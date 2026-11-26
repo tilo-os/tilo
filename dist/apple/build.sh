@@ -154,9 +154,10 @@ products() {
       # where the simulator reads them, so each app has programs of its own.
       scratch="$made/swiftpm-simulator"
       flags+=(--triple "$(uname -m)-apple-ios$minimum-simulator" --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)"
-        -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __entitlements -Xlinker "$made/simulator/rights.plist")
+        -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __entitlements -Xlinker "${3:-$made/simulator/rights.plist}")
       ;;
   esac
+  [ -z "${2:-}" ] || flags+=(--product "$2")
   flags+=(--scratch-path "$scratch")
   (cd "$here" && xcrun swift build "${flags[@]}" >&2 && xcrun swift build "${flags[@]}" --show-bin-path)
 }
@@ -699,14 +700,16 @@ build_assistant_iphone() {
 # phone's system with its typeface and its sentences, and whether the phone lets it show live
 # activities. The simulator runs without its window and is shut down again if this started it.
 check_assistant_simulator() {
-  local bin app="$made/simulator/$name.app" device started="" failed=""
-  local flags=(-c release --triple "$(uname -m)-apple-ios$minimum-simulator"
-    --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" --scratch-path "$made/swiftpm-simulator")
-  (cd "$here" && xcrun swift build "${flags[@]}" >&2)
-  bin="$(cd "$here" && xcrun swift build "${flags[@]}" --show-bin-path)"
+  local bin app="$made/simulator/$name.app" device started="" failed="" team=SIMULATOR0
   local appex="$app/PlugIns/AssistantWidgets.appex"
   rm -rf "$made/simulator"
   mkdir -p "$appex"
+  # As on a phone, the app keeps this device's keys in its own keychain group.
+  fill "$assistant/Phone.entitlements" "$made/simulator/rights.plist"
+  bin="$(products simulator AssistantPhone)"
+  cp "$bin/AssistantPhone" "$app/$program"
+  fill "$assistant/Widgets.entitlements" "$made/simulator/widget-rights.plist"
+  bin="$(products simulator AssistantWidgets "$made/simulator/widget-rights.plist")"
   cp "$bin/AssistantWidgets" "$appex/AssistantWidgets"
   fill "$assistant/Widgets-Info.plist" "$appex/Info.plist"
   stamp "$appex/Info.plist"
@@ -714,7 +717,6 @@ check_assistant_simulator() {
   cp -R "$assistant/en.lproj" "$appex/"
   faces "$appex/Fonts"
   codesign --force --timestamp=none --sign - "$appex"
-  cp "$bin/AssistantPhone" "$app/$program"
   fill "$assistant/Phone-Info.plist" "$app/Info.plist"
   stamp "$app/Info.plist"
   plist -c "Set :TiloSite $site" "$app/Info.plist"

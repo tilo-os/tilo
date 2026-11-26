@@ -3,6 +3,9 @@ import Foundation
 
 #if os(iOS)
 import ActivityKit
+#if targetEnvironment(simulator)
+import Security
+#endif
 #endif
 
 /// What the app can tell of itself with nothing on screen, one line per fact, for a build to read.
@@ -50,6 +53,17 @@ public enum AssistantCheck {
         say(carried.count == AssistantWords.allCases.count,
             "its bundle carries \(carried.count) of its \(AssistantWords.allCases.count) sentences")
         #if os(iOS)
+        #if targetEnvironment(simulator)
+        // WebKit must be able to keep the key that protects the device's workspace identity.
+        let entry: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword, kSecAttrService: "so.tilo.assistant.check",
+            kSecAttrAccount: UUID().uuidString, kSecAttrAccessGroup: "\(team).\(Bundle.main.bundleIdentifier ?? "")"
+        ]
+        var item = entry
+        item[kSecValueData] = Data([0])
+        let kept = SecItemAdd(item as CFDictionary, nil) == errSecSuccess
+        say(kept && SecItemDelete(entry as CFDictionary) == errSecSuccess, "it can keep a device key in its own keychain group")
+        #endif
         say(info["NSSupportsLiveActivities"] as? Bool == true, "its bundle asks for live activities")
         let extensionAt = Bundle.main.builtInPlugInsURL?.appendingPathComponent("AssistantWidgets.appex").path ?? ""
         say(FileManager.default.fileExists(atPath: extensionAt), "it carries its widget extension")
