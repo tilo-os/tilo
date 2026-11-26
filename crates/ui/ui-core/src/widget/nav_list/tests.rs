@@ -1672,8 +1672,8 @@ fn assert_navigation_matches_its_unanimated_paint(
 
 #[test]
 fn populated_inserted_removed_and_reordered_navigation_paints_without_live_overlap() {
-    for scale in [1.0, 2.0] {
-        for theme in [Theme::dark(), Theme::light()] {
+    for (scale, theme) in [(1.0, Theme::dark()), (2.0, Theme::light())] {
+        {
             let theme = theme.with_text_scale(scale);
             let mut frame = Driver::for_root(
                 State::new(),

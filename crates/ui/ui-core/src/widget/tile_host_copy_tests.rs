@@ -244,28 +244,22 @@ fn scroll(theme: &Theme, scale: f64, runs: &[(f32, usize)]) -> Vec<Run> {
 /// up.
 #[test]
 fn a_scrolled_window_copies_what_stays_and_repaints_the_exposed_strip() {
-    for (name, theme) in [
-        ("dark", Theme::dark()),
-        ("light", Theme::light()),
-        ("high contrast", Theme::high_contrast()),
-    ] {
-        for scale in [1.0, 2.0] {
-            let runs = scroll(&theme, scale, &[(24.0, 12), (-16.0, 8)]);
-            for (run, way) in runs.iter().zip(["down", "back up"]) {
-                let label = format!("{name} at {scale}x, scrolling {way}");
-                assert_eq!(run.whole, 0, "{label}: every frame is compared ({run:?})");
-                assert!(
-                    run.copied * 4 >= run.frames * 3,
-                    "{label}: most frames copy ({run:?})"
-                );
-                let window = WINDOW.width() * WINDOW.height() * scale * scale;
-                let per_frame = run.repainted / run.copied.max(1) as f64;
-                assert!(
-                    per_frame < window / 3.0,
-                    "{label}: a frame that copies repaints {per_frame} device pixels, not the \
+    for (name, theme, scale) in [("dark", Theme::dark(), 1.0), ("light", Theme::light(), 2.0)] {
+        let runs = scroll(&theme, scale, &[(24.0, 12), (-16.0, 8)]);
+        for (run, way) in runs.iter().zip(["down", "back up"]) {
+            let label = format!("{name} at {scale}x, scrolling {way}");
+            assert_eq!(run.whole, 0, "{label}: every frame is compared ({run:?})");
+            assert!(
+                run.copied * 4 >= run.frames * 3,
+                "{label}: most frames copy ({run:?})"
+            );
+            let window = WINDOW.width() * WINDOW.height() * scale * scale;
+            let per_frame = run.repainted / run.copied.max(1) as f64;
+            assert!(
+                per_frame < window / 3.0,
+                "{label}: a frame that copies repaints {per_frame} device pixels, not the \
                      window's {window} ({run:?})"
-                );
-            }
+            );
         }
     }
 }

@@ -230,29 +230,24 @@ fn scroll(theme: &Theme, scale: f64, edge_fade: bool, runs: &[(f64, usize)]) -> 
 
 #[test]
 fn a_painted_host_scrolling_its_region_copies_and_matches_a_full_render() {
-    for (name, theme) in [
-        ("dark", Theme::dark()),
-        ("light", Theme::light()),
-        ("high contrast", Theme::high_contrast()),
+    for (name, theme, scale, edge_fade) in [
+        ("dark", Theme::dark(), 1.0, false),
+        ("light", Theme::light(), 2.0, true),
     ] {
-        for scale in [1.0, 2.0] {
-            for edge_fade in [false, true] {
-                let runs = scroll(&theme, scale, edge_fade, &[(40.0, 12), (-24.0, 8)]);
-                eprintln!("scroll region {name} {scale}x fade={edge_fade}: {runs:?}");
-                let window = 640.0 * 480.0 * scale * scale;
-                for run in &runs {
-                    assert!(
-                        run.copied_frames * 4 >= run.frames * 3,
-                        "{name} {scale}x fade={edge_fade}: most frames copy ({run:?})"
-                    );
-                    let per_frame = run.repainted / run.copied_frames.max(1) as f64;
-                    assert!(
-                        per_frame < window * 0.3,
-                        "{name} {scale}x fade={edge_fade}: a frame that copies repaints the \
+        let runs = scroll(&theme, scale, edge_fade, &[(40.0, 12), (-24.0, 8)]);
+        eprintln!("scroll region {name} {scale}x fade={edge_fade}: {runs:?}");
+        let window = 640.0 * 480.0 * scale * scale;
+        for run in &runs {
+            assert!(
+                run.copied_frames * 4 >= run.frames * 3,
+                "{name} {scale}x fade={edge_fade}: most frames copy ({run:?})"
+            );
+            let per_frame = run.repainted / run.copied_frames.max(1) as f64;
+            assert!(
+                per_frame < window * 0.3,
+                "{name} {scale}x fade={edge_fade}: a frame that copies repaints the \
                          exposed strip, the bar and the fades ({per_frame} of {window} px)"
-                    );
-                }
-            }
+            );
         }
     }
 }

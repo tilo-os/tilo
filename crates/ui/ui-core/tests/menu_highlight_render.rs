@@ -273,31 +273,6 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
             for label in labels() {
                 menu.push(MenuItem::action(label, || {}));
             }
-            menu.open_at([40.0, 40.0]);
-            let row1 = menu.item_rect(1).expect("row 1 is an action row");
-            dispatch(&mut menu, &cursor_moved(row1.center()));
-            assert_eq!(menu.hovered(), Some(1), "pointer over row 1 highlights it");
-            let row2 = menu.item_rect(2).unwrap();
-
-            let rendered = drawn_menu(&mut menu, &theme);
-            rendered.dump(&format!("menu_highlight_context_menu_hover_{name}"));
-            assert_armed_row(
-                &rendered,
-                text_free_probe(row1),
-                text_free_probe(row2),
-                &theme,
-                name,
-                "context-menu/pointer",
-            );
-        }
-    }
-
-    {
-        for (name, theme) in themes() {
-            let mut menu = ContextMenu::new();
-            for label in labels() {
-                menu.push(MenuItem::action(label, || {}));
-            }
             let viewport = Rect::new(0.0, 0.0, f64::from(CANVAS_W), f64::from(CANVAS_H));
             // The measured, viewport-bounded path shared hosts (toolbar
             // overflow, shell) use.
@@ -323,7 +298,8 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
         }
     }
 
-    // Every preset `Theme::named` resolves, including the accessibility track:
+    // The pointer-hover path on every preset `Theme::named` resolves, including the accessibility track
+    // (which includes the two defaults):
     // the veneer polarity and the accent are per-theme decisions, so a highlight
     // that survives the two defaults can still vanish on a preset.
     // The armed context-menu row must read on every shipped theme, and its

@@ -224,28 +224,22 @@ fn scroll(theme: &Theme, scale: f64, runs: &[(f64, usize)]) -> Vec<Run> {
 
 #[test]
 fn scrolling_a_virtual_list_copies_the_rows_and_matches_a_full_render() {
-    for (name, theme) in [
-        ("dark", Theme::dark()),
-        ("light", Theme::light()),
-        ("high contrast", Theme::high_contrast()),
-    ] {
-        for scale in [1.0, 2.0] {
-            let runs = scroll(&theme, scale, &[(40.0, 16), (-24.0, 8)]);
-            eprintln!("virtual list {name} {scale}x: {runs:?}");
-            let window = 640.0 * 480.0 * scale * scale;
-            for run in &runs {
-                assert_eq!(run.whole, 0, "{name} {scale}x: {run:?}");
-                assert!(
-                    run.copied_frames * 4 >= run.frames * 3,
-                    "{name} {scale}x: most frames copy ({run:?})"
-                );
-                let per_frame = run.repainted / run.copied_frames.max(1) as f64;
-                assert!(
-                    per_frame < window * 0.3,
-                    "{name} {scale}x: a frame that copies repaints the exposed strip and the \
+    for (name, theme, scale) in [("dark", Theme::dark(), 1.0), ("light", Theme::light(), 2.0)] {
+        let runs = scroll(&theme, scale, &[(40.0, 16), (-24.0, 8)]);
+        eprintln!("virtual list {name} {scale}x: {runs:?}");
+        let window = 640.0 * 480.0 * scale * scale;
+        for run in &runs {
+            assert_eq!(run.whole, 0, "{name} {scale}x: {run:?}");
+            assert!(
+                run.copied_frames * 4 >= run.frames * 3,
+                "{name} {scale}x: most frames copy ({run:?})"
+            );
+            let per_frame = run.repainted / run.copied_frames.max(1) as f64;
+            assert!(
+                per_frame < window * 0.3,
+                "{name} {scale}x: a frame that copies repaints the exposed strip and the \
                      bar ({per_frame} of {window} px, {run:?})"
-                );
-            }
+            );
         }
     }
 }

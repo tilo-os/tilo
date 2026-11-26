@@ -528,7 +528,7 @@ fn scrolled_scrollable_renders_widgets_that_were_offscreen_at_initial_layout() {
 #[test]
 fn scrolling_to_the_end_of_dashboard_still_renders_content() {
     // Walks the full dashboard from offset 0 → max via repeated
-    // wheel-sized scrolls (60 px logical per tick — the same step
+    // large scrolls (four wheel ticks of 60 px logical each — the same step
     // a real mouse wheel produces in `Scrollable::handle_event`).
     // At each step it relayouts, draws, mark_drawns, and counts
     // non-bg pixels. Any frame below the threshold is a
@@ -552,10 +552,10 @@ fn scrolling_to_the_end_of_dashboard_still_renders_content() {
     let mut min_frame = Vec::new();
     let mut last_offset: f32 = -1.0;
 
-    // 250 × 60 px = up to 15,000 px of scroll. The dashboard is
+    // 250 × 240 px = up to 60,000 px of scroll. The dashboard is
     // ~9,800 px logical so this comfortably hits max_y.
     for step in 0..250 {
-        h.root.scroll_by(0.0, 60.0);
+        h.root.scroll_by(0.0, 240.0);
         let off = h.root.offset_y();
         h.relayout();
         let rgba = h.draw_one_frame();

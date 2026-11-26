@@ -101,6 +101,7 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
         let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
         let theme = Theme::default();
 
+        let mut renderer = OffscreenRenderer::new(w, h);
         for (r8, g8, b8) in grounds {
             let color = vello::peniko::Color::from_rgb8(r8, g8, b8);
             let mut host = TileHost::new(TileContent::App(Box::new(Flood { rect, color })));
@@ -114,7 +115,6 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
                 &theme,
                 crate::presence::PresenceCtx::empty().draw_env(),
             ));
-            let mut renderer = OffscreenRenderer::new(w, h);
             let rgba = renderer.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 0xFF));
 
             // Both vertical edges at mid-height, and the horizontal edges at
