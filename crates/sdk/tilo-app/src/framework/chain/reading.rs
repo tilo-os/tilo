@@ -40,7 +40,7 @@ pub(super) fn read_spec(label: &str, chain: &str, item: Option<&str>) -> tilo_ac
         "read",
         label.clone(),
         label,
-        OperationKind::View,
+        OperationKind::Effect,
         CHAIN_READ_TYPE,
         vec![
             tilo_actions::ActionParam::optional(
@@ -119,7 +119,8 @@ pub(super) fn read_spec(label: &str, chain: &str, item: Option<&str>) -> tilo_ac
                 })
         },
     )
-    .of_kind(tilo_actions::ActionKind::Read)
+    // Reading a chain runs on its host and keeps the same no-risk, idempotent read contract.
+    .with_contract(tilo_actions::ActionContract::view())
     .with_description(
         "What this holds as typed data: the items of its parts, the newest part first, a page at \
          a time with `cursor` passing on where a page ended, each as its collection holds it \
