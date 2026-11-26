@@ -7,6 +7,7 @@ use tilo_action_policy::Change;
 mod confined;
 mod editor;
 mod holders;
+mod one_writer;
 mod placed;
 mod signed_invocations;
 use crate::join::WorkspaceId;
