@@ -51,7 +51,7 @@ Tilo is built around shared workspaces. All of your devices work as one computer
 
 ## Contribute
 
-Code, bug reports, accessibility testing, translations, docs, and design feedback are all welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers building from source (`cargo desktop`, `cargo headless`, `cargo web`) and submitting a pull request.
+Code, bug reports, accessibility testing, translations, docs, and design feedback are all welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers building from source (`cargo desktop`, `cargo headless`, `cargo daemon`, `cargo web`) and submitting a pull request.
 
 Development happens on [code.tilo.so/tilo/tilo](https://code.tilo.so/tilo/tilo); [GitHub](https://github.com/tilo-os/tilo) is a mirror, so please open issues and pull requests on Forgejo. Coding agents are welcome too: understand what you submit and say what you tested ([AGENTS.md](AGENTS.md)).
 

@@ -131,5 +131,6 @@ incremental = false
 [alias]
 desktop = ["run", "--locked", "--quiet", "--package", "tilo-local", "--", "desktop"]
 headless = ["run", "--locked", "--quiet", "--package", "tilo-local", "--", "headless"]
+daemon = ["run", "--locked", "--quiet", "--package", "tilo-local", "--", "daemon"]
 web = ["run", "--locked", "--quiet", "--package", "tilo-local", "--", "web"]
 local = ["run", "--locked", "--quiet", "--package", "tilo-local", "--"]

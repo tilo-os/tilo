@@ -7621,6 +7621,30 @@ isolation = "vm"
 timeout_secs = 1200
 on = ["idle", "stable"]
 
+# `cargo daemon`'s programs: the launcher, this checkout's `tilo` command and the daemon it
+# starts, built where cargo has its registry.
+[[check]]
+name = "daemon-binaries"
+run = "cargo build --locked -p tilo-local && cargo build --locked -p tilo-cli --bin tilo && cargo build --locked -p tilo-daemon --bin tilo-runtime"
+# The toolkit the daemon carries reads its font catalog at build time.
+needs = ["font-seed"]
+env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1" }
+outputs = ["/target/debug/tilo-local", "/target/debug/tilo", "/target/debug/tilo-runtime"]
+default = false
+
+# `cargo daemon --check` (tools/tilo-local): a device daemon started on a fresh state directory
+# of its own, founding its throwaway person, asked `tilo status --daemon` and one read action
+# (devices#info), then stopped. It runs beside the person's own daemon and never touches it.
+[[check]]
+name = "run-daemon"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "bash tools/test-env.sh /target/debug/tilo-local daemon --check --no-build"
+needs = ["daemon-binaries"]
+requires = ["arch=x86_64"]
+isolation = "vm"
+timeout_secs = 1200
+on = ["idle", "stable"]
+
 # `cargo web --check` on the bundle and programs the checks beside it built: the local stack brought
 # up on the shipped bundle, its page loaded back module by module down to the runtime's
 # WebAssembly, then stopped. A bundle missing a piece the page imports fails here, by name.

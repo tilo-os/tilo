@@ -45,8 +45,13 @@ pub fn logged_in() -> bool {
 }
 
 /// Whether a Tilo desktop runs in this login: its session serves the person's programs at its
-/// API socket, which answers while it runs.
+/// API socket, which answers while it runs. A client naming a profile apart (a development
+/// daemon's, a VM host's, a test's) talks to that profile's daemon, not this login's desktop, so
+/// the desktop's socket answers nothing for it.
 pub(crate) fn desktop_runs() -> bool {
+    if tilo_device_identity::login::daemon::named_profile().is_some() {
+        return false;
+    }
     tilo_paths::login::session_dir(std::env::var_os("XDG_RUNTIME_DIR")).is_some_and(|directory| {
         tilo_files::native::socket::is_bound(&directory.join(tilo_paths::login::API_SOCKET_FILE))
     })
@@ -672,6 +677,29 @@ mod tests {
             host_device: None,
             host_hint: None,
         }
+    }
+
+    #[test]
+    fn a_client_naming_a_profile_apart_is_not_a_desktops() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let runtime = tempfile::tempdir().unwrap();
+        env.set("XDG_RUNTIME_DIR", runtime.path())
+            .remove("TILO_RUNTIME_PROFILE");
+        let directory =
+            tilo_paths::login::session_dir(std::env::var_os("XDG_RUNTIME_DIR")).unwrap();
+        std::fs::create_dir_all(&directory).unwrap();
+        let _socket =
+            tilo_files::native::socket::bind(&directory.join(tilo_paths::login::API_SOCKET_FILE))
+                .unwrap();
+        assert!(
+            desktop_runs(),
+            "a desktop's socket that answers is a desktop"
+        );
+        env.set("TILO_RUNTIME_PROFILE", runtime.path().join("profile"));
+        assert!(
+            !desktop_runs(),
+            "a client naming a profile apart talks to that daemon, not the desktop"
+        );
     }
 
     #[test]

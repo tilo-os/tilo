@@ -1,13 +1,16 @@
 //! `tilo-local`: one command for each way to run Tilo from a checkout. The workspace's Cargo
-//! aliases (`.cargo/config.toml`) are the way in: `cargo desktop`, `cargo headless`, `cargo web`.
+//! aliases (`.cargo/config.toml`) are the way in: `cargo desktop`, `cargo headless`, `cargo daemon`,
+//! `cargo web`.
 //!
 //! Each command drives the path that already exists for it and adds nothing beside it: the
-//! development session (`dist/dev/nested-session.sh`) for the desktop and the headless runtime, and
-//! the web bundle's build and local hosting stack for the web entry. What this adds is the choice
-//! of options, a line saying where the running thing is and how to reach it, and `--check`: a smoke
-//! test that starts it, asks it something, and stops it.
+//! development session (`dist/dev/nested-session.sh`) for the desktop and the headless runtime, the
+//! device daemon over a profile of its own for the command line and agents, and the web bundle's
+//! build and local hosting stack for the web entry. What this adds is the choice of options, a line
+//! saying where the running thing is and how to reach it, and `--check`: a smoke test that starts
+//! it, asks it something, and stops it.
 
 mod check;
+mod daemon;
 mod json;
 mod mcp;
 mod session;
@@ -21,6 +24,7 @@ Run Tilo from this checkout, one command each.
 
   cargo desktop [OPTIONS]    the Tilo desktop in a window on the desktop you are using
   cargo headless [OPTIONS]   the session and its apps with no window, for agents and tests
+  cargo daemon [OPTIONS]     a device daemon in the background, over a profile of its own
   cargo web [OPTIONS]        the web entry, built and served by the local tilo.sh stack
 
 Each command takes --help for its options, and --check to start it, ask it
@@ -44,13 +48,15 @@ fn main() -> ExitCode {
     let ran = match command.as_str() {
         "desktop" => session::main(session::Mode::Desktop, args),
         "headless" => session::main(session::Mode::Headless, args),
+        "daemon" => daemon::main(args),
         "web" => web::main(&args),
         "help" | "-h" | "--help" => {
             print!("{HELP}");
             Ok(ExitCode::SUCCESS)
         }
         other => Err(format!(
-            "no command {other}: the commands are desktop, headless and web (cargo desktop --help)"
+            "no command {other}: the commands are desktop, headless, daemon and web \
+             (cargo desktop --help)"
         )),
     };
     ran.unwrap_or_else(|error| {
