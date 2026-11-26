@@ -170,8 +170,9 @@ pub use validator::{
     document_access_target,
 };
 pub use workspace_document::{
-    CONTENT_REFUSAL_APP, CONTENT_REFUSAL_KIND, WORKSPACE_DOCUMENTS, WorkspaceDocument, bound_kind,
-    content_refusal_document_id, is_content_refusal_document, is_sealed_kind, sealed_kind,
+    CONTENT_REFUSAL_APP, CONTENT_REFUSAL_KIND, EARLIER_RECORDS, WORKSPACE_DOCUMENTS,
+    WorkspaceDocument, bound_kind, content_refusal_document_id, decided_as_app_record,
+    is_content_refusal_document, is_sealed_kind, is_unread_record, sealed_kind,
     shared_workspace_document, workspace_document, workspace_document_id,
     workspace_document_of_kind,
 };

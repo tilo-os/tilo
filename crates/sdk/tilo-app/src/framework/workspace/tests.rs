@@ -50,7 +50,10 @@ fn a_known_reader_can_read_their_record_at_any_role() {
         assert!(
             !open(
                 person,
-                tilo_actions::policy::roles::WORKSPACE_MESSAGE_DRAFTS_DOCUMENT
+                collab_types::EARLIER_RECORDS
+                    .iter()
+                    .find_map(|earlier| earlier.fixed.filter(|_| earlier.app == APP))
+                    .unwrap()
             )
             .may_read(),
             "the earlier drafts have no verifiable owner"

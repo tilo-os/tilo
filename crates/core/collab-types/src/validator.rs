@@ -441,7 +441,7 @@ pub fn validate_log(op: &SignedOp, state: &mut InboundState) -> Result<(), Valid
 pub fn document_node(workspace: &str, app: &str, document: &str) -> TreePath {
     use tilo_actions::document_sync::{DocumentSync, document_sync};
     let resource = |id| {
-        let id = if roles::is_workspace_moderation(app, id) {
+        let id = if crate::decided_as_app_record(app, id) {
             ""
         } else {
             id
@@ -524,7 +524,7 @@ pub fn document_access_target<'a>(app: &str, document: &'a str) -> Option<&'a st
         | DocumentSync::ChainHead { base } => base,
         DocumentSync::Eager | DocumentSync::OnDemand => document,
     };
-    let document = if roles::is_workspace_moderation(app, document) {
+    let document = if crate::decided_as_app_record(app, document) {
         ""
     } else {
         document

@@ -2465,7 +2465,7 @@ impl Layouts {
             (
                 route.document.clone(),
                 route.app,
-                tilo_action_policy::roles::PERSON_VIEW_KIND,
+                tilo_desktop_model::person_view::PERSON_VIEW_KIND,
             )
         };
         let workspace = workspace_id.to_string();

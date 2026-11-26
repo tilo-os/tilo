@@ -1095,6 +1095,9 @@ impl Printer<'_> {
                 if let Some(readers) = &t.readers {
                     options.push(format!("readers: {}", readers.rule));
                 }
+                if t.sealed {
+                    options.push("sealed: true".to_owned());
+                }
                 let options = if options.is_empty() {
                     String::new()
                 } else {

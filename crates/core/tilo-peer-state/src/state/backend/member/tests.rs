@@ -3,6 +3,9 @@ use crate::StatePeer;
 use crate::state::DeviceRow;
 use crate::state::now_ns;
 use crate::verified_certificate::VerifiedCertificate;
+
+/// The app whose records keep a workspace's layout and each person's view of it.
+const LAYOUT: &str = "so.tilo.browser-desktop";
 use automerge::ROOT;
 use automerge::ReadDoc;
 use automerge::transaction::Transactable;
@@ -283,10 +286,8 @@ tilo_test_env::scenario! {
         let workspace = peer.core.workspace_doc.as_mut().unwrap();
         workspace.put(ROOT, "owner", person.as_str()).unwrap();
         workspace.commit();
-        for (app, record) in [
-            ("so.tilo.tube", roles::WORKSPACE_TUBE_HISTORY_DOCUMENT),
-            ("so.tilo.messages", roles::WORKSPACE_MESSAGE_DRAFTS_DOCUMENT),
-        ] {
+        for earlier in collab_types::EARLIER_RECORDS {
+            let (app, record) = (earlier.app, earlier.fixed.unwrap());
             assert!(
                 peer.check_document_read(source, app, record, now).is_err(),
                 "workspace ownership cannot disclose private data with no verifiable owner"
@@ -338,13 +339,9 @@ tilo_test_env::scenario! {
         put_member(&mut peer, &other, Role::Editor);
         let workspace_id = peer.workspace_id().to_owned();
         let view = |of: &str| {
-            collab_types::document_node(
-                &workspace_id,
-                roles::LAYOUT_APP,
-                &roles::person_view_record(of),
-            )
+            collab_types::document_node(&workspace_id, LAYOUT, &format!("view-of-{of}"))
         };
-        let layout = collab_types::document_node(&workspace_id, roles::LAYOUT_APP, "desktop");
+        let layout = collab_types::document_node(&workspace_id, LAYOUT, "desktop");
         let cx = tilo_action_policy::Context::at_time(now);
         for role in [Role::Editor, Role::Viewer] {
             put_member(&mut peer, &person, role);
@@ -360,12 +357,7 @@ tilo_test_env::scenario! {
                 "{role:?}, on another member's view"
             );
             assert!(
-                peer.check_document_read(
-                    source,
-                    roles::LAYOUT_APP,
-                    &roles::person_view_record(&other),
-                    now
-                )
+                peer.check_document_read(source, LAYOUT, &format!("view-of-{other}"), now)
                 .is_ok(),
                 "every member reads every view"
             );

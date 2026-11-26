@@ -331,3 +331,33 @@ fn a_record_an_agent_makes_is_the_person_it_acts_for() {
         .expect("an agent that acts for nobody makes no record under a reader rule");
     assert!(refused.contains("no person made it"), "{refused}");
 }
+
+/// Chat's draft is its author's alone: what Ada is writing in a channel reaches her other device,
+/// and Bea's device lists, counts and reads none of it.
+#[test]
+fn bea_reads_none_of_adas_chat_draft() {
+    const CHAT: &str = "so.tilo.chat";
+    let (ada, packages) = Replica::new("ada", Workspace::new(), &[crate::fixtures::CHAT]);
+    let meta = packages[0].meta.clone();
+    let [laptop, bea] = ["ada", "bea"].map(|name| {
+        let replica = Replica::new(name, Workspace::new(), &[crate::fixtures::CHAT]).0;
+        ada.send_to(&replica);
+        replica
+    });
+    let all = Value::resource(&ada.root(CHAT));
+    let channel = ada.call(CHAT, "new_channel", vec![all, Value::text("plans")]);
+    ada.call(CHAT, "open_channel", vec![channel]);
+    ada.commit();
+    for other in [&laptop, &bea] {
+        ada.send_to(other);
+    }
+    let Value::List(drafts) = ada.read(&ada.root(CHAT), "drafts") else {
+        panic!("Chat's drafts are a list");
+    };
+    let draft = target(drafts.first().expect("Ada's draft in the channel"));
+    let kind = meta.kind_of("Draft");
+    let (_, laptop_counts, _, laptop_reads) = found(&laptop, &kind, "", &draft);
+    assert_eq!((laptop_counts, laptop_reads), (1, true), "Ada's other device has her draft");
+    let (_, bea_counts, _, bea_reads) = found(&bea, &kind, "", &draft);
+    assert_eq!((bea_counts, bea_reads), (0, false), "Bea's device has none of it");
+}

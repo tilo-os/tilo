@@ -618,12 +618,11 @@ pub fn published_resource(document: &str) -> String {
 /// resource its tree is published under ([`published_resource`]).
 #[must_use]
 pub fn written_node(document: &WrittenDocument<'_>) -> TreePath {
-    let resource =
-        if tilo_action_policy::roles::is_workspace_moderation(document.app, document.document) {
-            String::new()
-        } else {
-            published_resource(document.document)
-        };
+    let resource = if crate::decided_as_app_record(document.app, document.document) {
+        String::new()
+    } else {
+        published_resource(document.document)
+    };
     let app = TreePath::workspace(document.workspace).app(document.app);
     // A sealed record (the vault, the mailbox) is decided at its kind,
     // as every reader of it decides it ([`crate::document_node`]), whether or not an app here

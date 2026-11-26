@@ -410,13 +410,15 @@ fn a_playlist_shows_its_own_videos_in_order_and_plays_the_first() {
     assert_eq!(progress_of(ada, meta, &entry), Value::Float(0.0));
 }
 
-/// Each member reads their own watch history: what one watched is not in the other's.
+/// Each member reads their own watch history: what one watched is sealed to their devices, and
+/// not in the other's.
 #[test]
 fn a_members_watch_history_is_their_own() {
     let client = client();
     let Client { ada, meta, root } = &client;
-    let (bo, _) = replica("bo", ada.doc.fork());
-    ada.sync_with(&bo);
+    // Bo's device takes in what Ada's sends it as a member's device does: only what Bo reads.
+    let (bo, _) = replica("bo", Workspace::new());
+    ada.send_to(&bo);
 
     let cache = video(ada, meta, root, "v-cache");
     let bread = video(ada, meta, root, "v-bread");
@@ -434,8 +436,18 @@ fn a_members_watch_history_is_their_own() {
     );
     ada.commit();
     bo.commit();
-    ada.sync_with(&bo);
+    ada.send_to(&bo);
+    bo.send_to(&ada);
 
+    // Each entry is sealed to its watcher's devices: the other's replica has none of it.
+    assert!(
+        history_entry(&bo, meta, root, "v-cache", Some("ada")).is_none(),
+        "bo's device reads nothing of what ada watched"
+    );
+    assert!(
+        history_entry(ada, meta, root, "v-bread", Some("bo")).is_none(),
+        "ada's device reads nothing of what bo watched"
+    );
     let cache_entry =
         history_entry(ada, meta, root, "v-cache", Some("ada")).expect("ada's own entry");
     let bread_entry =

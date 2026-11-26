@@ -17,7 +17,7 @@ pub const PERSONAL_PLACES: (&str, &str) = ("tilo.host", "tilolang.personal");
 #[must_use]
 pub fn stays(app: &str, record: &str) -> bool {
     let root = collab_types::document_access_target(app, record).unwrap_or(record);
-    if tilo_action_policy::roles::lacks_private_record_owner(app, root) {
+    if collab_types::is_unread_record(app, root) {
         return true;
     }
     match app {

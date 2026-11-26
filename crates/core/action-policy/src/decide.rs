@@ -343,7 +343,7 @@ impl<'g> Party<'g> {
 
     fn decide_grants(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Decision<'g> {
         let node = &*crate::roles::decided_node(node);
-        if kind == ActionKind::Read && crate::roles::lacks_private_record_owner_at(node) {
+        if kind == ActionKind::Read && crate::roles::in_unread_record(node) {
             return Decision {
                 answer: Answer::Deny,
                 basis: Basis::NoGrant,

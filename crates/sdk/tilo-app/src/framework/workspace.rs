@@ -348,7 +348,7 @@ impl Core {
         let (app, route) = (self.owner, self.id().route());
         collab_types::sealed_kind(app, route).is_some()
             || roles::has_member_reader(app, self.kind)
-            || roles::is_workspace_moderation(app, route)
+            || collab_types::decided_as_app_record(app, route)
     }
 
     fn may(&self, verb: &str) -> bool {

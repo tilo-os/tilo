@@ -79,11 +79,9 @@ pub const FILL_PAGE: &str = "fill-page";
 /// is read by everyone in it and by the agent's model, so neither is a way to one.
 pub const ASK: &str = "ask";
 
-/// The record kind the workspace keeps its vault in, in Passwords: where every action of the
-/// vault that writes takes its step ([`effects`]).
-pub const VAULT_KIND: &str = "passwords.workspace-vault";
-/// The id of the workspace's vault record, which its system declaration binds to [`VAULT_KIND`].
-pub const VAULT_RECORD: &str = "uuid:56daeee1-adbe-4b63-b0cc-5fd549e93077";
+// The record kind the workspace keeps its vault in, in Passwords, where every action of the vault
+// that writes takes its step ([`effects`]), and the id its declaration binds to it.
+pub use app_fleet::{VAULT_KIND, VAULT_RECORD};
 /// The vault record's step that keeps an item, a new one or an edit of one.
 pub const KEEP_SEALED: &str = "keep-sealed";
 /// The vault record's step that forgets an item.

@@ -43,6 +43,8 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
+# The records the system keeps for an app's whole workspace, as declared.
+app-fleet = { package = "tilo-app-fleet", version = "0.1.0", path = "../../desktop/app-fleet" }
 # What a skill's selector reads over a published resource.
 tilo-selector = { version = "0.1.0", path = "../tilo-selector" }
 # What a type's noun is called in a sentence, shared with the compiler that writes an app's

@@ -207,7 +207,7 @@ type Draft (title: subject, untitled: "New message", readers: author until sent)
 
 /// The workspace mailbox holds its accounts, drafts, and conversation labels. It is sealed: only
 /// the members who may read it ever hold its keys.
-type Mail {
+type Mail (sealed: true) {
     accounts: Collection<Account>
     drafts: Collection<Draft>
     labels: Collection<Label>

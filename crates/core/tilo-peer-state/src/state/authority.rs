@@ -1086,7 +1086,7 @@ impl StatePeer {
             return true;
         }
         let root = collab_types::document_access_target(app, document).unwrap_or(document);
-        if tilo_action_policy::roles::lacks_private_record_owner(app, root) {
+        if collab_types::is_unread_record(app, root) {
             return false;
         }
         let kind = self

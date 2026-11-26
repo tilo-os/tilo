@@ -23,13 +23,27 @@ use crate::width::WindowWidth;
 /// layout.
 #[must_use]
 pub fn resource_of(person: &str) -> String {
-    tilo_action_policy::roles::person_view_record(person)
+    declared()
+        .record_of(person)
+        .expect("a person's view is declared as each person's own")
 }
 
 /// The person whose view of the layout record `record` holds, on [`crate::ownership::DESKTOP_APP`].
 #[must_use]
 pub fn person_of(record: &str) -> Option<&str> {
-    tilo_action_policy::roles::person_viewing(crate::ownership::DESKTOP_APP, record)
+    declared().person_of(record)
+}
+
+/// The kind of a person's view of a workspace's layout.
+pub const PERSON_VIEW_KIND: &str = "desktop.person-view";
+
+/// What the system declares of a person's view ([`app_fleet::WORKSPACE_DOCUMENTS`]): each
+/// person keeps their own, which every member reads and only they change.
+fn declared() -> &'static app_fleet::WorkspaceDocument {
+    app_fleet::WORKSPACE_DOCUMENTS
+        .iter()
+        .find(|kept| kept.app == crate::ownership::DESKTOP_APP && kept.kind == PERSON_VIEW_KIND)
+        .expect("the system declares a person's view")
 }
 
 /// The keys a view is kept under.

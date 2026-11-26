@@ -1857,6 +1857,9 @@ mod store {
             ),
             "an issue cannot be what the history's id names"
         );
+        // Written where nothing was refused before it: what follows a refused change is refused
+        // with it.
+        let (mut here, mut there) = (issues(), issues());
         let open = put(&mut here, "a", resource("board", "a1", "Plan", "open"));
         assert!(deliver(&open, &mut there, &|_: &Proposal<'_>| true).is_empty());
     }

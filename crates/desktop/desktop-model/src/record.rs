@@ -53,7 +53,7 @@ pub fn layout() -> Surface {
 #[must_use]
 pub fn person_view() -> Surface {
     declaring(
-        tilo_action_policy::roles::PERSON_VIEW_KIND,
+        crate::person_view::PERSON_VIEW_KIND,
         "View",
         Some(ReaderRule::Author { until: None }),
         [],

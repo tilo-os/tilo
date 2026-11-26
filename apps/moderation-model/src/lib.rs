@@ -5,6 +5,7 @@ pub mod model;
 
 pub use model::{Decision, Moderation, Outcome, Report, Reverted, Ruling, moderation};
 
-pub use tilo_actions::policy::roles::WORKSPACE_MODERATION_DOCUMENT as DOCUMENT;
-
 pub const KIND: &str = "tilo.moderation";
+
+/// The workspace's moderation record, which Chat keeps.
+pub const DOCUMENT: &str = "derived:tilo.moderation@tab:0000000000000000";

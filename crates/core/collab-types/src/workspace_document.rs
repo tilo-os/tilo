@@ -4,101 +4,15 @@
 //! Other apps can join a shared workspace record from their own windows;
 //! the workspace's grants on its owner still decide every read and change.
 
-/// A record an app keeps for the whole workspace.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WorkspaceDocument {
-    /// The app that keeps it: whose surface and grants decide its changes.
-    pub app: &'static str,
-    /// Its resource kind.
-    pub kind: &'static str,
-    /// The id it is kept under, where that is not the one its kind derives
-    /// ([`workspace_document_id`]). Either way the id is bound to the kind ([`bound_kind`]).
-    pub fixed: Option<&'static str>,
-    /// Whether it is kept under keys of its own from its first write ([`is_sealed_kind`]).
-    pub sealed: bool,
-}
-
-impl WorkspaceDocument {
-    const fn kept(app: &'static str, kind: &'static str) -> Self {
-        Self {
-            app,
-            kind,
-            fixed: None,
-            sealed: false,
-        }
-    }
-}
-
-/// The records apps keep for their whole workspace.
-pub const WORKSPACE_DOCUMENTS: &[WorkspaceDocument] = &[
-    // What a workspace's VM session keeps for its next one, its settings by name: the one
-    // record its device writes besides its window's (`tilo-workspace-service::environment`).
-    WorkspaceDocument::kept("so.tilo.browser", "browser.environment"),
-    // The workspace's own emoji, which any view draws for `:name:`
-    // (`tilo-workspace-emoji`).
-    WorkspaceDocument::kept("so.tilo.chat", "tilo.workspace.emoji"),
-    // Which vault items the workspace's Linux machine hands the programs it
-    // starts, and in which variable: Terminal keeps it, and the server reads it
-    // when a program starts there (`tilo_environment::machine_secrets`).
-    WorkspaceDocument::kept("so.tilo.terminal", "terminal.machine-secrets"),
-    WorkspaceDocument::kept("so.tilo.chat", "chat.skills"),
-    // The workspace's agents: their names, colours, models and who added them,
-    // which the workspace settings sheet, the apps and their devices all
-    // read (`tilo-workspace-agent`).
-    WorkspaceDocument::kept("so.tilo.workspace", "tilo.workspace.agent"),
-    // The reports and decisions Chat keeps for its workspace.
-    WorkspaceDocument::kept("so.tilo.chat", "tilo.moderation"),
-    // Each person's place in the workspace's tilolang apps: their windows' and
-    // lenses' state and what they have seen, kept once for every package of the
-    // language rather than per package (`tilolang-tilo::personal`).
-    WorkspaceDocument::kept("tilo.host", "tilolang.personal"),
-    // The workspace's accounts (mail, calendar, messaging), which Settings keeps
-    // and Mail, Calendar and Messages read; their secrets are the vault's
-    // (`accounts::person`).
-    WorkspaceDocument::kept("so.tilo.settings", "tilo.accounts"),
-    // The people the workspace knows, with the identities each is reached at,
-    // which Contacts keeps and Mail, Calendar and Messages address
-    // (`tilo-contact-directory`).
-    WorkspaceDocument::kept("so.tilo.contacts", "tilo.contacts.identities"),
-    // What the workspace browsed and kept: its history, its bookmarks, the
-    // addresses it fills in and what operated each tab's page (Browser).
-    WorkspaceDocument::kept("so.tilo.browser", "browser.browsing-history"),
-    WorkspaceDocument::kept("so.tilo.browser", "browser.personal-bookmarks"),
-    WorkspaceDocument::kept("so.tilo.browser", "browser.address-book"),
-    WorkspaceDocument::kept("so.tilo.browser", "browser.page-record"),
-    // The workspace's vault: its sealed entries and who may use each, which Passwords keeps and
-    // every device's vault actions write (`tilo-workspace-service`'s `vault_entries`).
-    WorkspaceDocument {
-        fixed: Some(tilo_actions::remote::person_vault::VAULT_RECORD),
-        sealed: true,
-        ..WorkspaceDocument::kept(
-            "so.tilo.passwords",
-            tilo_actions::remote::person_vault::VAULT_KIND,
-        )
-    },
-    // The workspace's files: its tree's own record and each chunk of it (`fs-protocol`'s tree).
-    WorkspaceDocument::kept("so.tilo.file-explorer", "files.tree"),
-    // The workspace's shared desktop, each person's view of it and each window's view of what it
-    // showed (`desktop-model`'s record).
-    WorkspaceDocument::kept("so.tilo.browser-desktop", "tilo.desktop"),
-    WorkspaceDocument::kept("so.tilo.browser-desktop", "desktop.person-view"),
-    WorkspaceDocument::kept("so.tilo.browser-desktop", "desktop.window-view"),
-    // What the person answered about the devices of their machines, kept once for all of them
-    // (`tilo-peer-state`'s device answers).
-    WorkspaceDocument::kept("so.tilo.identity", "identity.device-answers"),
-];
+pub use app_fleet::{
+    EARLIER_RECORDS, WORKSPACE_DOCUMENTS, WorkspaceDocument,
+    derived_record as workspace_document_id,
+};
 
 /// The workspace document of `kind`, whichever app keeps it.
 #[must_use]
 pub fn workspace_document_of_kind(kind: &str) -> Option<&'static WorkspaceDocument> {
     WORKSPACE_DOCUMENTS.iter().find(|known| known.kind == kind)
-}
-
-/// The id of the workspace document of `kind` in any workspace: one per kind, the
-/// same on every device, derived as the person's document of a kind is.
-#[must_use]
-pub fn workspace_document_id(kind: &str) -> String {
-    crate::person_document_id(kind)
 }
 
 /// The workspace document `app` keeps under `document`, when it is one.
@@ -114,11 +28,7 @@ pub fn workspace_document(app: &str, document: &str) -> Option<&'static Workspac
 /// id names, or the kind a fixed id is declared for. `None` for an id that names no kind.
 #[must_use]
 pub fn bound_kind(record: &str) -> Option<&str> {
-    WORKSPACE_DOCUMENTS
-        .iter()
-        .find(|kept| kept.fixed == Some(record))
-        .map(|kept| kept.kind)
-        .or_else(|| crate::person_resource_type(record))
+    app_fleet::fixed_kind(record).or_else(|| crate::person_resource_type(record))
 }
 
 /// Whether records of `kind` are kept under keys of their own from their first write, as the
@@ -173,11 +83,24 @@ pub fn is_content_refusal_document(document: &str) -> bool {
         .is_some_and(|rest| rest.starts_with(CONTENT_REFUSAL_KIND))
 }
 
+/// Whether `app`'s `record` is decided as the app's own record (`""`), as its declaration says
+/// ([`WorkspaceDocument::as_app_record`]).
+#[must_use]
+pub fn decided_as_app_record(app: &str, record: &str) -> bool {
+    app_fleet::declared_record(app, record).is_some_and(|kept| kept.as_app_record)
+}
+
+/// Whether no one reads `app`'s `record`, as its declaration says
+/// ([`WorkspaceDocument::unread`]): not its person, an owner, a role or a grant.
+#[must_use]
+pub fn is_unread_record(app: &str, record: &str) -> bool {
+    app_fleet::declared_record(app, record).is_some_and(|kept| kept.unread)
+}
+
 /// A workspace record that even apps without a declared read of its owner may join.
 #[must_use]
 pub fn shared_workspace_document(app: &str, document: &str) -> Option<&'static WorkspaceDocument> {
-    workspace_document(app, document)
-        .filter(|_| !tilo_action_policy::roles::is_workspace_moderation(app, document))
+    workspace_document(app, document).filter(|kept| !kept.as_app_record)
 }
 
 #[cfg(test)]

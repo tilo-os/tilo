@@ -10,6 +10,8 @@ const NOW: u64 = 1_000_000;
 const ALICE: &str = "a11ce";
 const BOB: &str = "b0b";
 const CAROL: &str = "ca401";
+/// The app whose records keep a workspace's layout and each person's view of it.
+const LAYOUT: &str = "so.tilo.browser-desktop";
 
 fn cx() -> Context<'static> {
     Context::at(NOW)
@@ -2793,8 +2795,8 @@ fn each_person_changes_their_own_view_of_the_layout_and_no_one_elses() {
     }
     let answer = |workspace: &WorkspacePolicy, person, of: &str, kind| {
         let node = TreePath::workspace("r")
-            .app(roles::LAYOUT_APP)
-            .resource(roles::person_view_record(of));
+            .app(LAYOUT)
+            .resource(format!("view-of-{of}"));
         Authority::person(workspace.party(person))
             .decide(&node, kind, &cx())
             .answer
@@ -2820,7 +2822,7 @@ fn each_person_changes_their_own_view_of_the_layout_and_no_one_elses() {
         Answer::Deny
     );
     let layout = TreePath::workspace("r")
-        .app(roles::LAYOUT_APP)
+        .app(LAYOUT)
         .kind("tilo.desktop")
         .resource("desktop");
     assert_eq!(

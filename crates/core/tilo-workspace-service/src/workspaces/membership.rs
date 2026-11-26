@@ -1,7 +1,7 @@
 //! What a workspace's owner alone keeps of it, as a record of the workspace itself
 //! ([`Ownership`]: what they labelled it with, and whether keys reaching it alone run commands in
 //! its machine unasked), which no role but the owner's reads or changes
-//! ([`tilo_action_policy::roles::OWNER_ONLY_APP`]). A member's membership, the role they hold
+//! (`tilo-server-protocol`'s `workspaces::OWNERSHIP`). A member's membership, the role they have
 //! and when the workspace was made, is no record: it reads from the workspace's member list
 //! ([`tilo_server_protocol::workspaces::MEMBERSHIP_APP`]).
 //!

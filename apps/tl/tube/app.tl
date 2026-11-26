@@ -207,15 +207,16 @@ type PlaybackPrefs {
 }
 
 /// One video the person watched: when, and where they left off. Watched again, it moves to the
-/// front rather than appearing twice. Each entry names the member who watched it, so a member
-/// reads their own history and nobody else's.
-type WatchEntry {
+/// front rather than appearing twice. An entry is read by its author alone (`readers: author`):
+/// what a member watched is sealed to their own devices, and no other member lists, finds or
+/// reads it.
+type WatchEntry (readers: author) {
     /// The video's key, as the service names it.
     key: Text merge register
     title: Text
     channel_name: Text
-    /// Who watched it. Empty for an entry the native app's history carried before this one
-    /// recorded members: it stays the workspace's, and watching the video again makes it theirs.
+    /// Who watched it. Empty for an entry an imported history carried before this one recorded
+    /// members: it is the importer's, and watching the video again names them.
     member: Option<Actor> = .none
     watched: Time
     /// How far in they were, as a share of its length; zero when they watched it to the end.

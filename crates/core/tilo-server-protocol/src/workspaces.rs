@@ -927,7 +927,9 @@ const MEMBER_RECORD: &str = "member.";
 
 /// The record of what a workspace's owner alone keeps of it: the labels they gave it and
 /// whether keys reaching it alone run commands in its machine unasked.
-pub const OWNERSHIP: (&str, &str) = (tilo_action_policy::roles::OWNER_ONLY_APP, "ownership");
+/// Only the workspace's owner reads or changes it, as its declaration says
+/// (`app_fleet::WorkspaceDocument::owner_only`).
+pub const OWNERSHIP: (&str, &str) = ("so.tilo.ownership", "ownership");
 
 /// The role a person holds in a workspace of their own.
 pub const OWNER_ROLE: &str = "owner";

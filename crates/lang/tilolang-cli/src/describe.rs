@@ -1040,6 +1040,12 @@ mod tests {
             ["tl.t.vault"]
         );
         assert!(sealed("").expect("it compiles").is_empty());
+        // Formatting keeps it: a package formatted is sealed as written.
+        let (module, _) = tilolang::parser::parse_module(
+            "app t.vault \"Vault\"\n\ntype Vault (sealed: true) {\n    name: Text\n}\n",
+        );
+        let printed = tilolang::print::print_module(&module.expect("it parses"));
+        assert!(printed.contains("type Vault (sealed: true) {"), "{printed}");
         let dir = package(
             "app t.vault \"Vault\"\n\ntype Entry (sealed: true) {\n    name: Text\n}\n\n\
              type Vault {\n    entries: Collection<Entry>\n}\n\nroot vault: Vault\n\n\
