@@ -27,7 +27,6 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 use tilo_actions::{ActionOutput, ApiError, ResourcePresentation, ResourceSpec};
-use tilo_resource::Effect;
 use tilo_service::{AskSender, Service, Started, decode, offer, reading};
 use zbus::zvariant::OwnedValue;
 

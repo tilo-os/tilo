@@ -19,10 +19,6 @@ use std::rc::Rc;
 
 use tilolang_tilo::resources::{LocalPort, ResourceStore};
 
-/// The app whose resources these are: the shell package the session runs, which declares
-/// `resources: .own` (`apps/tl/shell/app.tl`).
-pub(crate) const APP: &str = "so.tilo.shell";
-
 /// The shell's resources in this session, and how what the person's workspace holds of them is
 /// taken in.
 pub(crate) struct ShellRecord {
