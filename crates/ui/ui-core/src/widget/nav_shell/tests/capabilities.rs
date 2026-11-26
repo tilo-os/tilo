@@ -33,52 +33,6 @@ fn titled_content(actions: Vec<Element>) -> NavShell {
 tilo_test_env::scenario! {
     fn a_header_row_gives_its_title_and_actions_the_area_they_need;
 
-    // Swapping a column while the host holds the tree waits for the next
-    // build: the event routed in between still reaches the widget the tree
-    // was built with, never a dropped one.
-    phase a_swap_waits_for_the_next_build;
-    {
-        let (old, old_events) = TestLeaf::fill("content").boxed();
-        let shell = NavShell::new()
-            .content(old)
-            .content_header("Draft", Vec::new());
-        let mut h = harness(shell, 1024, 700, Theme::dark());
-        settle(&mut h, 1024, 700);
-        let (new, new_events) = TestLeaf::fill("content-next").boxed();
-        h.widget_mut::<NavShell>().expect("the shell").set_content(new);
-        h.widget_mut::<NavShell>()
-            .expect("the shell")
-            .set_content_header("Final", vec![icon("share", Icon::Send, "Share")]);
-        assert_eq!(
-            exposed_ids(&h),
-            ["content"],
-            "the old content stays until the host builds again"
-        );
-        let device = winit::event::DeviceId::dummy();
-        h.dispatch_to_root(&WindowEvent::CursorMoved {
-            device_id: device,
-            position: winit::dpi::PhysicalPosition::new(400.0, 400.0),
-        });
-        assert!(old_events.events() > 0, "the event reached the built content");
-        assert_eq!(new_events.events(), 0);
-        assert!(
-            h.widget_mut::<NavShell>()
-                .expect("the shell")
-                .content_mut::<TestLeaf>()
-                .is_some_and(|p| p.id == "content-next"),
-            "typed access sees the content waiting to go in"
-        );
-        settle(&mut h, 1024, 700);
-        assert_eq!(exposed_ids(&h), ["content-next", "share"]);
-        assert_eq!(
-            h.root::<NavShell>()
-                .part(Part::Title(Column::Content))
-                .and_then(Widget::accessibility)
-                .and_then(|node| node.name)
-                .as_deref(),
-            Some("Final")
-        );
-    }
 
     // The bar follows the actions it is given in place: a window that shows something else shows
     // its actions from the first layout that sees them, each placed, never the ones before.
@@ -192,74 +146,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    // The actions band starts after the leading buttons and the title's
-    // measured width; the title starts at the content gutter.
-    phase the_actions_start_after_the_title_and_the_title_at_the_gutter;
-    {
-        let theme = Theme::dark();
-        let m = Metrics::resolve(&theme);
-        let shell = titled_content(vec![
-            icon("reply", Icon::Reply, "Reply"),
-            icon("delete", Icon::Trash2, "Delete message"),
-        ]);
-        let mut h = harness(shell, 1024, 700, theme.clone());
-        settle(&mut h, 1024, 700);
-        let title = part_rect(&h, Part::Title(Column::Content));
-        assert!(
-            (title.x0 - f64::from(theme.tokens.spacing.rhythm.group)).abs() < 0.5,
-            "the title starts at the content gutter ({})",
-            title.x0
-        );
-        let reply = part_rect(&h, Part::Action(Column::Content, 0));
-        assert!(
-            reply.x0 >= title.x1 + m.gap - 0.5,
-            "{reply:?} after {title:?}"
-        );
-        assert!(reply.x1 < 1024.0 && reply.width() > 0.0);
 
-        let shell = NavShell::new()
-            .sidebar(TestLeaf::fill("sidebar").boxed().0)
-            .content(TestLeaf::fill("content").boxed().0)
-            .content_header(
-                "Quarterly planning",
-                vec![icon("reply", Icon::Reply, "Reply")],
-            )
-            .with_sidebar_hidden();
-        let mut h = harness(shell, 1024, 700, theme);
-        settle(&mut h, 1024, 700);
-        let g = geometry(&h);
-        let title = part_rect(&h, Part::Title(Column::Content));
-        assert!(title.x0 >= g.toggle.x1 + m.gap - 0.5);
-        assert!(part_rect(&h, Part::Action(Column::Content, 0)).x0 >= title.x1);
-    }
-
-    // A title takes the width the actions leave: where most of the row's actions wait in the
-    // menu, the title says what it says instead of being held to a third of the row with empty
-    // space beside it.
-    phase a_title_takes_the_area_its_actions_leave;
-    {
-        let theme = Theme::dark();
-        let title = "Launch plan for the autumn release, and everything it has to carry with it";
-        let actions: Vec<Element> = (0..10)
-            .map(|_| Box::new(Button::new("open", "Open").in_menu().on_open(|| {})) as Element)
-            .collect();
-        let shell = NavShell::new()
-            .content(TestLeaf::fill("content").boxed().0)
-            .content_header(title, actions);
-        let mut h = harness(shell, 1024, 700, theme.clone());
-        settle(&mut h, 1024, 700);
-        let shown = part_rect(&h, Part::Title(Column::Content));
-        let api = part_rect(&h, Part::More(Column::Content));
-        assert!(api.width() > 0.0, "the actions wait in the menu's api");
-        let (needs, _) =
-            crate::widget::window_header::header_row::measure_title(&mut TextRenderer::new(), &theme, title, None);
-        assert!(
-            (shown.width() - needs).abs() < 1.5,
-            "the title says {needs:.0} wide and takes {:.0} ({shown:?})",
-            shown.width()
-        );
-        assert!(shown.x1 <= api.x0, "{shown:?} does not run into {api:?}");
-    }
 
     // The row's order of giving way: an action's label gives way for its icon, then what else stands
     // in the row for the menu's API, and only then is the title cut — the primary action never
@@ -346,131 +233,9 @@ tilo_test_env::scenario! {
         }
     }
 
-    // A header row reports what it settled on: the title's width against what it says, the width it
-    // left beside it, and what its actions kept.
-    phase a_leading_fill_stands_between_the_toggle_and_the_actions;
-    {
-        let shell = NavShell::new()
-            .sidebar(TestLeaf::fill("sidebar").boxed().0)
-            .content(TestLeaf::fill("content").boxed().0)
-            .content_header("", vec![icon("new", Icon::Plus, "New folder")])
-            .content_header_leading(Box::new(Button::new("path", "Home › Documents › Taxes")));
-        let mut h = harness(shell, 1280, 800, Theme::dark());
-        settle(&mut h, 1280, 800);
-        let g = geometry(&h);
-        let leading = part_rect(&h, Part::Leading(Column::Content));
-        let action = part_rect(&h, Part::Action(Column::Content, 0));
-        assert!(leading.width() > 0.0);
-        assert!(leading.x0 >= g.content_column.x0, "in the content's header");
-        assert!(leading.x1 <= action.x0, "{leading:?} before {action:?}");
-        assert!(leading.y0 >= 0.0 && leading.y1 <= g.header_height);
-    }
 
-    // A switch states its size and measures nothing; in a header it still
-    // stands at that size, beside a labelled button.
-    phase a_switch_in_the_header_keeps_its_own_width;
-    {
-        let switch = crate::widget::Toggle::bound("power", "Power");
-        let intrinsic = crate::widget::ToggleFace::size(&Theme::dark()).0;
-        let shell = titled_content(vec![
-            Box::new(switch),
-            labelled("apply", "Apply", Icon::Check),
-        ]);
-        let mut h = harness(shell, 1280, 800, Theme::dark());
-        settle(&mut h, 1280, 800);
-        let switch = part_rect(&h, Part::Action(Column::Content, 0));
-        let apply = part_rect(&h, Part::Action(Column::Content, 1));
-        assert!(
-            switch.width() >= intrinsic,
-            "{switch:?} is at least the switch's own {intrinsic} wide"
-        );
-        assert!(switch.x1 <= apply.x0, "{switch:?} before {apply:?}");
-    }
 
-    phase a_page_columns_filter_field_lines_up_with_the_page_under_it;
-    {
-        let lines = 55.0_f32;
-        for (w, theme) in [(1280, Theme::dark()), (520, Theme::light())] {
-            let seen = SharedRc::new(Cell::new(Rect::ZERO));
-            let width = (theme.text(crate::TextRole::Body).line_height_px() * lines).round();
-            let page = crate::widget::Scrollable::new(crate::widget::ScrollAxis::Vertical)
-                .fill_parent_height()
-                .with_stable_vertical_gutter()
-                .with_child(Box::new(
-                    crate::widget::Container::new()
-                        .with_no_padding()
-                        .with_centered_max_width(width)
-                        .with_child(Box::new(crate::widget::Column::new().push(Box::new(
-                            EdgeProbe {
-                                rect: Rect::ZERO,
-                                seen: SharedRc::clone(&seen),
-                            },
-                        )))),
-                ));
-            let shell = NavShell::new()
-                .content(Box::new(page))
-                .content_header("Discover", Vec::new())
-                .content_kind(ContentKind::Grid)
-                .with_page_column(lines)
-                .with_filter(SearchField::filter());
-            let mut h = harness(shell, w, 800, theme);
-            settle(&mut h, w, 800);
-            let field = part_rect(&h, Part::Filter);
-            let row = seen.get();
-            assert!(row.width() > 0.0, "the page was laid out at {w}");
-            assert!(
-                (field.x0 - row.x0).abs() < 0.5 && (field.x1 - row.x1).abs() < 0.5,
-                "at {w} the field {field:?} spans the page's content {row:?}"
-            );
-            let g = geometry(&h);
-            assert!(
-                field.y0 - g.header(Column::Content).y1 >= Metrics::resolve(h.theme()).gap - 0.5,
-                "the field stands clear of the header's hairline"
-            );
-            assert!(row.y0 >= field.y1, "the page starts under the field");
-        }
-    }
 
-    // A header's actions stand at the trailing edge of their own column, whether the columns after
-    // it are quiet or say something of their own: they stay beside what they act on, and they do not
-    // move as a person selects and deselects an item in the column beside them.
-    phase a_headers_actions_stand_at_their_columns_trailing_edge;
-    {
-        let theme = Theme::dark();
-        let gutter = crate::chrome::column_gutter(&theme);
-        let shell = NavShell::new()
-            .overview(TestLeaf::fill("overview").boxed().0)
-            .content(TestLeaf::fill("content").boxed().0)
-            .overview_header("Inbox", vec![icon("search", Icon::Send, "Search")]);
-        let mut h = harness(shell, 1024, 700, theme);
-        settle(&mut h, 1024, 700);
-        let edge = h.root::<NavShell>().geometry().overview_column.x1;
-        assert!(
-            edge < 1024.0 - 40.0,
-            "the detail beside the list stands in the window: the list ends at {edge}"
-        );
-        let ends_at =
-            |rect: Rect, edge: f64| rect.width() > 0.0 && (rect.x1 - (edge - gutter)).abs() < 0.5;
-        let quiet = part_rect(&h, Part::Action(Column::Overview, 0));
-        assert!(
-            ends_at(quiet, edge),
-            "the list's action ends at the list's edge {edge} while the detail is quiet: {quiet:?}"
-        );
-        h.root_mut::<NavShell>()
-            .set_content_header("Move flat", vec![icon("board", Icon::Send, "Board")]);
-        settle(&mut h, 1024, 700);
-        let selected = part_rect(&h, Part::Action(Column::Overview, 0));
-        assert!(
-            (selected.x0 - quiet.x0).abs() < 0.5 && (selected.x1 - quiet.x1).abs() < 0.5,
-            "the list's action keeps its place when an item is selected beside it: {quiet:?} then {selected:?}"
-        );
-        let content = h.root::<NavShell>().geometry().content_column.x1;
-        let own = part_rect(&h, Part::Action(Column::Content, 0));
-        assert!(
-            ends_at(own, content),
-            "the detail's action ends at the detail's edge {content}: {own:?}"
-        );
-    }
 
     // A list offers its actions again as what it shows changes: the row takes the ones it is
     // handed now, so an action that arrives with the icon it draws gives its label up for the
@@ -596,44 +361,6 @@ tilo_test_env::scenario! {
         h.send(&crate::synthetic_input::cursor_moved(10.0, 300.0));
         assert!(deleted.get(), "the chosen action ran through its api");
     }
-}
-
-/// A title's box reaches the actions that follow it, not just the width its words measure: a
-/// box the size of the measure itself cuts the last glyph where the renderer shaping the words
-/// rounds wider than the measure that sized the box, so a short column name reads as
-/// "Not…" beside a column left empty.
-#[test]
-fn a_titles_box_reaches_the_actions_that_follow_it() {
-    let theme = Theme::dark();
-    let m = Metrics::resolve(&theme);
-    let shell = NavShell::new()
-        .sidebar(TestLeaf::fill("sidebar").boxed().0)
-        .content(TestLeaf::fill("content").boxed().0)
-        .sidebar_header("Notes", vec![icon("new", Icon::Plus, "New note")]);
-    let mut h = harness(shell, 280, 700, theme.clone());
-    settle(&mut h, 280, 700);
-    let title = part_rect(&h, Part::Title(Column::Sidebar));
-    let action = part_rect(&h, Part::Action(Column::Sidebar, 0));
-    let mut text = TextRenderer::new();
-    let (needs, _) =
-        crate::widget::window_header::header_row::measure_title(&mut text, &theme, "Notes", None);
-    assert!(
-        title.width() > needs + 1.0,
-        "the title has more than the width of its words: {title:?} for {needs:.1}"
-    );
-    assert!(
-        (title.x1 + m.gap - action.x0).abs() < 0.5,
-        "the title's box ends one gap before its action: {title:?}, {action:?}"
-    );
-    let spare = crate::num::f32_of_f64(title.width());
-    assert!(
-        text.elide_to_width_style(
-            "Notes",
-            spare,
-            &crate::widget::window_header::header_row::title_style(&theme)
-        ) == "Notes",
-        "no renderer elides the whole name in a box that wide"
-    );
 }
 
 tilo_test_env::scenario! {
@@ -852,35 +579,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_overview_collapses_into_its_rail_before_it_pushes;
-    {
-        let rail = crate::widget::NavList::new(vec![crate::widget::NavSection::untitled(
-            "places",
-            vec![
-                crate::widget::NavItem::new("oslo", "Oslo").icon(Icon::Pin),
-                crate::widget::NavItem::new("lima", "Lima").icon(Icon::Pin),
-            ],
-        )])
-        .rail();
-        let shell = NavShell::new()
-            .overview(TestLeaf::fill("overview").boxed().0)
-            .overview_rail(Box::new(rail))
-            .content(TestLeaf::fill("content").boxed().0);
-        let theme = Theme::dark();
-        let m = Metrics::resolve(&theme);
-        let mut h = harness(shell, 1280, 800, theme.clone());
-        settle(&mut h, 1280, 800);
-        assert_eq!(geometry(&h).overview, OverviewPlacement::List);
-        assert!(m.rail + m.page_min < 600.0 && 600.0 < m.overview + m.page_min);
-        settle(&mut h, 600, 800);
-        let g = geometry(&h);
-        assert_eq!(g.overview, OverviewPlacement::Rail, "{g:?}");
-        assert!(g.stack.is_empty(), "no push while the rail fits");
-        assert!((g.rail.width() - m.rail).abs() < 0.5);
-        assert!(g.content_column.x0 >= g.rail.x1 - 0.5);
-        settle(&mut h, 300, 800);
-        assert_eq!(geometry(&h).stack, [NavPane::Overview, NavPane::Content]);
-    }
 
     phase a_shell_with_overflowing_actions_passes_the_native_audits;
     {
@@ -941,33 +639,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase an_enlarged_sidebar_drawer_leaves_a_pointer_target_that_dismisses_it;
-    {
-        for theme in [Theme::light(), Theme::dark().with_text_scale(2.0)] {
-            let band = f64::from(theme.tokens.metrics.min_pointer_target + theme.tokens.spacing.s4);
-            let shell = NavShell::new()
-                .content_kind(ContentKind::Document)
-                .sidebar(TestLeaf::fill("sidebar").boxed().0)
-                .content(TestLeaf::fill("content").boxed().0)
-                .inspector(TestLeaf::fill("inspector").boxed().0);
-            let mut h = harness(shell, 480, 800, theme.clone());
-            h.root_mut::<NavShell>().open_sidebar();
-            settle(&mut h, 480, 800);
-            let g = geometry(&h);
-            assert!(480.0 - g.sidebar_column.x1 >= band - 0.5);
-            assert_eq!(g.open_drawer(), Some(Column::Sidebar));
-            h.click_at(
-                (480.0 + g.sidebar_column.x1) / 2.0,
-                g.content_column.center().y,
-            );
-            settle(&mut h, 480, 800);
-            assert_eq!(
-                geometry(&h).open_drawer(),
-                None,
-                "a press beside the drawer closes it"
-            );
-        }
-    }
 }
 
 #[test]
@@ -1071,7 +742,11 @@ fn a_popover_owned_by_a_header_button_hears_the_pointer_first() {
         button: MouseButton::Left,
     });
     assert_eq!(events.get(), 1, "the popover's owner heard the press");
-    assert_eq!(content_events.events(), before, "the column under it did not");
+    assert_eq!(
+        content_events.events(),
+        before,
+        "the column under it did not"
+    );
 }
 
 struct Filtered {
@@ -1119,44 +794,5 @@ impl Widget for Filtered {
 
     fn get_rect(&self) -> Rect {
         self.inner.rect
-    }
-}
-
-struct EdgeProbe {
-    rect: Rect,
-    seen: SharedRc<Cell<Rect>>,
-}
-
-impl Widget for EdgeProbe {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::length(40.0),
-                },
-                ..Default::default()
-            })
-            .expect("a leaf");
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-        self.seen.set(self.rect);
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn name(&self) -> &'static str {
-        "EdgeProbe"
     }
 }

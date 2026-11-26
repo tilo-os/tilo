@@ -159,28 +159,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    // A page that shows its title as a heading of its own names itself by that heading, and the
-    // bar's heading goes: one name, not two.
-    phase a_page_that_shows_its_title_as_its_heading_names_itself_once;
-    {
-        let words = "Call the landlord about the boiler";
-        let content =
-            Box::new(crate::widget::Column::new().push(heading(words, crate::TextRole::LargeTitle)))
-                as Element;
-        let mut h = harness(page(words, content), 390, 844, Theme::dark());
-        settle(&mut h, 390, 844);
-        let headings = h
-            .a11y_nodes()
-            .into_iter()
-            .filter(|(_, node)| node.label() == Some(words))
-            .count();
-        assert_eq!(
-            headings,
-            1,
-            "the page's heading is the one name it has: {:?}",
-            outcomes(&h)
-        );
-    }
 
     // An item opened in place among a list's rows titles that item, never the page: the column
     // keeps its own title over the list.

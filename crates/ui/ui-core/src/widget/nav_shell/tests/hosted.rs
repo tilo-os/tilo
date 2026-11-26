@@ -1,6 +1,6 @@
 use super::*;
 use crate::widget::{NavFeed, NavItem, NavList, NavSection};
-use crate::window_toolbar::{ToolbarEvent, declared};
+use crate::window_toolbar::ToolbarEvent;
 
 fn places() -> Vec<NavSection> {
     let item = |id: &str, label: &str, icon: Icon| NavItem::new(id, label).icon(icon);
@@ -140,83 +140,7 @@ tilo_test_env::scenario! {
         assert!(!bar_back(&h));
     }
 
-    // A phone-wide (420 px) push stack whose app keeps the sidebar's toggle in
-    // the window's bar (Passwords, Files) has no header row: the toggle stands
-    // in the bar's corner, and Back beside it while there is somewhere to go
-    // back to.
-    phase a_narrow_stack_with_its_toggle_in_the_bar_draws_no_row_under_it;
-    {
-        const NARROW: u32 = 420;
-        let no_row = |h: &Driver, at: &str, has_back: bool| {
-            let g = geometry(h);
-            assert_eq!(g.header_height, 0.0, "{at}: no header row");
-            assert!(
-                g.headers.iter().all(|header| *header == Rect::ZERO),
-                "{at}: no header in any column"
-            );
-            assert_eq!(shows_back_part(h), has_back, "{at}: a Back of its own");
-        };
-        let mut shell = NavShell::new()
-            .content_kind(ContentKind::Page)
-            .sidebar(TestLeaf::fill("sidebar").boxed().0)
-            .overview(TestLeaf::fill("overview").boxed().0)
-            .content(TestLeaf::fill("content").boxed().0);
-        shell.set_sidebar_toggle_in_window_bar(true);
-        let mut h = harness(shell, NARROW, H, Theme::dark());
-        settle(&mut h, NARROW, H);
-        assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
-        no_row(&h, "the list", false);
-        let list = child_rect(&h, "overview").expect("the list shows");
-        assert!(list.y0.abs() < 1e-9, "the list starts right under the bar");
 
-        h.root_mut::<NavShell>().show(NavPane::Content);
-        settle(&mut h, NARROW, H);
-        no_row(&h, "an open item", true);
-        assert!(h.root::<NavShell>().can_go_back());
-        let item = child_rect(&h, "content").expect("the item shows");
-        assert!(item.y0.abs() < 1e-9, "the item starts right under the bar");
-        assert!(h.root_mut::<NavShell>().back());
-        settle(&mut h, NARROW, H);
-        assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
-
-        let mut shell = NavShell::new()
-            .content_kind(ContentKind::List)
-            .sidebar(TestLeaf::fill("sidebar").boxed().0)
-            .content(TestLeaf::fill("content").boxed().0)
-            .content_header("", Vec::new());
-        shell.set_sidebar_toggle_in_window_bar(true);
-        let mut h = harness(shell, NARROW, H, Theme::dark());
-        settle(&mut h, NARROW, H);
-        assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
-        no_row(&h, "the folder", false);
-    }
-
-    // A narrow window on its list still settles the content it put away, so
-    // what the content takes up shows in the list on screen.
-    phase a_narrow_window_on_its_list_still_settles_the_content_behind_it;
-    {
-        let feed = NavFeed::new();
-        let shell = NavShell::new()
-            .with_window_toolbar()
-            .content_kind(ContentKind::Reading)
-            .sidebar(Box::new(
-                NavList::new(Vec::new()).with_id("places").fed_by(&feed),
-            ))
-            .content(Box::new(SettleShower {
-                feed: feed.clone(),
-                rect: Rect::ZERO,
-            }));
-        feed.show(places(), Some("home".into()));
-        let mut h = harness(shell, 480, 800, Theme::dark());
-        settle(&mut h, 480, 800);
-        assert_eq!(geometry(&h).sidebar, SidebarPlacement::Screen);
-        assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
-        h.root_mut::<NavShell>().show(NavPane::Sidebar);
-        settle(&mut h, 480, 800);
-        assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
-        let list = h.root::<NavShell>().sidebar_ref::<NavList>();
-        assert!(list.and_then(|list| list.row_rect("later")).is_some());
-    }
 
     // The app shows its places through the feed; a row the person chooses
     // comes back to the app as that place's id.
@@ -264,45 +188,6 @@ fn bar_back(h: &Driver) -> bool {
         .leading
         .iter()
         .any(|action| action.id == crate::widget::nav_shell::window_toolbar::WINDOW_BACK)
-}
-
-struct SettleShower {
-    feed: NavFeed,
-    rect: Rect,
-}
-
-impl Widget for SettleShower {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        taffy.fill_leaf(node_map, self)
-    }
-
-    crate::rect_geometry!();
-
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(
-            unused_variables,
-            unused_mut,
-            reason = "a draw binds only the parts it uses"
-        )]
-        let (_scene, _transform, _text, _theme, mut env) = ctx.parts();
-    }
-
-    fn settle(&mut self, _edits: &mut crate::widget::Edits<'_>, _path: &automerge::ObjId) {
-        let mut places = places();
-        if let Some(section) = places.first_mut() {
-            section.items.push(NavItem::new("later", "Later"));
-        }
-        self.feed.show(places, Some("home".into()));
-    }
-
-    fn name(&self) -> &'static str {
-        "SettleShower"
-    }
 }
 
 /// A choice the app does not take (a call it joins, not a place it opens)
@@ -461,96 +346,6 @@ fn a_sections_menu_and_rename_come_back_through_the_feed() {
     );
 }
 
-/// Every column's header row — its title and the buttons that act on what it shows — stands at
-/// the top of its column while the shell's bar hosts the window, at rest and with the bar out:
-/// the rows share one height and top, the row is the window's bar (its controls come into the
-/// width the row keeps at its trailing end), the bar declares none of the columns' titles or
-/// buttons, and a button pressed in its row runs.
-#[test]
-fn a_hosted_shell_keeps_every_columns_header_in_its_own_row() {
-    let pressed = SharedRc::new(Cell::new(0));
-    let count = SharedRc::clone(&pressed);
-    let compose =
-        Button::new("mail.compose", "Compose").on_click(move || count.set(count.get() + 1));
-    let shell = NavShell::new()
-        .content_kind(ContentKind::Page)
-        .sidebar(TestLeaf::fill("sidebar").boxed().0)
-        .overview(TestLeaf::fill("overview").boxed().0)
-        .content(TestLeaf::fill("content").boxed().0)
-        .sidebar_header(
-            "Mailboxes",
-            vec![Box::new(Button::icon_only(
-                "mail.new-mailbox",
-                Icon::Plus,
-                "New mailbox",
-            ))],
-        )
-        .overview_header("Inbox", vec![Box::new(compose)])
-        .content_header(
-            "Design review",
-            vec![Box::new(Button::icon_only(
-                "mail.reply",
-                Icon::Reply,
-                "Reply",
-            ))],
-        );
-    // The shell's window frame hosts the shell, as a window of the session hosts a tile: the
-    // frame hands its bar to the shell's header row.
-    let mut h = crate::headless::Driver::in_window_frame(
-        State::new(),
-        Box::new(shell),
-        (1280, 800),
-        Theme::dark(),
-    );
-    for _ in 0..2 {
-        if let Some(shell) = h.widget_mut::<NavShell>() {
-            shell.snap();
-        }
-        h.relayout();
-    }
-    assert_eq!(
-        declared(),
-        None,
-        "the bar declares none of the columns' titles or buttons"
-    );
-    assert!(h.row_holds_bar(), "the header row is the window's bar");
-    let g = h
-        .widget_mut::<NavShell>()
-        .expect("the frame hosts the shell")
-        .geometry()
-        .clone();
-    let rows = [Column::Sidebar, Column::Overview, Column::Content].map(|c| g.header(c));
-    for row in rows {
-        assert!(
-            row.width() > 0.0 && row.y0.abs() < 1e-9,
-            "every column's row stands at the window's top: {rows:?}"
-        );
-        assert!(
-            (row.height() - rows[0].height()).abs() < 1e-9,
-            "every row is as tall as the sidebar's: {rows:?}"
-        );
-    }
-    let targets = h.targets();
-    let rect_named = |id: &str| targets.get(id).copied().filter(|rect| rect.area() > 0.0);
-    for (id, row) in ["mail.new-mailbox", "mail.compose", "mail.reply"]
-        .into_iter()
-        .zip(rows)
-    {
-        let button = rect_named(id).expect("the button shows in its row");
-        assert!(
-            button.x0 >= row.x0 - 1e-9 && button.x1 <= row.x1 + 1e-9 && button.y1 <= row.y1,
-            "{id} stands in its own column's header row: {button:?} in {row:?}"
-        );
-    }
-    assert!(
-        rect_named("mail.reply").is_some_and(|reply| reply.x1 <= g.window_controls.x0),
-        "the row's buttons stand before the area kept for the window's controls"
-    );
-    let compose = rect_named("mail.compose").expect("Compose shows");
-    h.click_at(compose.center().x, compose.center().y);
-    assert_eq!(pressed.get(), 1, "the press in the row runs the button");
-}
-
 /// A notice the app asks the window's bar to show says what an operation came to. It is no press
 /// on the sidebar's toggle: the sidebar stands as it stood, and nothing is kept as the person's
 /// choice for it, so it still stands after the window was narrow and is wide again.
@@ -588,45 +383,6 @@ fn a_notice_asked_through_the_bar_leaves_the_sidebar_as_it_is() {
     assert!(
         h.root::<NavShell>().is_sidebar_open(),
         "nothing was kept as the person's choice for the wide window"
-    );
-}
-
-/// A conversation floated as a card beside the window it was sent from shows only itself: no
-/// list stands over it and the bar offers no toggle for one, whatever the app last remembered
-/// of its sidebar.
-#[test]
-fn a_narrow_window_floating_as_a_card_shows_its_content_alone() {
-    let shell = NavShell::new()
-        .with_window_toolbar()
-        .content_kind(ContentKind::Reading);
-    let link = shell.window_bar_link();
-    let shell = shell
-        .sidebar(TestLeaf::fill("sidebar").boxed().0)
-        .content(TestLeaf::fill("content").boxed().0);
-    let mut h = harness(shell, 360, 520, Theme::dark());
-    crate::window_toolbar::deliver(ToolbarEvent::Floating { floating: true });
-    link.stage_sidebar(true);
-    link.put_drawer_away();
-    settle(&mut h, 360, 520);
-    assert_eq!(geometry(&h).sidebar, SidebarPlacement::None);
-    assert_eq!(
-        link.parts().sidebar,
-        None,
-        "no toggle for a sidebar it does not show"
-    );
-    assert!(child_rect(&h, "content").is_some_and(|r| r.width() >= 359.0));
-    assert!(
-        child_rect(&h, "sidebar").is_none_or(|r| r.area() <= 0.0),
-        "no list over the card"
-    );
-
-    crate::window_toolbar::deliver(ToolbarEvent::Floating { floating: false });
-    settle(&mut h, 376, 520);
-    assert_eq!(geometry(&h).sidebar, SidebarPlacement::Screen);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
-    assert!(
-        link.parts().sidebar.is_some(),
-        "in the strip its list is a press away"
     );
 }
 

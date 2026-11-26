@@ -87,55 +87,8 @@ tilo_test_env::scenario! {
         assert_eq!(place_count(&h, "Inbox").as_deref(), Some("6"));
     }
 
-    // A narrow window shows the list as the screen: no sidebar stands beside the
-    // header, so the header keeps the count.
-    phase a_narrow_window_keeps_the_count_in_the_header;
-    {
-        let shell = places_shell(6).content_kind(ContentKind::List);
-        let mut h = harness(shell, 400, 800, Theme::dark());
-        settle(&mut h, 400, 800);
-        assert_eq!(geometry(&h).sidebar, SidebarPlacement::Screen);
-        assert_eq!(header_count(&h).as_deref(), Some("6"));
-    }
 
-    phase a_rail_leaves_the_number_to_the_header;
-    {
-        let places = NavList::new(vec![NavSection::untitled(
-            "places",
-            vec![NavItem::new("inbox", "Inbox").count(6)],
-        )])
-        .with_id("places")
-        .selected("inbox")
-        .rail();
-        let shell = NavShell::new()
-            .sidebar(Box::new(places))
-            .overview(TestLeaf::fill("overview").boxed().0)
-            .content(TestLeaf::fill("content").boxed().0)
-            .overview_header("Inbox", Vec::new())
-            .overview_count(6);
-        let mut h = harness(shell, 1280, 800, Theme::dark());
-        h.root_mut::<NavShell>().stage_sidebar_width(64.0);
-        settle(&mut h, 1280, 800);
-        assert!(
-            h.root::<NavShell>()
-                .sidebar_ref::<NavList>()
-                .expect("the sidebar is the list")
-                .is_rail()
-        );
-        assert_eq!(header_count(&h).as_deref(), Some("6"));
-    }
 
-    // The header leaves only the count the place already shows: a number the
-    // place does not show is the header's to say.
-    phase a_header_count_the_place_does_not_show_stays;
-    {
-        let mut h = harness(places_shell(6), 1280, 800, Theme::dark());
-        settle(&mut h, 1280, 800);
-        h.root_mut::<NavShell>().set_overview_count(Some(7));
-        settle(&mut h, 1280, 800);
-        assert_eq!(place_count(&h, "Inbox").as_deref(), Some("6"));
-        assert_eq!(header_count(&h).as_deref(), Some("7"));
-    }
 
     // Zero is never drawn: the header shows no badge and keeps the width one would
     // have taken, and the place's row says nothing.

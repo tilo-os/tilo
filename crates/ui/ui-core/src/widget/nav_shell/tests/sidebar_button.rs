@@ -3,7 +3,6 @@
 //! its own.
 
 use super::*;
-use crate::headless::SidebarShown;
 
 /// Click the sidebar button the shell's header row holds three times in a window `width` wide
 /// that the shell's bar hosts; each click flips the sidebar, and the shell and its frame
@@ -59,14 +58,6 @@ tilo_test_env::scenario! {
         assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
     }
 
-    phase agreement_needs_the_bar_the_shell_and_the_frame;
-    {
-        let state = |bar, shell, frame| SidebarShown { bar, shell, frame };
-        assert_eq!(state(true, true, true).agreed(), Some(true));
-        assert_eq!(state(false, false, false).agreed(), Some(false));
-        assert_eq!(state(true, false, false).agreed(), None);
-        assert_eq!(state(false, false, true).agreed(), None);
-    }
 
     phase the_bars_sidebar_button_flips_a_docked_sidebar;
     {

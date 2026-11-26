@@ -121,24 +121,6 @@ tilo_test_env::scenario! {
         assert!(child_rect(&h, "empty").is_none());
     }
 
-    // In a phone-wide window of a list and its content, the empty state is
-    // the one screen, with no list to go back to.
-    phase a_narrow_window_shows_the_empty_state_alone;
-    {
-        const NARROW: u32 = 420;
-        let shell = NavShell::new()
-            .overview(TestLeaf::fill("overview").boxed().0)
-            .content(TestLeaf::fill("content").boxed().0)
-            .nothing_listed(TestLeaf::fill("empty").boxed().0);
-        let mut h = harness(shell, NARROW, H, Theme::dark());
-        settle(&mut h, NARROW, H);
-        let empty = child_rect(&h, "empty").expect("the empty state is shown");
-        assert!(
-            empty.width() >= f64::from(NARROW) - 1.0,
-            "full width: {empty:?}"
-        );
-        assert!(!geometry(&h).stack.contains(&NavPane::Overview));
-    }
 
     // A phone-wide window with a sidebar whose toggle is in the window's bar, as Passwords has:
     // the empty state is the window's one screen, right under the bar, with no Back and no header

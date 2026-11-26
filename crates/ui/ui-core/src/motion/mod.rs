@@ -46,8 +46,6 @@ mod tests;
 
 pub use appearing::{Appearance, Appearing};
 pub use beckon::{Arrival, Beckon, Completion};
-#[cfg(test)]
-pub(crate) use clock::forget_frames_for_tests;
 pub(crate) use clock::laying_out_frame;
 pub(crate) use clock::own;
 pub(crate) use clock::pin_frame;

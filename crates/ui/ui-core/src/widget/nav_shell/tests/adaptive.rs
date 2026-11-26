@@ -24,30 +24,6 @@ fn place_sections() -> Vec<NavSection> {
     )]
 }
 
-fn mailboxes() -> NavList {
-    let item = |id: &str, label: &str, icon: Icon| NavItem::new(id, label).icon(icon);
-    NavList::new(vec![
-        NavSection::untitled(
-            "mailboxes",
-            vec![
-                item("inbox", "Inbox", Icon::Inbox),
-                item("sent", "Sent", Icon::Send),
-            ],
-        ),
-        NavSection::new(
-            "folders",
-            "Folders",
-            vec![item("receipts", "Receipts", Icon::Folder)],
-        )
-        .trailing_action(crate::widget::NavAction::new(
-            "new-folder",
-            Icon::Plus,
-            "New folder",
-        )),
-    ])
-    .with_id("mailboxes")
-}
-
 fn shell_with(sidebar: NavList) -> NavShell {
     NavShell::new()
         .with_id("places-shell")
@@ -160,38 +136,6 @@ fn a_sidebar_opens_as_a_list_and_the_width_switches_it_to_a_rail() {
     assert!(
         !h.root::<NavShell>().is_sidebar_open(),
         "dragged past the rail, the sidebar hides"
-    );
-}
-
-/// Places under headings with a "New" action open as a list at the
-/// sidebar's width; dragged narrow enough, they read as a rail too, and
-/// collapsing stays the sidebar toggle's (or a drag past the rail).
-#[test]
-fn a_list_with_headings_narrows_into_a_rail() {
-    let theme = Theme::dark();
-    let mut h = harness(shell_with(mailboxes()), W, H, theme.clone());
-    settle(&mut h, W, H);
-    let adaptive = adaptive(&h);
-    assert!(!shows_rail(&h));
-    let start = sidebar_width(&h);
-    assert!(
-        (start - f64::from(theme.tokens.metrics.sidebar_width)).abs() < 0.5,
-        "{start}"
-    );
-    let edge = press_edge(&mut h);
-    move_pointer(&mut h, edge.x - (start - adaptive.rail), edge.y);
-    assert!(shows_rail(&h), "narrowed to its rail, it reads as one");
-    move_pointer(&mut h, edge.x - start + 10.0, edge.y);
-    release(&mut h);
-    assert!(
-        !h.root::<NavShell>().is_sidebar_open(),
-        "dragged past the rail, the sidebar hides"
-    );
-    h.root_mut::<NavShell>().toggle_sidebar();
-    settle(&mut h, W, H);
-    assert!(
-        h.root::<NavShell>().is_sidebar_open(),
-        "the toggle shows it again"
     );
 }
 

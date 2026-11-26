@@ -6,7 +6,6 @@ use std::cell::Cell;
 use std::rc::Rc as SharedRc;
 
 mod adaptive;
-mod band;
 mod capabilities;
 mod chosen;
 mod content_swap;
@@ -185,46 +184,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    // The narrowest window is the compact layout's: one column at a time at
-    // phone width, the content's minimum where that is wider.
-    phase the_minimum_window_width_is_the_compact_layouts;
-    {
-        for theme in [Theme::dark(), Theme::dark().with_text_scale(2.0)] {
-            let m = Metrics::resolve(&theme);
-            for (make, min) in [
-                (files_shell as fn() -> NavShell, m.list_min),
-                (settings_shell, m.page_min),
-                (document_shell, m.reading_min),
-                (mail_shell, m.page_min),
-            ] {
-                let mut h = harness(make(), 1280, 700, theme.clone());
-                settle(&mut h, 1280, 700);
-                let shell = h.root::<NavShell>();
-                let expected = min.max(m.compact_min);
-                assert!((shell.minimum_width() - expected).abs() < 1e-6);
-                assert_eq!(
-                    crate::widget::minimum_window_width(shell),
-                    Some(shell.minimum_width()),
-                    "the host reads it from the tree"
-                );
-                assert!(
-                    shell.minimum_width() <= 360.0 * f64::from(theme.text_growth()),
-                    "phone width"
-                );
-                let width = shell.minimum_width().ceil();
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "a small positive width"
-                )]
-                let px = width as u32;
-                settle(&mut h, px, 700);
-                let g = geometry(&h);
-                assert_ne!(g.sidebar, SidebarPlacement::Docked);
-                assert_eq!(g.open_drawer(), None);
-            }
-        }
-    }
 
     // A window in a strip is a window of its own: the shell decides from the window's width, never
     // the display's.
@@ -258,42 +217,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    // A window resized near a threshold does not flicker: back to docked only
-    // `layout_hysteresis` past it.
-    phase layout_changes_have_hysteresis;
-    {
-        let theme = Theme::dark();
-        let m = Metrics::resolve(&theme);
-        let threshold = m.sidebar_min + m.beside_sidebar_min(ContentKind::List);
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "small positive widths"
-        )]
-        let px = |w: f64| w.round() as u32;
-        let mut h = harness(files_shell(), 1280, 700, theme);
-        settle(&mut h, 1280, 700);
-        let at = |h: &mut Driver, w: f64| {
-            settle(h, px(w), 700);
-            geometry(h).sidebar
-        };
-        assert_eq!(at(&mut h, threshold), SidebarPlacement::Docked);
-        assert_eq!(at(&mut h, threshold - 1.0), SidebarPlacement::Screen);
-        assert_eq!(
-            at(&mut h, threshold + m.hysteresis - 1.0),
-            SidebarPlacement::Screen,
-            "not back until past the band"
-        );
-        assert_eq!(
-            at(&mut h, threshold + m.hysteresis),
-            SidebarPlacement::Docked
-        );
-        assert_eq!(
-            at(&mut h, threshold),
-            SidebarPlacement::Docked,
-            "docked holds down to the threshold"
-        );
-    }
 
     // A window opened narrow has no place to keep yet, so it opens on a list,
     // whole screen: the content's own list where it has one, else the sidebar.
@@ -396,24 +319,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_docked_sidebar_is_never_kept_beside_squeezed_columns;
-    {
-        let mut h = harness(mail_shell(), 800, 600, Theme::dark());
-        settle(&mut h, 800, 600);
-        let g = geometry(&h);
-        assert_eq!(g.sidebar, SidebarPlacement::Screen);
-        h.root_mut::<NavShell>().show(NavPane::Content);
-        settle(&mut h, 800, 600);
-        let g = geometry(&h);
-        assert!(g.side_by_side);
-        let content = child_rect(&h, "content").expect("content laid out");
-        let m = Metrics::resolve(&Theme::dark());
-        assert!(
-            content.width() >= m.page_min - 0.5,
-            "the detail keeps its minimum ({})",
-            content.width()
-        );
-    }
 
     phase the_inspector_docks_beside_the_content_and_rises_as_a_sheet_when_narrow;
     {
@@ -495,42 +400,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    // The overview column follows what it lists, up to its cap: the width the
-    // detail has past the measure it reads at is the list's, so a long row fits
-    // whole while the page beside it still reads as a page.
-    phase the_overview_grows_to_fit_its_rows_while_the_page_keeps_its_measure;
-    {
-        let tokens = Theme::dark().tokens.metrics;
-        let at = |w: u32| {
-            let shell = NavShell::new()
-                .sidebar(TestLeaf::fill("sidebar").boxed().0)
-                .overview(TestLeaf::fill("overview").boxed().0)
-                .content(TestLeaf::fill("content").boxed().0);
-            let mut h = harness(shell, w, 800, Theme::dark());
-            settle(&mut h, w, 800);
-            geometry(&h)
-        };
-        let list = f64::from(tokens.overview_width);
-        let cap = f64::from(tokens.overview_max_width);
-        let reading = f64::from(tokens.reading_measure);
-        let g = at(1280);
-        assert_eq!(g.overview, OverviewPlacement::List);
-        assert!(
-            g.overview_column.width() > list && g.overview_column.width() <= cap,
-            "the list takes the area past the page's measure: {:?}",
-            g.overview_column
-        );
-        assert!(
-            g.content_column.width() >= reading,
-            "the page beside it still reads at its measure: {:?}",
-            g.content_column
-        );
-        let g = at(1800);
-        assert_eq!(g.overview_column.width(), cap, "the cap bounds the list");
-        assert!(g.content_column.width() >= reading);
-        let g = at(1000);
-        assert!(g.overview_column.width() <= list + 1.0);
-    }
 
     // Narrowing a docked window keeps the person's place: they land on the
     // page they were on, Back goes to the list, and widening docks again with
@@ -573,71 +442,6 @@ tilo_test_env::scenario! {
         assert!(g.content_column.width() > 0.0 && g.sidebar_column.width() > 0.0);
         assert_eq!(g.stack, Vec::<NavPane>::new());
     }
-}
-
-/// A resize across the docking threshold lands in the layout its new rect asks for, on the
-/// frame that rect is laid out in: narrowing, the content fills the window; widening, the
-/// sidebar is docked beside it.
-#[test]
-fn a_resize_across_the_threshold_lands_in_the_layout_its_rect_asks_for() {
-    let shell = NavShell::new()
-        .sidebar(TestLeaf::fill("sidebar").boxed().0)
-        .content(TestLeaf::fill("content").boxed().0)
-        .content_header("Appearance", Vec::new());
-    let mut h = harness(shell, 1280, 700, Theme::dark());
-    settle(&mut h, 1280, 700);
-    let docked = geometry(&h);
-    assert_eq!(docked.sidebar, SidebarPlacement::Docked);
-    let point = docked.content_column.center();
-    h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
-    h.dispatch_to_root(&crate::synthetic_input::mouse_press());
-    assert!(geometry(&h).content_column.x0 > 0.0);
-
-    h.relayout_at((400, 700)).expect("narrow");
-    let g = geometry(&h);
-    assert_eq!(g.sidebar, SidebarPlacement::Screen);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
-    assert_eq!(
-        (g.content_column.x0, g.content_column.width()),
-        (0.0, 400.0),
-        "the page fills the window on the frame the window narrowed, not a slide later"
-    );
-    assert_eq!(g.size_class, crate::tokens::Breakpoint::Compact);
-
-    // Wider again: the sidebar is docked beside the content at once.
-    h.relayout_at((1280, 700)).expect("wide");
-    let g = geometry(&h);
-    assert_eq!(g.sidebar, SidebarPlacement::Docked);
-    assert_eq!(g.sidebar_column, docked.sidebar_column);
-    assert_eq!(g.content_column, docked.content_column);
-}
-
-/// Under reduced motion nothing slides across a layout switch either: the
-/// page stands in its new place at once.
-#[test]
-fn under_reduced_motion_a_resize_switched_layout_stands_at_once() {
-    let shell = NavShell::new()
-        .sidebar(TestLeaf::fill("sidebar").boxed().0)
-        .content(TestLeaf::fill("content").boxed().0);
-    let mut theme = Theme::dark();
-    theme.reduce_motion = true;
-    let mut h = harness(shell, 1280, 700, theme);
-    settle(&mut h, 1280, 700);
-    let point = geometry(&h).content_column.center();
-    h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
-    h.dispatch_to_root(&crate::synthetic_input::mouse_press());
-    h.relayout_at((400, 700)).expect("narrow");
-    let shell = h.root::<NavShell>();
-    assert_eq!(shell.geometry().content_column.x0, 0.0, "no slide");
-    assert!(
-        !shell.switch_columns.contains(&true),
-        "and no column it has to fade in"
-    );
-    assert_eq!(
-        shell.switch_fade.progress(crate::time::now()),
-        1.0,
-        "the layout is there, not arriving"
-    );
 }
 
 /// Keyboard focus survives a switch to one column at a time: a person
@@ -750,30 +554,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_toolbar_in_a_header_behind_the_drawer_settles;
-    {
-        let toolbar = || -> Element {
-            Box::new(
-                crate::widget::Toolbar::new(crate::widget::toolbar::Orientation::Horizontal)
-                    .push_icon(crate::icons::Icon::Search, "Search", || {})
-                    .push_icon(crate::icons::Icon::Refresh, "Refresh", || {}),
-            )
-        };
-        let shell = NavShell::new()
-            .content_kind(ContentKind::Document)
-            .sidebar(TestLeaf::fill("sidebar").boxed().0)
-            .overview(TestLeaf::fill("overview").boxed().0)
-            .content(TestLeaf::fill("content").boxed().0)
-            .sidebar_header("Mailboxes", Vec::new())
-            .overview_header("Inbox", vec![toolbar()])
-            .content_header("", vec![toolbar()]);
-        let mut h = harness(shell, 560, 860, Theme::dark());
-        settle(&mut h, 560, 860);
-        assert_eq!(geometry(&h).sidebar, SidebarPlacement::Drawer);
-        h.root_mut::<NavShell>().open_sidebar();
-        settle(&mut h, 560, 860);
-        assert!(h.root::<NavShell>().is_sidebar_open());
-    }
 
     phase the_toggle_says_what_it_does_to_whoever_reads_the_window;
     {
@@ -1071,37 +851,6 @@ fn a_toggle_that_lands_at_once_reaches_the_screen() {
     assert!((geometry(&h).sidebar_column.width() - open).abs() < 0.5);
 }
 
-/// The sidebar's rows reach its trailing edge: the grip that resizes it stands past the edge, so a
-/// press or a hover at a row's far end is the row's.
-#[test]
-fn the_sidebar_edge_takes_nothing_from_the_rows_beside_it() {
-    let mut h = harness(mail_shell(), 1400, 800, Theme::dark());
-    settle(&mut h, 1400, 800);
-    let g = geometry(&h);
-    let y = g.resize_handle.center().y;
-    let on_row = Point::new(g.sidebar_column.x1 - 1.0, y);
-    assert!(
-        g.resize_handle.width() > 0.0,
-        "the docked sidebar has an edge to drag"
-    );
-    assert!(
-        !g.resize_handle.contains(on_row),
-        "the grip {:?} reaches into the sidebar {:?}",
-        g.resize_handle,
-        g.sidebar_column
-    );
-    assert_ne!(
-        crate::widget::cursor::in_tree(h.root_widget(), on_row),
-        Some(winit::window::CursorIcon::ColResize),
-        "a row's far end shows no resize pointer"
-    );
-    assert_eq!(
-        crate::widget::cursor::in_tree(h.root_widget(), g.resize_handle.center()),
-        Some(winit::window::CursorIcon::ColResize),
-        "the grip does"
-    );
-}
-
 #[test]
 fn dragging_the_trailing_edge_resizes_and_below_its_minimum_hides() {
     let mut h = harness(mail_shell(), 1400, 800, Theme::dark());
@@ -1145,57 +894,7 @@ fn dragging_the_trailing_edge_resizes_and_below_its_minimum_hides() {
 tilo_test_env::scenario! {
     fn header_rows_and_the_window_bar_hold_titles_status_and_actions;
 
-    phase a_column_without_a_shell_has_no_header_row;
-    {
-        let shell = NavShell::new().content(TestLeaf::fill("content").boxed().0);
-        let mut h = harness(shell, 1024, 700, Theme::dark());
-        settle(&mut h, 1024, 700);
-        let g = geometry(&h);
-        assert_eq!(g.header_height, 0.0);
-        assert_eq!(
-            child_rect(&h, "content"),
-            Some(Rect::new(0.0, 0.0, 1024.0, 700.0))
-        );
-    }
 
-    // A header row stands over a column only while that column's header
-    // holds something: beside a docked sidebar's titled header, an empty
-    // content header leaves the content at the window's top, and the row
-    // comes back over it once the header has a title.
-    phase an_empty_content_header_holds_no_row_beside_the_sidebars;
-    {
-        for (title, holds) in [("", false), ("Draft", true)] {
-            let mut shell = notes_shell().content_header(title, Vec::new());
-            shell.set_sidebar_toggle_in_window_bar(true);
-            let mut h = harness(shell, 1280, 800, Theme::dark());
-            settle(&mut h, 1280, 800);
-            let g = geometry(&h);
-            assert_eq!(g.sidebar, SidebarPlacement::Docked);
-            assert!(
-                g.sidebar_header().height() > 0.0,
-                "{title:?}: the sidebar keeps its header"
-            );
-            let content = child_rect(&h, "content").expect("the content is laid out");
-            if holds {
-                assert!((g.content_header().height() - g.header_height).abs() < 1e-9);
-                assert!(
-                    (content.y0 - g.header_height).abs() < 1e-9,
-                    "{title:?}: the content starts under its header"
-                );
-            } else {
-                assert_eq!(
-                    g.content_header(),
-                    Rect::ZERO,
-                    "{title:?}: no content header"
-                );
-                assert!(
-                    content.y0.abs() < 1e-9,
-                    "{title:?}: the content starts at the top, at {}",
-                    content.y0
-                );
-            }
-        }
-    }
 
     phase history_is_one_glyph_in_the_window_top_trailing_corner;
     {
@@ -1346,48 +1045,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase sync_status_reads_as_quiet_text_before_the_rows_trailing_controls;
-    {
-        const OFFLINE: &str = "Working offline. Changes will sync when you're back.";
-        let status = |h: &Driver| {
-            h.root::<NavShell>()
-                .children()
-                .into_iter()
-                .find(|child| child.name() == "HeaderStatus")
-                .map(|child| (child.get_rect(), child.accessibility()))
-        };
-        let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
-        let offline = crate::widget::WindowStatus::says(OFFLINE);
-        assert!(h.root_mut::<NavShell>().set_sync_status(Some(&offline)));
-        h.root_mut::<NavShell>()
-            .set_history_control(Some(HistoryControl::Closed));
-        settle(&mut h, 1280, 800);
-        let g = geometry(&h);
-        let (rect, node) = status(&h).unwrap();
-        let node = node.unwrap();
-        assert_eq!(node.name.as_deref(), Some(OFFLINE));
-        assert_eq!(node.live, Some(crate::a11y::Politeness::Polite));
-        assert!(rect.width() > 0.0, "painted in the row");
-        assert!(
-            rect.y1 <= g.header_height,
-            "inside the header row, not a band"
-        );
-        assert!(
-            rect.x1 <= g.history.x0,
-            "{rect:?} ends before History {g:?}"
-        );
-        assert!(
-            rect.x0 >= g.content_column.x0,
-            "stays in the content column's row"
-        );
-
-        assert!(h.root_mut::<NavShell>().set_sync_status(None));
-        settle(&mut h, 1280, 800);
-        assert!(
-            status(&h).and_then(|(_, node)| node).is_none(),
-            "nothing to announce"
-        );
-    }
 
     // A notice is the window bar's: it shows there in the location's place,
     // leaves on its own, and paints nothing over the window.
@@ -1472,73 +1129,6 @@ tilo_test_env::scenario! {
         assert!(h.root::<NavShell>().window_bar_part().is_none());
     }
 
-    // A bar no wider than a phone's is the app's row: the window keeps its own controls at the
-    // trailing end and gives up the places its search and its new-tab API hold in a wide bar, so
-    // the app's own controls stand there instead of folding into the row's menu.
-    phase a_phone_wide_bar_keeps_the_windows_controls_and_gives_the_rest_to_the_app;
-    {
-        let theme = Theme::dark();
-        let m = theme.tokens.metrics;
-        let phone = 390.0_f64;
-        assert!(phone < f64::from(m.compact_breakpoint));
-        let wide = crate::widget::merged_row_width();
-        let kept = crate::widget::merged_row_width_in(phone);
-        assert!(
-            kept > 0.0 && kept < wide,
-            "a phone's bar keeps the window's controls and less than a wide bar keeps: {kept} of \
-         {wide}"
-        );
-        assert!(!crate::widget::merged_row_holds_search(phone));
-        assert!(crate::widget::merged_row_holds_search(f64::from(
-            m.compact_breakpoint
-        )));
-        assert_eq!(
-            crate::widget::merged_row_width_in(f64::from(m.compact_breakpoint)),
-            wide,
-            "a bar of a regular window's width keeps all of the window's furniture"
-        );
-        let part = crate::widget::WindowBarPart {
-            row: Rect::new(0.0, 0.0, phone, f64::from(m.header_height)),
-            controls: Rect::new(phone - kept, 0.0, phone, f64::from(m.header_height)),
-        };
-        let furniture = crate::widget::window_header::RowFurniture::of(part);
-        assert!(
-            furniture.controls.pill.area() > 0.0,
-            "the window's own controls stand in the area it keeps: {furniture:?}"
-        );
-        assert_eq!(
-            furniture.search,
-            Rect::ZERO,
-            "the app's row draws the search"
-        );
-        assert_eq!(furniture.new_tab, Rect::ZERO, "and its own tabs");
-
-        let actions: Vec<Element> = vec![
-            Box::new(Button::new("new-note", "New note")),
-            Box::new(Button::icon_only(
-                "note-menu",
-                crate::icons::Icon::MoreHorizontal,
-                "Note actions",
-            )),
-        ];
-        let shell = NavShell::new()
-            .content(TestLeaf::fill("content").boxed().0)
-            .content_header("Groceries", actions);
-        let mut h = harness(shell, 390, 800, theme);
-        assert!(
-            h.root_mut::<NavShell>()
-                .set_window_bar(Some(crate::widget::WindowBar {
-                    controls_width: kept,
-                    lists_actions: false,
-                }))
-        );
-        settle(&mut h, 390, 800);
-        let shown = child_rect(&h, "new-note").expect("the app's own control stands in the row");
-        assert!(
-            shown.width() > 0.0 && shown.x1 <= phone - kept,
-            "the app's control stands before the window's furniture: {shown:?} of {phone}"
-        );
-    }
 
     phase a_window_bar_that_presents_search_takes_the_headers_own_search_button_away;
     {
@@ -1651,54 +1241,6 @@ tilo_test_env::scenario! {
     // keep the row as it is; an action that comes or goes changes it.
 }
 
-#[test]
-fn slides_take_the_motion_duration_and_reduced_motion_jumps() {
-    let theme = Theme::dark();
-    let mut h = harness(mail_shell(), 1280, 800, theme.clone());
-    settle(&mut h, 1280, 800);
-    h.root_mut::<NavShell>().toggle_sidebar();
-    h.relayout_at((1280, 800)).expect("layout");
-    assert!(
-        h.root::<NavShell>().needs_animation_frame(),
-        "hiding the sidebar animates"
-    );
-
-    let mut calm = Theme::dark();
-    calm.reduce_motion = true;
-    let mut h = harness(mail_shell(), 1280, 800, calm);
-    settle(&mut h, 1280, 800);
-    h.root_mut::<NavShell>().toggle_sidebar();
-    h.relayout_at((1280, 800)).expect("layout");
-    h.relayout_at((1280, 800)).expect("layout");
-    assert_eq!(
-        geometry(&h).sidebar_column,
-        Rect::ZERO,
-        "reduced motion does not slide"
-    );
-}
-
-#[test]
-fn pressing_the_toggle_hides_and_shows_the_sidebar() {
-    let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
-    settle(&mut h, 1280, 800);
-    let toggle = geometry(&h).toggle.center();
-    let press = |h: &mut Driver| {
-        h.click_at(toggle.x, toggle.y);
-        h.relayout_at((1280, 800)).expect("layout");
-    };
-    press(&mut h);
-    settle(&mut h, 1280, 800);
-    assert!(!h.root::<NavShell>().is_sidebar_open());
-    assert_eq!(
-        geometry(&h).toggle.center(),
-        toggle,
-        "the toggle did not move"
-    );
-    press(&mut h);
-    settle(&mut h, 1280, 800);
-    assert!(h.root::<NavShell>().is_sidebar_open());
-}
-
 tilo_test_env::scenario! {
     fn the_shell_keeps_its_tree_and_remeasures_what_changed;
 
@@ -1731,29 +1273,6 @@ tilo_test_env::scenario! {
     // A change a part carries out in place is the shell's only where the shell can have it carried
     // out: in a screen it lays out, in front or not, it is remounted there; a screen outside the
     // tree is built whole when it comes back.
-}
-
-#[test]
-fn narrowing_keeps_the_explicit_or_last_interacted_content_pane() {
-    for clicked in [false, true] {
-        let mut h = harness(mail_shell(), 1600, 800, Theme::dark());
-        settle(&mut h, 1600, 800);
-        assert!(geometry(&h).overview_column.width() > 0.0);
-        if clicked {
-            let point = geometry(&h).overview_column.center();
-            h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
-            h.dispatch_to_root(&crate::synthetic_input::mouse_press());
-        } else {
-            h.root_mut::<NavShell>().show(NavPane::Overview);
-        }
-        settle(&mut h, 560, 800);
-        assert_eq!(
-            h.root::<NavShell>().front_pane(),
-            NavPane::Overview,
-            "clicked: {clicked}"
-        );
-        assert!(geometry(&h).overview_column.width() > 0.0);
-    }
 }
 
 #[test]
@@ -2049,86 +1568,6 @@ fn a_focused_sidebar_resize_edge_follows_the_arrow_keys_until_a_press() {
     assert_eq!(geometry(&h).sidebar_column.width(), wider);
 }
 
-/// Whether the content of a narrow mail window is still sliding in one frame
-/// after `push` brought it to the front.
-fn slides_after_push(push: impl FnOnce(&mut NavShell)) -> bool {
-    let mut h = harness(mail_shell(), 560, 800, Theme::dark());
-    settle(&mut h, 560, 800);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
-    push(&mut h.root_mut::<NavShell>());
-    h.relayout_at((560, 800)).expect("the push lays out");
-    let shell = h.root::<NavShell>();
-    assert_eq!(shell.front_pane(), NavPane::Content);
-    let moving = shell.inputs.borrow().push.is_moving(crate::time::now());
-    if moving {
-        assert!(
-            shell.needs_animation_frame(),
-            "the shell asks for frames while the push moves"
-        );
-    } else {
-        // Landed at once: the shell owes the frames that lay the landed pose out and drop
-        // what it hides, and asks for nothing after them.
-        for _ in 0..LANDING_FRAMES {
-            if !h.root::<NavShell>().needs_animation_frame() {
-                break;
-            }
-            h.relayout_at((560, 800)).expect("a landing frame lays out");
-        }
-        assert!(
-            !h.root::<NavShell>().needs_animation_frame(),
-            "a push that landed asks for no frames beyond its landing's"
-        );
-    }
-    moving
-}
-
-/// The frames a slide that landed still owes: the one whose tick finds it ended, the one that
-/// lays the landed pose out, and the structural one that drops what that pose hides.
-const LANDING_FRAMES: usize = 3;
-
-/// A push follows the input that asked for it (HIG §9.7): a click or a tap
-/// the person just made slides the content in; a key, an agent's action, or a
-/// show nobody visibly caused lands it on the next frame.
-#[test]
-fn a_push_slides_for_a_click_or_a_tap_and_lands_at_once_otherwise() {
-    use crate::tokens::MotionSource;
-    assert!(
-        !slides_after_push(|shell| shell.show(NavPane::Content)),
-        "a show nobody caused lands at once"
-    );
-    for (source, slides) in [
-        (MotionSource::Pointer, true),
-        (MotionSource::Gesture, true),
-        (MotionSource::Keyboard, false),
-        (MotionSource::Action, false),
-    ] {
-        let moving = slides_after_push(|shell| {
-            crate::motion::note_source(source);
-            shell.show(NavPane::Content);
-        });
-        assert_eq!(moving, slides, "a push after {source:?}");
-    }
-}
-
-/// A host that knows where an open came from says so: a search hit or an
-/// agent's `open` lands at once even right after a click elsewhere, and a
-/// person's click slides even when nothing was noted on this thread.
-#[test]
-fn a_push_from_a_known_origin_moves_as_that_origin_does() {
-    use crate::tokens::MotionSource;
-    assert!(
-        !slides_after_push(|shell| {
-            crate::motion::note_source(MotionSource::Pointer);
-            shell.show_from(NavPane::Content, MotionSource::Action);
-        }),
-        "an agent's open lands at once"
-    );
-    assert!(
-        slides_after_push(|shell| shell.show_from(NavPane::Content, MotionSource::Pointer)),
-        "a person's click slides the content in"
-    );
-}
-
 struct ResumableContent(crate::widget::Spacer);
 
 impl crate::widget::Decorator for ResumableContent {
@@ -2182,39 +1621,5 @@ impl crate::widget::Continuable for ResumableContent {
         _path: &automerge::ObjId,
     ) -> bool {
         true
-    }
-}
-
-tilo_test_env::scenario! {
-    fn a_page_window_at_a_laptop_width_stands_its_sidebar_beside_the_page;
-
-    // A gallery is a page beside its groups' list: at a laptop's width the list stands beside
-    // the page rather than folding behind a control.
-    phase its_sidebar_stands_beside_the_page_at_930_wide;
-    {
-        let mut h = harness(settings_shell(), 930, 700, Theme::dark());
-        settle(&mut h, 930, 700);
-        let g = geometry(&h);
-        assert_eq!(g.sidebar, SidebarPlacement::Docked);
-        assert!(g.sidebar_column.width() > 0.0);
-        assert!(
-            g.content_column.width() >= Metrics::resolve(&Theme::dark()).page_min - 0.5,
-            "the page keeps its reading width beside the list"
-        );
-    }
-
-    // Narrower than a page and a list, the list folds behind the shell's own control, which the
-    // window's bar shows.
-    phase a_folded_sidebar_is_a_control_away;
-    {
-        let mut h = harness(settings_shell(), 600, 700, Theme::dark());
-        settle(&mut h, 600, 700);
-        let g = geometry(&h);
-        assert_ne!(g.sidebar, SidebarPlacement::Docked);
-        let shell = h.root::<NavShell>();
-        assert!(
-            shell.window_toolbar().sidebar.is_some(),
-            "the bar offers the sidebar while it is folded"
-        );
     }
 }

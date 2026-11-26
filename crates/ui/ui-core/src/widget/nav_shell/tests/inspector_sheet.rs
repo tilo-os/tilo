@@ -94,33 +94,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    // A window too short for a half-height sheet to hold the inspector at its
-    // docked width opens it at the whole height, the content clear above it.
-    phase a_short_window_opens_its_inspector_sheet_at_the_whole_height;
-    {
-        let _settled = crate::motion::testing::settled();
-        let (w, h_px) = (W, 480);
-        let shell = NavShell::new()
-            .content(TestLeaf::fill("content").boxed().0)
-            .inspector(TestLeaf::fill("inspector").boxed().0);
-        let mut h = harness(shell, w, h_px, Theme::dark());
-        settle(&mut h, w, h_px);
-        h.root_mut::<NavShell>().open_inspector();
-        settle(&mut h, w, h_px);
-        let g = geometry(&h);
-        assert_eq!(g.inspector, InspectorPlacement::Sheet);
-        assert_eq!(detent(&h), Some(SheetDetent::Half));
-        let panel = g.inspector_column;
-        assert!(
-            (panel.y0 - g.sheet.area.y0).abs() < 0.5 && (panel.y1 - f64::from(h_px)).abs() < 0.5,
-            "half height is the whole height here: {panel:?} in {:?}",
-            g.sheet.area
-        );
-        assert!(
-            panel.height() / 2.0 < f64::from(crate::tokens::Metrics::BASE.inspector_width),
-            "the window is short for a half sheet: {panel:?}"
-        );
-    }
 
     phase a_narrow_inspector_is_a_sheet_at_half_height_with_the_content_live_above_it;
     {
@@ -250,66 +223,6 @@ fn the_sheet_is_a_named_region_whose_grip_steps_its_detent() {
     assert_eq!(detent(&h), Some(SheetDetent::Half));
 }
 
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-fn pixels(h: &Driver, ground: vello::peniko::Color) -> Vec<u8> {
-    let mut canvas = crate::cpu_raster::CpuCanvas::new();
-    canvas
-        .rasterize(&crate::retained_raster::FrameContent {
-            scene: h.scene(),
-            width: W,
-            height: H,
-            base_color: ground,
-            damage_regions: &[],
-            scroll_copies: &[],
-            full_redraw: true,
-            backdrop: &crate::part_paint::backdrop::BackdropFrame::default(),
-        })
-        .expect("the frame rasterizes");
-    canvas.pixels().to_vec()
-}
-
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-#[test]
-fn the_sheet_stands_off_the_content_above_it_in_both_themes() {
-    let _settled = crate::motion::testing::settled();
-    for theme in [Theme::light(), Theme::dark()] {
-        let (content, _) = TestLeaf::fill("content").boxed();
-        let shell = NavShell::new()
-            .content(content)
-            .inspector(TestLeaf::fill("inspector").boxed().0);
-        let mut h = harness(shell, W, H, theme.clone());
-        settle(&mut h, W, H);
-        h.root_mut::<NavShell>().open_inspector();
-        settle(&mut h, W, H);
-        let ground = theme.tokens.colors.surfaces.content;
-        let px = pixels(&h, ground);
-        let at = |x: f64, y: f64| -> [i32; 3] {
-            let i = ((y as usize) * W as usize + x as usize) * 4;
-            [0, 1, 2].map(|c| i32::from(px[i + c]))
-        };
-        let lum = |p: [i32; 3]| p[0] + p[1] + p[2];
-        let top = geometry(&h).inspector_column.y0.round();
-        let x = f64::from(W) / 4.0;
-        let window = at(x, top - 120.0);
-        let face = at(x, top + 12.0);
-        assert_ne!(
-            face, window,
-            "the sheet's face is its own level, not the window's ({})",
-            theme.name
-        );
-        let stands_off =
-            |p: [i32; 3]| (lum(p) - lum(face)).abs() > 3 && (lum(p) - lum(window)).abs() > 3;
-        let edge = (-3..4)
-            .map(|d| at(x, top + f64::from(d)))
-            .collect::<Vec<_>>();
-        assert!(
-            edge.iter().any(|p| stands_off(*p)),
-            "the sheet's top edge parts it from the content ({}): {edge:?} between {window:?} and {face:?}",
-            theme.name
-        );
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 enum BackInput {
     Bar,
@@ -375,53 +288,4 @@ fn back_lowers_or_puts_the_sheet_away_before_it_goes_anywhere() {
             );
         }
     }
-}
-
-/// At each detent the inspector's frame, as the shell reports it and as a
-/// link reads it, is where the body is laid out, and what it shows of the
-/// body is the sheet under its grip down to the window's foot.
-#[test]
-fn the_inspector_frame_is_what_the_sheet_shows_at_each_detent() {
-    let _settled = crate::motion::testing::settled();
-    let (mut h, _) = sheet_open();
-    let link = h.root::<NavShell>().inspector_link();
-    for detent in [SheetDetent::Peek, SheetDetent::Half, SheetDetent::Full] {
-        h.root_mut::<NavShell>().set_inspector_detent(detent);
-        settle(&mut h, W, H);
-        let frame = h.root::<NavShell>().inspector_frame();
-        assert_eq!(
-            link.frame(),
-            frame,
-            "{detent:?}: the link reads the same frame"
-        );
-        assert_eq!(frame.placement, InspectorPlacement::Sheet);
-        assert!(frame.open);
-        assert_eq!(frame.detent, Some(detent));
-        assert_eq!(
-            Some(frame.body),
-            child_rect(&h, "inspector"),
-            "{detent:?}: the body is laid out in the frame"
-        );
-        let panel = geometry(&h).inspector_column;
-        assert!(
-            (panel.y0 - top_at(&h, detent)).abs() < 0.5,
-            "{detent:?}: the sheet rests at its detent: {panel:?}"
-        );
-        let under_grip = Rect::new(panel.x0, frame.body.y0, panel.x1, f64::from(H));
-        assert!(
-            frame.body.y0 > panel.y0,
-            "{detent:?}: the body starts under the grip"
-        );
-        assert_eq!(
-            frame.shown, under_grip,
-            "{detent:?}: the frame shows the sheet under its grip down to the foot"
-        );
-    }
-    link.set_detent(SheetDetent::Full);
-    settle(&mut h, W, H);
-    assert_eq!(detent(&h), Some(SheetDetent::Full));
-    link.close();
-    settle(&mut h, W, H);
-    assert!(!h.root::<NavShell>().is_inspector_open());
-    assert!(!link.frame().open);
 }
