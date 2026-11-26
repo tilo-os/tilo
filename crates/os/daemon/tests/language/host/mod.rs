@@ -681,14 +681,12 @@ impl Host {
         let caller = Caller::delegated_agent(agent, person, key)
             .in_workspace(workspace)
             .named(name)
-            .on_roster(0, person)
-            .in_engine_turn_here()
             .in_agent_session("agent-session:test")
+            .on_roster(0, person)
             .on_roster_turn(tilo_action_policy::turn::Turn::new(
                 "chat/conversation",
                 "asked",
-            ))
-            .in_new_execution();
+            ));
         let actions = EngineActions::new(Arc::new(daemon.action_provider().unwrap()), keys);
         let provider = WorkspaceActionProvider::new(actions, id);
         Agent {

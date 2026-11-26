@@ -33,6 +33,14 @@ tracing.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# The Lounge seeder (`examples/seed-lounge.rs`) enters a public workspace's people through its
+# entry on a session with the server, as a page's Join does.
+tilo-server-protocol = { path = "../tilo-server-protocol" }
+tilo-session-client = { path = "../session-client", features = ["toolkit"] }
+tilo-server-client = { path = "../tilo-server-client" }
+tilo-user-identity = { path = "../tilo-user-identity" }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 # The bounds and fixtures a unit test waits and builds with.
 tilo-test-env = { path = "../../../tools/test-env", features = ["tokio"] }
 # The grants a shortcut step's turn runs under, as a workspace decides them.

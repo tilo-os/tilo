@@ -15,19 +15,6 @@ pub fn resource_provider(route: &DocumentRoute) -> String {
     format!("{RESOURCE_PROVIDER}:{}:{}", route.app_id, route.document)
 }
 
-pub fn resource_of(provider: &str, workspace: &str) -> Option<DocumentRoute> {
-    let rest = provider
-        .strip_prefix(RESOURCE_PROVIDER)?
-        .strip_prefix(':')?;
-    // App ids have no colon; record ids may (`uuid:…`).
-    let (app_id, record) = rest.split_once(':')?;
-    Some(DocumentRoute {
-        app_id: app_id.to_owned(),
-        cluster_id: workspace.to_owned(),
-        document: record.to_owned(),
-    })
-}
-
 /// How an invocation the API refused ended.
 pub(crate) enum Outcome {
     /// Nothing ran.
