@@ -233,6 +233,7 @@ impl<'a> Splitter<'a> {
     ///
     /// It's important to compile the wasm with --emit-relocs such that the relocations are available
     /// to construct the callgraph.
+    #[cfg(test)]
     pub fn new(original: &'a [u8], bindgened: &'a [u8]) -> Result<Self> {
         Self::with_analysis(original, bindgened, None)
     }
@@ -240,6 +241,7 @@ impl<'a> Splitter<'a> {
     /// [`Self::new`], reading back from `cache` what an earlier run of this
     /// module's bodies read of them, and keeping this run's there
     /// (analysis.rs).
+    #[cfg(test)]
     pub fn with_analysis(
         original: &'a [u8],
         bindgened: &'a [u8],

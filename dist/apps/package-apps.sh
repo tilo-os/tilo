@@ -62,24 +62,6 @@ case $tools_profile in
 esac
 release_dir=$target_dir/$tools_dir
 thin_app_dir=$target_dir/thin-app
-# Every app that keeps a model ships its built module inside the package, so a
-# device holding the workspace's keys applies the app's actions with no build
-# of its own. The modules are the `app-models` check's output (`tools/ci/app-models.sh`,
-# kept under the target directory); a pack takes that output through `TILO_APP_MODELS`
-# and builds no wasm crate. Each module holds only its app's own code and links
-# against the model runtime beside them (`app-model-runtime/`), which the runtime
-# bundle below carries once for every app.
-# The modules every app ships are the app-models check's output; a release builds them in its
-# model step and names them here. This packs what is there and builds no module of its own: an
-# app whose module is missing cannot ship, and a wasm link under the native hardening flags
-# fails far from the cause, so a pack without them stops here, before anything compiles.
-if [[ ${TILO_APP_RUNTIME_ONLY:-} != 1 && ${TILO_APP_COMPILE_ONLY:-} != 1 ]]; then
-    [[ -n ${TILO_APP_MODELS:-} ]] || {
-        printf 'TILO_APP_MODELS is not set: point it at the app-models output (`t outputs app-models`)\n' >&2
-        exit 2
-    }
-fi
-app_models=$(realpath -m "${TILO_APP_MODELS:-${CARGO_TARGET_DIR:-$repo_root/target}/app-models}")
 # TILO_APP_TOOLS_BUILT=1: the packing tools are already in $release_dir, built by an earlier run,
 # so none is built.
 tools_built=${TILO_APP_TOOLS_BUILT:-}
@@ -222,13 +204,6 @@ keyboard_library="$keyboard_libdir/libxkbcommon.so.0"
 runtime_fonts="$out/work/fonts"
 python3 "$repo_root/tools/font-catalog.py" prepare \
     "$repo_root/crates/ui/ui-core/assets/fonts" "$runtime_fonts" --scope product
-# The model runtime the apps' modules link against is signed into the runtime bundle
-# (lib/app-model-runtime), so every device these apps are installed on has it once.
-app_model_runtime="$app_models/app-model-runtime"
-[[ -f $app_model_runtime/runtime.json ]] || {
-    printf 'no model runtime at %s; build it with `t outputs app-models`\n' "$app_model_runtime" >&2
-    exit 1
-}
 # Keep the public runtime and publisher key under the root the app release
 # checks transport and assemble-collection.sh consumes. Private identities stay
 # in work/ (or the caller's external identity files), outside that root.
@@ -238,7 +213,6 @@ OUT_DIR="$out/runtime" RUNTIME_RELEASE="$runtime_release" FROM=/ \
     ARCH="$(uname -m)" IDENTITY_JSON="$runtime_identity" \
     BUNDLE_BIN="$release_dir/tilo-runtime-bundle" \
     FONT_CATALOG_ROOT="$runtime_fonts" \
-    MODEL_RUNTIME="$app_model_runtime" \
     EXTRA_LIBS="$runtime_dylib ${runtime_engines[*]} $rust_libstd $keyboard_library" \
     "$repo_root/os/scripts/bake-runtime-bundle.sh"
 # Every app below links this exact runtime build and names it.
@@ -293,20 +267,6 @@ while IFS=$'\t' read -r name package binary id version manifest; do
     surface="$repo_root/$(dirname "$manifest")/surface.json"
     if [[ -f $surface ]]; then
         install -pm 0644 "$surface" "$payload/surface.json"
-    fi
-    # An app declares a model by keeping a guest crate beside it (apps/db-client ->
-    # apps/db-client-model-wasm). The module the app-models check built for it ships
-    # at the payload root, where every device holding the workspace's keys reads
-    # it and `tilolang package` stages it. A declared model with no module built
-    # fails the pack here: the app would ship unable to apply its own actions.
-    if [[ -f $app_dir-model-wasm/Cargo.toml ]]; then
-        module="$(basename "$app_dir")/model.wasm"
-        [[ -f $app_models/$module ]] || {
-            printf 'app=%s declares a model but %s is not built; build it with `t outputs app-models`\n' \
-                "$name" "$app_models/$module" >&2
-            exit 1
-        }
-        install -pm 0644 "$app_models/$module" "$payload/model.wasm"
     fi
     sed "s|^\(identity  *= *\)\"ed25519:[0-9a-fA-F]*\"|\1\"ed25519:$pubkey\"|" \
         "$repo_root/$manifest" > "$staged_manifest"

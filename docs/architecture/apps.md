@@ -69,54 +69,6 @@ JavaScript glue, no browser clocks). Built alone (`tilolang model`), a guest is
 a whole module, and `tilolang package` ships it so: any device calls it as it
 is.
 
-Nearly all of such a module is code every app's model shares: automerge, std,
-the resource layer, serde_json. So the apps this repository ships are built
-together. `t test app-models` (tools/ci/app-models.sh) links every guest crate
-into one module (crates/sdk/tilo-models-wasm) and splits it with
-`wasm-split --models` (tools/web/wasm-split): what only one app's entry
-reaches becomes that app's `model.wasm`, tens of KB, and everything else the
-model runtime, kept once beside them as `app-model-runtime/` (its modules and a
-`runtime.json` naming it by a BLAKE3 hash of their bytes). Each app's module
-names that hash, and the export to call, in a `tilo_model_runtime` section.
-Both pack paths take that output rather than building it again: the release
-pack (`dist/apps/package-apps.sh`) when it signs, and the image pack
-(`os/scripts/pack-apps.sh`), whose app store a freshly installed system boots
-with. Each writes an app's module into its payload as `model.wasm`, signed with
-the rest, and refuses an app whose guest crate it finds and whose module is not
-there. The model runtime is in no app's package: the runtime bundle every app
-of the release names carries it, signed, as `lib/app-model-runtime`, and
-`tools/perf/runtime-size-budget/` holds its bytes. An app's package therefore
-counts only its own model code against its budget.
-
-A device links a split module after the runtime it names
-(`tilo-model-engine`, on the engine that executes every WebAssembly module, which
-caches the runtime's compiled modules once per process): the runtime's start
-module with the model ABI, its shared modules, then the app's module, each
-import answered by the exports of the modules before it, as the page links a
-split bundle. It finds the runtime by its hash in the directories
-`TILO_APP_MODEL_RUNTIME` lists, then under `TILO_APP_MODELS` (the app-models
-output the tests are given), then in every installed runtime bundle (the
-person's and `/usr/lib/tilo-runtime`). The server's image carries the runtime
-of the release it was built with and names it in `TILO_APP_MODEL_RUNTIME`.
-A package built by another release names another runtime, and the bundle that
-carries it in its manifest (`[package].runtime`, `tilo-runtime/<version>`). A
-server lacking that runtime fetches it before it applies the app's first action
-(`app_cli::model_runtime`): it asks the enabled registries for the runtime
-package that provides that version, takes the package only as the registry's
-signed entry names it (length, BLAKE3, root and publisher) and when its
-signature verifies, checks that the bundle manifest inside is signed by a
-runtime publisher the device trusts (as the launcher checks an installed
-bundle) and lists every file it takes, and downloads only
-`lib/app-model-runtime`, never the bundle's libraries. The engine then reads
-the runtime and computes its hash from its bytes; it must be the hash the
-module names. The runtime is kept on disk under the store's cache
-(`app-model-runtime/<hash>`, the four most recently used) and in memory for
-the process, so later actions ask the registry nothing. A runtime that cannot
-be fetched or verified is refused with the hash the module names, the ones
-this server holds and why the fetch failed, and is not asked for again for five
-minutes; it is never linked against other code. A whole module names none and
-is called as before.
-
 An app written against the framework writes none of the following: storage, sync, merge,
 undo, history, presence, identity, signing, encryption, key handling, transport,
 permission checks, coalescing, retries for documents, or a server for its

@@ -888,7 +888,7 @@ The copies:
 | Rust view models | `ViewCx` views; `tilo-view` `#[view]` with `view-macros` (1,682, used only by Chat) |
 | Widget output | ui-core paints to a canvas, and 162 widget files also write HTML (`composition.rs` `HtmlCx`) |
 | tilolang hosts | `apps/tilolang` (21,346, one process per installed app, toolkit linked in); `tilolang-process` (14,358, one process per workspace and author) |
-| Rust model logic | each app's own code, and again as `apps/*-model` (34 crates) plus `apps/*-model-wasm` (31 crates) with `tilo-model-guest` |
+| Rust model logic | each app's own code, and again as `apps/*-model` with `tilo-model-guest` |
 | Launch paths | a Rust app binary through `app-launch` and the `launcher` sandbox; `apps/tilolang`; `tilolang-process`; in-process written views and the session's own layers; `app-keeper` for non-Tilo programs; Rust models as WebAssembly |
 | Permission checks | `action-policy` (12,437); tilolang's own `tl:host` commit; the SDK's `PermissionContext` |
 | Shell | `apps/tl/shell` (6,990), over the desktop session-core holds |
@@ -955,7 +955,7 @@ The copies:
 |---|---|
 | `tilo-view` and `view-macros` (Chat's views port) | ~1,700 |
 | `apps/tilolang` (folded into `tilolang-process`) | ~21,000 |
-| `apps/*-model`, `apps/*-model-wasm`, `tilo-model-guest`, as each app's types move into `.tl` | ~35,000 and 65 crates |
+| `apps/*-model`, `tilo-model-guest`, as each app's types move into `.tl` | ~35,000 and 2 crates |
 | Native model links in `tilo-server` and `tilo-agent-session` | to be measured |
 | `tl:host` commit, the SDK `PermissionContext` | to be measured |
 | ui-core `bound_dispatch`, `RootDispatch` and the widget callbacks (`on_change`, `on_view`, `take_action`) | ~15,000 |

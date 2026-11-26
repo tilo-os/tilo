@@ -15,10 +15,6 @@
 #   TILO_CHROMIUM_ENGINE  what `--chromium` left: the engine taken from there
 #                      instead of built again; `apart` leaves it out of OUT, for an
 #                      image build given it beside the tree (os/dev/build-image.sh)
-#   TILO_APP_MODELS    the modules `tools/ci/app-models.sh` built for every app
-#                      that keeps a model (the app-models check's output), taken
-#                      instead of building them here; the packing below ships
-#                      them inside each app's package
 #   TILO_GITHUB_ASSET_CACHE  the checksum-pinned external assets (default
 #                      os/external-assets/cache), for the CEF distribution
 #   TILO_APP_COLLECTION  the collection in dist/apps/app-collections.toml whose
@@ -129,7 +125,7 @@ if [[ ${1:-} == --dev ]]; then
   exit 0
 fi
 # --apps: of a compiled tree FROM, what the apps and their runtimes are packed from (the payload
-# action of os/image/layers.toml): the thin apps, the runtime and its engines, the app models,
+# action of os/image/layers.toml): the thin apps, the runtime and its engines,
 # the prebuilt apps, the packing tools and what the packing reads of the sources (the apps'
 # manifests, the language packs, the product fonts), copied into OUT. A step of its own that t never
 # caches, so the payload is keyed by these files' bytes rather than by the compile's key: a
@@ -178,7 +174,7 @@ if [[ ${1:-} == --apps ]]; then
   # thin `tilolang-process` the packing bakes into their runtime bundle, whose manifest
   # (`crates/lang/tilolang-process/tilo-runtime.toml`) and standard library
   # (`crates/lang/tilolang/std`) name its version.
-  for f in "${files[@]}" runtime-bundle-publisher.hex thin-apps app-models prebuilt-apps prebuilt-runtime fonts app-plan.json \
+  for f in "${files[@]}" runtime-bundle-publisher.hex thin-apps prebuilt-apps prebuilt-runtime fonts app-plan.json \
       tilolang tilolang-std crates; do
     [[ -e $from/$f ]] || continue
     cp -a "$from/$f" "$out/"
@@ -405,11 +401,7 @@ case "$TILO_RUST_LTO" in \
          EXTRA_CARGO_ARGS="$1" \
            os/scripts/build-thin-apps.sh; \
        } \
-    && thin_pid="" models_pid="" \
-    && if [ "${TILO_PREBUILT_APPS}" != 1 ] && [ -z "${TILO_APP_MODELS:-}" ]; then \
-         { bash tools/ci/app-models.sh > "$scratch/tilo-app-models.log" 2>&1 & } \
-         && models_pid=$!; \
-       fi \
+    && thin_pid="" \
     && if [ "${TILO_PREBUILT_APPS}" != 1 ] && [ "$TILO_RUST_LTO" = off ]; then \
          { ( thin_started=$(date +%s); build_thin_apps "" \
              && printf 'TILO_BUILD_TIMING phase=rust-thin-apps-parallel elapsed_seconds=%s exit_code=0\n' "$(( $(date +%s) - thin_started ))" \
@@ -567,17 +559,7 @@ case "$TILO_RUST_LTO" in \
          && if [ -n "$THIN_RUNTIMES" ]; then cp "$target/thin-app/tilolang-process" "$out"/thin-apps/; fi \
          && LIBSTD="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
          && [ -n "${LIBSTD}" ] \
-         && cp "${LIBSTD}" "$out"/ \
-         && build_phase rust-app-models \
-         && rm -rf "$out/app-models" \
-         && if [ -n "${TILO_APP_MODELS:-}" ]; then \
-              cp -a "${TILO_APP_MODELS}" "$out"/app-models; \
-            else \
-              models_status=0; wait "$models_pid" || models_status=$?; \
-              cat "$scratch/tilo-app-models.log"; \
-              [ "$models_status" = 0 ] \
-              && cp -a "$target/app-models" "$out"/app-models; \
-            fi; \
+         && cp "${LIBSTD}" "$out"/; \
        fi \
     && build_phase rust-boot-greeter \
     && if [ "${TILO_BOOT_GREETER:-}" != apart ]; then boot_greeter "$out"; fi \
@@ -602,8 +584,8 @@ case "$TILO_RUST_LTO" in \
 # so `|| exit` is what stops the build at a phase that fails.
 
 # What the apps' packing (os/image/helpers/apps-payload.Containerfile) reads of the sources,
-# so the packing reads no checkout and is keyed by the bytes it packs: each app's manifest,
-# public surface and model crate (apps/), every language's pack (the packages carry English
+# so the packing reads no checkout and is keyed by the bytes it packs: each app's manifest and
+# public surface (apps/), every language's pack (the packages carry English
 # only) and, for the runtime bundle, the product font catalog's faces.
 build_phase app-sources
 rm -rf "$out/apps" "$out/language-packs" "$out/fonts"
@@ -611,8 +593,6 @@ for manifest in apps/*/tilo-app.toml; do
   app=$(dirname "$manifest")
   install -D -m 0644 "$manifest" "$out/$app/tilo-app.toml"
   [[ ! -f $app/surface.json ]] || install -m 0644 "$app/surface.json" "$out/$app/surface.json"
-  [[ ! -f $app-model-wasm/Cargo.toml ]] \
-    || install -D -m 0644 "$app-model-wasm/Cargo.toml" "$out/$app-model-wasm/Cargo.toml"
 done
 # The tilolang packages, and the manifest of the runtime they run on: the packing
 # compiles each of them with `tilolang build`, which searches `apps/tl` for the

@@ -5,8 +5,8 @@
 //! lists its modules in the order they are instantiated (the start module
 //! first) and names the runtime by its hash, and those modules. The hash is
 //! BLAKE3 over each module in order, as its length (eight bytes,
-//! little-endian) and its bytes: what `wasm-split --models` writes into every
-//! app module it splits against it, and what [`Runtime::read`] computes again
+//! little-endian) and its bytes: what a split app module records for the
+//! runtime it was split against, and what [`Runtime::read`] computes again
 //! from the bytes it reads, so a runtime whose files do not match what it says
 //! it is, is refused.
 //!
@@ -14,8 +14,8 @@
 //!
 //! - every directory [`RUNTIME_VARIABLE`] lists (`:`-separated): the server's
 //!   image names the runtime it carries this way;
-//! - `$TILO_APP_MODELS/app-model-runtime`: the app-models output the tests and
-//!   the packs are given, beside the apps' modules;
+//! - `$TILO_APP_MODELS/app-model-runtime`: a build output beside the apps'
+//!   modules, when a caller names one;
 //! - `lib/app-model-runtime` of every runtime bundle installed on the device:
 //!   the person's (`$TILO_RUNTIME_BUNDLE_DIR`, else
 //!   `$XDG_DATA_HOME/tilo-runtime`) and the system's (`/usr/lib/tilo-runtime`).
@@ -37,15 +37,15 @@ use crate::ModelError;
 /// split against (`runtime`, its hash) and the export to call (`entry`).
 pub const RUNTIME_SECTION: &str = "tilo_model_runtime";
 
-/// The name of a runtime's directory, under the app-models output and under
+/// The name of a runtime's directory, under a build output and under
 /// a runtime bundle's `lib/`.
 pub const RUNTIME_DIR: &str = "app-model-runtime";
 
 /// The variable that names runtime directories for a device to look in first.
 pub const RUNTIME_VARIABLE: &str = "TILO_APP_MODEL_RUNTIME";
 
-/// The variable naming the app-models output (`<app>/model.wasm`, and the
-/// runtime under [`RUNTIME_DIR`]), as the packs and the tests read it.
+/// The variable naming a build output (`<app>/model.wasm`, and the
+/// runtime under [`RUNTIME_DIR`]).
 const APP_MODELS_VARIABLE: &str = "TILO_APP_MODELS";
 
 /// What a split module's [`RUNTIME_SECTION`] says.

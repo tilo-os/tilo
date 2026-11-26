@@ -134,21 +134,6 @@ symbol_relocations = 6592
 # lower them to. The theme painter interpreter's engine (wasmi) was measured
 # by t's app-sizes-x86_64 run 1bcf1340bd; its aarch64 number is the x86_64 one
 # until the first aarch64 run prints what to lower it to.
-# The model runtime the bundle carries (lib/app-model-runtime): the WebAssembly
-# every app's model module links against, which tools/ci/app-models.sh splits
-# off the apps' models so that no app's package carries it. Measured by
-# tools/ci/app-models.sh at its introduction: 2441734 bytes in three modules,
-# the same on both architectures. Before it, each of the 19 apps with a model
-# carried its own 2.6-3.0 MB copy in its package. The raise that covered the
-# code two joined modules shared was dropped on 2026-11-19: the date library
-# left the runtime for Calendar's module, where it is Calendar's alone, and
-# the runtime is back at the budget it started with (2,431,613 measured).
-[app_model_runtime.x86_64]
-bytes = 2490368
-
-[app_model_runtime.aarch64]
-bytes = 2490368
-
 [engines.x86_64]
 "libtilo_adblock_engine.so" = 196608
 "libtilo_browser_engine.so" = 196608

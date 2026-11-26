@@ -405,9 +405,6 @@ def assemble_inside(args):
     bundle = target / 'release/tilo-runtime-bundle'
     publish_runtime_fonts(repo, fonts, stage / 'tree/usr/share/tilo/font-catalogs')
     includes = list(dict.fromkeys([toolkit, *engines, std[0], *closure, fonts]))
-    model_runtime = target / 'app-models/app-model-runtime'
-    if model_entries(repo, entries) and (model_runtime / 'runtime.json').is_file():
-        includes.append(model_runtime)
     if args.source_inventory is not None:
         includes.append(source_membership(
             stage / 'work/system-app-cohort.json', args.source_inventory,
@@ -687,29 +684,6 @@ def prepare_tilolang_applications(args, entries):
         raise ValueError('the cohort build did not produce the tilolang runtime binary')
 
 
-def model_entries(repo, entries):
-    """The applications that keep a model: a guest crate beside the app
-    (apps/remote -> apps/remote-model-wasm), whose module the pack requires."""
-    return [entry for entry in entries
-            if (repo / 'apps' / (entry['dir'] + '-model-wasm') / 'Cargo.toml').is_file()]
-
-
-def prepare_models(args, entries):
-    """Build every app's model module and the model runtime they link
-    against, as the image's app-models step does: the pack refuses an app
-    that declares a model without its module, and the runtime bundle carries
-    the model runtime the modules name."""
-    repo, target = args.repo.resolve(), args.target_dir.resolve()
-    if not model_entries(repo, entries):
-        return None
-    env = dict(os.environ, CARGO_TARGET_DIR=str(target))
-    run(['bash', str(repo / 'tools/ci/app-models.sh')], env=env)
-    runtime = target / 'app-models/app-model-runtime'
-    if not (runtime / 'runtime.json').is_file():
-        raise ValueError('tools/ci/app-models.sh wrote no model runtime')
-    return runtime
-
-
 def assemble(args):
     repo, target = args.repo.resolve(), args.target_dir.resolve()
     if args.dest is not None and args.dest.exists() and any(args.dest.iterdir()):
@@ -737,7 +711,6 @@ def assemble(args):
         prepare_applications(args, entries)
         if tilolang:
             prepare_tilolang_applications(args, entries)
-        prepare_models(args, entries)
         cohort = ','.join(entry['dir'] for entry in entries)
         run(namespace_command(repo, stage, target, args.profile, app=args.app,
                               compiler=args.compiler_capture, app_plan=args.app_plan,

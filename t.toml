@@ -778,20 +778,6 @@ run = "crates/lang/tilolang-tilo/bench/imagefilter/build.sh"
 outputs = ["/target/wasm32-unknown-unknown/release/tilolang_bench_imagefilter.wasm"]
 default = false
 
-# Every app's model module, built once and kept for the checks that read one:
-# the `model.wasm` a package carries so every device holding a workspace's keys
-# applies the app's actions with no build of its own. One mechanism for every
-# app (tools/ci/app-models.sh): an app keeps its model as a guest crate beside
-# it (`apps/remote` → `apps/remote-model-wasm`), and the module is what that
-# crate builds for wasm32. A run that asks for a package's output runs this
-# first.
-[[check]]
-name = "app-models"
-egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/ci/app-models.sh"
-outputs = ["/target/app-models/**"]
-default = false
-
 # The test that applies an installed app's action from the package an image
 # installs, not one the test compiled: Database Client's `.tapp` is built by
 # the image's own pack path (tools/apps/tilolang_packages.sh, which
@@ -3508,16 +3494,13 @@ export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
 export TILO_RELEASE_APPS=$(python3 -I tools/ci/python.py tools/apps/app_release.py --collection default | python3 -c 'import json, sys; print(" ".join(json.load(sys.stdin)["apps"]))')
 export TILO_APP_PREBUILT=/target/apps-build/{arch}
 export TILO_APP_TOOLS_BUILT=1
-# Each app's module, built once by the app-models check: the packages carry
-# them, and no wasm crate builds in a signing run.
-export TILO_APP_MODELS=/target/app-models
 export TILO_APP_RELEASE_OUT=/target/app-release/{arch}
 export TILO_APP_RELEASE_SOURCE="$T_COMMIT"
 export TILO_APP_RELEASE_SEQUENCE=$(git show -s --format=%ct "$T_COMMIT")
 dist/apps/package-apps.sh
 # The package CLI the publication runs on: the same bytes the tapps were packed with.
 install -m 0755 /target/apps-build/{arch}/release/tilo-app-package /target/app-release/{arch}/tilo-app-package'''
-needs = ["apps-build-{arch}", "app-models"]
+needs = ["apps-build-{arch}"]
 requires = ["arch={arch}"]
 secrets = ["TAPP_PUBLISHER_IDENTITY", "RUNTIME_BUNDLE_SIGNING_KEY"]
 git = true
@@ -3555,8 +3538,6 @@ arch = ["x86_64", "aarch64"]
 name = "app-reproducible-{arch}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/apps/check-reproducible-tapp.sh poker"
-needs = ["app-models"]
-env = { TILO_APP_MODELS = "/target/app-models" }
 requires = ["arch={arch}"]
 on = ["dispatch"]
 heavy = true
@@ -3641,8 +3622,7 @@ name = "app-sizes-{arch}"
 # against (tools/font-catalog.py). Pinned, a verdict is kept by what the job read and served to
 # the next ask of the same state, instead of every ask building the release again.
 egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
-run = "set -euo pipefail\n# One release build of the default collection, then the two budgets over it: every app's\n# signed tapp (tools/perf/tapp-size-budget/) and the shared runtime's bytes, relocations and\n# symbol lookups, and the model runtime its bundle carries (tools/perf/runtime-size-budget/). package-apps.sh builds with throwaway\n# identities when no publisher key is given, which is all a size build needs.\n# Each measure prints its numbers and its own verdict, so an over-budget tapp never hides\n# the runtime's numbers, or the reverse. The modules the packages carry are the app-models\n# check's, so the app bytes measured here are the ones a release ships.\nexport CARGO_INCREMENTAL=0\nexport CARGO_BUILD_JOBS=$(bash -c 'source tools/apps/release-lib.sh; cargo_jobs')\nexport TILO_RELEASE_APPS=$(python3 -I tools/ci/python.py tools/apps/app_release.py --collection default | python3 -c 'import json, sys; print(\" \".join(json.load(sys.stdin)[\"apps\"]))')\nexport TILO_APP_MODELS=/target/app-models\nexport TILO_APP_RELEASE_OUT=/target/app-sizes/{arch}\ndist/apps/package-apps.sh\nfailed=\npython3 tools/perf/tapp_size_ratchet.py measure /target/app-sizes/{arch} --arch {arch} --every || failed=1\nlibdir=$(rustc --print target-libdir)\npython3 tools/perf/runtime_size_ratchet.py measure \"$CARGO_TARGET_DIR/thin-app/libruntime_dylib.so\" --arch {arch} --apps-dir \"$CARGO_TARGET_DIR/thin-app\" --library-dir \"$libdir\" $(sed \"s|^|--engine $CARGO_TARGET_DIR/thin-app/|\" \"$CARGO_TARGET_DIR/thin-app/runtime-engines\") --app-model-runtime \"$(ls -d /target/app-sizes/{arch}/runtime/tilo-runtime/*/lib/app-model-runtime)\" || failed=1\n[[ -z $failed ]]\n"
-needs = ["app-models"]
+run = "set -euo pipefail\n# One release build of the default collection, then the two budgets over it: every app's\n# signed tapp (tools/perf/tapp-size-budget/) and the shared runtime's bytes, relocations and\n# symbol lookups (tools/perf/runtime-size-budget/). package-apps.sh builds with throwaway\n# identities when no publisher key is given, which is all a size build needs.\n# Each measure prints its numbers and its own verdict, so an over-budget tapp never hides\n# the runtime's numbers, or the reverse.\nexport CARGO_INCREMENTAL=0\nexport CARGO_BUILD_JOBS=$(bash -c 'source tools/apps/release-lib.sh; cargo_jobs')\nexport TILO_RELEASE_APPS=$(python3 -I tools/ci/python.py tools/apps/app_release.py --collection default | python3 -c 'import json, sys; print(\" \".join(json.load(sys.stdin)[\"apps\"]))')\nexport TILO_APP_RELEASE_OUT=/target/app-sizes/{arch}\ndist/apps/package-apps.sh\nfailed=\npython3 tools/perf/tapp_size_ratchet.py measure /target/app-sizes/{arch} --arch {arch} --every || failed=1\nlibdir=$(rustc --print target-libdir)\npython3 tools/perf/runtime_size_ratchet.py measure \"$CARGO_TARGET_DIR/thin-app/libruntime_dylib.so\" --arch {arch} --apps-dir \"$CARGO_TARGET_DIR/thin-app\" --library-dir \"$libdir\" $(sed \"s|^|--engine $CARGO_TARGET_DIR/thin-app/|\" \"$CARGO_TARGET_DIR/thin-app/runtime-engines\") || failed=1\n[[ -z $failed ]]\n"
 outputs = ["/target/app-sizes/{arch}/**"]
 requires = ["arch={arch}"]
 timeout_secs = 5400
@@ -3936,8 +3916,8 @@ default = false
 name = "image-server"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/server-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/server/binaries /target/publish/server /target/app-models/app-model-runtime"
-needs = ["server-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64", "app-models"]
+run = "bash tools/ci/publish/server-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/server/binaries /target/publish/server"
+needs = ["server-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
@@ -6750,9 +6730,9 @@ name = "os-compile-release-x86_64"
 # from tilo's package store by the SHA-256 the catalog pins (tools/font-catalog.py).
 egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/compile.sh /target/os/x86_64/compiled-release"
-needs = ["test-assets", "os-chromium-x86_64", "app-models"]
+needs = ["test-assets", "os-chromium-x86_64"]
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
-env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/x86_64/chromium", TILO_APP_MODELS = "/target/app-models", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets" }
+env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/x86_64/chromium", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets" }
 requires = ["arch=x86_64"]
 outputs = ["/target/os/x86_64/compiled-release/**"]
 timeout_secs = 10800
@@ -7087,9 +7067,9 @@ name = "os-compile-release-aarch64"
 # from tilo's package store by the SHA-256 the catalog pins (tools/font-catalog.py).
 egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/compile.sh /target/os/aarch64/compiled-release"
-needs = ["test-assets", "os-chromium-aarch64", "app-models"]
+needs = ["test-assets", "os-chromium-aarch64"]
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
-env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/aarch64/chromium", TILO_APP_MODELS = "/target/app-models", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets" }
+env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/aarch64/chromium", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets" }
 requires = ["arch=arm64"]
 outputs = ["/target/os/aarch64/compiled-release/**"]
 timeout_secs = 10800

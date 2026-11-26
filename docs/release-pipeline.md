@@ -93,8 +93,8 @@ Pull requests use the cheapest job that proves the affected boundary:
 
 t keys every check by what it reads and serves a result across commits that keep
 its inputs, so the app release needs no artifact hand-off between jobs:
-`sign-apps-{arch}` reads `apps-build-{arch}`'s tree and `app-models`, and
-`app-release-smoke-{arch}` reads both. A collection build packages the whole
+`sign-apps-{arch}` reads `apps-build-{arch}`'s tree, and
+`app-release-smoke-{arch}` reads the signed release it wrote. A collection build packages the whole
 default collection; t compiles only what changed. OS images and desktop
 distributions can pin a published collection by version and architecture
 without compiling apps again.

@@ -64,11 +64,6 @@ COPY bin/tilo-runtime /usr/bin/tilo-runtime
 COPY os/containers/tilo-server/tilo-home-peer /usr/bin/tilo-home-peer
 RUN /usr/bin/busybox chmod 0755 /usr/bin/tilo-home-peer /usr/bin/tilo /usr/bin/tilo-runtime
 COPY os/usr/lib/systemd/system/tilo-server.service /usr/lib/systemd/system/tilo-server.service
-# The model runtime the apps of this release link their model modules against
-# (tools/ci/app-models.sh): the server applies an installed app's actions from
-# the app's package, linked after it (crates/lang/tilo-model-engine).
-COPY app-model-runtime/ /usr/lib/tilo/app-model-runtime/
-ENV TILO_APP_MODEL_RUNTIME=/usr/lib/tilo/app-model-runtime
 
 # Where the daemon writes state + reads config. The container
 # operator mounts a volume here for persistence.

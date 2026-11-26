@@ -10,11 +10,6 @@
 //! any device calls as it is. That is what `tilolang package` stages as
 //! [`MODEL_MODULE`], for an app built on its own.
 //!
-//! The apps this repository ships are built together instead
-//! (tools/ci/app-models.sh, `t`'s `app-models` check): each one's module then
-//! holds only its own code and links against the model runtime the shared
-//! runtime bundle carries once, and the release and image packs take those.
-//!
 //! The guest crates are workspace members, so every app's module shares one
 //! lockfile and one wasm32 target directory: a dependency compiles once for
 //! every app's module, not once per app.

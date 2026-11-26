@@ -242,7 +242,6 @@ RUN --mount=type=secret,id=publisher_identity \
        fi \
     && REPO=/out \
     BIN_DIR=/out/thin-apps \
-    APP_MODELS=/out/app-models \
     APP_PLAN="$([ -f /out/app-plan.json ] && printf %s /out/app-plan.json || true)" \
     TAPP_DIR=/out/prebuilt-apps \
     TILOLANG_BIN=/out/tilolang \

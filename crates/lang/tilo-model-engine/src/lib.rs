@@ -35,12 +35,11 @@
 //!
 //! # Split modules
 //!
-//! An app built in this repository carries only its own code: every app's
-//! model is linked into one module and split (tools/ci/app-models.sh,
-//! `wasm-split --models`) into the model runtime the apps share (automerge,
-//! std, the resource layer, `serde_json`), which the shared runtime bundle
-//! carries once, and one module per app. Such a module names the runtime it
-//! was split against in its [`RUNTIME_SECTION`], and the export to call. It
+//! A split app module carries only its own code, linked against the model
+//! runtime the apps share (automerge, std, the resource layer,
+//! `serde_json`), which the shared runtime bundle carries once. Such a module
+//! names the runtime it was split against in its [`RUNTIME_SECTION`], and the
+//! export to call. It
 //! is linked after that runtime ([`Engine::compile_linked`]): the runtime's
 //! start module with [`ABI`], its shared modules, then the app's module, each
 //! import answered by the exports of the modules before it. The runtime is

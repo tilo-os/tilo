@@ -43,12 +43,6 @@
 #                       app that dies at exec with an unresolved soname.
 #   FONT_CATALOG_ROOT   verified product catalog directory to include as
 #                       lib/fonts in this signed SDK (optional).
-#   MODEL_RUNTIME       the model runtime every app's model module links
-#                       against (`app-model-runtime/` of tools/ci/app-models.sh's
-#                       output), included as lib/app-model-runtime, where a device
-#                       finds it by the hash an app's module names
-#                       (crates/lang/tilo-model-engine) (optional).
-#
 # Called from os/build.sh via `--bake-runtime` before the container build.
 # Callable stand-alone during dev — the output tree can then be COPYied
 # into a bootc image or served as a per-user install source.
@@ -114,14 +108,6 @@ if [ -n "$FONT_CATALOG_ROOT" ]; then
         || die "FONT_CATALOG_ROOT must be a fonts directory"
     INCLUDE_ARGS+=(--include "$FONT_CATALOG_ROOT")
 fi
-if [ -n "$MODEL_RUNTIME" ]; then
-    [ "$(basename "$MODEL_RUNTIME")" = app-model-runtime ] \
-        || die "MODEL_RUNTIME must be a app-model-runtime directory"
-    [ -f "$MODEL_RUNTIME/runtime.json" ] \
-        || die "MODEL_RUNTIME holds no runtime.json: $MODEL_RUNTIME"
-    INCLUDE_ARGS+=(--include "$MODEL_RUNTIME")
-    msg "including the model runtime: $MODEL_RUNTIME"
-fi
 dependency_objects=()
 dependency_dirs=()
 for lib in $EXTRA_LIBS; do
@@ -169,10 +155,6 @@ for object in "$BUNDLE_DIR"/lib/*.so*; do
             || die "$name is signed twice, at lib/$name and lib/$directory/$name"
     done
 done
-if [ -n "$MODEL_RUNTIME" ]; then
-    cmp -s "$MODEL_RUNTIME/runtime.json" "$BUNDLE_DIR/lib/app-model-runtime/runtime.json" \
-        || die "signed runtime is missing its model runtime"
-fi
 msg "baked runtime $(cat "$VERSION_OUT")"
 
 # 4. Extract + record the pubkey.

@@ -43,13 +43,8 @@
 //! ```
 //!
 //! Built alone (`tilolang model`, an app outside this repository), that is a
-//! whole module exporting [`EXPORT`]. The repository builds every app's guest
-//! into one module instead (crates/sdk/tilo-models-wasm, with
-//! `--cfg tilo_model_split`), where each entry is `tilo_model_apply_<app>`
-//! and is named in the `tilo_split_exports` section; `wasm-split --models`
-//! then leaves what every app shares (automerge, std, the resource layer) in
-//! one model runtime and only the app's own code in its `model.wasm`. A device
-//! links that module after the runtime it names (`tilo-model-engine`).
+//! whole module exporting [`EXPORT`]. A device calls the module as it is
+//! (`tilo-model-engine`).
 
 #![deny(rust_2018_idioms, missing_docs)]
 

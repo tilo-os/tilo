@@ -79,8 +79,6 @@ else:
     raise SystemExit('unexpected font fixture invocation')
 """)
         self.write("bin/uname", "#!/bin/sh\nprintf '%s\\n' \"$FIXTURE_ARCH\"\n")
-        # What the release workflow's model build leaves for the pack to read.
-        self.write("models/app-model-runtime/runtime.json", "{}")
         self.write("stdlib/libstd-fixture.so", "\x7fELF fixture standard library")
         self.write("native/libc.so.6", "\x7fELF fixture native dependency")
         self.write("keyboard/libxkbcommon.so.0", "\x7fELF fixture default keyboard library")
@@ -199,7 +197,6 @@ else:
                         FIXTURE_CARGO_LOG=str(self.root / "cargo.log"),
                         FIXTURE_STDLIB=str(self.root / "stdlib"), TILO_RELEASE_APPS="totp",
                         FIXTURE_SURFACES=str(self.root / "packed-surfaces"),
-                        TILO_APP_MODELS=str(self.root / "models"),
                         SOURCE_DATE_EPOCH="123", GITHUB_SHA="1" * 40)
         for name in ("CARGO_TARGET_DIR", "TILO_APP_RELEASE_OUT", "TAPP_PUBLISHER_IDENTITY_FILE",
                      "RUNTIME_BUNDLE_IDENTITY_FILE", "TRUST_LIST", "MAX_TAPP_BYTES",

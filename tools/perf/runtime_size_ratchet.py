@@ -32,12 +32,6 @@ engine's file has a budget of its own (`[engines.<arch>]`, by library name),
 with the same headroom, rounding and raise files: the build check fails when
 one is over its budget or has none.
 
-The runtime bundle also carries the model runtime every app's model module
-links against (`lib/app-model-runtime`, tools/ci/app-models.sh): the WebAssembly
-two apps or more share, which no app's package carries. `measure
---app-model-runtime DIR` holds its modules' bytes to `[app_model_runtime.<arch>]
-bytes`, with the same headroom, rounding and raise files.
-
 Three checks, as for the per-app tapp budgets (tapp_size_ratchet.py):
 
 - **The build.** `measure FILE --arch ARCH` reads the dylib the app release has
@@ -455,47 +449,16 @@ def engine_lines(path: pathlib.Path, runtime: ElfStats, runtime_name: str,
     return status, lines
 
 
-def app_model_runtime_lines(directory: pathlib.Path, arch: str, budget: Budget) -> tuple[int, list[str]]:
-    """The model runtime in `directory` (its runtime.json and the modules it lists) against its budget."""
-    try:
-        manifest = json.loads((directory / "runtime.json").read_text(encoding="utf-8"))
-        files = [directory / name for name in manifest["modules"]]
-        size = sum(path.stat().st_size for path in files)
-    except (OSError, ValueError, KeyError, TypeError) as error:
-        return 1, [f"error: model runtime {directory}: {error}"]
-    lines = [f"model runtime {arch}: {size} bytes in {len(files)} modules ({manifest.get('hash', '?')}), "
-             + ", ".join(f"{path.name} {path.stat().st_size}" for path in files)]
-    proposed = budget_for("bytes", size, budget.headroom)
-    limit = budget.totals("app_model_runtime").get((arch, "bytes"))
-    if limit is None:
-        return 1, [*lines, f"error: model runtime {arch}: {size} bytes and no budget; add "
-                           f"[app_model_runtime.{arch}] bytes = {proposed} to {DIRECTORY}/budget.toml"]
-    if size > limit:
-        return 1, [*lines, f"error: model runtime {arch}: {size} bytes is over its budget of {limit} "
-                           f"(+{size - limit})",
-                   *raise_lines("the model runtime", f"app_model_runtime.{arch}", "bytes", proposed - limit)]
-    if proposed < limit * (1 - SLACK):
-        return 0, [*lines, f"model runtime {arch}: under its budget of {limit}; lower it: "
-                           f"[app_model_runtime.{arch}] bytes = {proposed}, and drop it from its raise files"]
-    return 0, [*lines, f"model runtime {arch}: within its budget of {limit}"]
-
-
 def measure(path: pathlib.Path, budget: Budget, arch: str | None = None, apps: list[pathlib.Path] = (),
             directories: list[pathlib.Path] | None = None,
-            engines: list[pathlib.Path] = (),
-            app_model_runtime: pathlib.Path | None = None) -> tuple[int, list[str], ElfStats]:
+            engines: list[pathlib.Path] = ()) -> tuple[int, list[str], ElfStats]:
     """The dylib against its budgets; with `directories`, also what it and `apps` load at exec.
 
-    Each of `engines` is reported, and must link the runtime and stay out of what `apps` load;
-    `app_model_runtime`, the bundle's model runtime, is held to its budget."""
+    Each of `engines` is reported, and must link the runtime and stay out of what `apps` load."""
     stats = read_elf(path)
     if arch is not None and stats.arch != arch:
         return 1, [f"error: {path} is built for {stats.arch}, not {arch}"], stats
     status, lines = judge(stats, budget)
-    if app_model_runtime is not None:
-        checked, more = app_model_runtime_lines(app_model_runtime, stats.arch, budget)
-        status |= checked
-        lines += more
     for engine in engines:
         checked, more = engine_lines(engine, stats, path.name, budget)
         status |= checked
@@ -664,11 +627,6 @@ def shape_problems(budget: Budget) -> list[str]:
         if not isinstance(table, dict) or len(values) != len(table) or any(
                 not engine_library(name) or value <= 0 for name, value in values.items()):
             problems.append(f"[engines.{arch}] maps each engine library (lib*.so) to a positive byte budget")
-    models = budget.data.get("app_model_runtime", {})
-    if not isinstance(models, dict) or not set(models) <= set(arches) or any(
-            not isinstance(table, dict) or set(table) != {"bytes"} or not tapp.ints(table)
-            or tapp.ints(table)["bytes"] <= 0 for table in models.values()):
-        problems.append(f"[app_model_runtime.<arch>] tables must be among {', '.join(arches)}, each a positive bytes")
     users = budget.data.get("engine_users", {})
     for library, apps in (users.items() if isinstance(users, dict) else [("", None)]):
         if not (library.startswith("lib") and library.endswith(".so") and isinstance(apps, list) and apps
@@ -694,11 +652,10 @@ def raise_problems(name: str, raised: dict[str, Any], budget: Budget) -> list[st
         problems.append(f"raise {name} needs a reason of at least {MIN_REASON} characters "
                         "and the run that measured the growth")
     unknown = set(raised) - {"reason", "run", "runtime", "engines"}
-    unknown.discard("app_model_runtime")
     if unknown:
         problems.append(f"raise {name} has unknown keys {sorted(unknown)}")
     adds = 0
-    for kind in ("runtime", "engines", "app_model_runtime"):
+    for kind in ("runtime", "engines"):
         base = budget.data.get(kind, {})
         table = raised.get(kind, {})
         for arch, metrics in (table.items() if isinstance(table, dict) else ()):
@@ -727,7 +684,7 @@ def increases(before: Budget, after: Budget, new_raises: set[str]) -> list[str]:
         problems.append("[targets] needed_absent lost an entry; targets only tighten")
     if set(before.apps_without_media) - set(after.apps_without_media):
         problems.append("apps_without_media lost an entry; targets only tighten")
-    for kind in ("runtime", "engines", "app_model_runtime"):
+    for kind in ("runtime", "engines"):
         old, allowance = before.totals(kind), after.added(new_raises, kind)
         for key, total in sorted(after.totals(kind).items()):
             if key in old and total - old[key] > allowance.get(key, 0):
@@ -765,9 +722,6 @@ def main(argv: list[str] | None = None) -> int:
     measured.add_argument("--engine", type=pathlib.Path, action="append", default=[],
                           help="a runtime engine library built with it: held to its budget, and kept out "
                                "of what apps_without_media load; repeatable")
-    measured.add_argument("--app-model-runtime", type=pathlib.Path,
-                          help="the model runtime the runtime bundle carries (its lib/app-model-runtime): "
-                               "held to its budget")
     published_parser = commands.add_parser("published", help="the newest published runtimes against their budgets")
     published_parser.add_argument("entries", type=pathlib.Path)
     published_parser.add_argument("--registry", default=REGISTRY)
@@ -789,8 +743,7 @@ def main(argv: list[str] | None = None) -> int:
                 directories = [*args.library_dir, *SYSTEM_DIRECTORIES]
                 apps = [args.apps_dir / name for name in current.apps_without_media
                         if (args.apps_dir / name).is_file()]
-            status, lines, _ = measure(args.dylib, current, args.arch, apps, directories, args.engine,
-                                       args.app_model_runtime)
+            status, lines, _ = measure(args.dylib, current, args.arch, apps, directories, args.engine)
             return emit(status, lines, args.summary)
         if args.command == "apps-without-media":
             print("\n".join(current.apps_without_media))

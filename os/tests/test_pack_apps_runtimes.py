@@ -85,7 +85,7 @@ printf '[[entry]]\\nid="%s"\\n' "$(cat "$tapp")" >> "$store/registry.toml"
         environment = {
             'PATH': os.defpath, 'HOME': str(self.root), 'TMPDIR': str(self.scratch),
             'REPO': str(self.repo), 'STORE': str(self.store), 'BIN_DIR': str(self.bins),
-            'APP_MODELS': str(self.root / 'models'), 'APP_PLAN': str(self.plan),
+            'APP_PLAN': str(self.plan),
             'LANGUAGE_RUNTIME_PACKAGES': str(self.packages),
             'BUNDLE_BIN': str(self.bundle), 'PKG_BIN': str(self.verify),
             'INSTALL_BIN': str(self.install), 'SHIM_BIN': '/missing',

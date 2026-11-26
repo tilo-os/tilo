@@ -1079,8 +1079,7 @@ pub fn verify_bundle_metadata_with(
 /// that root's, and its signatures verify under `opts`. What it then vouches
 /// for is each listed file's BLAKE3, so a caller holding some of the files
 /// checks each against [`BundleManifest::files`]: what takes one directory
-/// of a bundle (the model runtime under `lib/app-model-runtime`) without the
-/// hundreds of megabytes beside it.
+/// of a bundle without the hundreds of megabytes beside it.
 ///
 /// # Errors
 ///

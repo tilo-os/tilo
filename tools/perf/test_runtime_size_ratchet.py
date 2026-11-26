@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import json
 import pathlib
-import shutil
 import struct
 import subprocess
 import sys
@@ -337,48 +336,6 @@ class Closure(Scratch):
                                            engines=[runtime / "libtilo_typst_engine.so"])
         self.assertEqual(status, 1)
         self.assertTrue(any("does not link libruntime_dylib.so" in line for line in lines), lines)
-
-    def app_model_runtime(self, sizes: list[int]) -> pathlib.Path:
-        directory = pathlib.Path(tempfile.mkdtemp()) / "app-model-runtime"
-        directory.mkdir()
-        self.addCleanup(shutil.rmtree, directory.parent, True)
-        names = ["main.wasm", *(f"shared{index}.wasm" for index in range(len(sizes) - 1))]
-        for name, size in zip(names, sizes):
-            (directory / name).write_bytes(b"\0" * size)
-        (directory / "runtime.json").write_text(json.dumps({"schema": 1, "hash": "ab" * 32, "modules": names}))
-        return directory
-
-    def test_the_model_runtime_is_held_to_its_budget(self):
-        runtime = self.tree({"libruntime_dylib.so": elf(needed=["libc.so.6"])})
-        dylib = runtime / "libruntime_dylib.so"
-        models = budget(TEXT + "\n[app_model_runtime.x86_64]\nbytes = 131072\n")
-        status, lines, _ = ratchet.measure(dylib, models, "x86_64", app_model_runtime=self.app_model_runtime([1000, 120000]))
-        self.assertEqual(status, 0, lines)
-        self.assertTrue(any(line.startswith("model runtime x86_64: 121000 bytes in 2 modules") for line in lines),
-                        lines)
-        status, lines, _ = ratchet.measure(dylib, models, "x86_64", app_model_runtime=self.app_model_runtime([1000, 140000]))
-        self.assertEqual(status, 1)
-        self.assertTrue(any("over its budget of 131072 (+9928)" in line for line in lines), lines)
-        self.assertIn("    [app_model_runtime.x86_64]", lines)
-        raised = budget(TEXT + "\n[app_model_runtime.x86_64]\nbytes = 131072\n",
-                        models=f"{REASON}[app_model_runtime.x86_64]\nbytes = 65536\n")
-        status, lines, _ = ratchet.measure(dylib, raised, "x86_64", app_model_runtime=self.app_model_runtime([1000, 140000]))
-        self.assertEqual(status, 0, lines)
-        # One that has no budget fails, and names the line to add.
-        status, lines, _ = ratchet.measure(dylib, budget(), "x86_64", app_model_runtime=self.app_model_runtime([1000]))
-        self.assertEqual(status, 1)
-        self.assertTrue(any("no budget; add [app_model_runtime.x86_64] bytes = 65536" in line for line in lines), lines)
-
-    def test_a_model_runtime_budget_is_one_positive_bytes_per_architecture(self):
-        for table in ("[app_model_runtime.x86_64]\nbytes = 0\n", "[app_model_runtime.riscv]\nbytes = 65536\n",
-                      "[app_model_runtime.x86_64]\nbytes = 65536\nmodules = 3\n"):
-            problems = ratchet.check(None, budget(TEXT + table))
-            self.assertTrue(any("[app_model_runtime.<arch>]" in problem for problem in problems), (table, problems))
-        self.assertEqual(ratchet.check(None, budget(TEXT + "[app_model_runtime.x86_64]\nbytes = 65536\n")), [])
-        before = budget(TEXT + "[app_model_runtime.x86_64]\nbytes = 65536\n")
-        after = budget(TEXT + "[app_model_runtime.x86_64]\nbytes = 131072\n")
-        self.assertTrue(any("[app_model_runtime.x86_64] bytes: raised" in problem
-                            for problem in ratchet.check(before, after)))
 
     def test_a_library_that_cannot_be_found_fails(self):
         runtime = self.tree({"libruntime_dylib.so": elf(needed=["libc.so.6", "libmissing.so"])})
