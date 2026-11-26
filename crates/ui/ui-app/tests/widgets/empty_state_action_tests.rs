@@ -34,6 +34,7 @@ use tilo_ui_base::widget::*;
 use winit::event::*;
 use winit::keyboard::*;
 
+#[test]
 fn an_empty_states_action_is_the_same_path_for_pointer_and_a_reader() {
     use automerge::ReadDoc as _;
     use std::cell::Cell;

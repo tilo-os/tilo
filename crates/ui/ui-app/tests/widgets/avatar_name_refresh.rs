@@ -34,6 +34,7 @@ use tilo_ui_base::widget::*;
 use winit::event::*;
 use winit::keyboard::*;
 
+#[test]
 fn bound_name_refresh_keeps_photo_and_adjacent_input_selection() {
     use tilo_ui::widget::{Row, TextInput};
     let name = tilo_ui_base::LocalState::new("Ada".to_owned());

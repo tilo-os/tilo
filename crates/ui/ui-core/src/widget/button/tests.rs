@@ -2,8 +2,6 @@ use super::*;
 use automerge::AutoCommit;
 use tilo_ui_base::tokens::TextRole;
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use tilo_ui_base::widget::Widget;
 
 /// An effect on the person's own device runs for a guest (an Editor) and

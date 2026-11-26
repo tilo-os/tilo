@@ -33,6 +33,7 @@ use tilo_ui_base::widget::*;
 use winit::event::*;
 use winit::keyboard::*;
 
+#[test]
 fn a_window_with_a_tile_lays_it_out_at_its_ratio() {
     let person = Person::new(tilo_actions::MemberId::person("ef".repeat(32)), "Lin");
     let tile = CallTile::of(person, CallSource::Camera);

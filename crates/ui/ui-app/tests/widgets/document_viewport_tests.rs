@@ -34,12 +34,6 @@ use tilo_ui_base::widget::*;
 use winit::event::*;
 use winit::keyboard::*;
 
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "in a test these are the assertion"
-)]
-
 tilo_test_env::scenario! {
     /// The document viewport's zoom, pan, transforms and scrollbars.
     /// Each phase was a test of its own and builds its own fixture.

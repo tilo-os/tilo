@@ -1,6 +1,5 @@
 use super::*;
 use crate::headless::InspectionNode;
-use crate::widget::Column;
 use std::cell::Cell;
 use std::rc::Rc;
 use tilo_ui_base::widget::Element;

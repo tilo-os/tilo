@@ -409,9 +409,6 @@ mod tests {
 
     use super::*;
     use crate::widget::Text;
-    use tilo_ui_base::Intents;
-    use tilo_ui_base::theme::Theme;
-    use tilo_ui_base::{component::Fired, component::Intent};
 
     fn published(resource: &str, action: &str) -> tilo_actions::ActionBinding<()> {
         let mut spec = tilo_actions::ResourceSpec::new(resource, "test.card", "Card");

@@ -34,6 +34,7 @@ use tilo_ui_base::widget::*;
 use winit::event::*;
 use winit::keyboard::*;
 
+#[test]
 fn a_text_badge_is_as_wide_as_its_label_at_every_text_scale() {
     for scale in [1.0, 2.0] {
         let theme = Theme::dark().with_text_scale(scale);

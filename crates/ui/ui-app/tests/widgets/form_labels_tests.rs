@@ -33,6 +33,7 @@ use tilo_ui_base::widget::*;
 use winit::event::*;
 use winit::keyboard::*;
 
+#[test]
 fn labeled_controls_share_one_key_for_visible_and_spoken_labels() {
     fn labeled_field_hugs_its_content_inside_a_tall_form() {
         let field = labeled_field(
