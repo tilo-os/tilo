@@ -4424,6 +4424,106 @@ impl ResourceStore {
         listing
     }
 
+    /// The listing of the collection `field` of `at` the index holds to `filters`, in its
+    /// order, with the writes this store has not sent read over it: an item written here that no
+    /// longer holds to `pred` leaves it, and one that now holds comes in where it stands. A
+    /// filter of a column of three thousand finished tasks then reads the page or two it is
+    /// asked for, not every task of the column, after an action wrote one task's status.
+    ///
+    /// `None` when a write here added, removed or moved an item of the collection, so the
+    /// index's places are not the items' places now, or when the index cannot say where an item
+    /// stands: the caller reads the items one by one.
+    fn written_over(
+        &self,
+        at: &ResourceRef,
+        field: &str,
+        kind: &str,
+        item: &TypeId,
+        pred: Option<&Pred>,
+        filters: Vec<Filter>,
+    ) -> Result<Option<Rc<Listing>>, StoreError> {
+        let holder = id_of(at);
+        if self.places_written(kind, &holder) {
+            return Ok(None);
+        }
+        let base = self.paged(at, field, kind, filters, Order::default());
+        let written: Vec<String> = self
+            .inner
+            .local
+            .borrow()
+            .iter()
+            .filter_map(|(id, held)| {
+                let held = held.as_ref()?;
+                (held.kind == kind && held.parent.as_deref() == Some(holder.as_str()))
+                    .then(|| id.clone())
+            })
+            .collect();
+        let mut gone = Vec::new();
+        let mut come = Vec::new();
+        for id in written {
+            let item_id = item_of(&id);
+            let target = at.item(&item_id, item.clone());
+            let holds = match pred {
+                Some(pred) => pred.eval(&mut |read: &FieldRead| self.field_lit(&target, read))?,
+                None => true,
+            };
+            match (base.position(&item_id), holds) {
+                (None, _) => return Ok(None),
+                (Some(Some(stands)), false) => gone.push(stands),
+                (Some(None), true) => {
+                    let Some(slot) = self.slot_in(&base, &at.doc, &id) else {
+                        return Ok(None);
+                    };
+                    come.push((slot, Rc::from(item_id)));
+                }
+                (Some(Some(_)), true) | (Some(None), false) => {}
+            }
+        }
+        if gone.is_empty() && come.is_empty() {
+            return Ok(Some(base));
+        }
+        gone.sort_unstable();
+        come.sort();
+        Ok(Some(Rc::new(Listing::paged(Rc::new(WrittenOver {
+            base,
+            gone,
+            come,
+        })))))
+    }
+
+    /// How many items of `base`, a listing in the index's order of places, stand before the
+    /// resource `id`: where it stands among them. Read by halving the listing, a page or so at
+    /// each step; `None` when a place is not known.
+    fn slot_in(&self, base: &Listing, doc: &str, id: &str) -> Option<usize> {
+        let key = |id: &str| -> Option<(Value, String)> {
+            let cache = self.inner.cache.borrow();
+            let held = cache.get(id)?.as_ref()?;
+            Some((
+                held.order.clone().map_or(Value::Null, Value::Text),
+                id.to_owned(),
+            ))
+        };
+        let own = {
+            let local = self.inner.local.borrow();
+            let held = local.get(id)?.as_ref()?;
+            (
+                held.order.clone().map_or(Value::Null, Value::Text),
+                id.to_owned(),
+            )
+        };
+        let (mut low, mut high) = (0, base.len());
+        while low < high {
+            let mid = low.midpoint(high);
+            let other = format!("{doc}/{}", base.get(mid)?);
+            if key(&other)? < own {
+                low = mid.saturating_add(1);
+            } else {
+                high = mid;
+            }
+        }
+        Some(low)
+    }
+
     /// Whether this store holds writes not sent yet of resources of `kind`.
     fn writes_of(&self, kind: &str) -> bool {
         let local = self.inner.local.borrow();
@@ -5039,6 +5139,92 @@ impl PagedItems for Pages {
     }
 }
 
+/// A listing of the index with the writes a store has not sent read over it
+/// ([`ResourceStore::written_over`]): the items of `base` at the places `gone` left out, and
+/// each item of `come` put in before the item of `base` at its place.
+#[derive(Debug)]
+struct WrittenOver {
+    base: Rc<Listing>,
+    /// Places in `base`, in order.
+    gone: Vec<usize>,
+    /// Places in `base`, in order, with the item that comes in before the one there.
+    come: Vec<(usize, Rc<str>)>,
+}
+
+impl WrittenOver {
+    /// Where the item at the place `at` in `base` stands here.
+    fn over(&self, at: usize) -> usize {
+        let gone = self.gone.partition_point(|gone| *gone < at);
+        let come = self.come.partition_point(|(slot, _)| *slot <= at);
+        at.saturating_sub(gone).saturating_add(come)
+    }
+}
+
+impl PagedItems for WrittenOver {
+    fn len(&self) -> usize {
+        self.base
+            .len()
+            .saturating_sub(self.gone.len())
+            .saturating_add(self.come.len())
+    }
+
+    fn len_is_exact(&self) -> bool {
+        self.base.len_is_exact()
+    }
+
+    fn get(&self, index: usize) -> Option<Rc<str>> {
+        // The places in `base` where something leaves or comes, in order: what comes at a place
+        // stands before the item there.
+        let mut gone = self.gone.iter().peekable();
+        let mut come = self.come.iter().peekable();
+        let (mut at, mut here) = (0_usize, 0_usize);
+        loop {
+            let next = match (come.peek(), gone.peek()) {
+                (Some((slot, _)), Some(left)) => (*slot).min(**left),
+                (Some((slot, _)), None) => *slot,
+                (None, Some(left)) => **left,
+                (None, None) => {
+                    return self.base.get(at.saturating_add(index.saturating_sub(here)));
+                }
+            };
+            let run = next.saturating_sub(at);
+            if index < here.saturating_add(run) {
+                return self.base.get(at.saturating_add(index.saturating_sub(here)));
+            }
+            here = here.saturating_add(run);
+            at = next;
+            if let Some((_, item)) = come.next_if(|(slot, _)| *slot == at) {
+                if index == here {
+                    return Some(Rc::clone(item));
+                }
+                here = here.saturating_add(1);
+            } else if gone.next_if(|left| **left == at).is_some() {
+                at = at.saturating_add(1);
+            }
+        }
+    }
+
+    fn position(&self, id: &str) -> Option<Option<usize>> {
+        if let Some(at) = self.come.iter().position(|(_, item)| &**item == id) {
+            let slot = self.come.get(at).map_or(0, |(slot, _)| *slot);
+            let gone = self.gone.partition_point(|gone| *gone < slot);
+            return Some(Some(slot.saturating_sub(gone).saturating_add(at)));
+        }
+        match self.base.position(id)? {
+            Some(at) if self.gone.binary_search(&at).is_ok() => Some(None),
+            Some(at) => Some(Some(self.over(at))),
+            None => Some(None),
+        }
+    }
+
+    fn holds(&self, id: &str) -> Option<bool> {
+        if self.come.iter().any(|(_, item)| &**item == id) {
+            return Some(true);
+        }
+        self.position(id).map(|at| at.is_some())
+    }
+}
+
 /// What the store's reader holds, as rich text is read for them.
 struct Holdings<'s>(&'s ResourceStore);
 
@@ -5575,6 +5761,13 @@ impl Store for ResourceStore {
                     held.items.len() == 1
                         && self.kinds_of_type(item).is_ok_and(|kinds| kinds.len() == 1)
                 });
+                if single
+                    && order.is_none()
+                    && let Some(listing) =
+                        self.written_over(at, &field.id, &kind, item, pred, filters.clone())?
+                {
+                    return Ok(listing);
+                }
                 if single {
                     let ids = self
                         .children_where(at, &field.id, &filters)?
