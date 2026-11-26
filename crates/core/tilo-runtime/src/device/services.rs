@@ -2426,24 +2426,32 @@ impl Daemon {
         // This device is one of the person's, listed with their others: what every host admits
         // it by, and where a revocation of it is marked. The device whose ticket made this one
         // listed it before it answered the certificate; a device no ticket made, as the one the
-        // person was founded on, writes itself, whether it holds their workspace or keeps a member
-        // copy of it. A confined device was listed by the root that certified it, in the same
-        // step.
+        // person was founded on, writes itself once their workspace is here: a workspace this
+        // computer founds for them lists it as it founds them
+        // ([`super::first_workspace::FirstWorkspace`]), and one that arrives from their desktop
+        // lists it as it settles ([`super::host_runs::settling`]). A confined device was listed
+        // by the root that certified it, in the same step.
         if !confined {
+            let person = identity.cert.user_public_key;
+            // A device that founded its person's workspace and one that keeps its member copy
+            // alike: a start with neither keeps no record to be listed in, and the founding or
+            // arrival lists this device when the workspace is here.
+            let own_workspace = WorkspaceId::from(collab_types::person_workspace(&person));
             let (copies, own) = (workspaces.copies().clone(), identity.cert.clone());
-            if let Err(error) = block_on_owned(async move {
-                use tilo_workspace_service::workspaces::person_workspace;
-                let person = own.user_public_key;
-                let listed = person_workspace::devices::of(&copies, &person)
-                    .await
-                    .listed(&person)
-                    .iter()
-                    .any(|listed| listed.cert.device_public_key == own.device_public_key);
-                if listed {
-                    return Ok(());
-                }
-                person_workspace::devices::keep(&copies, &own).await
-            }) {
+            if workspaces.keeps_now(own_workspace)
+                && let Err(error) = block_on_owned(async move {
+                    use tilo_workspace_service::workspaces::person_workspace;
+                    let listed = person_workspace::devices::of(&copies, &person)
+                        .await
+                        .listed(&person)
+                        .iter()
+                        .any(|listed| listed.cert.device_public_key == own.device_public_key);
+                    if listed {
+                        return Ok(());
+                    }
+                    person_workspace::devices::keep(&copies, &own).await
+                })
+            {
                 tracing::warn!(%error, "this device is not listed with its person's");
             }
         }
