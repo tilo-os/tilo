@@ -4747,6 +4747,18 @@ async fn ask_entry(
         Through::Invitation { invitation, .. } => Some(invitation.as_slice()),
         Through::Entry => None,
     };
+    // A row the workspace refuses leaves nothing of it there, so the device's next try signs
+    // its first change again: one signed for a refused request cannot come first, since every
+    // copy holding it would refuse the retry's redemption of the same invitation.
+    let forget_refused = || {
+        tilo_peer_state::own_admission::forget_signed(
+            &entering.workspace,
+            &governance,
+            &cert,
+            tilo_clock::wall(),
+        )
+        .ok();
+    };
     let admission = tilo_peer_state::own_admission::sign_entry(
         &entering.workspace,
         &governance,
@@ -4756,21 +4768,44 @@ async fn ask_entry(
         tilo_clock::wall(),
     )
     .await
-    .map_err(|reason| EntryFailure {
-        code: "refused",
-        message: format!("this device could not sign its own admission: {reason}"),
+    .map_err(|reason| {
+        forget_refused();
+        EntryFailure {
+            code: "refused",
+            message: format!("this device could not sign its own admission: {reason}"),
+        }
     })?;
     let with_admission = tilo_server_protocol::entering::Entering {
         through,
         admission,
         ..entering.clone()
     };
-    match ask_entry_once(actions, signer, cert, host, &with_admission).await? {
-        Entered::Sign { .. } => Err(EntryFailure {
-            code: "refused",
-            message: "the host did not take the admission this device signed".into(),
-        }),
-        entered => Ok(entered),
+    let answered = ask_entry_once(actions, signer, cert.clone(), host, &with_admission).await;
+    let answered = match answered {
+        Ok(answered) => answered,
+        Err(failure) => {
+            if failure.code == "refused" {
+                forget_refused();
+            }
+            return Err(failure);
+        }
+    };
+    match answered {
+        // The device is in: its row is the workspace's, and its next admission builds on it.
+        Entered::Admitted { .. } => Ok(answered),
+        // The entry refused the device under the row it signed, or asked for one it was sent:
+        // neither leaves the row in the workspace.
+        Entered::Refused(refusal) => {
+            forget_refused();
+            Ok(Entered::Refused(refusal))
+        }
+        Entered::Sign { .. } => {
+            forget_refused();
+            Err(EntryFailure {
+                code: "refused",
+                message: "the host did not take the admission this device signed".into(),
+            })
+        }
     }
 }
 

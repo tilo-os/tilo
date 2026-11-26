@@ -110,6 +110,25 @@ fn signed(signer: SignedBy, changes: &[Vec<u8>]) {
     drop(kept);
 }
 
+/// Forget what `own` signed into `workspace` on `governance`: the workspace refused it, so no
+/// copy holds it, and the device's next admission there signs its first change again instead of
+/// building on a refusal every copy would refuse after it. A device that enters with an
+/// invitation and is refused (a pre-admission token it got wrong, say) tries again with the
+/// same invitation under a new request; the row of the refused request cannot come first.
+///
+/// # Errors
+/// The governance does not read.
+pub fn forget_signed(
+    workspace: &str,
+    governance: &[Vec<u8>],
+    own: &DeviceCert,
+    now: SystemTime,
+) -> Result<(), String> {
+    let peer = StatePeer::unanchored(workspace, own, governance, now)?;
+    SIGNED.lock().remove(&signed_by(&peer, workspace, own));
+    Ok(())
+}
+
 /// Write `write` on `own`'s copy of the workspace as `governance` makes it,
 /// signed by `key`, and answer the workspace changes it made: none when the
 /// workspace holds what it would write already. What the device signed into the
