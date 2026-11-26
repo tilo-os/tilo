@@ -1094,11 +1094,14 @@ impl Core {
     /// own record's changes apart.
     fn invoke_many(
         &self,
-        invoker: &Actor,
-        app: Option<&str>,
+        identity: Option<&RunId>,
+        (invoker, app): (&Actor, Option<&str>),
         aref: &ActionRef,
         from: Option<&ResourceRef>,
+        gesture: Option<&str>,
+        admission: Admission,
     ) -> Result<InvokeOutcome, RuntimeError> {
+        let admitted = admission != Admission::Not;
         let [Value::List(items)] = aref.args.as_slice() else {
             return Err(RuntimeError::BadArgs(
                 "`many` takes a list of actions".into(),
@@ -1145,10 +1148,10 @@ impl Core {
             app: app.map(str::to_owned),
             chain,
             approved_by: None,
-            identity: None,
+            identity: identity.cloned(),
             from: from.cloned(),
             at: None,
-            gesture: None,
+            gesture: gesture.map(str::to_owned),
         };
         match self.decide(&ctx, first)? {
             Decision::Allow => {
@@ -1156,6 +1159,17 @@ impl Core {
                 Ok(InvokeOutcome::Done(Value::Unit))
             }
             Decision::Deny => Ok(InvokeOutcome::Denied),
+            // The choice is the person's own press, or a call the dispatch admitted for them:
+            // that answers what the action asks first, as one action's press does, and the
+            // many runs as the one change it is.
+            Decision::Ask if admitted && self.press_answers(admission, invoker, first)? => {
+                let ctx = ExecCtx {
+                    approved_by: Some(invoker.clone()),
+                    ..ctx
+                };
+                self.run_many(&ctx, &refs)?;
+                Ok(InvokeOutcome::Done(Value::Unit))
+            }
             Decision::Ask => self.wait_on_person(aref),
         }
     }
@@ -1400,7 +1414,7 @@ impl Core {
         let admitted = admission != Admission::Not;
         // One action over many items is one change: its references are the change's own.
         if aref.action == MANY_ACTION {
-            return self.invoke_many(invoker, app, aref, from);
+            return self.invoke_many(identity, (invoker, app), aref, from, gesture, admission);
         }
         // What the invoker left out is computed now, on what they see, and recorded.
         let aref = &self.completed(aref)?;
