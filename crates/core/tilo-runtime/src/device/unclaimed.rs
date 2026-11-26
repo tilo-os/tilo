@@ -1027,11 +1027,11 @@ impl ActionProvider for DeviceOnly {
         if let Some(state) = self.0.founding.calls().lock_recover().get(&invocation) {
             return Pending::ready(Ok(state.receipt()));
         }
-        // The session the sign-in answered a founding link asks only what makes or joins its
-        // person: the device's own actions about the person, and nothing else until it has one.
+        // The session a sign-in answered a founding link asks only what makes or joins its
+        // person, until the person exists: from then on it is the person's, and its link reaches
+        // them.
         if let Some(seated) = &self.1
-            && (seated.seat.founding
-                || matches!(seated.seat.admitted, Admitted::Founding { .. }))
+            && matches!(seated.seat.admitted, Admitted::Founding { .. })
             && !answers_a_founding_setup(&request.target.provider, &request.target.address.action)
         {
             return Pending::ready(Err(ActionCallError::Refused {

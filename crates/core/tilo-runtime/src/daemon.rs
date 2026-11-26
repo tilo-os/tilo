@@ -2884,12 +2884,19 @@ fn asks_the_founding(stream: &Stream) -> bool {
             .and_then(Value::as_str)
             .is_some_and(|path| {
                 use tilo_device_identity::login::{FOUND, LOG_IN, RESTORE};
-                path.strip_prefix(tilo_device_identity::login::RESOURCE)
-                    .and_then(|action| action.strip_prefix('#'))
-                    .is_some_and(|action| {
+                let Some((resource, action)) = path.split_once('#') else {
+                    return false;
+                };
+                match resource {
+                    tilo_device_identity::login::RESOURCE => {
                         matches!(action, FOUND | RESTORE | LOG_IN)
                             || action == crate::device::ticket::INFO
-                    })
+                    }
+                    // The session that made the person certifies the key its root made it here,
+                    // with the device's own actions, until its key is certified.
+                    crate::seats::SEATS => action == crate::seats::CERTIFIED,
+                    _ => false,
+                }
             })
 }
 

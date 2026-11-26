@@ -52,7 +52,7 @@ use tilo_mcp::lines::Answer;
 use crate::device::unclaimed::DeviceOnly;
 
 /// The resource the seats' actions are on, and the app they are listed as.
-const SEATS: &str = "seats";
+pub(crate) const SEATS: &str = "seats";
 /// The provider the device answers the seats' actions as.
 pub(crate) const PROVIDER: &str = "tilo.seats";
 /// What the seats' catalogue is.
@@ -472,7 +472,20 @@ impl Seats {
     pub(crate) fn founded_by(&self, seat: &Seat, person: [u8; 32]) -> Result<(), String> {
         self.admission.founded_by(seat.uid, person)?;
         // The key the account signed in with acts for it from now on, as its certificate comes.
-        self.admission.founded(seat.uid, person)
+        self.admission.founded(seat.uid, person)?;
+        // The session that made them is theirs from now on: its next calls, and its link, reach
+        // the person without a restart, though it is not certified yet (that still reaches this
+        // device's own actions through `seats#certified`).
+        if let Some(pid) = seat.pid
+            && matches!(
+                self.links.lock_recover().get(&(seat.uid, pid)),
+                Some(SeatLink::Founding)
+            )
+        {
+            let device = self.device.person() == Some(person);
+            self.record_person(seat.uid, pid, person, device);
+        }
+        Ok(())
     }
 
     /// Record that `uid` joined the person `person` its computer now serves: the person the
@@ -618,7 +631,10 @@ impl Seats {
                     founding = true;
                 }
                 // Another person's link: its own admission (the key it certified) answers it.
-                Some(SeatLink::Person { .. }) | None => {}
+                Some(SeatLink::Person { .. }) => {
+                    founding = true;
+                }
+                None => {}
             }
         }
         Seat {
@@ -1182,7 +1198,16 @@ impl Seats {
             Admitted::Device if !self.admission.system() && self.device.person().is_none() => {
                 who.insert("founding".into(), json!(true));
             }
-            Admitted::Device | Admitted::Person(_) => {}
+            // An account that made its person here holds a key of theirs this device made, which
+            // still waits for the certificate that makes the account act as it.
+            Admitted::Device | Admitted::Person(_) => {
+                if let Some((person, key)) = self.admission.awaiting(seat.uid) {
+                    who.insert(
+                        "certify".into(),
+                        json!({"person": hex::encode(person), "key": hex::encode(key)}),
+                    );
+                }
+            }
         }
         // Where this computer enters its person's workspaces, to the person's own account alone:
         // the account a person's own daemon runs as is that person's, and another person acts as

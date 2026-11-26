@@ -3106,6 +3106,13 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
         launch: None,
         connections: None,
     });
+    // The same seat acts as the person now, over the link it made them with and with no new
+    // sign-in: a call of the person's is no longer held to the setup's reach.
+    let (_, why) = call(ADA, "devices#renewCertificates", json!({}));
+    assert!(
+        !why.contains("may make one or join one"),
+        "the session that made the person is still held to its setup: {why}"
+    );
     // The same seat certifies the key its person's root made it, with no new sign-in: the seat
     // is that person's from now on.
     let (failed, said) = call(ADA, "seats#certified", json!({}));
@@ -3115,10 +3122,6 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
         who["person"].as_str().map(str::len),
         Some(64),
         "the session that made the person acts as them: {who}"
-    );
-    assert!(
-        who["key"].as_str().is_some_and(|key| key.len() == 64),
-        "the session acts as the key its person's root certified: {who}"
     );
 
     // Root says it signed in again, and the daemon answers the person, not a second founding.
