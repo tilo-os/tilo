@@ -163,17 +163,14 @@ impl FirstWorkspace {
                 };
                 let workspace = own_workspace(&self.workspaces.device_cert().user_public_key);
                 self.workspaces.found(workspace, FOUNDED_NAME).await?;
-                // Held now, it lists this device with the person's others, as the daemon's start
-                // does for a workspace it holds: what every host admits the device by, and what
-                // the evidence of a call it runs is signed under.
-                hold_person(self.workspaces.copies(), &self.workspaces.device_cert()).await;
                 self.name(file, workspace)?;
                 let _ = self.show(&[workspace]).await;
                 Ok(workspace.to_string())
             })
             .await
             .cloned()?;
-        // Founded now or before: this device is listed in it before anything uses it.
+        // Founded now or before: this device is listed with its person's, and their root marked,
+        // once it holds the workspace — one write, from [`Self::settle`].
         self.settle().await;
         Ok(founded)
     }
@@ -289,15 +286,23 @@ pub(super) async fn hold_person(
     if super::confined::workspace_of(cert).is_some() {
         return;
     }
-    if let Err(error) = devices::keep(copies, cert).await {
-        tracing::warn!(%error, "this device is not listed with its person's");
-    }
-    // The root is this account's own: the person whose workspace this is, read by the account it
-    // runs as, not looked up through a sign-in record.
-    if let Ok(record) = super::services::device_root_record()
-        && let Ok(root) = tilo_identity::store::load_from_path(record)
-        && let Err(error) = devices::mark_root_holder(copies, &root, cert).await
-    {
-        tracing::warn!(%error, "this device's root is not marked in its person's devices");
+    // One write lists this device. The root is this account's own, read by the account it runs
+    // as and not looked up through a sign-in record; the mark that it keeps the root is kept in
+    // the same record as the entry that lists it. A second write founded the record again from
+    // what it read before the first was carried, at the same author's first number.
+    let marking = match super::services::device_root_record() {
+        Ok(record) => tilo_identity::store::load_from_path(record).ok(),
+        Err(_) => None,
+    };
+    let listed = match &marking {
+        Some(root) => devices::mark_root_holder(copies, root, cert).await,
+        None => devices::keep(copies, cert).await,
+    };
+    if let Err(error) = listed {
+        if marking.is_some() {
+            tracing::warn!(%error, "this device's root is not marked in its person's devices");
+        } else {
+            tracing::warn!(%error, "this device is not listed with its person's");
+        }
     }
 }

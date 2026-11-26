@@ -9,10 +9,11 @@
 //! not, never writes the list itself; a host that merely admits someone holds no copy of their own
 //! workspace and writes nothing either.
 //!
-//! One writer runs wherever the person's own workspace is hosted: the daemon calls these
-//! changes as part of the action that made the workspace, took the device into one that is
-//! theirs or admitted the person, so the list is complete without a desktop session, and a
-//! workspace removed is remembered as gone so a device that was away lets it go too.
+//! One writer runs for the person's list: the device that keeps their root, calling these changes
+//! as part of the action that made the workspace, took the device into one that is theirs or
+//! admitted the person, and carrying them to wherever that workspace is hosted. So the list is
+//! complete without a desktop session, and a workspace removed is remembered as gone so a device
+//! that was away lets it go too.
 
 use tilo_peer_state::join::TransportHint;
 use tilo_resource::Invoke;
@@ -259,11 +260,11 @@ impl Workspaces {
         known
     }
 
-    /// Apply `changes` to `person`'s own workspace where this device hosts it:
-    /// whether every one landed. The list is `person`'s own act, signed by a
-    /// device that keeps their root: a server handed their own workspace holds
-    /// it without that root, and writes nothing here. A copy another device
-    /// serves keeps what that device wrote, and adds nothing of its own.
+    /// Apply `changes` to `person`'s own workspace as the device that keeps their root: whether
+    /// every one landed. The list is `person`'s own act, signed by a device that keeps their root:
+    /// a server handed their own workspace holds it without that root, and writes nothing here.
+    /// The device keeping the root writes it where it hosts that workspace, and where another
+    /// device keeps it, through its copy carried there, as any record of theirs is written.
     async fn write_person_list(
         &self,
         person: &[u8; 32],
@@ -271,11 +272,12 @@ impl Workspaces {
     ) -> bool {
         let own = person_workspace_id(person);
         let cert = self.device_cert();
-        if cert.user_public_key != *person
-            || !cert.capabilities.can_admit_devices
-            || self.state(&own).await.is_none()
-            || self.is_member(&own).await.unwrap_or(false)
-        {
+        if cert.user_public_key != *person || !cert.capabilities.can_admit_devices {
+            return false;
+        }
+        let holds_copy =
+            self.state(&own).await.is_some() || self.is_member(&own).await.unwrap_or(false);
+        if !holds_copy {
             return false;
         }
         for change in changes {
