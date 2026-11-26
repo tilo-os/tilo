@@ -1218,7 +1218,6 @@ doc = false
 "tilo-resource" = { path = "../../crates/core/tilo-resource", default-features = false, features = ["test-support"] }
 "tilo-resource-store" = { path = "../../crates/core/resource-store", default-features = false, features = [] }
 "tilo-rich-edit" = { path = "../../crates/ui/tilo-rich-edit", default-features = false, features = ["test-support"] }
-"tilo-rich-text" = { path = "../../crates/sdk/tilo-rich-text", default-features = false, features = [] }
 "tilo-rollback" = { path = "../../crates/os/tilo-rollback", default-features = false, features = [] }
 "tilo-rt" = { path = "../../crates/platform/tilo-rt", default-features = false, features = [] }
 "tilo-runner-native" = { path = "../../crates/sdk/runner-native", default-features = false, features = ["broker-transport", "default", "mpris"] }
@@ -3660,7 +3659,6 @@ doc = false
 "tilo-resource" = { path = "../../crates/core/tilo-resource", default-features = false, features = ["test-support"] }
 "tilo-resource-store" = { path = "../../crates/core/resource-store", default-features = false, features = [] }
 "tilo-rich-edit" = { path = "../../crates/ui/tilo-rich-edit", default-features = false, features = ["test-support"] }
-"tilo-rich-text" = { path = "../../crates/sdk/tilo-rich-text", default-features = false, features = [] }
 "tilo-rollback" = { path = "../../crates/os/tilo-rollback", default-features = false, features = [] }
 "tilo-rt" = { path = "../../crates/platform/tilo-rt", default-features = false, features = [] }
 "tilo-runner-native" = { path = "../../crates/sdk/runner-native", default-features = false, features = ["broker-transport", "default", "gpu-video", "mpris", "webview-adblock"] }

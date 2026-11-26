@@ -86,8 +86,7 @@
 //!   ([`publish_child`](tilo_resource::publish_child)), so the palette,
 //!   agents and scripts address it too. The child is addressed, permissioned, undone (by its
 //!   own coalescing) and named in history like a root, and applies as the
-//!   parent. Rich text is `tilo_rich_text::RichTextField` over such a
-//!   dispatcher; plain text is [`PlainText`](tilo_resource::PlainText),
+//!   parent. Plain text is [`PlainText`](tilo_resource::PlainText),
 //!   whose [`TextControl`] binds a `TextInput` or `CodeEditor` so every
 //!   keystroke is a splice action.
 //! * **Handing a result to another app** — a picture to place, a file to

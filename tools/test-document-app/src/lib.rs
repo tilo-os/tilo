@@ -1,21 +1,20 @@
 //! A document app for the suites, and nothing a person installs.
 //!
-//! A test that types into a window, edits a record through its published actions or reads lent
-//! content needs a document app to do it with. It opens this one: the shared editor over a
-//! rich-text record, with the actions that record publishes, an effect that reads a document the
+//! A test that edits a record through its published actions or reads lent content needs a
+//! document app to do it with. It opens this one: a rich-text record, with the actions that
+//! record publishes, an effect that reads a document the
 //! workspace holds as content, and an effect that writes a file and answers nothing. Its id is
 //! never a product's, so no suite's assertion moves when a product changes, and the app stays
 //! when a product that once stood in its place goes.
 
 use automerge::AutoCommit;
-use tilo_rich_text::RichTextViews;
 use ui::framework::{EffectAnswer, ResourceApp, ViewCx};
 use ui::tilo_resource;
 use ui::widget::Element;
 
-/// The record every window shows: the document model's rich text, which the shared editor
-/// draws and edits, its blocks addressed by their own ids.
-pub use tilo_rich_text::RichText as Document;
+/// The record every window holds: the document model's rich text, its blocks addressed by their
+/// own ids.
+pub use tilo_document::RichText as Document;
 
 /// The app's id.
 pub const APP_ID: &str = "so.tilo.test-document";
@@ -59,7 +58,7 @@ impl ResourceApp for TestDocumentApp {
     fn view(cx: &mut ViewCx<Document>) -> Element {
         let content = cx.content();
         cx.effects(move |effect: TestEffect, _cx| answer(effect, content.as_ref()));
-        cx.rich_text()
+        Box::new(ui::widget::Spacer::new())
     }
 }
 

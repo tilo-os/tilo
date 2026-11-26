@@ -12,8 +12,6 @@
 //! The heading outline is a projection kept current the same way.
 
 pub mod action;
-pub mod anchor;
-pub mod annotation;
 pub mod block_actions;
 pub mod block_edit;
 /// A body's lines as Markdown with its block ids: the one Markdown dialect, kept beside the
@@ -41,7 +39,6 @@ use tilo_doc::schema::{
 use tilo_doc::snapshot::{AttrVal, BlockView, ChangeView, CommentView, NoteView};
 
 pub use action::{RICH_TEXT_ACTION_TYPE, RichTextAction};
-pub use anchor::TextAnchor;
 
 /// What a store of a new rich text wrote: its body paragraphs, each as
 /// reading it back gives it, the containers they were stored in, and whether

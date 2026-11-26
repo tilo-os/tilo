@@ -14581,7 +14581,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge-fork",
  "tilo-content",
- "tilo-rich-text",
+ "tilo-document",
  "workspace-hack",
 ]
 
@@ -19486,19 +19486,6 @@ dependencies = [
  "tracing",
  "unicode-bidi",
  "uuid",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-rich-text"
-version = "0.1.0"
-dependencies = [
- "serde",
- "tilo-app",
- "tilo-app-test-host",
- "tilo-doc",
- "tilo-document",
- "tracing",
  "workspace-hack",
 ]
 
@@ -27598,7 +27585,6 @@ dependencies = [
  "tilo-resource-macros",
  "tilo-resource-store",
  "tilo-rich-edit",
- "tilo-rich-text",
  "tilo-rollback",
  "tilo-rt",
  "tilo-runner-native",
