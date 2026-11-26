@@ -1457,6 +1457,24 @@ impl Host {
             .offered_reading(resource, &id, &self.inner.viewer)
     }
 
+    /// Whether `app` says anything of the action it publishes as `action` per target: what it is
+    /// called there, whether it applies, or what it requires ([`Self::offered_reading`]). An
+    /// action that says none of them is offered as it is published on every resource, so a
+    /// window asks nothing about it of any row.
+    #[must_use]
+    pub fn decides_per_target(&self, app: &str, action: &str) -> bool {
+        self.find_in_packages(|package| {
+            (package.meta.app == app).then(|| {
+                package.meta.actions.iter().any(|declared| {
+                    !declared.scenario
+                        && crate::meta::published_name(declared) == action
+                        && (declared.guard || declared.applies || declared.present.is_some())
+                })
+            })
+        })
+        .unwrap_or(false)
+    }
+
     /// The action the API publishes as `action` on `resource`: one of the package whose
     /// resource it is (`tl:<app>:<id>`, `tl:<app>`), by the name the app publishes it under or
     /// the id its declaration keeps

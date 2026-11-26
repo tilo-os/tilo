@@ -1389,8 +1389,15 @@ pub struct Kept {
 /// about every action of every row it shows, and the rows it shows move as it scrolls.
 #[derive(Default)]
 struct Answers {
-    /// The answer to each question, by the resource and the action it was asked of.
-    said: std::collections::HashMap<(String, String), Answered>,
+    /// The answer to each question, by the resource and then the action it was asked of: a
+    /// question is looked up by the names it is asked with, building no key.
+    said: std::collections::HashMap<String, std::collections::HashMap<String, Answered>>,
+    /// How many answers [`Self::said`] keeps, over every resource.
+    kept: usize,
+    /// Whether the app says anything of an action per target, by app and published action: an
+    /// action whose app declares no presentation, no `applies` and no requirement is offered as
+    /// it is published on every row, so no row asks about it.
+    decides: std::collections::HashMap<String, std::collections::HashMap<String, bool>>,
     /// The loaded packages the answers were read over: a package that loads is answered again.
     packages: Vec<tilolang_tilo::runtime::PackageId>,
 }
@@ -1445,13 +1452,15 @@ impl Offers for collaboration::ExportedAction {
 
 /// How many answers a window's rows keep: a person scrolling a list of ten thousand asks about
 /// the rows they reach, so keeping every answer of every row would grow with the workspace.
-/// Past this, the answers start over.
+/// Past this, the answers of rows the window no longer shows go, and the window's own stay: a
+/// person going back to a place they just left finds its rows answered.
 const ANSWERS_KEPT: usize = 8_192;
 
 impl Answers {
     /// What the action `action` offers on `resource`, as `host` says it now, with the
     /// publications where `at` says: an answer read earlier stands while nothing it read moved
-    /// ([`Self::forget`]).
+    /// ([`Self::forget`]). An action its app says nothing of per target is answered at once,
+    /// keeping nothing.
     fn answer(
         &mut self,
         host: &Host,
@@ -1459,26 +1468,74 @@ impl Answers {
         resource: &str,
         action: &str,
     ) -> Option<tilolang_tilo::host::Offered> {
-        let key = (resource.to_owned(), action.to_owned());
-        if let Some(answered) = self.said.get(&key) {
+        if !self.decides(host, resource, action) {
+            return None;
+        }
+        if let Some(answered) = self
+            .said
+            .get(resource)
+            .and_then(|actions| actions.get(action))
+        {
             return answered.said.clone();
         }
         let (said, reads) = match host.offered_reading(resource, action) {
             Some((offered, reading)) => (Some(offered), (!reading.beyond).then_some(reading.reads)),
             None => (None, Some(Vec::new())),
         };
-        if self.said.len() >= ANSWERS_KEPT {
+        // A caller asking past what the window shows (the directory) starts the answers over
+        // once they are full: the window's own make room before it asks ([`Self::make_room`]).
+        if self.kept >= ANSWERS_KEPT {
             self.said.clear();
+            self.kept = 0;
         }
-        self.said.insert(
-            key,
+        let held = self.said.entry(resource.to_owned()).or_default().insert(
+            action.to_owned(),
             Answered {
                 at,
                 said: said.clone(),
                 reads,
             },
         );
+        if held.is_none() {
+            self.kept = self.kept.saturating_add(1);
+        }
         said
+    }
+
+    /// Whether the app of `resource` says anything of `action` per target: what it is called
+    /// there, whether it applies, or what it requires. Read once per action of each package
+    /// loaded.
+    fn decides(&mut self, host: &Host, resource: &str, action: &str) -> bool {
+        let Some(app) = tilolang_tilo::publish::app_of(resource) else {
+            return true;
+        };
+        if let Some(decides) = self
+            .decides
+            .get(app)
+            .and_then(|actions| actions.get(action))
+        {
+            return *decides;
+        }
+        let decides = host.decides_per_target(app, action);
+        self.decides
+            .entry(app.to_owned())
+            .or_default()
+            .insert(action.to_owned(), decides);
+        decides
+    }
+
+    /// Room for the answers of the rows the window shows now, `shown`: past [`ANSWERS_KEPT`],
+    /// the answers of every other row go, and every answer when the window's own fill it.
+    fn make_room(&mut self, shown: &std::collections::BTreeSet<String>) {
+        if self.kept < ANSWERS_KEPT {
+            return;
+        }
+        self.said.retain(|resource, _| shown.contains(resource));
+        self.kept = self.said.values().map(std::collections::HashMap::len).sum();
+        if self.kept >= ANSWERS_KEPT {
+            self.said.clear();
+            self.kept = 0;
+        }
     }
 
     /// Forget what a change reached since an answer was read ([`Publications::changed_since`]),
@@ -1493,23 +1550,31 @@ impl Answers {
         if packages != self.packages.as_slice() {
             self.packages = packages.to_vec();
             self.said.clear();
+            self.kept = 0;
+            self.decides.clear();
             return true;
         }
         let mut since: std::collections::HashMap<u64, Option<Moved>> =
             std::collections::HashMap::new();
         let mut moved = false;
-        self.said.retain(|_, answered| {
-            let Some(reads) = &answered.reads else {
-                return false;
-            };
-            let reached_now = since
-                .entry(answered.at)
-                .or_insert_with(|| publications.changed_since(answered.at))
-                .as_ref()
-                .is_none_or(|moved| reads.iter().any(|read| moved.reaches(read)));
-            moved |= reached_now;
-            !reached_now
+        let mut kept = 0;
+        self.said.retain(|_, actions| {
+            actions.retain(|_, answered| {
+                let Some(reads) = &answered.reads else {
+                    return false;
+                };
+                let reached_now = since
+                    .entry(answered.at)
+                    .or_insert_with(|| publications.changed_since(answered.at))
+                    .as_ref()
+                    .is_none_or(|moved| reads.iter().any(|read| moved.reaches(read)));
+                moved |= reached_now;
+                !reached_now
+            });
+            kept = actions.len().saturating_add(kept);
+            !actions.is_empty()
         });
+        self.kept = kept;
         moved
     }
 }
@@ -2981,6 +3046,7 @@ impl Hosted {
         };
         let shown = self.instance.shown_resources();
         self.forget_answers();
+        self.answers.make_room(&shown);
         let at = self.moved();
         for descriptor in descriptors {
             if !shown.contains(&descriptor.address.resource) {
