@@ -2571,19 +2571,21 @@ fn a_hosted_window_names_another_app_as_the_names_it_was_sent() {
 
 /// The Notes app, and Discussion it is made with: the app a Markdown file opens in.
 fn notes_bundle() -> Bundle {
+    let discussion_source = include_str!("../../../../apps/tl/discussion/app.tl");
     let discussion = tilolang::compile_package(
-        include_str!("../../../../apps/tl/discussion/app.tl"),
+        discussion_source,
         &tilolang::IdsLock::new(),
-        &[],
+        &tilolang_tilo::platform_apps::named_platform_packages(discussion_source)
+            .expect("the platform's packages read"),
     )
-    .unwrap_or_else(|_| panic!("the discussion app compiles"));
+    .unwrap_or_else(|diagnostics| panic!("the discussion app compiles: {diagnostics:?}"));
     let lock = tilolang::IdsLock::parse(include_str!("../../../../apps/tl/notes/app.ids")).unwrap();
-    let compiled = tilolang::compile_package(
-        include_str!("../../../../apps/tl/notes/app.tl"),
-        &lock,
-        std::slice::from_ref(&discussion.meta),
-    )
-    .unwrap_or_else(|_| panic!("the notes app compiles"));
+    let notes_source = include_str!("../../../../apps/tl/notes/app.tl");
+    let mut imports = tilolang_tilo::platform_apps::named_platform_packages(notes_source)
+        .expect("the platform's packages read");
+    imports.push(discussion.meta.clone());
+    let compiled = tilolang::compile_package(notes_source, &lock, &imports)
+        .unwrap_or_else(|diagnostics| panic!("the notes app compiles: {diagnostics:?}"));
     Bundle::new(&compiled, [])
 }
 
