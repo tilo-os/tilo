@@ -93,6 +93,7 @@ mod opened;
 mod opens_page;
 mod outcomes;
 mod passwords_vault;
+mod platform_packages;
 mod policy;
 mod print_centre;
 mod publication;

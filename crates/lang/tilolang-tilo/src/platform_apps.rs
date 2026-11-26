@@ -111,8 +111,13 @@ pub fn session_verbs()
 
 /// The session's package: its resources' types and actions, which a shell's views, an agent's
 /// task and the REPL call as any package's (`session.place(resource: …, x: 80, y: 60)`).
+///
+/// It is the platform's copy of the app ([`platform_package`]), the one [`platform_packages`]
+/// hands a window's host as well: one app is one package, so a host that loads the description a
+/// shell or a keyboard was compiled against and then describes the platform's apps again holds
+/// the session once, rather than two descriptions declaring its types and actions twice.
 pub fn session_package() -> Result<PackageMeta, String> {
-    crate::catalogue::described(SESSION_APP, "Session", SESSION_DESCRIPTION)
+    platform_package(SESSION_APP)
 }
 
 /// The resource each of the session's loose actions is published on, by the action's id.

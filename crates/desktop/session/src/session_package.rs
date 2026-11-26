@@ -283,21 +283,11 @@ fn entry(
 ) -> Entry {
     let id = spec.id.as_str();
     let mut types = TypeSet::new();
-    let keyboard = spec.kind == crate::keyboard::KIND;
-    let keyboard_fields = if keyboard {
-        // The keyboard reads as a type of its own, so a package names it (`session.keyboard`)
-        // and reads what the field asks of typing and the person's keyboard settings.
-        let fields = keyboard_type_fields(&mut types);
-        let _ = types.named("so.tilo.session::Keyboard", "Keyboard", |_| NamedType {
-            name: String::new(),
-            doc: "The on-screen keyboard over the focused field: whether it shows and where, what \
-                  the field asks of typing, and the person's keyboard settings."
-                .to_owned(),
-            fields: fields.clone(),
-            cases: Vec::new(),
-            tag: None,
-        });
-        fields
+    // The keyboard's reading is the fields of its resource, which the package declares as its
+    // type (`session.Keyboard`, named after the kind): a named type of the same name beside them
+    // would declare that one type twice under one id.
+    let keyboard_fields = if spec.kind == crate::keyboard::KIND {
+        keyboard_type_fields(&mut types)
     } else {
         Vec::new()
     };
