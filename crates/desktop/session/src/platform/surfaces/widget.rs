@@ -577,13 +577,28 @@ impl WidgetSurface {
         ui::widget::drag_bus::placed_at(vello::kurbo::Point::new(f64::from(x), f64::from(y)))
     }
 
-    fn input(&mut self, event: &WindowEvent) {
+    /// Hand `event` to the tree, and say whether the tree took it: what a host of the tree
+    /// answers a key its views left over with (a shell handing the focus to a window).
+    fn input(&mut self, event: &WindowEvent) -> bool {
         let _placed = self.placed();
         // What a confirmation asks depends on the modifiers the person holds: the toolkit's one
         // rule skips a question Shift was held for, where Undo takes the action back.
         ui::widget::context_menu::note_input(event);
-        self.host.send(event);
+        let handled = self.host.send_handled(event);
         self.owe();
+        handled
+    }
+
+    /// Hand `key` to the tree as a keyboard event, and say whether the tree took it. A host whose
+    /// views are only one focus surface of its own answers the keys the tree left over (a shell's
+    /// direction leaving its bar for a window).
+    pub fn key_input(&mut self, key: &SurfaceKey) -> bool {
+        let modifiers = key.modifiers.state();
+        if modifiers != self.modifiers {
+            self.modifiers = modifiers;
+            self.input(&WindowEvent::ModifiersChanged(Modifiers::from(modifiers)));
+        }
+        self.input(&key_event(key))
     }
 
     /// Bring the lifted layers up to the parts the last frame lifted: a layer for each, posed as
@@ -1015,12 +1030,7 @@ impl ShellSurface for WidgetSurface {
     }
 
     fn key(&mut self, key: &SurfaceKey) {
-        let modifiers = key.modifiers.state();
-        if modifiers != self.modifiers {
-            self.modifiers = modifiers;
-            self.input(&WindowEvent::ModifiersChanged(Modifiers::from(modifiers)));
-        }
-        self.input(&key_event(key));
+        let _ = self.key_input(key);
     }
 
     /// The field the toolkit keeps the focus in, if it takes typing: an input

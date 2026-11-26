@@ -3016,6 +3016,14 @@ impl Compositor {
         self.data.state.focused_window()
     }
 
+    /// Whether a client owns the keyboard: it has it now, or it is the one it goes back to while
+    /// a surface of the session's holds it. `false` on an empty desktop, where the shell's own
+    /// controls answer the keys.
+    #[must_use]
+    pub fn keyboard_client(&self) -> bool {
+        self.data.state.keyboard_focus().is_some()
+    }
+
     /// The identifier the focused window can be captured under, when it has focus and can be
     /// captured at all: a capture that names no window takes this one.
     #[must_use]

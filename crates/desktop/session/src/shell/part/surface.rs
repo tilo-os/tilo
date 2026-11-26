@@ -212,6 +212,11 @@ impl ShellSurface for ShellPart {
     }
 
     fn wants_keyboard(&self) -> bool {
+        // A sheet of the session's over the desktop — a question, the guide, a sheet's page —
+        // takes the keys that are its own: the shell's controls stay behind it.
+        if self.origin.borrow().link.sheet_up() {
+            return false;
+        }
         // The held Super's keys are a picture the shell draws over the windows: they take no key,
         // so the window in front keeps the keyboard while they show and every chord it is holding
         // Super for still runs.
@@ -221,7 +226,14 @@ impl ShellSurface for ShellPart {
         // The shell under the windows takes the keys when one of its own controls put the caret
         // somewhere it answers: a field of the bar's, or a canvas's place, which pans with the
         // arrow keys (`ui.Map`). A shell with none leaves the keys to the window in front.
-        self.cover.over() || self.text_input().is_some() || self.widgets.takes_keys()
+        //
+        // It also takes them while the desktop's focus is its own (no window holds the
+        // keyboard): an empty desktop's bar, dock and surfaces answer the person's keys, and a
+        // direction they leave over hands the focus to a window.
+        self.cover.over()
+            || self.text_input().is_some()
+            || self.widgets.takes_keys()
+            || (!self.hidden() && self.origin.borrow().link.on_seat())
     }
 
     /// The regions the shell's translucent material records: the compositor blurs what lies
@@ -252,7 +264,16 @@ impl ShellSurface for ShellPart {
         self.input = true;
         self.took_press();
         let Some(action) = self.switcher_key(key) else {
-            self.widgets.key(key);
+            // A direction its views have no control left for is the desktop's: the focus leaves
+            // the bar or dock for the window it points at. The desktop takes the ring away when
+            // a window takes the focus; with none there, the shell keeps it.
+            let handled = self.widgets.key_input(key);
+            if !handled
+                && let Some(step) = step_of(key)
+                && let Some(leave) = &self.leave
+            {
+                leave(step);
+            }
             return;
         };
         match action {
@@ -378,6 +399,24 @@ impl super::ShellPart {
             }
         }
         desktop.carry_to(ui::kurbo::Point::new(x, y));
+    }
+}
+
+/// The direction `key` asks for, when it is an arrow pressed (or repeating): the step the
+/// shell's views move the focus by, and the one they leave over when they have no control left
+/// that way.
+fn step_of(key: &SurfaceKey) -> Option<super::FocusStep> {
+    use winit::keyboard::{Key, NamedKey};
+    if !key.pressed {
+        return None;
+    }
+    let (name, _) = tilo_ui_base::keys::from_keysym(key.keysym, None);
+    match name {
+        Key::Named(NamedKey::ArrowUp) => Some(super::FocusStep::Up),
+        Key::Named(NamedKey::ArrowDown) => Some(super::FocusStep::Down),
+        Key::Named(NamedKey::ArrowLeft) => Some(super::FocusStep::Left),
+        Key::Named(NamedKey::ArrowRight) => Some(super::FocusStep::Right),
+        _ => None,
     }
 }
 

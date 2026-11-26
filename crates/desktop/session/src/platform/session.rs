@@ -1032,6 +1032,11 @@ impl Session {
             wallpapers: std::sync::Arc::clone(&wallpapers),
         });
         let shell_service = shell();
+        // Whether the desktop's focus is the shell's views rather than a window: written every
+        // pass from the keyboard's owner, and what the shell holds it to answer the keys. And
+        // whether a sheet stands over the desktop, which keeps the shell's controls behind it.
+        let shell_seat: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+        let sheet_up: Rc<Cell<bool>> = Rc::new(Cell::new(false));
         let shell = crate::shell::Shell::mount(
             &mut compositor,
             &mut published,
@@ -1039,6 +1044,8 @@ impl Session {
             Some(wells),
             presentation.theme.clone(),
             daemon_link.is_ok(),
+            Rc::clone(&shell_seat),
+            Rc::clone(&sheet_up),
         )
         .map_err(|why| {
             Error::Backend(tilo_compositor::BackendError(format!(
@@ -1094,6 +1101,12 @@ impl Session {
         // The sheets, over the desktop and its panels.
         let sheets = crate::sheets::mount::mount_sheets(&mut compositor, &mut published, &options);
         let modal_sheets = sheets.modal();
+        // What stands over the desktop and takes the keys of its own: while one of them is
+        // drawn, the shell's own controls stay behind it.
+        let mut sheet_presentations = modal_sheets.clone();
+        if let Some(guide) = &sheets.shortcut_guide {
+            sheet_presentations.push(tilo_sheets::SheetState::presentation(guide).clone());
+        }
         let crate::sheets::mount::Sheets {
             workspace_settings,
             directory,
@@ -1943,6 +1956,9 @@ impl Session {
             invitable,
             controller,
             controller_keys,
+            shell_seat,
+            sheet_up,
+            sheets: sheet_presentations,
             app_sheets,
         };
         shared.lend_to_apps();

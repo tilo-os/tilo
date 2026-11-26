@@ -109,6 +109,9 @@ pub(crate) struct Shell {
     /// One part per output, in the order the outputs are known: each stands on its own display, and
     /// a display added (or taken away) has its part made (or dropped) to follow.
     parts: Vec<(String, Rc<RefCell<ShellPart>>)>,
+    /// The directions a part's views left over since the session last acted on them: the
+    /// desktop's focus moves that way, from the shell's controls to the window it points at.
+    steps: Rc<RefCell<Vec<part::FocusStep>>>,
     /// The packages the shell's parts are made from, kept to make each new display's part.
     packages: Vec<tilolang_tilo::tilolang::Compiled>,
     app: String,
@@ -198,6 +201,8 @@ impl Shell {
         wells: Option<ui::widget::Wells>,
         theme: tilo_ui_base::Theme,
         daemon: bool,
+        seat: Rc<std::cell::Cell<bool>>,
+        sheet: Rc<std::cell::Cell<bool>>,
     ) -> Result<Self, String> {
         // What the person waits for before the shell can draw: its package compiled, its record
         // read and its views made. The frame path after this is each frame's own cost.
@@ -210,7 +215,7 @@ impl Shell {
             .last()
             .map(|compiled| compiled.meta.app.clone())
             .ok_or("the shell package did not compile")?;
-        let link = Rc::new(SessionLink::default());
+        let link = Rc::new(SessionLink::with_focus(seat, sheet));
         let mut shell = Self {
             lists,
             link,
@@ -226,6 +231,7 @@ impl Shell {
             record: tilolang_tilo::resources::ResourceStore::in_memory(),
             record_kept: false,
             parts: Vec::new(),
+            steps: Rc::new(RefCell::new(Vec::new())),
             lent_content: None,
             packages,
             app,
@@ -374,6 +380,10 @@ impl Shell {
             std::sync::Arc::new(move || wake.wake_by_ref()),
             self.wells.clone(),
         );
+        // A direction the views have no control left for is the desktop's: the session takes it
+        // on the pass and moves the focus to the window it points at.
+        let steps = Rc::clone(&self.steps);
+        part.on_focus_leave(Rc::new(move |step| steps.borrow_mut().push(step)));
         part.set_theme(self.theme.clone());
         // The windows the views picture, each display's own: the reading's window keys stand for
         // the tabs of the workspace in front, and a window whose app holds secrets is left out, so
@@ -784,6 +794,21 @@ impl Shell {
     /// reading on.
     pub(crate) fn link(&self) -> Rc<SessionLink> {
         Rc::clone(&self.link)
+    }
+
+    /// The directions the parts' views left over since the last call, in the order the person
+    /// asked them: the desktop's focus moves that way, to the window beside the shell's controls.
+    #[must_use]
+    pub(crate) fn take_focus_steps(&self) -> Vec<part::FocusStep> {
+        std::mem::take(&mut self.steps.borrow_mut())
+    }
+
+    /// Let the parts' own controls give the keyboard up: the focus left the shell for a window it
+    /// reached, so the ring goes and the window answers the next press.
+    pub(crate) fn release_focus(&self) {
+        for (_, part) in &self.parts {
+            part.borrow_mut().release_focus();
+        }
     }
 
     /// The views that could not be shown since the last call, each an app, a view and why: what
@@ -2126,6 +2151,27 @@ impl crate::Session {
         // the one the daemon holds, is followed on the pass it happened on, in every workspace of
         // the shell, not only the one in front (`docs/architecture/apps.md` §1, §8).
         crate::connectors::reconcile(self);
+        // A direction the shell's views left over is the desktop's: the focus moves to the
+        // window beside the bar or dock, and the window in front answers the next press. The
+        // shell and the windows are one order under the keyboard and a controller.
+        let steps = self
+            .shell
+            .as_ref()
+            .map(Shell::take_focus_steps)
+            .unwrap_or_default();
+        if !steps.is_empty() {
+            let mut reached = false;
+            for step in steps {
+                let forward = matches!(step, part::FocusStep::Down | part::FocusStep::Right);
+                reached |= crate::windows::focus_beside(&self.shared.handle, forward);
+            }
+            // A window took the focus: the shell's own ring goes, so the window answers the next
+            // press rather than the shell holding the keyboard for it.
+            if reached && let Some(shell) = self.shell.as_ref() {
+                shell.release_focus();
+            }
+            self.settle()?;
+        }
         Ok(())
     }
 

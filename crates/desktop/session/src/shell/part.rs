@@ -219,9 +219,27 @@ pub struct SessionLink {
     /// What the API refused of what the shell asked, in its words: each refusal, kept for
     /// whoever asks ([`SessionLink::refused`]), never a quiet drop.
     refused: RefCell<Vec<String>>,
+    /// Whether the desktop's focus is the shell's views rather than a window: while no window
+    /// has the keyboard, the bar, dock and surfaces answer the person's keys, so the shell is
+    /// reached from an empty desktop and left again for a window.
+    seat: Rc<Cell<bool>>,
+    /// Whether a sheet of the session's stands over the desktop: a question, the guide or a
+    /// sheet's own page takes the keys, and the shell's controls stay behind it.
+    sheet: Rc<Cell<bool>>,
 }
 
 impl SessionLink {
+    /// A link whose shell holds the desktop's focus while `seat` says so, and stays behind a
+    /// sheet while `sheet` says one stands over it: the same cells the session writes each pass.
+    #[must_use]
+    pub fn with_focus(seat: Rc<Cell<bool>>, sheet: Rc<Cell<bool>>) -> Self {
+        Self {
+            seat,
+            sheet,
+            ..Self::default()
+        }
+    }
+
     /// What the place `key` is called, as the layout the session published names it: the words its
     /// frame and its tab carry for a person and for assistive technology, which a gesture that
     /// moves the strip aims at.
@@ -268,6 +286,27 @@ impl SessionLink {
             }
         }
         !asked.is_empty()
+    }
+
+    /// The cell saying whether the desktop's focus is the shell's views rather than a window:
+    /// the session writes it, and what the shell holds it to answer the person's keys.
+    #[must_use]
+    pub fn seat(&self) -> Rc<Cell<bool>> {
+        Rc::clone(&self.seat)
+    }
+
+    /// Whether the desktop's focus is the shell's views now: no window holds the keyboard, so
+    /// the bar, dock and surfaces answer it.
+    #[must_use]
+    pub fn on_seat(&self) -> bool {
+        self.seat.get()
+    }
+
+    /// Whether a sheet stands over the desktop now: it takes the keys, and the shell's controls
+    /// stay behind it.
+    #[must_use]
+    pub fn sheet_up(&self) -> bool {
+        self.sheet.get()
     }
 
     /// What the API refused of what the shell asked since the session started, in its words.
@@ -698,6 +737,20 @@ pub struct ShellPart {
     /// floating window lifted by its bar was taken.
     pointer: (f64, f64),
     pressed_at: (f64, f64),
+    /// What a direction its views left over asks of the desktop: the focus moves on to the
+    /// window the direction points at, so the shell's bar and the windows are one focus order
+    /// under the keyboard and a controller.
+    leave: Option<Rc<dyn Fn(FocusStep)>>,
+}
+
+/// A direction a key asked of the shell's views and they had no control left for: the host
+/// moves the desktop's focus the way it points, to the window beside them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FocusStep {
+    Up,
+    Down,
+    Left,
+    Right,
 }
 
 /// Which of the compositor's windows a view's window key names, if it may be pictured.
@@ -854,6 +907,7 @@ impl ShellPart {
             floats: None,
             pointer: (0.0, 0.0),
             pressed_at: (0.0, 0.0),
+            leave: None,
         };
         if seed {
             part.seed();
@@ -1164,6 +1218,20 @@ impl ShellPart {
     /// by then.
     pub fn set_deadline(&mut self, deadline: Option<std::time::Instant>) {
         self.deadline = deadline;
+    }
+
+    /// Tell `leave` what a direction the part's views leave over asks of the desktop: the focus
+    /// moves to the window the direction points at, so a controller's d-pad crosses the shell's
+    /// bar and dock into the windows and back as one order.
+    pub fn on_focus_leave(&mut self, leave: Rc<dyn Fn(FocusStep)>) {
+        self.leave = Some(leave);
+    }
+
+    /// Give the keyboard up: no control of the part's views holds the focus any more, so the
+    /// window the desktop moved it to answers the keys.
+    pub fn release_focus(&mut self) {
+        self.widgets.clear_focus();
+        self.input = true;
     }
 
     /// Stand the part on `output`, its connector name and logical rectangle `(x, y, w, h)`:

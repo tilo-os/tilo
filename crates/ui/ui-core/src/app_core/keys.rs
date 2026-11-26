@@ -64,16 +64,19 @@ impl crate::app::App {
     }
 
     /// Move focus to the nearest control in `direction`, or to the first one when nothing holds focus.
-    pub(crate) fn navigate_focus(&mut self, direction: Direction) {
+    /// Whether the focus moved: a direction no control lies that way is left to the host, which
+    /// moves the desktop's focus on (a shell's bar handing it to a window).
+    pub(crate) fn navigate_focus(&mut self, direction: Direction) -> bool {
         let order = self.keyboard_travel_order();
         let Some(current) = self.tree().focused else {
             if let Some(&first) = order.first() {
                 self.move_focus(Some(first));
+                return true;
             }
-            return;
+            return false;
         };
         let Ok(current_rect) = self.inspect_node(current, |widget| widget.get_rect()) else {
-            return;
+            return false;
         };
         let next = crate::focus_navigation::next(
             (current, current_rect),
@@ -86,7 +89,9 @@ impl crate::app::App {
         );
         if let Some(next) = next {
             self.move_focus(Some(next));
+            return true;
         }
+        false
     }
 
     /// Tab (Shift+Tab when `shift`) through the travel order.
@@ -234,7 +239,8 @@ impl crate::app::App {
     }
 
     /// An arrow no widget consumed moves focus (only with Alt when `require_alt`), behind the same
-    /// modal and trap fence as Tab.
+    /// modal and trap fence as Tab. A direction no control lies that way is not taken: the host
+    /// answers it, moving the desktop's focus on from the surface it reached.
     pub(crate) fn handle_unconsumed_directional_key(
         &mut self,
         event: &WindowEvent,
@@ -248,8 +254,9 @@ impl crate::app::App {
         let Some(direction) = pressed_named(event).and_then(Direction::from_key) else {
             return;
         };
-        self.navigate_focus(direction);
-        *handled = true;
+        if self.navigate_focus(direction) {
+            *handled = true;
+        }
     }
 
     /// Every fallback, in order, for a key the widgets left unhandled.

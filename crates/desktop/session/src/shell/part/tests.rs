@@ -751,6 +751,78 @@ fn a_field_put_in_focus_takes_the_keys_and_a_press_elsewhere_hands_them_back() {
 }
 
 #[test]
+fn a_direction_the_views_have_nothing_left_for_is_the_desktops() {
+    // The compositor hands the shell's part the keys while its own controls hold the focus. A
+    // direction no control of its views lies that way is not the shell's: it asks the desktop to
+    // move the focus on, so the bar and the windows are one order under the controller.
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let (mut part, _link) = part();
+    for _ in 0..4 {
+        part.prepare_frame();
+        part.draw();
+    }
+    let steps: Rc<std::cell::RefCell<Vec<FocusStep>>> = Rc::default();
+    let held = Rc::clone(&steps);
+    part.on_focus_leave(Rc::new(move |step| held.borrow_mut().push(step)));
+
+    // The first direction seats the ring on the shell's first control: the key stays the views'.
+    ShellSurface::key(&mut part, &super::tests_support::key(0xff54, true));
+    assert!(
+        part.widgets.takes_keys(),
+        "the direction seated the ring on a control of the shell's"
+    );
+    assert!(
+        steps.borrow().is_empty(),
+        "the key that seated the ring did not leave the views: {:?}",
+        steps.borrow()
+    );
+
+    // Leftwards at the leading edge of the ring, no control of the shell's lies that way: the
+    // desktop moves the focus on to the window beside it.
+    for _ in 0..6 {
+        if !steps.borrow().is_empty() {
+            break;
+        }
+        ShellSurface::key(&mut part, &super::tests_support::key(0xff51, true));
+    }
+    assert!(
+        !steps.borrow().is_empty(),
+        "a direction at the edge of the shell's controls left the views"
+    );
+    assert!(
+        steps.borrow().iter().all(|step| *step == FocusStep::Left),
+        "the desktop is told the way the press points: {:?}",
+        steps.borrow()
+    );
+    assert!(
+        part.widgets.takes_keys(),
+        "with no window to go to the shell keeps its ring: the desktop takes it away when one takes the focus"
+    );
+}
+
+#[test]
+fn a_shell_holding_the_desktops_focus_takes_the_keys_a_window_would() {
+    // No window holds the keyboard: the desktop's focus is the shell's, so its bar, dock and
+    // surfaces answer the person's keys — how an empty desktop is reached by keyboard and by a
+    // controller.
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let (mut part, link) = part();
+    for _ in 0..4 {
+        part.prepare_frame();
+        part.draw();
+    }
+    assert!(
+        !ShellSurface::wants_keyboard(&part),
+        "a window in front keeps the keys while the shell's own controls hold none"
+    );
+    link.seat().set(true);
+    assert!(
+        ShellSurface::wants_keyboard(&part),
+        "the shell holding the desktop's focus answers the keys"
+    );
+}
+
+#[test]
 fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
     let (mut part, _link) = part();
     let display = part.placement().expect("the part stands on its display");

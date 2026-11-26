@@ -447,6 +447,34 @@ pub(crate) fn walked(
     (walked, front)
 }
 
+/// Move the keyboard to the window beside the shell's controls, in the order Alt+Tab walks the
+/// workspace in front (the window in front first): forwards for `forward`, backwards for
+/// `false`, or the next one past the window in front. This is where a direction the shell's
+/// views leave over goes, so a controller's d-pad crosses the bar and dock into the windows.
+/// Nothing moves when the workspace holds no window this device shows: the answer says whether a
+/// window took the focus.
+pub(crate) fn focus_beside(handle: &DesktopHandle, forward: bool) -> bool {
+    let (windows, workspace) = handle.read(|tree| (windows(tree, handle), tree.active));
+    let workspace = workspace.to_string();
+    let here: Vec<&Window> = windows
+        .iter()
+        .filter(|window| window.workspace_key == workspace && !window.elsewhere)
+        .collect();
+    let focused = here.iter().position(|window| window.focused);
+    let next = match (focused, forward) {
+        (Some(at), true) => here.get(at.saturating_add(1)),
+        (Some(at), false) => at.checked_sub(1).and_then(|at| here.get(at)),
+        (None, true) => here.first(),
+        (None, false) => here.last(),
+    };
+    next.is_some_and(|window| {
+        window
+            .key
+            .parse::<u64>()
+            .is_ok_and(|tab| handle.focus_tab(tab))
+    })
+}
+
 /// The window the walk has reached, of `windows`: its place among them, where it stands to be
 /// lifted and where Alt let go lands. `None` while no walk is up.
 pub(crate) fn reaching(

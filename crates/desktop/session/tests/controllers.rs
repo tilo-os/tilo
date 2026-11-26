@@ -26,6 +26,7 @@ use std::time::Duration;
 
 use crate::common::window::{Client, pump};
 use os_actions::{ForwardedGamepadEvent, GamepadButton};
+use serde_json::json;
 use settings_store::hardware::ShortcutConfig;
 use tilo_compositor::{Compositor, InputEvent};
 use tilo_session::controller_nav::NavDirection;
@@ -452,4 +453,266 @@ fn the_menu_button_opens_the_window_in_fronts_menu() {
     // The same button closes it again.
     fake.press(GamepadButton::West);
     until(&mut session, |session| !window_menu_up(session));
+}
+
+/// The tilolang shell's window, as assistive technology names it.
+const SHELL: &str = "Desktop shell";
+
+/// The control the shell's focus ring stands on now, as assistive technology reads it: its name,
+/// or `None` while the ring is not in the shell (the shell's window itself holds the focus).
+fn shell_focus(session: &Session) -> Option<String> {
+    let windows = session.a11y_windows();
+    let (_, _, tree) = windows.iter().find(|(_, name, _)| name == SHELL)?;
+    let (_, node) = tree.nodes.iter().find(|(id, _)| *id == tree.focus)?;
+    (node.role() != ui::accesskit::Role::Window)
+        .then(|| node.label().unwrap_or_default().to_owned())
+}
+
+/// Step the session until the shell has drawn the control `name` somewhere on it.
+#[track_caller]
+fn shell_shows(session: &mut Session, name: &str) {
+    until(session, |session| {
+        session.a11y_windows().iter().any(|(_, window, tree)| {
+            window == SHELL
+                && tree
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| node.label() == Some(name))
+        })
+    });
+}
+
+/// Step the session until the shell's focus ring stands on the control `name`, walking it there
+/// with the D-pad at most `presses` times: down through the page, and right along each row.
+#[track_caller]
+fn walk_to(session: &mut Session, fake: &Fake, name: &str, presses: usize) {
+    for at in 0..presses {
+        if shell_focus(session).as_deref() == Some(name) {
+            return;
+        }
+        let direction = if at % 3 == 2 {
+            NavDirection::Right
+        } else {
+            NavDirection::Down
+        };
+        fake.dpad(direction);
+        for _ in 0..3 {
+            session.step(Duration::from_millis(1)).expect("step");
+        }
+    }
+    panic!(
+        "the D-pad never reached {name:?}: the ring stands on {:?}",
+        shell_focus(session)
+    );
+}
+
+/// Whether the launcher's search field stands on the shell: what the person sees when the
+/// launcher is up.
+fn launcher_up(session: &Session) -> bool {
+    session.a11y_windows().iter().any(|(_, window, tree)| {
+        window == SHELL
+            && tree
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some(crate::common::LAUNCHER_SEARCH))
+    })
+}
+
+#[test]
+fn a_controller_seats_the_shells_focus_ring_and_moves_it() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let fake = Fake::new(ControllerFamily::Xbox);
+    let mut session = session_with(&fake);
+    shell_shows(&mut session, "Open an app");
+    assert_eq!(
+        shell_focus(&session),
+        None,
+        "nothing of the shell holds the focus before the D-pad moves"
+    );
+
+    // The first direction seats the ring on the shell's first control: an empty desktop is the
+    // shell's, so the controller reaches its bar and dock.
+    fake.dpad(NavDirection::Down);
+    let first = crate::common::wait_for(&mut session, "the shell's focus ring", |session| {
+        shell_focus(session).filter(|name| !name.is_empty())
+    });
+    assert!(
+        session.compositor().surface_takes_keys(),
+        "the shell takes the keys while its own controls hold the focus"
+    );
+
+    // A further direction moves the ring to another control of the shell's, not out of it.
+    let mut moved = None;
+    for _ in 0..6 {
+        fake.dpad(NavDirection::Down);
+        if let Some(next) =
+            crate::common::steps_within(&mut session, Duration::from_millis(400), |session| {
+                shell_focus(session).filter(|name| *name != first)
+            })
+        {
+            moved = Some(next);
+            break;
+        }
+    }
+    let moved = moved.unwrap_or_else(|| panic!("the D-pad moved the ring off {first:?}"));
+    assert!(!moved.is_empty(), "the ring stands on a named control");
+}
+
+#[test]
+fn the_controller_focus_ring_is_the_shells_own_in_light_and_dark() {
+    // The ring the controller moves is the toolkit's: it belongs to the shell like any control's,
+    // and the person's theme draws it. A controller leaves it standing through a theme change.
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let fake = Fake::new(ControllerFamily::Xbox);
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        config: SessionConfig::default(),
+        controllers: Some(Source::Lent(Box::new(fake.clone()))),
+        services: vec![Box::new(settings_sections::service::SettingsService::new())],
+        ..Options::default()
+    });
+    session.step(Duration::from_millis(1)).expect("step");
+    crate::common::wait_for(&mut session, "the appearance section", |session| {
+        session.read("settings/appearance")
+    });
+    shell_shows(&mut session, "Open an app");
+    fake.dpad(NavDirection::Down);
+    let first = crate::common::wait_for(&mut session, "the shell's focus ring", |session| {
+        shell_focus(session).filter(|name| !name.is_empty())
+    });
+
+    for (theme, mode, name) in [
+        ("tilo-dark", "dark", "controller-focus-dark"),
+        ("paper-light", "light", "controller-focus-light"),
+    ] {
+        let key = if mode == "light" {
+            "light_theme"
+        } else {
+            "dark_theme"
+        };
+        appearance(&mut session, key, json!(theme));
+        appearance(&mut session, "mode", json!(mode));
+        for _ in 0..8 {
+            session.step(Duration::from_millis(1)).expect("step");
+        }
+        crate::common::shot(&mut session, name);
+        assert_eq!(
+            shell_focus(&session).as_deref(),
+            Some(first.as_str()),
+            "in the {mode} theme the ring stands where the controller left it"
+        );
+    }
+}
+
+/// Set a field of the person's appearance section through its own published setter.
+fn appearance(session: &mut Session, field: &str, value: serde_json::Value) {
+    let arguments = json!({ "value": value })
+        .as_object()
+        .expect("an object")
+        .clone();
+    session
+        .invoke(
+            "settings/appearance",
+            &settings_store::workspace::verb(field),
+            &arguments,
+        )
+        .expect("the appearance section takes it");
+}
+
+#[test]
+fn the_launcher_opens_from_the_control_the_controller_reached_and_back_closes_it() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let fake = Fake::new(ControllerFamily::Xbox);
+    let mut session = session_with(&fake);
+    shell_shows(&mut session, "Open an app");
+    fake.dpad(NavDirection::Down);
+    crate::common::wait_for(&mut session, "the shell's focus ring", |session| {
+        shell_focus(session).filter(|name| !name.is_empty())
+    });
+
+    // The person walks the ring down to the shell's way into the launcher, and A opens it.
+    walk_to(&mut session, &fake, "Open an app", 16);
+    fake.press(GamepadButton::South);
+    until(&mut session, launcher_up);
+
+    // B backs out of it, as Escape does: the launcher is a surface of the shell's.
+    fake.press(GamepadButton::East);
+    until(&mut session, |session| !launcher_up(session));
+}
+
+#[test]
+fn a_direction_the_shell_leaves_over_focuses_the_window_beside_it() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let fake = Fake::new(ControllerFamily::Xbox);
+    let mut session = session_with(&fake);
+    let mut left = mapped(&mut session, "org.example.Left");
+    let mut right = mapped(&mut session, "org.example.Right");
+    pump(&mut session, &mut [&mut left, &mut right], |session, _| {
+        focused_app(session.compositor()).as_deref() == Some("org.example.Right")
+    });
+    let window = crate::common::window::window_of(session.compositor(), "org.example.Right")
+        .expect("the window in front")
+        .0;
+    let before = session
+        .desktop()
+        .with_policy(|policy| policy.tab_of(window))
+        .expect("the window in front is the layout's");
+
+    // The notification centre stands over the windows with the shell's own controls focused: the
+    // shell holds the keys, so the controller's directions are its views' until they run out.
+    let arguments = json!({ "open": true });
+    session
+        .invoke(
+            tilo_session_core::desktop::verbs::CHROME_RESOURCE,
+            "notifications",
+            arguments.as_object().expect("an object"),
+        )
+        .expect("the centre opens");
+    crate::common::wait_for(&mut session, "the centre to take the keys", |session| {
+        session.compositor().surface_takes_keys().then_some(())
+    });
+
+    // A direction with nothing of the shell's left that way is the desktop's: the focus moves to
+    // the window beside the shell's controls.
+    let mut focused = before;
+    for at in 0..24 {
+        if at % 2 == 0 {
+            fake.dpad(NavDirection::Right);
+        } else {
+            fake.dpad(NavDirection::Down);
+        }
+        if let Some(next) =
+            crate::common::steps_within(&mut session, Duration::from_millis(400), |session| {
+                session
+                    .desktop()
+                    .with_policy(|policy| policy.focused_tab())
+                    .filter(|tab| *tab != before)
+            })
+        {
+            focused = next;
+            break;
+        }
+    }
+    assert_ne!(focused, before, "the focus left the shell for a window");
+
+    // Back closes the centre, and the window it reached answers the controller itself.
+    fake.press(GamepadButton::East);
+    crate::common::wait_for(&mut session, "the centre to close", |session| {
+        (!session.compositor().surface_takes_keys()).then_some(())
+    });
+    for client in [&mut left, &mut right] {
+        client.seen.keys.clear();
+    }
+    fake.dpad(NavDirection::Right);
+    pump(&mut session, &mut [&mut left, &mut right], |_, clients| {
+        clients.iter().any(|client| {
+            client.seen.keys
+                == vec![
+                    (KEY_LEFT_ALT, true),
+                    (KEY_RIGHT, true),
+                    (KEY_RIGHT, false),
+                    (KEY_LEFT_ALT, false),
+                ]
+        })
+    });
 }

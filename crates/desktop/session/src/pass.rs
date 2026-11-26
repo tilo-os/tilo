@@ -196,6 +196,23 @@ impl Session {
         tilo_frame_metrics::profile::expire(Instant::now());
         self.compositor.dispatch(timeout)?;
         self.take_input()?;
+        // What stands over the desktop and takes the keys of its own: while one of them is
+        // drawn, the shell's own controls stay behind it.
+        let sheet_up = self.setup_up()
+            || self
+                .shared
+                .sheets
+                .iter()
+                .any(tilo_sheets::Presentation::is_drawn);
+        self.shared.sheet_up.set(sheet_up);
+        // Whether the desktop's focus is the shell's views: with no client holding or awaiting
+        // the keyboard, the shell's bar, dock and surfaces answer it, so a keyboard or a
+        // controller reaches them from an empty desktop and leaves them for a window. A window
+        // that is behind the shell's own ring keeps the keyboard it goes back to, so the shell's
+        // focus is the ring's while it has one.
+        self.shared
+            .shell_seat
+            .set(!self.compositor.locked() && !self.compositor.keyboard_client());
         self.follow_logout_request();
         // What the session itself does before the frame: the session, the apps and the overlays this
         // pass lays out.

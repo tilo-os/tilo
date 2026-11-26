@@ -451,6 +451,16 @@ pub(crate) struct Shared {
     /// Whether the keys being routed now are a controller's own,
     /// for its presses: those say nothing about a keyboard.
     pub(crate) controller_keys: Rc<Cell<bool>>,
+    /// Whether the desktop's focus is the shell's views rather than a window: while no window
+    /// holds the keyboard, the shell's bar, dock and surfaces answer the person's keys, so an
+    /// empty desktop is reached by keyboard and controller and a direction leaves it for a
+    /// window.
+    pub(crate) shell_seat: Rc<Cell<bool>>,
+    /// Whether a sheet of the session's stands over the desktop: it takes the keys of its own,
+    /// and the shell's controls stay behind it.
+    pub(crate) sheet_up: Rc<Cell<bool>>,
+    /// The sheets whose being drawn sets [`Self::sheet_up`]: the modal ones and the guide.
+    pub(crate) sheets: Vec<tilo_sheets::Presentation>,
     /// The questions about the person's apps: whether to add a program they
     /// downloaded to their apps, and whether to uninstall one.
     #[cfg(target_os = "linux")]

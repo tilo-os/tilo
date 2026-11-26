@@ -1080,8 +1080,14 @@ impl Driver {
     /// the surface's device pixels. A pen sample is kept for the pointer event it describes and
     /// never reaches a widget as an event of its own.
     pub fn send(&mut self, event: &WindowEvent) {
+        let _ = self.send_handled(event);
+    }
+
+    /// [`Self::send`], and whether the tree took the event: the answer a host needs for a key its
+    /// tree left over, as a shell does when a direction leaves its views.
+    pub fn send_handled(&mut self, event: &WindowEvent) -> bool {
         let Some(_pen) = self.app.input.pen.route(event) else {
-            return;
+            return false;
         };
         // A frame the clock made due runs before the input, as a window's loop draws what is due
         // between events: the press lands on what that frame placed, not on the layout the
@@ -1107,18 +1113,21 @@ impl Driver {
             if took {
                 drop(running);
                 self.run_frame();
-                return;
+                return true;
             }
         }
         // A card standing over the window takes what is on it, and the window under it does not
         // see it, as on a desktop.
-        if !self.route_to_card(event) {
-            self.app.surface_input(&self.surface, event.clone(), false);
-        }
+        let handled = if self.route_to_card(event) {
+            true
+        } else {
+            self.app.surface_input(&self.surface, event.clone(), false)
+        };
         drop(running);
         if !self.coalesces_input() {
             self.run_frame();
         }
+        handled
     }
 
     /// [`Self::send`].
