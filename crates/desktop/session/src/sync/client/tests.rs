@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use super::network::event_of;
 use super::*;
 use collab_types::PeerPresencePayload;
@@ -214,6 +216,7 @@ tilo_test_env::scenario! {
                 label: "Quinten".to_owned(),
                 ..OwnPresence::default()
             },
+            Rc::default(),
         );
         sync.follow_desktop(&shell(WORKSPACE));
         let commands = sent(&mut said);
@@ -1062,6 +1065,7 @@ tilo_test_env::scenario! {
                 name: "Page".to_owned(),
             },
             OwnPresence::default(),
+            Rc::default(),
         );
         let showing = [(topic(WORKSPACE), WORKSPACE.to_owned())];
         sync.follow_workspaces(&showing, Some(topic(WORKSPACE)));
@@ -1103,6 +1107,7 @@ tilo_test_env::scenario! {
                 label: "Quinten".to_owned(),
                 ..OwnPresence::default()
             },
+            Rc::default(),
         );
         let showing = [
             (topic(WORKSPACE), WORKSPACE.to_owned()),

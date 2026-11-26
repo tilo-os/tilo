@@ -10,8 +10,8 @@
 pub use tilo_session_client::presence;
 pub use tilo_session_client::{
     Answer, CallFrame, CallPicture, CallShown, Closed, Cmd, Device, Enrolled, Event, InCall,
-    LiveCall, LiveCaller, Outbox, OwnPresence, PageShown, Receipt, RosterDevice, Topic, Transport,
-    answer, topic_of,
+    LiveCall, LiveCaller, Outbox, OwnPresence, PageShown, Receipt, RosterDevice, Saying, Topic,
+    Transport, answer, topic_of,
 };
 
 pub mod layout;

@@ -4,6 +4,7 @@
 //! dark.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use ui::application::ComponentRunnerInputs;
 
@@ -294,6 +295,46 @@ pub(crate) fn start_collaboration(
             .map(|identity| hex::encode(identity.device_cert.user_public_key)),
         ..sync::OwnPresence::default()
     };
+    // This process dials as the device only when it holds the device's key. A session the
+    // device's daemon started cannot — the daemon owns the key and the endpoint — and takes part
+    // through it instead: the workspaces' live sessions carry who is here and what they say, and
+    // the daemon says this device's one word ([`crate::live::Live`]). Two endpoints under one key
+    // push each other off the network, so none is bound here.
+    if identity
+        .as_ref()
+        .is_some_and(|identity| identity.signer.endpoint_secret().is_none())
+    {
+        let identity = identity.expect("an identity checked above");
+        let publisher = iroh::EndpointId::from_bytes(&identity.device_cert.device_public_key)
+            .expect("a device key is an endpoint id");
+        let saying = live.borrow().as_ref().map(|live| {
+            tilo_session_client::Saying::Word(
+                Arc::new(live.telling()) as Arc<dyn tilo_session_client::TellWord>
+            )
+        });
+        // Nothing this session says leaves on the peer network itself: what it says of the person
+        // goes to the daemon's word, and the rest of the network is the daemon's.
+        let (outgoing, _commands): (
+            tokio::sync::mpsc::UnboundedSender<tilo_session_client::Cmd>,
+            _,
+        ) = tokio::sync::mpsc::unbounded_channel();
+        let (_heard, arrived) = std::sync::mpsc::channel();
+        return Some(Rc::new(sync::Client::over(
+            sync::Transport {
+                outgoing: Arc::new(outgoing),
+                arrived,
+                saying,
+            },
+            sync::Device {
+                publisher,
+                endpoint: iroh::EndpointAddr::new(publisher),
+                person: Some(identity.device_cert.user_public_key),
+                name: identity.device_cert.device_label.clone(),
+            },
+            own,
+            live,
+        )));
+    }
     match sync::Client::start(
         sync::Entry {
             identity,

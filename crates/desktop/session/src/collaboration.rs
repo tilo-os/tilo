@@ -17,6 +17,12 @@ impl Session {
         // show: a workspace this device joined arrives on the shell whether or not this session
         // takes part in the peer network.
         self.shared.follow_enrollments();
+        // What the workspaces' live sessions heard — presence, a call's voice, a shared window's
+        // picture — is taken before what reads it this pass, on a session whose peer network is
+        // its daemon's.
+        if let Some(sync) = &self.shared.sync {
+            sync.follow_live();
+        }
         let Some(sync) = &self.shared.sync else {
             return;
         };

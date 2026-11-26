@@ -705,10 +705,6 @@ impl Local {
     /// Take every object the workspaces' live sessions heard since the last call: a member's presence
     /// frame, or a call's voice or pictures. Whether any did.
     fn hear_live(&self, client: &SessionClient) -> bool {
-        let held = self.live.borrow();
-        let Some(live) = held.as_ref() else {
-            return false;
-        };
         let own = client.publisher();
         let topics: Vec<(tilo_desktop_model::WorkspaceId, String)> = client
             .live_workspaces()
@@ -718,6 +714,21 @@ impl Local {
                 Some((id, workspace))
             })
             .collect();
+        self.hear_live_in(client, own, topics)
+    }
+
+    /// [`Self::hear_live`] over `topics`, the workspaces whose live links this client reads, as
+    /// this device `own`'s session.
+    fn hear_live_in(
+        &self,
+        client: &SessionClient,
+        own: EndpointId,
+        topics: Vec<(tilo_desktop_model::WorkspaceId, String)>,
+    ) -> bool {
+        let held = self.live.borrow();
+        let Some(live) = held.as_ref() else {
+            return false;
+        };
         let mut heard = false;
         for (ws, workspace) in topics {
             while let Some(object) = live.try_recv(ws) {
@@ -1240,12 +1251,17 @@ impl Client {
     /// hands it is what the session shows. The transport's own commands stay the client's, so a
     /// host that reads them off its end reads what this session said.
     #[must_use]
-    pub fn over(transport: Transport, device: Device, own: OwnPresence) -> Self {
+    pub fn over(
+        transport: Transport,
+        device: Device,
+        own: OwnPresence,
+        live: Rc<RefCell<Option<crate::live::Live>>>,
+    ) -> Self {
         #[cfg(target_os = "linux")]
         let host = {
             let (commands, _host_commands) = tokio::sync::mpsc::unbounded_channel();
             let (_desktop_events, desktop_arrived) = std::sync::mpsc::channel();
-            Rc::new(Local::bare(commands, desktop_arrived))
+            Rc::new(Local::bare(commands, desktop_arrived, live))
         };
         #[cfg(target_os = "linux")]
         let outgoing = std::sync::Arc::clone(&transport.outgoing);
@@ -1314,7 +1330,7 @@ impl Client {
         );
         let hosting = Rc::new(Hosting {
             roster: Rc::new(Roster::new()),
-            local: Rc::new(Local::bare(commands, desktop_arrived)),
+            local: Rc::new(Local::bare(commands, desktop_arrived, Rc::default())),
         });
         inner.attach_host(Rc::clone(&hosting) as Rc<dyn Host>);
         let client = Self {
@@ -1492,6 +1508,30 @@ impl Client {
         if let Some(live) = self.hosting.local.live() {
             live.workspace_arrived();
         }
+    }
+
+    /// Take what the workspaces' live sessions heard since the last call, on a session whose peer
+    /// network is its daemon's: the live links the daemon gave it stand for the workspaces, and
+    /// what they carry is taken as the client's own board reads it. Nothing on a client whose own
+    /// thread already hears them. Whether any did.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn follow_live(&self) -> bool {
+        if self.thread.is_some() {
+            return false;
+        }
+        let topics: Vec<(tilo_desktop_model::WorkspaceId, String)> = {
+            let held = self.hosting.local.live.borrow();
+            let Some(live) = held.as_ref() else {
+                return false;
+            };
+            live.live_sessions()
+                .into_iter()
+                .map(|(workspace, _)| (workspace, workspace.to_string()))
+                .collect()
+        };
+        self.hosting
+            .local
+            .hear_live_in(&self.inner, self.inner.publisher(), topics)
     }
 
     /// The workspaces the device's daemon keeps, as this client reads them: what the live rows
@@ -1765,6 +1805,7 @@ impl Local {
     fn bare(
         commands: tokio::sync::mpsc::UnboundedSender<HostCmd>,
         desktop_events: std::sync::mpsc::Receiver<DesktopEvent>,
+        live: Rc<std::cell::RefCell<Option<crate::live::Live>>>,
     ) -> Self {
         let (_said, versions) = std::sync::mpsc::channel();
         Self {
@@ -1783,7 +1824,7 @@ impl Local {
             person: crate::PersonResources::default(),
             live_rows: tilo_workspace_service::live::LiveRows::default(),
             reachability: RefCell::new(Reachability::default()),
-            live: Rc::default(),
+            live,
             #[cfg(test)]
             test_live_sessions: RefCell::default(),
             #[cfg(test)]
