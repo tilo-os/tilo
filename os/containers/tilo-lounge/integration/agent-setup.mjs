@@ -383,7 +383,9 @@ if (!JSON.parse(kept)?.mcpServers?.tilo?.command?.endsWith('tilo')) {
 }
 // The agent's own end is the tab's clock for what it last reported: the screen leaves once it
 // has heard it all, so what the tab drew is read after that, never before.
-await until(first, `document.documentElement.dataset.firstScreen === undefined`, 'the first screen leaving', stepLimit(2));
+if (!await first.waitFor(`document.documentElement.dataset.firstScreen === undefined`, {timeout: stepLimit(2)}).catch(() => false)) {
+  await fail(`the first screen leaving never happened: ${(await pageText(first)).slice(0, 600)}; the login said: ${loggedIn.stdout}${loggedIn.stderr}`);
+}
 await following;
 const steps = await first.evaluate('globalThis.__checkSteps ?? []').catch(() => []);
 report.steps = steps;
