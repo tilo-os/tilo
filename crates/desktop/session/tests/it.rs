@@ -202,6 +202,8 @@ mod panel_services;
 mod part_view;
 #[path = "people.rs"]
 mod people;
+#[path = "people_bar.rs"]
+mod people_bar;
 #[path = "people_cards.rs"]
 mod people_cards;
 #[path = "person_workspace.rs"]

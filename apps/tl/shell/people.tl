@@ -1081,21 +1081,23 @@ view sharing_indicator() {
 }
 
 /// Someone waved at this person: who, beside the faces, for a moment. The session clears it when
-/// its moment is over, so the bar never keeps a word that has gone stale.
+/// its moment is over, so the bar never keeps a word that has gone stale. It is news, so a reader
+/// hears it without having to be looking at the bar.
 view wave_notice() {
     let board = device.people
     if board.waved != "" {
         let name = board.waved
-        ui.Chip(std.say("{name} waved at you"), icon: .hand, tone: .info)
+        ui.Chip(std.say("{name} waved at you"), icon: .hand, tone: .info, live: .polite)
     }
 }
 
 /// Someone arrived where this person is: the first time in a public workspace, what its people
-/// see of the person instead, opening their own card where they choose otherwise.
+/// see of the person instead, opening their own card where they choose otherwise. The session
+/// clears it when its moment is over.
 view arrival_notice() {
     let board = device.people
     if board.arrived_seen != "" {
-        ui.Button(board.arrived_seen, icon: .eye, size: .small, role: .plain) {
+        ui.Button(board.arrived_seen, icon: .eye, size: .small, role: .plain, live: .polite) {
             on press: device.show_person(device.people, person: "self")
         }
     } else if not board.arrived.is_empty() {
@@ -1109,7 +1111,7 @@ view arrival_notice() {
         } else {
             std.say("{short} and {others} others are here")
         }
-        ui.Chip(label, icon: .users, tone: .success) {
+        ui.Chip(label, icon: .users, tone: .success, live: .polite) {
             on press: device.show(device.people)
         }
     }
