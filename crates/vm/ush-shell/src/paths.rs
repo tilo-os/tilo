@@ -36,3 +36,15 @@ pub fn normalize(path: &Path) -> PathBuf {
         out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dot_dot_is_taken_by_name() {
+        assert_eq!(join(Path::new("/a/b"), "../c"), PathBuf::from("/a/c"));
+        assert_eq!(join(Path::new("/a"), "/x/./y"), PathBuf::from("/x/y"));
+        assert_eq!(join(Path::new("/"), ".."), PathBuf::from("/"));
+    }
+}

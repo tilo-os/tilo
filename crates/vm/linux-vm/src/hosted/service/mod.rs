@@ -1660,3 +1660,6 @@ fn read_names(dir: &Path) -> Vec<String> {
         })
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+mod tests;

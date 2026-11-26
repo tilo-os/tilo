@@ -7,6 +7,7 @@
 )]
 
 mod commands;
+mod dispatch;
 mod interactive;
 mod render;
 mod shell;

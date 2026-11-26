@@ -65,6 +65,12 @@ impl Pattern {
         Self { toks }
     }
 
+    #[cfg(test)]
+    pub fn parse(text: &str) -> Self {
+        let chars: Vec<PatChar> = text.chars().map(|c| (c, false)).collect();
+        Self::new(&chars)
+    }
+
     pub fn is_literal(&self) -> bool {
         self.toks.iter().all(|t| matches!(t, Tok::Lit(_)))
     }
@@ -198,6 +204,37 @@ fn matches_at(toks: &[Tok], s: &[char]) -> bool {
                 at = si.saturating_add(1);
             }
             _ => return false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    tilo_test_env::scenario! {
+        /// Shell patterns.
+        fn a_pattern_matches_like_a_shell_glob;
+
+        phase stars_questions_and_classes;
+        {
+            assert!(Pattern::parse("*.rs").matches("main.rs"));
+            assert!(!Pattern::parse("*.rs").matches("main.rc"));
+            assert!(Pattern::parse("a?c").matches("abc"));
+            assert!(Pattern::parse("[a-c]x").matches("bx"));
+            assert!(Pattern::parse("[!a-c]x").matches("dx"));
+            assert!(Pattern::parse("[[:digit:]]*").matches("9lives"));
+            assert!(Pattern::parse("*a*b*").matches("xxaxxbxx"));
+            assert!(Pattern::parse("\\*").matches("*"));
+            assert!(!Pattern::parse("\\*").matches("x"));
+            assert!(Pattern::parse("[]x]").matches("]"));
+        }
+
+        phase a_quoted_star_is_a_star;
+        {
+            let quoted = Pattern::new(&[('*', true)]);
+            assert!(quoted.matches("*"));
+            assert!(!quoted.matches("anything"));
         }
     }
 }

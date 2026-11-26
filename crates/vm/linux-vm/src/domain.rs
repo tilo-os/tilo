@@ -127,3 +127,91 @@ pub fn attached_tags(domain_xml: &str) -> Vec<String> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use linux_vm_protocol::GuestOs;
+
+    use super::*;
+    use crate::config::Paths;
+
+    fn config() -> VmConfig {
+        VmConfig::new(
+            GuestOs::Linux,
+            "/c/base.qcow2".into(),
+            Paths::under(
+                Path::new("/d"),
+                Path::new("/run/user/1000"),
+                Path::new("/c"),
+                GuestOs::Linux,
+            ),
+        )
+    }
+
+    #[test]
+    fn the_domain_is_unprivileged_headless_and_shares_nothing_by_definition() {
+        let config = config();
+        let xml = render_domain_xml(&config, VsockBackend::Kernel).unwrap();
+        {
+            for required in [
+                "<name>tilo-linux-vm-linux</name>",
+                "<memory unit='MiB'>6144</memory><currentMemory unit='MiB'>1536</currentMemory>",
+                "<source type='memfd'/><access mode='shared'/>",
+                "<backend type='passt'/>",
+                "<cid auto='yes'/>",
+                "<memballoon model='virtio'>",
+                "<source file='/d/tilo/linux-vm/linux/disk.qcow2'/>",
+                "<video><model type='none'/></video>",
+            ] {
+                assert!(xml.contains(required), "missing {required}");
+            }
+            for forbidden in [
+                "<filesystem",
+                "type='network'",
+                "<hostdev",
+                "spice",
+                "<graphics",
+            ] {
+                assert!(!xml.contains(forbidden), "unexpected {forbidden}");
+            }
+            assert!(is_ours(&xml, &config));
+            let hybrid = render_domain_xml(&config, VsockBackend::Hybrid).unwrap();
+            assert!(hybrid.starts_with("<domain type='kvm' xmlns:qemu="));
+            assert!(hybrid.contains("vhost-user-vsock-pci"));
+            assert!(!hybrid.contains("<vsock"));
+            assert!(is_ours(&hybrid, &config));
+            assert!(
+                is_ours(
+                    "<metadata><tilo:linux-vm xmlns:tilo=\"https://tilo.sh/vm/1\" guest=\"linux\"/></metadata>",
+                    &config
+                ),
+                "libvirt's own serialisation is still ours"
+            );
+            let uuid = "b9a49084-2e51-412a-ae9c-c1f9d51b0863";
+            let live = format!("<domain><name>x</name>\n  <uuid>{uuid}</uuid></domain>");
+            assert_eq!(domain_uuid(&live), Some(uuid));
+            let redefined = with_uuid(&xml, uuid);
+            assert!(redefined.contains(&format!("</name><uuid>{uuid}</uuid>")));
+            assert_eq!(domain_uuid(&redefined), Some(uuid));
+            assert_eq!(domain_uuid("<domain/>"), None);
+            assert!(!is_ours(
+                "<domain><name>tilo-linux-vm-linux</name></domain>",
+                &config
+            ));
+        }
+        {
+            let share = HostShare {
+                path: PathBuf::from("/var/home/you/src"),
+                read_only: false,
+            };
+            let device = filesystem_xml(&share, Path::new("/run/user/1000/x.sock")).unwrap();
+            assert!(device.contains("<driver type='virtiofs' queue='1024'/>"));
+            assert!(device.contains("<source socket='/run/user/1000/x.sock'/>"));
+            let live = format!("<domain><devices>{device}<disk/></devices></domain>");
+            assert_eq!(attached_tags(&live), [share.tag()]);
+            assert!(attached_tags(&xml).is_empty());
+        }
+    }
+}

@@ -75,3 +75,104 @@ fn moved(path: &str, (from, to): &(Option<PathBuf>, Option<PathBuf>)) -> Option<
     };
     Some(moved.to_string_lossy().into_owned())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::WorkspaceId;
+    use tilo_environment::{Environment, dir_grant};
+
+    const FROM: &str = "6f1c2d3e-0000-4000-8000-000000000001";
+    const TO: &str = "6f1c2d3e-0000-4000-8000-000000000002";
+
+    fn device(root: &Path) -> Store {
+        std::fs::create_dir_all(root.join("files")).unwrap();
+        let store = Store::at(root.join("ush")).with_workspace(root.join("files"));
+        crate::records::testing::keep_serving(store.records_root());
+        store
+    }
+
+    fn workspace(store: &Store, id: &str) -> Store {
+        store.for_workspace(&WorkspaceId::parse(Some(id)).unwrap())
+    }
+
+    #[test]
+    fn an_environment_of_the_source_is_the_branchs_with_its_home_and_its_own_files() {
+        let root = tempfile::tempdir().unwrap();
+        let device = device(root.path());
+        let from = workspace(&device, FROM);
+        let to = workspace(&device, TO);
+        let tree = from.workspace().unwrap().to_path_buf();
+        std::fs::create_dir_all(tree.join("src")).unwrap();
+        let outside = root.path().join("elsewhere");
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let records = Records::of(&from);
+        let mut env = Environment {
+            name: "Dev".to_owned(),
+            ..Environment::default()
+        };
+        env.set_home(tree.display().to_string()).unwrap();
+        env.grants
+            .push(dir_grant(&tree.join("src"), false).unwrap());
+        env.grants.push(dir_grant(&outside, true).unwrap());
+        records.create("env-1", &env).unwrap();
+        let var = from.environment_dir("env-1").join("var");
+        std::fs::create_dir_all(var.join("lib/apt")).unwrap();
+        std::fs::write(var.join("lib/apt/state"), b"installed").unwrap();
+
+        let branched = branch_environments(&from, &to).unwrap();
+        assert_eq!(branched.environments, 1);
+        assert_eq!(branched.files, 1);
+
+        let copy = Records::of(&to)
+            .load("env-1")
+            .unwrap()
+            .expect("the branch's environment");
+        assert_eq!(copy.name, "Dev");
+        assert_eq!(
+            copy.workspace, TO,
+            "the branch's own, so its sessions are the branch's"
+        );
+        let branch_tree = to.workspace().unwrap();
+        assert_eq!(Path::new(&copy.home_dir), branch_tree);
+        let paths: Vec<String> = copy
+            .grants
+            .iter()
+            .filter_map(|grant| match &grant.scope {
+                collab_types::caps::Scope::FsPath(path) => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(paths.contains(&branch_tree.display().to_string()));
+        assert!(paths.contains(&branch_tree.join("src").display().to_string()));
+        assert!(
+            paths.contains(&outside.display().to_string()),
+            "a grant outside stays"
+        );
+        assert!(
+            !paths.iter().any(|path| Path::new(path).starts_with(&tree)),
+            "nothing of the source's files: {paths:?}"
+        );
+        assert_eq!(
+            std::fs::read(to.environment_dir("env-1").join("var/lib/apt/state")).unwrap(),
+            b"installed"
+        );
+
+        let source = records.load("env-1").unwrap().unwrap();
+        assert_eq!(source.workspace, FROM);
+        assert_eq!(Path::new(&source.home_dir), tree);
+        std::fs::write(
+            to.environment_dir("env-1").join("var/lib/apt/state"),
+            b"changed",
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(var.join("lib/apt/state")).unwrap(),
+            b"installed"
+        );
+
+        assert!(branch_environments(&from, &to).is_err());
+        assert!(branch_environments(&from, &from).is_err());
+    }
+}

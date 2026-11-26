@@ -60,3 +60,78 @@ pub fn write_guest_filter(dir: &std::path::Path) -> Result<std::path::PathBuf, S
     std::fs::write(&path, bytes)?;
     Ok(path)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_filter_compiles_aligned() {
+        let bytes = compile_guest_filter().unwrap();
+        assert!(!bytes.is_empty());
+        assert_eq!(bytes.len() % 8, 0, "blob is not 8-byte aligned");
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn the_compiled_guest_program_matches_the_pinned_golden_file() {
+        let golden = hex::decode(
+            include_str!("../tests/fixtures/seccomp/ush.x86_64.bpf.hex")
+                .lines()
+                .collect::<String>(),
+        )
+        .expect("decode pinned guest BPF hex fixture");
+        let compiled = compile_guest_filter().unwrap();
+        assert!(
+            compiled == golden,
+            "the guest filter compiled to a different BPF program than the pinned one \
+             ({} bytes vs {} pinned); this is a sandbox policy change",
+            compiled.len(),
+            golden.len()
+        );
+    }
+
+    #[test]
+    fn the_kernel_enforces_the_filter() {
+        let program = sandbox_core::seccomp::deny_list_program(guest_rules().expect("rules"))
+            .expect("compile");
+
+        // SAFETY: the child only installs the filter, makes raw syscalls and
+        // `_exit`s. It never returns into the harness and touches no allocator
+        // or lock after the fork.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            let bail = |code: i32| -> ! {
+                // SAFETY: `_exit` is async-signal-safe and does not unwind.
+                unsafe { libc::_exit(code) }
+            };
+            if seccompiler::apply_filter(&program).is_err() {
+                bail(12);
+            }
+            if unsafe { libc::syscall(libc::SYS_unshare, libc::CLONE_NEWUSER) } == 0 {
+                bail(10);
+            }
+            if unsafe { libc::syscall(libc::SYS_ptrace, libc::PTRACE_TRACEME, 0, 0, 0) } == 0 {
+                bail(10);
+            }
+            // An ordinary syscall must keep working, or the filter broke the
+            // shell rather than confining it.
+            // SAFETY: getpid has no failure mode.
+            if unsafe { libc::syscall(libc::SYS_getpid) } <= 0 {
+                bail(11);
+            }
+            bail(0)
+        }
+
+        let mut status = 0i32;
+        unsafe { libc::waitpid(pid, &raw mut status, 0) };
+        assert!(libc::WIFEXITED(status), "child died: {status:#x}");
+        assert_eq!(
+            libc::WEXITSTATUS(status),
+            0,
+            "10 = a denied syscall succeeded, 11 = an allowed one was refused, \
+             12 = the filter would not install"
+        );
+    }
+}

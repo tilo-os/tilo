@@ -143,3 +143,49 @@ pub fn ensure_guest(images: &Path, reference: &str) -> Result<Fetched, GuestErro
     let _ = std::fs::remove_dir_all(&staging);
     fetched
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_hosted_guest_is_fetched_only_by_pinned_digest() {
+        let digest = "ab".repeat(32);
+        let linux = format!("registry.tilo.so/tilo/hosted-guest@sha256:{digest}");
+        {
+            let snapshot = format!("# pinned by CI\nHOSTED_GUEST_X86_64_REF={linux}\n");
+            assert_eq!(pinned_ref(&snapshot, "x86_64"), Some(linux.clone()));
+            assert_eq!(pinned_ref(&snapshot, "aarch64"), None);
+            assert_eq!(
+                pinned_ref(&format!("# HOSTED_GUEST_X86_64_REF={linux}"), "x86_64"),
+                None
+            );
+            assert!(matches!(
+                reference(Some("registry.tilo.so/tilo/hosted-guest:latest")),
+                Err(GuestError::NotARef(_))
+            ));
+            assert!(!valid_pinned_ref(&format!(
+                "evil.example/hosted-guest@sha256:{digest}"
+            )));
+            assert!(!valid_pinned_ref("registry.tilo.so/tilo/x@sha256:abc"));
+            for sibling in [
+                "hosted-guest-dev",
+                "hosted-browser-guest",
+                "tilo-vm",
+                "hosted",
+            ] {
+                assert!(!valid_pinned_ref(&format!(
+                    "registry.tilo.so/tilo/{sibling}@sha256:{digest}"
+                )));
+            }
+            assert!(current_ref().is_none_or(|reference| valid_pinned_ref(&reference)));
+        }
+        {
+            let dir = guest_dir(Path::new("/c"), &linux);
+            assert_eq!(dir, PathBuf::from(format!("/c/hosted-{digest}")));
+            let found = files(&dir);
+            assert_eq!(found.kernel, dir.join("vmlinux"));
+            assert_eq!(found.rootfs, dir.join("rootfs.ext4"));
+        }
+    }
+}

@@ -137,3 +137,68 @@ pub fn guest_command_available(base: &std::path::Path, command: &str) -> bool {
 fn system_provider_available(base: &std::path::Path) -> bool {
     base.join("usr/bin/tilo").is_file() && base.join("usr/libexec/tilo-deployment").is_file()
 }
+
+#[cfg(test)]
+macro_rules! require_trusted_loader {
+    () => {
+        tilo_test_env::require_capability!(
+            TrustedLoader,
+            $crate::helper_runtime::native_loader_trusted(),
+            "the helper's native loader"
+        );
+    };
+}
+#[cfg(test)]
+pub(crate) use require_trusted_loader;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    tilo_test_env::scenario! {
+        /// The commands a guest's PATH carries beside its images.
+        fn guest_commands_are_the_runtimes_own_before_any_apps;
+
+        phase the_system_shim_requires_the_tilo_system_provider;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let bin = dir.path().join("usr/bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            std::fs::write(bin.join("tilo"), "").unwrap();
+
+            assert!(guest_command_available(dir.path(), "tilo"));
+            assert!(
+                !guest_command_available(dir.path(), "system"),
+                "a client binary alone must not expose the system alias"
+            );
+
+            let provider = dir.path().join("usr/libexec/tilo-deployment");
+            std::fs::create_dir_all(provider.parent().unwrap()).unwrap();
+            std::fs::write(provider, "").unwrap();
+            assert!(guest_command_available(dir.path(), "system"));
+        }
+
+        phase linux_vm_apps_never_shadow_the_runtimes_own_commands;
+        {
+            let registry = linux_vm::apps::Registry::from_guest(
+                linux_vm::GuestOs::Linux,
+                &[
+                    installed_app("com.visualstudio.code"),
+                    installed_app("org.example.pkg"),
+                ],
+                &[],
+            );
+            assert_eq!(linux_vm_command_names(&registry), ["code"]);
+        }
+    }
+
+    fn installed_app(id: &str) -> linux_vm::apps::InstalledApp {
+        linux_vm::apps::InstalledApp {
+            id: id.into(),
+            name: id.into(),
+            window_class: None,
+            comment: None,
+            terminal: false,
+        }
+    }
+}

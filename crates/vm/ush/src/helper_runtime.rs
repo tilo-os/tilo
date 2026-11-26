@@ -255,3 +255,241 @@ fn mount_id(file: &std::fs::File) -> io::Result<u64> {
     }
     Ok(metadata.stx_mnt_id)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
+
+    #[test]
+    fn missing_or_nonabsolute_dependencies_fail_before_guest_launch() {
+        let loader = std::env::current_exe().unwrap();
+        for output in [
+            "libmissing.so => not found",
+            "libbad.so => relative (0x1)",
+            "../../outside => /proc/self/exe (0x1)",
+        ] {
+            assert!(parse_libraries(output, &loader).is_err());
+        }
+    }
+
+    #[test]
+    fn installed_loader_in_systemd_user_namespace_requires_immutable_filesystem() {
+        const CHILD: &str = "TILO_USH_LOADER_NAMESPACE_TEST";
+        if let Ok(case) = std::env::var(CHILD) {
+            probe_namespace_loader(&case);
+            return;
+        }
+        // The fixture mounts a real read-only filesystem and gives files to
+        // users the namespace does and does not map: real root's work, which
+        // the job sandbox never grants (the micro-VM check does).
+        tilo_test_env::require_capability!(
+            Chown,
+            tilo_test_env::chown_to(2000),
+            "the loader fixture's ownership"
+        );
+        tilo_test_env::require_capability!(
+            UserNamespace,
+            tilo_test_env::mount_namespace(),
+            "the loader fixture's readonly overlay mount"
+        );
+        let executable = std::env::current_exe().unwrap();
+        let loader = interpreter(Path::new("/usr/bin/bash")).unwrap().unwrap();
+        let canonical = loader.canonicalize().unwrap();
+        // The uid-only child must traverse every ancestor of the fixture,
+        // and $TMPDIR may sit under a root-only directory; /tmp never does.
+        let fixture = tempfile::tempdir_in("/tmp").unwrap();
+        std::fs::set_permissions(fixture.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        materialize_test_loader(fixture.path());
+        let _mount = mount_immutable_fixture(fixture.path());
+        let attacker = fixture.path().join("attacker-loader");
+        std::fs::copy(&canonical, &attacker).unwrap();
+        // Native test containers run as root; the child deliberately matches
+        // systemd's unprivileged uid-only map instead of mapping host root.
+        let caller = rustix::process::getuid().as_raw();
+        let uid = if caller == 0 { 1000 } else { caller };
+        if caller == 0 {
+            let path = std::ffi::CString::new(attacker.as_os_str().as_encoded_bytes()).unwrap();
+            assert_eq!(unsafe { libc::chown(path.as_ptr(), uid, uid) }, 0);
+        }
+        let unmapped = fixture.path().join("unmapped-loader");
+        std::fs::copy(&canonical, &unmapped).unwrap();
+        assert_eq!(
+            caller, 0,
+            "native container must provide disposable fixture ownership"
+        );
+        let path = std::ffi::CString::new(unmapped.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::chown(path.as_ptr(), 2000, 2000) }, 0);
+        for case in [
+            "immutable",
+            "mutable",
+            "readonly-bind",
+            "attacker",
+            "attacker-unmapped",
+        ] {
+            run_namespace_case(case, fixture.path(), &canonical, &executable, uid);
+        }
+    }
+
+    fn run_namespace_case(
+        case: &str,
+        fixture: &Path,
+        canonical: &Path,
+        executable: &Path,
+        uid: u32,
+    ) {
+        use std::os::unix::process::CommandExt;
+        let test = "helper_runtime::tests::installed_loader_in_systemd_user_namespace_requires_immutable_filesystem";
+        let mut command = std::process::Command::new("bwrap");
+        command.args([
+            "--unshare-user",
+            "--unshare-pid",
+            "--uid",
+            &uid.to_string(),
+            "--gid",
+            &uid.to_string(),
+            "--ro-bind",
+            "/",
+            "/",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+        ]);
+        if case == "immutable" {
+            command
+                .arg("--ro-bind")
+                .arg(fixture.join("installed"))
+                .arg("/usr");
+        } else if case == "mutable" {
+            command.args(["--bind", "/usr", "/usr"]);
+        } else if case.starts_with("attacker") {
+            let source = fixture.join(if case == "attacker" {
+                "attacker-loader"
+            } else {
+                "unmapped-loader"
+            });
+            command.arg("--ro-bind").arg(source).arg(canonical);
+        }
+        command
+            .arg("--")
+            .arg(executable)
+            .args([test, "--exact", "--nocapture"]);
+        command.env("TILO_USH_LOADER_NAMESPACE_TEST", case);
+        {
+            // SAFETY: only async-signal-safe credential syscalls execute
+            // between fork and exec; the parent's credentials stay intact.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::setgid(uid) != 0 || libc::setuid(uid) != 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        let output = command.output_locked().unwrap();
+        assert!(
+            output.status.success(),
+            "{case}: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn probe_namespace_loader(case: &str) {
+        let binary = Path::new("/usr/bin/bash");
+        if !case.starts_with("attacker") {
+            let loader = if cfg!(target_arch = "aarch64") {
+                "/usr/lib/ld-linux-aarch64.so.1"
+            } else {
+                "/usr/lib64/ld-linux-x86-64.so.2"
+            };
+            let overflow = std::fs::read_to_string("/proc/sys/kernel/overflowuid")
+                .unwrap()
+                .trim()
+                .parse::<u32>()
+                .unwrap();
+            assert_eq!(std::fs::metadata(loader).unwrap().uid(), overflow);
+        }
+        let result = HelperRuntime::resolve(binary);
+        if case == "immutable" {
+            assert!(result.unwrap().is_some(), "real loader closure is resolved");
+        } else {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("native host loader"),
+                "{case} ownership must not become trusted"
+            );
+        }
+    }
+
+    struct ImmutableMount(PathBuf);
+
+    impl Drop for ImmutableMount {
+        fn drop(&mut self) {
+            let target = std::ffi::CString::new(self.0.as_os_str().as_encoded_bytes()).unwrap();
+            assert_eq!(
+                unsafe { libc::umount2(target.as_ptr(), libc::MNT_DETACH) },
+                0,
+                "{}",
+                io::Error::last_os_error()
+            );
+        }
+    }
+
+    fn mount_immutable_fixture(root: &Path) -> ImmutableMount {
+        // Make a genuine readonly filesystem before dropping to the uid-only
+        // namespace. A readonly bind of the mutable builder filesystem is
+        // deliberately insufficient for production trust.
+        let installed = root.join("installed");
+        std::fs::create_dir(&installed).unwrap();
+        let target = std::ffi::CString::new(installed.as_os_str().as_encoded_bytes()).unwrap();
+        let options = std::ffi::CString::new(format!(
+            "lowerdir={}/empty:{}/usr",
+            root.display(),
+            root.display()
+        ))
+        .unwrap();
+        assert_eq!(
+            unsafe {
+                libc::mount(
+                    c"installed-test".as_ptr(),
+                    target.as_ptr(),
+                    c"overlay".as_ptr(),
+                    libc::MS_RDONLY | libc::MS_NODEV,
+                    options.as_ptr().cast(),
+                )
+            },
+            0,
+            "{}",
+            io::Error::last_os_error()
+        );
+        ImmutableMount(installed)
+    }
+
+    fn materialize_test_loader(root: &Path) {
+        let executable = std::env::current_exe().unwrap();
+        let mut files = Vec::new();
+        for binary in [Path::new("/usr/bin/bash"), executable.as_path()] {
+            let closure = HelperRuntime::resolve(binary).unwrap().unwrap();
+            files.push(closure.loader);
+            files.extend(closure.libraries.into_values());
+        }
+        files.push(PathBuf::from("/usr/bin/bash"));
+        for source in files {
+            let relative = source.strip_prefix("/").unwrap();
+            let relative = if relative.starts_with("lib") || relative.starts_with("lib64") {
+                Path::new("usr").join(relative)
+            } else {
+                relative.to_path_buf()
+            };
+            let destination = root.join(relative);
+            std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            std::fs::copy(source, destination).unwrap();
+        }
+        std::fs::create_dir(root.join("empty")).unwrap();
+    }
+}

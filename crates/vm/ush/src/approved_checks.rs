@@ -280,3 +280,176 @@ impl ApprovedChecks {
         execution::run(check, authority, report)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    fn check(root: &Path) -> ApprovedCheck {
+        for dir in ["source/target", "build", "scratch", "image/usr/bin"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::set_permissions(root.join("scratch"), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        ApprovedCheck {
+            id: "unit-check".into(),
+            binding: ProjectBinding {
+                workspace: uuid::Uuid::new_v4(),
+                host: [7; 32],
+                record: "file:/fixture/project.tilo".into(),
+                resource: "project:one".into(),
+            },
+            checkout: root.join("source"),
+            build: root.join("build"),
+            scratch: root.join("scratch"),
+            runtime_binary: PathBuf::from("/usr/bin/true").canonicalize().unwrap(),
+            images: vec![CheckImage {
+                identity: format!("sha256:{}", "a".repeat(64)),
+                root: root.join("image"),
+            }],
+            command: vec!["/usr/bin/true".into()],
+            environment: vec![],
+            reported_phases: vec![],
+            limits: CheckLimits {
+                cpu_percent: 100,
+                memory_bytes: 64 * 1024 * 1024,
+                processes: 32,
+                wall_seconds: 5,
+                output_bytes: 4096,
+            },
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// Registration: what an approved check may not declare.
+        fn the_registry_refuses_a_check_it_could_not_confine;
+
+        phase registry_rejects_foreign_host_workspace_and_project_before_execution;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let entry = check(dir.path());
+            let binding = entry.binding.clone();
+            let registry = ApprovedChecks::new(binding.clone(), vec![entry.clone()]).unwrap();
+            for foreign in [
+                ProjectBinding {
+                    host: [8; 32],
+                    ..binding.clone()
+                },
+                ProjectBinding {
+                    workspace: uuid::Uuid::new_v4(),
+                    ..binding.clone()
+                },
+                ProjectBinding {
+                    record: "file:/fixture/another-project.tilo".into(),
+                    ..binding.clone()
+                },
+                ProjectBinding {
+                    resource: "project:two".into(),
+                    ..binding.clone()
+                },
+            ] {
+                assert!(ApprovedChecks::new(foreign.clone(), vec![entry.clone()]).is_err());
+                assert!(
+                    registry
+                        .run(&foreign, "unit-check", || panic!(
+                            "must not reach authority or manager"
+                        ))
+                        .is_err()
+                );
+            }
+            assert!(
+                registry
+                    .run(&binding, "other-check", || panic!(
+                        "unapproved ID must not execute"
+                    ))
+                    .is_err()
+            );
+            assert!(
+                registry
+                    .run(&binding, "unit-check", || Err("caller revoked".into()))
+                    .unwrap_err()
+                    .contains("caller revoked")
+            );
+        }
+
+        phase registry_refuses_duplicate_checks_source_links_and_shared_builds;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut entry = check(dir.path());
+            assert!(
+                ApprovedChecks::new(entry.binding.clone(), vec![entry.clone(), entry.clone()]).is_err()
+            );
+            entry.build = entry.checkout.join("target");
+            assert!(entry.validate().unwrap_err().contains("disjoint"));
+            entry = check(dir.path());
+            let source = dir.path().join("source-link");
+            std::os::unix::fs::symlink(&entry.checkout, &source).unwrap();
+            entry.checkout = source;
+            assert!(entry.validate().is_err());
+        }
+
+        phase registry_refuses_target_override_preconfinement_loader_and_duplicate_environment;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut entry = check(dir.path());
+            for environment in [
+                vec![("CARGO_TARGET_DIR".into(), "/shared".into())],
+                vec![("LD_PRELOAD".into(), "/project/malicious.so".into())],
+                vec![
+                    ("CARGO_HOME".into(), "/project/target/cache".into()),
+                    ("CARGO_HOME".into(), "/elsewhere".into()),
+                ],
+            ] {
+                entry.environment = environment;
+                assert!(entry.validate().is_err());
+            }
+            entry.environment = vec![
+                ("CARGO_HOME".into(), "/project/target/cache".into()),
+                ("CARGO_NET_OFFLINE".into(), "true".into()),
+            ];
+            assert!(entry.validate().is_ok());
+        }
+
+        phase malformed_limits_and_unknown_configuration_fields_fail;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut entry = check(dir.path());
+            let mut json = serde_json::to_value(&entry).unwrap();
+            json["raw_shell"] = "echo unsafe".into();
+            assert!(serde_json::from_value::<ApprovedCheck>(json).is_err());
+            entry.limits.memory_bytes = 0;
+            assert!(entry.validate().is_err());
+            entry = check(dir.path());
+            entry.images[0].identity = "latest".into();
+            assert!(entry.validate().is_err());
+        }
+
+        phase source_build_contents_unsafe_scratch_and_tool_path_escape_fail_registration;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut entry = check(dir.path());
+            std::fs::write(
+                entry.checkout.join("target/prior-output"),
+                b"foreign build artifact",
+            )
+            .unwrap();
+            assert!(
+                entry
+                    .validate()
+                    .unwrap_err()
+                    .contains("mount point must be empty")
+            );
+            std::fs::remove_file(entry.checkout.join("target/prior-output")).unwrap();
+            std::fs::set_permissions(&entry.scratch, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(
+                entry
+                    .validate()
+                    .unwrap_err()
+                    .contains("inaccessible to other users")
+            );
+            std::fs::set_permissions(&entry.scratch, std::fs::Permissions::from_mode(0o700)).unwrap();
+            entry.command[0] = "/usr/../project/target/agent-controlled-helper".into();
+            assert!(entry.validate().unwrap_err().contains("command is invalid"));
+        }
+    }
+}

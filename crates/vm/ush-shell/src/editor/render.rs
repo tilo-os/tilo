@@ -180,3 +180,20 @@ pub fn table(names: &[String], columns: usize) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_line_wider_than_the_terminal_wraps_and_the_cursor_follows() {
+        let (out, drawn) = draw(Drawn::default(), "\x1b[1m$\x1b[0m ", "abcdefgh", 3, 5);
+        // "$ abc" fills the first row; the cursor sits before "d", at the
+        // start of the second.
+        assert!(out.starts_with("\r\x1b[J\x1b[1m$\x1b[0m abcdefgh"));
+        assert_eq!(drawn.cursor_row, 1);
+        assert!(out.ends_with("\x1b[1A\r"), "{out:?}");
+        let (again, _) = draw(drawn, "$ ", "", 0, 5);
+        assert!(again.starts_with("\x1b[1A\r\x1b[J"));
+    }
+}

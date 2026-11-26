@@ -100,3 +100,66 @@ pub fn parse_confined(args: &[String]) -> Option<Confinement> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_share_gets_a_confined_unprivileged_daemon() {
+        let share = HostShare {
+            path: "/var/home/you/Music".into(),
+            read_only: true,
+        };
+        let socket = Path::new("/run/user/1000/tilo-linux-vm/linux/fs-1.sock");
+        {
+            let argv = virtiofsd_argv(VIRTIOFSD, &share, socket, 1000, 4242, 4243);
+            assert_eq!(
+                argv,
+                [
+                    VIRTIOFSD,
+                    "--socket-path",
+                    "/run/user/1000/tilo-linux-vm/linux/fs-1.sock",
+                    "--shared-dir",
+                    "/var/home/you/Music",
+                    "--sandbox",
+                    "none",
+                    "--cache",
+                    "auto",
+                    "--translate-uid",
+                    "map:1000:4242:1",
+                    "--translate-gid",
+                    "map:1000:4243:1",
+                    "--readonly"
+                ]
+            );
+            let writable = HostShare {
+                read_only: false,
+                ..share.clone()
+            };
+            assert!(
+                !virtiofsd_argv(VIRTIOFSD, &writable, socket, 1000, 1, 1)
+                    .contains(&"--readonly".to_string())
+            );
+        }
+        {
+            let daemon = virtiofsd_argv(VIRTIOFSD, &share, socket, 1000, 1, 1);
+            let argv = confined_argv(
+                Path::new("/usr/libexec/tilo/tilo-linux-vm"),
+                &share,
+                socket,
+                daemon.clone(),
+            );
+            assert_eq!(argv[..2], ["/usr/libexec/tilo/tilo-linux-vm", "confine-fs"]);
+            let Confinement {
+                ro, rw, program, ..
+            } = parse_confined(&argv[2..]).unwrap();
+            assert!(ro.contains(&PathBuf::from("/var/home/you/Music")));
+            assert!(ro.contains(&PathBuf::from("/usr")));
+            assert_eq!(rw, [PathBuf::from("/run/user/1000/tilo-linux-vm/linux")]);
+            assert_eq!(program, daemon);
+            assert_eq!(parse_confined(&["--ro".to_string()]), None);
+            assert_eq!(parse_confined(&["--".to_string()]), None);
+        }
+    }
+}

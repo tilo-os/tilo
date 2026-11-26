@@ -831,3 +831,253 @@ pub fn run_init(args: &[String]) -> Result<i32, String> {
     }
     Err(Command::new(program).args(rest).exec().to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn observation() -> CgroupObservation {
+        CgroupObservation {
+            main_pid: 12,
+            control_group: "/owned.service".into(),
+            cpu_max: "100000 100000".into(),
+            memory_max: "67108864".into(),
+            memory_swap_max: "0".into(),
+            pids_max: "32".into(),
+        }
+    }
+    fn limits() -> CheckLimits {
+        CheckLimits {
+            cpu_percent: 100,
+            memory_bytes: 67_108_864,
+            processes: 32,
+            wall_seconds: 5,
+            output_bytes: 4096,
+        }
+    }
+
+    fn prepared(root: &Path) -> Prepared {
+        let check = ApprovedCheck {
+            id: "fixture".into(),
+            binding: ProjectBinding {
+                workspace: uuid::Uuid::new_v4(),
+                host: [1; 32],
+                record: "file:/fixture/project.tilo".into(),
+                resource: "project:fixture".into(),
+            },
+            checkout: root.join("source"),
+            build: root.join("build"),
+            scratch: root.into(),
+            runtime_binary: "/usr/bin/true".into(),
+            images: vec![],
+            command: vec!["/usr/bin/true".into()],
+            environment: vec![],
+            reported_phases: vec![],
+            limits: limits(),
+        };
+        Prepared {
+            check,
+            token: uuid::Uuid::new_v4().to_string(),
+            report_nonce: uuid::Uuid::new_v4().to_string(),
+            runtime_binary_sha256: "a".repeat(64),
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// What an approved check's run must show before it counts as complete, bounded and cleaned up.
+        fn an_approved_check_completes_and_cleans_up_only_on_what_was_observed;
+
+        phase the_report_nonce_has_no_supervisor_authority;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut prepared = prepared(dir.path());
+            assert!(reported_environment(&prepared).is_empty());
+            prepared.check.reported_phases = vec![super::super::ReportedCheckPhase {
+                id: "route".into(),
+                label: "Routing".into(),
+            }];
+            let informational_nonce = prepared.report_nonce.clone();
+            let report_environment = reported_environment(&prepared);
+            assert_ne!(informational_nonce, prepared.token);
+            assert_eq!(
+                report_environment,
+                vec![
+                    ("TILO_CHECK_REPORT_TOKEN".into(), informational_nonce),
+                    ("TILO_CHECK_REPORT_ID".into(), prepared.check.id.clone()),
+                ]
+            );
+            assert!(
+                report_environment
+                    .iter()
+                    .all(|(_, value)| value != &prepared.token),
+                "the supervisor permit/completion token never enters the guest environment"
+            );
+        }
+
+        phase completion_requires_matching_private_token_config_binary_and_real_status;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut prepared = prepared(dir.path());
+            assert!(completion(&prepared, b"config").unwrap().is_none());
+            for (token, config, binary, code, signal) in [
+                (
+                    "foreign".into(),
+                    hash(b"config"),
+                    "a".repeat(64),
+                    Some(0),
+                    None,
+                ),
+                (
+                    prepared.token.clone(),
+                    hash(b"other"),
+                    "a".repeat(64),
+                    Some(0),
+                    None,
+                ),
+                (
+                    prepared.token.clone(),
+                    hash(b"config"),
+                    "b".repeat(64),
+                    Some(0),
+                    None,
+                ),
+                (
+                    prepared.token.clone(),
+                    hash(b"config"),
+                    "a".repeat(64),
+                    None,
+                    None,
+                ),
+                (
+                    prepared.token.clone(),
+                    hash(b"config"),
+                    "a".repeat(64),
+                    Some(0),
+                    Some(9),
+                ),
+            ] {
+                let value = Completion {
+                    token,
+                    config_sha256: config,
+                    runtime_binary_sha256: binary,
+                    exit_code: code,
+                    signal,
+                };
+                let path = prepared
+                    .check
+                    .scratch
+                    .join(format!("completion-{}", prepared.token));
+                publish_private(&path, &serde_json::to_vec(&value).unwrap()).unwrap();
+                assert!(completion(&prepared, b"config").is_err());
+                prepared.token = uuid::Uuid::new_v4().to_string();
+            }
+            let value = Completion {
+                token: prepared.token.clone(),
+                config_sha256: hash(b"config"),
+                runtime_binary_sha256: "a".repeat(64),
+                exit_code: Some(23),
+                signal: None,
+            };
+            let path = prepared
+                .check
+                .scratch
+                .join(format!("completion-{}", prepared.token));
+            publish_private(&path, &serde_json::to_vec(&value).unwrap()).unwrap();
+            assert_eq!(
+                completion(&prepared, b"config").unwrap().unwrap().exit_code,
+                Some(23)
+            );
+            assert!(publish_private(&path, b"replacement").is_err());
+            assert_eq!(
+                completion(&prepared, b"config").unwrap().unwrap().exit_code,
+                Some(23)
+            );
+        }
+
+        phase cleanup_requires_observed_quiescent_manager_with_no_pid_or_pending_job;
+        {
+            let good = "LoadState=loaded\nActiveState=inactive\nMainPID=0\nJob=0\n";
+            assert!(quiescent(&unit_state(good).unwrap()));
+            assert!(quiescent(
+                &unit_state("LoadState=not-found\nActiveState=inactive\nMainPID=0\nJob=\n").unwrap()
+            ));
+            for text in [
+                "LoadState=loaded\nActiveState=activating\nMainPID=0\nJob=0\n",
+                "LoadState=loaded\nActiveState=inactive\nMainPID=0\nJob=41\n",
+                "LoadState=loaded\nActiveState=active\nMainPID=0\nJob=0\n",
+                "LoadState=loaded\nActiveState=failed\nMainPID=12\nJob=0\n",
+                "LoadState=loaded\nActiveState=inactive\nJob=0\n",
+                "LoadState=error\nActiveState=inactive\nMainPID=0\nJob=0\n",
+            ] {
+                assert!(!quiescent(&unit_state(text).unwrap()));
+            }
+            assert!(quiescent(
+                &unit_state("LoadState=not-found\nActiveState=inactive\nJob=0\n").unwrap()
+            ));
+            assert!(unit_state("LoadState=loaded\nActiveState=inactive\nMainPID=0\n").is_err());
+            assert!(
+                unit_state("LoadState=loaded\nActiveState=inactive\nMainPID=0\nJob=0\nJob=41\n")
+                    .is_err()
+            );
+        }
+
+        phase observed_kernel_values_must_actually_bound_every_aggregate_dimension;
+        {
+            assert!(validate_observation(&observation(), &limits()).is_ok());
+            for changed in [
+                CgroupObservation {
+                    cpu_max: "max 100000".into(),
+                    ..observation()
+                },
+                CgroupObservation {
+                    cpu_max: "100001 100000".into(),
+                    ..observation()
+                },
+                CgroupObservation {
+                    cpu_max: "1 0".into(),
+                    ..observation()
+                },
+                CgroupObservation {
+                    memory_max: "max".into(),
+                    ..observation()
+                },
+                CgroupObservation {
+                    memory_max: "67108865".into(),
+                    ..observation()
+                },
+                CgroupObservation {
+                    memory_swap_max: "1".into(),
+                    ..observation()
+                },
+                CgroupObservation {
+                    pids_max: "33".into(),
+                    ..observation()
+                },
+                CgroupObservation {
+                    pids_max: "max".into(),
+                    ..observation()
+                },
+            ] {
+                assert!(validate_observation(&changed, &limits()).is_err());
+            }
+        }
+
+        phase private_check_refuses_symlink_hardlink_public_input_and_unbounded_files;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let input = dir.path().join("input");
+            private_file(&input, b"check").unwrap();
+            assert_eq!(read_private(&input).unwrap(), b"check");
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(&input, &link).unwrap();
+            assert!(read_private(&link).is_err());
+            std::fs::hard_link(&input, dir.path().join("hard")).unwrap();
+            assert!(read_private(&input).is_err());
+            let large = dir.path().join("large");
+            private_file(&large, &vec![0; 65537]).unwrap();
+            assert!(read_private(&large).is_err());
+            let public = dir.path().join("public");
+            std::fs::write(&public, b"unsafe").unwrap();
+            assert!(read_private(&public).is_err());
+        }
+    }
+}

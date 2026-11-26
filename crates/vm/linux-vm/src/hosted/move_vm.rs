@@ -947,3 +947,293 @@ fn clear(dir: &Path) -> io::Result<()> {
         _ => Ok(()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::FileExt as _;
+
+    use super::super::firecracker::allocated;
+    use super::super::meter::{Meter, VmIdentity};
+    use super::*;
+    use tilo_server_protocol::hosted_vm::VmSize;
+
+    use super::super::firecracker::tests::files;
+
+    /// A VM's state on disk: a sparse disk with data in two places, a snapshot, a
+    /// configuration and a meter.
+    fn with_vm(dir: &Path) -> VmFiles {
+        let files = files(dir);
+        std::fs::create_dir_all(files.vmm()).unwrap();
+        let disk = std::fs::File::create(files.disk()).unwrap();
+        disk.set_len(48 << 20).unwrap();
+        disk.write_all_at(b"the tenant's tools", 0).unwrap();
+        disk.write_all_at(b"at forty mebibytes", 40 << 20).unwrap();
+        let memory = std::fs::File::create(files.snapshot().memory).unwrap();
+        memory.set_len(64 << 20).unwrap();
+        memory.write_all_at(b"a page", 8 << 20).unwrap();
+        std::fs::write(files.snapshot().state, b"vcpus").unwrap();
+        std::fs::write(files.config(), b"{}").unwrap();
+        Meter::new(VmIdentity {
+            vm: "ws/default".into(),
+            workspace: "ws".into(),
+            environment: "default".into(),
+            account: "acct-1".into(),
+            size: VmSize::Small,
+        })
+        .save(&files.meter())
+        .unwrap();
+        files
+    }
+
+    /// One transfer between two machines, side by side.
+    fn transfer(
+        from: &VmFiles,
+        to: &VmFiles,
+        kind: Kind,
+    ) -> (Result<u64, MoveError>, Result<u64, MoveError>) {
+        let (mut here, there) = std::os::unix::net::UnixStream::pair().unwrap();
+        let target = to.clone();
+        let receiving = std::thread::spawn(move || {
+            let mut link = there;
+            let offer = hello(&mut link)?;
+            receive(&offer, &target, &mut link)
+        });
+        let sent = send(from, "ws/default", &Part::ALL, kind, &mut here);
+        let received = receiving.join().unwrap();
+        (sent, received)
+    }
+
+    #[test]
+    fn a_vm_arrives_whole_with_its_holes_still_holes() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = with_vm(&dir.path().join("from"));
+        let to = files(&dir.path().join("to"));
+        let (sent, received) = transfer(&from, &to, Kind::Take);
+        let (sent, received) = (sent.unwrap(), received.unwrap());
+        assert_eq!(sent, received, "what was sent is what arrived");
+        assert!(
+            sent < 4096,
+            "the bytes it holds, not its 48 MiB of disk: {sent} bytes"
+        );
+        assert!(
+            to.snapshot().valid(),
+            "it arrives asleep, to wake where it is"
+        );
+        assert!(to.meter().is_file());
+        assert_eq!(
+            std::fs::metadata(to.disk()).unwrap().len(),
+            48 << 20,
+            "as long as it was"
+        );
+        assert!(
+            allocated(&to.disk()) < 1 << 20,
+            "and as sparse: {} bytes stored",
+            allocated(&to.disk())
+        );
+        let mut head = [0_u8; 18];
+        std::fs::File::open(to.disk())
+            .unwrap()
+            .read_exact_at(&mut head, 0)
+            .unwrap();
+        assert_eq!(&head, b"the tenant's tools");
+        let mut far = [0_u8; 18];
+        std::fs::File::open(to.disk())
+            .unwrap()
+            .read_exact_at(&mut far, 40 << 20)
+            .unwrap();
+        assert_eq!(&far, b"at forty mebibytes");
+        assert!(
+            !incoming(&to.state).exists(),
+            "nothing of the transfer stays"
+        );
+        assert_eq!(
+            Meter::load(&to.meter()).unwrap().identity.vm,
+            "ws/default",
+            "the same VM wherever it lives"
+        );
+    }
+
+    /// A stream that closes after `left` bytes read.
+    struct Cut {
+        inner: std::os::unix::net::UnixStream,
+        left: usize,
+    }
+
+    impl Read for Cut {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.left == 0 {
+                return Ok(0);
+            }
+            let want = buf.len().min(self.left);
+            let read = self.inner.read(buf.get_mut(..want).unwrap_or_default())?;
+            self.left = self.left.saturating_sub(read);
+            Ok(read)
+        }
+    }
+
+    impl Write for Cut {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.inner.write(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.inner.flush()
+        }
+    }
+
+    #[test]
+    fn a_transfer_cut_short_carries_on_from_its_last_whole_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = files(&dir.path().join("from"));
+        std::fs::create_dir_all(from.vmm()).unwrap();
+        // Four blocks of data, so a transfer has whole blocks to keep.
+        let disk = std::fs::File::create(from.disk()).unwrap();
+        disk.set_len(32 << 20).unwrap();
+        let block = usize::try_from(BLOCK_BYTES).unwrap();
+        let written = vec![7_u8; block];
+        for index in 0..4_u64 {
+            disk.write_all_at(&written, index * BLOCK_BYTES).unwrap();
+        }
+        Meter::new(VmIdentity {
+            vm: "ws/default".into(),
+            workspace: "ws".into(),
+            environment: "default".into(),
+            account: "acct-1".into(),
+            size: VmSize::Small,
+        })
+        .save(&from.meter())
+        .unwrap();
+        let to = files(&dir.path().join("to"));
+        let (mut here, there) = std::os::unix::net::UnixStream::pair().unwrap();
+        let cut = Cut {
+            inner: there,
+            // Two whole block frames and a few bytes of the third.
+            left: block.saturating_mul(2).saturating_add(1 << 12),
+        };
+        let target = to.clone();
+        let receiving = std::thread::spawn(move || {
+            let mut link = cut;
+            let offer = hello(&mut link)?;
+            receive(&offer, &target, &mut link)
+        });
+        assert!(send(&from, "ws/default", &Part::ALL, Kind::Take, &mut here).is_err());
+        assert!(receiving.join().unwrap().is_err());
+        assert!(
+            incoming(&to.state).exists(),
+            "what arrived is kept for the next try"
+        );
+        assert_eq!(
+            std::fs::read_dir(to.state.join("incoming"))
+                .unwrap()
+                .count(),
+            3,
+            "the VM's name, what of the disk arrived and its journal of whole blocks"
+        );
+
+        let (sent, received) = transfer(&from, &to, Kind::Take);
+        let meter = std::fs::metadata(from.meter()).unwrap().len();
+        assert_eq!(
+            sent.unwrap(),
+            BLOCK_BYTES.saturating_mul(2).saturating_add(meter),
+            "the two blocks it already has are not sent again"
+        );
+        assert_eq!(
+            received.unwrap(),
+            BLOCK_BYTES.saturating_mul(2).saturating_add(meter),
+            "and only the rest arrives"
+        );
+        assert!(to.meter().is_file());
+        let mut head = [0_u8; 4];
+        std::fs::File::open(to.disk())
+            .unwrap()
+            .read_exact_at(&mut head, 0)
+            .unwrap();
+        assert_eq!(head, [7, 7, 7, 7]);
+    }
+
+    #[test]
+    fn a_replica_carries_only_the_blocks_that_changed_and_never_a_newer_disk_with_old_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = with_vm(&dir.path().join("from"));
+        let to = files(&dir.path().join("to"));
+        let (sent, received) = transfer(&from, &to, Kind::Replica);
+        let (sent, received) = (sent.unwrap(), received.unwrap());
+        assert_eq!(sent, received);
+        assert!(sent < 4096, "{sent} bytes");
+        assert!(
+            to.snapshot().valid(),
+            "asleep at the source: the copy restores"
+        );
+        // The VM ran and wrote one block of its disk while it was away.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(from.disk())
+            .unwrap()
+            .write_all_at(b"a later write", 20 << 20)
+            .unwrap();
+        let (sent, received) = transfer(&from, &to, Kind::Replica);
+        assert_eq!(received.unwrap(), 13, "the bytes of the block that changed");
+        assert_eq!(sent.unwrap(), 13, "one changed block, not the whole disk");
+        assert!(
+            !to.snapshot().state.exists(),
+            "a newer disk never pairs with the memory of an older one: it boots afresh"
+        );
+        let mut written = [0_u8; 13];
+        std::fs::File::open(to.disk())
+            .unwrap()
+            .read_exact_at(&mut written, 20 << 20)
+            .unwrap();
+        assert_eq!(&written, b"a later write");
+    }
+
+    #[test]
+    fn a_block_that_does_not_hash_to_what_was_offered_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let to = files(&dir.path().join("to"));
+        let (mut here, there) = std::os::unix::net::UnixStream::pair().unwrap();
+        let target = to.clone();
+        let receiving = std::thread::spawn(move || {
+            let mut link = there;
+            let offer = hello(&mut link)?;
+            receive(&offer, &target, &mut link)
+        });
+        let block = usize::try_from(BLOCK_BYTES).unwrap();
+        let data = vec![1_u8; block];
+        Frame::Offer(Offer {
+            vm: "ws/default".into(),
+            kind: Kind::Take,
+            files: BTreeMap::from([(
+                "disk.raw".to_owned(),
+                FileState {
+                    len: BLOCK_BYTES,
+                    digest: digest_of_blocks(&[digest_of(&data)]),
+                    blocks: Vec::new(),
+                },
+            )]),
+        })
+        .written(&mut here)
+        .unwrap();
+        assert!(matches!(
+            Frame::read(&mut here).unwrap(),
+            Some(Frame::Resume { .. })
+        ));
+        // A block whose bytes are not the digest announced for it.
+        Frame::Block {
+            file: "disk.raw".into(),
+            index: 0,
+            digest: [9; 32],
+            data,
+        }
+        .written(&mut here)
+        .unwrap();
+        assert!(matches!(
+            Frame::read(&mut here).unwrap(),
+            Some(Frame::Refuse { .. })
+        ));
+        assert!(receiving.join().unwrap().is_err());
+        assert!(
+            !incoming(&to.state).join("disk.raw").exists(),
+            "nothing half-arrived is a disk"
+        );
+    }
+}

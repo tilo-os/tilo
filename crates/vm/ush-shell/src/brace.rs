@@ -185,3 +185,21 @@ fn sequence(inner: &str) -> Option<Vec<String>> {
             .collect(),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lists_ranges_and_widths() {
+        assert_eq!(expand("a{b,c}d"), ["abd", "acd"]);
+        assert_eq!(expand("{1..3}"), ["1", "2", "3"]);
+        assert_eq!(expand("-{01..03}-"), ["-01-", "-02-", "-03-"]);
+        assert_eq!(expand("{a,{1...3}}"), ["a", "{1...3}"]);
+        assert_eq!(expand("{x}"), ["{x}"]);
+        assert_eq!(expand("'{a,b}'"), ["'{a,b}'"]);
+        assert_eq!(expand("${x}{a,b}"), ["${x}a", "${x}b"]);
+        assert_eq!(expand("{a..e..2}"), ["a", "c", "e"]);
+        assert_eq!(expand("{a,b}{1,2}"), ["a1", "a2", "b1", "b2"]);
+    }
+}

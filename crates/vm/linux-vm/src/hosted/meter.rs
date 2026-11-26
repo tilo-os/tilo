@@ -301,3 +301,154 @@ pub fn summarize(records: &[UsageEntry], from_ms: u64, to_ms: u64) -> Vec<SizeUs
     }
     by_size.into_values().collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn identity(size: VmSize) -> VmIdentity {
+        VmIdentity {
+            vm: "ws1/default".into(),
+            workspace: "ws1".into(),
+            environment: "default".into(),
+            account: "acct-1".into(),
+            size,
+        }
+    }
+
+    #[test]
+    fn runs_are_billed_per_second_across_suspends() {
+        {
+            let mut meter = Meter::new(identity(VmSize::Small));
+            let mut seconds = Vec::new();
+            for wake in 0..10_u64 {
+                let start = 1_000_000 + wake * 60_000;
+                meter.started(start, true);
+                meter.started(start + 200, true);
+                let record = meter.stopped(start + 1_500, RunEnd::Suspended).unwrap();
+                assert_eq!((record.start_ms, record.millis), (start, 1_500));
+                seconds.push(record.seconds);
+            }
+            assert_eq!(seconds, [1, 2, 1, 2, 1, 2, 1, 2, 1, 2]);
+            assert_eq!(seconds.iter().sum::<u64>(), 15);
+            assert_eq!(meter.carry_ms, 0);
+            assert_eq!(
+                meter.stopped(2_000_000, RunEnd::Stopped),
+                None,
+                "nothing ran"
+            );
+        }
+        {
+            let mut meter = Meter::new(identity(VmSize::Default));
+            meter.started(10_000, true);
+            meter.seen(14_000);
+            meter.seen(13_000);
+            let saved = serde_json::to_vec(&meter).unwrap();
+            let mut restarted: Meter = serde_json::from_slice(&saved).unwrap();
+            let record = restarted.recover().unwrap();
+            assert_eq!(
+                (record.end_ms, record.seconds, record.ended),
+                (14_000, 4, Some(RunEnd::Recovered))
+            );
+            assert!(!restarted.running());
+        }
+        {
+            let mut meter = Meter::new(identity(VmSize::Small));
+            meter.started(50_000, true);
+            let record = meter.stopped(49_000, RunEnd::Crashed).unwrap();
+            assert_eq!((record.millis, record.seconds), (0, 0));
+        }
+    }
+
+    #[test]
+    fn a_run_is_billed_from_its_first_linux_action_and_a_browser_alone_is_not() {
+        let mut meter = Meter::new(identity(VmSize::Small));
+        meter.started(10_000, false);
+        meter.seen(70_000);
+        assert_eq!(
+            meter.stopped(70_000, RunEnd::Suspended),
+            None,
+            "a VM that only held Browser bills no time: its page actions are counted"
+        );
+        meter.started(100_000, false);
+        meter.billed(130_000);
+        meter.billed(140_000);
+        let record = meter.stopped(190_000, RunEnd::Suspended).unwrap();
+        assert_eq!(
+            (record.start_ms, record.seconds),
+            (130_000, 60),
+            "from the first Linux action until it slept"
+        );
+    }
+
+    #[test]
+    fn snapshots_are_counted_apart_from_running_time() {
+        let mut meter = Meter::new(identity(VmSize::Large));
+        assert_eq!(meter.snapshot_taken(0, 2_000_000_000), None);
+        let replaced = meter.snapshot_taken(86_400_000, 1_000_000_000).unwrap();
+        assert_eq!(replaced.kind, UsageKind::Snapshot);
+        assert_eq!(
+            (replaced.seconds, replaced.snapshot_bytes),
+            (86_400, Some(2_000_000_000))
+        );
+        let dropped = meter.snapshot_dropped(86_400_000 + 43_200_000).unwrap();
+        assert_eq!(dropped.seconds, 43_200);
+        assert_eq!(meter.snapshot_dropped(0), None);
+
+        meter.started(0, true);
+        let run = meter.stopped(90_500, RunEnd::Suspended).unwrap();
+        let usage = summarize(&[replaced, dropped, run], 0, u64::MAX);
+        assert_eq!(usage.len(), 1);
+        let large = usage.first().unwrap();
+        assert_eq!(large.running_seconds, 90);
+        assert!((large.snapshot_gb_days() - 2.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_log_keeps_each_accounts_records_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = Log::new(dir.path().join("usage"));
+        let mut small = Meter::new(identity(VmSize::Small));
+        let mut other = Meter::new(VmIdentity {
+            account: "acct-2".into(),
+            ..identity(VmSize::Xlarge)
+        });
+        small.started(0, true);
+        other.started(0, true);
+        log.append(&small.stopped(3_000, RunEnd::Suspended).unwrap())
+            .unwrap();
+        log.append(&other.stopped(5_000, RunEnd::Stopped).unwrap())
+            .unwrap();
+        small.started(10_000, true);
+        log.append(&small.stopped(12_000, RunEnd::Suspended).unwrap())
+            .unwrap();
+        // A torn last line, as a crash mid-write leaves it.
+        let path = dir.path().join("usage/acct-1.jsonl");
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"{\"kind\":\"runn").unwrap();
+
+        let records = log.records("acct-1").unwrap();
+        assert_eq!(
+            records.iter().map(|r| r.seconds).collect::<Vec<_>>(),
+            [3, 2]
+        );
+        let line = std::fs::read_to_string(&path).unwrap();
+        let first = line.lines().next().unwrap();
+        for field in [
+            "\"kind\":\"running\"",
+            "\"vm\":\"ws1/default\"",
+            "\"workspace\":\"ws1\"",
+            "\"account\":\"acct-1\"",
+            "\"size\":\"small\"",
+            "\"seconds\":3",
+            "\"ended\":\"suspended\"",
+        ] {
+            assert!(first.contains(field), "{field} missing from {first}");
+        }
+        assert_eq!(log.records("acct-2").unwrap().len(), 1);
+        assert!(log.records("nobody").unwrap().is_empty());
+        assert!(log.records("../etc/passwd").is_err());
+        let usage = summarize(&records, 0, 11_000);
+        assert_eq!(usage.first().map(|u| u.running_seconds), Some(3));
+    }
+}

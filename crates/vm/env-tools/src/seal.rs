@@ -276,3 +276,20 @@ fn set_times(path: &Path) -> std::io::Result<()> {
         Err(std::io::Error::last_os_error())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exclusions_match_whole_components() {
+        assert!(is_excluded("usr/lib/sysimage/rpm"));
+        assert!(is_excluded("usr/lib/sysimage/rpm/rpmdb.sqlite"));
+        assert!(is_excluded("etc/resolv.conf"));
+        assert!(is_excluded("etc/foo.conf.rpmnew"));
+        assert!(!is_excluded("usr/lib/sysimage/rpm-ostree"));
+        assert!(!is_excluded("etc/resolv.conf.d/x"));
+        assert!(!is_excluded("usr/bin/rpm"));
+        assert!(!is_excluded("etc/passwd"));
+    }
+}

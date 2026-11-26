@@ -98,3 +98,59 @@ fn run(argv: &[&str]) -> Result<(), String> {
         Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn share(tag: &str, path: &str, read_only: bool) -> GuestShare {
+        GuestShare {
+            tag: tag.into(),
+            path: path.into(),
+            read_only,
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn shares_converge_on_the_desired_set;
+
+        phase new_shares_mount_parent_first_revoked_ones_unmount_child_first;
+        // phase: new shares mount parent-first, revoked ones unmount child-first
+        {
+            let current = vec![share("a", "/h/a", false), share("b", "/h/a/b", false)];
+            let desired = vec![share("c", "/h/c/d", false), share("e", "/h/c", true)];
+            let plan = plan(&current, &desired);
+            assert_eq!(
+                plan.unmount,
+                [share("b", "/h/a/b", false), share("a", "/h/a", false)]
+            );
+            assert_eq!(
+                plan.mount,
+                [share("e", "/h/c", true), share("c", "/h/c/d", false)]
+            );
+        }
+
+        phase an_unchanged_share_is_left_alone_a_changed_mode_remounts;
+        // phase: an unchanged share is left alone, a changed mode remounts
+        {
+            let current = vec![share("a", "/h/a", false), share("b", "/h/b", false)];
+            let desired = vec![share("a", "/h/a", false), share("b", "/h/b", true)];
+            let plan = plan(&current, &desired);
+            assert_eq!(plan.unmount, [share("b", "/h/b", false)]);
+            assert_eq!(plan.mount, [share("b", "/h/b", true)]);
+        }
+
+        phase read_only_shares_mount_read_only;
+        // phase: read-only shares mount read-only
+        {
+            assert_eq!(
+                mount_argv(&share("fs-1", "/h/a", true)),
+                ["mount", "-t", "virtiofs", "-o", "ro", "fs-1", "/h/a"]
+            );
+            assert_eq!(
+                mount_argv(&share("fs-1", "/h/a", false)),
+                ["mount", "-t", "virtiofs", "fs-1", "/h/a"]
+            );
+        }
+    }
+}

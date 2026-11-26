@@ -913,3 +913,660 @@ pub(crate) mod testing {
         socket
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ush_shell::io::Captured;
+
+    use super::testing::{fake_service, fake_vm};
+
+    tilo_test_env::scenario! {
+        /// A hosted workspace's program in its VM: the grants it is given, a refusal's words and the session's terminal.
+        fn a_program_reaches_the_workspaces_vm_with_its_grants_refusals_and_terminal;
+
+        phase writable_grants_win_over_readable_ones;
+        {
+            let shares = shares_of(
+                vec!["/srv/ws/files".into()],
+                vec!["/srv/ws/files".into(), "/srv/shared/docs".into()],
+            );
+            assert_eq!(
+                shares,
+                [
+                    ShareRequest {
+                        path: "/srv/ws/files".into(),
+                        read_only: false
+                    },
+                    ShareRequest {
+                        path: "/srv/shared/docs".into(),
+                        read_only: true
+                    }
+                ]
+            );
+        }
+
+        phase a_plans_refusal_reaches_the_program_word_for_word;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("hosted.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request: Request = control::FRAMING.read_value(&mut stream).unwrap().unwrap();
+                let Request::Ensure { vm, shares } = request else {
+                    panic!("an ensure");
+                };
+                assert_eq!(
+                    (
+                        vm.workspace.as_str(),
+                        vm.environment.as_str(),
+                        vm.account.as_str(),
+                        vm.size
+                    ),
+                    ("ws1", "default", "acct-1", VmSize::Large)
+                );
+                assert_eq!(shares.len(), 1);
+                control::FRAMING
+                    .write_value(
+                        &mut stream,
+                        &Reply::Refused(server_account::Refusal {
+                            reason: server_account::Reason::TooManyRunning {
+                                limit: 1,
+                                running: vec!["ws2".into()],
+                            },
+                            message: "Your plan runs at most 1 Linux VM at a time.".into(),
+                            next: Vec::new(),
+                        }),
+                    )
+                    .unwrap();
+            });
+            let programs = HostedPrograms::new(
+                HostedTarget {
+                    socket,
+                    account: "acct-1".into(),
+                    size: VmSize::Large,
+                    plans: None,
+                },
+                "ws1".into(),
+                "default".into(),
+                "/srv/ws1/files".into(),
+                Box::new(|| shares_of(vec!["/srv/ws1/files".into()], Vec::new())),
+            );
+            let (stderr, err) = Output::buffer();
+            let io = Stdio {
+                stderr,
+                ..Stdio::null()
+            };
+            let ran = programs.run(
+                &["cargo".into()],
+                &[],
+                Path::new("/srv/ws1/files"),
+                &io,
+                None,
+            );
+            server.join().unwrap();
+            assert_eq!(ran, Program::Exited(126));
+            assert_eq!(
+                String::from_utf8(err.take()).unwrap(),
+                "ush: cargo: Your plan runs at most 1 Linux VM at a time.\n"
+            );
+        }
+
+        phase a_program_on_the_sessions_terminal_gets_its_keys_and_size_in_the_vm;
+        {
+            use std::os::fd::FromRawFd as _;
+            let dir = tempfile::tempdir().unwrap();
+            let socket = fake_service(dir.path(), fake_vm(dir.path()));
+            let (mut master, mut slave) = (-1, -1);
+            let size = libc::winsize {
+                ws_row: 33,
+                ws_col: 101,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            };
+            let opened = unsafe {
+                libc::openpty(
+                    &raw mut master,
+                    &raw mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    &raw const size,
+                )
+            };
+            assert_eq!(opened, 0);
+            // SAFETY: openpty succeeded; both descriptors are owned only here.
+            let (master, slave) =
+                unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+            let mut keys = std::fs::File::from(master);
+            let programs = HostedPrograms::new(
+                HostedTarget {
+                    socket,
+                    account: "acct-1".into(),
+                    size: VmSize::Small,
+                    plans: None,
+                },
+                "ws1".into(),
+                "default".into(),
+                "/srv/ws1/files".into(),
+                Box::new(Vec::new),
+            )
+            .terminal(slave.try_clone().unwrap());
+            assert!(
+                programs.terminal.lock().unwrap().is_some(),
+                "a pty is a terminal"
+            );
+            let (stdout, out) = Output::buffer();
+            let io = Stdio {
+                stdin: Input::host(std::fs::File::from(slave.try_clone().unwrap())),
+                stdout: Output::host(Std::Out, OutputWriter2(stdout)),
+                stderr: Output::null(),
+            };
+            let typist = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(500));
+                keys.write_all(b"secret\r").unwrap();
+                keys
+            });
+            let ran = programs.run(
+                &[
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "stty size; printf 'name? '; read name; echo \"hi $name\"".into(),
+                ],
+                &[],
+                Path::new("/"),
+                &io,
+                None,
+            );
+            let _keys = typist.join().unwrap();
+            assert_eq!(ran, Program::Exited(0));
+            let out = String::from_utf8(out.take()).unwrap();
+            assert!(
+                out.contains("33 101"),
+                "the VM's terminal has the session's size: {out:?}"
+            );
+            assert!(out.contains("name? "), "{out:?}");
+            assert!(
+                out.contains("hi secret"),
+                "the typed line reached the program: {out:?}"
+            );
+            let mut modes: libc::termios = unsafe { std::mem::zeroed() };
+            assert_eq!(
+                unsafe { libc::tcgetattr(slave.as_raw_fd(), &raw mut modes) },
+                0
+            );
+            assert_ne!(modes.c_lflag & libc::ICANON, 0);
+        }
+    }
+
+    /// The workspace's server, as far as the machine's agent socket sees it: it answers each
+    /// line a connection sends with `admitted <line>`, and keeps where each came from.
+    #[derive(Default)]
+    struct Admitting(std::sync::Mutex<Vec<AgentConnection>>);
+
+    impl MachineAgents for Admitting {
+        fn serve(&self, mut from: AgentConnection, mut stream: std::os::unix::net::UnixStream) {
+            assert!(from.program.contains("python"), "{from:?}");
+            from.program.clear();
+            self.0.lock().unwrap().push(from);
+            let mut line = Vec::new();
+            let mut byte = [0_u8; 1];
+            while std::io::Read::read(&mut stream, &mut byte).is_ok_and(|read| read == 1) {
+                if byte[0] == b'\n' {
+                    let answer = format!("admitted {}\n", String::from_utf8_lossy(&line));
+                    let _ = stream.write_all(answer.as_bytes());
+                    line.clear();
+                } else {
+                    line.push(byte[0]);
+                }
+            }
+        }
+    }
+
+    /// A stand-in for `tilo-runtime --connect`: connects where `TILO_AGENT_SOCK` says, says
+    /// one line and prints its answer.
+    const CONNECTS: &str = r#"
+import os, socket
+s = socket.socket(socket.AF_UNIX)
+s.connect(os.environ["TILO_AGENT_SOCK"])
+s.sendall(b"initialize\n")
+print("answered " + s.makefile("rb").readline().decode().strip(), flush=True)
+"#;
+
+    tilo_test_env::scenario! {
+        fn a_program_in_the_machine_reaches_the_workspaces_server_at_its_agent_socket;
+
+        phase its_connection_reaches_the_server_named_by_its_workspace_and_session;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = fake_service(dir.path(), fake_vm(dir.path()));
+            let server = std::sync::Arc::new(Admitting::default());
+            let programs = HostedPrograms::new(
+                HostedTarget {
+                    socket,
+                    account: "acct-1".into(),
+                    size: VmSize::Small,
+                    plans: None,
+                },
+                "ws1".into(),
+                "dev".into(),
+                FILES.into(),
+                Box::new(Vec::new),
+            )
+            .serving_agents(std::sync::Arc::clone(&server) as std::sync::Arc<dyn MachineAgents>, "s1");
+            let (stdout, out) = Output::buffer();
+            let io = Stdio {
+                stdout,
+                ..Stdio::null()
+            };
+            let ran = programs.run(
+                &["python3".into(), "-I".into(), "-c".into(), CONNECTS.into()],
+                &[],
+                Path::new("/"),
+                &io,
+                None,
+            );
+            let out = String::from_utf8(out.take()).unwrap();
+            assert_eq!(ran, Program::Exited(0), "{out}");
+            assert!(out.contains("answered admitted initialize"), "{out}");
+            assert_eq!(
+                *server.0.lock().unwrap(),
+                [AgentConnection {
+                    workspace: "ws1".into(),
+                    environment: "dev".into(),
+                    session: "s1".into(),
+                    agent: false,
+                    program: String::new(),
+                }]
+            );
+        }
+
+        phase a_host_that_serves_no_agents_leaves_the_socket_unnamed;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = fake_service(dir.path(), fake_vm(dir.path()));
+            let programs = HostedPrograms::new(
+                HostedTarget {
+                    socket,
+                    account: "acct-1".into(),
+                    size: VmSize::Small,
+                    plans: None,
+                },
+                "ws1".into(),
+                "dev".into(),
+                FILES.into(),
+                Box::new(Vec::new),
+            );
+            let (stdout, out) = Output::buffer();
+            let io = Stdio {
+                stdout,
+                ..Stdio::null()
+            };
+            let ran = programs.run(
+                &["/bin/sh".into(), "-c".into(), "echo \"[${TILO_AGENT_SOCK-}]\"".into()],
+                &[],
+                Path::new("/"),
+                &io,
+                None,
+            );
+            assert_eq!(ran, Program::Exited(0));
+            assert_eq!(String::from_utf8(out.take()).unwrap(), "[]\n");
+        }
+    }
+
+    struct OutputWriter2(Output);
+
+    impl Write for OutputWriter2 {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.write_all(buf)?;
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    const KEY: &str = "0123456789abcdef0123";
+
+    /// The workspace's files as a session's shell names them.
+    const FILES: &str = "/srv/ws1/files";
+
+    fn session(
+        host: &test_host::TestHost,
+        account: &str,
+    ) -> (HostedPrograms, Stdio, Captured, Captured) {
+        let programs = HostedPrograms::new(
+            host.target(account),
+            "ws1".into(),
+            "default".into(),
+            FILES.into(),
+            Box::new(Vec::new),
+        )
+        .with_marks_key(Some(KEY.into()));
+        let (_, out) = Output::buffer();
+        let (_, err) = Output::buffer();
+        let io = Stdio {
+            stdout: Output::host(Std::Out, out.clone()),
+            stderr: Output::host(Std::Err, err.clone()),
+            ..Stdio::null()
+        };
+        (programs, io, out, err)
+    }
+
+    fn held(text: &str) -> Option<(bool, server_account::Refusal)> {
+        use base64::Engine as _;
+        let mark = text.split("\x1b]133;W;").nth(1)?.split('\x07').next()?;
+        let mut agent = None;
+        let mut refusal = None;
+        for field in mark.split(';') {
+            match field.split_once('=') {
+                Some(("k", key)) => assert_eq!(key, KEY),
+                Some(("a", flag)) => agent = Some(flag == "1"),
+                Some(("r", json)) => {
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(json)
+                        .unwrap();
+                    refusal = Some(serde_json::from_slice(&bytes).unwrap());
+                }
+                _ => panic!("an unknown field in {mark:?}"),
+            }
+        }
+        Some((agent?, refusal?))
+    }
+
+    tilo_test_env::scenario! {
+        /// A command that needs a Linux machine the account or the host cannot give yet.
+        fn a_command_the_account_cannot_run_yet_is_held_refused_or_cancelled;
+
+        phase a_persons_command_without_a_card_waits_for_one_then_runs;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let host = test_host::TestHost::start(dir.path());
+            let (programs, io, out, err) = session(&host, "acct-1");
+            let running = std::thread::spawn(move || {
+                programs.run(
+                    &["cargo".into(), "build".into()],
+                    &[],
+                    Path::new("/"),
+                    &io,
+                    None,
+                )
+            });
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mark = loop {
+                let text = String::from_utf8_lossy(&err.peek()).into_owned();
+                if let Some(mark) = held(&text) {
+                    break mark;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "no held mark: {text:?}"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            let (agent, refusal) = mark;
+            assert!(!agent);
+            assert_eq!(refusal.reason, server_account::Reason::NoPaymentMethod);
+            assert_eq!(
+                refusal
+                    .step(server_account::NextStepKind::AddPaymentMethod)
+                    .and_then(|step| step.url.as_deref()),
+                Some("https://tilo.sh/billing/card?account=acct-1")
+            );
+            assert!(!running.is_finished(), "a person's command waits");
+            host.add_card("acct-1");
+            assert_eq!(running.join().unwrap(), Program::Exited(0));
+            assert_eq!(String::from_utf8(out.take()).unwrap(), "ran cargo build\n");
+            let terminal = String::from_utf8(err.take()).unwrap();
+            assert!(
+                terminal.ends_with(&format!("\x1b]133;U;k={KEY}\x07")),
+                "{terminal:?}"
+            );
+            assert!(host.wakes_asked() >= 2);
+        }
+
+        phase cancelling_a_held_command_ends_it_having_run_nothing;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let host = test_host::TestHost::start(dir.path());
+            let (programs, io, out, err) = session(&host, "acct-1");
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let cancelled = std::sync::Arc::clone(&cancel);
+            let running = std::thread::spawn(move || {
+                let stop = move || cancelled.load(std::sync::atomic::Ordering::SeqCst);
+                programs.run(&["cargo".into()], &[], Path::new("/"), &io, Some(&stop))
+            });
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while held(&String::from_utf8_lossy(&err.peek())).is_none() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the command was never held"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(running.join().unwrap(), Program::Exited(130));
+            assert!(out.take().is_empty());
+            let terminal = String::from_utf8(err.take()).unwrap();
+            assert!(
+                terminal.contains("ush: cargo: cancelled. Nothing ran, because no card was added.\n"),
+                "{terminal:?}"
+            );
+            assert!(terminal.contains(&format!("\x1b]133;U;k={KEY}\x07")));
+        }
+
+        phase an_agents_command_is_refused_at_once_with_the_typed_refusal;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let host = test_host::TestHost::start(dir.path());
+            let (programs, io, out, err) = session(&host, "acct-1");
+            let ran = programs.run(
+                &["cargo".into()],
+                &[("USH_RENDER".into(), "agent".into())],
+                Path::new("/"),
+                &io,
+                None,
+            );
+            assert_eq!(ran, Program::Exited(126));
+            assert_eq!(host.wakes_asked(), 1, "an agent's command never waits");
+            assert!(out.take().is_empty());
+            let terminal = String::from_utf8(err.take()).unwrap();
+            let (agent, refusal) = held(&terminal).expect("Terminal gets the typed refusal");
+            assert!(agent);
+            assert_eq!(refusal.reason, server_account::Reason::NoPaymentMethod);
+            assert!(
+                terminal.ends_with(
+                    "ush: cargo: This needs a Linux machine. Tilo Cloud runs Linux machines for \
+                 accounts with a card on file, and this account has none yet. Add a card to \
+                 continue. Ask the person to add a card; Terminal shows them where. Then run \
+                 the command again.\n"
+                ),
+                "{terminal:?}"
+            );
+        }
+
+        phase a_command_waiting_for_room_ends_when_cancelled_having_run_nothing;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let host = test_host::TestHost::start(dir.path());
+            std::fs::write(host.plans(), b"{}").unwrap();
+            host.full_for(usize::MAX);
+            let (programs, io, out, err) = session(&host, "acct-1");
+            let stop = || true;
+            let ran = programs.run(&["cargo".into()], &[], Path::new("/"), &io, Some(&stop));
+            assert_eq!(ran, Program::Exited(130));
+            assert!(out.take().is_empty());
+            assert!(
+                String::from_utf8(err.take()).unwrap().ends_with(
+                    "ush: cargo: cancelled. Nothing ran, because no machine had room yet.\n"
+                )
+            );
+        }
+
+        phase a_host_that_sells_nothing_runs_the_command_with_no_prompt;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let host = test_host::TestHost::start(dir.path());
+            std::fs::write(host.plans(), b"{}").unwrap();
+            let (programs, io, out, err) = session(&host, "acct-1");
+            let ran = programs.run(&["make".into()], &[], Path::new("/"), &io, None);
+            assert_eq!(ran, Program::Exited(0));
+            assert_eq!(String::from_utf8(out.take()).unwrap(), "ran make\n");
+            assert!(err.take().is_empty(), "no prompt, no mark");
+        }
+    }
+
+    #[test]
+    fn a_command_waits_while_no_machine_has_room_then_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = test_host::TestHost::start(dir.path());
+        std::fs::write(host.plans(), b"{}").unwrap();
+        host.full_for(2);
+        let (programs, io, out, err) = session(&host, "acct-1");
+        // An agent's command waits too: being full is never a refusal.
+        let ran = programs.run(
+            &["cargo".into(), "build".into()],
+            &[("USH_RENDER".into(), "agent".into())],
+            Path::new("/"),
+            &io,
+            None,
+        );
+        assert_eq!(ran, Program::Exited(0));
+        assert_eq!(host.wakes_asked(), 3, "asked again until there was room");
+        assert_eq!(String::from_utf8(out.take()).unwrap(), "ran cargo build\n");
+        assert_eq!(
+            String::from_utf8(err.take()).unwrap(),
+            "ush: cargo: The machine is full until one of its VMs goes idle. Waiting; Ctrl+C \
+             cancels.\n",
+            "said once, however long it waits"
+        );
+    }
+
+    #[test]
+    fn a_run_reaches_the_vm_with_the_workspaces_files_as_home_and_the_vms_disk_for_caches() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = test_host::TestHost::start(dir.path());
+        std::fs::write(host.plans(), b"{}").unwrap();
+        let files = dir.path().join("files");
+        std::fs::create_dir_all(&files).unwrap();
+        let programs = HostedPrograms::new(
+            host.target("acct-1"),
+            "ws1".into(),
+            "default".into(),
+            files.clone(),
+            Box::new(Vec::new),
+        );
+        let (stdout, _out) = Output::buffer();
+        let io = Stdio {
+            stdout,
+            ..Stdio::null()
+        };
+        let ran = programs.run(
+            &["cargo".into(), "build".into()],
+            &[("HOME".into(), "/root".into())],
+            &files,
+            &io,
+            None,
+        );
+        assert_eq!(ran, Program::Exited(0));
+        let (argv, env) = host.launched().pop().expect("the VM was asked to run it");
+        assert_eq!(argv, ["cargo", "build"]);
+        let get = |name: &str| {
+            env.iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+        };
+        assert_eq!(
+            get("HOME"),
+            Some(files.display().to_string()),
+            "the shell's `~`, even over what the run was given"
+        );
+        assert_eq!(get("XDG_CACHE_HOME"), Some("/home/tilo/.cache".into()));
+        assert_eq!(get("XDG_DATA_HOME"), Some("/home/tilo/.local/share".into()));
+        assert_eq!(get("CARGO_HOME"), Some("/home/tilo/.cargo".into()));
+        assert_eq!(get("RUSTUP_HOME"), Some("/home/tilo/.rustup".into()));
+        assert_eq!(get("NPM_CONFIG_CACHE"), Some("/home/tilo/.npm".into()));
+        assert_eq!(get("CARGO_TARGET_DIR"), Some("/var/tmp/tilo/target".into()));
+        assert_eq!(
+            get("PATH"),
+            Some(format!(
+                "{}/.local/bin:/usr/local/bin:/usr/bin:/bin",
+                files.display()
+            )),
+            "what the person installed in `~` comes first"
+        );
+        assert_eq!(
+            get("NPM_CONFIG_PREFIX"),
+            Some(format!("{}/.local", files.display())),
+            "`npm install --global` installs into `~`"
+        );
+    }
+
+    #[test]
+    fn a_program_works_in_the_workspaces_files_and_writes_its_machines_cache_outside_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = fake_service(dir.path(), fake_vm(dir.path()));
+        let files = dir.path().join("files");
+        std::fs::create_dir_all(&files).unwrap();
+        let shared = files.clone();
+        let programs = HostedPrograms::new(
+            HostedTarget {
+                socket,
+                account: "acct-1".into(),
+                size: VmSize::Small,
+                plans: None,
+            },
+            "ws1".into(),
+            "default".into(),
+            files.clone(),
+            Box::new(move || shares_of(vec![shared.clone()], Vec::new())),
+        );
+        let (stdout, out) = Output::buffer();
+        let io = Stdio {
+            stdout,
+            ..Stdio::null()
+        };
+        let asked = files.display().to_string();
+        let ran = programs.run(
+            &[
+                "/bin/sh".into(),
+                "-c".into(),
+                "printf '%s\\n' \"$HOME\" \"$XDG_CACHE_HOME\" \"$CARGO_HOME\" \
+                 \"$CARGO_TARGET_DIR\"; echo x > ~/f"
+                    .into(),
+            ],
+            &[
+                ("HOME".into(), "/root".into()),
+                (
+                    "XDG_CACHE_HOME".into(),
+                    files.join(".cache").display().to_string(),
+                ),
+            ],
+            &files,
+            &io,
+            None,
+        );
+        assert_eq!(ran, Program::Exited(0));
+        let said = String::from_utf8(out.take()).unwrap();
+        assert_eq!(
+            said.lines().collect::<Vec<_>>(),
+            [
+                asked.as_str(),
+                "/home/tilo/.cache",
+                "/home/tilo/.cargo",
+                "/var/tmp/tilo/target",
+            ],
+            "the machine's own paths, over the run's"
+        );
+        assert_eq!(
+            std::fs::read_to_string(files.join("f")).unwrap(),
+            "x\n",
+            "`~` is the workspace's files"
+        );
+        assert!(
+            !files.join(".cache").exists(),
+            "no cache of the machine's landed in the workspace's files"
+        );
+    }
+}

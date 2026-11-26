@@ -153,3 +153,71 @@ impl Grants {
         out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shares_are_exactly_the_granted_directories() {
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("grants.json");
+            assert!(Grants::load(&file).shares(Some(0)).is_empty());
+            let mut grants = Grants::default();
+            grants.grant(Path::new("/var/home/you/src"), false).unwrap();
+            grants
+                .grant(Path::new("/var/home/you/Music"), true)
+                .unwrap();
+            grants.save(&file).unwrap();
+            let shares = Grants::load(&file).shares(Some(0));
+            assert_eq!(
+                shares,
+                [
+                    HostShare {
+                        path: "/var/home/you/Music".into(),
+                        read_only: true
+                    },
+                    HostShare {
+                        path: "/var/home/you/src".into(),
+                        read_only: false
+                    },
+                ]
+            );
+            assert!(shares[0].tag().len() <= 36);
+            assert_ne!(shares[0].tag(), shares[1].tag());
+            assert!(shares[1].guest().validate().is_ok());
+        }
+        {
+            let mut grants = Grants::default();
+            assert_eq!(grants.grant(Path::new("/usr/lib"), false), None);
+            assert_eq!(grants.grant(Path::new("relative"), false), None);
+            grants.capabilities.push(
+                CapOverride::grant(
+                    Grantee::person("local"),
+                    Scope::FsPath("/var/home/you/other".into()),
+                    Access::Write,
+                )
+                .through("so.tilo.ush"),
+            );
+            assert!(grants.shares(Some(0)).is_empty());
+        }
+        {
+            let mut grants = Grants::default();
+            grants.grant(Path::new("/var/home/you/src"), false).unwrap();
+            grants.capabilities.push(
+                CapOverride::new(
+                    Grantee::person("local"),
+                    Scope::FsPath("/var/home/you/src".into()),
+                    Effect::Restrict,
+                    Access::Read,
+                )
+                .through(LINUX_VM_APP_ID),
+            );
+            assert!(grants.shares(Some(0))[0].read_only);
+            assert!(grants.revoke("/var/home/you/src"));
+            assert!(grants.shares(Some(0)).is_empty());
+            assert!(!grants.revoke("/var/home/you/src"));
+        }
+    }
+}

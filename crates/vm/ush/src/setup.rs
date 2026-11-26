@@ -73,3 +73,21 @@ pub fn attach_stderr(terminal: &OwnedFd) -> std::io::Result<OwnedFd> {
 pub fn restore_stderr(saved: BorrowedFd<'_>) {
     unsafe { libc::dup2(saved.as_raw_fd(), libc::STDERR_FILENO) };
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_setup_report_is_one_line_and_nothing_else_reads_as_one() {
+        let report = SetupReport::Failed {
+            reason: "its network namespace: denied".into(),
+        };
+        let line = report.line();
+        assert_eq!(line.matches('\n').count(), 1);
+        assert_eq!(SetupReport::parse(&line), Some(report));
+        assert_eq!(SetupReport::parse("ush: something went wrong"), None);
+        assert_eq!(SetupReport::parse(r#"{"setup":"unknown"}"#), None);
+        assert_eq!(SetupReport::parse(""), None);
+    }
+}

@@ -143,3 +143,52 @@ pub trait Field: Send + Sync {
 
     fn reply(&self, reply: &Reply);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_lease() -> Lease {
+        Lease {
+            incarnation: [1; 16],
+            generation: 2,
+            revision: 3,
+            expires_ns: 4,
+            anchor: 0,
+            focus: 5,
+        }
+    }
+
+    #[test]
+    fn debug_never_prints_prompt_text() {
+        let secret = "super-secret-prompt-text";
+        let request = Request::Replace {
+            lease: sample_lease(),
+            transaction: 7,
+            text: secret.into(),
+        };
+        let reply = Reply {
+            request: 9,
+            status: Status::Ready,
+            lease: Some(sample_lease()),
+            transaction: 7,
+            can_undo: true,
+            can_redo: false,
+            text: secret.into(),
+        };
+
+        for formatted in [
+            format!("{request:?}"),
+            format!("{request:#?}"),
+            format!("{reply:?}"),
+            format!("{reply:#?}"),
+        ] {
+            assert!(
+                !formatted.contains(secret),
+                "Debug leaked prompt text: {formatted}"
+            );
+        }
+        assert!(format!("{request:?}").contains("Replace"));
+        assert!(format!("{reply:?}").contains("Ready"));
+    }
+}

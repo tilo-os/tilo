@@ -53,3 +53,29 @@ pub fn actual_mib(dommemstat: &str) -> Option<u64> {
             .map(|kib| kib / 1024)
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_balloon_follows_guest_pressure_within_bounds() {
+        let policy = MemoryPolicy::default();
+        {
+            assert_eq!(policy.next_target(1536, 200), Some(2048));
+            assert_eq!(policy.next_target(5888, 100), Some(6144));
+            assert_eq!(policy.next_target(6144, 100), None);
+            assert_eq!(policy.next_target(4096, 900), Some(4608));
+        }
+        {
+            assert_eq!(policy.next_target(4096, 3000), Some(3584));
+            assert_eq!(policy.next_target(1792, 1500), Some(1536));
+            assert_eq!(policy.next_target(1536, 1500), None);
+            assert_eq!(policy.next_target(2048, 1000), None);
+        }
+        {
+            assert_eq!(actual_mib("actual 2097152\nrss 100\n"), Some(2048));
+            assert_eq!(actual_mib("rss 100\n"), None);
+        }
+    }
+}

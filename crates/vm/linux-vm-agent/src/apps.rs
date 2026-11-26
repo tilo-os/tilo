@@ -61,3 +61,56 @@ fn parse(contents: &str, id: &str, path: &Path) -> Option<InstalledApp> {
         terminal: entry.terminal,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flatpak_exports_become_installed_apps() {
+        let user = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        std::fs::write(
+            user.path().join("org.gnome.Calculator.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Calculator\nExec=flatpak run org.gnome.Calculator\n",
+        )
+        .unwrap();
+        std::fs::write(
+            system.path().join("org.gnome.Calculator.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Shadowed\nExec=x\n",
+        )
+        .unwrap();
+        std::fs::write(
+            system.path().join("com.visualstudio.code.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Visual Studio Code\nExec=code\nStartupWMClass=Code\n",
+        )
+        .unwrap();
+        std::fs::write(
+            system.path().join("hidden.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Hidden\nExec=x\nNoDisplay=true\n",
+        )
+        .unwrap();
+        let apps = installed(&[user.path().to_path_buf(), system.path().to_path_buf()]);
+        let names: Vec<(&str, &str, Option<&str>)> = apps
+            .iter()
+            .map(|app| {
+                (
+                    app.id.as_str(),
+                    app.name.as_str(),
+                    app.window_class.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [
+                (
+                    "org.gnome.Calculator",
+                    "Calculator",
+                    Some("org.gnome.Calculator")
+                ),
+                ("com.visualstudio.code", "Visual Studio Code", Some("Code")),
+            ]
+        );
+    }
+}

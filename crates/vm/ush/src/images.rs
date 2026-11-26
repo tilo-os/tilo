@@ -353,3 +353,289 @@ impl Images for DirImages {
         Ok((release, id))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use package_store::{Admission, CertifiedFleet, ImageShelf, ImageTrust, PackageStore, Store};
+    use tilo_app_package::manifest::Arch;
+    use tilo_app_package::{ImageSpec, Kind, Packed, SigningIdentity, seal_image};
+    use tilo_environment::{DEFAULT_RECORD, Environment};
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert, UserIdentity};
+
+    use super::*;
+    use crate::supervisor::{Session, SessionOptions};
+
+    fn seal(
+        dir: &Path,
+        kind: Kind,
+        runtime: Option<PackageId>,
+        signer: &SigningIdentity,
+    ) -> Packed {
+        let file = if kind == Kind::Tool {
+            "usr/bin/pandoc"
+        } else {
+            "usr/bin/bash"
+        };
+        std::fs::create_dir_all(dir.join("usr/bin")).unwrap();
+        std::fs::create_dir_all(dir.join("etc")).unwrap();
+        std::fs::write(dir.join(file), file).unwrap();
+        let spec = ImageSpec {
+            kind,
+            id: format!("so.tilo.{kind}"),
+            version: "44.1.0".into(),
+            name: None,
+            arch: if cfg!(target_arch = "aarch64") {
+                Arch::AArch64
+            } else {
+                Arch::X86_64
+            },
+            runtime,
+            packages: vec![format!(
+                "pandoc-0:3.1-1.fc44.{}",
+                tilo_environment::host_arch()
+            )],
+        };
+        seal_image(dir, &spec, signer).unwrap()
+    }
+
+    fn full(packed: &Packed) -> Vec<u8> {
+        tilo_app_package::tapp::to_bytes(&packed.meta, Some(packed)).unwrap()
+    }
+
+    /// Counts builds; a fetched image must not need one.
+    struct CountedBuilds(AtomicUsize);
+    impl ToolBuilder for CountedBuilds {
+        fn build(
+            &self,
+            _runtime: &PackageId,
+            _packages: &[String],
+            _progress: &mut dyn std::io::Write,
+        ) -> Result<PackageId, ToolBuildError> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Err(ToolBuildError::Failed("no builder here".into()))
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// The image store: where a tool or runtime image comes from and how it opens.
+        fn images_are_fetched_opened_and_imported_into_the_store;
+
+        phase a_tool_built_on_another_of_your_devices_is_fetched_not_rebuilt;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let ci = SigningIdentity::generate();
+            let laptop = SigningIdentity::generate();
+            let (root, user) = UserIdentity::generate("Ada", 1);
+            let mut cert = DeviceCert {
+                user_public_key: user.public_key,
+                device_public_key: laptop.public_key_bytes(),
+                device_label: "laptop".into(),
+                capabilities: DeviceCapabilities::primary(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
+            };
+            tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+            let mut fleet = CertifiedFleet::new(user.public_key);
+            fleet.certify(cert).unwrap();
+
+            let runtime = seal(&dir.path().join("runtime"), Kind::EnvRuntime, None, &ci);
+            let tool = seal(
+                &dir.path().join("tool"),
+                Kind::Tool,
+                Some(runtime.meta.id),
+                &laptop,
+            );
+            let system = dir.path().join("system");
+            PackageStore::at(&system)
+                .install_image(
+                    full(&runtime).as_slice(),
+                    |_| Ok(Admission::default()),
+                    None,
+                )
+                .unwrap();
+            let laptop_store = PackageStore::at(dir.path().join("laptop"));
+            laptop_store
+                .install_image(full(&tool).as_slice(), |_| Ok(Admission::default()), None)
+                .unwrap();
+            let shelf = ImageShelf::at(dir.path().join("synced").join(SHELF_DIR));
+            let laptop_images = StoreImages::new(Store::new(laptop_store)).with_shelf(shelf.clone());
+            laptop_images.share(&tool.meta.id).unwrap();
+
+            let server_store = |fleet: CertifiedFleet| {
+                let store = Store::new(PackageStore::at(dir.path().join("server")))
+                    .with_system(package_store::Layout::new(&system))
+                    .with_trust(ImageTrust::new().with_fleet(fleet));
+                Arc::new(StoreImages::new(store).with_shelf(shelf.clone()))
+            };
+            let builds = Arc::new(CountedBuilds(AtomicUsize::new(0)));
+            let ush = crate::store::Store::at(dir.path().join("ush"));
+            ush.ensure().unwrap();
+            crate::records::testing::keep_serving(ush.records_root());
+            let mut session = Session::new(
+                ush,
+                SessionOptions::default(),
+                server_store(fleet.clone()),
+                builds.clone(),
+            );
+            session.resolve().unwrap();
+            crate::records::Records::of(&session.store)
+                .apply(
+                    DEFAULT_RECORD,
+                    Environment::ADD_TOOL.with((
+                        vec!["pandoc".into()],
+                        tilo_environment::host_arch().into(),
+                        tool.meta.id.to_string(),
+                    )),
+                )
+                .unwrap();
+
+            let resolved = session.resolve().unwrap();
+            assert_eq!(builds.0.load(Ordering::Relaxed), 0, "fetched, not rebuilt");
+            let (label, tree) = &resolved.images[0];
+            assert!(label.contains("pandoc"), "{label}");
+            assert!(tree.starts_with(dir.path().join("server")));
+            assert!(tree.join("usr/bin/pandoc").is_file());
+
+            let mut removal = tilo_user_identity::RevocationEntry {
+                user_public_key: user.public_key,
+                revoked_device_public_key: laptop.public_key_bytes(),
+                revoked_at_ns: 2,
+                reason: tilo_user_identity::RevocationReason::Stolen,
+                signature: [0; 64],
+            };
+            tilo_user_identity::sign_revocation_entry(&mut removal, &root).unwrap();
+            fleet.revoke(removal).unwrap();
+            session.images = server_store(fleet);
+            let refused = session.resolve().unwrap_err().to_string();
+            assert!(refused.contains("removed from your devices"), "{refused}");
+            assert_eq!(builds.0.load(Ordering::Relaxed), 1, "built here instead");
+        }
+
+        phase images_of_every_shipped_package_format_open;
+        {
+            for format in tilo_app_package::tapp::READABLE_FORMATS {
+                let dir = tempfile::tempdir().unwrap();
+                let ci = SigningIdentity::generate();
+                let runtime = seal(&dir.path().join("runtime"), Kind::EnvRuntime, None, &ci);
+                let runtime_meta = at_format(&runtime, format, &ci);
+                let system = dir.path().join("system");
+                PackageStore::at(&system)
+                    .install_image(
+                        tilo_app_package::tapp::to_bytes(&runtime_meta, Some(&runtime))
+                            .unwrap()
+                            .as_slice(),
+                        |_| Ok(Admission::default()),
+                        None,
+                    )
+                    .unwrap();
+                let shelf = ImageShelf::at(dir.path().join("synced").join(SHELF_DIR));
+                let images = StoreImages::new(
+                    Store::new(PackageStore::at(dir.path().join("laptop")))
+                        .with_system(package_store::Layout::new(&system)),
+                )
+                .with_shelf(shelf.clone());
+                let (release, current) = images.current_runtime().unwrap();
+                assert_eq!((release.as_str(), current), ("44.1.0", runtime_meta.id));
+                let tree = images.tree(&current).unwrap();
+                assert!(tree.join("usr/bin/bash").is_file(), "format {format}");
+
+                let tool = seal(
+                    &dir.path().join("tool"),
+                    Kind::Tool,
+                    Some(runtime_meta.id),
+                    &ci,
+                );
+                let tool_meta = at_format(&tool, format, &ci);
+                images
+                    .store
+                    .user()
+                    .install_image(
+                        tilo_app_package::tapp::to_bytes(&tool_meta, Some(&tool))
+                            .unwrap()
+                            .as_slice(),
+                        |_| Ok(Admission::default()),
+                        None,
+                    )
+                    .unwrap();
+                images.share(&tool_meta.id).unwrap();
+                let other = StoreImages::new(
+                    Store::new(PackageStore::at(dir.path().join("desktop")))
+                        .with_system(package_store::Layout::new(&system))
+                        .with_trust(ImageTrust::new().with_publisher(ci.public_key_bytes())),
+                )
+                .with_shelf(shelf);
+                let fetched = other.tree(&tool_meta.id).unwrap();
+                assert!(fetched.join("usr/bin/pandoc").is_file(), "format {format}");
+                other.check_tool(&tool_meta.id, &runtime_meta.id).unwrap();
+            }
+        }
+
+        phase a_system_runtime_is_local_where_it_lies_and_needs_no_import;
+        {
+            // A tmpfs is a filesystem that is not itself an overlay, so the
+            // system's tree is the one an environment stacks: nothing is
+            // imported, and the image is local from the start.
+            let Ok(system) = tempfile::tempdir_in("/dev/shm") else {
+                return;
+            };
+            let dir = tempfile::tempdir().unwrap();
+            let runtime = seal(
+                &dir.path().join("runtime"),
+                Kind::EnvRuntime,
+                None,
+                &SigningIdentity::generate(),
+            );
+            PackageStore::at(system.path())
+                .install_image(
+                    full(&runtime).as_slice(),
+                    |_| Ok(Admission::default()),
+                    None,
+                )
+                .unwrap();
+            let images = StoreImages::new(
+                Store::new(PackageStore::at(dir.path().join("user")))
+                    .with_system(package_store::Layout::new(system.path())),
+            );
+
+            assert!(images.is_local(&runtime.meta.id), "no import is needed");
+            let tree = images.tree(&runtime.meta.id).unwrap();
+            assert_eq!(
+                tree,
+                package_store::Layout::new(system.path()).payload(runtime.meta.id),
+                "the system's own tree, where it lies"
+            );
+            assert!(tree.join("usr/bin/bash").is_file());
+            assert!(images.is_local(&runtime.meta.id));
+            assert_eq!(images.tree(&runtime.meta.id).unwrap(), tree);
+            assert!(
+                !images.store.user().layout().payload(runtime.meta.id).exists(),
+                "nothing was copied into this account's store"
+            );
+        }
+    }
+
+    fn at_format(
+        packed: &Packed,
+        format: u32,
+        signer: &SigningIdentity,
+    ) -> tilo_app_package::PackageMeta {
+        let mut root = tilo_app_package::SignedRoot {
+            format,
+            signature: Some([0; 64]),
+            ..packed.meta.root.clone()
+        };
+        root.signature = Some(signer.sign_signed_root(&root).unwrap());
+        tilo_app_package::PackageMeta::from_root(
+            root,
+            packed.meta.manifest_bytes.clone(),
+            packed.meta.collection_bytes.clone(),
+        )
+        .unwrap()
+    }
+}

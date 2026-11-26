@@ -344,3 +344,25 @@ fn escape(name: &str, quote: Option<char>) -> String {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_word_at_the_cursor_and_its_place() {
+        let (w, q, cmd) = words("ls -l src/ma");
+        assert_eq!(w.last().unwrap(), &(6, "src/ma".to_owned()));
+        assert_eq!((q, cmd), (None, false));
+        let (w, _, cmd) = words("cat a | gr");
+        assert_eq!(w.last().unwrap().1, "gr");
+        assert!(cmd, "after a pipe");
+        let (w, _, cmd) = words("FOO=1 ");
+        assert_eq!(w.last().unwrap().1, "");
+        assert!(cmd, "after an assignment");
+        let (w, q, _) = words("cat 'my fi");
+        assert_eq!(w.last().unwrap(), &(4, "my fi".to_owned()));
+        assert_eq!(q, Some('\''));
+        assert_eq!(escape("my file", None), "my\\ file");
+    }
+}

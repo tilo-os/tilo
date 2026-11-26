@@ -189,3 +189,159 @@ impl SessionSpec {
         out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec() -> SessionSpec {
+        SessionSpec::new(
+            "/s/bases/debian",
+            "/s/layers/a/upper",
+            "/s/layers/a/work",
+            "/s/layers/a/home",
+            "a",
+        )
+    }
+
+    fn strs(spec: &SessionSpec) -> Vec<String> {
+        spec.to_bwrap_args()
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn pos(v: &[String], needle: &str) -> usize {
+        v.iter()
+            .position(|s| s == needle)
+            .unwrap_or_else(|| panic!("missing {needle} in {v:?}"))
+    }
+
+    #[test]
+    fn sessions_isolate_the_host_home_network_and_namespaces() {
+        {
+            let v = strs(&spec());
+            // The failure mode being guarded is a `--bind / /` or `--dev-bind / /`
+            // creeping in for convenience, which would make the whole layer
+            // pointless.
+            for i in 0..v.len().saturating_sub(2) {
+                let is_bind = matches!(v[i].as_str(), "--bind" | "--dev-bind" | "--ro-bind");
+                assert!(
+                    !(is_bind && v[i + 1] == "/"),
+                    "session binds the host root: {:?}",
+                    &v[i..i + 3]
+                );
+            }
+        }
+        {
+            let v = strs(&spec());
+            let i = pos(&v, "/s/layers/a/home");
+            assert_eq!(v[i - 1], "--bind");
+            assert_eq!(v[i + 1], "/root");
+            let h = pos(&v, "HOME");
+            assert_eq!(v[h + 1], "/root");
+            assert!(!v.iter().any(|s| s.starts_with("/home/")), "{v:?}");
+        }
+        {
+            let v = strs(&spec());
+            let i = pos(&v, "--chmod");
+            assert_eq!(v[i + 1], "1777");
+            assert_eq!(v[i + 2], "/tmp");
+        }
+        {
+            // The id mapping is established before bwrap; asking bwrap for another
+            // user namespace would collapse the map back to a single uid.
+            let v = strs(&spec());
+            assert!(
+                !v.iter()
+                    .any(|s| s == "--unshare-user" || s == "--unshare-all"),
+                "{v:?}"
+            );
+            assert!(v.iter().any(|s| s == "--unshare-pid"));
+            assert!(v.iter().any(|s| s == "--die-with-parent"));
+        }
+        {
+            let mut s = spec();
+            s.network = false;
+            let v = strs(&s);
+            assert!(v.iter().any(|x| x == "--unshare-net"));
+            assert!(!v.iter().any(|x| x == "/etc/resolv.conf"));
+        }
+        {
+            let mut s = spec();
+            s.shares = vec![
+                Share {
+                    host: "/data/in".into(),
+                    guest: "/mnt/in".into(),
+                    writable: false,
+                },
+                Share {
+                    host: "/data/out".into(),
+                    guest: "/mnt/out".into(),
+                    writable: true,
+                },
+            ];
+            let v = strs(&s);
+            let i = pos(&v, "/data/in");
+            assert_eq!(v[i - 1], "--ro-bind");
+            assert_eq!(v[i + 1], "/mnt/in");
+            let j = pos(&v, "/data/out");
+            assert_eq!(v[j - 1], "--bind");
+            assert_eq!(v[j + 1], "/mnt/out");
+        }
+    }
+
+    #[test]
+    fn session_argv_stacks_overlays_and_places_the_command() {
+        {
+            let mut s = spec();
+            s.lower_layers = vec![
+                PathBuf::from("/s/layers/bottom/upper"),
+                PathBuf::from("/s/layers/mid/upper"),
+            ];
+            let v = strs(&s);
+            let base = pos(&v, "/s/bases/debian");
+            let bottom = pos(&v, "/s/layers/bottom/upper");
+            let mid = pos(&v, "/s/layers/mid/upper");
+            let upper = pos(&v, "/s/layers/a/upper");
+            // bwrap gives later --overlay-src higher precedence, so this ordering is
+            // what makes a stacked layer actually shadow the one below it.
+            assert!(base < bottom && bottom < mid && mid < upper, "{v:?}");
+            assert_eq!(v[upper - 1], "--overlay");
+            assert_eq!(v[upper + 1], "/s/layers/a/work");
+            assert_eq!(v[upper + 2], "/");
+        }
+        {
+            let v = strs(&spec());
+            let sep = pos(&v, "--");
+            assert_eq!(&v[sep + 1..], &["/bin/sh".to_string(), "-l".to_string()]);
+        }
+        {
+            let mut s = spec();
+            s.command = vec![
+                "apt-get".into(),
+                "install".into(),
+                "-y".into(),
+                "cowsay".into(),
+            ];
+            let v = strs(&s);
+            let sep = pos(&v, "--");
+            assert_eq!(&v[sep + 1..], &["apt-get", "install", "-y", "cowsay"]);
+        }
+        {
+            let text = spec().explain();
+            assert!(text.starts_with("bwrap "), "{text}");
+            assert!(
+                text.contains("--overlay /s/layers/a/upper /s/layers/a/work /"),
+                "{text}"
+            );
+        }
+        {
+            let v = strs(&spec());
+            let i = pos(&v, "TILO_LAYER");
+            assert_eq!(v[i + 1], "a");
+            let h = pos(&v, "--hostname");
+            assert_eq!(v[h + 1], "a");
+        }
+    }
+}

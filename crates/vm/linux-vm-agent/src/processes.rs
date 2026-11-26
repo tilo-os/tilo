@@ -59,3 +59,49 @@ impl Processes {
         found
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    /// A process `process` started by `parent`.
+    fn process(root: &Path, process: u32, name: &str, parent: u32) {
+        let at = root.join(process.to_string());
+        std::fs::create_dir_all(&at).unwrap();
+        std::fs::write(
+            at.join("stat"),
+            format!("{process} ({name}) S {parent} {process} {process} 0 -1 4194560 100\n"),
+        )
+        .unwrap();
+    }
+
+    tilo_test_env::scenario! {
+        fn a_process_knows_whose_it_is;
+
+        phase its_parents_are_read_up_to_the_machines_first_process;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            process(root, 1, "init", 0);
+            process(root, 100, "tilo-linux-vm-agent", 1);
+            process(root, 101, "agent", 100);
+            process(root, 102, "node (mcp) x", 101);
+            let processes = Processes::at(root);
+            assert_eq!(
+                processes.lineage(102),
+                [102, 101, 100, 1],
+                "a name with brackets and spaces is read to its end"
+            );
+            assert_eq!(processes.lineage(9999), [9999], "a process that cannot be read is alone");
+        }
+
+        phase a_machine_that_cannot_be_read_knows_no_parents;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let processes = Processes::at(dir.path().join("absent"));
+            assert_eq!(processes.lineage(1), [1]);
+        }
+    }
+}

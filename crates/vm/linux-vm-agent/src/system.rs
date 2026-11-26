@@ -65,3 +65,28 @@ pub fn uptime_secs(contents: &str) -> u64 {
         .and_then(|secs| secs.split('.').next()?.parse().ok())
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proc_files_are_read_defensively() {
+        let meminfo_text =
+            "MemTotal:        2014340 kB\nMemFree: 1 kB\nMemAvailable:    1500000 kB\n";
+        assert_eq!(meminfo(meminfo_text), (2_014_340, 1_500_000));
+        assert_eq!(meminfo("garbage"), (0, 0));
+        assert_eq!(uptime_secs("1234.56 99.00\n"), 1234);
+        assert_eq!(uptime_secs(""), 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_clock_is_set_with_millisecond_precision() {
+        assert_eq!(
+            realtime_parts(1_782_816_120_123),
+            (1_782_816_120, 123_000_000)
+        );
+        assert_eq!(realtime_parts(0), (0, 0));
+    }
+}

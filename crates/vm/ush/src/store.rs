@@ -234,3 +234,93 @@ fn restrict_to_owner(path: &Path) -> std::io::Result<()> {
     perms.set_mode(0o700);
     std::fs::set_permissions(path, perms)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    tilo_test_env::scenario! {
+        /// `Store`: where the runtime keeps its state.
+        fn the_store_lays_out_private_trees_per_workspace;
+
+        phase ensure_lays_out_a_private_store_idempotently;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::at(dir.path().join("ush"));
+            store.ensure().unwrap();
+
+            assert!(
+                store
+                    .environment_home("default")
+                    .ends_with("environments/default/home")
+            );
+            assert!(
+                store
+                    .environment_var("default")
+                    .ends_with("environments/default/var")
+            );
+            assert!(store.records_root().starts_with(store.root()));
+            assert!(store.sessions_dir().is_dir());
+            assert!(store.audit_dir().is_dir());
+
+            let mode = std::fs::metadata(store.root())
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(
+                mode & 0o077,
+                0,
+                "store root is group/world accessible: {mode:o}"
+            );
+
+            store.ensure().unwrap();
+        }
+
+        phase a_workspace_has_its_own_records_state_and_files;
+        {
+            let data = PathBuf::from("/home/you/.local/share");
+            let session = PathBuf::from("/run/user/1000/tilo-session/agent.sock");
+            let base = Store {
+                root: data.join("ush"),
+                records: session.clone(),
+                grant_root: None,
+                workspace: Some(PathBuf::from("/var/workspace")),
+                files: Some(PathBuf::from("/var/workspace")),
+                workspace_id: WorkspaceId::primary(),
+            };
+            let w1 = WorkspaceId::parse(Some("w1")).unwrap();
+            let store = base.for_workspace(&w1);
+            assert_eq!(
+                store.records_root(),
+                session,
+                "every workspace's records are asked of the one session"
+            );
+            assert_eq!(
+                store.workspace(),
+                Some(Path::new("/var/workspace/.workspaces/w1"))
+            );
+            assert_eq!(store.files(), Some(Path::new("/var/workspace")));
+            assert_eq!(
+                store.environment_var("default"),
+                data.join("ush/workspaces/w1/environments/default/var")
+            );
+            assert_eq!(store.sessions_dir(), base.sessions_dir());
+            assert!(store.confinement().is_some());
+
+            let primary = store.for_workspace(&WorkspaceId::primary());
+            assert_eq!(primary, base);
+            assert_eq!(primary.records_root(), session);
+            assert_eq!(primary.workspace(), Some(Path::new("/var/workspace")));
+            assert_eq!(
+                primary.environment_var("default"),
+                data.join("ush/environments/default/var")
+            );
+            assert!(primary.confinement().is_none());
+
+            let moved = Store::at("/tmp/ush").for_workspace(&w1);
+            assert_eq!(moved.records_root(), Path::new("/tmp/ush/records"));
+            assert_eq!(moved.workspace(), None, "no files, no home folder");
+        }
+    }
+}
