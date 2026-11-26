@@ -74,10 +74,6 @@ impl<H: ActionProvider + ?Sized> ActionProvider for std::sync::Arc<H> {
         (**self).session_state_changed(caller)
     }
 
-    fn ended(&self, caller: &Caller) -> Option<String> {
-        (**self).ended(caller)
-    }
-
     fn changed(
         &self,
         caller: &Caller,

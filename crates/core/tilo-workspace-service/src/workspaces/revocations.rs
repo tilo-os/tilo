@@ -38,12 +38,28 @@ impl Workspaces {
         else {
             return None;
         };
+        // The revocations this host took in from the person's devices' announcement, and the
+        // record of their devices itself: one of the two holds a revocation first, and either
+        // refuses the key from the entry's own moment on.
         let revoked_at_ns = self
             .inner
             .host
             .revocations
             .read_recover()
-            .revoked_at(person, device)?;
+            .revoked_at(person, device)
+            .or_else(|| {
+                self.inner
+                    .host
+                    .blocked
+                    .read_recover()
+                    .revocations()
+                    .iter()
+                    .find(|entry| {
+                        entry.user_public_key == *person
+                            && entry.revoked_device_public_key == *device
+                    })
+                    .map(|entry| entry.revoked_at_ns)
+            })?;
         Some(Refusal::Revoked {
             reason: format!(
                 "key_revoked: this key was revoked at {}",

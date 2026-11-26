@@ -466,10 +466,11 @@ impl AgentSigner {
         ))
     }
 
-    /// Why the agent acts no further, once its person revoked its key ([`REVOKED`]) or their
-    /// revocations cannot be read: what ends every connection it has open, at its next call.
+    /// Why the agent's key signs nothing more, once its person revoked it ([`REVOKED`]) or their
+    /// revocations cannot be read: what every connection it carries stops signing at, its next
+    /// frame.
     #[must_use]
-    pub fn ended(&self) -> Option<String> {
+    pub fn revoked(&self) -> Option<String> {
         match self.keys.revocation(&self.person, &self.key) {
             Ok(None) => None,
             Ok(Some(_)) => Some(REVOKED.to_owned()),
@@ -520,7 +521,7 @@ impl collab_types::signer::DeviceSigner for KeySigner {
     }
 
     fn sign(&self, message: Vec<u8>) -> collab_types::signer::SignFuture<'_> {
-        if let Some(why) = self.1.ended() {
+        if let Some(why) = self.1.revoked() {
             return Box::pin(std::future::ready(Err(collab_types::signer::SignError(
                 why,
             ))));
@@ -606,13 +607,6 @@ impl<P: ActionProvider> ActionProvider for Signed<P> {
 
     fn session_state_changed(&self, caller: &Caller) -> Option<Pending<()>> {
         self.provider.session_state_changed(caller)
-    }
-
-    fn ended(&self, caller: &Caller) -> Option<String> {
-        self.signer
-            .as_ref()
-            .and_then(AgentSigner::ended)
-            .or_else(|| self.provider.ended(caller))
     }
 
     fn changed(
@@ -930,7 +924,7 @@ mod tests {
     }
 
     /// An agent mid-run whose person revokes its key stops at its next call: the key it was
-    /// granted signs nothing more, and the connection is told why.
+    /// granted signs nothing more, here or on any connection it carries.
     #[test]
     fn a_run_whose_key_its_person_revokes_signs_nothing_from_its_next_call() {
         let _home = device();
@@ -948,7 +942,7 @@ mod tests {
         .unwrap();
         let mut first = request();
         signer.sign(&mut first).unwrap();
-        assert_eq!(signer.ended(), None, "the agent acts");
+        assert_eq!(signer.revoked(), None, "the agent acts");
         let key = tilo_server_protocol::invocation::verify_invocation(
             &workspace.to_string(),
             &first,
@@ -967,7 +961,7 @@ mod tests {
         };
         assert_eq!(reason, REVOKED);
         assert!(next.signed.is_none(), "nothing was signed");
-        assert_eq!(signer.ended().as_deref(), Some(REVOKED));
+        assert_eq!(signer.revoked().as_deref(), Some(REVOKED));
         assert!(keys.made(&key).is_none(), "the key is forgotten here");
         assert!(signer.signing().is_err(), "no connection signs with it");
     }

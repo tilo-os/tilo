@@ -6978,13 +6978,6 @@ impl ActionProvider for RuntimeActionProvider {
         session.provider.session_state_changed(session.acting())
     }
 
-    /// Why the agent this runtime's session runs acts no further: the session's own provider
-    /// says, read for whichever caller asks, as a revoked key ends every caller of it.
-    fn ended(&self, _caller: &Caller) -> Option<String> {
-        let session = self.session.as_ref()?;
-        session.provider.ended(session.acting())
-    }
-
     /// What a watch of the workspace follows, routed and authorized as [`Self::here`] and
     /// [`Self::session_state`] are: the session host's own signal for a session this runtime
     /// serves, and the broker's for one it runs itself.

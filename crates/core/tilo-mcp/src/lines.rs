@@ -5,7 +5,6 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tilo_lock::MutexRecover as _;
 
 use crate::McpServer;
 
@@ -137,57 +136,6 @@ where
         Answer::InOrder(reply)
     } else {
         Answer::Overlapping(reply)
-    }
-}
-
-/// Whether a connection's caller acts no further, and why: set by [`Ending::answer`] once a
-/// request found it so, which ends the connection after that answer ([`Ending::check`]).
-#[derive(Clone, Default)]
-pub struct Ending(std::sync::Arc<std::sync::Mutex<Option<String>>>);
-
-impl Ending {
-    /// The answer to `request` once `server`'s caller acts no further ([`McpServer::ended`]):
-    /// why, as the call's own refusal, answered before the next line is read. `None` while the
-    /// caller acts, and the request is answered as any other.
-    pub fn answer<H>(
-        &self,
-        server: &std::sync::Arc<McpServer<H>>,
-        request: &Value,
-    ) -> Option<Answer<'static>>
-    where
-        H: tilo_actions::remote::ActionProvider + Send + Sync + 'static,
-    {
-        let why = server.ended()?;
-        Some(self.refusing(request, why))
-    }
-
-    /// The answer to `request` that ends the connection, saying `why`: what [`Self::answer`]
-    /// answers a request its caller may no longer make, and what a connection answers the
-    /// request it could not admit a session for ([`Self::check`] ends it after that answer).
-    pub fn refusing(&self, request: &Value, why: String) -> Answer<'static> {
-        let id = request.get("id").cloned();
-        let reply = id.map(|id| {
-            if request.get("method").and_then(Value::as_str) == Some("tools/call") {
-                json!({"jsonrpc": "2.0", "id": id, "result": {
-                    "content": [{"type": "text", "text": why}], "isError": true}})
-            } else {
-                json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": why}})
-            }
-        });
-        *self.0.lock_recover() = Some(why);
-        Answer::InOrder(Box::pin(async move { Ok(reply) }))
-    }
-
-    /// What ends the connection once a request was answered that its caller acts no further:
-    /// the `check` [`serve_lines`] runs, which runs after that answer was written.
-    ///
-    /// # Errors
-    /// The caller acts no further: why.
-    pub fn check(&self) -> io::Result<()> {
-        match &*self.0.lock_recover() {
-            Some(why) => Err(io::Error::new(io::ErrorKind::PermissionDenied, why.clone())),
-            None => Ok(()),
-        }
     }
 }
 

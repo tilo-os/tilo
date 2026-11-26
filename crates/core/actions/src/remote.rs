@@ -1694,13 +1694,6 @@ pub trait ActionProvider {
         None
     }
 
-    /// Why `caller` acts through this provider no further, for good: an agent whose person
-    /// revoked its key. A connection that serves it answers that and ends. `None` while it acts.
-    fn ended(&self, caller: &Caller) -> Option<String> {
-        let _ = caller;
-        None
-    }
-
     /// Resolves the next time what a watch of the workspace follows under `scope` may have
     /// changed, so a waiter reads it again then instead of on a timer; `None` when this provider
     /// cannot tell, and the waiter then waits until its own deadline.
