@@ -10,9 +10,9 @@ use taffy::{NodeId, TaffyTree};
 use tilo_ui_base::{widget::Widget, widget::bound_nodes::BoundNodeMap};
 use winit::event::{ElementState, WindowEvent};
 
-pub(crate) use crate::focus_navigation::FocusRestrictions;
+pub use crate::focus_navigation::FocusRestrictions;
 impl FocusRestrictions {
-    pub(crate) fn collect(root: &dyn Widget, tree: &TaffyTree<()>) -> Self {
+    pub fn collect(root: &dyn Widget, tree: &TaffyTree<()>) -> Self {
         let mut restrictions = Self {
             denied: HashSet::new(),
         };
@@ -23,7 +23,7 @@ impl FocusRestrictions {
     }
 }
 
-pub(crate) fn has_surfaces(root: &dyn Widget) -> bool {
+pub fn has_surfaces(root: &dyn Widget) -> bool {
     let mut found = false;
     crate::history_mode::capability::visit_framework_history(root, &mut |_, _| found = true);
     found
@@ -37,8 +37,8 @@ pub(crate) fn owns_node(root: &dyn Widget, node: NodeId, tree: &TaffyTree<()>) -
 }
 /// One node's focus admission, walking every surface: the reference [`FocusRestrictions`] must agree
 /// with.
-#[cfg(test)]
-pub(crate) fn allows_focus(root: &dyn Widget, node: NodeId, tree: &TaffyTree<()>) -> bool {
+#[cfg(any(test, feature = "test-support"))]
+pub fn allows_focus(root: &dyn Widget, node: NodeId, tree: &TaffyTree<()>) -> bool {
     let mut allowed = true;
     crate::history_mode::capability::visit_framework_history(root, &mut |history, _| {
         if (history.captures_input() || history.has_saved_focus())

@@ -4,16 +4,16 @@
 use super::model::{CommandGroup, HostCommand};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MenuKind {
+pub enum MenuKind {
     Edit,
     View,
     History,
 }
 
 impl MenuKind {
-    pub(crate) const ALL: [Self; 3] = [Self::Edit, Self::View, Self::History];
+    pub const ALL: [Self; 3] = [Self::Edit, Self::View, Self::History];
 
-    pub(crate) fn title_key(self) -> &'static str {
+    pub fn title_key(self) -> &'static str {
         match self {
             Self::Edit => "host-menu-edit",
             Self::View => "host-menu-view",
@@ -32,13 +32,13 @@ impl MenuKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Entry {
+pub enum Entry {
     /// An index into the commands the entries were built from.
     Command(usize),
     Separator,
 }
 
-pub(crate) fn entries(commands: &[HostCommand], menu: MenuKind) -> Vec<Entry> {
+pub fn entries(commands: &[HostCommand], menu: MenuKind) -> Vec<Entry> {
     let mut entries = Vec::new();
     let mut previous = None;
     for (index, command) in commands.iter().enumerate() {
@@ -52,52 +52,4 @@ pub(crate) fn entries(commands: &[HostCommand], menu: MenuKind) -> Vec<Entry> {
         entries.push(Entry::Command(index));
     }
     entries
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Entry, MenuKind, entries};
-    use crate::host_chrome::model::CommandGroup;
-
-    #[test]
-    fn each_menu_holds_its_groups_in_model_order_with_separators_between() {
-        let mut app = crate::app::framework_history_tests::native_chrome_app();
-        let commands = app.host_commands(true);
-        let group = |entry: &Entry| match entry {
-            Entry::Command(index) => Some(commands[*index].group),
-            Entry::Separator => None,
-        };
-        let edit: Vec<_> = entries(&commands, MenuKind::Edit)
-            .iter()
-            .map(group)
-            .collect();
-        assert_eq!(
-            edit,
-            [
-                Some(CommandGroup::Undo),
-                Some(CommandGroup::Undo),
-                None,
-                Some(CommandGroup::Search),
-            ]
-        );
-        let history: Vec<_> = entries(&commands, MenuKind::History)
-            .iter()
-            .map(group)
-            .collect();
-        assert_eq!(
-            history,
-            [
-                Some(CommandGroup::History),
-                None,
-                Some(CommandGroup::RecentChanges),
-                Some(CommandGroup::RecentChanges),
-            ]
-        );
-        assert!(entries(&commands, MenuKind::View).is_empty());
-        let titles: Vec<_> = MenuKind::ALL
-            .iter()
-            .map(|kind| tilo_ui_base::i18n::I18nManager::lookup_plain(kind.title_key()))
-            .collect();
-        assert_eq!(titles, ["Edit", "View", "History"]);
-    }
 }

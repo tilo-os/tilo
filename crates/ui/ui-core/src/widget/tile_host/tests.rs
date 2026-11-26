@@ -511,7 +511,7 @@ fn window_history_control(driver: &crate::app::driver::Driver) -> Option<bool> {
 fn a_shell_window_presents_history_on_its_tab_not_in_a_band() {
     use crate::widget::{TabDescriptor, WindowGroup, WindowWidth};
     let history_tile = || {
-        let (host, component) = crate::history_mode::integration_tests::component_with_history();
+        let (host, component) = crate::history_mode::testing::component_with_history();
         (host, TileHost::from_component(component))
     };
 
@@ -634,7 +634,7 @@ impl crate::widget::app_widget::AppWidget for Restless {
 
 #[test]
 fn a_tile_whose_history_shows_a_version_leaves_the_hidden_apps_change_with_it() {
-    let (_host, component) = crate::history_mode::integration_tests::component_with_history();
+    let (_host, component) = crate::history_mode::testing::component_with_history();
     let mut tile = TileHost::from_component(component);
     tile.content = TileContent::App(Box::new(Restless));
     let history = tile

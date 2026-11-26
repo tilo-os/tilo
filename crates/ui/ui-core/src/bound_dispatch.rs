@@ -1,13 +1,14 @@
 //! Lifetime and canonical-record routing shared by retained and raw widget dispatch.
 #[cfg(feature = "model")]
 mod bound_widget;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub use bound_widget::history_owner;
 #[cfg(feature = "model")]
 #[cfg(test)]
 pub(crate) use bound_widget::keyboard_input_scope;
 #[cfg(feature = "model")]
-pub(crate) use bound_widget::{
-    BoundTraversal, history_owner, visit_components, visit_resource_owners,
-};
+pub(crate) use bound_widget::{BoundTraversal, visit_components, visit_resource_owners};
 #[cfg(feature = "model")]
 pub use bound_widget::{BoundWidget, callback_binding, resource_owners};
 #[cfg(feature = "model")]
@@ -3470,6 +3471,27 @@ pub struct CallbackBinding {
     /// Edits commit as the author writer on the record
     /// ([`crate::application::ProcessContext::write_as_author`]).
     pub(crate) writes_as_author: bool,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl CallbackBinding {
+    /// The records the component publishes into, read by a test through its binding.
+    #[doc(hidden)]
+    pub fn records_for_test(&self) -> &ResourceStore {
+        &self.records
+    }
+
+    /// The record the component's edits are checked out against.
+    #[doc(hidden)]
+    pub fn checkout_for_test(&self) -> &DocumentCheckout {
+        &self.checkout
+    }
+
+    /// The person the component writes as.
+    #[doc(hidden)]
+    pub fn author_for_test(&self) -> &MemberId {
+        &self.author
+    }
 }
 
 #[cfg(feature = "model")]

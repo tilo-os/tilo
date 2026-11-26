@@ -68,7 +68,7 @@ pub fn callback_binding<W: Widget + ?Sized>(widget: &W) -> Option<CallbackBindin
 }
 
 /// [`BoundWidget::history_owner`] of `widget`.
-pub(crate) fn history_owner<W: Widget + ?Sized>(widget: &W) -> Option<HistoryOwner> {
+pub fn history_owner<W: Widget + ?Sized>(widget: &W) -> Option<HistoryOwner> {
     capability::<dyn BoundWidget>(widget).and_then(BoundWidget::history_owner)
 }
 

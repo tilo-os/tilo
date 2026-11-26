@@ -694,7 +694,7 @@ impl Nodes {
     }
 
     /// The resource the node at `key` stands for.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn resource_of(&self, key: &str) -> Option<&ResourceId> {
         self.node(key).map(|node| &node.item)
     }
@@ -1408,7 +1408,11 @@ impl DescribedTreeView {
     }
 
     /// The nodes the tree was given whole: what its rows are, read once.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
+    #[allow(
+        clippy::panic,
+        reason = "a tree whose host renders its rows holds none, which no test asks it for"
+    )]
     fn nodes(&self) -> &Nodes {
         match &self.rows.rows {
             Rows::Given(nodes) => nodes,
@@ -1417,27 +1421,27 @@ impl DescribedTreeView {
     }
 
     /// Whether the node at `key` is open.
-    #[cfg(test)]
-    pub(crate) fn is_open(&self, key: &str) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn is_open(&self, key: &str) -> bool {
         !self.marks.is_folded(&key.to_owned())
     }
 
     /// The key of the row for the resource `item`, which is also the node's stable
     /// name on screen.
-    #[cfg(test)]
-    pub(crate) fn row_key(&self, item: &str) -> Option<String> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn row_key(&self, item: &str) -> Option<String> {
         self.rows.key_of_item(item)
     }
 
     /// The rows selected, by key.
-    #[cfg(test)]
-    pub(crate) fn selected(&self) -> Vec<String> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn selected(&self) -> Vec<String> {
         self.list.selection().stored_keys().cloned().collect()
     }
 
     /// The resource the node at `key` stands for.
-    #[cfg(test)]
-    pub(crate) fn item_of(&self, key: &str) -> Option<&ResourceId> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn item_of(&self, key: &str) -> Option<&ResourceId> {
         self.nodes().resource_of(key)
     }
 

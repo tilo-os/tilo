@@ -1707,5 +1707,9 @@ pub fn document(title: &str, theme: &tilo_ui_base::Theme, body: &str, tail: &str
 /// from, by role, in the theme's properties ([`theme_css`]).
 pub const PAGE_CSS: &str = include_str!("page.css");
 
+/// The compositions the page tests draw, shared with the app runner's tests above the toolkit.
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
+
 #[cfg(test)]
 mod tests;

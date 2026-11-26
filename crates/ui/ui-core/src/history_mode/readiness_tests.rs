@@ -1,6 +1,14 @@
+use super::testing::*;
 use super::*;
+use crate::application::{LaunchTarget, RestoreInput};
+use crate::application_test_support::{
+    APP, ProbeHarness, runner_permissions, runner_probe_definition,
+};
 use crate::widget::{Column, IconDescriptor};
+use crate::{State, headless::Driver, widget::BoundAppWidget};
+use automerge::{ROOT, transaction::Transactable};
 use std::{cell::Cell, rc::Rc};
+use tilo_ui_base::widget::Widget;
 
 struct DraftRoot {
     pending: Rc<Cell<bool>>,
@@ -123,7 +131,7 @@ fn readiness_refuses_review_refresh_and_confirmation_without_head_change() {
             .click_named("history-restore-review.primary")
             .unwrap();
         assert_eq!(
-            crate::history_mode::integration_tests::body(&driver.state_mut().doc),
+            crate::history_mode::testing::body(&driver.state_mut().doc),
             "old"
         );
     }
@@ -135,7 +143,7 @@ static COMPONENT_HISTORY: HistoryDefinition = HistoryDefinition {
         key: "document",
         title: "Notebook",
         presentation: HistoryPresentation::Domain {
-            create: super::super::host_tests::preview,
+            create: crate::history_mode::testing::preview,
         },
     }],
 };
@@ -236,10 +244,7 @@ fn readiness_component_tile_checks_retained_child_at_confirmation() {
     assert_eq!(
         binding
             .records
-            .read_checked(
-                &binding.checkout.id,
-                crate::history_mode::integration_tests::body
-            )
+            .read_checked(&binding.checkout.id, crate::history_mode::testing::body)
             .unwrap(),
         "live"
     );
@@ -253,10 +258,7 @@ fn readiness_component_tile_checks_retained_child_at_confirmation() {
     assert_eq!(
         binding
             .records
-            .read_checked(
-                &binding.checkout.id,
-                crate::history_mode::integration_tests::body
-            )
+            .read_checked(&binding.checkout.id, crate::history_mode::testing::body)
             .unwrap(),
         "old"
     );

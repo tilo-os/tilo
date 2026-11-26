@@ -104,7 +104,7 @@ macro_rules! delegate_widget_methods {
         }
     };
     ($field:tt: $($method:ident),+ $(,)?) => {
-        $($crate::testing::delegate_widget_methods!(@ $field $method);)+
+        $($crate::delegate_widget_methods!(@ $field $method);)+
     };
 }
 

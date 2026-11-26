@@ -7,33 +7,33 @@
     reason = "in a test these are the assertion"
 )]
 
-use crate::component_testing::*;
-use crate::headless::Driver;
-use crate::testing::harness;
-use crate::{
+use std::sync::Arc;
+use tilo_ui::component_testing::*;
+use tilo_ui::headless::Driver;
+use tilo_ui::testing::harness;
+use tilo_ui::{
     widget::CodeEditor, widget::CodeEditorProps, widget::DescribedCards, widget::DropZone,
     widget::DropZoneProps, widget::Image, widget::ImageProps, widget::MediaCardProps,
     widget::MediaGrid, widget::MediaGridProps, widget::PagePreview, widget::PagePreviewProps,
     widget::QrProps, widget::QrWidget,
 };
-use std::sync::Arc;
 use tilo_ui_base::component::*;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
 use tilo_ui_base::{component::Component, component::Described, component::PropType};
 
 fn picture(src: &str) -> Value {
-    Value::Picture(tilo_ui_graph::component::Picture {
+    Value::Picture(tilo_ui::tilo_ui_graph::component::Picture {
         src: src.to_owned(),
     })
 }
 
-fn pictures_with(png: Vec<u8>) -> crate::pictures::Pictures {
+fn pictures_with(png: Vec<u8>) -> tilo_ui::pictures::Pictures {
     let fetch: tilo_ui_base::image_store::Fetcher = Arc::new(move |_| Some(png.clone()));
-    crate::pictures::Pictures::new(tilo_ui_base::ImageStore::new(&fetch))
+    tilo_ui::pictures::Pictures::new(tilo_ui_base::ImageStore::new(&fetch))
 }
 
-fn card_of(props: MediaCardProps) -> crate::widget::MediaCard {
+fn card_of(props: MediaCardProps) -> tilo_ui::widget::MediaCard {
     let mut grid = MediaGrid::from_props(
         "library",
         MediaGridProps {
@@ -51,7 +51,7 @@ tilo_test_env::scenario! {
 
     phase an_image_is_a_picture_by_its_address_and_shows_its_bytes_when_they_arrive;
     {
-        let png = crate::png::encode_rgba8(4, 4, &[40, 80, 160, 255].repeat(16)).expect("a picture");
+        let png = tilo_ui::png::encode_rgba8(4, 4, &[40, 80, 160, 255].repeat(16)).expect("a picture");
         let pictures = pictures_with(png);
         let mut node = Node::new("Image", "photo", &tilo_ui_base::Intents::default())
             .prop("src", text("data:image/png;base64,x"))
@@ -77,17 +77,17 @@ tilo_test_env::scenario! {
 
     phase a_picture_answers_a_served_store_and_nothing_else_loads;
     {
-        let png = crate::png::encode_rgba8(2, 2, &[255; 4].repeat(4)).expect("a picture");
+        let png = tilo_ui::png::encode_rgba8(2, 2, &[255; 4].repeat(4)).expect("a picture");
         let fetch: tilo_ui_base::image_store::Fetcher = Arc::new(move |url: &str| {
             assert_eq!(url, "tilo-blob://only");
             Some(png.clone())
         });
         let store = tilo_ui_base::ImageStore::new(&fetch);
-        let pictures = crate::pictures::Pictures::new(store);
-        let mut shown = crate::ShownPicture::default();
+        let pictures = tilo_ui::pictures::Pictures::new(store);
+        let mut shown = tilo_ui::ShownPicture::default();
         shown.set(
             pictures,
-            crate::widget::PictureSource {
+            tilo_ui::widget::PictureSource {
                 src: "tilo-blob://only".into(),
             },
         );
@@ -95,8 +95,8 @@ tilo_test_env::scenario! {
             shown.waiting(),
             "it asks for a frame until the bytes are in"
         );
-        assert!(crate::pictures::data_bytes("tilo-blob://only").is_none());
-        assert!(crate::pictures::data_bytes("data:image/png;base64,AA==").is_some());
+        assert!(tilo_ui::pictures::data_bytes("tilo-blob://only").is_none());
+        assert!(tilo_ui::pictures::data_bytes("data:image/png;base64,AA==").is_some());
     }
 
     phase the_media_grid_reads_its_cards_and_a_pressed_card_reports_itself;
@@ -116,7 +116,7 @@ tilo_test_env::scenario! {
     phase a_pressed_card_opens_what_it_stands_for;
     {
         let queue = tilo_ui_base::Intents::default();
-        let png = crate::png::encode_rgba8(4, 4, &[255; 4].repeat(16)).expect("a picture");
+        let png = tilo_ui::png::encode_rgba8(4, 4, &[255; 4].repeat(16)).expect("a picture");
         let pictures = pictures_with(png);
         let views: Vec<tilo_ui_base::widget::Element> = vec![Box::new({
             let mut node = Node::new("MediaCard", "blue", &queue)
@@ -124,11 +124,11 @@ tilo_test_env::scenario! {
                 .prop("title", text("Blue"))
                 .prop("picture", picture("data:image/png;base64,x"))
                 .on("activate");
-            let mut props = crate::widget::MediaCardProps::from_source(&mut node).expect("reads");
+            let mut props = tilo_ui::widget::MediaCardProps::from_source(&mut node).expect("reads");
             props.pictures = Some(pictures);
             card_of(props)
         })];
-        let grid = crate::widget::MediaGrid::of(views);
+        let grid = tilo_ui::widget::MediaGrid::of(views);
         let mut host = harness(grid);
         let rect = host.root_widget().children()[0].get_rect();
         host.click_at(rect.center().x, rect.center().y);
@@ -242,9 +242,9 @@ tilo_test_env::scenario! {
         let rect = host.root::<DropZone>().get_rect();
         assert!(rect.width() > 0.0 && rect.height() > 0.0);
         let wide = Driver::for_root(
-            crate::State::new(),
+            tilo_ui::State::new(),
             {
-                let mut column = crate::widget::arrange::Stack::stack().fill_width();
+                let mut column = tilo_ui::widget::arrange::Stack::stack().fill_width();
                 column = column.push(Box::new(DropZone::from_props("choose", props2)));
                 column
             },
@@ -263,7 +263,7 @@ tilo_test_env::scenario! {
             .prop("min_lines", Value::Int(4))
             .prop("gutter", Value::Bool(true));
         let props = CodeEditorProps::from_source(&mut node).expect("reads");
-        assert_eq!(props.language, Some(crate::widget::Language::Tilolang));
+        assert_eq!(props.language, Some(tilo_ui::widget::Language::Tilolang));
         let editor = CodeEditor::from_props("source", props);
         let host = harness(editor);
         assert!(host.root::<CodeEditor>().get_rect().height() > 0.0);
@@ -272,9 +272,9 @@ tilo_test_env::scenario! {
     phase a_prop_of_an_undescribed_type_does_not_read;
     {
         // A picture is a `Picture` value, never text: the wrong kind is refused, not coerced.
-        assert!(crate::widget::PictureSource::from_value(&text("x")).is_err());
+        assert!(tilo_ui::widget::PictureSource::from_value(&text("x")).is_err());
         assert!(
-            crate::widget::PictureSource::from_value(&picture("tilo-blob://dot")).is_ok(),
+            tilo_ui::widget::PictureSource::from_value(&picture("tilo-blob://dot")).is_ok(),
             "a picture value reads"
         );
     }
@@ -308,20 +308,20 @@ tilo_test_env::scenario! {
             .on("set_rate")
             .on("select_quality")
             .on("select_captions");
-        let props = crate::widget::VideoPlayerProps::from_source(&mut node).expect("reads");
+        let props = tilo_ui::widget::VideoPlayerProps::from_source(&mut node).expect("reads");
         assert_eq!(props.qualities, ["1080p", "720p"]);
         assert_eq!(
             props.caption_tracks.get("en").map(String::as_str),
             Some("English")
         );
-        let mut video = crate::widget::DeclaredVideo::from_props("watch", props);
+        let mut video = tilo_ui::widget::DeclaredVideo::from_props("watch", props);
         assert!(
             video.player().setting("playback-rate").is_some(),
             "the player offers a speed"
         );
         assert!(video.player().setting("quality").is_some());
         assert!(video.player().setting("captions").is_some());
-        let twice = crate::widget::PLAYBACK_RATES
+        let twice = tilo_ui::widget::PLAYBACK_RATES
             .iter()
             .position(|rate| (*rate - 2.0).abs() < f64::EPSILON)
             .expect("2× is one of the speeds");
@@ -351,8 +351,8 @@ tilo_test_env::scenario! {
             )
             .prop("caption_language", text("en"))
             .on("select_captions");
-        let props = crate::widget::VideoPlayerProps::from_source(&mut node).expect("reads");
-        let mut video = crate::widget::DeclaredVideo::from_props("watch", props);
+        let props = tilo_ui::widget::VideoPlayerProps::from_source(&mut node).expect("reads");
+        let mut video = tilo_ui::widget::DeclaredVideo::from_props("watch", props);
         assert!(video.player().choose_setting("captions", 0));
         let doc = automerge::AutoCommit::new();
         tilo_ui_base::widget::Widget::sync(&mut video, &doc, &automerge::ROOT);

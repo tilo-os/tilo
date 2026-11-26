@@ -25,8 +25,8 @@ pub(super) struct ReviewPanel {
     token: Option<crate::history_mode::RestoreReview>,
 }
 impl HistoryHost {
-    #[cfg(test)]
-    pub(crate) fn set_clock(&mut self, clock: fn() -> Option<u64>) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_clock(&mut self, clock: fn() -> Option<u64>) {
         self.clock = clock;
     }
 
@@ -82,13 +82,13 @@ impl HistoryHost {
             }),
         });
     }
-    pub(crate) fn take_restored_source(&mut self) -> Option<HistorySourceRegistration> {
+    pub fn take_restored_source(&mut self) -> Option<HistorySourceRegistration> {
         self.restored_source.take()
     }
-    pub(crate) fn has_review_request(&self) -> bool {
+    pub fn has_review_request(&self) -> bool {
         self.review_request.is_some()
     }
-    pub(crate) fn service_restore(
+    pub fn service_restore(
         &mut self,
         state: &mut State,
         root: &mut dyn Widget,

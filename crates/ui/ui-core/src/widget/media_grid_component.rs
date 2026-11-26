@@ -85,16 +85,16 @@ impl PartType for DescribedCards {
 
 impl DescribedCards {
     /// The cards given whole, in order: what a grid of a handful shows without a host.
-    #[cfg(test)]
-    pub(crate) fn given(cards: Vec<MediaCardProps>) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn given(cards: Vec<MediaCardProps>) -> Self {
         Self {
             held: CardsHeld::Given(cards),
         }
     }
 
     /// The cards given whole, read by a test: empty for one a host renders.
-    #[cfg(test)]
-    pub(crate) fn held(&self) -> &[MediaCardProps] {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn held(&self) -> &[MediaCardProps] {
         match &self.held {
             CardsHeld::Given(cards) => cards,
             CardsHeld::Nothing | CardsHeld::Rendered(_) => &[],

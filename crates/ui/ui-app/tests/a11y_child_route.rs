@@ -1,8 +1,10 @@
+//! A painted surface's retained button is operated through the accessibility child walk, and
+//! the route the walk takes reads back as it was written.
 use std::cell::Cell;
 use std::rc::Rc;
 use tilo_ui_base::a11y_child_route::*;
 
-use crate::{widget::Button, widget::Embedded};
+use tilo_ui::{widget::Button, widget::Embedded};
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
 use vello::kurbo::Rect;
@@ -91,8 +93,8 @@ tilo_test_env::scenario! {
             button: Embedded::new(button),
             rect: Rect::ZERO,
         };
-        let mut harness = crate::headless::Driver::for_root(
-            crate::State::new(),
+        let mut harness = tilo_ui::headless::Driver::for_root(
+            tilo_ui::State::new(),
             painter,
             (400, 300),
             tilo_ui_base::theme::Theme::dark(),

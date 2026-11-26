@@ -36,6 +36,45 @@
     clippy::unnecessary_wraps,
     reason = "a widget test builds its probe fixtures and scenes by hand; the shapes are the assertion, not a library a caller keeps"
 )]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::collapsible_if,
+    clippy::default_trait_access,
+    clippy::empty_line_after_doc_comments,
+    clippy::format_collect,
+    clippy::format_push_string,
+    clippy::large_enum_variant,
+    clippy::large_stack_arrays,
+    clippy::manual_assert_eq,
+    clippy::manual_find,
+    clippy::manual_midpoint,
+    clippy::many_single_char_names,
+    clippy::match_wildcard_for_single_variants,
+    clippy::missing_errors_doc,
+    clippy::needless_collect,
+    clippy::needless_pass_by_value,
+    clippy::needless_range_loop,
+    clippy::needless_raw_string_hashes,
+    clippy::or_fun_call,
+    clippy::panic_in_result_fn,
+    clippy::redundant_clone,
+    clippy::redundant_closure_for_method_calls,
+    clippy::result_large_err,
+    clippy::semicolon_if_nothing_returned,
+    clippy::significant_drop_in_scrutinee,
+    clippy::significant_drop_tightening,
+    clippy::struct_excessive_bools,
+    clippy::type_complexity,
+    clippy::unchecked_time_subtraction,
+    clippy::unicode_not_nfc,
+    clippy::uninlined_format_args,
+    clippy::unreadable_literal,
+    clippy::unused_self,
+    clippy::useless_conversion,
+    reason = "the toolkit's unit tests moved here, and the crate they came from allows these"
+)]
 
 #[path = "support/mod.rs"]
 mod support;
@@ -183,3 +222,58 @@ mod drop_zone_tests;
 mod graph_canvas_tests;
 #[path = "widgets/group_row_keyboard_tests.rs"]
 mod group_row_keyboard_tests;
+
+// The toolkit's own tests that drive it through the app runner above it.
+#[path = "a11y_child_route.rs"]
+mod a11y_child_route;
+#[path = "action_contract.rs"]
+mod action_contract;
+#[cfg(unix)]
+#[path = "collaboration_app.rs"]
+mod collaboration_app;
+#[path = "component_coverage.rs"]
+mod component_coverage;
+#[path = "component_data.rs"]
+mod component_data;
+#[path = "component_media.rs"]
+mod component_media;
+#[path = "component_part_fill.rs"]
+mod component_part_fill;
+#[path = "composition_page.rs"]
+mod composition_page;
+#[path = "control_hints_component.rs"]
+mod control_hints_component;
+#[path = "focus_navigation.rs"]
+mod focus_navigation;
+#[path = "history_mode_focus.rs"]
+mod history_mode_focus;
+#[path = "history_mode_host.rs"]
+mod history_mode_host;
+#[path = "history_mode_integration.rs"]
+mod history_mode_integration;
+#[path = "history_mode_isolation.rs"]
+mod history_mode_isolation;
+#[cfg(target_os = "linux")]
+#[path = "host_chrome_header_bar.rs"]
+mod host_chrome_header_bar;
+#[cfg(target_os = "macos")]
+#[path = "host_chrome_macos.rs"]
+mod host_chrome_macos;
+#[path = "host_chrome_menus.rs"]
+mod host_chrome_menus;
+#[path = "host_chrome_windows_items.rs"]
+mod host_chrome_windows_items;
+#[path = "live_pictures.rs"]
+mod live_pictures;
+#[path = "native_scenario.rs"]
+mod native_scenario;
+#[path = "pointer_replay.rs"]
+mod pointer_replay;
+#[path = "pointer_replay_carry.rs"]
+mod pointer_replay_carry;
+#[path = "presence_draft.rs"]
+mod presence_draft;
+#[path = "ui_graph.rs"]
+mod ui_graph;
+#[path = "view.rs"]
+mod view;

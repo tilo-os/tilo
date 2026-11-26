@@ -5,6 +5,9 @@
 
 #![allow(
     dead_code,
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::expect_used,
     reason = "each test file compiles this module and uses the helpers its cases need"
 )]
 
@@ -14,7 +17,8 @@ use tilo_ui_base::LocalState;
 use tilo_ui_base::widget::Element;
 use tilo_ui_base::{
     component::Bound, component::BoundValue, component::Event, component::Fired, component::Intent,
-    component::SharedRows, component::Source, component::Value,
+    component::Registry, component::SharedRows, component::Source, component::Type,
+    component::Value,
 };
 
 /// An instance as a test gives it: values by prop, the events it handles queued on `queue`, the
@@ -232,4 +236,66 @@ pub fn text_bound(key: &str, value: &str, edits: Option<Intent>) -> BoundValue {
         path: Vec::new(),
         identity: None,
     })
+}
+
+pub fn given_with_views(key: &str, props: &[(&str, Value)], views: usize) -> Node {
+    Node {
+        fillers: views,
+        ..given(key, props)
+    }
+}
+
+pub fn sample(ty: &Type) -> Value {
+    match ty {
+        Type::Text | Type::Enum => Value::Text("x".into()),
+        Type::Int => Value::Int(1),
+        Type::Float => Value::Float(1.0),
+        Type::Bool => Value::Bool(true),
+        Type::Actor => Value::Actor {
+            identity: tilo_actions::MemberId::person("ada").into(),
+            name: "Ada".into(),
+            hue: None,
+            picture: None,
+        },
+        Type::Resource => Value::Resource("r".into()),
+        Type::Link => Value::Link {
+            reference: "tl:a.b".into(),
+            title: "x".into(),
+        },
+        Type::Time => Value::Text("2026-06-30T08:42:00Z".into()),
+        Type::Icon => Value::Icon("pin".into()),
+        Type::Picture => Value::Picture(tilo_ui_graph::component::Picture {
+            src: "tilo-blob://dot".into(),
+        }),
+        Type::File => Value::File(tilo_ui_graph::component::File {
+            name: "notes.md".into(),
+            media: "text/markdown".into(),
+            size: 12,
+            url: "tilo-blob://kept".into(),
+        }),
+        Type::RichText => Value::Rich(tilo_ui_graph::rich::RichText::default()),
+        Type::Choice { cases, .. } => Value::Choice(cases.first().cloned().unwrap_or_default()),
+        Type::Option(_) => Value::None,
+        Type::List(_) | Type::Set(_) => Value::List(Vec::new()),
+        Type::Map { .. } => Value::Map(Vec::new()),
+        Type::Action => Value::Action(tilo_ui_graph::component::Offered::default()),
+        Type::Cases { name } => {
+            let described = Registry::of(&[&crate::component_catalogue::TOOLKIT])
+                .catalogue()
+                .enums
+                .into_iter()
+                .find(|described| &described.name == name)
+                .unwrap_or_else(|| panic!("`{name}` is described"));
+            let case = &described.cases[0];
+            Value::Case {
+                case: case.name.clone(),
+                fields: case
+                    .fields
+                    .iter()
+                    .filter(|field| field.default.is_none())
+                    .map(|field| (field.name.clone(), sample(&field.ty)))
+                    .collect(),
+            }
+        }
+    }
 }

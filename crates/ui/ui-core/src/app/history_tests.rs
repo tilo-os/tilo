@@ -1,3 +1,5 @@
+use super::testing::*;
+pub(crate) use super::testing::{app_with_root, history_root, layout};
 use super::*;
 use crate::bound_dispatch::ToolkitPart as _;
 use crate::history_mode::*;
@@ -17,7 +19,7 @@ tilo_test_env::scenario! {
     phase native_focus_order_enumerates_history_once;
     {
         let state = State::new();
-        let (root, visits) = crate::history_mode::focus_tests::FocusHistoryRoot::new(2_000, &state);
+        let (root, visits) = crate::history_mode::testing::FocusHistoryRoot::new(2_000, &state);
         let mut app = App::new_with_controlled_inputs(state, Box::new(root));
         layout(&mut app);
         visits.set(0);
@@ -97,72 +99,6 @@ tilo_test_env::scenario! {
         );
     }
 }
-static HISTORY: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.tilo.native-history-fixture",
-    scopes: &[HistoryScopeDefinition {
-        key: "document",
-        title: "Native notebook",
-        presentation: HistoryPresentation::Domain {
-            create: crate::history_mode::test_preview,
-        },
-    }],
-};
-/// An app whose registered framework History has two committed changes.
-fn app() -> App {
-    app_on(historical_state())
-}
-/// A state whose framework History has two committed changes.
-fn historical_state() -> State {
-    let mut state = State::new();
-    state.doc.put(ROOT, "body", "old").unwrap();
-    state.commit_action(None, None);
-    state.doc.put(ROOT, "body", "live").unwrap();
-    state.commit_action(None, None);
-    state
-}
-/// An app on `state` whose History is the framework's registered History.
-fn app_on(state: State) -> App {
-    app_with_root(state, Box::new(crate::widget::Column::new()))
-}
-/// [`app_with_root`]'s managed root: `root` under the framework's registered History.
-pub(crate) fn history_root(root: Box<dyn tilo_ui_base::widget::Widget>) -> ManagedRoot {
-    let registration = HistoryRegistration::new(
-        &HISTORY,
-        vec![HistorySourceRegistration::HostDocument {
-            scope: "document",
-            resource: HistoryResource::new(
-                "native-fixture",
-                "lifetime-904",
-                HISTORY.app_id,
-                crate::DocumentId::for_tab(904),
-            ),
-        }],
-    )
-    .unwrap();
-    ManagedRoot::new(root, registration)
-}
-/// An app on `state` showing `root` under the framework's registered History.
-pub(crate) fn app_with_root(state: State, root: Box<dyn tilo_ui_base::widget::Widget>) -> App {
-    App::from_managed_root_with_controlled_inputs(state, history_root(root)).unwrap()
-}
-/// Lay out and paint one 900×650 frame, as the native runner does.
-pub(crate) fn layout(app: &mut App) {
-    app.init_layout();
-    let root = app.layout.root_node.unwrap();
-    assert!(run_layout_pass(app, root, 900, 650, 1.0, true, None).is_some());
-    let mut scene = vello::Scene::new();
-    draw_frame_content(app, &mut scene, 900, 650, 1.0, None);
-    complete_native_frame_content(app, |_| {});
-}
-/// [`app`] where the host's own chrome presents History, laid out.
-/// An app whose platform menus list its History, served the history of its document.
-pub(crate) fn native_chrome_app() -> App {
-    let mut app = app();
-    app.prepare_native_presentation(crate::host_chrome::HostChrome::Native);
-    layout(&mut app);
-    app
-}
-
 fn named(app: &mut App, label: &str) -> accesskit::NodeId {
     app.build_a11y_tree_update(1.0)
         .nodes
@@ -414,10 +350,8 @@ fn owned_routes_isolate_documents_and_admit_only_owned_bytes() {
     }
 
     {
-        let probe = crate::history_mode::isolation_tests::native_effect_probe_parts(
-            "observer",
-            "fixture.observer",
-        );
+        let probe =
+            crate::history_mode::testing::native_effect_probe_parts("observer", "fixture.observer");
         let mut app = App::new_with_controlled_inputs(State::new(), probe.root);
         let foreign = tilo_ui_base::collaboration::RouteSpec::document(
             "foreign",
@@ -1992,7 +1926,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let (_host, component) = crate::history_mode::integration_tests::component_with_history();
+            let (_host, component) = crate::history_mode::testing::component_with_history();
             let mut app = App::from_component(
                 component,
                 crate::application::ComponentRunnerInputs {
@@ -2022,7 +1956,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let probe = crate::history_mode::isolation_tests::native_effect_probe_parts(
+            let probe = crate::history_mode::testing::native_effect_probe_parts(
                 "live",
                 "fixture.export",
             );
@@ -2114,7 +2048,7 @@ tilo_test_env::scenario! {
     phase native_history_entry_pointer_captures_before_discard;
     {
         let probe =
-            crate::history_mode::isolation_tests::native_effect_probe_parts("live", "fixture.export");
+            crate::history_mode::testing::native_effect_probe_parts("live", "fixture.export");
         let mut app = app();
         app.root_widget = probe.root;
         layout(&mut app);
@@ -2133,7 +2067,7 @@ tilo_test_env::scenario! {
     phase native_history_focus_does_not_drain_live_controls;
     {
         let probe =
-            crate::history_mode::isolation_tests::native_effect_probe_parts("live", "fixture.export");
+            crate::history_mode::testing::native_effect_probe_parts("live", "fixture.export");
         let mut app = app();
         app.root_widget = probe.root;
         layout(&mut app);
@@ -3472,7 +3406,7 @@ fn live_component_bridge_and_direct_take_first_emit_after_return_and_preview_rem
     component_app.dispatch_control_invocations();
     assert_eq!(handles[0].starts.get(), 1, "preview bridge output is inert");
 
-    let probe = crate::history_mode::isolation_tests::native_effect_probe_parts(
+    let probe = crate::history_mode::testing::native_effect_probe_parts(
         "direct-live",
         "fixture.direct-live",
     );

@@ -142,39 +142,3 @@ fn a_native_composer_reads_as_typing_while_its_person_types() {
         );
     }
 }
-
-/// Ada starts typing and her window vanishes without saying she stopped: Bo's window repaints
-/// as she starts, sleeps, and wakes by itself once the linger ends to repaint without her.
-#[test]
-fn a_readers_window_wakes_to_clear_typing_gone_quiet() {
-    use crate::time::testing::with_monotonic_time as at;
-    let (start, ada) = (crate::time::now(), MemberId::person("ada"));
-    let ends = start + COMPOSING_LINGER;
-    let mut bo = crate::headless::Driver::for_root(
-        crate::state::State::new(),
-        crate::widget::TextInput::local(),
-        (400, 80),
-        tilo_ui_base::Theme::dark(),
-    );
-    at(start, || while bo.poll_frame().expect("frame") {});
-    let quiet = bo.presence().widget_presence(start);
-    at(start, || {
-        bo.update_presence(|presence| {
-            let typing = PresencePayload::Composing { composing: true };
-            presence.apply_remote_presence_at(ada.clone(), channel(), typing, start);
-            true
-        });
-        assert!(bo.poll_frame().expect("frame"), "her start is a frame");
-        assert_eq!(bo.frame_schedule().next_wake_deadline, Some(ends));
-    });
-    // What widgets paint from changed both times, so the window repaints whole.
-    assert_ne!(bo.presence().widget_presence(start), quiet);
-    let nothing_due = at(ends - Duration::from_millis(1), || bo.frame_schedule());
-    assert!(!nothing_due.needs_redraw);
-    at(ends, || {
-        assert!(bo.poll_frame().expect("frame"));
-        assert!(bo.presence().composing_at(&channel(), ends).is_empty());
-        assert_eq!(bo.presence().widget_presence(ends), quiet);
-        assert_eq!(bo.frame_schedule().next_wake_deadline, None);
-    });
-}

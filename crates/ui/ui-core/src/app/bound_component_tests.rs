@@ -30,7 +30,7 @@ fn collaboration_probe_factory(
     context
         .initialize_new_resource(|_| Ok(()))
         .map_err(crate::launch_error::LaunchError::Record)?;
-    let probe = crate::history_mode::isolation_tests::native_effect_probe_parts(
+    let probe = crate::history_mode::testing::native_effect_probe_parts(
         "bound-collaboration",
         "fixture.bound-collaboration",
     );

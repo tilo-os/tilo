@@ -3,13 +3,19 @@
 //! and the authenticated host whose personal vocabulary every text field reads. A test
 //! that installs it would otherwise reach other tests running beside it on other threads
 //! under `cargo test`, as nextest's process per test never would.
-#![cfg(test)]
+#![cfg(any(test, feature = "test-support"))]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "the helper's own process is the fixture; a command that cannot start fails the test"
+)]
 
 use tilo_test_env::SpawnUnderEnvLock as _;
 const OWN_PROCESS_TEST: &str = "TILO_UI_OWN_PROCESS_TEST";
 
 /// Whether the calling test runs its body here: only in a process that runs nothing else.
-pub(crate) fn in_own_process(test: &str) -> bool {
+pub fn in_own_process(test: &str) -> bool {
     if std::env::var(OWN_PROCESS_TEST).is_ok_and(|own| own == test) {
         return true;
     }
@@ -30,7 +36,7 @@ pub(crate) fn in_own_process(test: &str) -> bool {
 
 /// The path [`in_own_process`] takes for test `name` in `module` (`module_path!()` at the
 /// test).
-pub(crate) fn test_path(module: &str, name: &str) -> String {
+pub fn test_path(module: &str, name: &str) -> String {
     let module = module.split_once("::").map_or(module, |(_, path)| path);
     format!("{module}::{name}")
 }

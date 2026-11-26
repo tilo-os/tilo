@@ -21509,6 +21509,7 @@ dependencies = [
  "tilo-vello-encoding",
  "tilo-wasm-aot",
  "tilo-winit",
+ "tokio",
  "uuid",
  "wat",
  "workspace-hack",

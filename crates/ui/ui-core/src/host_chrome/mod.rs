@@ -4,19 +4,25 @@
 pub(crate) mod edit;
 #[cfg(any(feature = "native", test))]
 pub(crate) mod frame;
-#[cfg(any(all(target_os = "linux", feature = "native"), test))]
-pub(crate) mod header_bar;
+#[cfg(any(
+    all(target_os = "linux", feature = "native"),
+    any(test, feature = "test-support")
+))]
+pub mod header_bar;
 #[cfg(all(target_os = "macos", feature = "native"))]
-pub(crate) mod macos;
-#[cfg(any(all(any(target_os = "macos", windows), feature = "native"), test))]
-pub(crate) mod menus;
-pub(crate) mod model;
+pub mod macos;
+#[cfg(any(
+    all(any(target_os = "macos", windows), feature = "native"),
+    any(test, feature = "test-support")
+))]
+pub mod menus;
+pub mod model;
 #[cfg(any(feature = "native", test))]
 mod owner;
 #[cfg(all(windows, feature = "native"))]
 pub(crate) mod windows;
-#[cfg(any(all(windows, feature = "native"), test))]
-pub(crate) mod windows_items;
+#[cfg(any(all(windows, feature = "native"), any(test, feature = "test-support")))]
+pub mod windows_items;
 pub(crate) mod zoom;
 
 #[cfg(any(feature = "native", test))]

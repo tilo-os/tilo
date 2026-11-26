@@ -1,6 +1,14 @@
 //! The UI graph editor's tests, kept beside the code they read.
 
-use super::*;
+use automerge::AutoCommit;
+use std::cell::RefCell;
+use std::rc::Rc;
+use tilo_ui::ui_graph::*;
+use tilo_ui::widget::Text;
+use tilo_ui_base::LocalState;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Element;
+use tilo_ui_base::widget::Widget;
 
 /// Replace `path`'s contents and move its mtime a second on, so the change is seen on
 /// a filesystem whose timestamps are coarser than the time between two writes.
@@ -25,18 +33,18 @@ fn graph_checked_controls_share_view_values_without_document_writes() {
     ).unwrap();
     let context = UiBuildContext::default();
     let widget = document.build_with(&Theme::dark(), &context).unwrap();
-    let mut driver = crate::headless::Driver::new(crate::State::new(), widget, (360, 200));
+    let mut driver = tilo_ui::headless::Driver::new(tilo_ui::State::new(), widget, (360, 200));
     let before = driver.dump_json();
     driver.perform_named("check", &Action::ToggleCheck).unwrap();
     driver
-        .expect(&crate::headless::SemanticExpectation::named("toggle").checked(true))
+        .expect(&tilo_ui::headless::SemanticExpectation::named("toggle").checked(true))
         .unwrap();
     assert_eq!(context.values().get_bool("shared"), Some(true));
     driver
         .perform_named("toggle", &Action::ToggleCheck)
         .unwrap();
     driver
-        .expect(&crate::headless::SemanticExpectation::named("check").checked(false))
+        .expect(&tilo_ui::headless::SemanticExpectation::named("check").checked(false))
         .unwrap();
     assert_eq!(context.values().get_bool("shared"), Some(false));
     assert_eq!(
@@ -169,12 +177,12 @@ fn named_value(widget: &dyn Widget, id: &str) -> Option<String> {
 
 fn run_operation(
     live: &mut impl Widget,
-    kind: crate::tilo_actions::OperationKind,
+    kind: tilo_ui::tilo_actions::OperationKind,
     type_id: &str,
     payload: &[u8],
-) -> Result<Option<crate::tilo_actions::ActionOutput>, String> {
+) -> Result<Option<tilo_ui::tilo_actions::ActionOutput>, String> {
     tilo_ui_base::widget::ResourceOperation::local(
-        crate::tilo_actions::InvocationId::new(),
+        tilo_ui::tilo_actions::InvocationId::new(),
         kind,
         type_id,
         payload,
@@ -255,9 +263,9 @@ fn app_component_factories_receive_props_and_keep_graph_lifecycle() {
         Ok(Box::new(Text::new(title).with_id(request.id)))
     });
     let widget = document.build_with(&Theme::dark(), &context).unwrap();
-    let mut app = crate::headless::Driver::new(crate::State::new(), widget, (320, 120));
+    let mut app = tilo_ui::headless::Driver::new(tilo_ui::State::new(), widget, (320, 120));
     app.expect(
-        &crate::headless::SemanticExpectation::named("profile")
+        &tilo_ui::headless::SemanticExpectation::named("profile")
             .role(Role::StaticText)
             .name("Ada"),
     )
@@ -287,9 +295,10 @@ fn builder_previews_and_edits_unloaded_app_components() {
     .unwrap();
     let handle = UiGraphHandle::new(document).unwrap();
     let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
-    let mut app = crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1200, 720));
+    let mut app =
+        tilo_ui::headless::Driver::new(tilo_ui::State::new(), Box::new(editor), (1200, 720));
     app.expect(
-        &crate::headless::SemanticExpectation::named("profile")
+        &tilo_ui::headless::SemanticExpectation::named("profile")
             .role(Role::StaticText)
             .name("Component: profile-card"),
     )
@@ -311,7 +320,7 @@ fn builder_previews_and_edits_unloaded_app_components() {
 
 #[test]
 fn graph_json_round_trips_and_builds_real_accessible_widgets() {
-    fn has_title(node: &crate::headless::InspectionNode) -> bool {
+    fn has_title(node: &tilo_ui::headless::InspectionNode) -> bool {
         node.semantics.as_ref().is_some_and(|semantics| {
             semantics.role == (Role::Heading { level: 1 })
                 && semantics.name.as_deref() == Some("Roadmap")
@@ -327,8 +336,8 @@ fn graph_json_round_trips_and_builds_real_accessible_widgets() {
     title_doc.splice_text(&text, 0, 0, "Roadmap").unwrap();
     let values = UiValues::default();
     let context = UiBuildContext::default().with_values(values.clone());
-    let mut driver = crate::headless::Driver::new(
-        crate::State::from_doc(title_doc),
+    let mut driver = tilo_ui::headless::Driver::new(
+        tilo_ui::State::from_doc(title_doc),
         reparsed.build_with(&Theme::dark(), &context).unwrap(),
         (640, 360),
     );
@@ -336,7 +345,7 @@ fn graph_json_round_trips_and_builds_real_accessible_widgets() {
     assert!(has_title(&inspection.root));
     driver
         .expect(
-            &crate::headless::SemanticExpectation::named("title-input")
+            &tilo_ui::headless::SemanticExpectation::named("title-input")
                 .role(Role::TextInput)
                 .name("Title"),
         )
@@ -362,7 +371,7 @@ fn graph_json_round_trips_and_builds_real_accessible_widgets() {
 
 #[test]
 fn serialized_check_label_builds_visible_and_spoken_semantics() {
-    fn has_visible_label(node: &crate::headless::InspectionNode) -> bool {
+    fn has_visible_label(node: &tilo_ui::headless::InspectionNode) -> bool {
         node.semantics.as_ref().is_some_and(|semantics| {
             semantics.role == Role::StaticText && semantics.name.as_deref() == Some("Remember me")
         }) || node.children.iter().any(has_visible_label)
@@ -375,15 +384,15 @@ fn serialized_check_label_builds_visible_and_spoken_semantics() {
         value_path: "remember".into(),
         enabled: true,
     });
-    let mut driver = crate::headless::Driver::new(
-        crate::State::new(),
+    let mut driver = tilo_ui::headless::Driver::new(
+        tilo_ui::State::new(),
         document.build(&Theme::dark()).unwrap(),
         (360, 120),
     );
 
     driver
         .expect(
-            &crate::headless::SemanticExpectation::named("remember")
+            &tilo_ui::headless::SemanticExpectation::named("remember")
                 .role(Role::Checkbox)
                 .name("Remember me"),
         )
@@ -501,7 +510,7 @@ fn routed_graph_buttons_publish_navigation_and_leave_the_document_alone() {
     .unwrap();
     let handle = router.handle();
     let mut driver =
-        crate::headless::Driver::new(crate::State::new(), Box::new(router), (640, 360));
+        tilo_ui::headless::Driver::new(tilo_ui::State::new(), Box::new(router), (640, 360));
     let document_before = driver.dump_json();
 
     driver
@@ -533,7 +542,7 @@ fn routed_graph_buttons_publish_navigation_and_leave_the_document_alone() {
 #[test]
 fn navigation_to_an_unknown_registered_screen_is_disabled() {
     fn find_missing(
-        node: &crate::headless::InspectionNode,
+        node: &tilo_ui::headless::InspectionNode,
     ) -> Option<&tilo_ui_base::a11y::AccessNode> {
         node.semantics
             .as_ref()
@@ -564,7 +573,7 @@ fn navigation_to_an_unknown_registered_screen_is_disabled() {
             &UiBuildContext::default().with_router(route.clone()),
         )
         .unwrap();
-    let mut driver = crate::headless::Driver::new(crate::State::new(), root, (640, 360));
+    let mut driver = tilo_ui::headless::Driver::new(tilo_ui::State::new(), root, (640, 360));
     let inspection = driver.inspection();
     let missing = find_missing(&inspection.root).expect("missing-route button remains visible");
     assert!(missing.state.disabled);
@@ -581,7 +590,7 @@ tilo_test_env::scenario! {
     {
         let handle = UiGraphHandle::new(sample()).unwrap();
         let before = handle.document().unwrap();
-        handle.inner.write().unwrap().revision = u64::MAX;
+        handle.exhaust_revision();
         let replacement = UiDocument::new(UiNode::Text {
             id: "replacement".into(),
             text: UiTextSource::Static {
@@ -643,7 +652,8 @@ fn live_edit_rebuilds_the_real_subtree_and_round_trips() {
     assert_eq!(handle.document().unwrap().nodes().len(), 4);
     assert!(matches!(handle.node("save"), Ok(UiNode::Button { .. })));
     let live = handle.widget(&Theme::dark()).unwrap();
-    let mut driver = crate::headless::Driver::new(crate::State::new(), Box::new(live), (640, 360));
+    let mut driver =
+        tilo_ui::headless::Driver::new(tilo_ui::State::new(), Box::new(live), (640, 360));
     assert!(driver.inspection_json().unwrap().contains("Save"));
 
     handle
@@ -801,7 +811,7 @@ fn live_graph_reject_bad_apply_keeps_last_good_tree() {
     let payload = serde_json::to_vec(&serde_json::json!({ "edits": edits })).unwrap();
     let error = run_operation(
         &mut live,
-        crate::tilo_actions::OperationKind::Effect,
+        tilo_ui::tilo_actions::OperationKind::Effect,
         "tilo.ui.graph.apply",
         &payload,
     )
@@ -814,7 +824,7 @@ fn live_graph_reject_bad_apply_keeps_last_good_tree() {
     let doc = AutoCommit::new();
     Widget::sync(&mut live, &doc, &automerge::ROOT);
     assert!(
-        crate::headless::Driver::new(crate::State::new(), Box::new(live), (640, 360))
+        tilo_ui::headless::Driver::new(tilo_ui::State::new(), Box::new(live), (640, 360))
             .inspection_json()
             .unwrap()
             .contains("Save"),
@@ -858,7 +868,7 @@ fn live_graph_actions_apply_and_dump() {
     let payload = serde_json::to_vec(&serde_json::json!({ "edits": edits })).unwrap();
     let output = run_operation(
         &mut live,
-        crate::tilo_actions::OperationKind::Effect,
+        tilo_ui::tilo_actions::OperationKind::Effect,
         "tilo.ui.graph.apply",
         &payload,
     )
@@ -871,7 +881,7 @@ fn live_graph_actions_apply_and_dump() {
     ));
     let dumped = run_operation(
         &mut live,
-        crate::tilo_actions::OperationKind::View,
+        tilo_ui::tilo_actions::OperationKind::View,
         "tilo.ui.graph.dump",
         b"null",
     )
@@ -1149,7 +1159,8 @@ fn live_structural_edits_rebuild_and_save_the_same_graph() {
             UiBuildContext::default().with_values(values.clone()),
         )
         .unwrap();
-    let mut driver = crate::headless::Driver::new(crate::State::new(), Box::new(live), (640, 360));
+    let mut driver =
+        tilo_ui::headless::Driver::new(tilo_ui::State::new(), Box::new(live), (640, 360));
     handle
         .insert_child(
             "root",
@@ -1187,7 +1198,7 @@ fn live_structural_edits_rebuild_and_save_the_same_graph() {
     assert!(UiDocument::from_json(&handle.to_json_pretty().unwrap()).is_ok());
 }
 
-fn edit_builder_button_properties(driver: &mut crate::headless::Driver) {
+fn edit_builder_button_properties(driver: &mut tilo_ui::headless::Driver) {
     driver
         .perform_named("builder-property", &Action::SetValue("Publish".into()))
         .unwrap();
@@ -1244,7 +1255,7 @@ fn graphical_editor_changes_and_saves_the_live_preview_graph() {
             Ok(())
         });
     let mut driver =
-        crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
+        tilo_ui::headless::Driver::new(tilo_ui::State::new(), Box::new(editor), (1_400, 800));
 
     let initial = driver.inspection_json().unwrap();
     assert!(initial.contains("builder-add-button"));
@@ -1324,7 +1335,7 @@ fn graphical_editor_validates_property_edits_atomically_and_tracks_renamed_ids()
     let handle = UiGraphHandle::new(sample()).unwrap();
     let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
     let mut driver =
-        crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
+        tilo_ui::headless::Driver::new(tilo_ui::State::new(), Box::new(editor), (1_400, 800));
 
     driver
         .perform_named("builder-add-container", &Action::Activate)
@@ -1370,7 +1381,7 @@ fn graphical_editor_keeps_renames_live_and_routes_shortcuts_to_local_history() {
     let handle = UiGraphHandle::new(sample()).unwrap();
     let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
     let mut driver =
-        crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
+        tilo_ui::headless::Driver::new(tilo_ui::State::new(), Box::new(editor), (1_400, 800));
 
     driver
         .perform_named("builder-add-container", &Action::Activate)
@@ -1407,7 +1418,7 @@ fn graphical_editor_exposes_layout_and_text_source_choices() {
     let handle = UiGraphHandle::new(sample()).unwrap();
     let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
     let mut driver =
-        crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
+        tilo_ui::headless::Driver::new(tilo_ui::State::new(), Box::new(editor), (1_400, 800));
 
     driver
         .perform_named("builder-column-gap", &Action::SetValue("12.5".into()))

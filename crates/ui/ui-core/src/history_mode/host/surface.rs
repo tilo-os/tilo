@@ -8,7 +8,7 @@ use tilo_ui_base::widget::DrawChild;
 use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 impl HistoryHost {
-    pub(crate) fn build_composition(
+    pub fn build_composition(
         &mut self,
         live: &mut dyn Widget,
         tree: &mut TaffyTree<()>,
@@ -300,7 +300,7 @@ impl HistoryHost {
             tilo_ui_base::widget::layout_rect(tree, node, origin).origin()
         })
     }
-    pub(crate) fn apply_composition(
+    pub fn apply_composition(
         &mut self,
         live: &mut dyn Widget,
         tree: &TaffyTree<()>,
@@ -312,11 +312,11 @@ impl HistoryHost {
             live.apply_layout(tree, node, self.live_origin(tree));
         }
     }
-    pub(crate) fn live_layout_node(&self) -> Option<NodeId> {
+    pub fn live_layout_node(&self) -> Option<NodeId> {
         self.live_node
     }
     /// Route `event` to the History chrome, then (when the chrome did not take it) to the `live` app.
-    pub(crate) fn route_event(
+    pub fn route_event(
         &mut self,
         live: &mut dyn Widget,
         event: &WindowEvent,

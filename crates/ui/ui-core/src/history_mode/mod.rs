@@ -632,25 +632,37 @@ pub(crate) fn sorted_heads(mut heads: Vec<ChangeHash>) -> Vec<ChangeHash> {
 #[cfg(test)]
 mod tests;
 
+/// The fixtures History's own tests and the app runner's share.
 #[cfg(feature = "model")]
-#[cfg(test)]
-pub(crate) mod host_tests;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 
 #[cfg(feature = "model")]
-#[cfg(test)]
-pub(crate) mod focus_tests;
+#[cfg(any(test, feature = "test-support"))]
+pub use api::HISTORY_RESOURCE;
 
 #[cfg(feature = "model")]
-#[cfg(test)]
-pub(crate) mod isolation_tests;
+#[cfg(any(test, feature = "test-support"))]
+pub use host::{HistoryHost, SIDE_PANEL_WIDTH};
 
 #[cfg(feature = "model")]
-#[cfg(test)]
-pub(crate) mod integration_tests;
+#[cfg(any(test, feature = "test-support"))]
+pub use embedded::{FocusRestrictions, allows_focus, has_surfaces};
 
 #[cfg(feature = "model")]
+#[cfg(any(test, feature = "test-support"))]
+pub use testing::preview as test_preview;
+
+/// What a restore fixture's record holds: the fixture the component tests drive through a
+/// managed root.
+#[cfg(feature = "model")]
 #[cfg(test)]
-pub(crate) use host_tests::preview as test_preview;
+#[allow(
+    clippy::too_many_lines,
+    reason = "The assertion helper compares queued and refused bindings across one ownership transition."
+)]
+#[path = "readiness_tests.rs"]
+mod readiness_tests;
 
 #[cfg(feature = "model")]
 pub(crate) mod routes;

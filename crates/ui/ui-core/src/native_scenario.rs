@@ -780,22 +780,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn effect_probe_reads_current_fixture_state_without_changing_it() {
-        let offset = std::rc::Rc::new(std::cell::Cell::new(12_u32));
-        let observed = offset.clone();
-        let mut app = crate::App::new(
-            crate::State::new(),
-            Box::new(crate::widget::Text::new("probe")),
-        );
-        assert!(app.native_input_snapshot().is_none());
-        app.set_native_input_probe(move || serde_json::json!({"offset": observed.get()}));
-        assert_eq!(app.native_input_snapshot().unwrap()["offset"], 12);
-        offset.set(24);
-        assert_eq!(app.native_input_snapshot().unwrap()["offset"], 24);
-        assert_eq!(offset.get(), 24);
-    }
-
     fn scenario() -> Scenario {
         Scenario {
             name: "native wheel".into(),

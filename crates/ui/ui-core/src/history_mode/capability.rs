@@ -100,7 +100,7 @@ pub fn document_action_applied(
     }
 }
 
-pub(crate) fn visit_framework_history(
+pub fn visit_framework_history(
     widget: &dyn Widget,
     visitor: &mut dyn FnMut(&super::FrameworkHistorySurface, &dyn Widget),
 ) {
@@ -112,7 +112,7 @@ pub(crate) fn visit_framework_history(
 }
 
 /// Mutable [`visit_framework_history`].
-pub(crate) fn visit_framework_history_mut(
+pub fn visit_framework_history_mut(
     widget: &mut dyn Widget,
     visitor: &mut dyn FnMut(&mut super::FrameworkHistorySurface, &mut dyn Widget),
 ) {

@@ -23,7 +23,7 @@ use winit::event::WindowEvent;
 /// Below this width History takes the whole window, its preview a page of its own; at or above it,
 /// History is a panel beside the content.
 const SIDE_PANEL_MIN_WIDTH: f64 = 600.0;
-pub(crate) const SIDE_PANEL_WIDTH: f64 = 360.0;
+pub const SIDE_PANEL_WIDTH: f64 = 360.0;
 
 #[derive(Clone, Copy)]
 enum Command {
@@ -48,7 +48,7 @@ enum Command {
 }
 
 #[derive(Clone)]
-pub(crate) struct PendingControlCallback {
+pub struct PendingControlCallback {
     invoke: Rc<RefCell<Box<dyn FnMut()>>>,
 }
 impl PendingControlCallback {
@@ -61,7 +61,7 @@ impl PendingControlCallback {
         (self.invoke.borrow_mut())();
     }
     #[cfg(test)]
-    pub(crate) fn invoke_for_test(&self) {
+    pub fn invoke_for_test(&self) {
         self.invoke();
     }
 }
@@ -85,6 +85,10 @@ thread_local! {
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent presentation, focus and refresh flags are not mutually exclusive modes"
+)]
+#[tilo_ui_base::component::not_a_component(
+    framework,
+    "the framework History surface a window hosts"
 )]
 pub struct HistoryHost {
     enclosing_owner: Option<super::HistoryOwner>,
@@ -213,7 +217,7 @@ impl crate::focus_navigation::FocusSurface for HistoryHost {
 
 impl HistoryHost {
     /// Request the same read-only presentation as the History button.
-    pub(crate) fn request_open(&self) -> bool {
+    pub fn request_open(&self) -> bool {
         if self.invalid_owner {
             return false;
         }
@@ -225,7 +229,7 @@ impl HistoryHost {
     }
 
     /// Return to the live app, as the History button does while open.
-    pub(crate) fn request_close(&self) {
+    pub fn request_close(&self) {
         if self.open {
             self.open_requested.set(true);
             super::note_news();
@@ -233,7 +237,7 @@ impl HistoryHost {
     }
 
     /// Open with `entry` selected, as choosing a recent change in a History menu does.
-    pub(crate) fn request_open_at(&mut self, entry: tilo_ui_base::HistoryEntryId) -> bool {
+    pub fn request_open_at(&mut self, entry: tilo_ui_base::HistoryEntryId) -> bool {
         if !self.request_open() {
             return false;
         }
@@ -242,22 +246,19 @@ impl HistoryHost {
         true
     }
 
-    pub(crate) fn is_open(&self) -> bool {
+    pub fn is_open(&self) -> bool {
         self.open
     }
 
     /// The window's History API as this History serves it: Open, Open at and Hide.
-    pub(crate) fn api_resource(&self) -> tilo_actions::ResourceSpec {
+    pub fn api_resource(&self) -> tilo_actions::ResourceSpec {
         crate::history_mode::api::history_resource(!self.invalid_owner, self.is_open())
     }
 
     /// Run one History API operation resolved against [`Self::api_resource`] (a header History
     /// control, the History shortcut): it opens, opens at a change, or closes exactly as this History's
     /// own button does.
-    pub(crate) fn invoke_api(
-        &mut self,
-        encoded: &tilo_actions::EncodedAction,
-    ) -> Result<(), String> {
+    pub fn invoke_api(&mut self, encoded: &tilo_actions::EncodedAction) -> Result<(), String> {
         use crate::history_mode::api::{HISTORY_OPERATION, HistoryCommand, decode_entry};
         if encoded.type_id != HISTORY_OPERATION {
             return Err("Unsupported History operation".into());
@@ -278,7 +279,7 @@ impl HistoryHost {
     }
 
     /// The changes History lists, in causal order, whether or not History is open.
-    pub(crate) fn current_entries(&self, doc: &AutoCommit) -> Vec<crate::widget::HistoryEntry> {
+    pub fn current_entries(&self, doc: &AutoCommit) -> Vec<crate::widget::HistoryEntry> {
         if self.open {
             return self.timeline.entries().to_vec();
         }
@@ -299,23 +300,23 @@ impl HistoryHost {
 
     /// The host presents History elsewhere, or the system surface omits document chrome: retain History
     /// ownership without its closed button.
-    pub(crate) fn remove_fallback_bar(&mut self) {
+    pub fn remove_fallback_bar(&mut self) {
         self.fallback_bar = false;
         self.rebuild_toolbar();
     }
 
     /// The host's own menus list History's recent changes ([`Self::lists_recent`]).
     #[cfg(any(feature = "native", test))]
-    pub(crate) fn list_recent(&mut self) {
+    pub fn list_recent(&mut self) {
         self.lists_recent = true;
     }
 
-    pub(crate) fn remove_open_button(&mut self) {
+    pub fn remove_open_button(&mut self) {
         self.set_open_button(false);
     }
 
     /// Whether the app's header row is offered the History control while History is closed.
-    pub(crate) fn set_open_button(&mut self, shown: bool) {
+    pub fn set_open_button(&mut self, shown: bool) {
         if self.open_button != shown {
             self.open_button = shown;
             self.rebuild_toolbar();
@@ -323,7 +324,7 @@ impl HistoryHost {
     }
 
     /// The shell window's tab row presents this History's control (see `window_presents`).
-    pub(crate) fn set_window_presents(&mut self, presents: bool) {
+    pub fn set_window_presents(&mut self, presents: bool) {
         if self.window_presents != presents {
             self.window_presents = presents;
             self.rebuild_toolbar();
@@ -331,11 +332,11 @@ impl HistoryHost {
     }
 
     /// Whether this History can be opened at all: its owner is valid.
-    pub(crate) fn offers_control(&self) -> bool {
+    pub fn offers_control(&self) -> bool {
         !self.invalid_owner
     }
 
-    pub(crate) fn new(
+    pub fn new(
         registration: HistoryRegistration,
         doc: &AutoCommit,
     ) -> Result<Self, HistoryRegistrationError> {
@@ -471,7 +472,7 @@ impl HistoryHost {
     /// Draw into a scene of its own, append that to `scene`, and say whether it differs from what the
     /// last presented frame painted: a window that shows the live app under an unchanged History
     /// toolbar repaints only what the app's widgets damage.
-    pub(crate) fn draw_compared(
+    pub fn draw_compared(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
@@ -501,18 +502,18 @@ impl HistoryHost {
     }
 
     /// The frame drawn last was presented: what the next frame's paint is compared with.
-    pub(crate) fn paint_presented(&mut self) {
+    pub fn paint_presented(&mut self) {
         if let Some(painting) = self.painting.take() {
             self.painted = Some(painting);
         }
     }
-    pub(crate) fn set_control_domain(&mut self, domain: &tilo_ui_base::ControlDomain) {
+    pub fn set_control_domain(&mut self, domain: &tilo_ui_base::ControlDomain) {
         self.control_domain = Some(domain.clone());
     }
-    pub(crate) fn sync_status_matches(&self, status: Option<&crate::widget::WindowStatus>) -> bool {
+    pub fn sync_status_matches(&self, status: Option<&crate::widget::WindowStatus>) -> bool {
         self.sync_status.as_ref() == status
     }
-    pub(crate) fn set_sync_status(&mut self, status: Option<crate::widget::WindowStatus>) {
+    pub fn set_sync_status(&mut self, status: Option<crate::widget::WindowStatus>) {
         self.sync_status = status;
         self.rebuild_toolbar();
     }
@@ -521,7 +522,7 @@ impl HistoryHost {
     /// own layout does not depend on it. Returns `false`, changing nothing here, when the status would
     /// move or appear in this bar instead; the caller then refreshes it whole
     /// ([`Self::set_sync_status`]).
-    pub(crate) fn set_sync_status_in_place(
+    pub fn set_sync_status_in_place(
         &mut self,
         status: Option<&crate::widget::WindowStatus>,
         live: &mut dyn Widget,
@@ -535,31 +536,31 @@ impl HistoryHost {
         self.sync_status = status.cloned();
         true
     }
-    pub(crate) fn validate_root(&self, root: &dyn Widget) -> Result<(), HistoryRegistrationError> {
+    pub fn validate_root(&self, root: &dyn Widget) -> Result<(), HistoryRegistrationError> {
         let _phase = tilo_actions::profiling::Phase::start("ui.history_root_validation");
         self.registration
             .validate_root_with_owner(root, self.enclosing_owner.as_ref())
     }
     /// Whether this is the History of the tile that hosts `owner`'s app.
-    pub(crate) fn encloses(&self, owner: &super::HistoryOwner) -> bool {
+    pub fn encloses(&self, owner: &super::HistoryOwner) -> bool {
         self.enclosing_owner
             .as_ref()
             .is_some_and(|enclosing| enclosing.same_owner(owner))
     }
     /// The app the tile holding this History hosts.
-    pub(crate) fn enclosing_owner(&self) -> Option<&super::HistoryOwner> {
+    pub fn enclosing_owner(&self) -> Option<&super::HistoryOwner> {
         self.enclosing_owner.as_ref()
     }
     /// The History API actions a control in the hosted app can run now: Open while closed, Hide while
     /// open, none for an invalid owner.
-    pub(crate) fn api_addresses(&self) -> std::collections::HashSet<tilo_actions::ActionAddress> {
+    pub fn api_addresses(&self) -> std::collections::HashSet<tilo_actions::ActionAddress> {
         tilo_actions::api::survey(&[self.api_resource()])
             .into_iter()
             .filter(|descriptor| descriptor.contract.availability.is_available())
             .map(|descriptor| descriptor.address)
             .collect()
     }
-    pub(crate) fn set_enclosing_owner(&mut self, owner: Option<super::HistoryOwner>) {
+    pub fn set_enclosing_owner(&mut self, owner: Option<super::HistoryOwner>) {
         self.embedded = true;
         let replaced = self.enclosing_owner.as_ref().is_some_and(|existing| {
             owner
@@ -571,14 +572,14 @@ impl HistoryHost {
         }
         self.enclosing_owner = owner;
     }
-    pub(crate) fn keyboard_is_active(&self) -> bool {
+    pub fn keyboard_is_active(&self) -> bool {
         self.keyboard_active
     }
-    pub(crate) fn cancel_focus_return(&mut self) {
+    pub fn cancel_focus_return(&mut self) {
         self.saved_focus = None;
         self.returning_live = false;
     }
-    pub(crate) fn activate_at_pointer(&mut self, event: &WindowEvent, scale: f64) {
+    pub fn activate_at_pointer(&mut self, event: &WindowEvent, scale: f64) {
         let point = match event {
             WindowEvent::Touch(touch) => {
                 Point::new(touch.location.x / scale, touch.location.y / scale)
@@ -587,10 +588,10 @@ impl HistoryHost {
         };
         self.keyboard_active = self.rect.contains(point);
     }
-    pub(crate) fn set_keyboard_active(&mut self, active: bool) {
+    pub fn set_keyboard_active(&mut self, active: bool) {
         self.keyboard_active = active;
     }
-    pub(crate) fn composition_contains(&self, target: NodeId, tree: &TaffyTree<()>) -> bool {
+    pub fn composition_contains(&self, target: NodeId, tree: &TaffyTree<()>) -> bool {
         let mut pending: Vec<_> = self.chrome_node.into_iter().collect();
         while let Some(node) = pending.pop() {
             if node == target {
@@ -601,7 +602,7 @@ impl HistoryHost {
         false
     }
     /// Forget handles owned by a discarded Taffy composition.
-    pub(crate) fn discard_layout_nodes(&mut self) {
+    pub fn discard_layout_nodes(&mut self) {
         self.rect = Rect::ZERO;
         self.cursor = Point::ORIGIN;
         self.keyboard_active = false;
@@ -619,10 +620,10 @@ impl HistoryHost {
         self.banner_node = None;
         self.panel_rect = Rect::ZERO;
     }
-    pub(crate) fn live_interactive(&self) -> bool {
+    pub fn live_interactive(&self) -> bool {
         !self.captures_input() && !self.invalid_owner
     }
-    pub(crate) fn width_needs_refresh(&self, width: f64) -> bool {
+    pub fn width_needs_refresh(&self, width: f64) -> bool {
         (self.width < 600.0) != (width < 600.0)
     }
 
@@ -660,13 +661,13 @@ impl HistoryHost {
                 })
             })
     }
-    pub(crate) fn validate(&self) -> Result<(), HistoryRegistrationError> {
+    pub fn validate(&self) -> Result<(), HistoryRegistrationError> {
         if self.invalid_owner {
             return Err(HistoryRegistrationError::UnsupportedOwner);
         }
         self.registration.validate()
     }
-    pub(crate) fn invalidate_owner(&mut self) -> bool {
+    pub fn invalidate_owner(&mut self) -> bool {
         if self.invalid_owner {
             return false;
         }
@@ -691,7 +692,7 @@ impl HistoryHost {
         self.toolbar_dirty = true;
         true
     }
-    pub(crate) fn preserve_captured_focus(
+    pub fn preserve_captured_focus(
         &mut self,
         captured: Option<tilo_ui_base::widget::layout::CompositionFocus>,
     ) {
@@ -699,28 +700,28 @@ impl HistoryHost {
             self.saved_focus = captured;
         }
     }
-    pub(crate) fn take_returning_focus(
+    pub fn take_returning_focus(
         &mut self,
     ) -> Option<tilo_ui_base::widget::layout::CompositionFocus> {
         self.returning_live = false;
         self.saved_focus.take()
     }
-    pub(crate) fn discard_saved_focus(&mut self) {
+    pub fn discard_saved_focus(&mut self) {
         self.saved_focus = None;
     }
-    pub(crate) fn captures_input(&self) -> bool {
+    pub fn captures_input(&self) -> bool {
         self.open || self.open_requested.get() || !self.selected.is_empty()
     }
     /// History's entry is requested and not yet presented: the frame that presents it seals the
     /// controls components queued before it.
-    pub(crate) fn entry_pending(&self) -> bool {
+    pub fn entry_pending(&self) -> bool {
         self.open_requested.get() && !self.open
     }
     #[allow(
         clippy::single_match_else,
         reason = "owner-bearing capture keeps the component and legacy ownership variants adjacent"
     )]
-    pub(crate) fn capture_pending_controls(
+    pub fn capture_pending_controls(
         &mut self,
         live: &mut dyn Widget,
         doc: &AutoCommit,
@@ -890,7 +891,7 @@ impl HistoryHost {
             )
         });
     }
-    pub(crate) fn capture_embedded_pending_controls(
+    pub fn capture_embedded_pending_controls(
         &mut self,
         live: &mut dyn Widget,
         doc: &AutoCommit,
@@ -906,7 +907,7 @@ impl HistoryHost {
         clippy::needless_pass_by_ref_mut,
         reason = "the surface-owned lifecycle API names which suspended queue is being drained"
     )]
-    pub(crate) fn discard_pending_output(&mut self, live: &mut dyn Widget) {
+    pub fn discard_pending_output(&mut self, live: &mut dyn Widget) {
         let _ = crate::bound_dispatch::drain_control_invocations(live);
         while tilo_ui_base::widget::controls::take_control_invocation(live).is_some() {}
         // Entry observed these exact queues even if mutable traversal failed.
@@ -917,7 +918,7 @@ impl HistoryHost {
             owner.queued_controls.borrow_mut().clear();
         }
     }
-    pub(crate) fn finish_return_to_live(&mut self) {
+    pub fn finish_return_to_live(&mut self) {
         // If ownership never recovered, preserve the sealed descriptor as a
         // visible refusal instead of losing it on the next History entry.
         for sealed in self.pending_control_recovery.drain(..) {
@@ -940,28 +941,26 @@ impl HistoryHost {
         // emissions into these queues retain their ordinary dispatch semantics.
         self.suspended_control_queues.clear();
     }
-    pub(crate) fn has_settled_control_return(&self) -> bool {
+    pub fn has_settled_control_return(&self) -> bool {
         self.control_lease.is_some() && !self.captures_input() && !self.returning_live
     }
-    pub(crate) fn finish_control_return(&mut self) {
+    pub fn finish_control_return(&mut self) {
         self.control_lease = None;
     }
     /// Runner-only structural flush after every admitted raw widget map has been cleared for this
     /// composition pass.
-    pub(crate) fn flush_pending_toolbar(&mut self) {
+    pub fn flush_pending_toolbar(&mut self) {
         if std::mem::take(&mut self.toolbar_dirty) {
             self.rebuild_toolbar();
         }
     }
-    pub(crate) fn pending_control_reviews(
-        &self,
-    ) -> Vec<super::pending_controls::PendingControlReview> {
+    pub fn pending_control_reviews(&self) -> Vec<super::pending_controls::PendingControlReview> {
         self.pending_controls.review()
     }
-    pub(crate) fn pending_control_surface_lifetime(&self) -> uuid::Uuid {
+    pub fn pending_control_surface_lifetime(&self) -> uuid::Uuid {
         self.pending_controls.surface_lifetime()
     }
-    pub(crate) fn pending_control_token(
+    pub fn pending_control_token(
         &mut self,
         id: super::pending_controls::PendingControlId,
     ) -> Option<super::pending_controls::ContinuationToken> {
@@ -973,7 +972,7 @@ impl HistoryHost {
     ) -> Option<super::pending_controls::PreparedContinuation> {
         self.pending_controls.prepare(token)
     }
-    pub(crate) fn pending_control_refused(
+    pub fn pending_control_refused(
         &mut self,
         id: super::pending_controls::PendingControlId,
         reason: impl Into<String>,
@@ -981,14 +980,11 @@ impl HistoryHost {
         self.pending_controls.refused(id, reason);
         self.toolbar_dirty = true;
     }
-    pub(crate) fn pending_control_consumed(
-        &mut self,
-        id: super::pending_controls::PendingControlId,
-    ) {
+    pub fn pending_control_consumed(&mut self, id: super::pending_controls::PendingControlId) {
         self.pending_controls.consumed(id);
         self.toolbar_dirty = true;
     }
-    pub(crate) fn cancel_pending_control(
+    pub fn cancel_pending_control(
         &mut self,
         token: &super::pending_controls::ContinuationToken,
     ) -> bool {
@@ -1005,7 +1001,7 @@ impl HistoryHost {
     }
     /// Answer presses of History's own controls that its retained chrome queued: this surface hosts the
     /// controls it presents.
-    pub(crate) fn answer_own_controls(
+    pub fn answer_own_controls(
         &mut self,
         doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &automerge::ObjId,
@@ -1013,7 +1009,7 @@ impl HistoryHost {
         tilo_ui_base::widget::controls::start_pending_control_invocations(self, doc, path)
     }
     /// The changes the timeline shows selected.
-    pub(crate) fn timeline_selection(&self) -> Vec<tilo_ui_base::HistoryEntryId> {
+    pub fn timeline_selection(&self) -> Vec<tilo_ui_base::HistoryEntryId> {
         self.timeline
             .selection()
             .and_then(|(start, end)| self.timeline.entries().get(start..=end))
@@ -1038,10 +1034,10 @@ impl HistoryHost {
     ) -> Option<PendingControlCallback> {
         self.pending_control_callbacks.get(id).cloned()
     }
-    pub(crate) fn has_saved_focus(&self) -> bool {
+    pub fn has_saved_focus(&self) -> bool {
         self.saved_focus.is_some()
     }
-    pub(crate) fn controls_event(&self, event: &WindowEvent, scale: f64) -> bool {
+    pub fn controls_event(&self, event: &WindowEvent, scale: f64) -> bool {
         let point = if let WindowEvent::CursorMoved { position, .. } = event {
             Point::new(position.x / scale, position.y / scale)
         } else if let WindowEvent::Touch(touch) = event {
@@ -1138,7 +1134,7 @@ impl HistoryHost {
         // ownership only after all remaining frame callbacks have finished.
         restored
     }
-    pub(crate) fn returning_live(&self) -> bool {
+    pub fn returning_live(&self) -> bool {
         self.returning_live
     }
 
@@ -1162,7 +1158,7 @@ impl HistoryHost {
     /// Present the listed changes as the live app `live` says they look
     /// ([`super::capability::PresentsHistoryEntries`]), and keep how the window shows its record for
     /// the previews ([`super::capability::live_presentation`]).
-    pub(crate) fn present_entries_of(&mut self, live: &dyn Widget) {
+    pub fn present_entries_of(&mut self, live: &dyn Widget) {
         if self.captures_input() {
             self.timeline
                 .set_entry_presenter(super::capability::history_entry_presenter(live));
@@ -1174,7 +1170,7 @@ impl HistoryHost {
     ///
     /// Not before the return has settled: until then every pass discards what the live app queues
     /// ([`Self::discard_pending_output`]), and with it what opening the change asked for.
-    pub(crate) fn deliver_opened_entry(&mut self, live: &mut dyn Widget) -> bool {
+    pub fn deliver_opened_entry(&mut self, live: &mut dyn Widget) -> bool {
         if self.opened.is_none()
             || self.captures_input()
             || self.returning_live
@@ -1198,7 +1194,7 @@ impl HistoryHost {
             self.banner_node,
         ]
     }
-    pub(crate) fn extend_focus_denials(&self, tree: &TaffyTree<()>, denied: &mut HashSet<NodeId>) {
+    pub fn extend_focus_denials(&self, tree: &TaffyTree<()>, denied: &mut HashSet<NodeId>) {
         if !self.captures_input() && !self.has_saved_focus() {
             return;
         }
@@ -1217,7 +1213,7 @@ impl HistoryHost {
     }
     /// Every layout node this History owns, collected in one walk: the set [`Self::owns_node`] answers
     /// for one node, for callers that ask it of every node in a composition.
-    pub(crate) fn owned_nodes(&self, tree: &TaffyTree<()>) -> HashSet<NodeId> {
+    pub fn owned_nodes(&self, tree: &TaffyTree<()>) -> HashSet<NodeId> {
         #[cfg(test)]
         OWNERSHIP_WALKS.with(|walks| walks.set(walks.get() + 1));
         let mut owned = HashSet::new();
@@ -1229,7 +1225,7 @@ impl HistoryHost {
         }
         owned
     }
-    pub(crate) fn owns_node(&self, node: NodeId, tree: &TaffyTree<()>) -> bool {
+    pub fn owns_node(&self, node: NodeId, tree: &TaffyTree<()>) -> bool {
         #[cfg(test)]
         OWNERSHIP_WALKS.with(|walks| walks.set(walks.get() + 1));
         let mut pending: Vec<_> = self.owned_layout_roots().into_iter().flatten().collect();
@@ -1241,7 +1237,7 @@ impl HistoryHost {
         }
         false
     }
-    pub(crate) fn set_width(&mut self, width: f64) {
+    pub fn set_width(&mut self, width: f64) {
         let changed = (self.width < 600.0) != (width < 600.0);
         self.width = width;
         if changed {
@@ -1276,13 +1272,13 @@ impl HistoryHost {
             &mut self.after
         }
     }
-    pub(crate) fn needs_refresh(&self, doc: &AutoCommit, width: f64) -> bool {
+    pub fn needs_refresh(&self, doc: &AutoCommit, width: f64) -> bool {
         let r = self.refresh_without_owners(width);
         r.unwrap_or_else(|| self.heads_need_refresh(doc))
     }
     /// [`Self::needs_refresh`] as far as it can be answered without reading an owner's document: `None`
     /// leaves it to the committed frontier ([`Self::heads_need_refresh`]).
-    pub(crate) fn refresh_without_owners(&self, width: f64) -> Option<bool> {
+    pub fn refresh_without_owners(&self, width: f64) -> Option<bool> {
         if self.invalid_owner {
             return Some(false);
         }
@@ -1327,7 +1323,7 @@ impl HistoryHost {
     }
     /// Whether the shown source's committed frontier asks for a refresh: it cannot be read, or an open
     /// History has not taken it up yet.
-    pub(crate) fn heads_need_refresh(&self, doc: &AutoCommit) -> bool {
+    pub fn heads_need_refresh(&self, doc: &AutoCommit) -> bool {
         let _phase = tilo_actions::profiling::Phase::start("ui.history_heads");
         let Ok(heads) = self.source().committed_heads(doc) else {
             return true;
@@ -1339,13 +1335,13 @@ impl HistoryHost {
                 super::sorted_heads(heads.clone()) != controller.observed_live_heads
             }) || self.listing.moved(&heads, self.source().parts().as_deref()))
     }
-    pub(crate) fn review_is_open(&self) -> bool {
+    pub fn review_is_open(&self) -> bool {
         self.review.is_some()
     }
-    pub(crate) fn review_layout_node(&self) -> Option<NodeId> {
+    pub fn review_layout_node(&self) -> Option<NodeId> {
         self.review_node
     }
-    pub(crate) fn observe_pointer(&mut self, event: &WindowEvent, scale: f64) {
+    pub fn observe_pointer(&mut self, event: &WindowEvent, scale: f64) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = Point::new(position.x / scale, position.y / scale);
         }
@@ -1407,7 +1403,7 @@ impl HistoryHost {
         clippy::too_many_lines,
         reason = "one ordered refresh reconciles source, controller, immutable canvases and toolbar"
     )]
-    pub(crate) fn refresh(&mut self, doc: &AutoCommit) {
+    pub fn refresh(&mut self, doc: &AutoCommit) {
         if self.invalid_owner {
             return;
         }
@@ -2159,11 +2155,11 @@ impl HistoryHost {
     /// Whether content can be laid out anew under the nodes this chrome keeps. Closed, the chrome
     /// lays the live app out in its body and changes below it are the app's; open, previewing or
     /// returning, its own layout holds the app and this chrome composes it.
-    pub(crate) fn lays_out_in_place(&self) -> bool {
+    pub fn lays_out_in_place(&self) -> bool {
         self.live_interactive() && !self.returning_live && !self.review_is_open()
     }
 
-    pub(crate) fn live_visible(&self) -> bool {
+    pub fn live_visible(&self) -> bool {
         let external = self
             .registration
             .definition
@@ -2183,14 +2179,14 @@ pub(crate) type HistoryChrome = Box<HistoryHost>;
 
 /// The window's History control `history` offers its window's bar: none while there is no History to
 /// open.
-pub(crate) fn window_control(history: &HistoryHost) -> Option<crate::widget::HistoryControl> {
+pub fn window_control(history: &HistoryHost) -> Option<crate::widget::HistoryControl> {
     history
         .offers_control()
         .then(|| crate::widget::HistoryControl::of(history.is_open()))
 }
 
 /// Run the window's History `control` on `history`, as the History shortcut does.
-pub(crate) fn press_window_control(
+pub fn press_window_control(
     history: &mut HistoryHost,
     control: crate::widget::HistoryControl,
 ) -> Result<(), String> {
@@ -2203,7 +2199,7 @@ pub(crate) fn press_window_control(
 /// The History control a window whose root widget is `root` offers its bar: the History the root
 /// offers ([`crate::widget::WindowHistory`], a window showing the system's history of what it
 /// shows), else its History API's, `history`.
-pub(crate) fn offered_control(
+pub fn offered_control(
     root: &dyn tilo_ui_base::widget::Widget,
     history: Option<&HistoryHost>,
 ) -> Option<crate::widget::HistoryControl> {
@@ -2213,7 +2209,7 @@ pub(crate) fn offered_control(
 }
 
 /// Run the window's History `control` where [`offered_control`] found it.
-pub(crate) fn press_offered(
+pub fn press_offered(
     root: &mut dyn tilo_ui_base::widget::Widget,
     history: Option<&mut HistoryHost>,
     control: crate::widget::HistoryControl,
@@ -2228,7 +2224,7 @@ pub(crate) fn press_offered(
 }
 
 /// Make the History `registration` asks for, over `doc`.
-pub(crate) fn make_history(
+pub fn make_history(
     registration: HistoryRegistration,
     doc: &AutoCommit,
 ) -> Result<HistoryChrome, HistoryRegistrationError> {

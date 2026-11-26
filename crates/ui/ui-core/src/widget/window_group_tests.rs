@@ -649,11 +649,11 @@ crate::testing::test_app_widget!(
 /// does the tab in front.
 #[test]
 fn a_background_tab_is_still_part_of_its_window() {
-    let active = crate::history_mode::isolation_tests::native_effect_probe_parts(
+    let active = crate::history_mode::testing::native_effect_probe_parts(
         "active-session",
         "fixture.active-session",
     );
-    let inactive = crate::history_mode::isolation_tests::native_effect_probe_parts(
+    let inactive = crate::history_mode::testing::native_effect_probe_parts(
         "inactive-session",
         "fixture.inactive-session",
     );

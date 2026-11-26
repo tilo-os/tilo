@@ -16,7 +16,7 @@ use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::HistoryEntryId;
 
 pub(crate) const HISTORY_OPERATION: &str = "tilo.host.history.view";
-pub(crate) const HISTORY_RESOURCE: &str = "tilo.host:history";
+pub const HISTORY_RESOURCE: &str = "tilo.host:history";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]

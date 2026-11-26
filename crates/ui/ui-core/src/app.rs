@@ -3109,6 +3109,10 @@ mod context_menu_input_tests;
 #[cfg(test)]
 #[path = "app/history_tests.rs"]
 pub(crate) mod framework_history_tests;
+/// The fixtures the app runner's tests share, for the toolkit's tests above it.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod testing;
 #[cfg(test)]
 mod tree_record_tests;
 

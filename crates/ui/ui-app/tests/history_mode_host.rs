@@ -1,121 +1,24 @@
-use super::*;
-use crate::{State, headless::Driver, widget::Button, widget::Column};
+//! The History host as an app's window drives it: its bar, its panel, its previews and what a
+//! retained record's activity hands back.
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use std::{cell::Cell, rc::Rc};
+use tilo_ui::history_mode::testing::*;
+use tilo_ui::history_mode::*;
+use tilo_ui::history_mode::{HistoryHost, SIDE_PANEL_WIDTH};
+use tilo_ui::{State, headless::Driver, widget::Button, widget::Column};
+use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
-use tilo_ui_base::{text_render::TextRenderer, theme::Theme};
 use vello::{
     Scene,
     kurbo::{Affine, Rect},
 };
-
-static DEFINITION: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.tilo.history-fixture",
-    scopes: &[HistoryScopeDefinition {
-        key: "document",
-        title: "Notebook",
-        presentation: HistoryPresentation::Domain { create: preview },
-    }],
-};
-struct NotebookPreview {
-    body: String,
-    bounds: Rect,
-    view: PreviewView,
-}
-pub(crate) fn preview(input: PreviewInput) -> Result<Box<dyn HistoryPreview>, String> {
-    let doc = automerge::AutoCommit::load(input.snapshot.bytes()).map_err(|e| e.to_string())?;
-    let body = doc
-        .get(ROOT, "body")
-        .map_err(|e| e.to_string())?
-        .and_then(|(value, _)| value.as_str().map(str::to_owned))
-        .unwrap_or_default();
-    Ok(Box::new(NotebookPreview {
-        body,
-        bounds: Rect::ZERO,
-        view: input.initial_view,
-    }))
-}
-impl HistoryPreview for NotebookPreview {
-    fn layout(&mut self, bounds: Rect, _: &mut TextRenderer, _: &Theme) -> Result<(), String> {
-        self.bounds = bounds;
-        Ok(())
-    }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &self.bounds,
-        );
-        text.draw_text(
-            scene,
-            "Notebook",
-            24.0,
-            theme.text_primary,
-            transform * Affine::translate((self.bounds.x0 + 24.0, self.bounds.y0 + 24.0)),
-            None,
-        );
-        text.draw_text(
-            scene,
-            &self.body,
-            18.0,
-            theme.text_primary,
-            transform
-                * Affine::translate((
-                    self.bounds.x0 + 24.0,
-                    self.bounds.y0 + 70.0 + self.view.scroll.1,
-                )),
-            None,
-        );
-    }
-    fn navigate(&mut self, command: PreviewNavigation) -> bool {
-        if let PreviewNavigation::Scroll { dx, dy } = command {
-            self.view.scroll.0 += dx;
-            self.view.scroll.1 += dy;
-            true
-        } else {
-            false
-        }
-    }
-    fn view(&self) -> PreviewView {
-        self.view.clone()
-    }
-    fn accessibility(&self) -> PreviewAccessibility {
-        PreviewAccessibility {
-            description: format!("Notebook: {}; scroll {}", self.body, self.view.scroll.1),
-            pages: vec![],
-        }
-    }
-}
-pub(super) fn registration() -> HistoryRegistration {
-    HistoryRegistration::new(
-        &DEFINITION,
-        vec![HistorySourceRegistration::HostDocument {
-            scope: "document",
-            resource: HistoryResource::new(
-                "fixture",
-                "lifetime-1",
-                DEFINITION.app_id,
-                crate::DocumentId::for_tab(777),
-            ),
-        }],
-    )
-    .unwrap()
-}
 
 #[test]
 fn history_status_and_recovery_keep_the_existing_bar_geometry() {
     for width in [360.0, 900.0] {
         let state = State::new();
         let mut live = Column::new().push(Box::new(Button::new("live", "Send")));
-        let mut history = host::HistoryHost::new(registration(), &state.doc).unwrap();
+        let mut history = HistoryHost::new(registration(), &state.doc).unwrap();
         history.set_width(width);
         let theme = Theme::dark();
         let mut renderer = tilo_ui_base::font_catalog::fixture_renderer();
@@ -131,7 +34,7 @@ fn history_status_and_recovery_keep_the_existing_bar_geometry() {
         ] {
             let status = key
                 .map(tilo_ui_base::i18n::I18nManager::lookup_plain)
-                .map(crate::widget::WindowStatus::says);
+                .map(tilo_ui::widget::WindowStatus::says);
             history.set_sync_status(status.clone());
             let mut tree = taffy::TaffyTree::new();
             let mut nodes = std::collections::HashMap::new();
@@ -199,7 +102,7 @@ fn first_control_capture_preserves_admitted_toolbar_until_recomposition() {
     state.doc.put(ROOT, "body", "existing document").unwrap();
     state.commit_action(None, None);
     let mut live = Column::new().push(Box::new(Button::new("live", "Send")));
-    let mut history = host::HistoryHost::new(registration(), &state.doc).unwrap();
+    let mut history = HistoryHost::new(registration(), &state.doc).unwrap();
     history.set_width(900.0);
     assert!(history.request_open());
     history.refresh(&state.doc);
@@ -236,10 +139,10 @@ fn a_first_build_whose_header_takes_the_history_control_is_admitted_as_built() {
     let mut state = State::new();
     state.doc.put(ROOT, "body", "existing document").unwrap();
     state.commit_action(None, None);
-    let mut live = crate::widget::NavShell::new()
+    let mut live = tilo_ui::widget::NavShell::new()
         .content(Box::new(Button::new("live", "Send")))
         .content_header("Page", Vec::new());
-    let mut history = host::HistoryHost::new(registration(), &state.doc).unwrap();
+    let mut history = HistoryHost::new(registration(), &state.doc).unwrap();
     history.set_width(900.0);
     let mut tree = taffy::TaffyTree::new();
     let mut nodes = std::collections::HashMap::new();
@@ -328,7 +231,7 @@ tilo_test_env::scenario! {
                 .unwrap()
                 .contains("Notebook: first")
         );
-        assert_eq!(crate::testing::clicks("effect"), 0);
+        assert_eq!(tilo_ui::testing::clicks("effect"), 0);
         driver.click_named("history-back-live").unwrap();
         assert!(driver.targets().contains_key("live-effect"));
         assert!(!driver.targets().contains_key("history-preview"));
@@ -478,12 +381,12 @@ fn versioned_driver(viewport: (u32, u32)) -> (Driver, String, Vec<automerge::Cha
     state.doc.put(ROOT, "body", "first").unwrap();
     state.commit_action(None, None);
     let first = state.doc.get_heads().pop().unwrap();
-    let id = crate::history_source::entry_id_from_hash(&first.to_string());
+    let id = tilo_ui::history_source::entry_id_from_hash(&first.to_string());
     state.doc.put(ROOT, "body", "second").unwrap();
     state.commit_action(None, None);
     let before = state.doc.get_heads();
     let root = Column::new().push(Box::new(
-        Button::new("live-effect", "Send").on_click(crate::testing::record_click("effect")),
+        Button::new("live-effect", "Send").on_click(tilo_ui::testing::record_click("effect")),
     ));
     let driver = Driver::from_managed_root(
         state,
@@ -593,7 +496,7 @@ fn managed_history_visible_branches_drain_and_retained_modes_return_current() {
     assert_history_frame_idle(&mut unavailable, "unavailable timeline");
 }
 fn find_access<'a>(
-    node: &'a crate::headless::InspectionNode,
+    node: &'a tilo_ui::headless::InspectionNode,
     target: &str,
 ) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
     fn in_access<'a>(
@@ -628,13 +531,13 @@ static FOLDER_COMPOSITION: HistoryDefinition = HistoryDefinition {
 
 struct FolderCompositionRoot {
     inner: Box<dyn Widget>,
-    source: crate::history_mode::folder::FolderHistorySource,
+    source: tilo_ui::history_mode::folder::FolderHistorySource,
 }
 
 impl Widget for FolderCompositionRoot {
-    tilo_ui_base::provides!(dyn crate::history_mode::capability::DocumentHistory);
+    tilo_ui_base::provides!(dyn tilo_ui::history_mode::capability::DocumentHistory);
 
-    crate::testing::delegate_widget_methods!(
+    tilo_ui::delegate_widget_methods!(
         inner: sync,
         build_layout,
         apply_layout,
@@ -661,7 +564,7 @@ impl Widget for FolderCompositionRoot {
     }
 }
 
-impl crate::history_mode::capability::DocumentHistory for FolderCompositionRoot {
+impl tilo_ui::history_mode::capability::DocumentHistory for FolderCompositionRoot {
     fn history_registration(
         &self,
     ) -> Result<Option<HistoryRegistration>, HistoryRegistrationError> {
@@ -682,7 +585,7 @@ impl crate::history_mode::capability::DocumentHistory for FolderCompositionRoot 
 
 #[test]
 fn folder_activity_keeps_the_wide_live_surface() {
-    let source = crate::history_mode::folder::FolderHistorySource::default();
+    let source = tilo_ui::history_mode::folder::FolderHistorySource::default();
     let registration = HistoryRegistration::new(
         &FOLDER_COMPOSITION,
         vec![HistorySourceRegistration::FolderFiles {
@@ -715,8 +618,8 @@ fn folder_activity_keeps_the_wide_live_surface() {
     );
 }
 
-const TOOLKIT_EN: &str = include_str!("../../../ui-base/locales/en-US.ftl");
-const TOOLKIT_DE: &str = include_str!("../../../ui-base/locales/de-DE.ftl");
+const TOOLKIT_EN: &str = include_str!("../../ui-base/locales/en-US.ftl");
+const TOOLKIT_DE: &str = include_str!("../../ui-base/locales/de-DE.ftl");
 
 #[test]
 fn history_chrome_follows_the_shell_language() {
@@ -852,9 +755,9 @@ fn header_history_control_opens_the_registered_history() {
         state.commit_action(None, None);
     }
     let before = state.doc.get_heads();
-    let shell = crate::widget::NavShell::new()
+    let shell = tilo_ui::widget::NavShell::new()
         .content_header("Notes", vec![])
-        .content(Box::new(crate::widget::Text::new("Body")));
+        .content(Box::new(tilo_ui::widget::Text::new("Body")));
     let mut driver = Driver::from_managed_root(
         state,
         ManagedRoot::new(Box::new(shell), registration()),
@@ -891,7 +794,7 @@ fn header_history_control_opens_the_registered_history() {
     assert!(driver.targets().contains_key("activity_timeline"));
     driver
         .invoke_local_history_action(
-            &tilo_actions::ActionAddress::new(crate::history_mode::api::HISTORY_RESOURCE, "hide"),
+            &tilo_actions::ActionAddress::new(tilo_ui::history_mode::HISTORY_RESOURCE, "hide"),
             None,
         )
         .unwrap();
@@ -945,12 +848,12 @@ fn opening_history_lays_the_shell_out_at_its_narrower_width() {
     });
     let overview = vec![probes.next().unwrap(), probes.next().unwrap()];
     let content = vec![probes.next().unwrap(), probes.next().unwrap()];
-    let shell = crate::widget::NavShell::new()
-        .sidebar(Box::new(crate::widget::Text::new("Library")))
-        .overview(Box::new(crate::widget::Text::new("List")))
+    let shell = tilo_ui::widget::NavShell::new()
+        .sidebar(Box::new(tilo_ui::widget::Text::new("Library")))
+        .overview(Box::new(tilo_ui::widget::Text::new("List")))
         .overview_header("All snippets", overview)
         .content_header("Multi-stage build", content)
-        .content(Box::new(crate::widget::Text::new("Body")));
+        .content(Box::new(tilo_ui::widget::Text::new("Body")));
     let mut driver = Driver::from_managed_root(
         state,
         ManagedRoot::new(Box::new(shell), registration()),
@@ -1009,7 +912,7 @@ fn history_is_a_side_panel_whose_change_previews_in_place_and_restores_on_its_ow
     let targets = driver.targets();
     let timeline = targets["activity_timeline"];
     assert!(
-        timeline.x0 >= 900.0 - host::SIDE_PANEL_WIDTH - 1.0,
+        timeline.x0 >= 900.0 - SIDE_PANEL_WIDTH - 1.0,
         "History stands at the window's trailing side: {timeline:?}"
     );
     assert!(
@@ -1019,7 +922,7 @@ fn history_is_a_side_panel_whose_change_previews_in_place_and_restores_on_its_ow
 
     let target = format!(
         "timeline-entry:{}",
-        tilo_ui_base::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
+        tilo_ui_base::HistoryEntryId::hex(&tilo_ui::history_source::entry_id_from_hash(
             &body_change.to_string()
         ))
     );
@@ -1074,9 +977,9 @@ fn the_side_panel_names_the_selected_changes_and_bands_them_under_the_name() {
     driver.commit_text("First pass");
     driver.key("Enter");
     let names = |driver: &mut Driver| {
-        crate::history_source::groups::read_named_ranges(
+        tilo_ui::history_source::groups::read_named_ranges(
             &driver.state_mut().doc,
-            &crate::history_source::AuthorDirectory::default(),
+            &tilo_ui::history_source::AuthorDirectory::default(),
         )
     };
     let [named] = names(&mut driver).try_into().unwrap();
@@ -1104,7 +1007,7 @@ fn the_side_panel_names_the_selected_changes_and_bands_them_under_the_name() {
         (node.role == tilo_ui_base::a11y::Role::TreeItem && node.name.as_deref() == Some(name))
             || node.children.iter().any(|child| band(child, name))
     }
-    fn banded(node: &crate::headless::InspectionNode, name: &str) -> bool {
+    fn banded(node: &tilo_ui::headless::InspectionNode, name: &str) -> bool {
         node.semantics
             .as_ref()
             .is_some_and(|access| band(access, name))

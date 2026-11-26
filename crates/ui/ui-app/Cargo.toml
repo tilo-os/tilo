@@ -41,6 +41,8 @@ tilo-wasm-aot = { path = "../../platform/tilo-wasm-aot", features = ["compile"] 
 wat = "1"
 # Tests whose interface is the process environment set it through `ScopedEnv`.
 tilo-test-env = { path = "../../../tools/test-env" }
+# The broker's admission ack the manager tests wait on wakes through it.
+tokio = { workspace = true, features = ["sync"] }
 accesskit = { version = "0.25.0", features = ["serde"] }
 automerge.workspace = true
 hex.workspace = true

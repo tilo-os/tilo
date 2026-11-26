@@ -387,7 +387,7 @@ mod component_adapter {
         widget::Theme, widget::WindowEvent,
     };
 
-    pub(crate) struct BoundAppWidget {
+    pub struct BoundAppWidget {
         pub(crate) component: AppComponent,
         /// A complete-content capture laid the root out in a tree of its own: the host rebuilds its layout
         /// before the next frame.
@@ -415,7 +415,7 @@ mod component_adapter {
     }
 
     impl BoundAppWidget {
-        pub(crate) fn new(component: AppComponent) -> Self {
+        pub fn new(component: AppComponent) -> Self {
             Self {
                 component,
                 relayout: false,
@@ -2400,7 +2400,7 @@ mod component_adapter {
     }
 }
 #[cfg(feature = "model")]
-pub(crate) use component_adapter::BoundAppWidget;
+pub use component_adapter::BoundAppWidget;
 
 #[cfg(test)]
 #[cfg(feature = "model")]

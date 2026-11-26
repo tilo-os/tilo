@@ -280,6 +280,15 @@ pub use {
 mod app_widget;
 #[cfg(feature = "model")]
 pub(crate) use app_widget::BoundAppWidget;
+
+/// A component's widget as a window's managed root holds it, for the tests above the toolkit.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn bound_app_widget(
+    component: crate::application::AppComponent,
+) -> Box<dyn tilo_ui_base::widget::Widget> {
+    Box::new(app_widget::BoundAppWidget::new(component))
+}
 pub use {
     app_widget::AppCommand, app_widget::AppKind, app_widget::AppProcessIntent,
     app_widget::AppWidget, app_widget::HostShellAllow, app_widget::IconDescriptor,

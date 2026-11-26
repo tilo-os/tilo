@@ -16,7 +16,7 @@ static DEFINITION: HistoryDefinition = HistoryDefinition {
         key: "document",
         title: "Refresh probe",
         presentation: HistoryPresentation::Domain {
-            create: crate::history_mode::host_tests::preview,
+            create: crate::history_mode::testing::preview,
         },
     }],
 };
@@ -517,7 +517,7 @@ impl crate::history_mode::HistoryParts for Parts {
         shown
             .put(ROOT, "body", self.body_at(version.part, version.heads))
             .unwrap();
-        crate::history_mode::host_tests::preview(crate::history_mode::PreviewInput {
+        crate::history_mode::testing::preview(crate::history_mode::PreviewInput {
             snapshot: crate::history_mode::HistorySnapshot {
                 bytes: std::sync::Arc::from(shown.save()),
                 heads: version.heads.to_vec(),

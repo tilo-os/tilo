@@ -1,11 +1,10 @@
-use super::*;
-use crate::application::{LaunchTarget, RestoreInput};
-use crate::application_test_support::{
-    APP, ProbeHarness, runner_permissions, runner_probe_definition,
-};
-use crate::{State, headless::Driver, widget::BoundAppWidget};
+//! Managed components bind the framework History to their own record's owner, and a reviewed
+//! restore rechecks authority and freshness before it writes.
+use crate::support::application::{APP, ProbeHarness, runner_permissions, runner_probe_definition};
 use automerge::{ROOT, transaction::Transactable};
-use tilo_ui_base::widget::Widget;
+use tilo_ui::application::{LaunchTarget, RestoreInput};
+use tilo_ui::history_mode::*;
+use tilo_ui::{State, headless::Driver};
 
 static BOUND: HistoryDefinition = HistoryDefinition {
     app_id: APP,
@@ -13,7 +12,7 @@ static BOUND: HistoryDefinition = HistoryDefinition {
         key: "document",
         title: "Bound notebook",
         presentation: HistoryPresentation::Domain {
-            create: super::host_tests::preview,
+            create: tilo_ui::history_mode::testing::preview,
         },
     }],
 };
@@ -31,26 +30,26 @@ tilo_test_env::scenario! {
         let component = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
             .unwrap();
-        let binding = component.callback_binding();
+        let binding = component.callback_binding_for_test();
         let selected = binding
-            .records
-            .with_history(&binding.checkout.id, |doc, history| {
+            .records_for_test()
+            .with_history(&binding.checkout_for_test().id, |doc, history| {
                 doc.put(ROOT, "body", "bound first").unwrap();
-                history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
+                history.commit_action_authored(doc, None, None, Some(binding.author_for_test().clone()));
                 let hash = doc.base_heads()[0];
                 doc.put(ROOT, "body", "bound latest").unwrap();
-                history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
+                history.commit_action_authored(doc, None, None, Some(binding.author_for_test().clone()));
                 format!(
                     "timeline-entry:{}",
                     tilo_ui_base::HistoryEntryId::hex(
-                        &crate::history_source::entry_id_from_hash(&hash.to_string())
+                        &tilo_ui::history_source::entry_id_from_hash(&hash.to_string())
                     )
                 )
             })
             .unwrap();
-        let root = Box::new(BoundAppWidget::new(component));
+        let root = tilo_ui::widget::bound_app_widget(component);
         let source =
-            HistorySourceRegistration::owned("document", APP, crate::bound_dispatch::history_owner(&*root).unwrap())
+            HistorySourceRegistration::owned("document", APP, tilo_ui::bound_dispatch::history_owner(&*root).unwrap())
                 .unwrap();
         let registration = HistoryRegistration::new(&BOUND, vec![source]).unwrap();
         let mut state = State::new();
@@ -85,7 +84,7 @@ tilo_test_env::scenario! {
         let mut driver = Driver::from_component(
             component,
             (900, 650),
-            crate::application::ComponentRunnerInputs {
+            tilo_ui::application::ComponentRunnerInputs {
                 theme: tilo_ui_base::Theme::dark(),
                 text_renderer: tilo_ui_base::font_catalog::fixture_renderer(),
             },
@@ -102,7 +101,7 @@ tilo_test_env::scenario! {
     phase managed_component_tile_automatically_composes_shared_history;
     {
         let (_host, component) = component_with_history();
-        let root = crate::widget::TileHost::from_component(component);
+        let root = tilo_ui::widget::TileHost::from_component(component);
         let mut driver = Driver::new(State::new(), Box::new(root), (900, 650));
         assert!(
             driver.targets().contains_key("history-open"),
@@ -113,25 +112,13 @@ tilo_test_env::scenario! {
     }
 }
 
-/// The text a restore fixture's record holds at `body`.
-pub(crate) fn body(doc: &automerge::AutoCommit) -> String {
-    use automerge::ReadDoc as _;
-    doc.get(ROOT, "body")
-        .unwrap()
-        .unwrap()
-        .0
-        .as_str()
-        .unwrap()
-        .to_owned()
-}
-
 pub(crate) static RESTORABLE: HistoryDefinition = HistoryDefinition {
     app_id: "dev.tilo.restore-fixture",
     scopes: &[HistoryScopeDefinition {
         key: "document",
         title: "Notebook",
         presentation: HistoryPresentation::Domain {
-            create: super::host_tests::preview,
+            create: tilo_ui::history_mode::testing::preview,
         },
     }],
 };
@@ -154,20 +141,20 @@ tilo_test_env::scenario! {
                 "fixture",
                 "restore-lifetime",
                 RESTORABLE.app_id,
-                crate::DocumentId::for_tab(17),
+                tilo_ui::DocumentId::for_tab(17),
             ),
         };
         let registration = HistoryRegistration::new(&RESTORABLE, vec![source]).unwrap();
         let mut driver = Driver::from_managed_root(
             state,
-            ManagedRoot::new(Box::new(crate::widget::Column::new()), registration),
+            ManagedRoot::new(Box::new(tilo_ui::widget::Column::new()), registration),
             (900, 650),
         )
         .unwrap();
         driver.click_named("history-open").unwrap();
         let target = format!(
             "timeline-entry:{}",
-            tilo_ui_base::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
+            tilo_ui_base::HistoryEntryId::hex(&tilo_ui::history_source::entry_id_from_hash(
                 &hash.to_string()
             ))
         );
@@ -195,13 +182,13 @@ tilo_test_env::scenario! {
             .click_named("history-restore-review.primary")
             .unwrap();
         assert_eq!(
-            crate::history_mode::integration_tests::body(&driver.state_mut().doc),
+            tilo_ui::history_mode::testing::body(&driver.state_mut().doc),
             "old"
         );
         assert_eq!(driver.state_mut().doc.get_changes(&before).len(), 1);
         assert!(driver.state_mut().undo(None, None).is_some());
         assert_eq!(
-            crate::history_mode::integration_tests::body(&driver.state_mut().doc),
+            tilo_ui::history_mode::testing::body(&driver.state_mut().doc),
             "live"
         );
     }
@@ -275,7 +262,7 @@ tilo_test_env::scenario! {
             .click_named("history-restore-review.primary")
             .unwrap();
         assert_eq!(
-            crate::history_mode::integration_tests::body(&driver.state_mut().doc),
+            tilo_ui::history_mode::testing::body(&driver.state_mut().doc),
             "old"
         );
         // The restore writes one change for each step since the version, and they are one
@@ -283,7 +270,7 @@ tilo_test_env::scenario! {
         assert_eq!(driver.state_mut().doc.get_changes(&before).len(), 2);
         assert!(driver.state_mut().undo(None, None).is_some());
         assert_eq!(
-            crate::history_mode::integration_tests::body(&driver.state_mut().doc),
+            tilo_ui::history_mode::testing::body(&driver.state_mut().doc),
             "remote change"
         );
     }
@@ -307,13 +294,13 @@ fn review_driver() -> Driver {
             "fixture",
             "restore-lifetime",
             RESTORABLE.app_id,
-            crate::DocumentId::for_tab(18),
+            tilo_ui::DocumentId::for_tab(18),
         ),
     };
     let registration = HistoryRegistration::new(&RESTORABLE, vec![source]).unwrap();
     let mut driver = Driver::from_managed_root(
         state,
-        ManagedRoot::new(Box::new(crate::widget::Column::new()), registration),
+        ManagedRoot::new(Box::new(tilo_ui::widget::Column::new()), registration),
         (900, 650),
     )
     .unwrap();
@@ -321,7 +308,7 @@ fn review_driver() -> Driver {
     driver.click_named("history-open").unwrap();
     let target = format!(
         "timeline-entry:{}",
-        tilo_ui_base::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
+        tilo_ui_base::HistoryEntryId::hex(&tilo_ui::history_source::entry_id_from_hash(
             &hash.to_string()
         ))
     );
@@ -333,6 +320,20 @@ fn review_driver() -> Driver {
         )
         .unwrap();
     driver
+}
+
+/// A component whose History is the fixture's registered record, driven through a prepared root.
+fn component_with_history() -> (ProbeHarness, tilo_ui::application::AppComponent) {
+    let host = ProbeHarness::new();
+    let definition = runner_probe_definition();
+    let context = host
+        .prepare_with_permissions(definition, 950, &LaunchTarget::New, runner_permissions())
+        .unwrap();
+    let mut component = definition
+        .instantiate(context, LaunchTarget::New, RestoreInput::None)
+        .unwrap();
+    component.register_document_history(&BOUND).unwrap();
+    (host, component)
 }
 
 #[test]
@@ -383,24 +384,4 @@ fn grant(
         until,
     )
     .at_unix_time(100)
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "The assertion helper compares queued and refused bindings across one ownership transition."
-)]
-#[path = "readiness_tests.rs"]
-mod readiness_tests;
-
-pub(crate) fn component_with_history() -> (ProbeHarness, crate::application::AppComponent) {
-    let host = ProbeHarness::new();
-    let definition = runner_probe_definition();
-    let context = host
-        .prepare_with_permissions(definition, 950, &LaunchTarget::New, runner_permissions())
-        .unwrap();
-    let mut component = definition
-        .instantiate(context, LaunchTarget::New, RestoreInput::None)
-        .unwrap();
-    component.register_document_history(&BOUND).unwrap();
-    (host, component)
 }

@@ -106,8 +106,8 @@ impl App {
 
     #[cfg(feature = "model")]
     /// The window's collaboration, for a test of what it joined.
-    #[cfg(test)]
-    pub(crate) fn collaboration_manager(&self) -> &CollaborationManager {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn collaboration_manager(&self) -> &CollaborationManager {
         &self.collaboration.manager
     }
 

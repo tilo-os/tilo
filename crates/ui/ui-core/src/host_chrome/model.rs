@@ -15,11 +15,11 @@ use tilo_ui_base::widget::HistoryEntryId;
 use tilo_ui_base::{platform::HostShortcut, platform::PlatformConventions, platform::Shortcut};
 
 /// How many recent changes a History menu lists.
-pub(crate) const RECENT_CHANGES: usize = 8;
+pub const RECENT_CHANGES: usize = 8;
 
 /// Where a command sits. Hosts map groups onto their own menus and separate adjacent groups.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CommandGroup {
+pub enum CommandGroup {
     Undo,
     Search,
     /// The app's own document and effect actions.
@@ -32,7 +32,7 @@ pub(crate) enum CommandGroup {
 }
 
 #[derive(Clone)]
-pub(crate) struct HostCommand {
+pub struct HostCommand {
     pub binding: ActionBinding<()>,
     pub label: String,
     pub shortcut: Option<Shortcut>,
@@ -66,14 +66,14 @@ impl HostCommand {
     }
 
     /// What activating the command asks the host to do.
-    pub(crate) fn invocation(&self) -> Option<ControlInvocation> {
+    pub fn invocation(&self) -> Option<ControlInvocation> {
         self.binding.invoke(()).ok()
     }
 }
 
 /// A change a History menu lists, from the same rows the History pane shows.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct RecentChange {
+pub struct RecentChange {
     pub entry: HistoryEntryId,
     pub author: String,
     /// The action's own label ("Rename") where it has one, else its summary.
@@ -83,7 +83,7 @@ pub(crate) struct RecentChange {
 
 impl RecentChange {
     #[cfg(feature = "model")]
-    pub(crate) fn from_entry(entry: &crate::widget::HistoryEntry) -> Self {
+    pub fn from_entry(entry: &crate::widget::HistoryEntry) -> Self {
         Self {
             entry: entry.id,
             author: entry.author.name.clone(),
@@ -110,7 +110,7 @@ impl RecentChange {
         reason = "recent changes are History's, which the model keeps"
     )
 )]
-pub(crate) fn host_commands(
+pub fn host_commands(
     resources: &[ResourceSpec],
     recent: &[RecentChange],
     conventions: PlatformConventions,

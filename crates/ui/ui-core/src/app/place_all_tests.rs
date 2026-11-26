@@ -38,7 +38,10 @@ fn placing_every_widget_again_keeps_the_frames_device_pixels() {
         let root = app.layout.root_node.unwrap();
         run_layout_pass(&mut app, root, 390, 844, 1.5, false, None).unwrap();
         let framed = rect_of(&app, "sync.retry");
-        assert!(!framed.is_zero_area(), "the frame places the action: {framed:?}");
+        assert!(
+            !framed.is_zero_area(),
+            "the frame places the action: {framed:?}"
+        );
         app.layout.placed_partly = true;
         app.place_all();
         let placed = rect_of(&app, "sync.retry");

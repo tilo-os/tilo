@@ -1,8 +1,6 @@
 //! Assertions an application's tests share, available to downstream crates
 //! through the `test-support` feature.
 
-#[cfg(feature = "model")]
-pub mod action_contract;
 #[cfg(any(test, feature = "test-support"))]
 mod clicks;
 pub mod component_harness;
@@ -12,6 +10,7 @@ mod executable;
 mod layout;
 #[cfg(any(test, feature = "test-support"))]
 mod menu_rows;
+#[path = "own_process_tests.rs"]
 mod own_process;
 #[cfg(test)]
 mod owned_text;
@@ -28,8 +27,8 @@ pub use executable::write_executable;
 pub use layout::{lay_out, lay_out_in};
 #[cfg(any(test, feature = "test-support"))]
 pub use menu_rows::{MENU_ROW_RESOURCE, MenuRows, bound_press};
-#[cfg(test)]
-pub(crate) use own_process::{in_own_process, test_path};
+#[cfg(any(test, feature = "test-support"))]
+pub use own_process::{in_own_process, test_path};
 #[cfg(test)]
 pub(crate) use owned_text::OwnedText;
 pub use tilo_test_env::{hang_bound, hang_deadline, wait_for, wait_until};

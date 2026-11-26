@@ -14,8 +14,8 @@ use tilo_actions::{
     PROMPTED_PARAM, ParamType, ResourceSpec,
 };
 
-use crate::action_palette::ActionPalette;
-use crate::state::State;
+use tilo_ui::action_palette::ActionPalette;
+use tilo_ui::state::State;
 
 const PEER_A: &[u8] = b"action-contract-peer-a";
 const PEER_B: &[u8] = b"action-contract-peer-b";
@@ -49,7 +49,7 @@ pub fn hydrated(doc: &mut AutoCommit) -> automerge::hydrate::Value {
     let mut content = doc.fork();
     let bookkeeping: Vec<String> = content
         .keys(automerge::ROOT)
-        .filter(|key| key.starts_with(crate::history_source::steps::BOOKKEEPING_PREFIX))
+        .filter(|key| key.starts_with(tilo_ui::history_source::steps::BOOKKEEPING_PREFIX))
         .collect();
     for key in bookkeeping {
         let _ = content.delete(automerge::ROOT, key);
@@ -488,17 +488,17 @@ macro_rules! action_contract_tests {
             #[allow(unused_imports, reason = "the caller's names, for the expressions it passed")]
             use super::*;
 
-            fn contract_seed() -> $crate::automerge::AutoCommit {
+            fn contract_seed() -> automerge::AutoCommit {
                 $seed
             }
 
-            fn contract_registry() -> $crate::tilo_actions::ActionRegistry {
+            fn contract_registry() -> tilo_actions::ActionRegistry {
                 $registry
             }
 
             fn contract_resources(
-                doc: &$crate::automerge::AutoCommit,
-            ) -> ::std::vec::Vec<$crate::tilo_actions::ResourceSpec> {
+                doc: &automerge::AutoCommit,
+            ) -> ::std::vec::Vec<tilo_actions::ResourceSpec> {
                 let $rdoc = doc;
                 $resources
             }
@@ -507,7 +507,7 @@ macro_rules! action_contract_tests {
             fn every_immediate_action_honours_contract() {
                 let seed = contract_seed();
                 let resources = contract_resources(&seed);
-                $crate::testing::action_contract::assert_every_immediate_action_honours_contract(
+                $crate::action_contract::assert_every_immediate_action_honours_contract(
                     &seed,
                     &contract_registry(),
                     &resources,
@@ -518,7 +518,7 @@ macro_rules! action_contract_tests {
                 #[test]
                 fn ctrl_k_publishes() {
                     let seed = contract_seed();
-                    $crate::testing::action_contract::assert_ctrl_k_publishes(
+                    $crate::action_contract::assert_ctrl_k_publishes(
                         &contract_resources(&seed),
                         &[$($label),*],
                     );
@@ -537,7 +537,7 @@ macro_rules! action_contract_tests {
                                 let $rd = &seed;
                                 $rbody
                             };
-                            $crate::testing::action_contract::assert_replays_byte_identical(
+                            $crate::action_contract::assert_replays_byte_identical(
                                 &seed,
                                 &contract_registry(),
                                 &encoded,
@@ -559,7 +559,7 @@ macro_rules! action_contract_tests {
                                 let $ud = &seed;
                                 $ubody
                             };
-                            $crate::testing::action_contract::assert_one_undo_boundary_reverts(
+                            $crate::action_contract::assert_one_undo_boundary_reverts(
                                 &seed,
                                 &contract_registry(),
                                 &encoded,
@@ -578,7 +578,7 @@ macro_rules! action_contract_tests {
                         fn $ename() {
                             let seed = contract_seed();
                             let resources = contract_resources(&seed);
-                            let (owner, spec) = $crate::testing::action_contract::find_spec(
+                            let (owner, spec) = $crate::action_contract::find_spec(
                                 &resources, $eres, $eact,
                             );
                             let expected = {
@@ -587,7 +587,7 @@ macro_rules! action_contract_tests {
                                 $ebody
                             };
                             let arg: ::std::option::Option<&str> = None $( .or(Some($earg)) )?;
-                            $crate::testing::action_contract::assert_spec_encodes_as(
+                            $crate::action_contract::assert_spec_encodes_as(
                                 spec, arg, &expected,
                             );
                         }

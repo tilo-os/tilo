@@ -57,8 +57,8 @@ impl Driver {
     }
 
     /// Read History's review against `clock`, in Unix milliseconds, instead of the wall clock.
-    #[cfg(test)]
-    pub(crate) fn set_history_clock(&mut self, clock: fn() -> Option<u64>) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_history_clock(&mut self, clock: fn() -> Option<u64>) {
         if let Some(history) = &mut self.app.history {
             history.set_clock(clock);
         }

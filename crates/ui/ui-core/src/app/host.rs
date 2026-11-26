@@ -19,7 +19,7 @@ fn collect_submitted_widget_damage(widget: &dyn Widget, regions: &mut Vec<KurboR
 /// painted outside the widgets' layout boxes (an overlay, history chrome, a
 /// dialog, the palette; the tooltip's bounds), which their damage does not
 /// cover. Tests draw through it; hosts through [`draw_frame_content_with`].
-#[cfg(all(feature = "native", test))]
+#[cfg(all(feature = "native", any(test, feature = "test-support")))]
 fn draw_frame_content(
     app: &mut App,
     scene: &mut Scene,
@@ -1368,7 +1368,12 @@ mod wake_integration_tests;
 #[path = "bound_component_tests.rs"]
 mod bound_component_tests;
 
-#[cfg(test)]
+#[cfg(all(feature = "native", any(test, feature = "test-support")))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a prepared frame is the fixture the test reads; a missing root is the failure"
+)]
 pub(crate) fn draw_prepared_component_test_frame(app: &mut App) {
     app.init_layout();
     let root = app.layout.root_node.unwrap();

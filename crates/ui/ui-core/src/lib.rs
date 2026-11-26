@@ -507,17 +507,66 @@ pub use {
 #[cfg(any(test, feature = "test-support"))]
 pub mod component_testing;
 
+/// The settings model and store an app's settings tests declare their schema and write through.
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use settings_model;
+#[cfg(all(feature = "model", feature = "test-support"))]
+#[doc(hidden)]
+pub use settings_store;
+
+/// The bytes a frozen app is carried in, for the tests above the toolkit that read them.
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use postcard;
+
+/// The graph the UI editor reads and writes, for the tests above the toolkit that build it.
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use tilo_ui_graph;
+
+/// The calendar types a date picker names its day in, for the tests above the toolkit.
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use jiff;
+
+/// The Objective-C bindings the macOS chrome is built on, for the tests above the toolkit.
+#[cfg(all(target_os = "macos", feature = "native", feature = "test-support"))]
+#[doc(hidden)]
+pub use objc2;
+#[cfg(all(target_os = "macos", feature = "native", feature = "test-support"))]
+#[doc(hidden)]
+pub use objc2_app_kit;
+#[cfg(all(target_os = "macos", feature = "native", feature = "test-support"))]
+#[doc(hidden)]
+pub use objc2_foundation;
+
+/// The host chrome's window bars, menus and jump tasks, for the tests above the toolkit that
+/// drive them through an app.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod host_chrome_testing {
+    pub use crate::host_chrome::header_bar::{HeaderBar, HeaderRequest, resize_edge};
+    pub use crate::host_chrome::menus::{Entry, MenuKind, entries};
+    pub use crate::host_chrome::model::{CommandGroup, HostCommand};
+    pub use crate::host_chrome::windows_items::{decode, encode, jump_tasks, menu_text, quote};
+}
+
+/// The macOS title bar chrome, for the tests above the toolkit that drive it through an app.
+#[cfg(all(
+    target_os = "macos",
+    feature = "native",
+    any(test, feature = "test-support")
+))]
+#[doc(hidden)]
+pub mod host_chrome_macos_testing {
+    pub use crate::host_chrome::macos::{ChromeRequest, MacChrome};
+}
+
 // Tests of the base that drive the widgets above it.
-#[cfg(test)]
-#[path = "a11y_child_route/tests.rs"]
-mod a11y_child_route_tests;
 #[cfg(test)]
 #[path = "accesskit_bridge/tests.rs"]
 mod accesskit_bridge_tests;
-#[cfg(test)]
-#[cfg(all(unix, feature = "broker-transport"))]
-#[path = "collaboration/broker_app_tests.rs"]
-mod collaboration_app_tests;
 #[cfg(test)]
 #[path = "component/controls_tests.rs"]
 mod component_controls_tests;
@@ -525,17 +574,8 @@ mod component_controls_tests;
 #[path = "component/coverage_tests.rs"]
 mod component_coverage_tests;
 #[cfg(test)]
-#[path = "component/data_tests.rs"]
-mod component_data_tests;
-#[cfg(test)]
 #[path = "component/feedback_tests.rs"]
 mod component_feedback_tests;
-#[cfg(test)]
-#[path = "component/media_tests.rs"]
-mod component_media_tests;
-#[cfg(test)]
-#[path = "component/part_fill_tests.rs"]
-mod component_part_fill_tests;
 #[cfg(test)]
 #[path = "component/tests.rs"]
 mod component_tests;

@@ -13,8 +13,6 @@ pub mod performed;
 pub mod shell;
 
 #[cfg(test)]
-mod component_tests;
-#[cfg(test)]
 mod tests;
 
 pub use coach::{Coach, Current, Phase, Timing};

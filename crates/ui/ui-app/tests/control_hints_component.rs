@@ -8,12 +8,12 @@ use std::collections::BTreeMap;
 
 use vello::kurbo::Rect;
 
-use super::performed::{self, Performed};
-use super::{ControlHints, ControlHintsProps};
-use crate::headless::Driver;
-use crate::time::{Duration, Instant};
-use crate::widget::arrange::{Fit, Sizing, Stack};
-use crate::{
+use tilo_ui::control_hints::performed::{self, Performed};
+use tilo_ui::control_hints::{ControlHints, ControlHintsProps};
+use tilo_ui::headless::Driver;
+use tilo_ui::time::{Duration, Instant};
+use tilo_ui::widget::arrange::{Fit, Sizing, Stack};
+use tilo_ui::{
     widget::CanvasPlace, widget::Map, widget::MapProps, widget::PLACE_BAND, widget::PinPlace,
     widget::PlaceProps, widget::Scrollable, widget::WindowFrame, widget::WindowFrameProps,
 };
@@ -108,7 +108,7 @@ impl Shell {
     /// `parts` laid out where each stands, and the hints over the whole area.
     fn with(parts: Vec<(Box<dyn Widget>, Rect)>, props: ControlHintsProps) -> Self {
         let queue = tilo_ui_base::Intents::default();
-        let start = crate::time::now();
+        let start = tilo_ui::time::now();
         let hints = ControlHints::from_props("hints", Self::props(&queue, props));
         let rects: Vec<Rect> = parts.iter().map(|(_, rect)| *rect).collect();
         let mut region = Manual::new(
@@ -128,7 +128,7 @@ impl Shell {
         for (part, _) in parts {
             region = region.child(part);
         }
-        let root = crate::widget::Stack::new()
+        let root = tilo_ui::widget::Stack::new()
             .push(Box::new(region))
             .push(Box::new(hints));
         #[allow(
@@ -137,7 +137,7 @@ impl Shell {
             reason = "the display's size, in whole pixels"
         )]
         let viewport = (AREA.width() as u32, AREA.height() as u32);
-        let host = Driver::for_root(crate::State::new(), root, viewport, Theme::dark());
+        let host = Driver::for_root(tilo_ui::State::new(), root, viewport, Theme::dark());
         Self { host, queue, start }
     }
 

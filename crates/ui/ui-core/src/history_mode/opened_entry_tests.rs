@@ -58,7 +58,7 @@ fn chosen() -> crate::widget::HistoryEntry {
 fn a_chosen_change_opens_once_history_has_returned() {
     let state = crate::State::new();
     let mut history =
-        HistoryHost::new(crate::history_mode::host_tests::registration(), &state.doc).unwrap();
+        HistoryHost::new(crate::history_mode::testing::registration(), &state.doc).unwrap();
     let opened = Rc::new(Cell::new(0));
     let mut live = Opens(opened.clone());
     history.opened = Some(chosen());

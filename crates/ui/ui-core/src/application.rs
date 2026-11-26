@@ -1396,6 +1396,12 @@ impl AppComponent {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn callback_binding_for_test(&self) -> crate::bound_dispatch::CallbackBinding {
+        self.callback_binding()
+    }
+
     pub(crate) fn callback_binding(&self) -> crate::bound_dispatch::CallbackBinding {
         self.context.callback_binding()
     }

@@ -758,6 +758,19 @@ pub struct UiGraphHandle {
     inner: Arc<RwLock<UiGraphState>>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
+impl UiGraphHandle {
+    /// Read a revision no edit can follow, as the tests above the toolkit exhaust it.
+    #[doc(hidden)]
+    #[allow(
+        clippy::unwrap_used,
+        reason = "a fixture sets the revision it tests an exhausted edit against"
+    )]
+    pub fn exhaust_revision(&self) {
+        self.inner.write().unwrap().revision = u64::MAX;
+    }
+}
+
 #[derive(Clone)]
 struct UiGraphState {
     document: UiDocument,
@@ -769,7 +782,8 @@ struct UiGraphState {
     live_mtime: Option<SystemTime>,
 }
 
-const UI_GRAPH_HISTORY_LIMIT: usize = 100;
+#[doc(hidden)]
+pub const UI_GRAPH_HISTORY_LIMIT: usize = 100;
 
 impl UiGraphHandle {
     /// Create a live handle after validating its complete source graph.
@@ -1614,7 +1628,8 @@ enum InsertKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum EditableProperty {
+#[doc(hidden)]
+pub enum EditableProperty {
     NodeId,
     ColumnGap,
     ContainerWidth,
@@ -2095,14 +2110,16 @@ fn optional_number(value: Option<f32>) -> String {
     value.map_or_else(String::new, |value| value.to_string())
 }
 
-enum ParsedProperty {
+#[doc(hidden)]
+pub enum ParsedProperty {
     Text(String),
     OptionalText(Option<String>),
     OptionalNumber(Option<f32>),
     JsonObject(serde_json::Map<String, serde_json::Value>),
 }
 
-fn parse_editable_property(
+#[doc(hidden)]
+pub fn parse_editable_property(
     property: EditableProperty,
     raw: &str,
 ) -> Result<ParsedProperty, String> {
@@ -2159,7 +2176,8 @@ fn parse_editable_property(
     clippy::too_many_lines,
     reason = "one exhaustive property setter mirrors the property catalog above"
 )]
-fn set_editable_property(node: &mut UiNode, property: EditableProperty, value: ParsedProperty) {
+#[doc(hidden)]
+pub fn set_editable_property(node: &mut UiNode, property: EditableProperty, value: ParsedProperty) {
     match (node, property, value) {
         (node, EditableProperty::NodeId, ParsedProperty::Text(value)) => set_node_id(node, value),
         (
@@ -3022,7 +3040,3 @@ impl tilo_ui_base::widget::undo_access::LocalUndo for UiGraphEditor {
         true
     }
 }
-
-#[cfg(test)]
-#[path = "ui_graph_tests.rs"]
-mod tests;
