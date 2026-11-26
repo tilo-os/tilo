@@ -32,16 +32,9 @@ pub fn personal_cluster(root: &[u8; 32]) -> uuid::Uuid {
     uuid::Builder::from_custom_bytes(bytes).into_uuid()
 }
 
-/// What every person record's id derives from: the app's base record
-/// (`tab:0`), whose role the person's record of a kind plays.
-const PERSON_RESOURCE_BASE: &str = "tab:0000000000000000";
-
-/// The id of the person's record of `kind`: one per kind, the same on every
-/// device (`ui::resource::person::document_id`).
-#[must_use]
-pub fn person_document_id(kind: &str) -> String {
-    format!("derived:{kind}@{PERSON_RESOURCE_BASE}")
-}
+// The id of the person's record of `kind`: one per kind, the same on every device, derived from
+// the app's base record (`ui::resource::person::document_id`).
+pub use app_fleet::derived_record as person_document_id;
 
 /// A personal record that remembers which workspace its contents refer to.
 #[must_use]
@@ -59,7 +52,7 @@ pub fn person_document_context(record: &str) -> Option<uuid::Uuid> {
 fn profile_context(record: &str) -> Option<(uuid::Uuid, &str)> {
     let (context, base) = record.strip_prefix("derived:context.")?.split_once('@')?;
     let id = uuid::Uuid::parse_str(context).ok()?;
-    (id.to_string() == context && personal_kind(base).is_some()).then_some((id, base))
+    (id.to_string() == context && app_fleet::derived_kind(base).is_some()).then_some((id, base))
 }
 
 /// The kind a person record's id names; `None` for any other record. A chunk of one
@@ -69,15 +62,7 @@ fn profile_context(record: &str) -> Option<(uuid::Uuid, &str)> {
 pub fn person_resource_type(record: &str) -> Option<&str> {
     let record = chunk_base(record);
     let record = profile_context(record).map_or(record, |(_, base)| base);
-    personal_kind(record)
-}
-
-fn personal_kind(record: &str) -> Option<&str> {
-    record
-        .strip_prefix("derived:")?
-        .strip_suffix(PERSON_RESOURCE_BASE)?
-        .strip_suffix('@')
-        .filter(|kind| !kind.is_empty() && !kind.contains('@'))
+    app_fleet::derived_kind(record)
 }
 
 /// The record `record` is a chunk of, for a chunk record id

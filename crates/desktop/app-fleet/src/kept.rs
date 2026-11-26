@@ -72,6 +72,9 @@ impl WorkspaceDocument {
     }
 }
 
+/// What each member's own view of a workspace's layout is kept under, before their id.
+pub const PERSON_VIEW_PREFIX: &str = "view-of-";
+
 /// The kind of the workspace's vault.
 pub const VAULT_KIND: &str = "passwords.workspace-vault";
 /// The id of the workspace's vault record, which its declaration binds to [`VAULT_KIND`].
@@ -130,7 +133,7 @@ pub const WORKSPACE_DOCUMENTS: &[WorkspaceDocument] = &[
     // showed (`desktop-model`'s record).
     WorkspaceDocument::kept("so.tilo.browser-desktop", "tilo.desktop"),
     WorkspaceDocument {
-        each_person: Some("view-of-"),
+        each_person: Some(PERSON_VIEW_PREFIX),
         ..WorkspaceDocument::kept("so.tilo.browser-desktop", "desktop.person-view")
     },
     WorkspaceDocument::kept("so.tilo.browser-desktop", "desktop.window-view"),
@@ -173,7 +176,9 @@ pub fn derived_record(kind: &str) -> String {
 
 const DERIVED_BASE: &str = "tab:0000000000000000";
 
-fn derived_kind(record: &str) -> Option<&str> {
+/// The kind the id `record` derives from ([`derived_record`]); `None` for any other id.
+#[must_use]
+pub fn derived_kind(record: &str) -> Option<&str> {
     record
         .strip_prefix("derived:")?
         .strip_suffix(DERIVED_BASE)?

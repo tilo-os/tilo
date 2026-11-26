@@ -22,37 +22,20 @@ use crate::width::WindowWidth;
 /// The record of [`crate::ownership::DESKTOP_APP`] holding `person`'s view of a workspace's
 /// layout.
 #[must_use]
-#[expect(
-    clippy::expect_used,
-    reason = "the system declares a person's view as each person's own, so a person's record name follows from the person: there is nothing here to answer with when it does not"
-)]
 pub fn resource_of(person: &str) -> String {
-    declared()
-        .record_of(person)
-        .expect("a person's view is declared as each person's own")
+    format!("{}{person}", app_fleet::PERSON_VIEW_PREFIX)
 }
 
 /// The person whose view of the layout record `record` holds, on [`crate::ownership::DESKTOP_APP`].
 #[must_use]
 pub fn person_of(record: &str) -> Option<&str> {
-    declared().person_of(record)
+    app_fleet::person_record(crate::ownership::DESKTOP_APP, record)
+        .filter(|(kept, _)| kept.kind == PERSON_VIEW_KIND)
+        .map(|(_, person)| person)
 }
 
 /// The kind of a person's view of a workspace's layout.
 pub const PERSON_VIEW_KIND: &str = "desktop.person-view";
-
-/// What the system declares of a person's view ([`app_fleet::WORKSPACE_DOCUMENTS`]): each
-/// person keeps their own, which every member reads and only they change.
-#[expect(
-    clippy::expect_used,
-    reason = "the table this crate was built against declares a person's view; one that does not is a build the layout has no meaning in"
-)]
-fn declared() -> &'static app_fleet::WorkspaceDocument {
-    app_fleet::WORKSPACE_DOCUMENTS
-        .iter()
-        .find(|kept| kept.app == crate::ownership::DESKTOP_APP && kept.kind == PERSON_VIEW_KIND)
-        .expect("the system declares a person's view")
-}
 
 /// The keys a view is kept under.
 const FRONT_STRIP: &str = "front_strip";

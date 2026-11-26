@@ -138,8 +138,8 @@ mod default_apps;
 mod kept;
 
 pub use kept::{
-    EARLIER_RECORDS, VAULT_KIND, VAULT_RECORD, WORKSPACE_DOCUMENTS, WorkspaceDocument,
-    declared_record, derived_record, fixed_kind, person_record,
+    EARLIER_RECORDS, PERSON_VIEW_PREFIX, VAULT_KIND, VAULT_RECORD, WORKSPACE_DOCUMENTS,
+    WorkspaceDocument, declared_record, derived_kind, derived_record, fixed_kind, person_record,
 };
 
 /// The fleet, read from each app's committed catalogue entry by `build.rs`.
