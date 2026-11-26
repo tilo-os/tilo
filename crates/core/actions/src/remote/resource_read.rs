@@ -751,19 +751,19 @@ impl Driven {
         use tilo_lock::MutexRecover as _;
 
         loop {
-            let held = {
-                let mut slot = self.slot.lock_recover();
-                match std::mem::replace(&mut *slot, Slot::Polling) {
-                    Slot::Held(held) => held,
-                    Slot::Polling => {
-                        // Another thread polls it: that poll ends with one more.
-                        self.again.store(true, Ordering::Release);
-                        return;
-                    }
-                    Slot::Done => {
-                        *slot = Slot::Done;
-                        return;
-                    }
+            let mut slot = self.slot.lock_recover();
+            let taken = std::mem::replace(&mut *slot, Slot::Polling);
+            drop(slot);
+            let held = match taken {
+                Slot::Held(held) => held,
+                Slot::Polling => {
+                    // Another thread polls it: that poll ends with one more.
+                    self.again.store(true, Ordering::Release);
+                    return;
+                }
+                Slot::Done => {
+                    *self.slot.lock_recover() = Slot::Done;
+                    return;
                 }
             };
             self.again.store(false, Ordering::Release);
