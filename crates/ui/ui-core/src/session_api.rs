@@ -102,12 +102,10 @@ pub fn api_error(error: &ActionCallError) -> ApiError {
     match error {
         ActionCallError::Unavailable { reason }
         | ActionCallError::Refused { reason }
-        | ActionCallError::InvalidRequest { reason } => {
-            ApiError::Unavailable {
-                code: error.code().into(),
-                reason: reason.clone(),
-            }
-        }
+        | ActionCallError::InvalidRequest { reason } => ApiError::Unavailable {
+            code: error.code().into(),
+            reason: reason.clone(),
+        },
         ActionCallError::ConfirmationRequired { .. } => ApiError::ConfirmationRequired,
         ActionCallError::NotPermitted => ApiError::Unavailable {
             code: error.code().into(),

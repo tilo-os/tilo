@@ -35,8 +35,6 @@ mod reading_order;
 mod component_nodes;
 #[path = "a11y_tree/pointed.rs"]
 mod pointed;
-#[path = "a11y_tree/walk.rs"]
-pub(crate) mod walk;
 use component_nodes::ComponentNodes;
 
 /// What a refresh builds a component's nodes from: a bound component's published resources. Only the
@@ -45,92 +43,15 @@ use component_nodes::ComponentNodes;
 type ComponentSnapshot = crate::bound_dispatch::BoundResourceSnapshot;
 #[cfg(not(feature = "model"))]
 type ComponentSnapshot = std::convert::Infallible;
+use crate::a11y::SemanticId;
+use crate::a11y_walk::{
+    A11yVisitor, HostedByIndex, HostedWidget, Visit, walk, walk_synthetic, with_slot_words,
+};
 pub(crate) use component_nodes::component_resource;
 pub(crate) use node_identity::AdmittedNodeNames;
 use node_identity::WidgetNodeMap;
 use reading_order::ReadingOrder;
-use walk::{A11yVisitor, Visit, walk, walk_synthetic, with_slot_words};
 
-/// A widget hosted inside its parent's synthetic tree: the synthetic path below the child it hangs off
-/// ([`Widget::accessibility_child_path`]), and whether that child *is* the widget node — the
-/// parent publishes the widget's semantics itself ([`Widget::accessibility_represents_child`]), so the
-/// walk attaches the widget's children to the synthetic node and exports no second node of the widget's
-/// own.
-pub(crate) struct HostedWidget<'a> {
-    pub path: Vec<usize>,
-    pub widget: &'a dyn Widget,
-    pub as_node: bool,
-}
-
-/// Hosted widgets by the index of the synthetic child they hang off.
-pub(crate) type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
-
-/// How a widget's children enter the accessibility walk.
-pub(crate) struct ExportedChildren<'a> {
-    /// Walked as the widget children, in order, with their index.
-    pub direct: Vec<(usize, &'a dyn Widget)>,
-    /// Walked under the synthetic child they hang off.
-    pub hosted: HostedByIndex<'a>,
-    /// No node of their own: the widget represents them in its synthetic tree.
-    pub represented: Vec<&'a dyn Widget>,
-}
-
-pub(crate) fn exported_children(w: &dyn Widget) -> ExportedChildren<'_> {
-    let mut children = ExportedChildren {
-        direct: Vec::new(),
-        hosted: HostedByIndex::new(),
-        represented: Vec::new(),
-    };
-    for (index, child) in w.children().into_iter().enumerate() {
-        let represented = w.accessibility_represents_child(index);
-        if let Some(mut path) = w.accessibility_child_path(index)
-            && !path.is_empty()
-        {
-            let parent_index = path.remove(0);
-            if represented {
-                children.represented.push(child);
-            }
-            children
-                .hosted
-                .entry(parent_index)
-                .or_default()
-                .push(HostedWidget {
-                    path,
-                    widget: child,
-                    as_node: represented,
-                });
-        } else if represented {
-            children.represented.push(child);
-        } else {
-            children.direct.push((index, child));
-        }
-    }
-    children
-}
-
-/// The widgets hosted in one synthetic child: those hanging off it directly, and those hanging off its
-/// own synthetic children.
-pub(crate) struct HostedHere<'a> {
-    pub direct: Vec<HostedWidget<'a>>,
-    pub nested: HostedByIndex<'a>,
-}
-
-pub(crate) fn hosted_in(hosted: Vec<HostedWidget<'_>>) -> HostedHere<'_> {
-    let mut here = HostedHere {
-        direct: Vec::new(),
-        nested: HostedByIndex::new(),
-    };
-    for hosted in hosted {
-        if hosted.path.is_empty() {
-            here.direct.push(hosted);
-        } else {
-            let mut hosted = hosted;
-            let child_index = hosted.path.remove(0);
-            here.nested.entry(child_index).or_default().push(hosted);
-        }
-    }
-    here
-}
 type NodeMap = HashMap<SemanticId, SemanticNode, rustc_hash::FxBuildHasher>;
 type RetainedMap = HashMap<SemanticId, RetainedSubtree, rustc_hash::FxBuildHasher>;
 
@@ -164,73 +85,6 @@ pub(crate) struct SemanticOperation {
     pub node: String,
     pub action: String,
     pub value: Option<String>,
-}
-
-/// Stable identity of a semantic node, preserved across [`refresh`](SemanticTree::refresh)
-/// as long as the backing widget or resource recurs.
-///
-/// The string form encodes the node's origin so ids never collide between the
-/// widget walk and the resource forest:
-/// * `"root"` — the synthetic window root.
-/// * `"w<taffy_id>"` — a laid-out widget, keyed by its `taffy::NodeId` (stable
-///   between structural rebuilds, exactly the key the AccessKit bridge uses).
-/// * `"<parent>~<index>"` — a synthetic a11y child (a table row/cell) with no
-///   widget of it, keyed by its position under its parent.
-/// * `"r:<resource_id>"` — a resource from the app's action model, keyed by its
-///   already-stable [`ResourceId`](tilo_actions::ResourceId).
-#[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
-pub struct SemanticId(pub String);
-
-impl std::borrow::Borrow<str> for SemanticId {
-    fn borrow(&self) -> &str {
-        &self.0
-    }
-}
-
-const KEYED: &str = "~k:";
-const REPEATED: char = '#';
-
-impl SemanticId {
-    fn root() -> Self {
-        SemanticId("root".into())
-    }
-    fn widget(taffy_id: TaffyNodeId) -> Self {
-        SemanticId(format!("w{}", u64::from(taffy_id)))
-    }
-    fn synthetic(parent: &SemanticId, index: usize) -> Self {
-        SemanticId(format!("{}~{}", parent.0, index))
-    }
-    fn synthetic_of(parent: &SemanticId, index: usize, access: &crate::a11y::AccessNode) -> Self {
-        if let Some(key) = &access.semantic_key {
-            return SemanticId::keyed(parent, key);
-        }
-        access.key.map_or_else(
-            || SemanticId::synthetic(parent, index),
-            |key| SemanticId::keyed(parent, key),
-        )
-    }
-    fn keyed(parent: &SemanticId, key: impl std::fmt::Display) -> Self {
-        SemanticId(format!("{}{KEYED}{}", parent.0, key))
-    }
-    fn repeat(id: &SemanticId, n: usize) -> Self {
-        SemanticId(format!("{}{REPEATED}{n}", id.0))
-    }
-    fn control_key(&self) -> Option<&str> {
-        let (_, keyed) = self.0.rsplit_once(KEYED)?;
-        Some(
-            keyed
-                .rsplit_once(REPEATED)
-                .filter(|(_, n)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-                .map_or(keyed, |(key, _)| key),
-        )
-    }
-    fn resource(id: &str) -> Self {
-        SemanticId(format!("r:{id}"))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
 }
 
 /// How a [`SemanticAction`] is carried out when invoked.

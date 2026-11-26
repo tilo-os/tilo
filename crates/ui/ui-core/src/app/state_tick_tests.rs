@@ -53,7 +53,7 @@ fn a_surface_that_hears_no_frame_callback_answers_an_invoked_action() {
 
     assert!(
         app.invoke_semantic_action(
-            &crate::a11y_tree::SemanticId("r:ordinary:fixture".into()),
+            &crate::a11y::SemanticId("r:ordinary:fixture".into()),
             "run",
             None
         )

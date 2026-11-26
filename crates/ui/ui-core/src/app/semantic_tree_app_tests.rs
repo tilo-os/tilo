@@ -9,7 +9,8 @@ include!("application_handoff_tests.rs");
 include!("driver_peer_tests.rs");
 
 use super::*;
-use crate::a11y_tree::{SemanticActionKind, SemanticId};
+use crate::a11y::SemanticId;
+use crate::a11y_tree::SemanticActionKind;
 use crate::component::Described;
 use crate::state::State;
 use crate::widget::TaffyTreeExt;

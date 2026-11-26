@@ -105,6 +105,7 @@
 pub mod a11y;
 pub(crate) mod a11y_child_route;
 pub mod a11y_tree;
+pub(crate) mod a11y_walk;
 #[cfg(all(feature = "native", target_os = "android"))]
 mod accesskit_android_adapter;
 pub mod accesskit_bridge;
@@ -525,10 +526,9 @@ pub use virtual_viewport::{
 // `a11y::Role` / `a11y::Action` are reached through the module path to avoid
 // clashing with `permissions::{Role}` / `permissions::Verb`, which are
 // already re-exported at the crate root.
+pub use a11y::SemanticId;
 pub use a11y::{A11ySettings, AccessBounds, AccessNode, AccessState, AccessibleTextSelection};
-pub use a11y_tree::{
-    SemanticAction, SemanticActionKind, SemanticId, SemanticNode, SemanticTree, TreeDelta,
-};
+pub use a11y_tree::{SemanticAction, SemanticActionKind, SemanticNode, SemanticTree, TreeDelta};
 
 pub use screen_reader::{ScreenReader, describe, flatten_reading_order};
 

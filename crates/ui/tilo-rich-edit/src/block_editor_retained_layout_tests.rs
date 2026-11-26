@@ -1111,7 +1111,7 @@ fn culled_cached_frames_render_what_a_full_frame_does() {
     }
 }
 
-fn subtree_len(tree: &ui::a11y_tree::SemanticTree, id: &ui::a11y_tree::SemanticId) -> usize {
+fn subtree_len(tree: &ui::a11y_tree::SemanticTree, id: &ui::a11y::SemanticId) -> usize {
     tree.node(id).map_or(0, |node| {
         node.children
             .iter()

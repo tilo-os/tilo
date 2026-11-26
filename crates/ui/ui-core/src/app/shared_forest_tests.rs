@@ -283,7 +283,7 @@ fn an_item_edit_updates_that_items_semantic_node_only() {
             std::slice::from_ref(&snapshot),
         );
         let id = |index: usize| {
-            crate::a11y_tree::SemanticId(format!(
+            crate::a11y::SemanticId(format!(
                 "ri:{}:{}:item:{index}",
                 binding.instance_id, binding.lifetime_id
             ))

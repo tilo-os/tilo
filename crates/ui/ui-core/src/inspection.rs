@@ -421,7 +421,7 @@ fn collect_inspection_called(
     let rect = widget.get_rect();
     let mut semantics = widget.accessibility();
     if let Some(node) = &mut semantics {
-        crate::a11y_tree::walk::with_slot_words(node, slot.as_ref());
+        crate::a11y_walk::with_slot_words(node, slot.as_ref());
     }
     let children_of = widget.children().len();
     let inherited = (semantics.is_none() && children_of == 1)

@@ -1227,7 +1227,7 @@ impl EmbeddedApp {
     /// below them (published resources) are left out.
     fn access_subtree(
         &self,
-        id: &crate::a11y_tree::SemanticId,
+        id: &crate::a11y::SemanticId,
         ordinal: usize,
         parent: &[u64],
     ) -> Option<crate::a11y::AccessNode> {
@@ -1283,7 +1283,7 @@ impl EmbeddedApp {
 
     /// The app's semantic node a key path from [`Self::access_subtree`]
     /// names.
-    fn hosted_node_at(&self, key_path: &[u64]) -> Option<crate::a11y_tree::SemanticId> {
+    fn hosted_node_at(&self, key_path: &[u64]) -> Option<crate::a11y::SemanticId> {
         let tree = self.app.semantic_tree();
         let mut current = tree.root().clone();
         for key in key_path {
@@ -1305,7 +1305,7 @@ impl EmbeddedApp {
 
     /// The app's semantic node on screen whose name is `name`, first in
     /// reading order.
-    fn hosted_node_named(&self, name: &str) -> Option<crate::a11y_tree::SemanticId> {
+    fn hosted_node_named(&self, name: &str) -> Option<crate::a11y::SemanticId> {
         let tree = self.app.semantic_tree();
         let mut pending = vec![tree.root().clone()];
         while let Some(id) = pending.pop() {
@@ -1327,7 +1327,7 @@ impl EmbeddedApp {
     /// none, a read-only one no value.
     fn perform_hosted(
         &mut self,
-        id: &crate::a11y_tree::SemanticId,
+        id: &crate::a11y::SemanticId,
         action: &crate::a11y::Action,
     ) -> bool {
         use crate::a11y::Action;

@@ -1130,12 +1130,7 @@ impl App {
         // A live region without an accessible name can't be tracked stably
         // across frames, so it's skipped.
         let mut regions = LiveRegionScan(Vec::new());
-        crate::a11y_tree::walk::walk::<true, _>(
-            &mut regions,
-            self.root_widget.as_ref(),
-            None,
-            &mut (),
-        );
+        crate::a11y_walk::walk::<true, _>(&mut regions, self.root_widget.as_ref(), None, &mut ());
         let seen = regions.0;
 
         let mut current_keys = std::collections::HashSet::new();
@@ -1951,7 +1946,7 @@ impl App {
     /// dispatch (see `Self::dispatch_encoded_semantic`).
     pub fn invoke_semantic_action(
         &mut self,
-        id: &crate::a11y_tree::SemanticId,
+        id: &crate::a11y::SemanticId,
         name: &str,
         arg: Option<&str>,
     ) -> Result<bool, String> {
@@ -2036,7 +2031,7 @@ impl App {
     /// Returns `Err` when the owning widget's component refuses dispatch.
     pub(crate) fn perform_semantic_verb(
         &mut self,
-        id: &crate::a11y_tree::SemanticId,
+        id: &crate::a11y::SemanticId,
         verb: crate::a11y::Action,
         press_unhandled: bool,
     ) -> Result<bool, String> {
@@ -2224,7 +2219,7 @@ impl LiveRegionScan {
     }
 }
 
-impl crate::a11y_tree::walk::A11yVisitor for LiveRegionScan {
+impl crate::a11y_walk::A11yVisitor for LiveRegionScan {
     type Scope = ();
     type Pending = crate::a11y::AccessNode;
     type SyntheticPending = ();
@@ -2234,12 +2229,12 @@ impl crate::a11y_tree::walk::A11yVisitor for LiveRegionScan {
         w: &dyn Widget,
         _slot: Option<(&dyn Widget, usize)>,
         (): &mut (),
-    ) -> crate::a11y_tree::walk::Visit<crate::a11y::AccessNode, ()> {
+    ) -> crate::a11y_walk::Visit<crate::a11y::AccessNode, ()> {
         let Some(node) = w.accessibility() else {
-            return crate::a11y_tree::walk::Visit::Collapse;
+            return crate::a11y_walk::Visit::Collapse;
         };
         self.note(&node);
-        crate::a11y_tree::walk::Visit::Node(node, ())
+        crate::a11y_walk::Visit::Node(node, ())
     }
 
     fn close<'w>(
@@ -2247,11 +2242,11 @@ impl crate::a11y_tree::walk::A11yVisitor for LiveRegionScan {
         owner: &'w dyn Widget,
         node: crate::a11y::AccessNode,
         (): (),
-        hosted: crate::a11y_tree::HostedByIndex<'w>,
+        hosted: crate::a11y_walk::HostedByIndex<'w>,
         _represented: Vec<&'w dyn Widget>,
         (): &mut (),
     ) {
-        crate::a11y_tree::walk::walk_synthetic_children::<true, Self, _>(
+        crate::a11y_walk::walk_synthetic_children::<true, Self, _>(
             self,
             owner,
             &node.children,

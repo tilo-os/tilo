@@ -722,7 +722,6 @@ mod tests {
     use crate::tokens::PresenceHue;
     use crate::tokens::contrast::audit;
 
-
     fn light_stack() -> ThemeLayerStack {
         ThemeLayerStack {
             user_theme: Some(Preset::Light.document()),

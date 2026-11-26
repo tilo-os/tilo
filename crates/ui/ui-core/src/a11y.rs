@@ -1143,3 +1143,74 @@ mod tests {
         }
     }
 }
+
+/// Stable identity of a semantic node, preserved across [`refresh`](crate::a11y_tree::SemanticTree::refresh)
+/// as long as the backing widget or resource recurs.
+///
+/// The string form encodes the node's origin so ids never collide between the
+/// widget walk and the resource forest:
+/// * `"root"` — the synthetic window root.
+/// * `"w<taffy_id>"` — a laid-out widget, keyed by its `taffy::NodeId` (stable
+///   between structural rebuilds, exactly the key the AccessKit bridge uses).
+/// * `"<parent>~<index>"` — a synthetic a11y child (a table row/cell) with no
+///   widget of it, keyed by its position under its parent.
+/// * `"r:<resource_id>"` — a resource from the app's action model, keyed by its
+///   already-stable [`ResourceId`](tilo_actions::ResourceId).
+#[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+pub struct SemanticId(pub String);
+
+impl std::borrow::Borrow<str> for SemanticId {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+const KEYED: &str = "~k:";
+const REPEATED: char = '#';
+
+impl SemanticId {
+    pub(crate) fn root() -> Self {
+        SemanticId("root".into())
+    }
+    pub(crate) fn widget(taffy_id: taffy::NodeId) -> Self {
+        SemanticId(format!("w{}", u64::from(taffy_id)))
+    }
+    pub(crate) fn synthetic(parent: &SemanticId, index: usize) -> Self {
+        SemanticId(format!("{}~{}", parent.0, index))
+    }
+    pub(crate) fn synthetic_of(
+        parent: &SemanticId,
+        index: usize,
+        access: &crate::a11y::AccessNode,
+    ) -> Self {
+        if let Some(key) = &access.semantic_key {
+            return SemanticId::keyed(parent, key);
+        }
+        access.key.map_or_else(
+            || SemanticId::synthetic(parent, index),
+            |key| SemanticId::keyed(parent, key),
+        )
+    }
+    pub(crate) fn keyed(parent: &SemanticId, key: impl std::fmt::Display) -> Self {
+        SemanticId(format!("{}{KEYED}{}", parent.0, key))
+    }
+    pub(crate) fn repeat(id: &SemanticId, n: usize) -> Self {
+        SemanticId(format!("{}{REPEATED}{n}", id.0))
+    }
+    pub(crate) fn control_key(&self) -> Option<&str> {
+        let (_, keyed) = self.0.rsplit_once(KEYED)?;
+        Some(
+            keyed
+                .rsplit_once(REPEATED)
+                .filter(|(_, n)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+                .map_or(keyed, |(key, _)| key),
+        )
+    }
+    pub(crate) fn resource(id: &str) -> Self {
+        SemanticId(format!("r:{id}"))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}

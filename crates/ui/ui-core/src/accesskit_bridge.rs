@@ -13,8 +13,8 @@ use taffy::NodeId as TaffyNodeId;
 
 use crate::a11y::{AccessNode, AccessibleTextSelection, Action, Role};
 use crate::a11y_child_route::{ChildRoute, Routes, child_route};
-use crate::a11y_tree::HostedByIndex;
-use crate::a11y_tree::walk::{A11yVisitor, Visit, walk, walk_synthetic_children};
+use crate::a11y_walk::HostedByIndex;
+use crate::a11y_walk::{A11yVisitor, Visit, walk, walk_synthetic_children};
 use crate::text_break::{grapheme_indices, graphemes};
 use crate::widget::Widget;
 
@@ -901,7 +901,7 @@ impl<const BOUND: bool> A11yVisitor for TreeWalk<'_, BOUND> {
             self.walk_counter = self.walk_counter.saturating_add(1);
             return Visit::Collapse;
         };
-        crate::a11y_tree::walk::with_slot_words(&mut access, slot.as_ref());
+        crate::a11y_walk::with_slot_words(&mut access, slot.as_ref());
         let id = match (&route, taffy_id) {
             (Some((owner, path)), None) => {
                 child_route_node_id(widget_node_id(Some(*owner), 0), path)

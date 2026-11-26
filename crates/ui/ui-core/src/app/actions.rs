@@ -451,7 +451,7 @@ impl App {
             serde_json::from_slice(&encoded.payload).map_err(|error| error.to_string())?;
         self.refresh_semantic_tree();
         self.invoke_semantic_action(
-            &crate::a11y_tree::SemanticId(operation.node),
+            &crate::a11y::SemanticId(operation.node),
             &operation.action,
             operation.value.as_deref(),
         )

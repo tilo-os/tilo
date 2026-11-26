@@ -1,11 +1,90 @@
 //! The one depth-first walk every view of the accessibility tree takes over the widgets: the AccessKit
-//! bridge, the retained [`SemanticTree`](super::SemanticTree) and the built-in reader's reading order.
+//! bridge, the retained [`SemanticTree`](crate::a11y_tree::SemanticTree) and the built-in reader's reading order.
 
-use super::{
-    ExportedChildren, HostedByIndex, HostedHere, HostedWidget, exported_children, hosted_in,
-};
 use crate::a11y::AccessNode;
 use crate::widget::Widget;
+use std::collections::HashMap;
+
+/// A widget hosted inside its parent's synthetic tree: the synthetic path below the child it hangs off
+/// ([`Widget::accessibility_child_path`]), and whether that child *is* the widget node — the
+/// parent publishes the widget's semantics itself ([`Widget::accessibility_represents_child`]), so the
+/// walk attaches the widget's children to the synthetic node and exports no second node of the widget's
+/// own.
+pub(crate) struct HostedWidget<'a> {
+    pub path: Vec<usize>,
+    pub widget: &'a dyn Widget,
+    pub as_node: bool,
+}
+
+/// Hosted widgets by the index of the synthetic child they hang off.
+pub(crate) type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
+
+/// How a widget's children enter the accessibility walk.
+pub(crate) struct ExportedChildren<'a> {
+    /// Walked as the widget children, in order, with their index.
+    pub direct: Vec<(usize, &'a dyn Widget)>,
+    /// Walked under the synthetic child they hang off.
+    pub hosted: HostedByIndex<'a>,
+    /// No node of their own: the widget represents them in its synthetic tree.
+    pub represented: Vec<&'a dyn Widget>,
+}
+
+pub(crate) fn exported_children(w: &dyn Widget) -> ExportedChildren<'_> {
+    let mut children = ExportedChildren {
+        direct: Vec::new(),
+        hosted: HostedByIndex::new(),
+        represented: Vec::new(),
+    };
+    for (index, child) in w.children().into_iter().enumerate() {
+        let represented = w.accessibility_represents_child(index);
+        if let Some(mut path) = w.accessibility_child_path(index)
+            && !path.is_empty()
+        {
+            let parent_index = path.remove(0);
+            if represented {
+                children.represented.push(child);
+            }
+            children
+                .hosted
+                .entry(parent_index)
+                .or_default()
+                .push(HostedWidget {
+                    path,
+                    widget: child,
+                    as_node: represented,
+                });
+        } else if represented {
+            children.represented.push(child);
+        } else {
+            children.direct.push((index, child));
+        }
+    }
+    children
+}
+
+/// The widgets hosted in one synthetic child: those hanging off it directly, and those hanging off its
+/// own synthetic children.
+pub(crate) struct HostedHere<'a> {
+    pub direct: Vec<HostedWidget<'a>>,
+    pub nested: HostedByIndex<'a>,
+}
+
+pub(crate) fn hosted_in(hosted: Vec<HostedWidget<'_>>) -> HostedHere<'_> {
+    let mut here = HostedHere {
+        direct: Vec::new(),
+        nested: HostedByIndex::new(),
+    };
+    for hosted in hosted {
+        if hosted.path.is_empty() {
+            here.direct.push(hosted);
+        } else {
+            let mut hosted = hosted;
+            let child_index = hosted.path.remove(0);
+            here.nested.entry(child_index).or_default().push(hosted);
+        }
+    }
+    here
+}
 
 /// What a view makes of one widget.
 pub(crate) enum Visit<P, S> {

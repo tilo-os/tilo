@@ -240,7 +240,7 @@ fn a_focus_move_publishes_on_its_own_frame() {
         app.surface_input(&region, event, false);
     }
     let delta = host_frame(&mut app, &region);
-    let focused = |id: &tilo_ui::a11y_tree::SemanticId| {
+    let focused = |id: &tilo_ui::a11y::SemanticId| {
         app.semantic_tree()
             .node(id)
             .is_some_and(|node| node.state.focused)

@@ -6,8 +6,8 @@ use tts::{NullSpeaker, Priority, Speaker, SpeechQueue, Utterance};
 
 use vello::kurbo::Point;
 
+use crate::a11y::SemanticId;
 use crate::a11y::{AccessNode, Role};
-use crate::a11y_tree::SemanticId;
 use crate::widget::Widget;
 
 mod phrase {
@@ -726,8 +726,8 @@ pub fn is_form_field(node: &AccessNode) -> bool {
 /// The accessibility walk ([`crate::a11y_tree::walk`]) the AccessKit bridge and the
 /// retained tree take, flattened.
 pub fn flatten_reading_order(root: &dyn Widget) -> Vec<AccessNode> {
-    use crate::a11y_tree::HostedByIndex;
-    use crate::a11y_tree::walk::{A11yVisitor, Visit, walk, walk_synthetic_children};
+    use crate::a11y_walk::HostedByIndex;
+    use crate::a11y_walk::{A11yVisitor, Visit, walk, walk_synthetic_children};
 
     struct Flatten(Vec<AccessNode>);
     impl A11yVisitor for Flatten {

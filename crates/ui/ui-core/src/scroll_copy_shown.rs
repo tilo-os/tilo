@@ -404,14 +404,22 @@ mod tests {
             transform: Affine::IDENTITY,
             look: (),
             overlays: Vec::new(),
-            pieces: vec![Piece { key: 1, rect: Rect::new(0.0, 0.0, 200.0, 20.0), paint: 1 }],
+            pieces: vec![Piece {
+                key: 1,
+                rect: Rect::new(0.0, 0.0, 200.0, 20.0),
+                paint: 1,
+            }],
             fixed: Vec::new(),
         };
         let mut frames = ShownFrames::default();
         frames.note(frame.clone());
         frames.present();
         let mut moved = frame;
-        moved.pieces.push(Piece { key: 2, rect: Rect::new(0.0, 300.0, 200.0, 320.0), paint: 2 });
+        moved.pieces.push(Piece {
+            key: 2,
+            rect: Rect::new(0.0, 300.0, 200.0, 320.0),
+            paint: 2,
+        });
         frames.note(moved);
         let before = vec![
             Rect::new(0.0, 0.0, 10.0, 10.0),

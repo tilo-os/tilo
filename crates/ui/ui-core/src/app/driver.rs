@@ -2387,7 +2387,7 @@ impl Driver {
     /// When the widget's component refuses the dispatch.
     pub fn perform_semantic(
         &mut self,
-        id: &crate::a11y_tree::SemanticId,
+        id: &crate::a11y::SemanticId,
         action: &crate::a11y::Action,
     ) -> Result<bool, String> {
         crate::motion::note_source(crate::tokens::MotionSource::Action);
@@ -2439,7 +2439,7 @@ impl Driver {
         &mut self,
         name: &str,
         semantic_target: Option<&str>,
-    ) -> Result<crate::a11y_tree::SemanticId, String> {
+    ) -> Result<crate::a11y::SemanticId, String> {
         let _ = self.app.refresh_semantic_tree();
         let targets = self.named_target_nodes();
         let tree = self.app.semantic_tree();

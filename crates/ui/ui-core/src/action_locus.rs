@@ -128,7 +128,7 @@ pub struct ActionUiRoute {
     pub address: tilo_actions::ActionAddress,
     pub control_id: String,
     /// Root-to-control semantic path.
-    pub path: Vec<crate::a11y_tree::SemanticId>,
+    pub path: Vec<crate::a11y::SemanticId>,
     pub bounds: Option<vello::kurbo::Rect>,
     pub focused: bool,
     pub disabled: bool,
@@ -164,7 +164,7 @@ pub(crate) fn action_ui_routes(
 
 type ActionRouteVisitor<'tree, 'visitor> = dyn FnMut(
         &crate::widget::ControlBindingMetadata,
-        &[crate::a11y_tree::SemanticId],
+        &[crate::a11y::SemanticId],
         &'tree crate::a11y_tree::SemanticNode,
     ) + 'visitor;
 
@@ -231,7 +231,7 @@ fn interaction_address(
     )
 }
 
-fn resource_of(id: &crate::a11y_tree::SemanticId) -> std::borrow::Cow<'_, str> {
+fn resource_of(id: &crate::a11y::SemanticId) -> std::borrow::Cow<'_, str> {
     let id = crate::a11y_tree::component_resource(id)
         .or_else(|| id.as_str().strip_prefix("r:"))
         .unwrap_or(id.as_str());
@@ -257,14 +257,14 @@ pub(crate) fn interaction_bounds(
     // keeps is not the alias the invocation has, so the record is what the
     // node is found by.
     let canonical_id = if let Some(encoded) = address.resource.strip_prefix("ui:") {
-        crate::a11y_tree::SemanticId(
+        crate::a11y::SemanticId(
             percent_encoding::percent_decode_str(encoded)
                 .decode_utf8()
                 .ok()?
                 .into_owned(),
         )
     } else {
-        crate::a11y_tree::SemanticId(format!("r:{}", address.resource))
+        crate::a11y::SemanticId(format!("r:{}", address.resource))
     };
     let stands_for_resource = |node: &crate::a11y_tree::SemanticNode| {
         node.action(&address.action).is_some()
@@ -432,10 +432,7 @@ pub(crate) fn resource_bounds(
     bindings: &[crate::widget::ControlBindingMetadata],
     address: &tilo_actions::ActionAddress,
 ) -> Option<(vello::kurbo::Rect, u64)> {
-    let resource = tree.node(&crate::a11y_tree::SemanticId(format!(
-        "r:{}",
-        address.resource
-    )))?;
+    let resource = tree.node(&crate::a11y::SemanticId(format!("r:{}", address.resource)))?;
     if !resource.durable_identity || resource.action(&address.action).is_none() {
         return None;
     }

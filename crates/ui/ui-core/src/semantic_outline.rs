@@ -14,8 +14,8 @@
 use serde::Serialize;
 
 use crate::a11y::AccessNode;
-use crate::a11y_tree::HostedByIndex;
-use crate::a11y_tree::walk::{A11yVisitor, Visit, walk_synthetic_children};
+use crate::a11y_walk::HostedByIndex;
+use crate::a11y_walk::{A11yVisitor, Visit, walk_synthetic_children};
 use crate::widget::Widget;
 
 /// The most nodes one outline carries: enough for a whole window's page, with the rest
@@ -100,7 +100,7 @@ pub fn outline(view: &dyn Widget) -> Outline {
         hidden: 0,
     };
     let mut tree = Vec::new();
-    crate::a11y_tree::walk::walk::<true, _>(&mut walk, view, None, &mut tree);
+    crate::a11y_walk::walk::<true, _>(&mut walk, view, None, &mut tree);
     let mut text = String::new();
     // The tree carries what the text shows and no more: a long document's lines past what
     // the text holds are counted, not sent as a tree nobody reads.
@@ -185,7 +185,7 @@ impl A11yVisitor for Walk {
                 None => return Visit::Collapse,
             },
         };
-        crate::a11y_tree::walk::with_slot_words(&mut access, parent_child.as_ref());
+        crate::a11y_walk::with_slot_words(&mut access, parent_child.as_ref());
         let synthetic = std::mem::take(&mut access.children)
             .into_iter()
             .map(std::sync::Arc::new)

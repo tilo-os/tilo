@@ -125,7 +125,7 @@ tilo_test_env::scenario! {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert!(
             app.invoke_semantic_action(
-                &crate::a11y_tree::SemanticId("r:ordinary:fixture".into()),
+                &crate::a11y::SemanticId("r:ordinary:fixture".into()),
                 "run",
                 None
             )
