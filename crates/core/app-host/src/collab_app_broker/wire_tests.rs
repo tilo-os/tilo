@@ -502,6 +502,18 @@ impl Endpoint {
                 result: Ok(Reply::Subscribed),
             }
         );
+        // A window opens with the context it shows: the permissions it has and the apps this
+        // device installed, which every subscriber is handed as it subscribes.
+        assert!(
+            matches!(
+                self.frame().await,
+                HostFrame::Event {
+                    subscription: delivered,
+                    event: Event::Context(ContextUpdate::Snapshot { .. }),
+                } if delivered == subscription
+            ),
+            "the window opens with its context"
+        );
         subscription
     }
 }
