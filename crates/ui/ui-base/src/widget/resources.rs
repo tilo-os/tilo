@@ -55,6 +55,13 @@ pub trait PublishesResources: Widget {
             .find(|spec| spec.id.as_str() == id)
     }
 
+    /// Whether [`Self::resource`] answers by id without listing everything the publisher holds:
+    /// the default builds the whole surface, so a publisher that overrides `resource` says so
+    /// here, and a remote read may ask for one resource without paying for the surface.
+    fn resolves_resources_by_id(&self) -> bool {
+        false
+    }
+
     /// The item resources the published tree leaves out because their collection holds more than one
     /// page of items, each resolved as [`Self::resource`] resolves it: what a listing paging past the
     /// published page lists, so every item is reachable. Children of the record resource.
@@ -298,6 +305,14 @@ pub fn resource(
     id: &str,
 ) -> Option<tilo_actions::ResourceSpec> {
     capability::<dyn PublishesResources>(widget)?.resource(doc, id)
+}
+
+/// Whether `widget`'s publisher answers for one resource without listing its surface
+/// ([`PublishesResources::resolves_resources_by_id`]).
+#[must_use]
+pub fn resolves_resources_by_id(widget: &(impl Widget + ?Sized)) -> bool {
+    capability::<dyn PublishesResources>(widget)
+        .is_some_and(PublishesResources::resolves_resources_by_id)
 }
 
 /// [`PublishesResources::resources_past_page`] of `widget`.

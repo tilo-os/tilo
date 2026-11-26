@@ -557,13 +557,18 @@ impl App {
             }
             // A parent the snapshot holds is answered from it alone: a remote page never asks the
             // widget what it publishes now, which would rebuild the app's surface on a read. One
-            // the snapshot does not hold (an app that published no directory) is resolved live.
+            // the snapshot does not hold (an app that published no directory), or whose publisher
+            // answers for one resource by id, is resolved as it stands.
             let projected_parent = self
                 .actions
                 .action_directory_snapshot
                 .as_ref()
                 .is_some_and(|snapshot| snapshot.nodes.contains_key(&query.parent_resource));
-            let parent = (!projected_parent)
+            let live = !projected_parent
+                || tilo_ui_base::widget::resources::resolves_resources_by_id(
+                    self.root_widget.as_ref(),
+                );
+            let parent = live
                 .then(|| self.resolve_publication_resource(&query.parent_resource, ""))
                 .flatten();
             let parent_actions = parent.as_ref().map_or_else(Vec::new, |resource| {

@@ -618,6 +618,9 @@ impl tilo_ui_base::widget::resources::PublishesResources for ExtendedDirectory {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         vec![Self::resource_tree(false)]
     }
+    fn resolves_resources_by_id(&self) -> bool {
+        true
+    }
     fn resource(&self, _: &automerge::AutoCommit, id: &str) -> Option<ResourceSpec> {
         let tree = Self::resource_tree(true);
         if id == tree.id.as_str() {
