@@ -2228,7 +2228,12 @@ async fn a_members_program_discovers_the_workspace_without_its_assistant_grant()
     assistant.page.peer.close();
 }
 
-/// The stable id from first use works for the root-approved Chat grant and a restarted host.
+#[path = "hosted_personal_model.rs"]
+mod model;
+#[path = "hosted_personal_chat.rs"]
+mod personal_chat;
+
+/// The new assistant answers its keeper in Chat, and its reply and grant survive a host restart.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_approves_the_chat_grant_for_their_new_personal_assistant() {
     use tilo_server_protocol::agents::{AgentGrantAction, AgentGrantStatus, GrantState};
@@ -2239,6 +2244,7 @@ async fn a_member_approves_the_chat_grant_for_their_new_personal_assistant() {
     let server = start(&owner, &host, state.path()).await;
     let mut assistant = PersonalAssistant::open(&server, &host).await;
     let (_, _, device) = assistant.approve_chat(&server).await;
+    let conversation = Box::pin(personal_chat::ask(&server, &mut assistant)).await;
 
     assistant.page.peer.close();
     drop(assistant.page);
@@ -2273,6 +2279,7 @@ async fn a_member_approves_the_chat_grant_for_their_new_personal_assistant() {
     assert_eq!(status.state, GrantState::Approved);
     assert!(status.ready);
     assert_eq!(status.apps, [CHAT]);
+    Box::pin(conversation.read_reply(&mut page)).await;
 }
 
 /// A long display name remains intact in the roster when a keeper approves its signed label.

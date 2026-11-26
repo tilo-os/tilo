@@ -17464,6 +17464,7 @@ dependencies = [
  "discord",
  "ebook",
  "ed25519-dalek 3.0.0",
+ "fake-model-providers",
  "feeds",
  "file-explorer",
  "fs-content",

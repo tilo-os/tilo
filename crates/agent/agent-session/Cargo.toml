@@ -160,6 +160,7 @@ discord = { path = "../../../apps/discord" }
 
 
 [dev-dependencies]
+fake-model-providers = { path = "../../dev/fake-model-providers" }
 # The page holder a test reads a peer's workspace through: the workspace service's document
 # core over the replica the peer's session admits into, as a page reads it.
 tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["device-keys", "session-pages"] }
