@@ -76,22 +76,25 @@ impl StatePeer {
                 .into());
             }
         }
-        self.admit_document(
-            source,
-            NeighbourMsg::AppDocument {
-                peer: peer_handle(&source),
-                app_id: app.into(),
-                cluster_id: self.core.workspace.clone(),
-                document_id: record.into(),
-                envelope: Box::new(envelope),
-                readers: readers.map(str::to_owned),
-            },
-            now,
-            true,
-            false,
-            false,
-        )
-        .map_err(crate::NotAdmitted::from)
+        let message = NeighbourMsg::AppDocument {
+            peer: peer_handle(&source),
+            app_id: app.into(),
+            cluster_id: self.core.workspace.clone(),
+            document_id: record.into(),
+            envelope: Box::new(envelope),
+            readers: readers.map(str::to_owned),
+        };
+        let report = self
+            .admit_document(source, message.clone(), now, true, false, false)
+            .map_err(crate::NotAdmitted::from)?;
+        // A local write that waits is not held: its author keeps it and writes it again, so the
+        // number it was drafted under stays the one the next change takes, and that change is
+        // the only one ever applied under it.
+        if report.summary.deferred {
+            self.forget_held(source, &message);
+            self.forget_refused(source, super::written_route(&message).as_ref());
+        }
+        Ok(report)
     }
 
     #[expect(

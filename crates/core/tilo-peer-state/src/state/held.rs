@@ -234,6 +234,25 @@ impl StatePeer {
         report.released = released;
         Ok(report)
     }
+    /// Let go `source`'s `message`, held here before: nothing of it is kept, and no number it was
+    /// drafted under is taken by it, so its author's next write takes that number and is the one
+    /// kept. A held write is decided here when what it waits for lands, so a local write that its
+    /// author was told to write again would otherwise be applied under the number its retry took.
+    pub(super) fn forget_held(&mut self, source: [u8; 32], message: &NeighbourMsg) {
+        let held = self
+            .core
+            .pending
+            .iter()
+            .any(|(author, waiting, _)| *author == source && waiting == message);
+        if !held {
+            return;
+        }
+        let size = crate::postcard_sink::encoded_len(message, usize::MAX).unwrap_or_default();
+        self.core
+            .pending
+            .retain(|(author, waiting, _)| !(*author == source && waiting == message));
+        self.core.pending_bytes = self.core.pending_bytes.saturating_sub(size);
+    }
     /// Decide every held message again now that the input `into` reports on
     /// landed: what each takes in is added to `into`, released writes
     /// included, and one that still waits is held again.

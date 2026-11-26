@@ -399,7 +399,9 @@ impl StatePeer {
     /// take it, its signed sequence is at or below the author's replay floor
     /// on the route, or it leaves no exact admission evidence. Neither waits
     /// for an asynchronous receipt: the evidence is the exact admission index
-    /// entry written by this same synchronous call.
+    /// entry written by this same synchronous call. A write that waits is not
+    /// kept: its author writes it again, and the number it was drafted under
+    /// is the one that write takes.
     pub fn admit_new_local_document(
         &mut self,
         app: &str,
@@ -657,9 +659,11 @@ mod tests {
     }
 
     /// A local write whose app surface this process does not hold waits for
-    /// it: it is kept as it is, not taken for a write the workspace refuses.
+    /// it: nothing of it is kept, so the number it was drafted under stays the
+    /// one the next write of the device takes, and another device takes that
+    /// write.
     #[test]
-    fn a_local_write_that_waits_for_its_app_surface_is_kept() {
+    fn a_local_write_that_waits_for_its_app_surface_takes_no_number() {
         use collab_types::Surfaces;
         use collab_types::surface::ContentSurfaces;
         // No surface this process has is the one the write names.
@@ -671,11 +675,12 @@ mod tests {
         );
         let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
         peer.select_exact_admissions().unwrap();
+        let mut receiver = peer.clone();
         let bytes = peer.document("test.app", "tab:1").unwrap();
         let NeighbourMsg::AppDocument { envelope, .. } = peer
             .clone()
             .publication_mut()
-            .publish_document("test.app", "tab:1", bytes, &key, now)
+            .publish_document("test.app", "tab:1", bytes.clone(), &key, now)
             .unwrap()
         else {
             panic!("expected actual signed document publication")
@@ -684,6 +689,7 @@ mod tests {
         let mut named = envelope.with_surface(Some([0x42; 32]));
         collab_types::sign_op(&mut named, &key).unwrap();
         let before = peer.document("test.app", "tab:1").unwrap();
+        let number = named.seq;
         assert_eq!(
             peer.admit_new_local_document("test.app", "tab:1", named, now)
                 .unwrap_err(),
@@ -693,6 +699,60 @@ mod tests {
             peer.document("test.app", "tab:1").unwrap(),
             before,
             "a write that waits leaves the record as it was"
+        );
+        assert_eq!(
+            peer.pending_count(),
+            0,
+            "nothing of a write that waits is kept to be applied later under its number"
+        );
+        // The write that waited is no longer here to be taken later under the number it carried:
+        // the next write of the device carries that number, and is admitted as it is.
+        use automerge::transaction::Transactable as _;
+        use collab_types::CommitNamed as _;
+        let person = peer
+            .certificates()
+            .into_iter()
+            .find(|cert| cert.device_public_key == key.verifying_key().to_bytes())
+            .expect("the workspace certifies the device")
+            .user_public_key;
+        let mut doc = automerge::AutoCommit::load(&bytes).unwrap();
+        let heads = doc.get_heads();
+        doc.put(automerge::ROOT, "next", "written").unwrap();
+        doc.commit_edit("fixture", "next", &person);
+        let NeighbourMsg::AppDocument { envelope, .. } = peer
+            .clone()
+            .publication_mut()
+            .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &key, now)
+            .unwrap()
+        else {
+            panic!("expected an incremental write")
+        };
+        assert_eq!(envelope.seq, number, "the write that waited took no number");
+        peer.admit_new_local_document("test.app", "tab:1", (*envelope).clone(), now)
+            .unwrap();
+        // Another device takes the write of that number, and takes this device for one machine.
+        let report = receiver
+            .receive_from_report(
+                crate::TransportOrigin::ServerDelta(key.verifying_key().to_bytes()),
+                NeighbourMsg::AppDocument {
+                    peer: neighbour_wire::peer_handle(&key.verifying_key().to_bytes()),
+                    app_id: "test.app".into(),
+                    cluster_id: peer.workspace_id().to_owned(),
+                    document_id: "tab:1".into(),
+                    envelope,
+                    readers: None,
+                },
+                now,
+            )
+            .unwrap();
+        assert!(
+            matches!(report.primary(), crate::InputDisposition::Accepted(_)),
+            "another device takes it: {:?}",
+            report.primary()
+        );
+        assert!(
+            receiver.copied_devices().is_empty(),
+            "the author is one machine"
         );
     }
 
