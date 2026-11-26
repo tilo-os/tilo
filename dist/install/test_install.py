@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 import unittest
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -333,6 +334,111 @@ printf "%s %s" "$0" "$*"
         self.assertIn("differs from the signed CLI", changed.stderr)
         self.assertEqual((target / "tilo").read_bytes(), b"different executable")
         self.assertEqual(self.installed.read_bytes(), b"existing default CLI")
+
+    @unittest.skipUnless(os.uname().sysname == "Linux" and shutil.which("cc"), "Linux daemon process identity")
+    def test_a_returning_hosted_login_recognizes_its_undumpable_daemon(self):
+        # The real runtime takes holder.lock, identifies itself, then reads the device key.
+        # Linux hides /proc/PID/exe from the owning user once that process is undumpable.
+        executable = self.home / "holder"
+        source = r"""
+#include <fcntl.h>
+#include <stdio.h>
+#include <sys/file.h>
+#include <sys/prctl.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+    int fd = open(argv[1], O_WRONLY | O_CREAT, 0600);
+    if (fd < 0 || flock(fd, LOCK_EX | LOCK_NB) || ftruncate(fd, 0)
+        || prctl(PR_SET_DUMPABLE, 0) || dprintf(fd, "%d", getpid()) < 1) return 1;
+    for (;;) pause();
+}
+"""
+        run("cc", "-x", "c", "-", "-o", executable, input=source.encode())
+        self.release = self.release.with_name("v0.3.1-assistant.1")
+        self.release.mkdir()
+        self.archive = self.release / machine()
+        target = self.home / ".local/share/tilo/cli" / self.release.name
+        state = self.home / ".local/state/tilo/device"
+        holder = state / "holder.lock"
+        program = b'''#!/bin/sh
+set -eu
+if [ "$1" = login ]; then
+    mkdir -p "$STATE" "$TILO_IDENTITY_ROOT/device/certs"
+    printf '  "user": "%s",\\n' "$PERSON" > "$STATE/login.json"
+    printf 'device certificate' > "$TILO_IDENTITY_ROOT/device/certs/$PERSON.bin"
+fi
+if [ ! -s "$STATE/holder.lock" ]; then
+    "$TILO_INSTALL_DIR/tilo-runtime" "$STATE/holder.lock" </dev/null >/dev/null 2>&1 &
+    for i in 1 2 3 4 5; do [ -s "$STATE/holder.lock" ] && break; sleep .1; done
+fi
+'''
+        self.publish(program, daemon=executable.read_bytes())
+        env = {"TILO_VERSION": self.release.name, "TILO_INSTALL_DIR": str(target),
+               "TILO_HOSTED_SETUP": "1", "TILO_IDENTITY_ROOT": str(self.home / "identity"),
+               "STATE": str(state), "PERSON": "ab" * 32}
+        capabilities = next(line.split()[1] for line in pathlib.Path("/proc/self/status").read_text().splitlines()
+                            if line.startswith("CapEff:"))
+        can_ptrace = bool(int(capabilities, 16) & (1 << 19))  # CAP_SYS_PTRACE
+
+        def stop_holder():
+            if holder.exists() and holder.read_text():
+                pid = int(holder.read_text())
+                try:
+                    os.kill(pid, 15)
+                except ProcessLookupError:
+                    pass
+                for _ in range(100):
+                    if subprocess.run(["flock", "-sn", holder, "true"]).returncode == 0:
+                        break
+                    time.sleep(.01)
+                holder.unlink()
+        try:
+            first = self.install("login", "ticket", **env)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            first_pid = holder.read_text()
+            if not can_ptrace:
+                with self.assertRaises(PermissionError):
+                    os.readlink(f"/proc/{first_pid}/exe")
+            again = self.install("device", "add", "returning", **env)
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertEqual(holder.read_text(), first_pid)
+            stop_holder()
+            reboot = self.install("device", "add", "after-restart", **env)
+            self.assertEqual(reboot.returncode, 0, reboot.stderr)
+            self.assertNotEqual(holder.read_text(), first_pid)
+            self.assertEqual(self.install("device", "add", "returning", **env).returncode, 0)
+            stop_holder()
+            # A user service can start the protected daemon before the installer runs.
+            # The manager must identify both this process and its verified executable.
+            service = self.home / ".config/systemd/user/tilo-peer.service"
+            service.parent.mkdir(parents=True)
+            service.write_text(f"ExecStart={target}/tilo-runtime device-daemon\n")
+            manager = self.home / "systemctl"
+            manager.write_text("""#!/bin/sh
+case "$5" in
+  MainPID) cat "$STATE/holder.lock" ;;
+  ExecStart) printf '{ path=%s/tilo-runtime ; argv[]=... ; }' "$TILO_INSTALL_DIR" ;;
+  *) exit 1 ;;
+esac
+""")
+            manager.chmod(0o755)
+            with subprocess.Popen([target / "tilo-runtime", holder]) as service_process:
+                try:
+                    for _ in range(100):
+                        if holder.exists() and holder.read_text():
+                            break
+                        time.sleep(.01)
+                    if not can_ptrace:
+                        unknown = self.install("device", "add", "unmanaged", **env)
+                        self.assertNotEqual(unknown.returncode, 0, unknown.stderr)
+                    env["PATH"] = f"{self.home}:{os.environ['PATH']}"
+                    managed = self.install("device", "add", "after-service-restart", **env)
+                    self.assertEqual(managed.returncode, 0, managed.stderr)
+                finally:
+                    service_process.terminate()
+            holder.unlink()
+        finally:
+            stop_holder()
 
     def test_without_openssl_the_sums_alone_decide(self):
         (self.release / "SHA256SUMS.sig").unlink()

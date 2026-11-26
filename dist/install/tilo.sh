@@ -110,7 +110,7 @@ main() {
       printf '%s %s %s' "$version" "$(digest "$login")" "$(digest "$cert")"
     }
     if [ -f "$receipt" ] && [ ! -L "$receipt" ]; then
-      identity=$(hosted_identity) && [ "$identity" = "$(cat "$receipt")" ] || fail "$other_profile"
+      identity=$(hosted_identity) && [ "$identity" = "$(sed -n '1p' "$receipt")" ] || fail "$other_profile"
     else
       if [ -e "$receipt" ] || [ -L "$receipt" ] || [ -e "$login" ] || [ -e "$holder" ] ||
          [ -d "$keys/device" ] || [ -e "$keys/device-private/keypair.bin" ] ||
@@ -192,14 +192,34 @@ KEY
     done
     # A daemon can also run on its own, with no user service. Its PID is kept in its
     # lock file. A free lock can have a stale PID; a live holder must run this binary.
+    linux_generation() {
+      pid=$(cat "$holder") || return 1
+      case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+      boot=$(cat /proc/sys/kernel/random/boot_id) || return 1
+      # Field 22 is the start time in kernel ticks. The command in parentheses may contain spaces.
+      since=$(sed 's/^.*) //' "/proc/$pid/stat" | cut -d ' ' -f 20)
+      case "$since" in ''|*[!0-9]*) return 1 ;; esac
+      printf '%s %s %s' "$boot" "$pid" "$since"
+    }
+    hosted_service_holds() {
+      [ -f "$service" ] && [ "$(systemctl --user show tilo-peer.service -p MainPID --value 2>/dev/null)" = "$pid" ] || return 1
+      launch=$(systemctl --user show tilo-peer.service -p ExecStart --value 2>/dev/null) || return 1
+      case "$launch" in "{ path=$dir/tilo-runtime ; "*) ;; *) return 1 ;; esac
+      [ "$(tr '\000' '\n' < "/proc/$pid/cmdline" | sed -n '1p')" = "$dir/tilo-runtime" ]
+    }
+    generation=
     if [ -e "$holder" ]; then
       [ -f "$holder" ] && [ ! -L "$holder" ] || fail "$other_profile"
       if [ "$os" = linux ]; then
         need flock
         if ! flock -sn "$holder" true; then
-          pid=$(cat "$holder")
-          case "$pid" in ''|*[!0-9]*) fail "$other_profile" ;; esac
-          cmp -s "/proc/$pid/exe" "$work/unpacked/tilo-runtime" || fail "$other_profile"
+          generation=$(linux_generation) || fail "$other_profile"
+          # A daemon that read the private key is undumpable: even this user may no
+          # longer read /proc/PID/exe. Its recorded kernel process identity survives that.
+          if [ "$generation" != "$(sed -n '2p' "$receipt")" ]; then
+            pid=$(cat "$holder")
+            cmp -s "/proc/$pid/exe" "$work/unpacked/tilo-runtime" || hosted_service_holds || fail "$other_profile"
+          fi
         fi
       else
         need lsof
@@ -235,9 +255,28 @@ KEY
   trap - EXIT INT TERM
   # Its input is the rest of this script's pipe, not the person's.
   "$dir/tilo" "$@" </dev/null
-  if [ "${TILO_HOSTED_SETUP:-}" = 1 ] && [ "$1" = login ]; then
+  if [ "${TILO_HOSTED_SETUP:-}" = 1 ]; then
+    case "$1:${2:-}" in
+      login:-*|login:) return 0 ;;
+      login:*|device:add) ;;
+      *) return 0 ;;
+    esac
     identity=$(hosted_identity) || fail "the hosted login did not leave its device certificate"
-    (umask 077; tmp=$(mktemp "$receipt.XXXXXXXX") && printf '%s\n' "$identity" > "$tmp" && mv -f "$tmp" "$receipt")
+    if [ "$os" = linux ] && [ -f "$holder" ]; then
+      need flock
+      if ! flock -sn "$holder" true; then
+        running=$(linux_generation) || fail "$other_profile"
+        if [ "$generation" != "$running" ]; then
+          # This signed command started with no such holder. Confirm the path it used to
+          # spawn its sibling before remembering this process across future invocations.
+          pid=$(cat "$holder")
+          exe=$(tr '\000' '\n' < "/proc/$pid/cmdline" | sed -n '1p')
+          [ "$exe" = "$dir/tilo-runtime" ] || fail "$other_profile"
+        fi
+        generation=$running
+      fi
+    fi
+    (umask 077; tmp=$(mktemp "$receipt.XXXXXXXX") && printf '%s\n%s\n' "$identity" "$generation" > "$tmp" && mv -f "$tmp" "$receipt")
   fi
 }
 
