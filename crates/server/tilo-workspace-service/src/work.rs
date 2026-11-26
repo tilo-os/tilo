@@ -612,7 +612,10 @@ mod tests {
         assert_eq!(first, lease("scout", &longer));
         assert_ne!(first, lease("other", &longer));
         assert_ne!(first, lease("scout", &format!("{place}y")));
-        assert_ne!(lease("a/b", &longer), lease("a", &format!("b/{longer}")));
+        assert_ne!(
+            lease("scout/b", &longer),
+            lease("scout", &format!("b/{longer}"))
+        );
         let invalid = format!("{longer}\n");
         assert_eq!(lease("scout", &invalid), format!("turn/scout/{invalid}"));
     }

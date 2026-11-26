@@ -1205,6 +1205,11 @@ name = "fixture.card"
 fields = [{ name = "title", type = "text" }, { name = "protected", type = "text" }]
 
 [[resources.verbs]]
+id = "create-card"
+kind = "undoable"
+writes = ["record", "protected"]
+
+[[resources.verbs]]
 id = "field-edit"
 kind = "undoable"
 field = "title"
@@ -1260,7 +1265,7 @@ params = [{ name = "edit", required = true, schema = { type = "object" } }]
     initial.commit_with(
         automerge::transaction::CommitOptions::default().with_message(
             collab_types::Stamp {
-                verb: "field-edit".into(),
+                verb: "create-card".into(),
                 invocation: "seed".into(),
                 ..Default::default()
             }
@@ -1315,13 +1320,15 @@ params = [{ name = "edit", required = true, schema = { type = "object" } }]
         .await
         .unwrap();
 
-    assert!(
-        workspaces
-            .resource_document(workspace, STORE_FIXTURE, &route.document)
-            .await
-            .unwrap()
-            .is_some(),
-        "the server can read the seeded store document"
+    let seeded = workspaces
+        .resource_document(workspace, STORE_FIXTURE, &route.document)
+        .await
+        .unwrap()
+        .expect("the server can read the seeded store document");
+    assert_eq!(
+        automerge::AutoCommit::load(&seeded).unwrap().get_heads(),
+        initial.get_heads(),
+        "the workspace store admitted the complete founding change"
     );
     assert!(
         store_path(state, &route).exists(),
