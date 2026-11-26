@@ -1495,42 +1495,6 @@ impl Runtime {
         catalogue(&metas)
     }
 
-    /// The documents an earlier build of `app` kept, each by its document id: the records a
-    /// native app of the same id wrote before this package took the id over, which the
-    /// package's migrations read with `earlier(r)` ([`crate::earlier`]). They are held only
-    /// once they are all here ([`crate::earlier::missing`]): a chain with a part still on its
-    /// way, or without the record it belongs to, would carry only some of what that build kept,
-    /// so until then the app holds none and the migrations that carry them wait.
-    pub fn set_earlier(&self, app: &str, documents: &[(String, automerge::AutoCommit)]) {
-        let missing = crate::earlier::missing(documents);
-        let items: Vec<crate::earlier::EarlierItem> = if missing.is_empty() {
-            documents
-                .iter()
-                .flat_map(|(id, doc)| crate::earlier::items(id, doc))
-                .collect()
-        } else {
-            tracing::warn!(
-                app,
-                ?missing,
-                "what an earlier build kept is not all here yet; carrying it waits"
-            );
-            Vec::new()
-        };
-        let mut earlier = self.core.earlier.borrow_mut();
-        if items.is_empty() {
-            earlier.remove(app);
-        } else {
-            earlier.insert(app.to_owned(), items.into());
-        }
-    }
-
-    /// Whether an earlier build of `app` left documents its migrations read
-    /// ([`Self::set_earlier`]).
-    #[must_use]
-    pub fn has_earlier(&self, app: &str) -> bool {
-        self.core.earlier.borrow().contains_key(app)
-    }
-
     /// Where `web.get` and `web.post` reach: the network of the device whose code makes the
     /// request, which runs each request once, and whose journal entry a replay answers from.
     pub fn set_web(&self, transport: impl crate::web::WebTransport + 'static) {

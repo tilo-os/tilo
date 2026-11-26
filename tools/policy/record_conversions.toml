@@ -43,19 +43,19 @@ lost = "The words a person had typed into the native Chat and not sent. The tilo
 kind = "chat.workspace"
 app = "chat"
 change = "removed"
-conversion = "apps/tl/chat/app.tl:carry_native_chat"
+lost = "The workspace's Chat record as the native Chat kept it. The tilolang Chat reads its own records; the native app's documents stay where they are, so a workspace that used it starts the new app with none of its conversations."
 
 [[change]]
 kind = "chat.messages"
 app = "chat"
 change = "removed"
-conversion = "apps/tl/chat/app.tl:carry_native_chat"
+lost = "The messages the native Chat kept, with their pins, reactions and threads. They stay in the native app's document and are not carried into the tilolang Chat's records."
 
 [[change]]
 kind = "chat.skills"
 app = "chat"
 change = "removed"
-conversion = "apps/tl/chat/app.tl:carry_native_chat"
+lost = "The skills the native Chat kept, with their examples. They stay in the native app's document and are not carried into the tilolang Chat's records."
 
 [[change]]
 kind = "tilo.moderation"
@@ -109,19 +109,19 @@ conversion = "apps/terminal/src/target.rs:open"
 kind = "tube.library"
 app = "tube"
 change = "removed"
-conversion = "apps/tl/tube/app.tl:carry_native_tube"
+lost = "The channels, likes, watch queue and replies the native Tube kept. They stay in the native app's documents and are not carried into the tilolang Tube's records."
 
 [[change]]
 kind = "tube.watch-history"
 app = "tube"
 change = "removed"
-conversion = "apps/tl/tube/app.tl:carry_native_tube"
+lost = "The watch history the native Tube kept, with when each video was watched. It stays in the native app's document and is not carried into the tilolang Tube's records."
 
 [[change]]
 kind = "mail.mailbox"
 app = "mail"
 change = "removed"
-lost = "The Rust Mail app is replaced by the tilolang Mail (apps/tl/mail). Messages and mailboxes are the mail server's, and the tilolang Mail reads them from the same accounts again; unsent drafts and waiting sends are carried into its drafts once by its carry_native_mail migration. Workspace-only labels on single messages and a change made offline but not yet sent to the server are not carried."
+lost = "The Rust Mail app is replaced by the tilolang Mail (apps/tl/mail). Messages and mailboxes are the mail server's, and the tilolang Mail reads them from the same accounts again; the drafts and waiting sends the native app kept stay in its document and are not carried into the new app's. Workspace-only labels on single messages and a change made offline but not yet sent to the server are not carried either."
 
 [[change]]
 kind = "mail.messages"

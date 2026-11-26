@@ -795,11 +795,6 @@ pub struct ActionMeta {
     /// its start whenever a call waits for a person, so it journals its reads and writes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub invokes: bool,
-    /// Whether the migration carries what an earlier build of the app kept (`earlier(r)`): those
-    /// documents are read only where the migration runs, so a resource made anywhere starts
-    /// without its mark, and the migration runs on it there.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub carries: bool,
     /// The outside capabilities the body's `outside(...)` calls name, as written (`youtube.search`):
     /// what the platform tags the action with.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

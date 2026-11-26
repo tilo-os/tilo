@@ -390,9 +390,6 @@ d-uiu73od5 = Kanalzeile
 
 d-pgyjhoe2 = Verlaufszeile
 
-d-t3cwabaw = Früheres Tube übernehmen
-    .doc = Was das frühere Tube vor der Übernahme dieser Kennung hielt, einmalig in dieses übernommen: die abonnierten Kanäle, die mit Gefällt mir markierten Videos, die Warteschlange und der Verlauf mit der Zeit, zu der jedes Video angesehen wurde. Der übernommene Verlauf entstand, bevor dieses Programm festhielt, wer was gesehen hat; seine Einträge nennen daher niemanden und bleiben die des Workspace, bis jemand eines der Videos erneut sieht.
-
 d-r6snpxjs = Vorgemerktes Video
     .doc = Ein Video, das jemand auf die Warteschlange des Workspace gesetzt hat. Eine Sammlung behält die Reihenfolge, in der ihre Einträge hinzugefügt wurden, sodass die Warteschlange in der Reihenfolge abgespielt wird, in der Videos hinzugefügt wurden.
     .noun = { $count ->

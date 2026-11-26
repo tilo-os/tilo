@@ -346,8 +346,8 @@ pub(crate) struct Checker<'a> {
     at: Option<usize>,
     /// Where the declaration being checked starts: what a function it makes in passing is named by.
     outer_at: Option<usize>,
-    /// Whether the declaration being checked is a `migration action`: only a migration reads what
-    /// an earlier build kept (`earlier(r)`) and gives an item it inserts the id that build gave it.
+    /// Whether the declaration being checked is a `migration action`: only a migration gives an
+    /// item it inserts an id of its own.
     migrating: bool,
     /// The string literals the module shows as words, by span.
     shown: std::collections::HashSet<Span>,

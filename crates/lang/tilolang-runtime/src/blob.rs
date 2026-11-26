@@ -635,17 +635,6 @@ fn made(blobs: &dyn BlobHost, name: &str, held: Held) -> Result<FileValue, Strin
 }
 
 /// `bytes` kept in the content store as a file called `name`, of the media type its name tells,
-/// when it holds no more than a file a person picks may: a file an earlier build of an app kept,
-/// which its migration carries over.
-pub(crate) fn kept_file(
-    blobs: &dyn BlobHost,
-    name: &str,
-    bytes: &[u8],
-) -> Result<FileValue, String> {
-    kept(blobs, name, bytes, MAX_CHOSEN)
-}
-
-/// `bytes` kept in the content store as a file called `name`, of the media type its name tells,
 /// when it holds no more than `limit` bytes.
 fn kept(blobs: &dyn BlobHost, name: &str, bytes: &[u8], limit: usize) -> Result<FileValue, String> {
     within(name, bytes.len(), limit)?;

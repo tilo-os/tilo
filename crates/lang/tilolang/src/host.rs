@@ -337,73 +337,6 @@ pub const VALUE_TYPES: &[ValueType] = &[
         ],
     },
     ValueType {
-        name: "Earlier",
-        id: "host-earlier",
-        doc: "An item an earlier build of the app kept in documents of its own, as `earlier(r)` answers in a migration: a native app's record of the same id, read field by field.",
-        fields: &[
-            (
-                "id",
-                "Text",
-                "The id it was kept under: the item's id in its collection, or the document's id for the document's own fields.",
-            ),
-            (
-                "of",
-                "Text",
-                "The collection that kept it (`pages`); empty for a document's own fields.",
-            ),
-            (
-                "order",
-                "Text",
-                "Its order key in that collection: a collection's items read in the order of their keys.",
-            ),
-            (
-                "version",
-                "Int",
-                "The version of the layout the document holding it was stored at; `0` when the document does not say (a part of a chain).",
-            ),
-            (
-                "texts",
-                "Map<Text>",
-                "Each field that reads as words, by its name: text, a name, a number, a flag.",
-            ),
-            (
-                "lists",
-                "Map<List<Text>>",
-                "Each field that holds several, by its name: a set or a map as its keys, a list as what it holds.",
-            ),
-            (
-                "rich",
-                "Map<RichText>",
-                "Each rich-text field, by its name.",
-            ),
-            (
-                "files",
-                "Map<Map<File>>",
-                "Each field that holds bytes by key, by its name: the file of each key's bytes, kept on this device (a native app's pictures, by their digest). A key whose bytes could not be kept is missing.",
-            ),
-            (
-                "entries",
-                "Map<Map<Text>>",
-                "Each field that maps keys to words, by its name: what each key holds, as words (a native app's watch times, by video). Its keys are in `lists` too.",
-            ),
-            (
-                "members",
-                "Map<List<Actor>>",
-                "Each field whose words name members of the workspace, by its name: the members they name (a native app's author, or the people of a direct conversation its id names).",
-            ),
-            (
-                "records",
-                "Map<List<Map<Text>>>",
-                "Each field that keeps records of its own, in a collection or a list, by its name: the records in the order they stood, each record's fields as words.",
-            ),
-            (
-                "by",
-                "Option<Actor>",
-                "Who wrote it there, as that document's history names them: the person whose change last wrote it, or the person an agent wrote it for; none where no person did. A record a migration makes under the id the item had (`insert(x, id: e.id)`) is made as theirs: a type read by its author only is read by them.",
-            ),
-        ],
-    },
-    ValueType {
         name: "Step",
         id: "host-step",
         doc: "A step of a resource's history as people read it: consecutive versions by the same person, or by the same run, folded into one.",
@@ -1067,7 +1000,6 @@ fn record_action(id: &str, label: &str, doc: &str, rest: Vec<ParamMeta>) -> Acti
         guard: false,
         applies: false,
         invokes: false,
-        carries: false,
         outside: Vec::new(),
         notice: false,
         search: None,

@@ -1034,9 +1034,6 @@ d-f23gpsje = Import abschließen
 
 d-f23gpsje-tilo_only = Nur Tilo
 
-d-k3qmcewh = Discord der alten App übernehmen
-    .doc = Der Discord-Server, den die alte App hielt, einmal in den Datensatz dieser App getragen: die Verbindungen beider Seiten (Kanäle, Threads, Nachrichten, Webhooks, Rollen und Emojis), die verknüpften Konten, die blockierten Konten und den einen Kanal, auf den die Bridge beschränkt ist.
-
 d-zry53cq3 = Dorthin senden
     .doc = Sendet eine Nachricht über den Webhook eines Kanals, wie die Bridge sie plant.
     .w-the-bridge-carries-messages-to-discord = Die Bridge trägt Nachrichten zu Discord

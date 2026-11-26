@@ -125,8 +125,6 @@ pub struct Effects {
     /// Whether each action's body invokes another action, itself included: what a run journals for,
     /// because a call can wait for a person and the run then runs again from its start.
     pub invokes: Vec<bool>,
-    /// Whether each action's body reads what an earlier build of the app kept (`earlier(r)`).
-    pub carries: Vec<bool>,
 }
 
 type ReachMap = BTreeMap<(String, String), Reach>;
@@ -221,11 +219,6 @@ pub fn analyze(m: &Module, app: &str) -> Effects {
         .iter()
         .map(|f| f.kind == FuncKind::Action && !f.facts.invokes.is_empty())
         .collect();
-    let carries = m
-        .funcs
-        .iter()
-        .map(|f| f.kind == FuncKind::Action && f.facts.earlier)
-        .collect();
     Effects {
         class,
         reaches: reaches
@@ -233,7 +226,6 @@ pub fn analyze(m: &Module, app: &str) -> Effects {
             .map(|m| m.into_values().collect())
             .collect(),
         invokes,
-        carries,
     }
 }
 

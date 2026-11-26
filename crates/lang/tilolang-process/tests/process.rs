@@ -33,7 +33,7 @@ use tilolang_tilo::runtime::Value;
 /// A check the project's host approved, run for the invocation the broker served.
 #[path = "process/approved_checks.rs"]
 mod approved_checks;
-/// The native Notes app's notebook, carried over once by the tilolang Notes a session starts.
+/// A session's chat, its actions called through the dispatch.
 #[path = "process/chat.rs"]
 mod chat;
 /// An app's calls of another app's action, through the dispatch.
@@ -45,6 +45,9 @@ mod jobs;
 /// A paste past a mebibyte, kept and undone.
 #[path = "process/paste.rs"]
 mod paste;
+/// An app's route is its own id, whatever its manifest claimed before.
+#[path = "process/previously.rs"]
+mod previously;
 /// The workspace's action registry, read and called by address.
 #[path = "process/registry.rs"]
 mod registry;

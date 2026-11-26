@@ -13,7 +13,7 @@ impl Checker<'_> {
         args: &[ast::Arg],
         span: Span,
     ) -> Ex {
-        // A value the host made (`host.Earlier`) is held whole, never a resource: its map or list is
+        // A value the host made (`host.Step`) is held whole, never a resource: its map or list is
         // read as the value it is, and nothing writes through it.
         if crate::host::is_value(key) {
             let r = self.field_read(

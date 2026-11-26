@@ -84,16 +84,6 @@ who proposed it. Dismissing records the refusal and changes nothing.
   A migration upgrades only what an earlier version wrote: a resource this version makes is
   recorded as already migrated in the change that makes it, and what it starts with is its
   type's `initial action`, never a migration.
-- A package that takes over the id of a native (Rust) app carries what that app kept with a
-  `migration action` that reads it: `earlier(r)` answers the native app's documents, read
-  from where that app stored them on this device, each item's fields as the native model kept
-  them, and who wrote it there (`by`) as the native document's history names them. The
-  platform runs it on every device that opens the package, once in the workspace, as one change;
-  a device that was offline when the native app went carries it when it next opens the package,
-  and one that holds none of the native documents yet waits for them. The native documents are
-  never written. A record the migration makes under the id the native item had
-  (`insert(x, id: e.id)`) is made as the person who wrote that item, so a type read by its
-  author alone is read by them. No one-off import outside the package does this work.
 - An app renamed keeps what it had: `app so.tilo.lang.tasks "Tasks" (previously:
   so.tilo.lang.todo)` reads the resources under the old id as its own, where they are. The old id
   is signed into the app, and only the same publisher's app can take it over. The renamed app

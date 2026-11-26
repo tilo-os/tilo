@@ -592,17 +592,9 @@ tilo_test_env::scenario! {
         assert_eq!(compiled.meta.migrations().count(), 1);
     }
 
-    phase only_a_migration_reads_what_an_earlier_build_kept_and_keeps_its_ids;
+    phase only_a_migration_keeps_the_ids_of_what_it_inserts;
     {
-        // A migration carries what a native app of the id kept: each item under the id it had.
-        let carries = "/// Shelves what the earlier build kept.\nmigration action carry(s: Store) {\n    for e in earlier(s).filter(e -> e.of == \"items\") {\n        s.items.insert(Item(title: e.texts.get(\"title\") ?? \"\", shelf: \"\"), id: e.id)\n    }\n}\n";
-        assert_eq!(
-            crate::common::codes(&format!("{MIGRATED}\n{carries}")),
-            Vec::<String>::new()
-        );
-        // Anything else neither reads it nor names the id what it inserts takes.
-        let reads = "action peek(s: Store) -> Int {\n    earlier(s).len()\n}\n";
-        assert_eq!(crate::common::codes(&format!("{MIGRATED}\n{reads}")), ["E022"]);
+        // Anything but a migration that inserts an item naming its id is refused.
         let names = "action add(s: Store) {\n    s.items.insert(Item(title: \"\", shelf: \"\"), id: \"x\")\n}\n";
         assert_eq!(crate::common::codes(&format!("{MIGRATED}\n{names}")), ["E022"]);
     }

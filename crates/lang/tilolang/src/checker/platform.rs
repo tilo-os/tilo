@@ -301,28 +301,6 @@ impl Checker<'_> {
         Ex::host(Imp::Links, vec![r], Ty::List(Box::new(host_ty("Link"))))
     }
 
-    /// `earlier(r)`: what an earlier build of `r`'s app kept in documents of its own, each item a
-    /// `host.Earlier`: what a `migration action` carries into the package's own resources. Only a
-    /// migration reads it, since only a migration runs once over what that build left.
-    pub(super) fn builtin_earlier(&mut self, args: &[ast::Arg], span: Span) -> Ex {
-        if !self.migrating {
-            self.err(
-                "E022",
-                span,
-                "`earlier(r)` reads what an earlier build of the app kept, which only a `migration action` carries over",
-            );
-        }
-        let Some(r) = self.resource_arg("earlier", args, span) else {
-            return Ex::error();
-        };
-        self.st.facts.earlier = true;
-        Ex::host(
-            Imp::Earlier,
-            vec![r],
-            Ty::List(Box::new(host_ty("Earlier"))),
-        )
-    }
-
     /// `proposal_note(r)`: what waits to be proposed of `r`, as one line of text; empty when nothing
     /// waits.
     pub(super) fn builtin_proposal_note(&mut self, args: &[ast::Arg], span: Span) -> Ex {

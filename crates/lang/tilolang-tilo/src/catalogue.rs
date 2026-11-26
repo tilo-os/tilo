@@ -842,7 +842,6 @@ impl Reader<'_> {
                 opens: Vec::new(),
                 shows: Vec::new(),
                 takes: Vec::new(),
-                carries: false,
                 proposal: None,
                 reaches: Vec::new(),
             });
@@ -1091,7 +1090,6 @@ impl Reader<'_> {
             opens: Vec::new(),
             shows: Vec::new(),
             takes: Vec::new(),
-            carries: false,
         });
     }
 

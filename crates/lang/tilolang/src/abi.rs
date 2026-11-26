@@ -345,7 +345,6 @@ imports! {
     Versions = "versions" ([H] -> [H]);
     VersionChange = "version_change" ([H] -> [H]);
     Links = "links" ([H] -> [H]);
-    Earlier = "earlier" ([H] -> [H]);
     VersionEnd = "version_end" ([H, I32] -> [H]);
     FieldChanged = "field_changed" ([H, H] -> [H]);
     RunChanges = "run_changes" ([H] -> [H]);

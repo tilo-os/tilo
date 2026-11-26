@@ -298,7 +298,6 @@ imports! {
     (Versions, "versions", "i", "i"),
     (VersionChange, "version_change", "i", "i"),
     (Links, "links", "i", "i"),
-    (Earlier, "earlier", "i", "i"),
     (VersionEnd, "version_end", "ii", "i"),
     (FieldChanged, "field_changed", "ii", "i"),
     (RunChanges, "run_changes", "i", "i"),

@@ -293,9 +293,6 @@ d-q4w7m2xk = Gewählt
 
 d-v8n3t5jb = Gewählt-Zähler
 
-d-qgq6mcy7 = Zur Seite gelegt
-    .doc = Notizen, die aus der früheren Notizen-App übernommen wurden und die sie nicht mehr zeigte: eine Seite, deren übergeordnete Seite gelöscht wurde, hier außerhalb des Baums bewahrt statt verworfen.
-
 d-dq2mnb22 = Schlagwörter
     .doc = Die Schlagwörter, die die Notizen des Notizbuchs tragen, jedes ein Name, an dem Notizen hängen: eine Notiz behält ihre Schlagwörter als Wörter, und das Notizbuch führt die Liste, in der eine Person sie benennt, umbenennt und löscht.
 
@@ -322,9 +319,6 @@ d-2vlaqp45 = Wörter
     .doc = Die Wörter des Absatzes.
 
 d-cvwcei36-filter-at = Bei
-
-d-qvjedq2v = Früheres Notizbuch übernehmen
-    .doc = Das Notizbuch, das die frühere Notizen-App vor der Übernahme dieser Kennung hielt, einmalig in dieses übernommen: jede Seite als Notiz, unter der Notiz, unter der ihre Seite stand, und in der Reihenfolge, in der ihre Seiten dort standen, mit Titel, Text, Schlagwörtern und der Kennung ihrer Seite.
 
 d-pjxiode5 = Einrücken
     .doc = Setzt eine Notiz unter die Notiz, über der sie steht, mit den Notizen unter ihr, wie `Tab` es im Baum tut; ohne benannte unter die Notiz darüber.

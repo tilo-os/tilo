@@ -311,7 +311,6 @@ impl Checker<'_> {
             "unseen" => return self.builtin_unseen(args, span),
             "unreadable" => return self.builtin_unreadable(args, span),
             "linked" => return self.builtin_links(args, span),
-            "earlier" => return self.builtin_earlier(args, span),
             "proposal_note" => return self.builtin_proposal_note(args, span),
             "first_unseen" => return self.builtin_first_unseen(args, span),
             "seen_by" => return self.builtin_seen_by(args, span),

@@ -192,9 +192,6 @@ type Draft (title: subject, untitled: "New message", readers: author until sent)
     invitation: Text = ""
     /// The files it takes along.
     attachments: List<File>
-    /// What the native Mail kept on this draft that this one has no place for (attachments,
-    /// private notes), said in words: never sent with it.
-    set_aside: Text
 
     search {
         filter "Drafts" = not sent and leaves_at == .none (icon: .pencil)
@@ -486,90 +483,6 @@ action search_server(a: Account, text: Text) (icon: .search, label: "Search the 
 primary action new_message(a: Account) -> Draft (icon: .pencil, label: "New message") {
     let m = root Mail
     m.drafts.insert(Draft(from: a.key, body: signature_of(m, a.key)))
-}
-
-/// The mailbox the native Mail kept before this app took its id over, carried into this one
-/// once: every draft it was writing and every message still waiting in its outbox is a draft
-/// here, from the same account, as the same identity, to the same people (the blind ones too),
-/// with the same subject, body and invitation. A message that was waiting to go is a draft
-/// again, to be sent from here. What a draft held that this app has no place for is kept on it
-/// in `set_aside`, never sent. Each draft is its author's, as the native mailbox's history names
-/// whoever wrote it there (the person an agent drafted it for), and read by them alone until it is
-/// sent. The native app's own documents are left as they are.
-migration action carry_native_mail(m: Mail) {
-    let earlier = earlier(m)
-    // An outbox entry is waiting while it has not settled; one that went or failed for good is
-    // the server's to show, not a draft.
-    let waiting = earlier.filter(
-        e -> e.of == "outbox"
-            and e.texts.get("settled") == .none
-            and e.lists.get("settled") == .none,
-    )
-    // Each is carried under the id it had there, so it is made as whoever wrote it there: a draft
-    // is read by its author alone until it is sent.
-    for e in earlier.filter(e -> e.of == "draft" or e.of == "drafts") {
-        for draft in native_draft(e, "", "", "") {
-            m.drafts.insert(draft, id: e.id)
-        }
-    }
-    for e in waiting {
-        let account = e.texts.get("value.account") ?? ""
-        let answers = e.texts.get("value.in_reply_to") ?? ""
-        for draft in native_draft(e, "value.draft.", account, answers) {
-            m.drafts.insert(draft, id: e.id)
-        }
-    }
-}
-
-/// The words the native record `e` kept in its field `name`; nothing when it kept none.
-fn native_said(e: host.Earlier, name: Text) -> Text {
-    e.texts.get(name) ?? ""
-}
-
-/// The draft the native record `e` kept under the fields named `at…`, sent from `account` and
-/// answering `answers` when the draft itself names neither: none for a draft with nothing
-/// written in it, which the native Mail left out too.
-fn native_draft(e: host.Earlier, at: Text, account: Text, answers: Text) -> List<Draft> {
-    let to = native_said(e, "{at}to")
-    let cc = native_said(e, "{at}cc")
-    let bcc = native_said(e, "{at}bcc")
-    let subject = native_said(e, "{at}subject")
-    let plain = native_said(e, "{at}body")
-    let body = if plain == "" {
-        (e.rich.get("{at}rich_body") ?? RichText("")).markdown
-    } else { plain }
-    let files = e.lists.get("{at}attachments.filename") ?? []
-    let notes = native_said(e, "{at}notes")
-    let sender = native_said(e, "{at}sender.account")
-    let sender_address = native_said(e, "{at}sender.email")
-    let reply = native_said(e, "{at}in_reply_to")
-    if files.len() == 0 and not [to, cc, bcc, subject, body].any(t -> t.trim() != "") {
-        []
-    } else {
-        let aside = [
-            if files.len() == 0 {
-                ""
-            } else {
-                "Attachments not carried over: {files.join(", ")}"
-            },
-            if notes == "" { "" } else { "Notes: {notes}" },
-        ]
-            .filter(t -> t != "")
-        [
-            Draft(
-                from: if sender == "" { account } else { sender },
-                from_address: sender_address,
-                to: to,
-                cc: cc,
-                bcc: bcc,
-                subject: subject,
-                body: body,
-                in_reply_to: if reply == "" { answers } else { reply },
-                invitation: native_said(e, "{at}calendar_ics"),
-                set_aside: aside.join("\n"),
-            ),
-        ]
-    }
 }
 
 /// Starts a message. A message is written before the workspace has an account to send it from:

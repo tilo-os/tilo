@@ -782,13 +782,9 @@ impl Core {
         let initial = pkg
             .as_ref()
             .and_then(|pkg| pkg.meta.initial_of(&new.ty).cloned());
-        // A migration that carries what an earlier build of the app kept is not marked done in
-        // the making: those documents are read where migrations run, the workspace's origin, and
-        // a resource made anywhere else, or before they were read, is still to receive them.
         let migrations: Vec<String> = pkg.as_ref().map_or_else(Vec::new, |pkg| {
             pkg.meta
                 .migrations_of(&new.ty)
-                .filter(|migration| !migration.carries)
                 .map(|migration| migration.id.clone())
                 .collect()
         });

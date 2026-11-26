@@ -136,8 +136,6 @@ pub struct Facts {
     /// [`crate::effects::reached`]'s.
     pub effects: BTreeSet<crate::effects::Effect>,
     pub calls: BTreeSet<usize>,
-    /// Whether the body reads what an earlier build of the app kept (`earlier(r)`).
-    pub earlier: bool,
 }
 
 #[derive(Clone, Debug)]

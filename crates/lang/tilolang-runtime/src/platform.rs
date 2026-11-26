@@ -2153,49 +2153,6 @@ impl Core {
         }
     }
 
-    /// `earlier(r)`: what an earlier build of the app declaring `r`'s type kept
-    /// ([`crate::earlier`]), each item a `host.Earlier`. Only a migration reads it (the checker
-    /// says so), and it is the same on every run: the earlier documents never change under it.
-    pub(crate) fn earlier_import(&self, a: &Args<'_>) -> HResult<Value> {
-        let target = self.ref_arg(a.h(0)?)?;
-        let app = {
-            let registry = self.registry.borrow();
-            registry
-                .type_owner(&target.target.ty)
-                .and_then(|owner| registry.package(owner))
-                .map(|pkg| pkg.meta.app.clone())
-        };
-        let items = app.and_then(|app| self.earlier.borrow().get(&app).cloned());
-        let blobs = self.blobs.borrow();
-        let keep = |name: &str, bytes: &[u8]| {
-            let blobs = blobs.as_ref()?;
-            crate::blob::kept_file(blobs.as_ref(), name, bytes)
-                .ok()
-                .map(Value::file)
-        };
-        Ok(Value::List(items.map_or_else(Vec::new, |items| {
-            items.iter().map(|item| item.value(&keep)).collect()
-        })))
-    }
-
-    /// The person who wrote the item `id` where the native app of the package declaring the type
-    /// `ty` kept it, as that app's document says: `None` where this device holds nothing that app
-    /// kept, no item of that id, or one no person wrote.
-    pub(crate) fn earlier_writer(&self, ty: &str, id: &str) -> Option<String> {
-        let app = {
-            let registry = self.registry.borrow();
-            registry
-                .type_owner(ty)
-                .and_then(|owner| registry.package(owner))
-                .map(|pkg| pkg.meta.app.clone())?
-        };
-        let items = self.earlier.borrow().get(&app).cloned()?;
-        items
-            .iter()
-            .filter(|item| item.id == id)
-            .find_map(|item| item.by.as_ref()?.person_id().map(str::to_owned))
-    }
-
     /// `unreadable(r)`: why the reading of a resource of another app says it could not be read,
     /// in the words of whatever asked; nothing when it answers, and for a resource this app
     /// holds itself, which it always reads. A screen shows it in place of the values it would

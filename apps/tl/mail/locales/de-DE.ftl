@@ -757,12 +757,6 @@ d-oqpazwvc = Schreiben
     .w-save-in-drafts = In Entwürfen speichern
     .w-this-answers = Dies antwortet auf { $subject }
 
-d-ozukvva2 = Zur Seite gelegt
-    .doc = Was die frühere Mail an diesem Entwurf hielt, wofür diese keinen Platz hat (Bcc, Anhänge, private Notizen), in Worten gesagt: nie mit ihm versendet.
-
-d-v7wxxiaj = Frühere Mail übernehmen
-    .doc = Das Postfach, das die frühere Mail vor der Übernahme dieser Kennung hielt, einmalig in dieses übernommen: jeder Entwurf, den sie schrieb, und jede noch in ihrem Postausgang wartende Nachricht ist hier ein Entwurf, vom selben Konto, an dieselben Personen, mit demselben Betreff, Text und derselben Einladung.
-
 d-xnczt27x-filter-latest = Empfangen
 
 d-lnhvmglv = Nachricht entwerfen

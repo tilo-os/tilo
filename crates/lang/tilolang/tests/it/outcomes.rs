@@ -351,7 +351,6 @@ fn published() -> tilolang::PackageMeta {
             export: None,
             guard: false,
             invokes: false,
-            carries: false,
             outside: Vec::new(),
             notice: false,
             opens: Vec::new(),

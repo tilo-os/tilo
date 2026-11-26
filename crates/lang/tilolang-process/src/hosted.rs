@@ -197,78 +197,6 @@ impl Transport for NoView {
     }
 }
 
-/// The documents the package holds in `record`'s workspace, each by the id it holds: its records,
-/// which what an earlier native app of that id kept are among, and which the package's migrations
-/// carry over on the device whose turn each one is.
-///
-/// Read through the instance's connection, as the device's own roles read its workspace's
-/// documents, and never written: the host keeps no live copy of a document. The app's documents
-/// are listed first and then read by id, a document that did not fit one answer asked for again.
-/// While one of them is on its way, none are handed over: carrying some of them would leave the
-/// rest behind for good, so the carrying waits for a start that reads them all.
-fn earlier_documents(record: &Connection, app: &str) -> Vec<(String, automerge::AutoCommit)> {
-    // Only a connection to a workspace can read its documents: one with no broker answers none.
-    if record.is_local() {
-        return Vec::new();
-    }
-    read_earlier(&record.port(None), app)
-}
-
-/// The records `port` holds of `app`, each whole and loaded, by the id it holds: listed first and
-/// then read by id, as every port that sends the workspace record commands reads them
-/// ([`collaboration::resource::commands`]). While one of them is on its way, none are returned:
-/// the carrying waits for a start that reads them all.
-fn read_earlier(
-    port: &dyn tilo_resource_store::Port,
-    app: &str,
-) -> Vec<(String, automerge::AutoCommit)> {
-    use collaboration::resource::{DocumentAsk, DocumentRead, commands};
-    let ask = |command| port.command(command);
-    let listed = match commands::list(&ask) {
-        Ok(listed) => listed,
-        Err(error) => {
-            tracing::warn!(app, %error, "the app's records do not list; carrying waits");
-            return Vec::new();
-        }
-    };
-    let mut read = Vec::with_capacity(listed.len());
-    for (key, _) in listed {
-        let wanted = DocumentAsk {
-            id: key.clone(),
-            since: None,
-        };
-        let bytes = match commands::read(&ask, &wanted) {
-            Ok(DocumentRead::Whole { bytes, .. }) => bytes,
-            Ok(DocumentRead::Absent) => continue,
-            Ok(other) => {
-                tracing::warn!(
-                    app,
-                    key,
-                    ?other,
-                    "a record is not here whole; carrying waits"
-                );
-                return Vec::new();
-            }
-            Err(error) => {
-                tracing::warn!(app, key, %error, "a record does not read; carrying waits");
-                return Vec::new();
-            }
-        };
-        match automerge::AutoCommit::load(&bytes) {
-            Ok(doc) => {
-                let id = collab_types::document::identity::identity(&doc)
-                    .map_or(key, |held| held.id.as_str().to_owned());
-                read.push((id, doc));
-            }
-            Err(error) => {
-                tracing::warn!(app, key, %error, "a record does not open; carrying it waits");
-                return Vec::new();
-            }
-        }
-    }
-    read
-}
-
 /// The words the window of `spec` reads in: the language the session named for the person, or,
 /// where it named none, the one this host's process runs in, against the languages `bundle`'s
 /// package ships (`tilo_history::window_language`). Every word the window paints — its app's own
@@ -1837,7 +1765,7 @@ fn abandon_open_runs(store: &ResourceStore, connection: &Connection, host: &Host
 }
 
 /// The instance `spec` runs in, on the device services `kept` holds, its words read by `phrases`
-/// and written in `formats`: its platform, its earlier documents and its access set, inside the
+/// and written in `formats`: its platform and its access set, inside the
 /// document's scope.
 fn open_instance(
     spec: &Spec,
@@ -1886,7 +1814,7 @@ fn open_instance(
         vaults: Rc::default(),
         checks: Rc::clone(&checks),
     };
-    let mut instance = Instance::new(
+    let instance = Instance::new(
         Config {
             app: spec.app.clone(),
             me: spec.person.as_str().into(),
@@ -1902,9 +1830,6 @@ fn open_instance(
         Rc::new(tilolang_tilo::names::Installed),
         window,
     );
-    // What a native app of the package's id kept: the package's migrations carry it over on the
-    // device whose turn each one is.
-    instance.set_earlier(earlier_documents(connection, &spec.app));
     // What its runtime offers and invokes is decided by the person's access as the session
     // says it, read at each decision.
     let access = Rc::new(RefCell::new(spec.access.clone()));
@@ -5110,108 +5035,5 @@ fn output_of(app: &str, value: &Value) -> tilo_actions::ActionOutput {
             )],
         },
         _ => tilo_actions::ActionOutput::default(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::cell::RefCell;
-    use std::collections::VecDeque;
-
-    use collab_types::store::wire::{Bytes, Command, Reply};
-    use tilo_resource_store::{LocalPort, Port};
-
-    use super::read_earlier;
-
-    const APP: &str = "so.tilo.lang.notes";
-
-    /// A document whose `title` text is `title`.
-    fn titled(title: &str) -> automerge::AutoCommit {
-        use automerge::transaction::Transactable as _;
-        let mut doc = automerge::AutoCommit::new();
-        let text = doc
-            .put_object(automerge::ROOT, "title", automerge::ObjType::Text)
-            .unwrap();
-        doc.splice_text(&text, 0, 0, title).unwrap();
-        doc.commit();
-        doc
-    }
-
-    /// A port answering a script of replies: what a workspace whose documents are on their way,
-    /// and one that answers more than fits, send a read.
-    #[derive(Default)]
-    struct Script {
-        replies: RefCell<VecDeque<Reply>>,
-        asked: RefCell<Vec<Command>>,
-    }
-
-    impl Script {
-        fn answering(replies: Vec<Reply>) -> Self {
-            Self {
-                replies: RefCell::new(replies.into()),
-                asked: RefCell::default(),
-            }
-        }
-
-        fn asked(&self) -> usize {
-            self.asked.borrow().len()
-        }
-    }
-
-    impl Port for Script {
-        fn command(&self, command: Command) -> Result<Reply, String> {
-            self.asked.borrow_mut().push(command);
-            Ok(self
-                .replies
-                .borrow_mut()
-                .pop_front()
-                .expect("a scripted answer"))
-        }
-    }
-
-    /// A record's answer in one page, `pending` when it is on its way.
-    fn page(doc: Option<&mut automerge::AutoCommit>, pending: bool) -> Reply {
-        let (changes, heads) = doc.map_or_else(Default::default, |doc| {
-            let heads = doc.get_heads().iter().map(ToString::to_string).collect();
-            (doc.save_after(&[]), heads)
-        });
-        Reply::RecordChanges {
-            changes: Bytes(changes),
-            heads,
-            next: None,
-            pending,
-        }
-    }
-
-    #[test]
-    fn what_an_earlier_app_kept_reads_whole_by_id() {
-        let port = LocalPort::in_memory().named(APP);
-        for (id, title) in [("doc-1", "Notes"), ("doc-2", "Tasks")] {
-            port.command(Command::RecordChange {
-                record: Some(id.to_owned()),
-                changes: Bytes(titled(title).save()),
-                more: false,
-                commit: None,
-            })
-            .unwrap();
-        }
-        let read = read_earlier(&port, APP);
-        let ids: Vec<&str> = read.iter().map(|(id, _)| id.as_str()).collect();
-        assert_eq!(ids, ["doc-1", "doc-2"], "each record, by its id");
-    }
-
-    #[test]
-    fn a_record_on_its_way_carries_nothing() {
-        let listed = Reply::Ids(vec!["doc-1".to_owned(), "doc-2".to_owned()]);
-        let script = Script::answering(vec![
-            listed,
-            page(Some(&mut titled("Notes")), false),
-            page(None, true),
-        ]);
-        assert!(
-            read_earlier(&script, APP).is_empty(),
-            "carrying one of them would leave the rest behind"
-        );
-        assert_eq!(script.asked(), 3, "listed, then each read once");
     }
 }

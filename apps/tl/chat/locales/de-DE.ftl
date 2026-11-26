@@ -663,9 +663,6 @@ d-44nvfzzq-example = Beispiel
 d-fom6d6su = Direktpersonen übernehmen
     .doc = Die Direktunterhaltungen, die eine frühere Version mit einer Person allein führte (`person`), die jedes Mitglied lesen konnte: in jeder sind jene Person und wer sie öffnete, wie ihr Verlauf sagt.
 
-d-bi2i7p2d = Nativen Chat übernehmen
-    .doc = Die Unterhaltungen, die der native Chat hielt, bevor diese App seine Id übernahm, einmal in diese übernommen: seine Kategorien und Kanäle in der Reihenfolge der Seitenleiste, jede mit Name und Thema, und jede Nachricht eines Kanals mit dem, was sie sagte, ob sie angeheftet war und der Id, die sie dort hatte.
-
 d-yqispavu = Problem melden
     .w-a-recording-is-a-video = Eine Aufnahme ist ein Video
     .doc = Legt einen Problembericht ab, was jemand bei der Nutzung von Tilo erlebt hat, im #feedback-Kanal des Arbeitsbereichs, den der erste Bericht öffnet.

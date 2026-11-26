@@ -1375,22 +1375,6 @@ action open_link(yt: YouTube, link: Text) -> host.Resource {
     yt
 }
 
-/// The text a row's value holds, when it is a string: read off the JSON it is written as, since
-/// a value an action is handed is not one of `json.Value`'s cases until it is parsed.
-fn row_text(value: json.Value) -> Option<Text> {
-    let written = json.encode(value)
-    if written.starts_with("\"") {
-        .some(written.slice(1, written.len() - 1))
-    } else { .none }
-}
-
-/// The milliseconds a row's value names, when it is a number. The value is written as JSON
-/// first, so a whole number reads the same whether it came in as one or as a float with a
-/// trailing `.0`.
-fn row_ms(value: json.Value) -> Option<Int> {
-    json.encode(value).split(".").at(0)?.to_int()
-}
-
 /// Likes a comment, or takes the like back: the person's own, kept with the workspace, since
 /// YouTube lets no app act as them.
 action like_comment(yt: YouTube, c: Comment, liked: Bool = not yt.liked_comments.contains(c.key)) (
@@ -1398,87 +1382,6 @@ action like_comment(yt: YouTube, c: Comment, liked: Bool = not yt.liked_comments
     label: "Like the comment",
 ) {
     if liked { yt.liked_comments.add(c.key) } else { yt.liked_comments.remove(c.key) }
-}
-
-/// What the native Tube kept before this app took its id over, carried into this one once: the
-/// channels subscribed to, the videos liked, the watch queue, the watch history with when each
-/// video was watched, the comments liked, and the replies it wrote to comments. The native app kept a video by its key
-/// alone, so each one carried is that key until the service answers with the rest. The history
-/// carried came before this app recorded who watched what, so its entries name no member and stay
-/// the workspace's until someone watches one of the videos again. Where an unfinished video was
-/// left is carried in milliseconds, and becomes a share of its length once the service answers
-/// with the length. Its replies are carried with no
-/// member named, so any member may take one back. The native app's own documents are left as they
-/// are.
-migration action carry_native_tube(yt: YouTube) uses time {
-    for kept in earlier(yt).filter(e -> e.of == "") {
-        for key in kept.lists.get("subscriptions") ?? [] {
-            if not yt.subscriptions.any(s -> s.key == key) {
-                yt.subscriptions.insert(Subscription(key: key, name: ""))
-            }
-        }
-        for key in kept.lists.get("likes") ?? [] {
-            if let v = yt.videos.find(x -> x.key == key) {
-                v.liked = true
-            } else {
-                yt.videos.insert(Video(key: key, liked: true))
-            }
-        }
-        for key in kept.lists.get("queue") ?? [] {
-            if not yt.queue.any(q -> q.key == key) {
-                // The queue reads a video's name from the video the service answers with; one it
-                // has not answered about yet is carried as its key, and the queue still holds it.
-                if not yt.videos.any(x -> x.key == key) { yt.videos.insert(Video(key: key)) }
-                yt.queue.insert(QueuedVideo(key: key))
-            }
-        }
-        // The comments the person liked there.
-        let liked = kept.entries.get("comment_likes") ?? Map<Text>()
-        for key in liked.keys() {
-            yt.liked_comments.add(key)
-        }
-        // A history the person deleted there stays deleted: an earlier history is not imported
-        // over it here either.
-        if (kept.texts.get("cleared") ?? "") == "true" {
-            yt.history_cleared = true
-        }
-        // When each video was watched, in milliseconds since 1970 as the native app kept it.
-        let watched = kept.entries.get("watched") ?? Map<Text>()
-        for key in watched.keys() {
-            let ms = (watched.get(key) ?? "").to_int() ?? 0
-            if not yt.history.any(h -> h.key == key) {
-                yt.history.insert(
-                    WatchEntry(
-                        key: key,
-                        title: "",
-                        channel_name: "",
-                        watched: 1970-01-01T00:00Z + Duration(ms / 1000),
-                    ),
-                )
-            }
-        }
-        // Where each video was left, in milliseconds, as the native app kept it: an unfinished
-        // video resumes there once the service answers with its length.
-        let left = kept.entries.get("positions") ?? Map<Text>()
-        for key in left.keys() {
-            let ms = (left.get(key) ?? "").to_int() ?? 0
-            if let h = yt.history.find(x -> x.key == key) {
-                h.left_ms = ms
-            }
-        }
-    }
-    // The replies the native app kept, which it wrote to comments: the workspace's, with no
-    // member named, so any member may take one back. What a reply said and the comment it answered
-    // are kept; YouTube's comments themselves are read from the service.
-    for kept in earlier(yt).filter(e -> e.of == "replies") {
-        let comment = kept.texts.get("comment") ?? ""
-        let text = kept.texts.get("text") ?? ""
-        if comment != ""
-            and text != ""
-            and not yt.replies.any(r -> r.comment == comment and r.text == text) {
-            yt.replies.insert(Reply(comment: comment, video: "", text: text, said: now))
-        }
-    }
 }
 
 /// The app's window: the person's subscriptions, trending, what they kept and what they watched,
