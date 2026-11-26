@@ -456,12 +456,12 @@ function start() {
   let working = null;
   let asked = 0;
   let heard = 0;
-  const ask = (value, tries = 0) => {
+  const ask = (value, tries = 0, field = null) => {
     if (!link) return;
     unanswered++;
     page.dataset.asks = String(++asked);
     working ??= setTimeout(() => { page.dataset.working = ''; }, 300);
-    sent.push({value, tries});
+    sent.push({value, tries, field});
     link.send(value).catch(() => {
       page.dataset.asksLost = String(Number(page.dataset.asksLost ?? 0) + 1);
     });
@@ -511,16 +511,55 @@ function start() {
 
   const numberOf = element => Number(element.closest('[data-p]')?.dataset.p);
 
-  const act = (element, action) => {
+  const act = (element, action, field = null) => {
     const id = numberOf(element);
     if (!Number.isFinite(id)) return;
-    ask({act: {id, target: element.dataset.t ?? null, action}});
+    ask({act: {id, target: element.dataset.t ?? null, action}}, 0, field);
   };
 
   const editing = element => element?.matches?.('input,textarea,[contenteditable]') ?? false;
   const valueOf = element => (element.matches('input,textarea') ? element.value : element.innerText.replace(/\n$/, ''));
   const keyOf = element => element.dataset.p ? `[data-p="${element.dataset.p}"]`
     : element.dataset.block ? `[data-block="${CSS.escape(element.dataset.block)}"]` : null;
+
+  // What the person typed: a document's text is asked as they write it, since
+  // the workspace keeps it as it lands. The search field is asked what they
+  // have settled on, one ask at a time: the workspace answers a typed word by
+  // searching it, so a letter-by-letter stream asked it once per letter, and
+  // the rows for the word a person was looking for waited behind every one of
+  // them. What they type while an ask is out waits for its answer and goes as
+  // one ask then.
+  const TYPING_PAUSE = 150;
+  const typing = new Map();
+  /** What each search field has out, and what it holds meanwhile. */
+  const searching = new Map();
+  const typed = element => {
+    if (element.dataset?.t !== 'search') { act(element, {value: valueOf(element)}); return; }
+    clearTimeout(typing.get(element));
+    typing.set(element, setTimeout(() => askSettled(element), TYPING_PAUSE));
+  };
+  const askSettled = element => {
+    typing.delete(element);
+    const held = searching.get(element) ?? {asked: null, out: false, next: null};
+    const value = valueOf(element);
+    if (held.out) { held.next = value; searching.set(element, held); return; }
+    if (held.asked === value) return;
+    held.asked = value;
+    held.out = true;
+    held.next = null;
+    searching.set(element, held);
+    act(element, {value}, element);
+  };
+  /** The answer to what `field` asked: what the person typed since is asked now,
+   * once, if it differs from what they were answered. */
+  const settledAnswer = field => {
+    const held = searching.get(field);
+    if (!held?.out) return;
+    held.out = false;
+    const next = held.next;
+    held.next = null;
+    if (next !== null && next !== held.asked) askSettled(field);
+  };
 
   // A document's editable blocks are edited in place, as the person's text.
   const editable = root => {
@@ -667,7 +706,7 @@ function start() {
     // Shown again under a field being typed in: its text is sent from here,
     // so what the person wrote lands on the document they are looking at.
     const kept = held && page.querySelector(held.key);
-    if (kept && (kept.dataset.a === 'value' || kept.dataset.a === 'edit')) act(kept, {value: held.value});
+    if (kept && (kept.dataset.a === 'value' || kept.dataset.a === 'edit')) typed(kept);
     follow();
     armBrowserRows();
     // The page says it arrived, as the entry it came from did: what a tool
@@ -683,6 +722,9 @@ function start() {
     unanswered = Math.max(0, unanswered - 1);
     const asked = sent.shift();
     caughtUp();
+    // A search field with an ask out hears its answer here: what the person
+    // typed since goes as the next ask, one at a time.
+    if (asked?.field) settledAnswer(asked.field);
     // Its document was opened again past a slow request: nothing the ask did
     // was applied, so the page is shown again where it is and what the person
     // did is asked again from there. Anything else the page refused is the
@@ -788,13 +830,13 @@ function start() {
   page.addEventListener('input', event => {
     const element = event.target;
     if (composing || event.isComposing) return;
-    if (element.dataset?.a === 'value' || element.dataset?.a === 'edit') act(element, {value: valueOf(element)});
+    if (element.dataset?.a === 'value' || element.dataset?.a === 'edit') typed(element);
   });
   page.addEventListener('compositionstart', () => { composing = true; });
   page.addEventListener('compositionend', event => {
     composing = false;
     const element = event.target;
-    if (element.dataset?.a === 'value' || element.dataset?.a === 'edit') act(element, {value: valueOf(element)});
+    if (element.dataset?.a === 'value' || element.dataset?.a === 'edit') typed(element);
   });
   page.addEventListener('focusin', event => {
     const element = event.target;
@@ -942,6 +984,9 @@ function start() {
       unanswered = 0;
       sent.length = 0;
       redone.length = 0;
+      // Nothing is out on the session that ended: a field asks its next value
+      // on the one that opens in its place.
+      for (const held of searching.values()) { held.out = false; held.next = null; }
       caughtUp();
       if (page.querySelector('[data-p]')) {
         // The session ended under an open page: open it again.
