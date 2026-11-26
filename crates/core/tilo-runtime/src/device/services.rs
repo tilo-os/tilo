@@ -958,7 +958,25 @@ fn device_person_root_record() -> io::Result<std::path::PathBuf> {
         return Ok(record);
     }
     let uid = device_person_uid().unwrap_or_else(crate::seats::own_account);
-    root_record(uid)
+    let refused = match root_record(uid) {
+        Ok(record) => return Ok(record),
+        Err(error) => error,
+    };
+    // A root sealed with the key this daemon took keeps no share the record's public metadata
+    // counts as held, so the store names no root there: the daemon that took the key opens it,
+    // and the record it opens is the root it keeps.
+    opened_root_record(uid).ok_or(refused)
+}
+
+/// The record of `uid`'s store whose root this process opens with the device key its daemon took:
+/// the one whose secret is sealed to this device, which no metadata reading alone counts as a
+/// share held.
+fn opened_root_record(uid: u32) -> Option<std::path::PathBuf> {
+    let dir = account_identity_dir(uid).ok()?;
+    let record = tilo_identity::store::resolve_active_identity(&dir)?;
+    tilo_identity::store::load_from_path(record.clone())
+        .ok()
+        .map(|_| record)
 }
 
 /// The variable a deployment hands the owner's root with: a file holding the root's 32-byte seed

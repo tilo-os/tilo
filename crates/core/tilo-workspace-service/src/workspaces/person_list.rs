@@ -278,6 +278,11 @@ impl Workspaces {
         let holds_copy =
             self.state(&own).await.is_some() || self.is_member(&own).await.unwrap_or(false);
         if !holds_copy {
+            tracing::warn!(
+                %own,
+                "the person's list of workspaces is not written here: this device holds no copy \
+                 of their own workspace"
+            );
             return false;
         }
         for change in changes {
