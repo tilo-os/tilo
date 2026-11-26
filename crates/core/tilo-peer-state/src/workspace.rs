@@ -407,14 +407,10 @@ const EFFECT_HISTORY: &str = tilo_desktop_model::projection::WORKSPACE_EFFECT_HI
 /// The key holding write refusals: `{<person>/<device> → {route and author →
 /// postcard refusal}}`.
 const WRITE_REFUSALS: &str = tilo_desktop_model::projection::WORKSPACE_WRITE_REFUSALS_KEY;
-#[cfg(test)]
-thread_local! { pub(crate) static RECEIPT_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 /// Decode one stored effect receipt. An unreadable receipt carries no evidence:
 /// it is treated as absent everywhere, as it always has been.
 fn decode_receipt(bytes: &[u8]) -> Option<serde_json::Value> {
-    #[cfg(test)]
-    RECEIPT_DECODES.with(|count| count.set(count.get().saturating_add(1)));
     tilo_failure::ignored!(
         "an unreadable receipt carries no evidence",
         serde_json::from_slice(bytes).ok()

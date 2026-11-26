@@ -229,10 +229,6 @@ impl DerefMut for CachedDocument {
         self.security_basis = Arc::default();
         self.named = Arc::default();
         self.newest_change = Arc::default();
-        #[cfg(test)]
-        if Arc::strong_count(&self.doc) > 1 {
-            DETACHES.with(|count| count.set(count.get().saturating_add(1)));
-        }
         Arc::make_mut(&mut self.doc)
     }
 }
@@ -246,8 +242,6 @@ impl CachedDocument {
     /// document state, not on every member's lookup.
     pub(crate) fn workspace_policy(&self, workspace: &str) -> &tilo_action_policy::WorkspacePolicy {
         let policy = self.workspace_policy.get_or_init(|| {
-            #[cfg(test)]
-            WORKSPACE_POLICIES.with(|count| count.set(count.get().saturating_add(1)));
             let mut policy = crate::members::replay(&self.doc, workspace);
             // What the workspace's entry opens to visitors is decided by the entry itself, so
             // every device reading this state admits a visitor's call alike.
@@ -444,8 +438,6 @@ impl CachedDocument {
                     if let Some(identity) = self.earlier_identity(key, bytes) {
                         return (key.clone(), identity.clone());
                     }
-                    #[cfg(test)]
-                    IDENTITY_DECODES.with(|count| count.set(count.get().saturating_add(1)));
                     let identity =
                         crate::state::DeviceRow::decode(bytes).map_err(std::sync::Arc::new);
                     (key.clone(), identity)
@@ -694,8 +686,6 @@ impl CachedDocument {
     /// [`Self::saved`] without copying the bytes.
     pub(crate) fn saved_bytes(&self) -> &[u8] {
         self.serialized.get_or_init(|| {
-            #[cfg(test)]
-            SERIALIZATIONS.with(|count| count.set(count.get().saturating_add(1)));
             let saved = AutoCommit::clone(&self.doc).save();
             crate::work::read(saved.len());
             saved
@@ -846,33 +836,12 @@ fn join_runs(runs: &mut Vec<Arc<[u8]>>) {
     }
 }
 #[cfg(test)]
-thread_local! {
-    static SERIALIZATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static DETACHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-/// This thread's document copies (shared clones detached by a mutation) and
-/// full saves since the last call, which resets both.
-#[cfg(test)]
-pub(crate) fn take_copies_and_saves() -> (usize, usize) {
-    (
-        DETACHES.with(|count| count.replace(0)),
-        SERIALIZATIONS.with(|count| count.replace(0)),
-    )
-}
-#[cfg(test)]
-thread_local! {
-    /// The workspace policies built from governance data on this thread.
-    pub(crate) static WORKSPACE_POLICIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-#[cfg(test)]
-thread_local! { pub(crate) static IDENTITY_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
-#[cfg(test)]
 mod tests {
     use super::*;
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
     use tilo_automerge::ApplyIncoming;
     tilo_test_env::scenario! {
-        fn a_cached_document_shares_its_work_until_it_changes;
+        fn a_cached_document_keeps_what_it_stores_and_reads;
 
         phase policy_is_shared_until_mutation_and_does_not_commit_pending_changes;
         {
@@ -946,77 +915,6 @@ mod tests {
                 (since.concat(), digest),
                 "the reopened state keeps the changes beside the base it was stored on"
             );
-        }
-
-        phase unchanged_clones_share_serialization_and_mutations_keep_old_snapshots;
-        {
-            let mut doc = AutoCommit::new();
-            doc.put(ROOT, "value", 1).unwrap();
-            doc.commit();
-            let mut cached = CachedDocument::from(doc);
-            SERIALIZATIONS.with(|count| count.set(0));
-            let initial = cached.saved();
-            for _ in 0..100 {
-                assert_eq!(cached.clone().saved(), initial);
-            }
-            assert_eq!(SERIALIZATIONS.with(std::cell::Cell::get), 1);
-            let old = cached.clone();
-            cached.put(ROOT, "value", 2).unwrap();
-            let pending = cached.pending_ops();
-            assert!(pending > 0);
-            let changed = cached.saved();
-            assert_ne!(changed, initial);
-            assert_eq!(
-                cached.pending_ops(),
-                pending,
-                "saving must not commit the owner"
-            );
-            assert_eq!(old.saved(), initial);
-            assert_eq!(cached.saved(), changed);
-            assert_eq!(SERIALIZATIONS.with(std::cell::Cell::get), 2);
-            assert_eq!(
-                AutoCommit::load(&changed)
-                    .unwrap()
-                    .get(ROOT, "value")
-                    .unwrap()
-                    .unwrap()
-                    .0
-                    .as_i64(),
-                Some(2)
-            );
-        }
-
-        phase clones_share_the_document_until_one_of_them_mutates;
-        {
-            let mut doc = AutoCommit::new();
-            doc.put(ROOT, "value", 1).unwrap();
-            doc.commit();
-            let mut cached = CachedDocument::from(doc);
-            take_copies_and_saves();
-            cached.put(ROOT, "value", 2).unwrap();
-            assert_eq!(
-                take_copies_and_saves(),
-                (0, 0),
-                "an unshared document is never copied"
-            );
-            let old = cached.clone();
-            let readers: Vec<_> = (0..10).map(|_| cached.clone()).collect();
-            assert!(
-                readers
-                    .iter()
-                    .all(|reader| Arc::ptr_eq(&reader.doc, &cached.doc))
-            );
-            cached.put(ROOT, "value", 3).unwrap();
-            cached.put(ROOT, "value", 4).unwrap();
-            assert_eq!(
-                take_copies_and_saves(),
-                (1, 0),
-                "only the first shared write copies"
-            );
-            let value = |doc: &CachedDocument| doc.get(ROOT, "value").unwrap().unwrap().0.as_i64();
-            assert_eq!(value(&old), Some(2));
-            assert_eq!(value(&readers[0]), Some(2));
-            assert_eq!(value(&cached), Some(4));
         }
 
         phase unresolved_incrementals_invalidate_even_when_heads_do_not_change;

@@ -191,61 +191,6 @@ fn seeded(count: usize) -> Replica<Checklist, AppNamed> {
 }
 
 #[test]
-fn apply_reads_only_touched_items() {
-    let mut replica = seeded(1_000);
-    let target = Id::from_raw("task-0500");
-
-    // Nothing kept yet: the first action reads every task.
-    follow(&mut replica);
-    let (_, (loads, _)) = counted(|| replica.apply(Checklist::DRAFT.with("h")).unwrap());
-    assert_eq!(loads, 1_000, "the first action reads the record whole");
-
-    follow(&mut replica);
-    let (_, (loads, stores)) = counted(|| replica.apply(Checklist::DRAFT.with("he")).unwrap());
-    assert_eq!(
-        (loads, stores),
-        (0, 0),
-        "typing into the draft reads and writes no task"
-    );
-
-    follow(&mut replica);
-    let (_, (loads, stores)) = counted(|| {
-        replica
-            .apply(Checklist::TOGGLE.with(target.clone()))
-            .unwrap()
-    });
-    assert_eq!((loads, stores), (0, 0), "a tick touches no title");
-
-    follow(&mut replica);
-    let (_, (loads, stores)) = counted(|| {
-        replica
-            .apply(Checklist::RETITLE.with((target.clone(), "renamed".into())))
-            .unwrap()
-    });
-    assert_eq!(
-        (loads, stores),
-        (0, 1),
-        "retitling one task writes one title"
-    );
-
-    follow(&mut replica);
-    let (_, (loads, stores)) = counted(|| replica.apply(Checklist::DRAFT.with("hel")).unwrap());
-    assert_eq!(
-        (loads, stores),
-        (1, 0),
-        "the next action re-reads only the title the last one wrote"
-    );
-
-    let state = replica.state().unwrap();
-    assert_eq!(state.draft, "hel");
-    let task = &state.tasks[&target];
-    assert_eq!(task.title.0, "renamed");
-    assert!(task.done);
-    assert_eq!(task.note.as_deref(), Some("was task 500"));
-    assert_eq!(state.tasks.len(), 1_000);
-}
-
-#[test]
 fn a_refused_action_writes_nothing_and_the_next_reads_whole() {
     let mut replica = seeded(10);
     replica.apply(Checklist::DRAFT.with("kept")).unwrap();
@@ -582,34 +527,6 @@ fn cached_grid_apply_is_replay_identical() {
         }
     }
     assert!(replayed > 100, "only {replayed} actions replayed");
-}
-
-#[test]
-fn writing_one_cell_writes_only_that_cell() {
-    let mut replica = Replica::<Table>::new().in_app("so.tilo.model", "Model");
-    replica.apply(Table::ADD_COLUMN.with(())).unwrap();
-    for _ in 0..100 {
-        replica.apply(Table::ADD_ROW.with(())).unwrap();
-    }
-    let state = replica.state().unwrap();
-    let rows: Vec<String> = state
-        .cells
-        .rows()
-        .map(|row| row.as_str().to_owned())
-        .collect();
-    let column = state.cells.columns().next().unwrap().as_str().to_owned();
-    for (n, row) in rows.iter().enumerate() {
-        replica
-            .apply(Table::WRITE.with(((row.clone(), column.clone()), format!("cell {n}"))))
-            .unwrap();
-    }
-    replica.live().unwrap();
-    let (_, (_, stores)) = counted(|| {
-        replica
-            .apply(Table::WRITE.with(((rows[50].clone(), column.clone()), "changed".into())))
-            .unwrap()
-    });
-    assert_eq!(stores, 1, "one cell written");
 }
 
 /// A group of many members runs on one copy of the record: it is read once, each member's

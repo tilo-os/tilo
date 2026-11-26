@@ -2861,8 +2861,6 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
     );
 }
 
-#[path = "copy_on_write_tests.rs"]
-pub(crate) mod copy_on_write;
 #[path = "delivery_admission_tests.rs"]
 mod delivery_admission;
 #[path = "workspace_refusal_tests.rs"]

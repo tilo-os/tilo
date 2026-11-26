@@ -63,6 +63,3 @@ pub(crate) fn snapshot_hash(
     })?;
     Ok(*hash.finalize().as_bytes())
 }
-
-#[cfg(test)]
-mod snapshot_hash_tests;

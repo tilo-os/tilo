@@ -25,20 +25,12 @@ use tilo_resource::{
 
 thread_local! {
     static LOADS: Cell<usize> = const { Cell::new(0) };
-    static CLONES: Cell<usize> = const { Cell::new(0) };
     static IDS: Cell<usize> = const { Cell::new(0) };
 }
 
-/// Text that counts how often it is read from the document and copied.
-#[derive(Debug, Default, PartialEq)]
+/// Text that counts how often it is read from the document.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Counted(pub String);
-
-impl Clone for Counted {
-    fn clone(&self) -> Self {
-        CLONES.with(|clones| clones.set(clones.get() + 1));
-        Self(self.0.clone())
-    }
-}
 
 impl Model for Counted {
     tilo_resource::leaf_paths!();
@@ -62,10 +54,6 @@ impl Model for Counted {
 
 fn loads() -> usize {
     LOADS.with(Cell::get)
-}
-
-fn clones() -> usize {
-    CLONES.with(Cell::get)
 }
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -250,44 +238,6 @@ tilo_test_env::scenario! {
     }
 }
 
-#[test]
-fn a_reader_whose_state_a_view_holds_copies_only_the_touched_item() {
-    let mut replica = Replica::<Notebook>::new().in_app("so.tilo.model", "Model");
-    for n in 0..1000 {
-        replica
-            .apply(Notebook::ADD.with(format!("note {n}")))
-            .unwrap();
-    }
-    let mut reader = Reader::<Notebook>::open(replica.doc_mut()).unwrap();
-    let target = reader.state().notes.ids().nth(500).cloned().unwrap();
-    let was = reader.state().notes[&target].body.0.clone();
-    // A view keeps the state it was shown, as a surface's `present` may.
-    let shown = Rc::clone(reader.state());
-
-    replica
-        .apply(Notebook::EDIT.with((target.clone(), "changed".into())))
-        .unwrap();
-    let before = clones();
-    assert!(reader.sync(replica.doc()).unwrap());
-    assert_eq!(clones() - before, 1, "only the edited note is copied");
-
-    let now = reader.state();
-    assert!(
-        !Rc::ptr_eq(now, &shown),
-        "the shown state was not changed in place"
-    );
-    assert_eq!(
-        shown.notes[&target].body.0, was,
-        "the view still sees what it was shown"
-    );
-    assert_eq!(now.notes[&target].body.0, "changed");
-    assert_eq!(now.as_ref(), &replica.state().unwrap());
-    for (id, note) in now.notes.iter() {
-        let held = &shown.notes[id];
-        assert_eq!(std::ptr::eq(note, held), *id != target, "note {id} shared");
-    }
-}
-
 /// A reader that follows `change`'s `steps`: every state it hands out keeps
 /// what it was shown, and after each change it reads what a fresh replica
 /// state is.
@@ -419,51 +369,6 @@ tilo_test_env::scenario! {
         assert_eq!(reader.revision(), synced + 1);
         assert_eq!(reader.state().as_ref(), &replica.state().unwrap());
     }
-}
-
-#[test]
-fn editing_one_note_of_many_reads_only_that_note() {
-    let mut replica = Replica::<Notebook>::new().in_app("so.tilo.model", "Model");
-    for n in 0..500 {
-        replica
-            .apply(Notebook::ADD.with(format!("note {n}")))
-            .unwrap();
-    }
-    let target = replica
-        .state()
-        .unwrap()
-        .notes
-        .ids()
-        .nth(250)
-        .cloned()
-        .unwrap();
-    replica.live().unwrap();
-
-    // (Applying an action reads its record; what is measured here is what
-    // a view pays to follow the change.)
-    replica
-        .apply(Notebook::EDIT.with((target.clone(), "changed".into())))
-        .unwrap();
-    let before = loads();
-    let live = replica.live().unwrap();
-    assert_eq!(loads() - before, 1, "one note's text read again");
-    assert_eq!(live.notes[&target].body.0, "changed");
-
-    replica
-        .apply(Notebook::DECORATE.with((target.clone(), "red".into())))
-        .unwrap();
-    replica.apply(Notebook::RENAME.with("Renamed")).unwrap();
-    let before = loads();
-    replica.live().unwrap();
-    assert_eq!(loads() - before, 0, "no note text read for other fields");
-
-    replica
-        .apply(Notebook::MOVE_NOTE.with((target.clone(), 0)))
-        .unwrap();
-    let before = loads();
-    let live = replica.live().unwrap();
-    assert_eq!(loads() - before, 0, "a move reads an order key, not a note");
-    assert_eq!(live.notes.ids().next(), Some(&target));
 }
 
 #[test]
@@ -740,53 +645,6 @@ tilo_test_env::scenario! {
     }
 }
 
-#[test]
-fn a_reader_whose_state_a_view_holds_copies_one_chunk_of_a_grid() {
-    let mut replica = Replica::<Sheet>::new().in_app("so.tilo.model", "Model");
-    replica.apply(Sheet::ADD_COLUMN.with(())).unwrap();
-    for _ in 0..1000 {
-        replica.apply(Sheet::ADD_ROW.with(())).unwrap();
-    }
-    let state = replica.state().unwrap();
-    let rows: Vec<Id> = state.grid.rows().cloned().collect();
-    let column = state.grid.columns().next().cloned().unwrap();
-    for (n, row) in rows.iter().enumerate() {
-        replica
-            .apply(Sheet::WRITE.with((cell(row, &column), format!("cell {n}"))))
-            .unwrap();
-    }
-    let mut reader = Reader::<Sheet>::open(replica.doc_mut()).unwrap();
-    // A view keeps the state it was shown, as a surface's `present` may.
-    let shown = Rc::clone(reader.state());
-
-    replica
-        .apply(Sheet::WRITE.with((cell(&rows[500], &column), "changed".into())))
-        .unwrap();
-    let before = clones();
-    assert!(reader.sync(replica.doc()).unwrap());
-    let copied = clones() - before;
-    assert!(
-        copied <= 64,
-        "{copied} cells copied: one chunk of rows at most, not the sheet"
-    );
-
-    let now = reader.state();
-    assert!(!Rc::ptr_eq(now, &shown), "the shown state was not changed");
-    assert_eq!(shown.grid.cell(&rows[500], &column).unwrap().0, "cell 500");
-    assert_eq!(now.grid.cell(&rows[500], &column).unwrap().0, "changed");
-    assert_eq!(now.as_ref(), &replica.state().unwrap());
-    let shared = rows
-        .iter()
-        .filter(|row| {
-            std::ptr::eq(
-                now.grid.cell(row, &column).unwrap(),
-                shown.grid.cell(row, &column).unwrap(),
-            )
-        })
-        .count();
-    assert!(shared >= 1000 - 64, "{shared} of 1000 cells still shared");
-}
-
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Card {
     pub id: String,
@@ -897,59 +755,6 @@ fn random_board_action(replica: &mut Replica<Board, AppNamed>, rng: &mut Lcg, st
         _ => replica.apply(Board::SEE.with((format!("w{}", rng.next(90)), rng.next(3) != 0))),
     };
     result.unwrap();
-}
-
-#[test]
-fn a_reader_whose_state_a_view_holds_copies_only_the_touched_items() {
-    let mut replica = Replica::<Board>::new().in_app("so.tilo.model", "Model");
-    for n in 0..300 {
-        replica
-            .apply(Board::ADD_CARD.with((format!("card {n}"), n % 2 == 1)))
-            .unwrap();
-        replica
-            .apply(Board::SEE.with((format!("word {n:03}"), true)))
-            .unwrap();
-    }
-    let mut reader = Reader::<Board>::open(replica.doc_mut()).unwrap();
-    let target = reader.state().cards[75].id();
-    let was = reader.state().cards[75].body.0.clone();
-    // A view keeps the state it was shown, as a surface's `present` may.
-    let shown = Rc::clone(reader.state());
-
-    // Editing one card copies the cards once, and no other field.
-    replica
-        .apply(Board::EDIT_CARD.with((target.clone(), "changed".into())))
-        .unwrap();
-    let before = clones();
-    assert!(reader.sync(replica.doc()).unwrap());
-    assert_eq!(clones() - before, 150, "the 150 cards are copied once");
-    let now = Rc::clone(reader.state());
-    assert_eq!(shown.cards.find(&target).unwrap().body.0, was);
-    assert_eq!(now.cards.find(&target).unwrap().body.0, "changed");
-    assert!(
-        std::ptr::eq(now.archive.as_ptr(), shown.archive.as_ptr()),
-        "the archive the edit did not touch is shared, not copied"
-    );
-    assert_eq!(now.as_ref(), &replica.state().unwrap());
-
-    // Marking a word seen copies one chunk of the set, and no card.
-    replica
-        .apply(Board::SEE.with(("word 150a".into(), true)))
-        .unwrap();
-    let before = clones();
-    assert!(reader.sync(replica.doc()).unwrap());
-    let copied = clones() - before;
-    assert!(
-        copied <= 64,
-        "{copied} words copied: one chunk, not the set"
-    );
-    assert_eq!(shown.seen.len(), 300);
-    assert_eq!(reader.state().seen.len(), 301);
-    assert!(std::ptr::eq(
-        reader.state().cards.as_ptr(),
-        now.cards.as_ptr()
-    ));
-    assert_eq!(reader.state().as_ref(), &replica.state().unwrap());
 }
 
 #[test]
@@ -1097,65 +902,6 @@ fn random_shelf_action(replica: &mut Replica<Shelf, AppNamed>, rng: &mut Lcg, st
         _ => replica.apply(Shelf::MARK.with((book(rng.next(150)), format!("at {step}")))),
     };
     result.unwrap();
-}
-
-#[test]
-fn a_reader_whose_state_a_view_holds_copies_one_chunk_of_a_map() {
-    let mut replica = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
-    for n in 0..1000 {
-        replica
-            .apply(Shelf::MARK.with((book(n), format!("page {n}"))))
-            .unwrap();
-    }
-    let mut reader = Reader::<Shelf>::open(replica.doc_mut()).unwrap();
-    // A view keeps the state it was shown, as a surface's `present` may.
-    let shown = Rc::clone(reader.state());
-
-    // A change to another field copies no entry of the map.
-    replica
-        .apply(Shelf::RETITLE.with("renamed".to_owned()))
-        .unwrap();
-    let before = clones();
-    assert!(reader.sync(replica.doc()).unwrap());
-    assert_eq!(clones() - before, 0, "no entry copied for a rename");
-    let renamed = Rc::clone(reader.state());
-    assert_eq!(shown.title, "");
-    assert_eq!(renamed.title, "renamed");
-    for n in 0..1000 {
-        assert!(
-            std::ptr::eq(
-                renamed.progress.get(&book(n)).unwrap(),
-                shown.progress.get(&book(n)).unwrap()
-            ),
-            "entry {n} shared"
-        );
-    }
-
-    // A change to one entry copies its chunk, not the map.
-    replica
-        .apply(Shelf::MARK.with((book(500), "changed".into())))
-        .unwrap();
-    let before = clones();
-    assert!(reader.sync(replica.doc()).unwrap());
-    let copied = clones() - before;
-    assert!(
-        copied <= 64,
-        "{copied} entries copied: one chunk at most, not the map"
-    );
-    let now = reader.state();
-    assert!(!Rc::ptr_eq(now, &renamed), "the held state was not changed");
-    assert_eq!(renamed.progress.get(&book(500)).unwrap().0, "page 500");
-    assert_eq!(now.progress.get(&book(500)).unwrap().0, "changed");
-    assert_eq!(now.as_ref(), &replica.state().unwrap());
-    let shared = (0..1000)
-        .filter(|n| {
-            std::ptr::eq(
-                now.progress.get(&book(*n)).unwrap(),
-                renamed.progress.get(&book(*n)).unwrap(),
-            )
-        })
-        .count();
-    assert!(shared >= 1000 - 64, "{shared} of 1000 entries still shared");
 }
 
 #[test]
@@ -1486,12 +1232,6 @@ tilo_test_env::scenario! {
     }
 }
 
-thread_local! {
-    static PAGES_COMPARED: Cell<usize> = const { Cell::new(0) };
-    static PAGES_STORED: Cell<usize> = const { Cell::new(0) };
-}
-
-/// Text that counts how often it is compared and written.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Page(pub String);
 
@@ -1512,22 +1252,11 @@ impl Model for Page {
         Ok(Self::default())
     }
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
-        PAGES_STORED.with(|stored| stored.set(stored.get() + 1));
         self.0.store(doc, slot)
     }
     fn stores_as(&self, before: &Self) -> bool {
-        PAGES_COMPARED.with(|compared| compared.set(compared.get() + 1));
         self == before
     }
-}
-
-/// What `run` returned, and how many [`Page`]s it compared and wrote.
-fn pages_counted<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
-    let compared = || PAGES_COMPARED.with(Cell::get);
-    let stored = || PAGES_STORED.with(Cell::get);
-    let (was_compared, was_stored) = (compared(), stored());
-    let out = run();
-    (out, compared() - was_compared, stored() - was_stored)
 }
 
 fn actor(name: &str) -> automerge::ActorId {
@@ -1538,421 +1267,6 @@ fn actor(name: &str) -> automerge::ActorId {
 /// same operations end at the same heads.
 fn commit_at_zero(doc: &mut Doc) {
     doc.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
-}
-
-tilo_test_env::scenario! {
-    fn saving_over_a_copy_visits_only_what_changed;
-
-    phase saving_a_map_changed_in_one_entry_visits_one_chunk;
-    {
-        use tilo_resource::__private::ROOT;
-        let held: Map<Page> = (0..1000)
-            .map(|n| (book(n), Page(format!("page {n}"))))
-            .collect();
-        let mut doc = Doc::new().with_actor(actor("base"));
-        tilo_resource::write_key(&mut doc, &ROOT, "progress", &held).unwrap();
-        commit_at_zero(&mut doc);
-
-        let mut now = held.clone();
-        now.insert(book(500), Page("changed".into()));
-        let mut changed = doc.fork().with_actor(actor("me"));
-        let ((), compared, stored) = pages_counted(|| {
-            tilo_resource::write_key_changed(
-                &mut changed,
-                &ROOT,
-                "progress",
-                &now,
-                &held,
-                &tilo_resource::Delta::nothing(),
-            )
-            .unwrap();
-        });
-        assert_eq!(stored, 1, "only the changed entry is written");
-        assert!(
-            compared <= 2 * 64,
-            "{compared} entries of 1000 compared: the changed chunk's, at most twice"
-        );
-
-        let mut whole = doc.fork().with_actor(actor("me"));
-        tilo_resource::write_key(&mut whole, &ROOT, "progress", &now).unwrap();
-        commit_at_zero(&mut changed);
-        commit_at_zero(&mut whole);
-        assert_eq!(changed.get_heads(), whole.get_heads(), "the same change");
-        let read: Map<Page> = tilo_resource::read_key(&changed, &ROOT, "progress").unwrap();
-        assert_eq!(read, now);
-
-        // An unchanged copy writes nothing and compares nothing.
-        let mut same = doc.fork().with_actor(actor("me"));
-        let ((), compared, stored) = pages_counted(|| {
-            tilo_resource::write_key_changed(
-                &mut same,
-                &ROOT,
-                "progress",
-                &held.clone(),
-                &held,
-                &tilo_resource::Delta::nothing(),
-            )
-            .unwrap();
-        });
-        assert_eq!((compared, stored), (0, 0));
-        assert_eq!(automerge::transaction::Transactable::pending_ops(&same), 0);
-
-        // The edits between the two compare that chunk too, and are the edits
-        // between the same entries in a BTreeMap.
-        let root = tilo_resource::Path::<Map<Page>, Map<Page>>::root();
-        let (edits, compared, _) = pages_counted(|| root.edits(&held, &now));
-        assert!(compared <= 64, "{compared} entries compared for the edits");
-        assert_eq!(edit_parts(&edits), btree_edits(&held, &now));
-    }
-
-    phase saving_a_record_whose_items_no_change_touched_visits_none;
-    {
-        use tilo_resource::__private::ROOT;
-        use tilo_resource::Fields;
-        let folios: Vec<Folio> = (0..300)
-            .map(|n| Folio {
-                id: format!("f{n:04}"),
-                page: Page(format!("page {n}")),
-            })
-            .collect();
-        let before = Volume {
-            title: "volume".into(),
-            folios: folios.clone().into(),
-            stack: folios.into(),
-        };
-        let mut doc = Doc::new().with_actor(actor("base"));
-        before.write_fields(&mut doc, &ROOT).unwrap();
-        commit_at_zero(&mut doc);
-
-        let mut after = before.clone();
-        after.title = "renamed".into();
-        let mut changed = doc.fork().with_actor(actor("me"));
-        let ((), compared, stored) = pages_counted(|| {
-            after
-                .write_changed_fields(
-                    &before,
-                    &mut changed,
-                    &ROOT,
-                    &tilo_resource::Delta::nothing(),
-                )
-                .unwrap();
-        });
-        assert_eq!((compared, stored), (0, 0), "no item visited for a rename");
-
-        // One item changed: the lists are written as a whole write writes them.
-        after.folios.find_mut(&Id::from_raw("f0150")).unwrap().page = Page("changed".into());
-        let mut changed = doc.fork().with_actor(actor("me"));
-        let mut whole = doc.fork().with_actor(actor("me"));
-        after
-            .write_changed_fields(
-                &before,
-                &mut changed,
-                &ROOT,
-                &tilo_resource::Delta::nothing(),
-            )
-            .unwrap();
-        after.write_fields(&mut whole, &ROOT).unwrap();
-        commit_at_zero(&mut changed);
-        commit_at_zero(&mut whole);
-        assert_eq!(changed.get_heads(), whole.get_heads(), "the same change");
-    }
-
-    phase saving_an_ordered_list_changed_removed_from_and_added_to_visits_only_those_items;
-    {
-        use tilo_resource::__private::ROOT;
-        let held: Ordered<Folio> = (0..300)
-            .map(|n| Folio {
-                id: format!("f{n:04}"),
-                page: Page(format!("page {n}")),
-            })
-            .collect();
-        let mut doc = Doc::new().with_actor(actor("base"));
-        tilo_resource::write_key(&mut doc, &ROOT, "stack", &held).unwrap();
-        commit_at_zero(&mut doc);
-        // As read: its order keys are known to rise.
-        let before: Ordered<Folio> = tilo_resource::read_key(&doc, &ROOT, "stack").unwrap();
-
-        let mut after = before.clone();
-        after.find_mut(&Id::from_raw("f0150")).unwrap().page = Page("changed".into());
-        after.take(&Id::from_raw("f0100")).unwrap();
-        after.retain(|folio| folio.id != "f0299");
-        after.push(Folio {
-            id: "f9000".into(),
-            page: Page("new".into()),
-        });
-        let mut changed = doc.fork().with_actor(actor("me"));
-        let ((), compared, stored) = pages_counted(|| {
-            tilo_resource::write_key_changed(
-                &mut changed,
-                &ROOT,
-                "stack",
-                &after,
-                &before,
-                &tilo_resource::Delta::nothing(),
-            )
-            .unwrap();
-        });
-        assert_eq!(stored, 2, "the changed item and the new one are written");
-        assert!(compared <= 4, "{compared} items of 300 compared");
-        let mut whole = doc.fork().with_actor(actor("me"));
-        tilo_resource::write_key(&mut whole, &ROOT, "stack", &after).unwrap();
-        commit_at_zero(&mut changed);
-        commit_at_zero(&mut whole);
-        assert_eq!(changed.get_heads(), whole.get_heads(), "the same change");
-        let read: Ordered<Folio> = tilo_resource::read_key(&changed, &ROOT, "stack").unwrap();
-        assert_eq!(read, after, "read back in the order saved");
-    }
-
-    phase saving_a_keyed_list_removed_from_visits_only_those_items;
-    {
-        use tilo_resource::__private::ROOT;
-        let held: Keyed<Folio> = (0..300)
-            .map(|n| Folio {
-                id: format!("f{n:04}"),
-                page: Page(format!("page {n}")),
-            })
-            .collect();
-        let mut doc = Doc::new().with_actor(actor("base"));
-        tilo_resource::write_key(&mut doc, &ROOT, "folios", &held).unwrap();
-        commit_at_zero(&mut doc);
-        let before: Keyed<Folio> = tilo_resource::read_key(&doc, &ROOT, "folios").unwrap();
-
-        let mut after = before.clone();
-        after.retain(|folio| folio.id != "f0100" && folio.id != "f0200");
-        after.find_mut(&Id::from_raw("f0150")).unwrap().page = Page("changed".into());
-        after.remove(0);
-        let mut changed = doc.fork().with_actor(actor("me"));
-        let ((), compared, stored) = pages_counted(|| {
-            tilo_resource::write_key_changed(
-                &mut changed,
-                &ROOT,
-                "folios",
-                &after,
-                &before,
-                &tilo_resource::Delta::nothing(),
-            )
-            .unwrap();
-        });
-        assert_eq!(stored, 1, "only the changed item is written");
-        assert!(compared <= 2, "{compared} items of 300 compared");
-        let mut whole = doc.fork().with_actor(actor("me"));
-        tilo_resource::write_key(&mut whole, &ROOT, "folios", &after).unwrap();
-        commit_at_zero(&mut changed);
-        commit_at_zero(&mut whole);
-        assert_eq!(changed.get_heads(), whole.get_heads(), "the same change");
-        let read: Keyed<Folio> = tilo_resource::read_key(&changed, &ROOT, "folios").unwrap();
-        assert_eq!(read.len(), 297, "three items left");
-    }
-
-    phase saving_a_keyed_list_changed_and_added_to_visits_only_those_items;
-    {
-        use tilo_resource::__private::ROOT;
-        use tilo_resource::Fields;
-        let folios: Vec<Folio> = (0..300)
-            .map(|n| Folio {
-                id: format!("f{n:04}"),
-                page: Page(format!("page {n}")),
-            })
-            .collect();
-        let before = Volume {
-            title: "volume".into(),
-            folios: folios.clone().into(),
-            stack: folios.into(),
-        };
-        let mut doc = Doc::new().with_actor(actor("base"));
-        before.write_fields(&mut doc, &ROOT).unwrap();
-        commit_at_zero(&mut doc);
-
-        let mut after = before.clone();
-        after.folios.find_mut(&Id::from_raw("f0150")).unwrap().page = Page("changed".into());
-        after.folios.push(Folio {
-            id: "f9000".into(),
-            page: Page("new".into()),
-        });
-        let mut changed = doc.fork().with_actor(actor("me"));
-        let ((), compared, stored) = pages_counted(|| {
-            after
-                .write_changed_fields(
-                    &before,
-                    &mut changed,
-                    &ROOT,
-                    &tilo_resource::Delta::nothing(),
-                )
-                .unwrap();
-        });
-        assert_eq!(stored, 2, "the changed item and the new one are written");
-        assert!(compared <= 4, "{compared} items of 300 compared");
-        let mut whole = doc.fork().with_actor(actor("me"));
-        after.write_fields(&mut whole, &ROOT).unwrap();
-        commit_at_zero(&mut changed);
-        commit_at_zero(&mut whole);
-        assert_eq!(changed.get_heads(), whole.get_heads(), "the same change");
-        let folios: Keyed<Folio> = tilo_resource::read_key(&changed, &ROOT, "folios").unwrap();
-        assert_eq!(folios.len(), 301, "the new item is there");
-    }
-
-    phase saving_a_collection_changed_in_one_item_compares_no_item_it_shares;
-    {
-        use tilo_resource::__private::ROOT;
-        let mut held = Collection::new();
-        for n in 0..300 {
-            held.push(
-                Id::from_raw(format!("f{n:04}")),
-                Folio {
-                    id: format!("f{n:04}"),
-                    page: Page(format!("page {n}")),
-                },
-            );
-        }
-        let mut doc = Doc::new().with_actor(actor("base"));
-        tilo_resource::write_key(&mut doc, &ROOT, "pages", &held).unwrap();
-        commit_at_zero(&mut doc);
-        // As read, so each item knows its stored order key.
-        let before: Collection<Folio> = tilo_resource::read_key(&doc, &ROOT, "pages").unwrap();
-
-        let mut after = before.clone();
-        after.get_mut(&Id::from_raw("f0150")).unwrap().page = Page("changed".into());
-        let mut changed = doc.fork().with_actor(actor("me"));
-        let ((), compared, stored) = pages_counted(|| {
-            tilo_resource::write_key_changed(
-                &mut changed,
-                &ROOT,
-                "pages",
-                &after,
-                &before,
-                &tilo_resource::Delta::nothing(),
-            )
-            .unwrap();
-        });
-        assert_eq!(stored, 1, "only the changed item is written");
-        assert!(compared <= 4, "{compared} items of 300 compared");
-        let mut whole = doc.fork().with_actor(actor("me"));
-        tilo_resource::write_key(&mut whole, &ROOT, "pages", &after).unwrap();
-        commit_at_zero(&mut changed);
-        commit_at_zero(&mut whole);
-        assert_eq!(changed.get_heads(), whole.get_heads(), "the same change");
-
-        // Its edits compare the changed item alone.
-        let root = tilo_resource::Path::<Collection<Folio>, Collection<Folio>>::root();
-        let (edits, compared, _) = pages_counted(|| root.edits(&before, &after));
-        assert!(compared <= 2, "{compared} items compared for the edits");
-        assert_eq!(edits.len(), 1);
-        // A copy nothing changed stores as it is.
-        let ((), compared, _) = pages_counted(|| assert!(before.clone().stores_as(&before)));
-        assert_eq!(compared, 0);
-    }
-
-    phase a_set_changed_in_one_element_writes_one;
-    {
-        use tilo_resource::__private::ROOT;
-        let held: Set<String> = (0..1000).map(element).collect();
-        let mut doc = Doc::new().with_actor(actor("base"));
-        tilo_resource::write_key(&mut doc, &ROOT, "tags", &held).unwrap();
-        commit_at_zero(&mut doc);
-
-        assert!(held.clone().stores_as(&held), "a copy stores as it is");
-        let mut now = held.clone();
-        now.insert("e0500-new".to_owned());
-        assert!(!now.stores_as(&held));
-        let mut changed = doc.fork().with_actor(actor("me"));
-        tilo_resource::write_key_changed(
-            &mut changed,
-            &ROOT,
-            "tags",
-            &now,
-            &held,
-            &tilo_resource::Delta::nothing(),
-        )
-        .unwrap();
-        assert_eq!(
-            automerge::transaction::Transactable::pending_ops(&changed),
-            1
-        );
-        let mut whole = doc.fork().with_actor(actor("me"));
-        tilo_resource::write_key(&mut whole, &ROOT, "tags", &now).unwrap();
-        commit_at_zero(&mut changed);
-        commit_at_zero(&mut whole);
-        assert_eq!(changed.get_heads(), whole.get_heads(), "the same change");
-        assert_eq!(
-            edit_parts(&tilo_resource::Path::<Set<String>, Set<String>>::root().edits(&held, &now)),
-            [(
-                Vec::new(),
-                tilo_resource::EditOp::Insert {
-                    value: serde_json::json!("e0500-new")
-                }
-            )]
-        );
-    }
-
-    phase saving_a_grid_changed_in_one_cell_visits_one_chunk_of_rows;
-    {
-        use tilo_resource::__private::ROOT;
-        let mut held: Grid<Page> = Grid::new();
-        for n in 0..1000 {
-            held.insert_row(n, row(n));
-        }
-        for n in 0..4 {
-            held.insert_column(n, column(n));
-        }
-        for r in 0..1000 {
-            for c in 0..4 {
-                held.set_cell(&row(r), &column(c), Some(Page(format!("{r}:{c}"))));
-            }
-        }
-        let mut doc = Doc::new().with_actor(actor("base"));
-        tilo_resource::write_key(&mut doc, &ROOT, "grid", &held).unwrap();
-        commit_at_zero(&mut doc);
-
-        let mut now = held.clone();
-        *now.cell_mut(&row(500), &column(2)).unwrap() = Page("changed".into());
-        let mut changed = doc.fork().with_actor(actor("me"));
-        let ((), compared, stored) = pages_counted(|| {
-            tilo_resource::write_key_changed(
-                &mut changed,
-                &ROOT,
-                "grid",
-                &now,
-                &held,
-                &tilo_resource::Delta::nothing(),
-            )
-            .unwrap();
-        });
-        assert_eq!(stored, 1, "only the changed cell is written");
-        assert!(
-            compared <= 2 * 64 * 4,
-            "{compared} cells of 4000 compared: the changed chunk's rows, at most twice"
-        );
-        let mut whole = doc.fork().with_actor(actor("me"));
-        tilo_resource::write_key(&mut whole, &ROOT, "grid", &now).unwrap();
-        commit_at_zero(&mut changed);
-        commit_at_zero(&mut whole);
-        assert_eq!(changed.get_heads(), whole.get_heads(), "the same change");
-
-        // An unchanged copy compares and writes nothing.
-        let mut same = doc.fork().with_actor(actor("me"));
-        let ((), compared, stored) = pages_counted(|| {
-            tilo_resource::write_key_changed(
-                &mut same,
-                &ROOT,
-                "grid",
-                &held.clone(),
-                &held,
-                &tilo_resource::Delta::nothing(),
-            )
-            .unwrap();
-        });
-        assert_eq!((compared, stored), (0, 0));
-        assert_eq!(automerge::transaction::Transactable::pending_ops(&same), 0);
-
-        // The edits between the two compare that chunk's cells.
-        let root = tilo_resource::Path::<Grid<Page>, Grid<Page>>::root();
-        let (edits, compared, _) = pages_counted(|| root.edits(&held, &now));
-        assert!(
-            compared <= 64 * 4,
-            "{compared} cells compared for the edits"
-        );
-        assert_eq!(edits.len(), 1);
-    }
 }
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]

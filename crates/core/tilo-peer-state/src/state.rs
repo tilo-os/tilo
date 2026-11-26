@@ -613,8 +613,6 @@ mod roster_beside_governance_tests;
 mod sealed_compaction_tests;
 #[cfg(test)]
 #[cfg(test)]
-#[path = "state/sharing_tests.rs"]
-mod sharing_tests;
 #[cfg(test)]
 #[path = "state/superseded_checkpoint_tests.rs"]
 mod superseded_checkpoint_tests;

@@ -85,12 +85,6 @@ fn walked() {
 }
 
 impl Documents {
-    /// Whether `a` and `b` are copies of one map of documents no copy changed.
-    #[cfg(test)]
-    pub(super) fn ptr_eq(a: &Self, b: &Self) -> bool {
-        Ordered::ptr_eq(&a.map, &b.map)
-    }
-
     /// How many documents hold sealed history.
     pub(super) fn sealed_count(&self) -> usize {
         let mut guard = self.made.lock();
