@@ -25,6 +25,10 @@ use local_tapp::FileTrust;
     after_help = "Examples:\n  app search browser\n  app install browser\n  app u browser       Update Browser (`u` is short for `update`)\n  app update          Update every installed app\n  app repo list       Show configured repositories"
 )]
 struct Cli {
+    /// The workspace, by its id, an install, update or removal is made in; this computer's own
+    /// when none is named (`tilo -w <workspace> app …` names it).
+    #[arg(long, global = true, value_name = "ID")]
+    workspace: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -202,7 +206,10 @@ enum RepoCmd {
 }
 
 fn main() -> ExitCode {
-    match parse_cli().cmd {
+    let cli = parse_cli();
+    #[cfg(any(unix, windows))]
+    app_cli::device::act_in(cli.workspace);
+    match cli.cmd {
         Cmd::Completions { shell } => {
             let mut generated = Vec::new();
             clap_complete::generate(shell, &mut Cli::command(), "app", &mut generated);

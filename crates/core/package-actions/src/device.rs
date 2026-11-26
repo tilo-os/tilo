@@ -10,20 +10,14 @@
 //! only their own connection is let in ([`crate::dev_build_admitted`]). A file it names is put
 //! for that action, so the bytes stay on this device, in the store the action reads them from.
 
-use std::io::Read as _;
 use std::path::Path;
-use std::time::{Duration, Instant};
 
 use app_cli::device::{
-    CHANGE_WAIT_MS, Daemon, install_file, line, line_at, on_app, update_offered,
+    CHANGE_WAIT_MS, Daemon, Wire, install_file, line, line_at, on_app, update_offered, waited,
 };
 use serde_json::{Map, Value, json};
-use tilo_action_services::{LineClient, device_tickets};
-use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, CatalogueQuery, ContentPut as _, InvokeArgument,
-    InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionTarget, UpdateMark,
-};
-use tilo_actions::{InvocationId, InvocationUpdate};
+use tilo_action_services::device_tickets;
+use tilo_actions::remote::{ActionProvider as _, CatalogueQuery, RemoteActionTarget};
 
 use crate::{Change, Report};
 
@@ -32,13 +26,7 @@ use crate::{Change, Report};
 const DEV_ID: &str = "dev-id";
 
 /// How long a change made through the daemon may take to run.
-const CHANGE_WAIT: Duration = Duration::from_millis(CHANGE_WAIT_MS);
-
-/// The bytes of a package file one piece of an upload carries.
-const PUT_PIECE: usize = 512 * 1024;
-
-/// How long a change that has not moved on is left before it is looked at again.
-const PAUSE: Duration = Duration::from_millis(100);
+const CHANGE_WAIT: std::time::Duration = std::time::Duration::from_millis(CHANGE_WAIT_MS);
 
 /// Make `change` through this computer's daemon, putting each local file it names first.
 ///
@@ -75,31 +63,19 @@ pub fn dev_id(app: &str) -> Result<String, String> {
     Connection::reach()?.dev_id(app)
 }
 
-/// One connection to the daemon over its action wire, as this computer's own account, and the
-/// caller its calls are named as here.
-struct Connection {
-    line: LineClient,
-    caller: Caller,
-}
+/// One connection to the daemon over its action wire, as this computer's own account, asking the
+/// device's package cache.
+struct Connection(Wire);
 
 impl Connection {
     /// The daemon serving this computer ([`line`] at its own socket).
     fn reach() -> Result<Self, String> {
-        Ok(Self::of(line()?))
+        Ok(Self(Wire::of(line()?)))
     }
 
     /// The daemon serving `socket` ([`line_at`]).
     fn at(socket: &Path) -> Result<Self, String> {
-        Ok(Self::of(line_at(socket)?))
-    }
-
-    fn of(line: LineClient) -> Self {
-        Self {
-            line,
-            // Who a call is, the daemon decides from the connection: the workspace a call names
-            // is all a frame carries of its caller, and a change names none.
-            caller: Caller::local_person(""),
-        }
+        Ok(Self(Wire::of(line_at(socket)?)))
     }
 
     /// The action `id` of the device's package cache, as the daemon publishes it now: the one
@@ -111,7 +87,7 @@ impl Connection {
             max_results: 1,
             ..CatalogueQuery::default()
         };
-        let page = waited(self.line.query(&self.caller, query), CHANGE_WAIT)?;
+        let page = waited(self.0.line().query(self.0.caller(), query), CHANGE_WAIT)?;
         page.rows
             .iter()
             .find_map(|row| {
@@ -130,7 +106,7 @@ impl Connection {
         target: &RemoteActionTarget,
         arguments: Map<String, Value>,
     ) -> Result<Report, String> {
-        let answer = self.invoke_value(target, arguments)?;
+        let answer = self.0.invoke(target, arguments)?;
         Ok(report_in(&answer).unwrap_or_else(|| Report {
             lines: vec![answer.to_string()],
             warnings: Vec::new(),
@@ -143,7 +119,7 @@ impl Connection {
     fn dev_id(&self, app: &str) -> Result<String, String> {
         let mut arguments = Map::new();
         arguments.insert("app".to_owned(), Value::String(app.to_owned()));
-        let answer = self.invoke_value(&device_tickets::target(DEV_ID), arguments)?;
+        let answer = self.0.invoke(&device_tickets::target(DEV_ID), arguments)?;
         answer
             .get("app")
             .and_then(Value::as_str)
@@ -153,105 +129,10 @@ impl Connection {
             })
     }
 
-    /// `target`'s action with `arguments`, to its end: the value it answered.
-    fn invoke_value(
-        &self,
-        target: &RemoteActionTarget,
-        arguments: Map<String, Value>,
-    ) -> Result<Value, String> {
-        let request = InvokeRequest {
-            invocation: InvocationId::new(),
-            target: target.clone(),
-            argument: InvokeArgument::Json(arguments),
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
-        };
-        let id = request.invocation;
-        let receipt = waited(self.line.invoke(&self.caller, request), CHANGE_WAIT)?;
-        let deadline = Instant::now().checked_add(CHANGE_WAIT);
-        let mut status = receipt.status;
-        let mut seen = UpdateMark::Accepted;
-        loop {
-            match status {
-                ReceiptStatus::Accepted => {}
-                ReceiptStatus::Completed { output } => {
-                    return Ok(output.value.unwrap_or_default());
-                }
-                ReceiptStatus::Failed { error } => {
-                    return Err(format!("{}: {}", error.code, error.message));
-                }
-                ReceiptStatus::Rejected { error } => return Err(error.said()),
-                ReceiptStatus::Cancelled { message } => {
-                    return Err(message.unwrap_or_else(|| "the change was stopped".to_owned()));
-                }
-            }
-            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                return Err("the change did not finish in time".to_owned());
-            }
-            // The daemon answers once the change moves on, or after its longest wait: a change
-            // that takes minutes is followed until it ends.
-            match self.line.next_change(&self.caller, &id) {
-                Some(moved) => {
-                    let _ = moved.wait_timeout(MAX_REMOTE_WAIT);
-                }
-                None => std::thread::sleep(PAUSE),
-            }
-            let Some(state) = self.line.observe(&self.caller, &id) else {
-                return Err("the daemon no longer keeps the change".to_owned());
-            };
-            let at = UpdateMark::of(&state.update);
-            if at == seen {
-                // A provider that answers at once leaves the wait nothing to wait for: the
-                // change is followed at a pace rather than spun on.
-                std::thread::sleep(PAUSE);
-            }
-            seen = at;
-            status = match state.update {
-                InvocationUpdate::Succeeded { output, .. } => ReceiptStatus::Completed { output },
-                InvocationUpdate::Failed { error, .. } => ReceiptStatus::Failed { error },
-                InvocationUpdate::Cancelled { message, .. } => ReceiptStatus::Cancelled { message },
-                InvocationUpdate::Accepted { .. }
-                | InvocationUpdate::Progress { .. }
-                | InvocationUpdate::Item { .. } => ReceiptStatus::Accepted,
-            };
-        }
-    }
-
     /// Put the file at `path` into the store the action `target` names reads from: its
     /// reference there.
     fn put(&self, path: &Path, target: &RemoteActionTarget) -> Result<String, String> {
-        let unreadable = |error: std::io::Error| format!("{}: {error}", path.display());
-        let mut file = std::fs::File::open(path).map_err(unreadable)?;
-        let size = file.metadata().map_err(unreadable)?.len();
-        let mut put = self
-            .line
-            .begin_put_for(size, Some(target.clone()))
-            .map_err(|error| error.said())?;
-        let mut offset = 0_u64;
-        let mut piece = vec![0_u8; PUT_PIECE];
-        loop {
-            let read = file.read(&mut piece).map_err(unreadable)?;
-            let Some(bytes) = piece.get(..read).filter(|bytes| !bytes.is_empty()) else {
-                break;
-            };
-            put.append(offset, bytes).map_err(|error| error.said())?;
-            offset = offset.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
-        }
-        Box::new(put).finish().map_err(|error| error.said())
-    }
-}
-
-/// `pending`, waited for `within`.
-fn waited<T>(pending: Pending<Result<T, ActionCallError>>, within: Duration) -> Result<T, String> {
-    match pending.wait_timeout(within) {
-        Ok(Some(Ok(answer))) => Ok(answer),
-        Ok(Some(Err(refused))) => Err(refused.said()),
-        Ok(None) | Err(_) => Err("the daemon did not answer in time".to_owned()),
+        self.0.put(path, target)
     }
 }
 

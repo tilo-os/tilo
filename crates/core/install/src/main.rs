@@ -35,6 +35,10 @@ struct Cli {
     /// the workspace's app actions and its package cache.
     #[arg(long, global = true, value_name = "DIR")]
     offline_store: Option<PathBuf>,
+    /// The workspace, by its id, an app is installed, updated, pinned or removed in; this
+    /// computer's own when none is named.
+    #[arg(long, global = true, value_name = "ID")]
+    workspace: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -1024,6 +1028,8 @@ fn main() {
     if let Some(root) = cli.offline_store {
         let _ = OFFLINE_STORE.set(root);
     }
+    #[cfg(any(unix, windows))]
+    app_cli::device::act_in(cli.workspace);
     if let Err(e) = dispatch(cli.cmd) {
         eprintln!("tilo-install: {e}");
         std::process::exit(1);

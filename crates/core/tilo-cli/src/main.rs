@@ -971,7 +971,7 @@ fn main() -> ExitCode {
             );
             agent::run(cli.cmd)
         }
-        Some("app") => run_app(args.get(1..).unwrap_or_default(), &invoked),
+        Some("app") => run_app(args.get(1..).unwrap_or_default(), &invoked, None),
         Some("action") => {
             let cli: ActionCli = parse_with(ActionCli::command().bin_name(&invoked), args);
             Ok(desktop::run_action(
@@ -1433,8 +1433,8 @@ fn run(mut cli: Cli) -> Result<ExitCode> {
         Cmd::App { args } if args.first().is_some_and(|verb| verb == "open") => {
             app_open(args.get(1..).unwrap_or_default(), &spelling)
         }
-        Cmd::App { args } => run_app(&args, "tilo app"),
-        Cmd::Store { args } => run_app(&args, "tilo store"),
+        Cmd::App { args } => run_app(&args, "tilo app", cli.workspace.as_deref()),
+        Cmd::Store { args } => run_app(&args, "tilo store", cli.workspace.as_deref()),
         // Read-only, so it never needs to become anything. A person diagnosing a machine should not
         // have to authenticate to be told what is on it.
         Cmd::Status { daemon: true, json } => daemon_status(json),
@@ -1662,7 +1662,9 @@ fn print_cleanup_status() {
     }
 }
 
-fn run_app(args: &[OsString], invocation: &str) -> Result<ExitCode> {
+/// `app` with `args`, said as `invocation`: its changes made in the workspace `named` names (by
+/// its name or id, as `-w` takes it), else in this computer's own.
+fn run_app(args: &[OsString], invocation: &str, named: Option<&str>) -> Result<ExitCode> {
     if is_root() && !is_help_request(args) {
         bail!(
             "app management belongs to the signed-in user, not root; \
@@ -1674,7 +1676,17 @@ fn run_app(args: &[OsString], invocation: &str) -> Result<ExitCode> {
     if !command_available(&binary) {
         bail!("managing apps needs Tilo's app tools, which this computer doesn't have");
     }
-    let status = Command::new(&binary)
+    let mut command = Command::new(&binary);
+    if let Some(named) = named {
+        let reach = api::Reach {
+            key_file: None,
+            json: false,
+        };
+        let workspace = hosted::workspace_id(reach, named)?;
+        // The variable `app` reads the workspace its changes are made in from.
+        command.env("TILO_APP_WORKSPACE", workspace);
+    }
+    let status = command
         .args(args)
         .env("TILO_APP_DISPLAY_NAME", invocation)
         .stdin(Stdio::inherit())
@@ -1829,7 +1841,7 @@ fn update_everything(yes: bool) -> Result<ExitCode> {
         app_provider,
         system_available(),
         app_skip_reason,
-        || run_app(&[OsString::from("update")], "tilo app"),
+        || run_app(&[OsString::from("update")], "tilo app", None),
         || os_upgrade(None, yes, false, false),
     )
 }

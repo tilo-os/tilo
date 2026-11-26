@@ -1,14 +1,53 @@
 //! How a program of the person's (`app`, `tilo-install`) asks this computer's daemon for a
-//! change over its native endpoint, as MCP: an app installed, updated, kept or removed is the
-//! action of the workspace's tree (`workspace/apps…`), whose every device then follows it, and
-//! a package file it names is handed to the workspace first. So a change from a terminal is the
-//! same action, admitted the same way, as one from an agent or another device.
+//! change over its native endpoint: an app installed, updated, kept or removed is the action of
+//! the workspace's tree (`workspace/apps…`), whose every device then follows it, and a package
+//! file it names is handed to the workspace first. So a change from a terminal is the same
+//! action, admitted the same way, as one from an agent or another device.
+//!
+//! The change is made in the workspace the person named ([`act_in`], [`WORKSPACE_ENV`]), over
+//! the daemon's action wire, which reaches every workspace this computer holds for them: a
+//! company's workspace is changed whatever stands with the computer's own. With none named it
+//! is made in the daemon's own workspace, over its MCP session.
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::path::Path;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
+use tilo_action_services::LineClient;
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider as _, Caller, ContentPut as _, InvokeArgument, InvokeRequest,
+    MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionTarget, UpdateMark,
+};
+use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
+
+/// The variable naming the workspace, by its id, a change from a terminal is made in: `tilo -w
+/// <workspace> app …` hands it on, and `app --workspace` and `tilo-install --workspace` set it
+/// for their own process.
+pub const WORKSPACE_ENV: &str = "TILO_APP_WORKSPACE";
+
+/// The workspace this process's changes are made in, once named ([`act_in`]).
+static NAMED: OnceLock<Option<String>> = OnceLock::new();
+
+/// Make this process's changes in `workspace` (its id), or, with none, in the one
+/// [`WORKSPACE_ENV`] names, else the daemon's own. The first naming holds.
+pub fn act_in(workspace: Option<String>) {
+    let _ = NAMED.set(workspace.or_else(from_env));
+}
+
+fn from_env() -> Option<String> {
+    std::env::var(WORKSPACE_ENV)
+        .ok()
+        .map(|named| named.trim().to_owned())
+        .filter(|named| !named.is_empty())
+}
+
+/// The workspace this process's changes are made in, when one was named.
+fn named() -> Option<&'static str> {
+    NAMED.get_or_init(from_env).as_deref()
+}
 
 /// How long a change may take before its caller stops waiting: a runtime built, a registry
 /// fetched.
@@ -200,11 +239,14 @@ pub fn line() -> Result<tilo_action_services::LineClient, String> {
     line_at(&tilo_machine::daemon_native()?)
 }
 
-/// One connection to the daemon's native endpoint, as MCP.
+/// One connection to the daemon's native endpoint: over the action wire in the workspace the
+/// person named, else as MCP in the daemon's own.
 pub struct Daemon {
     reader: BufReader<tilo_files::native::socket::Stream>,
     writer: tilo_files::native::socket::Stream,
     id: u64,
+    /// The action wire, in the workspace named, when one was.
+    wire: Option<Wire>,
 }
 
 /// The bytes of a package file one `upload` piece carries.
@@ -226,18 +268,26 @@ impl Daemon {
     /// No daemon answers on `socket`.
     pub fn at(socket: &Path) -> Result<Self, String> {
         let stream = stream_at(socket)?;
+        let wire = named()
+            .map(|workspace| Ok::<_, String>(Wire::in_workspace(line_at(socket)?, workspace)))
+            .transpose()?;
         Ok(Self {
             reader: BufReader::new(stream.try_clone().map_err(|error| error.to_string())?),
             writer: stream,
             id: 0,
+            wire,
         })
     }
 
-    /// Ask `path` of the workspace this computer is logged in to.
+    /// Ask `path` (`workspace/<resource>#<action>`) of the workspace the person named, else of
+    /// the daemon's own.
     ///
     /// # Errors
     /// The workspace refused, or this computer is logged in to none.
     pub fn workspace(&mut self, path: &str, arguments: &Value) -> Result<Value, String> {
+        if let Some(wire) = &self.wire {
+            return wire.workspace(path, arguments);
+        }
         self.call(
             "tilo_do",
             &json!({"path": path, "wait_ms": CHANGE_WAIT_MS, "args": arguments}),
@@ -341,5 +391,198 @@ impl Daemon {
         }
         self.call("tilo_put_finish", &json!({"upload": upload}))?;
         Ok(format!("tilo.content:{}", hasher.finalize().to_hex()))
+    }
+}
+
+/// One connection to the daemon over its action wire, as this computer's own account: who a call
+/// is, the daemon decides from the connection, and the workspace a call names is all a frame
+/// carries of its caller.
+pub struct Wire {
+    line: LineClient,
+    caller: Caller,
+    /// The workspace its calls are made in; `None`: the daemon's own.
+    workspace: Option<String>,
+}
+
+impl Wire {
+    /// The action wire `line`, its calls made in the daemon's own workspace.
+    #[must_use]
+    pub fn of(line: LineClient) -> Self {
+        Self {
+            line,
+            caller: Caller::local_person(""),
+            workspace: None,
+        }
+    }
+
+    /// The action wire `line`, its calls made in `workspace`.
+    #[must_use]
+    pub fn in_workspace(line: LineClient, workspace: &str) -> Self {
+        Self {
+            line,
+            caller: Caller::local_person("").in_workspace(workspace),
+            workspace: Some(workspace.to_owned()),
+        }
+    }
+
+    /// The line its calls go over.
+    #[must_use]
+    pub fn line(&self) -> &LineClient {
+        &self.line
+    }
+
+    /// Who its calls are named as.
+    #[must_use]
+    pub fn caller(&self) -> &Caller {
+        &self.caller
+    }
+
+    /// The workspace action `path` names (`workspace/<resource>#<action>`) with `arguments`, in
+    /// the workspace these calls are made in, to its end: what it answered.
+    ///
+    /// # Errors
+    /// `path` names no workspace action, no workspace was named, or the workspace refused or
+    /// failed it.
+    pub fn workspace(&self, path: &str, arguments: &Value) -> Result<Value, String> {
+        let workspace = self
+            .workspace
+            .as_deref()
+            .ok_or("a workspace's action is asked in the workspace it names")?;
+        let (resource, action) = path
+            .strip_prefix("workspace/")
+            .and_then(|path| path.rsplit_once('#'))
+            .ok_or_else(|| format!("{path} names no action of a workspace"))?;
+        let target = RemoteActionTarget {
+            provider: tilo_actions::remote::workspace_provider(workspace),
+            address: ActionAddress::new(resource, action),
+        };
+        let arguments = match arguments {
+            Value::Object(arguments) => arguments.clone(),
+            Value::Null => Map::new(),
+            other => return Err(format!("{path} takes named arguments, not {other}")),
+        };
+        self.invoke(&target, arguments)
+    }
+
+    /// `target`'s action with `arguments`, to its end: the value it answered.
+    ///
+    /// # Errors
+    /// The daemon refused the call, it failed or was stopped, or it did not end in time.
+    pub fn invoke(
+        &self,
+        target: &RemoteActionTarget,
+        arguments: Map<String, Value>,
+    ) -> Result<Value, String> {
+        let request = InvokeRequest {
+            invocation: InvocationId::new(),
+            target: target.clone(),
+            argument: InvokeArgument::Json(arguments),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        let id = request.invocation;
+        let receipt = waited(self.line.invoke(&self.caller, request), CHANGE_WAIT)?;
+        let deadline = Instant::now().checked_add(CHANGE_WAIT);
+        let mut status = receipt.status;
+        let mut seen = UpdateMark::Accepted;
+        loop {
+            match status {
+                ReceiptStatus::Accepted => {}
+                ReceiptStatus::Completed { output } => {
+                    return Ok(output.value.unwrap_or_default());
+                }
+                ReceiptStatus::Failed { error } => {
+                    return Err(format!("{}: {}", error.code, error.message));
+                }
+                ReceiptStatus::Rejected { error } => return Err(error.said()),
+                ReceiptStatus::Cancelled { message } => {
+                    return Err(message.unwrap_or_else(|| "the change was stopped".to_owned()));
+                }
+            }
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Err("the change did not finish in time".to_owned());
+            }
+            // The daemon answers once the change moves on, or after its longest wait: a change
+            // that takes minutes is followed until it ends.
+            match self.line.next_change(&self.caller, &id) {
+                Some(moved) => {
+                    let _ = moved.wait_timeout(MAX_REMOTE_WAIT);
+                }
+                None => std::thread::sleep(PAUSE),
+            }
+            let Some(state) = self.line.observe(&self.caller, &id) else {
+                return Err("the daemon no longer keeps the change".to_owned());
+            };
+            let at = UpdateMark::of(&state.update);
+            if at == seen {
+                // A provider that answers at once leaves the wait nothing to wait for: the
+                // change is followed at a pace rather than spun on.
+                std::thread::sleep(PAUSE);
+            }
+            seen = at;
+            status = match state.update {
+                InvocationUpdate::Succeeded { output, .. } => ReceiptStatus::Completed { output },
+                InvocationUpdate::Failed { error, .. } => ReceiptStatus::Failed { error },
+                InvocationUpdate::Cancelled { message, .. } => ReceiptStatus::Cancelled { message },
+                InvocationUpdate::Accepted { .. }
+                | InvocationUpdate::Progress { .. }
+                | InvocationUpdate::Item { .. } => ReceiptStatus::Accepted,
+            };
+        }
+    }
+
+    /// Put the file at `path` into the store the action `target` names reads from: its
+    /// reference there.
+    ///
+    /// # Errors
+    /// The file could not be read, or the daemon refused it.
+    pub fn put(&self, path: &Path, target: &RemoteActionTarget) -> Result<String, String> {
+        let unreadable = |error: std::io::Error| format!("{}: {error}", path.display());
+        let mut file = std::fs::File::open(path).map_err(unreadable)?;
+        let size = file.metadata().map_err(unreadable)?.len();
+        let mut put = self
+            .line
+            .begin_put_for(size, Some(target.clone()))
+            .map_err(|error| error.said())?;
+        let mut offset = 0_u64;
+        let mut piece = vec![0_u8; PUT_PIECE];
+        loop {
+            let read = file.read(&mut piece).map_err(unreadable)?;
+            let Some(bytes) = piece.get(..read).filter(|bytes| !bytes.is_empty()) else {
+                break;
+            };
+            put.append(offset, bytes).map_err(|error| error.said())?;
+            offset = offset.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        }
+        Box::new(put).finish().map_err(|error| error.said())
+    }
+}
+
+/// How long a change made through the daemon may take to run.
+const CHANGE_WAIT: Duration = Duration::from_millis(CHANGE_WAIT_MS);
+
+/// The bytes of a package file one piece of a put over the action wire carries.
+const PUT_PIECE: usize = 512 * 1024;
+
+/// How long a change that has not moved on is left before it is looked at again.
+const PAUSE: Duration = Duration::from_millis(100);
+
+/// `pending`, waited for `within`.
+///
+/// # Errors
+/// The daemon refused, or did not answer in time.
+pub fn waited<T>(
+    pending: Pending<Result<T, ActionCallError>>,
+    within: Duration,
+) -> Result<T, String> {
+    match pending.wait_timeout(within) {
+        Ok(Some(Ok(answer))) => Ok(answer),
+        Ok(Some(Err(refused))) => Err(refused.said()),
+        Ok(None) | Err(_) => Err("the daemon did not answer in time".to_owned()),
     }
 }

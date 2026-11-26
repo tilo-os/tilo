@@ -105,6 +105,14 @@ async fn workspace_of(client: &Calls, named: Option<&str>) -> Result<Option<Stri
     })
 }
 
+/// The id of the workspace `named` names, by its name or id, as `reach` knows it.
+///
+/// # Errors
+/// It names no workspace the account reaches, or none could be asked.
+pub fn workspace_id(reach: Reach<'_>, named: &str) -> Result<String> {
+    runtime()?.block_on(async { open(reach).await?.workspace_id(named).await })
+}
+
 /// Whether `path` is one of the account's (`account/keys#create`): acted on or read with no
 /// workspace.
 pub fn on_account(path: &str) -> bool {
