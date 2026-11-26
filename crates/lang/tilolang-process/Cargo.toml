@@ -70,6 +70,7 @@ collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../
 tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }
 # The API the session hands instances over.
 runtime-portal = { package = "tilo-runtime-portal", version = "0.1.0", path = "../../core/runtime-portal" }
+runtime-interface = { package = "tilo-runtime-interface", version = "0.1.0", path = "../../core/runtime-interface" }
 # The patch connection to each instance's window, and the sealed memfd its module comes in.
 tilo-render-protocol = { version = "0.1.0", path = "../../ui/tilo-render-protocol" }
 # The immutable buffers a module and a task's apps arrive in: a sealed memfd, or a section on

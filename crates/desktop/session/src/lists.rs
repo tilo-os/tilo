@@ -14,7 +14,7 @@ use tilo_desktop_search::providers::host_apps::HostApps;
 use tilo_desktop_search::providers::host_apps::{HostAppEntry, HostAppKind};
 use tilo_files::native::Watched;
 
-use runtime_portal::tools::{
+use runtime_interface::tools::{
     AppEntry as ListedApp, AppKind as ListedKind, AppRemoval, MAX_LISTED_APPS,
 };
 

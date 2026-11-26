@@ -16,7 +16,7 @@ use tilo_desktop_search::providers::host_apps::HostAppKind;
 use tilo_session_core::desktop::state::DesktopHandle;
 
 use crate::lists::AppLists;
-use runtime_portal::tools::{AppKind, DocumentApp};
+use runtime_interface::tools::{AppKind, DocumentApp};
 
 /// What this session decides an open with, read once: this device's apps, the defaults that
 /// decide among them, and the machine's own lists.

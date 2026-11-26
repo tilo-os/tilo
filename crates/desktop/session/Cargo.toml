@@ -402,6 +402,7 @@ tilo-render-service = { path = "../render-service" }
 # The kernel-attested ownership of an executing app process a launch is
 # admitted by.
 runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
+runtime-interface = { package = "tilo-runtime-interface", version = "0.1.0", path = "../../core/runtime-interface" }
 # The wire the apps speak to the session's services, and where the launcher
 # hands out its socket.
 runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-collab" }

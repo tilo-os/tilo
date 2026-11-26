@@ -46,6 +46,7 @@ ed25519-dalek.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 runtime-portal = { version = "0.1.0", package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
+runtime-interface = { package = "tilo-runtime-interface", version = "0.1.0", path = "../../core/runtime-interface" }
 # `dev` outside a checkout: the tilolang runtime bundle of the Tilo installed here, where its
 # launcher finds it.
 runtime-bundle = { version = "0.1.0", package = "tilo-runtime-bundle", path = "../../core/runtime-bundle" }

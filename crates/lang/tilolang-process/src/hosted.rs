@@ -494,7 +494,7 @@ struct HostPlatform {
     thumbnails: Option<std::sync::Arc<std::sync::OnceLock<Arc<thumbnail::ThumbnailService>>>>,
     /// The session's tools service, over the connection the session made for this instance: what
     /// `File.open` asks which app opens a file and starts it.
-    tools: Option<std::sync::Arc<runtime_portal::tools::Service>>,
+    tools: Option<std::sync::Arc<runtime_interface::tools::Service>>,
     /// What a person asking for a file is told when the session opened no chooser.
     no_chooser: String,
     /// The member the instance acts for: whose changes a watched folder's action makes.
@@ -1186,7 +1186,7 @@ impl Platform for HostPlatform {
             return Err("the shell is not answering which app opens a file".to_owned());
         };
         tools
-            .ask(runtime_portal::tools::ToolIntent::Terminal {
+            .ask(runtime_interface::tools::ToolIntent::Terminal {
                 directory: Some(folder.to_owned()),
             })
             .map(drop)
@@ -1205,7 +1205,7 @@ impl Platform for HostPlatform {
     /// started for (`TILO_TOOL_CONTEXT`), and an app opened on its own has none.
     fn launch_context(&self) -> String {
         const MAX_BYTES: usize = 16 * 1024;
-        let Ok(context) = std::env::var(runtime_portal::tools::TOOL_CONTEXT_ENV) else {
+        let Ok(context) = std::env::var(runtime_interface::tools::TOOL_CONTEXT_ENV) else {
             return String::new();
         };
         if context.len() > MAX_BYTES {
@@ -1225,12 +1225,12 @@ impl Platform for HostPlatform {
             return Err("the shell is not answering a terminal".to_owned());
         };
         let engine = match engine {
-            "distrobox" => runtime_portal::tools::ContainerEngine::Distrobox,
-            "podman" => runtime_portal::tools::ContainerEngine::Podman,
+            "distrobox" => runtime_interface::tools::ContainerEngine::Distrobox,
+            "podman" => runtime_interface::tools::ContainerEngine::Podman,
             other => return Err(format!("no `{other}` runs a container shell")),
         };
         tools
-            .ask(runtime_portal::tools::ToolIntent::ContainerShell {
+            .ask(runtime_interface::tools::ToolIntent::ContainerShell {
                 container: container.to_owned(),
                 engine,
             })
@@ -1317,7 +1317,7 @@ impl Platform for HostPlatform {
                     .read_content(hash)
                     .ok_or_else(|| format!("the content of `{name}` is not on this device"))?;
                 let apps = |kind: &str| tools.list_document_apps(kind);
-                let app = runtime_portal::tools::document_app_for_with(&bytes, name, &apps)?;
+                let app = runtime_interface::tools::document_app_for_with(&bytes, name, &apps)?;
                 let Some(app) = app else {
                     return Err(format!("nothing on this computer opens `{name}`"));
                 };
@@ -1369,7 +1369,7 @@ pub struct Kept {
     pub thumbnails: Option<std::sync::Arc<std::sync::OnceLock<Arc<thumbnail::ThumbnailService>>>>,
     /// The session's tools service, over the connection it made for this instance: what
     /// `File.open` asks which app opens a file and starts it.
-    pub tools: Option<std::sync::Arc<runtime_portal::tools::Service>>,
+    pub tools: Option<std::sync::Arc<runtime_interface::tools::Service>>,
 }
 
 /// What the actions of the rows a window shows answered, by resource and action: a window asks

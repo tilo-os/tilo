@@ -2276,9 +2276,10 @@ impl Apps {
         if let (Some(context), Kind::Package) =
             (self.state.borrow().tool_context.clone(), planned.kind)
         {
-            planned
-                .env
-                .insert(runtime_portal::tools::TOOL_CONTEXT_ENV.to_owned(), context);
+            planned.env.insert(
+                runtime_interface::tools::TOOL_CONTEXT_ENV.to_owned(),
+                context,
+            );
         }
     }
 

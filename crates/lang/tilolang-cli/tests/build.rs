@@ -76,7 +76,7 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
                 .unwrap_or_else(|| panic!("{} asks for no {service}", app.app));
             assert_eq!(
                 requirement.version,
-                runtime_portal::RUNTIME_INTERFACE_VERSION,
+                runtime_interface::RUNTIME_INTERFACE_VERSION,
                 "{service} at the version the runtime serves"
             );
         }
@@ -198,7 +198,9 @@ fn the_writer_and_the_spreadsheet_offer_the_files_they_open() {
     let writer = offers("so.tilo.word-processor");
     assert_eq!(
         writer.opens_ext,
-        ["docx", "odt", "rtf", "epub", "html", "htm", "md", "markdown", "txt"],
+        [
+            "docx", "odt", "rtf", "epub", "html", "htm", "md", "markdown", "txt"
+        ],
         "the Writer's extensions"
     );
     assert_eq!(

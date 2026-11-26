@@ -1,6 +1,6 @@
 //! The tools service: the typed opens an app asks this session for.
 //!
-//! An app the launcher starts is handed the `tools` socket ([`runtime_portal::tools`]) and asks
+//! An app the launcher starts is handed the `tools` socket ([`runtime_interface::tools`]) and asks
 //! for what only the session can do: open a tool at a typed context, list or open the drives the
 //! person plugged in, list or uninstall the person's apps ([`ToolIntent`] is the whole
 //! vocabulary). Who asks is read from the connection's peer credentials, and the request must
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
-use runtime_portal::tools::{
+use runtime_interface::tools::{
     AppEntry, DriveEntry, MAX_LISTED_APPS, MAX_LISTED_DRIVES, MAX_REPLY_BYTES, MAX_WIRE_BYTES,
     TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest, WorkspaceSettingsRoute,
 };
@@ -574,8 +574,10 @@ fn document_apps(inner: &Inner, caller: &Caller, path: &str) -> ToolReply {
         .take(MAX_LISTED_APPS)
         .map(|mut app| {
             // This thread may read the disk: the menu has the app's own icon the first time it opens.
-            app.artwork =
-                crate::app_icons::app_png(&app.id, runtime_portal::tools::DOCUMENT_APP_ARTWORK_PX);
+            app.artwork = crate::app_icons::app_png(
+                &app.id,
+                runtime_interface::tools::DOCUMENT_APP_ARTWORK_PX,
+            );
             app
         })
         .collect();

@@ -33,7 +33,7 @@ workspace-hack = { version = "0.1" }
 # The connection this device's service holds to the model gateway, made as
 # the launcher makes one for an app it starts.
 launcher = { path = "../../core/launcher" }
-runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
+runtime-interface = { package = "tilo-runtime-interface", version = "0.1.0", path = "../../core/runtime-interface" }
 
 [dev-dependencies]
 # The canonical compiled form of the surface this crate publishes.

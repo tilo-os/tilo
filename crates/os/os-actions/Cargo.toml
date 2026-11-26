@@ -53,7 +53,7 @@ tilo-bluetooth-address = { path = "../../core/bluetooth-address" }
 tilo-nm = { path = "../tilo-nm" }
 tilo-power-mgmt = { path = "../power" }
 tilo-rt.workspace = true
-runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal", default-features = false }
+runtime-interface = { package = "tilo-runtime-interface", version = "0.1.0", path = "../../core/runtime-interface" }
 zbus = { workspace = true, features = ["tokio"] }
 # Following a service's signals (src/bus_follow.rs).
 futures-util.workspace = true

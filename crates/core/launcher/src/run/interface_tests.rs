@@ -36,8 +36,8 @@ fn a_build_speaking_another_interface_version_is_refused() {
 
 #[test]
 fn an_app_pinned_before_the_served_runtime_range_is_refused() {
-    let current = runtime_portal::RUNTIME_INTERFACE_VERSION;
-    let oldest = runtime_portal::OLDEST_RUNTIME_INTERFACE_VERSION;
+    let current = runtime_interface::RUNTIME_INTERFACE_VERSION;
+    let oldest = runtime_interface::OLDEST_RUNTIME_INTERFACE_VERSION;
     let pinned = |version: u32| {
         let tail = format!(
             "[entrypoint]\nbin = \"bin/notes\"\n[sandbox.services]\n\

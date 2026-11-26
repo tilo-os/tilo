@@ -381,6 +381,7 @@ members = [
     "crates/core/tilo-fs-client",
     "crates/core/tilo-identity-client",
     "crates/core/runtime-portal",
+    "crates/core/runtime-interface",
     "crates/integrations/os-search",
     "crates/os/tilo-file-provider",
     "crates/core/tilo-identity",

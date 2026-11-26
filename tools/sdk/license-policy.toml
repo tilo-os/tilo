@@ -92,6 +92,7 @@ client_side = [
     "tilo-collab-types",            # a document's signed envelopes, and resource paths
     "tilo-neighbour-wire",
     "tilo-runtime-portal",
+    "tilo-runtime-interface",
     "rustls-native-certs",     # the system trust store, forked under crates/system
     "tilo-action-policy",      # the policy an answer to a message is held to
     "tilo-actions",

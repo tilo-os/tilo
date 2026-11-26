@@ -119,6 +119,7 @@ tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+runtime-interface = { package = "tilo-runtime-interface", version = "0.1.0", path = "../runtime-interface" }
 tilo-action-policy = { path = "../action-policy" }
 # Tests whose subject is the environment itself (session variables, service
 # and store lookups) scope their changes through it and restore them.

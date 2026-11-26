@@ -164,7 +164,7 @@ thread_local! {
     /// shell answers an app's `File.open`: none unless a test serves one
     /// ([`Session::opening_files_through`]).
     static DEVICE_TOOLS: std::cell::RefCell<
-        Option<std::sync::Arc<runtime_portal::tools::Service>>,
+        Option<std::sync::Arc<runtime_interface::tools::Service>>,
     > = const { std::cell::RefCell::new(None) };
 }
 
@@ -619,7 +619,7 @@ impl Session {
 
     /// The windows this thread opens from here on ask `tools` which app opens a file and open it
     /// there, as the session answers an app's `File.open`.
-    fn opening_files_through(tools: &Arc<runtime_portal::tools::Service>) {
+    fn opening_files_through(tools: &Arc<runtime_interface::tools::Service>) {
         DEVICE_TOOLS.with(|served| *served.borrow_mut() = Some(Arc::clone(tools)));
     }
 

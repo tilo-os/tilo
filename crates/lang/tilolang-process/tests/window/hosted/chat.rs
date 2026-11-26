@@ -935,15 +935,15 @@ impl tilo_dialogs::FilePicker for Picks {
 /// The session's tools, as a test serves them: it answers each request with the next of
 /// `answers`, in the order given, and keeps what it was asked.
 struct Tools {
-    asked: std::sync::Arc<std::sync::Mutex<Vec<runtime_portal::tools::ToolIntent>>>,
-    answers: std::sync::Arc<std::sync::Mutex<Vec<runtime_portal::tools::ToolReply>>>,
+    asked: std::sync::Arc<std::sync::Mutex<Vec<runtime_interface::tools::ToolIntent>>>,
+    answers: std::sync::Arc<std::sync::Mutex<Vec<runtime_interface::tools::ToolReply>>>,
 }
 
 impl Tools {
     /// The session's end of a tools connection, and the stub answering the other end.
     fn serving(
-        answers: Vec<runtime_portal::tools::ToolReply>,
-    ) -> (std::sync::Arc<runtime_portal::tools::Service>, Self) {
+        answers: Vec<runtime_interface::tools::ToolReply>,
+    ) -> (std::sync::Arc<runtime_interface::tools::Service>, Self) {
         let stub = Self {
             asked: std::sync::Arc::default(),
             answers: std::sync::Arc::new(std::sync::Mutex::new(
@@ -953,7 +953,7 @@ impl Tools {
         let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("the tools connection");
         stub.serve(ours);
         let service =
-            runtime_portal::tools::Service::connect(theirs, "the window's workspace".to_owned());
+            runtime_interface::tools::Service::connect(theirs, "the window's workspace".to_owned());
         (std::sync::Arc::new(service), stub)
     }
 
@@ -969,7 +969,8 @@ impl Tools {
             };
             for line in BufReader::new(stream).lines() {
                 let Ok(line) = line else { return };
-                let Ok(request) = serde_json::from_str::<runtime_portal::tools::ToolRequest>(&line)
+                let Ok(request) =
+                    serde_json::from_str::<runtime_interface::tools::ToolRequest>(&line)
                 else {
                     return;
                 };
@@ -981,10 +982,10 @@ impl Tools {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .pop()
-                    .unwrap_or_else(|| runtime_portal::tools::ToolReply {
+                    .unwrap_or_else(|| runtime_interface::tools::ToolReply {
                         accepted: false,
                         message: "the test service has no more answers".to_owned(),
-                        ..runtime_portal::tools::ToolReply::default()
+                        ..runtime_interface::tools::ToolReply::default()
                     });
                 let Ok(mut encoded) = serde_json::to_vec(&reply) else {
                     return;
@@ -998,7 +999,7 @@ impl Tools {
     }
 
     /// What it was asked, oldest first.
-    fn asked(&self) -> Vec<runtime_portal::tools::ToolIntent> {
+    fn asked(&self) -> Vec<runtime_interface::tools::ToolIntent> {
         self.asked
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1007,28 +1008,28 @@ impl Tools {
 }
 
 /// A listing that offers the app `app` for a file of the kind asked.
-fn listing(app: &str) -> runtime_portal::tools::ToolReply {
-    runtime_portal::tools::ToolReply {
+fn listing(app: &str) -> runtime_interface::tools::ToolReply {
+    runtime_interface::tools::ToolReply {
         accepted: true,
         message: "listed".to_owned(),
-        documents: vec![runtime_portal::tools::DocumentApp {
+        documents: vec![runtime_interface::tools::DocumentApp {
             id: app.to_owned(),
             name: app.to_owned(),
             is_default: true,
             icon: None,
-            source: Some(runtime_portal::tools::AppKind::Tilo),
+            source: Some(runtime_interface::tools::AppKind::Tilo),
             artwork: None,
         }],
-        ..runtime_portal::tools::ToolReply::default()
+        ..runtime_interface::tools::ToolReply::default()
     }
 }
 
 /// The session opening the file it was asked to.
-fn opened() -> runtime_portal::tools::ToolReply {
-    runtime_portal::tools::ToolReply {
+fn opened() -> runtime_interface::tools::ToolReply {
+    runtime_interface::tools::ToolReply {
         accepted: true,
         message: "opened".to_owned(),
-        ..runtime_portal::tools::ToolReply::default()
+        ..runtime_interface::tools::ToolReply::default()
     }
 }
 
@@ -1119,7 +1120,9 @@ fn a_person_adds_two_files_to_a_message_and_opens_one() {
         .asked()
         .into_iter()
         .find_map(|intent| match intent {
-            runtime_portal::tools::ToolIntent::OpenContent { name, app, .. } => Some((name, app)),
+            runtime_interface::tools::ToolIntent::OpenContent { name, app, .. } => {
+                Some((name, app))
+            }
             _ => None,
         })
         .expect("the file reaches the system's open action");

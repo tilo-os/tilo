@@ -667,7 +667,7 @@ fn services_block(program: Option<&SourceProgram>) -> String {
     let mut services = format!(
         "# Collaboration and the filesystem, at the version the runtime serves its session services.\n\
          collab = \"optional@{version}\"\ntilo-fs = \"optional@{version}\"",
-        version = runtime_portal::RUNTIME_INTERFACE_VERSION
+        version = runtime_interface::RUNTIME_INTERFACE_VERSION
     );
     let Some(program) = program else {
         return services;

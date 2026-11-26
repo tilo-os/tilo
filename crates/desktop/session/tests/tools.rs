@@ -21,7 +21,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use runtime_portal::tools::{
+use runtime_interface::tools::{
     AppKind, AppRemoval, TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest,
 };
 use tilo_app_host::services::{LaunchPlace, LauncherServices as _};

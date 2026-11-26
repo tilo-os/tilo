@@ -96,7 +96,7 @@ pub(crate) fn open_route(
     state: Option<&sheet::WorkspaceSettingsState>,
     fed: &Feeding<'_>,
     workspace: &str,
-    route: runtime_portal::tools::WorkspaceSettingsRoute,
+    route: runtime_interface::tools::WorkspaceSettingsRoute,
 ) -> Result<(), String> {
     let state = state.ok_or("this session shows no workspace settings")?;
     let front = fed
@@ -112,8 +112,8 @@ pub(crate) fn open_route(
 }
 
 /// The tab a route names, as the sheet's own tabs are keyed.
-fn tab_of(route: runtime_portal::tools::WorkspaceSettingsRoute) -> sheet::Tab {
-    use runtime_portal::tools::WorkspaceSettingsRoute;
+fn tab_of(route: runtime_interface::tools::WorkspaceSettingsRoute) -> sheet::Tab {
+    use runtime_interface::tools::WorkspaceSettingsRoute;
     match route {
         WorkspaceSettingsRoute::General => sheet::Tab::General,
         WorkspaceSettingsRoute::Members => sheet::Tab::People,

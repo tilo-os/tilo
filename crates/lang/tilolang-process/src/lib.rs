@@ -369,9 +369,9 @@ fn clipboard_of(fd: Option<Descriptor>) -> Option<Arc<tilo_clipboard::service::C
 fn tools_of(
     fd: Option<Descriptor>,
     workspace: &str,
-) -> Option<Arc<runtime_portal::tools::Service>> {
+) -> Option<Arc<runtime_interface::tools::Service>> {
     let stream = usable(fd, "tools")?;
-    Some(Arc::new(runtime_portal::tools::Service::connect(
+    Some(Arc::new(runtime_interface::tools::Service::connect(
         stream, workspace,
     )))
 }
@@ -404,7 +404,7 @@ struct Opening {
     /// The person's clipboard, over the connection the session opened for this instance.
     clipboard: Option<Arc<tilo_clipboard::service::Connected>>,
     /// The session's tools service, over the connection it made for this instance.
-    tools: Option<Arc<runtime_portal::tools::Service>>,
+    tools: Option<Arc<runtime_interface::tools::Service>>,
     /// When the host was handed the instance, and the stages it reached since, with how long
     /// after: what an instance's launch spends in the host.
     received: std::time::Instant,

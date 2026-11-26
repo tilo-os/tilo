@@ -363,7 +363,7 @@ class WordListTests(unittest.TestCase):
 
     def test_the_runtime_interface_lists_the_words_of_a_declared_shape(self):
         spec, committed = interfaces.load_spec(
-            interfaces.ROOT / "crates/core/runtime-portal/interface.toml")
+            interfaces.ROOT / "crates/core/runtime-interface/interface.toml")
         self.assertEqual(spec.words, [
             "crates/core/actions/src/params.rs:SCHEMA_ASSERTIONS",
             "crates/core/actions/src/params.rs:SCHEMA_ANNOTATIONS",
@@ -475,7 +475,7 @@ class ImportTableTests(unittest.TestCase):
 
     def test_the_runtime_interface_lists_the_hosts_wasm_imports(self):
         spec, committed = interfaces.load_spec(
-            interfaces.ROOT / "crates/core/runtime-portal/interface.toml")
+            interfaces.ROOT / "crates/core/runtime-interface/interface.toml")
         self.assertEqual(spec.imports, "crates/lang/tilolang-runtime/src/abi.rs")
         self.assertEqual(committed["IMPORTS"], "imports")
         self.assertEqual(committed["IMPORTS::ui_prop_b"], "iii -> ")

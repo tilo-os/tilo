@@ -2764,13 +2764,13 @@ fn opener() -> Bundle {
 /// The session's tools service, answered here over a connection: each request is answered from
 /// `answers` in turn and kept in `asked`, as the session answers one for an app.
 struct ToolsStub {
-    asked: std::sync::Arc<std::sync::Mutex<Vec<runtime_portal::tools::ToolIntent>>>,
-    answers: std::sync::Arc<std::sync::Mutex<Vec<runtime_portal::tools::ToolReply>>>,
+    asked: std::sync::Arc<std::sync::Mutex<Vec<runtime_interface::tools::ToolIntent>>>,
+    answers: std::sync::Arc<std::sync::Mutex<Vec<runtime_interface::tools::ToolReply>>>,
 }
 
 impl ToolsStub {
     /// A stub answering each request with the next of `answers`, in the order given.
-    fn new(answers: Vec<runtime_portal::tools::ToolReply>) -> Self {
+    fn new(answers: Vec<runtime_interface::tools::ToolReply>) -> Self {
         Self {
             asked: std::sync::Arc::default(),
             answers: std::sync::Arc::new(std::sync::Mutex::new(
@@ -2791,7 +2791,8 @@ impl ToolsStub {
             };
             for line in BufReader::new(stream).lines() {
                 let Ok(line) = line else { return };
-                let Ok(request) = serde_json::from_str::<runtime_portal::tools::ToolRequest>(&line)
+                let Ok(request) =
+                    serde_json::from_str::<runtime_interface::tools::ToolRequest>(&line)
                 else {
                     return;
                 };
@@ -2803,10 +2804,10 @@ impl ToolsStub {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .pop()
-                    .unwrap_or_else(|| runtime_portal::tools::ToolReply {
+                    .unwrap_or_else(|| runtime_interface::tools::ToolReply {
                         accepted: false,
                         message: "the test service has no more answers".into(),
-                        ..runtime_portal::tools::ToolReply::default()
+                        ..runtime_interface::tools::ToolReply::default()
                     });
                 let Ok(mut encoded) = serde_json::to_vec(&reply) else {
                     return;
@@ -2820,7 +2821,7 @@ impl ToolsStub {
     }
 
     /// What it was asked, oldest first.
-    fn asked(&self) -> Vec<runtime_portal::tools::ToolIntent> {
+    fn asked(&self) -> Vec<runtime_interface::tools::ToolIntent> {
         self.asked
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2829,22 +2830,22 @@ impl ToolsStub {
 }
 
 /// A listing that offers `app` for a file of the kind asked, or none when `app` is none.
-fn listing(app: Option<&str>) -> runtime_portal::tools::ToolReply {
-    runtime_portal::tools::ToolReply {
+fn listing(app: Option<&str>) -> runtime_interface::tools::ToolReply {
+    runtime_interface::tools::ToolReply {
         accepted: true,
         message: "listed".into(),
         documents: app
-            .map(|id| runtime_portal::tools::DocumentApp {
+            .map(|id| runtime_interface::tools::DocumentApp {
                 id: id.to_owned(),
                 name: id.to_owned(),
                 is_default: true,
                 icon: None,
-                source: Some(runtime_portal::tools::AppKind::Tilo),
+                source: Some(runtime_interface::tools::AppKind::Tilo),
                 artwork: None,
             })
             .into_iter()
             .collect(),
-        ..runtime_portal::tools::ToolReply::default()
+        ..runtime_interface::tools::ToolReply::default()
     }
 }
 
@@ -2867,7 +2868,7 @@ fn opening_with(stub: &ToolsStub, bytes: &[u8], name: &str) -> (TilolangProcess,
     let hash = content.put(bytes).unwrap();
     let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
     stub.serve(ours);
-    let tools = runtime_portal::tools::Service::connect(theirs, route.cluster_id.to_string());
+    let tools = runtime_interface::tools::Service::connect(theirs, route.cluster_id.to_string());
     let kept = tilolang_process::hosted::Kept {
         content: Some(content.clone()),
         chooser: None,
@@ -2918,10 +2919,10 @@ fn opener_said(host: &TilolangProcess) -> String {
 fn a_file_an_action_holds_opens_in_the_app_that_opens_its_kind() {
     let stub = ToolsStub::new(vec![
         listing(Some("so.tilo.lang.reader")),
-        runtime_portal::tools::ToolReply {
+        runtime_interface::tools::ToolReply {
             accepted: true,
             message: "opened".into(),
-            ..runtime_portal::tools::ToolReply::default()
+            ..runtime_interface::tools::ToolReply::default()
         },
     ]);
     let (mut host, mut window) = opening_with(&stub, b"# Plan\n", "plan.md");
@@ -2936,13 +2937,13 @@ fn a_file_an_action_holds_opens_in_the_app_that_opens_its_kind() {
     assert!(
         matches!(
             &asked[0],
-            runtime_portal::tools::ToolIntent::DocumentApps { path } if path == "file.md"
+            runtime_interface::tools::ToolIntent::DocumentApps { path } if path == "file.md"
         ),
         "the kind a Markdown file is, asked by its name: {:?}",
         asked[0]
     );
     match &asked[1] {
-        runtime_portal::tools::ToolIntent::OpenContent { name, hash, app } => {
+        runtime_interface::tools::ToolIntent::OpenContent { name, hash, app } => {
             assert_eq!(name, "plan.md");
             assert_eq!(app, "so.tilo.lang.reader");
             assert_eq!(hash.len(), 64, "the address of the bytes: {hash}");
@@ -2976,10 +2977,10 @@ fn an_open_the_session_refuses_says_why() {
     let refused = "a file is opened by Files, or by an app that declares files.open";
     let stub = ToolsStub::new(vec![
         listing(Some("so.tilo.lang.reader")),
-        runtime_portal::tools::ToolReply {
+        runtime_interface::tools::ToolReply {
             accepted: false,
             message: refused.into(),
-            ..runtime_portal::tools::ToolReply::default()
+            ..runtime_interface::tools::ToolReply::default()
         },
     ]);
     let (mut host, mut window) = opening_with(&stub, b"# Plan\n", "plan.md");

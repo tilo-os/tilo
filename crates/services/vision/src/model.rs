@@ -142,7 +142,7 @@ impl LocalVision {
         let name = launcher::services::MODEL_GATEWAY_SERVICE;
         let requirement = launcher::manifest::ServiceReq::parse(
             name,
-            &format!("optional@{}", runtime_portal::RUNTIME_INTERFACE_VERSION),
+            &format!("optional@{}", runtime_interface::RUNTIME_INTERFACE_VERSION),
         )
         .ok()?;
         let wanted = std::collections::BTreeMap::from([(name.to_owned(), requirement)]);

@@ -7361,6 +7361,7 @@ dependencies = [
  "tilo-render-protocol",
  "tilo-rt",
  "tilo-runtime-bundle",
+ "tilo-runtime-interface",
  "tilo-runtime-portal",
  "tilo-sandbox-core",
  "tilo-secrets",
@@ -10016,7 +10017,7 @@ dependencies = [
  "tilo-power-mgmt",
  "tilo-printing",
  "tilo-rt",
- "tilo-runtime-portal",
+ "tilo-runtime-interface",
  "tilo-seal",
  "tilo-test-env",
  "tracing",
@@ -19760,6 +19761,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-runtime-interface"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-app-id",
+ "tilo-content-types",
+ "tilo-lock",
+ "tilo-socket",
+ "tilo-test-env",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-runtime-portal"
 version = "0.1.0"
 dependencies = [
@@ -19772,8 +19787,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-action-policy",
- "tilo-app-id",
- "tilo-content-types",
  "tilo-failure",
  "tilo-files",
  "tilo-formats",
@@ -20341,6 +20354,7 @@ dependencies = [
  "tilo-runtime",
  "tilo-runtime-bundle",
  "tilo-runtime-collab",
+ "tilo-runtime-interface",
  "tilo-runtime-portal",
  "tilo-seal",
  "tilo-secrets",
@@ -21519,7 +21533,7 @@ dependencies = [
  "tilo-ocr",
  "tilo-resource",
  "tilo-runtime-fs",
- "tilo-runtime-portal",
+ "tilo-runtime-interface",
  "tilo-service",
  "tilo-surface-compile",
  "tilo-test-env",
@@ -22161,6 +22175,7 @@ dependencies = [
  "tilo-resource",
  "tilo-rich-edit",
  "tilo-runtime-bundle",
+ "tilo-runtime-interface",
  "tilo-runtime-portal",
  "tilo-test-env",
  "tilo-ui",
@@ -22318,6 +22333,7 @@ dependencies = [
  "tilo-resource",
  "tilo-resource-store",
  "tilo-rt",
+ "tilo-runtime-interface",
  "tilo-runtime-portal",
  "tilo-server-protocol",
  "tilo-shm",

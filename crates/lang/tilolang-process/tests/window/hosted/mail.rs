@@ -2191,7 +2191,7 @@ fn an_attachment_saves_as_its_file_and_goes_along_with_what_is_sent() {
     assert!(
         stub.asked().iter().any(|asked| matches!(
             asked,
-            runtime_portal::tools::ToolIntent::OpenContent { name, hash: asked_hash, app }
+            runtime_interface::tools::ToolIntent::OpenContent { name, hash: asked_hash, app }
                 if name == "Lease 2026.pdf" && *asked_hash == hash && app == "so.tilo.pdf"
         )),
         "the lease opens in the PDF viewer: {:?}",
@@ -3883,19 +3883,19 @@ fn a_message_previews_without_being_read() {
 /// The session's tools, as a test serves them: it answers every request as accepted and keeps
 /// what it was asked, so a test reads the opens an action asked for.
 struct Tools {
-    asked: std::sync::Arc<std::sync::Mutex<Vec<runtime_portal::tools::ToolIntent>>>,
+    asked: std::sync::Arc<std::sync::Mutex<Vec<runtime_interface::tools::ToolIntent>>>,
 }
 
 impl Tools {
     /// The session's end of a tools connection, and the stub answering the other end.
-    fn serving() -> (std::sync::Arc<runtime_portal::tools::Service>, Self) {
+    fn serving() -> (std::sync::Arc<runtime_interface::tools::Service>, Self) {
         let stub = Self {
             asked: std::sync::Arc::default(),
         };
         let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("the tools connection");
         stub.serve(ours);
         let service =
-            runtime_portal::tools::Service::connect(theirs, "the window's workspace".to_owned());
+            runtime_interface::tools::Service::connect(theirs, "the window's workspace".to_owned());
         (std::sync::Arc::new(service), stub)
     }
 
@@ -3908,7 +3908,8 @@ impl Tools {
             };
             for line in BufReader::new(stream).lines() {
                 let Ok(line) = line else { return };
-                let Ok(request) = serde_json::from_str::<runtime_portal::tools::ToolRequest>(&line)
+                let Ok(request) =
+                    serde_json::from_str::<runtime_interface::tools::ToolRequest>(&line)
                 else {
                     return;
                 };
@@ -3919,25 +3920,25 @@ impl Tools {
                     .push(intent.clone());
                 let reply = match &intent {
                     // The app that opens a file's kind: the one PDF Viewer, whatever the kind.
-                    runtime_portal::tools::ToolIntent::DocumentApps { .. } => {
-                        runtime_portal::tools::ToolReply {
+                    runtime_interface::tools::ToolIntent::DocumentApps { .. } => {
+                        runtime_interface::tools::ToolReply {
                             accepted: true,
                             message: "listed".to_owned(),
-                            documents: vec![runtime_portal::tools::DocumentApp {
+                            documents: vec![runtime_interface::tools::DocumentApp {
                                 id: "so.tilo.pdf".to_owned(),
                                 name: "PDF Viewer".to_owned(),
                                 is_default: true,
                                 icon: None,
-                                source: Some(runtime_portal::tools::AppKind::Tilo),
+                                source: Some(runtime_interface::tools::AppKind::Tilo),
                                 artwork: None,
                             }],
-                            ..runtime_portal::tools::ToolReply::default()
+                            ..runtime_interface::tools::ToolReply::default()
                         }
                     }
-                    _ => runtime_portal::tools::ToolReply {
+                    _ => runtime_interface::tools::ToolReply {
                         accepted: true,
                         message: "opened".to_owned(),
-                        ..runtime_portal::tools::ToolReply::default()
+                        ..runtime_interface::tools::ToolReply::default()
                     },
                 };
                 let Ok(mut encoded) = serde_json::to_vec(&reply) else {
@@ -3952,7 +3953,7 @@ impl Tools {
     }
 
     /// What it was asked, oldest first.
-    fn asked(&self) -> Vec<runtime_portal::tools::ToolIntent> {
+    fn asked(&self) -> Vec<runtime_interface::tools::ToolIntent> {
         self.asked
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -4026,7 +4027,7 @@ fn a_messages_links_are_listed_and_open_through_the_shell() {
     );
     assert_eq!(
         stub.asked(),
-        [runtime_portal::tools::ToolIntent::OpenLink {
+        [runtime_interface::tools::ToolIntent::OpenLink {
             url: "https://tilo.sh/plan".to_owned(),
         }],
         "the shell opens the address"

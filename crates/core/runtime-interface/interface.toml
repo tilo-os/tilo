@@ -8,14 +8,14 @@
 # every version from `oldest` to `version`.
 name = "runtime"
 version = 53
-version_const = "crates/core/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
-oldest_const = "crates/core/runtime-portal/src/lib.rs:OLDEST_RUNTIME_INTERFACE_VERSION"
+version_const = "crates/core/runtime-interface/src/lib.rs:RUNTIME_INTERFACE_VERSION"
+oldest_const = "crates/core/runtime-interface/src/lib.rs:OLDEST_RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
 sources = [
     "crates/core/tilo-identity-client/src/lib.rs",
     "crates/core/tilo-identity-client/src/profile.rs",
-    "crates/core/runtime-portal/src/tools.rs",
+    "crates/core/runtime-interface/src/tools.rs",
     "crates/core/runtime-collab/src/wire.rs",
     "crates/core/runtime-collab/src/wire/shell.rs",
     "crates/core/runtime-collab/src/lib.rs",
