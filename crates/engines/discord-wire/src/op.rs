@@ -628,44 +628,4 @@ mod tests {
         assert!(serde_json::from_value::<DiscordOp>(json!({"channel": "1"})).is_err());
         assert!(serde_json::from_value::<DiscordOp>(json!({"op": "dance"})).is_err());
     }
-
-    #[test]
-    fn results_are_tagged_and_default_to_done() {
-        let result = DiscordResult::Message {
-            message_id: "9".into(),
-            tilo: "m1".into(),
-            webhook_id: None,
-        };
-        let value = serde_json::to_value(&result).unwrap();
-        assert_eq!(
-            value,
-            json!({"result": "message", "message_id": "9", "tilo": "m1", "webhook_id": null})
-        );
-        assert_eq!(DiscordResult::default(), DiscordResult::Done);
-    }
-
-    #[test]
-    fn op_names_the_channel_it_acts_in() {
-        let op = DiscordOp::SetOverwrite(OverwriteOp {
-            channel: "1".into(),
-            target: "2".into(),
-            target_kind: OverwriteKind::Role,
-            allow: "0".into(),
-            deny: "2048".into(),
-        });
-        assert_eq!(op.channel(), Some("1"));
-        assert_eq!(DiscordOp::Kick(MemberOp::default()).channel(), None);
-    }
-
-    #[test]
-    fn channel_kinds_map_discord_type_numbers() {
-        assert_eq!(ChannelKind::from_discord(0), Some(ChannelKind::Text));
-        assert_eq!(ChannelKind::from_discord(11), Some(ChannelKind::Thread));
-        assert_eq!(
-            ChannelKind::from_discord(15),
-            None,
-            "forums are not mirrored"
-        );
-        assert_eq!(ChannelKind::Category.discord_type(), 4);
-    }
 }

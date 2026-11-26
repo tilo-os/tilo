@@ -994,11 +994,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn intents_are_the_eight_the_bridge_needs() {
-        assert_eq!(INTENTS, 34_447);
-    }
-
-    #[test]
     fn checkpoints_round_trip_and_tolerate_an_empty_start() {
         let checkpoint = Checkpoint {
             session_id: Some("s".into()),

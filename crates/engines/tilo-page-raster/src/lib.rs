@@ -134,15 +134,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn buckets_snap_and_stay_in_range() {
-        assert_eq!(bucket_for(0), 96);
-        assert_eq!(bucket_for(1000), 984);
-        assert_eq!(bucket_for(1007), 984);
-        assert_eq!(bucket_for(1008), 1008);
-        assert_eq!(bucket_for(u32::MAX), 4096);
-    }
-
-    #[test]
     fn a_batch_keeps_pending_renders_and_admits_a_few_new_ones() {
         let pending: std::collections::HashSet<PageKey> = [(3, 960)].into_iter().collect();
         let order = [

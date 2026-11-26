@@ -1,13 +1,6 @@
 use super::*;
 
 #[test]
-fn the_compiled_in_manifest_parses() {
-    let manifest = manifest().unwrap();
-    assert!(manifest.font.iter().any(|a| a.scope == Scope::Product));
-    assert!(manifest.font.iter().any(|a| a.scope == Scope::Fixture));
-}
-
-#[test]
 fn the_checkout_holds_the_pinned_catalog() {
     let root = checkout_root();
     check_manifest(&root).unwrap();

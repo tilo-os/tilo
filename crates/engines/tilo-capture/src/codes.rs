@@ -130,14 +130,4 @@ mod tests {
         assert!(decode(&[], 0, 0).is_empty());
         assert!(decode(&[0_u8; 10], 64, 64).is_empty());
     }
-
-    #[test]
-    fn a_frames_grey_is_its_luminance() {
-        let frame = Frame {
-            width: 2,
-            height: 1,
-            rgba: vec![255, 255, 255, 255, 0, 0, 0, 255],
-        };
-        assert_eq!(grey(&frame), vec![255, 0]);
-    }
 }

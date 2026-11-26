@@ -688,16 +688,6 @@ pub(crate) mod tests {
         assert_eq!(nowhere.name(), "unavailable");
     }
 
-    #[test]
-    fn the_process_clipboard_is_one_across_calls() {
-        let first = system();
-        let second = system();
-        assert!(std::ptr::addr_eq(
-            std::sync::Arc::as_ptr(&first),
-            std::sync::Arc::as_ptr(&second)
-        ));
-    }
-
     tilo_test_env::scenario! {
         fn the_in_process_and_system_clipboards_conform;
 

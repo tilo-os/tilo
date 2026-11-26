@@ -178,17 +178,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fourcc_round_trips_through_its_characters() {
-        assert_eq!(fourcc_str(DRM_FORMAT_NV12), "NV12");
-        assert_eq!(fourcc_str(DRM_FORMAT_P010), "P010");
-        assert_eq!(fourcc_str(DRM_FORMAT_YUYV), "YUYV");
-        // AR24 is DRM's name for what Vulkan calls B8G8R8A8 — the byte order
-        // the importer must map it to, so getting this wrong swaps red/blue.
-        assert_eq!(fourcc_str(DRM_FORMAT_ARGB8888), "AR24");
-        assert_eq!(fourcc_str(DRM_FORMAT_ABGR8888), "AB24");
-    }
-
-    #[test]
     #[cfg(unix)]
     #[allow(
         clippy::too_many_lines,

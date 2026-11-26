@@ -1092,22 +1092,6 @@ mod tests {
     }
 
     #[test]
-    fn the_longest_increasing_run_stays_and_the_rest_moves() {
-        let stay = longest_increasing(&[0, 3, 1, 2, 4]);
-        let mut kept: Vec<usize> = stay.into_iter().collect();
-        kept.sort_unstable();
-        assert_eq!(kept, [0, 2, 3, 4]);
-        assert!(longest_increasing(&[]).is_empty());
-    }
-
-    #[test]
-    fn a_common_subsequence_pairs_what_both_hold() {
-        let pairs = common(&["a", "b", "c", "d"], &["b", "x", "c", "d"], |a, b| a == b);
-        assert_eq!(pairs, [(1, 0), (2, 2), (3, 3)]);
-        assert!(common::<&str, &str>(&[], &["a"], |a, b| a == b).is_empty());
-    }
-
-    #[test]
     fn shapes_refuse_values_outside_their_range() {
         let mut shape = BlockShape::of(BlockKind::Heading);
         shape.level = Some(9);

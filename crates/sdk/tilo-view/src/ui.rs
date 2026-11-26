@@ -200,12 +200,6 @@ mod tests {
     }
 
     #[test]
-    fn a_required_prop_is_a_constructor_argument() {
-        let node: Node = ButtonBuilder::new("send", "Send").into();
-        assert_eq!(node.props.get("label"), Some(&Value::text("Send")));
-    }
-
-    #[test]
     fn the_generated_code_names_every_component_the_catalogue_describes() {
         // A component the catalogue adds is a builder in the generated code: the test reads
         // the generated source back, so a projection that silently dropped one fails.

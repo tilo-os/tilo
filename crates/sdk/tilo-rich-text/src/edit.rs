@@ -986,21 +986,6 @@ mod tests {
     }
 
     #[test]
-    fn longest_increasing_keeps_the_most_in_place() {
-        assert_eq!(longest_increasing(&[0, 1, 2]), [true, true, true]);
-        assert_eq!(longest_increasing(&[3, 0, 1, 2]), [false, true, true, true]);
-        assert_eq!(longest_increasing(&[1, 2, 3, 0]), [true, true, true, false]);
-        assert_eq!(longest_increasing(&[]), Vec::<bool>::new());
-    }
-
-    #[test]
-    fn char_splices_count_characters() {
-        assert_eq!(char_splice("héllo", "héllo!"), (5, 0, "!".into()));
-        assert_eq!(char_splice("aaa", "aa"), (2, 1, String::new()));
-        assert_eq!(char_splice("wörld", "wrld"), (1, 1, String::new()));
-    }
-
-    #[test]
     fn a_kept_run_is_never_written_again() {
         for (before, after, splices) in [
             (

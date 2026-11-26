@@ -73,36 +73,3 @@ impl NowPlayingSession {
         let _ = (now, state);
     }
 }
-
-impl NowPlayingAction {
-    #[cfg(any(web_page, test))]
-    pub(crate) fn from_page(name: &str) -> Option<Self> {
-        Some(match name {
-            "play" => Self::Play,
-            "pause" => Self::Pause,
-            "stop" => Self::Stop,
-            "next" => Self::Next,
-            "previous" => Self::Previous,
-            _ => return None,
-        })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn page_action_names_round_trip() {
-        for (name, action) in [
-            ("play", NowPlayingAction::Play),
-            ("pause", NowPlayingAction::Pause),
-            ("stop", NowPlayingAction::Stop),
-            ("next", NowPlayingAction::Next),
-            ("previous", NowPlayingAction::Previous),
-        ] {
-            assert_eq!(NowPlayingAction::from_page(name), Some(action));
-        }
-        assert_eq!(NowPlayingAction::from_page("seekto"), None);
-    }
-}

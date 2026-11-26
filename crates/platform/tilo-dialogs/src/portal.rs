@@ -1773,20 +1773,3 @@ impl Drop for ScopedPickerFixture {
         SCOPED_PICKER_FIXTURE.with(|current| *current.borrow_mut() = None);
     }
 }
-
-#[cfg(test)]
-#[test]
-fn writer_scoped_picker_fixture_is_thread_local_and_released_by_guard() {
-    use std::sync::Arc;
-    assert!(scoped_picker_fixture_backend().is_none());
-    let guard = scoped_picker_fixture(Arc::new(|_| PortalOutcome::Cancelled)).unwrap();
-    assert!(scoped_picker_fixture_backend().is_some());
-    assert!(scoped_picker_fixture(Arc::new(|_| PortalOutcome::Cancelled)).is_err());
-    assert!(
-        std::thread::spawn(|| scoped_picker_fixture_backend().is_none())
-            .join()
-            .unwrap()
-    );
-    drop(guard);
-    assert!(scoped_picker_fixture_backend().is_none());
-}

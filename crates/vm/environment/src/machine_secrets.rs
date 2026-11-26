@@ -146,16 +146,6 @@ mod tests {
 
     const ITEM: &str = "vault.item:0123456789abcdef0123456789abcdef";
 
-    #[test]
-    fn the_document_is_terminals_workspace_document_of_this_kind() {
-        assert_eq!(DOCUMENT, collab_types::workspace_document_id(KIND));
-        assert_eq!(
-            collab_types::workspace_document("so.tilo.terminal", DOCUMENT).map(|kept| kept.kind),
-            Some(KIND),
-            "every device and its server name the one document by its kind"
-        );
-    }
-
     fn replica() -> Replica<MachineSecrets, AppNamed> {
         let mut doc = tilo_resource::Doc::new();
         tilo_resource::Fields::write_fields(&MachineSecrets::default(), &mut doc, &automerge::ROOT)

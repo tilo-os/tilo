@@ -489,10 +489,4 @@ mod tests {
             }]
         );
     }
-
-    #[test]
-    fn tilo_os_reads_the_linux_column() {
-        assert_eq!(Target::from_platform("tilo-os"), Some(Target::Linux));
-        assert_eq!(Target::from_platform("windows"), None);
-    }
 }

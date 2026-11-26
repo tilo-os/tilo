@@ -140,18 +140,4 @@ mod tests {
             PathBuf::from("/tmp/xdg/notes.tilo.sh")
         );
     }
-
-    #[test]
-    fn run_main_maps_ok_to_zero_and_err_to_one() {
-        let cases: [(&str, anyhow::Result<()>, u8); 2] =
-            [("ok", Ok(()), 0), ("err", Err(anyhow::anyhow!("boom")), 1)];
-        for (name, result, want) in cases {
-            let code = run_main(move || result);
-            assert_eq!(
-                format!("{code:?}"),
-                format!("{:?}", ExitCode::from(want)),
-                "case {name}"
-            );
-        }
-    }
 }

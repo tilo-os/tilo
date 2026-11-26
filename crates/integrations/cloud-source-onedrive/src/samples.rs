@@ -208,16 +208,3 @@ pub const GET_DRIVE: &str = r#"{
         "total": 1099511627776
     }
 }"#;
-
-/// The error resource (Microsoft Graph error responses).
-pub const ERROR: &str = r#"{
-  "error": {
-    "code": "invalidRange",
-    "message": "Uploaded fragment overlaps with existing data.",
-    "innerError": {
-      "code": "invalidRange",
-      "request-id": "request-id",
-      "date": "date-time"
-    }
-  }
-}"#;

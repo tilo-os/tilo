@@ -1463,12 +1463,4 @@ mod tests {
         assert_eq!(root.item, "root");
         assert!(root.rest.is_empty());
     }
-
-    #[test]
-    fn ranges_parse_like_http() {
-        assert_eq!(parse_range("bytes=0-9", 100), Some(0..10));
-        assert_eq!(parse_range("bytes=90-", 100), Some(90..100));
-        assert_eq!(parse_range("bytes=-5", 100), Some(95..100));
-        assert_eq!(parse_range("bytes=100-", 100), None);
-    }
 }

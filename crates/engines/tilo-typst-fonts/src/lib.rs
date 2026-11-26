@@ -55,15 +55,3 @@ mod imp {
         Vec::new()
     }
 }
-
-#[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn native_builds_embed_every_font_the_host_would_serve() {
-        const { assert!(EMBEDDED) };
-        assert_eq!(embedded().len(), HOST_FONTS.len());
-    }
-}

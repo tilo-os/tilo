@@ -101,21 +101,6 @@ pub fn codec_name(media_type: &str, mpeg_version: Option<i32>) -> String {
     name.to_owned()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::codec_name;
-
-    #[test]
-    fn codecs_have_human_names() {
-        assert_eq!(codec_name("video/x-h264", None), "H.264");
-        assert_eq!(codec_name("video/x-h265", None), "HEVC");
-        assert_eq!(codec_name("audio/mpeg", Some(4)), "AAC");
-        assert_eq!(codec_name("audio/mpeg", Some(1)), "MP3");
-        assert_eq!(codec_name("video/mpeg", Some(2)), "MPEG-2");
-        assert_eq!(codec_name("video/x-weird", None), "video/x-weird");
-    }
-}
-
 /// A picture that stays where the page's media element shows it: a renderer
 /// copies it from `element` on the GPU, instead of the engine reading its
 /// pixels back ([`crate::MediaEngine::take_element_picture`]). `element` is

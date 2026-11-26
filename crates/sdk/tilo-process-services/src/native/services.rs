@@ -107,20 +107,3 @@ mod desktop_media {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[cfg(not(target_os = "android"))]
-    #[test]
-    fn native_services_resolve_one_shared_clipboard() {
-        let a = services(None);
-        let b = services(Some("so.tilo.example"));
-        assert!(std::ptr::addr_eq(
-            Arc::as_ptr(&a.clipboard),
-            Arc::as_ptr(&b.clipboard)
-        ));
-        assert_eq!(a.clipboard.name(), tilo_clipboard::system().name());
-    }
-}

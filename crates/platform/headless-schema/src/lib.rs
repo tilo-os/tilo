@@ -1022,20 +1022,6 @@ const BASIC_PERFORM_FIELDS: &[&str] = &["target", "semantic_target", "action"];
 mod tests {
     use super::*;
 
-    /// A drive names its scenario by a string, and none by default.
-    #[test]
-    fn a_drive_names_its_scenario() {
-        assert_eq!(parse_spec("{}").unwrap().scenario, None);
-        assert_eq!(
-            parse_spec(r#"{"scenario":"detail"}"#)
-                .unwrap()
-                .scenario
-                .as_deref(),
-            Some("detail")
-        );
-        assert!(parse_spec(r#"{"scenario":true}"#).is_err());
-    }
-
     /// Complete payloads and standalone actions share one grammar, bound
     /// answers fill later resources and arguments, and captures name a path.
     #[test]

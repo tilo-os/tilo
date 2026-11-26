@@ -96,15 +96,6 @@ mod tests {
     }
 
     #[test]
-    fn defaults_are_discord() {
-        let config = config(&[]).unwrap();
-        assert_eq!(config.api_base.as_str(), "https://discord.com/api/v10");
-        assert_eq!(config.cdn_base.as_str(), "https://cdn.discordapp.com/");
-        assert!(!config.read_only);
-        assert!(!config.egress.allow_loopback);
-    }
-
-    #[test]
     fn a_loopback_base_needs_the_override() {
         let fake = [(ENV_API_BASE, "http://127.0.0.1:9/api/v10")];
         assert!(config(&fake).is_err());

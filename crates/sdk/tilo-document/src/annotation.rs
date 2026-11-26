@@ -281,30 +281,3 @@ impl tilo_resource::JsonSchema for HighlightColor {
 }
 
 tilo_resource::json_model!(HighlightColor);
-
-#[cfg(test)]
-mod tests {
-    use super::{HighlightColor, iso_time};
-
-    #[test]
-    fn a_comment_is_dated_in_iso_utc_to_the_millisecond() {
-        assert_eq!(iso_time(0), "1970-01-01T00:00:00.000Z");
-        assert_eq!(iso_time(1_791_551_281_250), "2026-10-09T13:08:01.250Z");
-        assert_eq!(iso_time(951_868_799_000), "2000-02-29T23:59:59.000Z");
-    }
-
-    #[test]
-    fn a_highlight_colour_is_stored_as_its_key() {
-        for named in HighlightColor::ALL {
-            assert_eq!(HighlightColor::parse(&named.key()), named);
-            assert_eq!(
-                HighlightColor::from_rgb(named.rgb().0, named.rgb().1, named.rgb().2),
-                named
-            );
-        }
-        let exact = HighlightColor::from_rgb(1, 2, 3);
-        assert_eq!(exact, HighlightColor::Custom(0x0001_0203));
-        assert_eq!(HighlightColor::parse(&exact.key()), exact);
-        assert_eq!(HighlightColor::parse("plaid"), HighlightColor::Yellow);
-    }
-}

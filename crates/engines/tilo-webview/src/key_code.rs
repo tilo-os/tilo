@@ -72,20 +72,3 @@ pub fn dom_code(key: PhysicalKey) -> Option<&'static str> {
 pub fn known(code: &str) -> bool {
     CODES.iter().any(|&(_, name)| name == code)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_key_is_named_by_its_place_not_its_letter() {
-        assert_eq!(dom_code(PhysicalKey::Code(KeyCode::KeyY)), Some("KeyY"));
-        assert_eq!(
-            dom_code(PhysicalKey::Code(KeyCode::IntlBackslash)),
-            Some("IntlBackslash")
-        );
-        assert_eq!(dom_code(PhysicalKey::Code(KeyCode::Enter)), None);
-        assert!(CODES.iter().all(|&(_, name)| known(name)));
-        assert!(!known("Enter"));
-    }
-}

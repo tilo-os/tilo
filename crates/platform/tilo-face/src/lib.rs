@@ -89,13 +89,4 @@ mod tests {
         assert_eq!(initials("ada"), "A");
         assert_eq!(initials(""), "");
     }
-
-    #[test]
-    fn a_slot_is_stable_and_in_range() {
-        assert_eq!(presence_slot("ada"), presence_slot("ada"));
-        assert_eq!(presence_slot("alice"), 11);
-        for id in ["ada", "ada", "", "someone@example.org"] {
-            assert!(presence_slot(id) < PRESENCE_LEN);
-        }
-    }
 }

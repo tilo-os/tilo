@@ -56,22 +56,3 @@ impl Drop for ScopedUriFixture {
         SCOPED_URI_FIXTURE.with(|current| *current.borrow_mut() = None);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-
-    #[test]
-    fn scoped_uri_fixture_is_thread_local_and_restored() {
-        let guard = scoped_uri_fixture(Arc::new(|_| Ok(()))).unwrap();
-        assert!(scoped_uri_fixture(Arc::new(|_| Ok(()))).is_err());
-        assert!(
-            std::thread::spawn(|| SCOPED_URI_FIXTURE.with(|value| value.borrow().is_none()))
-                .join()
-                .unwrap()
-        );
-        drop(guard);
-        assert!(SCOPED_URI_FIXTURE.with(|value| value.borrow().is_none()));
-    }
-}

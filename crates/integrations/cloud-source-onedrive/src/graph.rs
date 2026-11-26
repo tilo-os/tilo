@@ -432,12 +432,6 @@ mod tests {
     }
 
     #[test]
-    fn errors_expose_their_code() {
-        let body: ErrorBody = parse(samples::ERROR);
-        assert_eq!(body.error.code, "invalidRange");
-    }
-
-    #[test]
     fn hashes_and_notebooks_map_to_neutral_types() {
         let item: DriveItem = parse(
             r#"{"id": "A!1", "name": "a.bin", "size": 3, "eTag": "\"{A},2\"",

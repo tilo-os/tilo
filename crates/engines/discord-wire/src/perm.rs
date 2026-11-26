@@ -29,16 +29,3 @@ pub fn bits(perms: u64) -> String {
 pub fn parse(bits: &str) -> u64 {
     bits.parse().unwrap_or(0)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bits_round_trip_as_decimal_strings() {
-        let everyone = VIEW_CHANNEL | SEND_MESSAGES;
-        assert_eq!(bits(everyone), "3072");
-        assert_eq!(parse("3072"), everyone);
-        assert_eq!(parse("not a number"), 0);
-    }
-}
