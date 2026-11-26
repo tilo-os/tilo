@@ -283,12 +283,20 @@ pub struct Answer {
 }
 
 impl Firing {
-    /// Who its run is started as: its saver, or the agent of theirs that saved it.
+    /// Who its run is started as: its saver, or the agent of theirs that saved it, holding what
+    /// the certificate that made its key delegates in the workspace: the same grants its turn
+    /// acts with, so the run reaches what it saved there.
     #[must_use]
     pub fn caller(&self) -> Caller {
         let caller = match (&self.agent, person_key(&self.saver)) {
             (Some((agent, key)), Some(person)) => {
-                Caller::delegated_agent(agent.clone(), person, *key)
+                Caller::delegated_agent(agent.clone(), person, *key).granting(
+                    tilo_action_policy::roles::certified_agent(
+                        &self.workspace,
+                        (agent, &self.saver),
+                        &self.saver,
+                    ),
+                )
             }
             _ => Caller::local_person(self.saver.clone()),
         };
