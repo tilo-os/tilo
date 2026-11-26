@@ -939,7 +939,7 @@ fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
             &[tilo_action_policy::Grant::new(
                 "scout-works-here",
                 tilo_action_policy::Grantee::agent("scout", host.person().to_owned()),
-                tilo_action_policy::TreePath::workspace(workspace.as_str()),
+                tilo_action_policy::TreePath::root(),
                 tilo_action_policy::KindSet::ALL,
                 tilo_action_policy::Answer::Allow,
                 tilo_action_policy::Grantee::person(host.person().to_owned()),
@@ -1077,12 +1077,12 @@ fn a_file_a_message_carries_is_told_to_the_turn_and_read_as_content_from_outside
             host,
             &channel,
             "What does Bo ask for?",
-            // A `List<File>` as a tilolang action takes its values: each an encoded file.
-            json!({"attachments": {"list": [{"file": {
+            // A `List<File>` as a tilolang action takes its values: a list of encoded files.
+            json!({"attachments": [{"file": {
                 "content": content,
                 "name": "from Bo.md",
                 "size": CARRIED.len(),
-            }}]}}),
+            }}]}),
         )
         .await;
         assert!(
