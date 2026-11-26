@@ -803,11 +803,12 @@ impl Apps {
         }
         let launch = self.start(app_id, workspace)?;
         let pid = launch.pid;
+        let watched = app_id.to_owned();
         let launched = Arc::clone(&self.launched);
         std::thread::Builder::new()
             .name("tilo-app-reaper".into())
             .spawn(move || {
-                launch.wait();
+                watch_end(&watched, launch);
                 launched.forget(pid);
                 // The default presentation's launch lock lives while its app runs: a start
                 // during it waits, or shows the window this one published.
@@ -965,13 +966,27 @@ impl Apps {
             }
             if self.connection_wait {
                 if warned.elapsed() >= std::time::Duration::from_secs(5) {
+                    // A start whose app never connects is a start that failed: the first
+                    // report is an error, with the last of what the app wrote, so a session
+                    // log that keeps errors alone still says why. The ones after it are the
+                    // same wait going on, and stay at warn.
+                    let first = warned == started;
                     warned = std::time::Instant::now();
-                    tracing::warn!(
-                        app = app_id,
-                        waited_s = started.elapsed().as_secs(),
-                        said = launch.said(),
-                        "an app has not connected since its start"
-                    );
+                    if first {
+                        tracing::error!(
+                            app = app_id,
+                            waited_s = started.elapsed().as_secs(),
+                            said = launch.said(),
+                            "an app has not connected since its start"
+                        );
+                    } else {
+                        tracing::warn!(
+                            app = app_id,
+                            waited_s = started.elapsed().as_secs(),
+                            said = launch.said(),
+                            "an app has not connected since its start"
+                        );
+                    }
                 }
             } else if started.elapsed() >= std::time::Duration::from_millis(100) {
                 break;
@@ -992,12 +1007,13 @@ impl Apps {
     ) -> Result<Option<u64>, String> {
         let launch = self.start_showing(app, workspace, shows, record)?;
         let ticket = self.launched.ticket(launch.pid);
+        let watched = app.to_owned();
         let launched = Arc::clone(&self.launched);
         std::thread::Builder::new()
             .name("tilo-app-reaper".into())
             .spawn(move || {
                 let pid = launch.pid;
-                launch.wait();
+                watch_end(&watched, launch);
                 launched.forget(pid);
             })
             .map(|_| ticket)
@@ -1013,6 +1029,30 @@ impl Apps {
     fn start_tilolang_window(&self, app: &str, workspace: &str) -> Result<(), String> {
         self.instances
             .start_window(app, workspace, self.origin_connection(app, workspace)?)
+    }
+}
+
+/// Follow `app`'s `launch` until it ends, and say how: an app the device started that stops
+/// while the device runs is a start or an app that failed, and how it ended and the last of
+/// what it wrote are the only trace of why. An app the person closed ends clean.
+fn watch_end(app: &str, launch: Launch) {
+    let stderr = std::sync::Arc::clone(&launch.stderr);
+    let pid = launch.pid;
+    let status = launch.wait();
+    let said = stderr
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let said = said.trim();
+    match &status {
+        Some(status) if status.success() => {
+            tracing::info!(app, pid, %status, said, "an app ended");
+        }
+        Some(status) => {
+            tracing::error!(app, pid, %status, said, "an app ended as it ran");
+        }
+        None => {
+            tracing::error!(app, pid, said, "an app ended without a status");
+        }
     }
 }
 
@@ -1417,7 +1457,7 @@ impl Launch {
             .clone()
     }
 
-    /// Wait for the process to exit; its exit code, when it exited normally.
+    /// Wait for the process to exit, and how it did.
     #[cfg_attr(
         target_os = "android",
         expect(
@@ -1425,7 +1465,7 @@ impl Launch {
             reason = "with no app sandbox here, no launched process waits"
         )
     )]
-    pub fn wait(self) -> Option<i32> {
+    pub fn wait(self) -> Option<std::process::ExitStatus> {
         #[cfg(target_os = "linux")]
         let status = {
             let mut child = self.child;
@@ -1443,7 +1483,7 @@ impl Launch {
         };
         #[cfg(target_os = "android")]
         let status: Option<std::process::ExitStatus> = None;
-        status.and_then(|status| status.code())
+        status
     }
 
     #[cfg_attr(

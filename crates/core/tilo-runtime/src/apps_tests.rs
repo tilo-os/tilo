@@ -1579,7 +1579,8 @@ int main(void) {
     // The app's connection is queued, never accepted; closing the listener
     // ends it, and the probe's read with it.
     drop(collab);
-    assert_eq!(launch.wait(), Some(0));
+    let status = launch.wait().expect("the probe's process ended");
+    assert!(status.success(), "the probe ended as it ran: {status}");
 }
 
 /// A connection this daemon makes for an instance it starts itself names that instance, and the
