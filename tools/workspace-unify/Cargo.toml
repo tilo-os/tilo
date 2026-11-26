@@ -1074,7 +1074,7 @@ doc = false
 "tilo-cloud-source-onedrive" = { path = "../../crates/integrations/cloud-source-onedrive", default-features = false, features = ["fake-server"] }
 "tilo-collab-admission" = { path = "../../crates/core/collab-admission", default-features = false, features = [] }
 "tilo-collab-types" = { path = "../../crates/core/collab-types", default-features = false, features = [] }
-"tilo-collaboration" = { path = "../../crates/core/collaboration", default-features = false, features = ["audio", "broker-transport", "default", "local-daemons", "native", "test-support"] }
+"tilo-collaboration" = { path = "../../crates/core/collaboration", default-features = false, features = ["broker-transport", "default", "local-daemons", "native", "test-support"] }
 "tilo-color-params" = { path = "../../crates/desktop/color-params", default-features = false, features = [] }
 "tilo-color-pipeline" = { path = "../../crates/desktop/color-pipeline", default-features = false, features = [] }
 "tilo-component-scan" = { path = "../../crates/ui/tilo-component-scan", default-features = false, features = [] }
@@ -2270,7 +2270,7 @@ doc = false
 "tilo-clipboard" = { path = "../../crates/platform/tilo-clipboard", default-features = false, features = ["os"] }
 "tilo-clock" = { path = "../../crates/platform/tilo-clock", default-features = false, features = ["local", "test-support"] }
 "tilo-collab-types" = { path = "../../crates/core/collab-types", default-features = false, features = [] }
-"tilo-collaboration" = { path = "../../crates/core/collaboration", default-features = false, features = ["audio", "broker-transport", "default", "local-daemons", "native", "test-support"] }
+"tilo-collaboration" = { path = "../../crates/core/collaboration", default-features = false, features = ["broker-transport", "default", "local-daemons", "native", "test-support"] }
 "tilo-component-scan" = { path = "../../crates/ui/tilo-component-scan", default-features = false, features = [] }
 "tilo-content" = { path = "../../crates/core/content", default-features = false, features = ["default", "dir"] }
 "tilo-content-types" = { path = "../../crates/core/content-types", default-features = false, features = [] }
@@ -3541,7 +3541,7 @@ doc = false
 "tilo-cloud-source-icloud" = { path = "../../crates/integrations/cloud-source-icloud", default-features = false, features = ["fake-server"] }
 "tilo-cloud-source-onedrive" = { path = "../../crates/integrations/cloud-source-onedrive", default-features = false, features = ["fake-server"] }
 "tilo-collab-types" = { path = "../../crates/core/collab-types", default-features = false, features = [] }
-"tilo-collaboration" = { path = "../../crates/core/collaboration", default-features = false, features = ["audio", "broker-transport", "default", "local-daemons", "native", "test-support"] }
+"tilo-collaboration" = { path = "../../crates/core/collaboration", default-features = false, features = ["broker-transport", "default", "local-daemons", "native", "test-support"] }
 "tilo-color-params" = { path = "../../crates/desktop/color-params", default-features = false, features = [] }
 "tilo-color-pipeline" = { path = "../../crates/desktop/color-pipeline", default-features = false, features = [] }
 "tilo-component-scan" = { path = "../../crates/ui/tilo-component-scan", default-features = false, features = [] }

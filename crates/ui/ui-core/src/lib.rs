@@ -124,6 +124,9 @@ pub mod animation;
 pub mod arriving;
 /// What wants a person: the waiting stack, and the log an outcome goes to when it does not.
 pub mod attention;
+/// An app's sound on its device's output, over the connection its launcher handed it.
+#[cfg(not(target_arch = "wasm32"))]
+mod audio_output;
 pub mod author;
 pub mod capability;
 pub mod content_zoom;

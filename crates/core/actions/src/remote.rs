@@ -43,6 +43,8 @@ mod application;
 /// The device's project checks an app runs by id, and the receipt each run leaves.
 pub mod approved_checks;
 pub mod asked;
+/// An app's sound output on the device, on the connection its launcher handed it.
+pub mod audio_output;
 pub mod browser;
 /// An outside service's call carried into a workspace's call, on an app's connection.
 pub mod call;
@@ -2444,6 +2446,17 @@ pub enum RemoteActionMessage {
     /// What the device says the outside call should show of who is on the workspace's side.
     /// Sent by the device, never asked for.
     CallStatus(call::CallStatus),
+    /// One command for the device's sound output, on the line an app's launcher handed it. A
+    /// write's PCM follows the frame as its binary body ([`audio_output::Request::body_len`]).
+    AudioOutputRequest {
+        correlation: u64,
+        command: audio_output::Request,
+    },
+    /// Answer to [`Self::AudioOutputRequest`], same correlation.
+    AudioOutputResponse {
+        correlation: u64,
+        result: Result<audio_output::Snapshot, ActionCallError>,
+    },
 }
 
 /// One record a reader asks for over the action API: alone, or `joined`
@@ -2548,6 +2561,7 @@ impl RemoteActionMessage {
                 | Self::ChangesRequest { .. }
                 | Self::ChangedRequest { .. }
                 | Self::SurfaceRequest { .. }
+                | Self::AudioOutputRequest { .. }
         )
     }
 }
@@ -2735,6 +2749,13 @@ fn read_answered<H: ActionProvider>(
     resource_read::unanswered(correlation)
 }
 
+/// A sound output lane is its own host's, never a provider's: one asked here says it carries none.
+fn no_audio_output_lane() -> ActionCallError {
+    ActionCallError::Unavailable {
+        reason: "this connection carries no sound output lane".into(),
+    }
+}
+
 /// A call lane is its own host's, never a provider's: one asked here says it carries none.
 fn no_call_lane() -> ActionCallError {
     ActionCallError::Unavailable {
@@ -2836,6 +2857,14 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
                 result: Err(no_call_lane()),
             })
         }
+        // A sound output lane is its own host's, never a provider's: one asked here says it
+        // carries none.
+        RemoteActionMessage::AudioOutputRequest { correlation, .. } => {
+            Pending::ready(RemoteActionMessage::AudioOutputResponse {
+                correlation,
+                result: Err(no_audio_output_lane()),
+            })
+        }
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
@@ -2854,6 +2883,7 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         | RemoteActionMessage::CallHeard(_)
         | RemoteActionMessage::CallSaid(_)
         | RemoteActionMessage::CallStatus(_)
+        | RemoteActionMessage::AudioOutputResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => return None,
     };
     // An abandoned answer still answers: the caller hears a refusal.

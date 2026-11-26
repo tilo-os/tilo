@@ -296,12 +296,10 @@ pub enum Changes {
 }
 
 /// A host service a [`Operation::Command`] addresses. Their commands are
-/// internally tagged JSON (`native_media::Command`, `audio_output::Command`,
-/// ...) or their own postcard, which the wire carries as they are.
+/// internally tagged JSON (`native_media::Request`, ...) or their own postcard,
+/// which the wire carries as they are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Service {
-    /// `audio_output::Command` -> `audio_output::Snapshot`, JSON.
-    AudioOutput,
     /// `native_media::Request` -> `native_media::Snapshot`, JSON.
     NativeMedia,
     /// `BrowserServiceSessionCommand` -> `BrowserServiceSessionReply`; the

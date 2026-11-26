@@ -87,30 +87,6 @@ async fn file_clipboard_raw_admitted_channel_cannot_mint_local_ownership() {
         .await;
 }
 
-#[cfg(test)]
-#[tokio::test(flavor = "current_thread")]
-async fn audio_output_raw_admitted_channel_cannot_open_or_write_host_pcm() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let fixture = local_directory_fixture();
-            let channel = fixture.invocation_channel();
-            for command in [
-                runtime_collab::audio_output::Command::Open {},
-                runtime_collab::audio_output::Command::Write {
-                    generation: 1,
-                    sequence: 1,
-                    samples: vec![123; 1920],
-                },
-            ] {
-                let error = channel.audio_output_command(&command).await.expect_err(
-                    "an admitted remote/raw route cannot manufacture launcher process ownership",
-                );
-                assert!(error.to_string().contains("launcher-attested"), "{error}");
-            }
-        })
-        .await;
-}
-
 tilo_test_env::scenario! {
     fn a_certified_join_is_verified_and_admitted_by_its_workspace;
 

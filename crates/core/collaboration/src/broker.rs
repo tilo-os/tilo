@@ -18,9 +18,6 @@ use super::{
     TransportStatus, Uuid, auto_hello_env, mpsc,
 };
 
-#[cfg(feature = "audio")]
-#[path = "audio_output.rs"]
-mod audio_output;
 #[path = "broker_bytes.rs"]
 mod bytes;
 #[path = "refused_answer.rs"]
@@ -2131,10 +2128,6 @@ impl CollaborationManager {
         let configured = crate::process::environment()
             .identity
             .collab_service_configured;
-        #[cfg(feature = "audio")]
-        if configured {
-            media::audio_output::require_governed();
-        }
         // A window the shell opened in this running process has a
         // connection of its own (`ui::window_link`); the one the launcher
         // handed the process is its first window's.

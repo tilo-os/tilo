@@ -279,12 +279,13 @@ impl AudioOutputServices for SeatAudioOutput {
     fn output(
         &self,
         context: NativeMediaRequestContext,
-        command: runtime_collab::audio_output::Command,
+        request: tilo_actions::remote::audio_output::Request,
+        samples: Vec<i16>,
     ) -> AudioOutputFuture {
         let asked = self.0.call(
             calls::AUDIO_OUTPUT,
             calls::COMMAND,
-            json!({"context": MediaContext::from(&context), "command": command}),
+            json!({"context": MediaContext::from(&context), "request": request, "samples": samples}),
         );
         Box::pin(async move {
             context.revalidate()?;

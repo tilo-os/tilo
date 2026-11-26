@@ -13,6 +13,7 @@ use tilo_lock::MutexRecover as _;
 
 use super::frame_line_in;
 use crate::outcome::InvocationId;
+use crate::remote::audio_output::{self, Request as AudioOutputRequest, Snapshot as AudioSnapshot};
 use crate::remote::call::{BridgedCall, CallAudio, CallReport, CallStatus};
 use crate::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ChangeFeed, ChangePage,
@@ -167,6 +168,18 @@ impl LineClient {
         message: RemoteActionMessage,
         workspace: Option<&str>,
     ) -> Pending<Answered<RemoteActionMessage>> {
+        self.ask_with_body_in(key, message, workspace, &[])
+    }
+
+    /// [`Self::ask_in`], writing `body` after the frame as one write of the connection: what a
+    /// sound output write carries its PCM as.
+    fn ask_with_body_in(
+        &self,
+        key: Key,
+        message: RemoteActionMessage,
+        workspace: Option<&str>,
+        body: &[u8],
+    ) -> Pending<Answered<RemoteActionMessage>> {
         let (asked, answer) = pending();
         {
             let mut waiting = self.0.waiting.lock_recover();
@@ -189,7 +202,9 @@ impl LineClient {
         let line = frame_line_in(message, workspace);
         let sent = {
             let mut writer = self.0.writer.lock_recover();
-            writeln!(writer, "{line}").and_then(|()| writer.flush())
+            writeln!(writer, "{line}")
+                .and_then(|()| writer.write_all(body))
+                .and_then(|()| writer.flush())
         };
         if let Err(error) = sent {
             end(
@@ -388,6 +403,7 @@ fn answered(shared: &Shared, message: RemoteActionMessage) {
         RemoteActionMessage::CatalogueResponse { correlation, .. }
         | RemoteActionMessage::CallCarryResponse { correlation, .. }
         | RemoteActionMessage::CallReportResponse { correlation, .. }
+        | RemoteActionMessage::AudioOutputResponse { correlation, .. }
         | RemoteActionMessage::ResourceReading { correlation, .. }
         | RemoteActionMessage::ContentPutResponse { correlation, .. }
         | RemoteActionMessage::ContentGetResponse { correlation, .. }
@@ -734,6 +750,120 @@ impl LineClient {
     #[must_use]
     pub fn asked_call(&self) -> Option<CallStatus> {
         self.0.waiting.lock_recover().asked.take()
+    }
+}
+
+/// An app's sound output on its device ([`crate::remote::audio_output`]): the commands its media
+/// stack sends, and the output's state as the device answers. Every command waits at most
+/// [`audio_output::DEADLINE`]; a write past a full device queue is answered with the sequence
+/// still accepted, which the caller retries.
+impl LineClient {
+    /// One command of an app's sound output, waited for.
+    ///
+    /// # Errors
+    /// The device refused it, the connection ended, or no answer came in time.
+    pub fn audio_output(&self, command: AudioOutputRequest) -> Answered<AudioSnapshot> {
+        let correlation = self.correlation();
+        self.audio_output_answer(
+            Key::Correlation(correlation),
+            RemoteActionMessage::AudioOutputRequest {
+                correlation,
+                command,
+            },
+            &[],
+        )
+    }
+
+    /// One write of PCM to the open output `generation`. The samples travel as the frame's
+    /// binary body, little-endian, 20 ms at most.
+    ///
+    /// # Errors
+    /// The samples are past one write's bound, the device refused them, the connection ended, or
+    /// no answer came in time.
+    pub fn audio_output_write(
+        &self,
+        generation: u64,
+        sequence: u64,
+        samples: &[i16],
+    ) -> Answered<AudioSnapshot> {
+        if samples.is_empty()
+            || samples.len() > audio_output::MAX_SAMPLES
+            || !samples
+                .len()
+                .is_multiple_of(usize::from(audio_output::CHANNELS))
+        {
+            return Err(ActionCallError::Refused {
+                reason: "invalid audio output write".into(),
+            });
+        }
+        let body = audio_output::body_of(samples);
+        let correlation = self.correlation();
+        self.audio_output_answer(
+            Key::Correlation(correlation),
+            RemoteActionMessage::AudioOutputRequest {
+                correlation,
+                command: AudioOutputRequest::Write {
+                    generation,
+                    sequence,
+                    bytes: u32::try_from(body.len()).map_err(|_| ActionCallError::Refused {
+                        reason: "invalid audio output write".into(),
+                    })?,
+                },
+            },
+            &body,
+        )
+    }
+
+    /// One command of an app's sound output, sent without waiting for its answer: what pause,
+    /// flush, volume and close are, which the app never holds its decoder for.
+    ///
+    /// # Errors
+    /// The connection ended.
+    pub fn audio_output_send(&self, command: AudioOutputRequest) -> Answered<()> {
+        let line = frame_line_in(
+            RemoteActionMessage::AudioOutputRequest {
+                correlation: 0,
+                command,
+            },
+            None,
+        );
+        let mut writer = self.0.writer.lock_recover();
+        writeln!(writer, "{line}")
+            .and_then(|()| writer.flush())
+            .map_err(|error| ActionCallError::Unavailable {
+                reason: format!("the connection closed: {error}"),
+            })
+    }
+
+    /// The device's answer to `message`, whose binary `body` follows it, waited for.
+    fn audio_output_answer(
+        &self,
+        key: Key,
+        message: RemoteActionMessage,
+        body: &[u8],
+    ) -> Answered<AudioSnapshot> {
+        let answered = self
+            .ask_with_body_in(key, message, None, body)
+            .wait_timeout(audio_output::DEADLINE)
+            .ok()
+            .flatten()
+            .unwrap_or(Err(ActionCallError::Unanswered))?;
+        match answered {
+            RemoteActionMessage::AudioOutputResponse { result, .. } => result,
+            other => Err(unexpected(&other)),
+        }
+        .and_then(valid_output)
+    }
+}
+
+/// A sound output snapshot that is one of the bounds' own.
+fn valid_output(snapshot: AudioSnapshot) -> Answered<AudioSnapshot> {
+    if snapshot.valid() {
+        Ok(snapshot)
+    } else {
+        Err(ActionCallError::Refused {
+            reason: "invalid audio output state".into(),
+        })
     }
 }
 

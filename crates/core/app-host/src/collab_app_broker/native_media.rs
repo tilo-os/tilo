@@ -40,6 +40,28 @@ impl NativeMediaRequestContext {
         }
     }
 
+    /// The context of an app's own connection to this device's daemon: the launcher placed it
+    /// for process `peer_id` running `app_id` in `workspace_id`, and `current` says whether it is
+    /// still that process. Only the daemon builds one, for a connection it serves as an app
+    /// ([`crate::collab_app_broker::AudioOutputConnection`]); it checks the process again
+    /// before every command it forwards.
+    #[must_use]
+    pub fn daemon_line(
+        peer_id: u64,
+        app_id: String,
+        workspace_id: String,
+        current: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+    ) -> Self {
+        Self {
+            peer_id,
+            app_id,
+            workspace_id,
+            document_id: String::new(),
+            opened_for: None,
+            revalidate: current,
+        }
+    }
+
     pub fn peer_id(&self) -> u64 {
         self.peer_id
     }
@@ -66,8 +88,9 @@ pub type NativeMediaFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<Snapshot, String>> + Send>>;
 pub type AudioOutputFuture = std::pin::Pin<
     Box<
-        dyn std::future::Future<Output = Result<runtime_collab::audio_output::Snapshot, String>>
-            + Send,
+        dyn std::future::Future<
+                Output = Result<tilo_actions::remote::audio_output::Snapshot, String>,
+            > + Send,
     >,
 >;
 
@@ -75,10 +98,48 @@ pub trait AudioOutputServices: Send + Sync {
     fn output(
         &self,
         context: NativeMediaRequestContext,
-        command: runtime_collab::audio_output::Command,
+        request: tilo_actions::remote::audio_output::Request,
+        samples: Vec<i16>,
     ) -> AudioOutputFuture;
     /// Fence output belonging to this exact connected process.
     fn disconnect(&self, peer_id: u64);
+}
+
+/// An app's sound output as its own connection to the device's daemon reaches it: the service
+/// that plays it, and the context of the app process the launcher placed that connection for,
+/// which is checked again before every command.
+pub struct AudioOutputConnection {
+    service: Arc<dyn AudioOutputServices>,
+    context: NativeMediaRequestContext,
+}
+
+impl AudioOutputConnection {
+    #[must_use]
+    pub fn new(service: Arc<dyn AudioOutputServices>, context: NativeMediaRequestContext) -> Self {
+        Self { service, context }
+    }
+
+    /// Play one command of the app's output, as the connection it was opened for is still the
+    /// app's.
+    #[must_use]
+    pub fn output(
+        &self,
+        request: tilo_actions::remote::audio_output::Request,
+        samples: Vec<i16>,
+    ) -> AudioOutputFuture {
+        self.service.output(self.context.clone(), request, samples)
+    }
+
+    /// The app's process ended: nothing it opened sounds any more.
+    pub fn disconnect(&self) {
+        self.service.disconnect(self.context.peer_id());
+    }
+
+    /// The process the connection was placed for, as this output's owner.
+    #[must_use]
+    pub fn peer_id(&self) -> u64 {
+        self.context.peer_id()
+    }
 }
 
 pub trait NativeMediaServices: Send + Sync {
@@ -489,34 +550,6 @@ impl Drop for ProcessMonitor {
 }
 
 impl JoinedChannel {
-    pub(super) fn audio_output_dispatch(
-        self: Rc<Self>,
-        bytes: &[u8],
-    ) -> Result<AudioOutputFuture, BrokerError> {
-        let command = runtime_collab::audio_output::Command::decode(bytes)
-            .map_err(|error| BrokerError::failed(error.into()))?;
-        let context = self.native_media_context(matches!(
-            command,
-            runtime_collab::audio_output::Command::Close { .. }
-        ));
-        let context = match context {
-            Ok(context) => context,
-            Err(error) => {
-                if let Some(service) = &self.state.services.audio_output {
-                    service.disconnect(self.connection_id);
-                }
-                return Err(error);
-            }
-        };
-        let service = self
-            .state
-            .services
-            .audio_output
-            .as_ref()
-            .ok_or_else(|| BrokerError::failed("governed audio output unavailable".into()))?;
-        Ok(service.output(context, command))
-    }
-
     #[expect(
         clippy::suspicious_operation_groupings,
         reason = "a route's cluster is the connection's workspace; the names differ by layer"

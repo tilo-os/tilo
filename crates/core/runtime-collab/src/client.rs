@@ -17,8 +17,8 @@ use crate::wire::{
 };
 use crate::{ChannelContext, Invocation};
 use crate::{
-    ExportedAction, SurfaceDelta, WorkspaceControlEvent, WorkspaceControlInput, audio_output,
-    committed_document, file_clipboard, native_media,
+    ExportedAction, SurfaceDelta, WorkspaceControlEvent, WorkspaceControlInput, committed_document,
+    file_clipboard, native_media,
 };
 
 /// Where a connection's calls hand the host descriptors, if it can.
@@ -507,24 +507,6 @@ impl RecordHandle {
             finish: Box::new(subscription.finisher()),
             subscription: tokio::sync::Mutex::new(subscription),
         })))
-    }
-
-    /// Send PCM or controls to this launched application's output-only service.
-    pub async fn audio_output_command(
-        &self,
-        command: &audio_output::Command,
-    ) -> Result<audio_output::Snapshot, NotAvailable> {
-        let bytes = command.encode().map_err(refused)?;
-        let reply = self.command(Service::AudioOutput, bytes, &[]).await?;
-        if reply.len() > audio_output::MAX_WIRE_BYTES {
-            return Err(refused("audio output reply too large"));
-        }
-        let snapshot: audio_output::Snapshot =
-            serde_json::from_slice(&reply).map_err(|_| refused("invalid audio output reply"))?;
-        if !snapshot.valid() {
-            return Err(refused("invalid audio output state"));
-        }
-        Ok(snapshot)
     }
 
     /// Whether the workspace seals what it keeps of this record. Asked first, it is where the

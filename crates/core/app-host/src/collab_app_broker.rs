@@ -131,8 +131,8 @@ use tilo_invocation_journal::{InvocationJournal, InvocationKey, InvocationOwner}
 
 pub use action_provider::delivering::LaunchOrigin;
 pub use native_media::{
-    AudioOutputFuture, AudioOutputServices, NativeMediaFuture, NativeMediaRequestContext,
-    NativeMediaServices,
+    AudioOutputConnection, AudioOutputFuture, AudioOutputServices, NativeMediaFuture,
+    NativeMediaRequestContext, NativeMediaServices,
 };
 #[cfg(test)]
 pub(crate) use published_invocation::OriginalLookup;
@@ -613,6 +613,28 @@ impl Drop for AppBrokerState {
 }
 
 impl AppBrokerState {
+    /// The device's sound output as an app's own connection to the daemon reaches it: the
+    /// service that plays it, and the context of the app process the launcher placed the
+    /// connection for, which `current` checks again before every command. `None` when this
+    /// session serves no app sound.
+    #[must_use]
+    pub fn audio_output(
+        &self,
+        peer_id: u64,
+        app: &str,
+        workspace: &str,
+        current: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+    ) -> Option<AudioOutputConnection> {
+        let service = self.services.audio_output.clone()?;
+        let context = NativeMediaRequestContext::daemon_line(
+            peer_id,
+            app.to_owned(),
+            workspace.to_owned(),
+            current,
+        );
+        Some(AudioOutputConnection::new(service, context))
+    }
+
     /// Drop the journal now: its writer finishes what it was handed and the
     /// store's lock is released before this returns.
     fn let_go_of_journal(&self) {

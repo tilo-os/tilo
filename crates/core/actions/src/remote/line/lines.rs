@@ -65,6 +65,15 @@ pub enum Take {
 pub trait CallLanes: Send + Sync {
     /// Take `message` as the lane's, or say it is the provider's.
     fn take(&self, message: &RemoteActionMessage) -> Take;
+    /// How many bytes of binary body follow `message` on the connection, when the lane reads
+    /// one (an app's sound output write carries its PCM so). None for every line-only frame.
+    fn body_len(&self, _message: &RemoteActionMessage) -> Option<usize> {
+        None
+    }
+    /// Take a frame whose binary `body` was read after it.
+    fn take_body(&self, message: &RemoteActionMessage, _body: &[u8]) -> Take {
+        self.take(message)
+    }
 }
 
 /// [`serve_lines`], with `lanes` answering the frames it owns before the provider sees them.
@@ -114,6 +123,10 @@ pub enum Served<R> {
 /// handed back with that held line, so its caller sees no gap. An input that reads nothing for
 /// now says so with [`std::io::ErrorKind::TimedOut`], and is read again after `handover` is
 /// asked.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one loop, kept whole so the order it answers in is the connection's order"
+)]
 pub fn serve_lines_handing<
     H: ActionProvider + Clone + Send + Sync + 'static,
     R: BufRead,
@@ -177,7 +190,17 @@ pub fn serve_lines_handing<
             break Stopped::Handed(Some(line));
         }
         if let Some(lanes) = lanes {
-            match lanes.take(&frame.message) {
+            let taken = match lanes.body_len(&frame.message) {
+                Some(length) => {
+                    let mut body = vec![0_u8; length];
+                    match std::io::Read::read_exact(&mut input, &mut body) {
+                        Ok(()) => lanes.take_body(&frame.message, &body),
+                        Err(_) => break Stopped::Ended,
+                    }
+                }
+                None => lanes.take(&frame.message),
+            };
+            match taken {
                 Take::NotCall => {}
                 Take::Silent => continue,
                 Take::Answer(answer) => {

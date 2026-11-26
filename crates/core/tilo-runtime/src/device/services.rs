@@ -238,6 +238,11 @@ impl Daemon {
             }));
     }
 
+    /// The workspace's broker, while this daemon runs one.
+    pub(crate) fn app_action_broker(&self) -> Option<AppActionBroker> {
+        self.broker.app_action_broker()
+    }
+
     /// What an app's call lane needs to carry one of its calls into a workspace's call through
     /// the live session this device holds: the device's word there, and the way to join a call as
     /// the app, through the device's one dispatch under the app's grants. No key material and no
@@ -4138,8 +4143,9 @@ impl Daemon {
         &self,
         workspace: &str,
         key: &tilo_api::grant_key::GrantKey,
-    ) -> impl std::future::Future<Output = io::Result<Arc<tilo_workspace_service::workspaces::SessionAdmission>>>
-    + Send
+    ) -> impl std::future::Future<
+        Output = io::Result<Arc<tilo_workspace_service::workspaces::SessionAdmission>>,
+    > + Send
     + 'static {
         let workspaces = Arc::clone(&self.workspaces);
         let (named, signing, cert) = (workspace.to_owned(), key.key().clone(), key.cert().clone());

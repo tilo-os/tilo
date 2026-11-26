@@ -279,13 +279,14 @@ impl SeatProvider {
                 };
                 match (
                     field::<MediaContext>(&arguments, "context"),
-                    field(&arguments, "command"),
+                    field(&arguments, "request"),
+                    field(&arguments, "samples"),
                 ) {
-                    (Ok(context), Ok(command)) => {
-                        let played = output.output(context.context(), command);
+                    (Ok(context), Ok(request), Ok(samples)) => {
+                        let played = output.output(context.context(), request, samples);
                         Box::pin(async move { answered(played.await?) })
                     }
-                    (Err(why), _) | (_, Err(why)) => failed(why),
+                    (Err(why), _, _) | (_, Err(why), _) | (_, _, Err(why)) => failed(why),
                 }
             }
             (calls::AUDIO_OUTPUT, calls::DISCONNECT) => {

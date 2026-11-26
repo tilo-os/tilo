@@ -1,11 +1,11 @@
 //! An app's sound on this device's output.
 //!
 //! A hosted app receives neither an audio socket nor the device's mixer: it hands this session the
-//! PCM it decodes (20 ms of stereo 48 kHz at a time, [`runtime_collab::audio_output`]) and this
+//! PCM it decodes (20 ms of stereo 48 kHz at a time, [`tilo_actions::remote::audio_output`]) and this
 //! session renders it on the device's output, one stream per open output, named after the app so a
-//! volume mixer shows it there. The stream opens only for a caller the broker re-attests before
-//! every command, and the person's lockdown silences it where it silences every other sound
-//! ([`media::audio_output::is_disabled`]): at its next write.
+//! volume mixer shows it there. The stream opens only for a caller the device's daemon re-attests
+//! before every command, and the person's lockdown silences it where it silences every other
+//! sound ([`media::audio_output::is_disabled`]): at its next write.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,12 +14,12 @@ use std::sync::{Arc, Mutex};
 use media::audio_output::{CHANNELS, MAX_SAMPLES, RATE};
 use media::pw_stream::{AudioStreams, PlaybackConfig, PlaybackSource, PlaybackStream};
 use media::sync_playout::ChannelRole;
-use runtime_collab::audio_output::{Command, Snapshot};
+use tilo_actions::remote::audio_output::{Request, Snapshot};
 use tilo_app_host::services::{AudioOutputFuture, AudioOutputServices, NativeMediaRequestContext};
 
 /// How many apps may sound at once on one desktop.
 const MAX_OUTPUTS: usize = 8;
-/// The most PCM one output holds while the device catches up: 7680 frames, as the wire names it.
+/// The most PCM one output holds while the device catches up: 7680 frames, as the app line names it.
 const MAX_QUEUED_SAMPLES: usize = MAX_SAMPLES * 8;
 /// The name the device's mixer shows an app's output under.
 const NODE_NAME: &str = "tilo-app-output";
@@ -299,7 +299,8 @@ impl Shared {
         &self,
         key: &Key,
         revalidate: &(dyn Fn() -> Result<(), String> + Send + Sync),
-        command: Command,
+        request: Request,
+        samples: Vec<i16>,
     ) -> Result<Snapshot, String> {
         if let Err(error) = revalidate() {
             // The connection this output belongs to is no longer admitted: nothing it opened
@@ -307,14 +308,14 @@ impl Shared {
             self.stop(Some(key.peer));
             return Err(error);
         }
-        let generation = match &command {
-            Command::Open {} => return Err("an output opens with `open`".into()),
-            Command::Write { generation, .. }
-            | Command::Pause { generation, .. }
-            | Command::Volume { generation, .. }
-            | Command::Flush { generation }
-            | Command::Status { generation }
-            | Command::Close { generation } => *generation,
+        let generation = match &request {
+            Request::Open {} => return Err("an output opens with `open`".into()),
+            Request::Write { generation, .. }
+            | Request::Pause { generation, .. }
+            | Request::Volume { generation, .. }
+            | Request::Flush { generation }
+            | Request::Status { generation }
+            | Request::Close { generation } => *generation,
         };
         // The admission this output was opened under can have ended since; it is asked outside the
         // registry's lock, because it waits on membership and ownership.
@@ -336,38 +337,36 @@ impl Shared {
             entry.fence();
             return Err("sound output is disabled by the person's lockdown policy".into());
         }
-        if matches!(command, Command::Close { .. }) {
+        if matches!(request, Request::Close { .. }) {
             entry.fence();
             let snapshot = entry.snapshot()?;
             outputs.entries.remove(key);
             return Ok(snapshot);
         }
-        match command {
-            Command::Write {
-                sequence, samples, ..
-            } => write(entry, sequence, samples)?,
-            Command::Pause { paused, .. } => {
+        match request {
+            Request::Write { sequence, .. } => write(entry, sequence, samples)?,
+            Request::Pause { paused, .. } => {
                 entry
                     .pcm
                     .lock()
                     .map_err(|_| "audio output state unavailable".to_owned())?
                     .paused = paused;
             }
-            Command::Volume { percent, .. } => {
+            Request::Volume { percent, .. } => {
                 entry
                     .pcm
                     .lock()
                     .map_err(|_| "audio output state unavailable".to_owned())?
                     .gain = f32::from(percent) / 100.0;
             }
-            Command::Flush { .. } => entry
+            Request::Flush { .. } => entry
                 .pcm
                 .lock()
                 .map_err(|_| "audio output state unavailable".to_owned())?
                 .queue
                 .clear(),
-            Command::Status { .. } => {}
-            Command::Open {} | Command::Close { .. } => {
+            Request::Status { .. } => {}
+            Request::Open {} | Request::Close { .. } => {
                 return Err("an output opens and closes as it is told".into());
             }
         }
@@ -456,21 +455,29 @@ impl AppAudioOutput {
 }
 
 impl AudioOutputServices for AppAudioOutput {
-    fn output(&self, context: NativeMediaRequestContext, command: Command) -> AudioOutputFuture {
-        if !command.valid() {
+    fn output(
+        &self,
+        context: NativeMediaRequestContext,
+        request: Request,
+        samples: Vec<i16>,
+    ) -> AudioOutputFuture {
+        if !request.valid()
+            || samples.len() > MAX_SAMPLES
+            || (!samples.is_empty() && !samples.len().is_multiple_of(usize::from(CHANNELS)))
+        {
             return Box::pin(async { Err("invalid audio output command".into()) });
         }
         let key = Key::from(&context);
         let app = context.app_id().to_owned();
         let revalidate: Arc<dyn Fn() -> Result<(), String> + Send + Sync> =
             Arc::new(move || context.revalidate());
-        match command {
-            Command::Open {} => {
+        match request {
+            Request::Open {} => {
                 let this = self.clone();
                 Box::pin(async move { this.0.open(key, revalidate, app).await })
             }
-            command => {
-                let outcome = self.0.control(&key, &*revalidate, command);
+            request => {
+                let outcome = self.0.control(&key, &*revalidate, request, samples);
                 Box::pin(async move { outcome })
             }
         }
@@ -592,6 +599,19 @@ mod tests {
         Arc::new(|| Ok(()))
     }
 
+    /// One write's request and its PCM, as an app's line hands them over.
+    fn packet_of(sequence: u64, samples: Vec<i16>) -> (Request, Vec<i16>) {
+        let bytes = u32::try_from(samples.len() * 2).expect("a bounded packet");
+        (
+            Request::Write {
+                generation: 1,
+                sequence,
+                bytes,
+            },
+            samples,
+        )
+    }
+
     /// What the device plays of `output`, one 20 ms quantum at a time.
     fn rendered(device: &Device, at: usize, frames: usize) -> Vec<f32> {
         let mut out = vec![
@@ -620,18 +640,10 @@ mod tests {
             device.last()[0].description.starts_with("so.tilo.music"),
             "the mixer shows the app it plays for"
         );
-        let write = |sequence, samples: [i16; 4]| Command::Write {
-            generation: 1,
-            sequence,
-            samples: samples.to_vec(),
-        };
+        let (request, samples) = packet_of(1, vec![16384, 16384, 16384, 16384]);
         audio
             .0
-            .control(
-                &key(1),
-                &*admitted(),
-                write(1, [16384, 16384, 16384, 16384]),
-            )
+            .control(&key(1), &*admitted(), request, samples)
             .unwrap();
         let played = rendered(device, 0, 2);
         assert_eq!(
@@ -641,7 +653,12 @@ mod tests {
         );
         let status = audio
             .0
-            .control(&key(1), &*admitted(), Command::Status { generation: 1 })
+            .control(
+                &key(1),
+                &*admitted(),
+                Request::Status { generation: 1 },
+                Vec::new(),
+            )
             .unwrap();
         assert_eq!(status.accepted_sequence, 1);
         assert_eq!(
@@ -660,15 +677,15 @@ mod tests {
             .open(key(1), admitted(), "so.tilo.music".into())
             .await
             .unwrap();
-        let packet = |sequence| Command::Write {
-            generation: 1,
-            sequence,
-            samples: vec![1, 1],
-        };
-        audio.0.control(&key(1), &*admitted(), packet(1)).unwrap();
+        let (request, samples) = packet_of(1, vec![1, 1]);
         audio
             .0
-            .control(&key(1), &*admitted(), packet(1))
+            .control(&key(1), &*admitted(), request, samples)
+            .unwrap();
+        let (request, samples) = packet_of(1, vec![1, 1]);
+        audio
+            .0
+            .control(&key(1), &*admitted(), request, samples)
             .expect("a retried packet is taken once");
         let queued = |audio: &AppAudioOutput| {
             let outputs = audio.0.outputs.lock().unwrap();
@@ -681,8 +698,12 @@ mod tests {
                 .queued_frames
         };
         assert_eq!(queued(&audio), 1, "the retry added nothing");
+        let (request, samples) = packet_of(3, vec![1, 1]);
         assert!(
-            audio.0.control(&key(1), &*admitted(), packet(3)).is_err(),
+            audio
+                .0
+                .control(&key(1), &*admitted(), request, samples)
+                .is_err(),
             "a packet that skipped one is refused rather than played out of order"
         );
     }
@@ -695,21 +716,21 @@ mod tests {
             .open(key(1), admitted(), "so.tilo.music".into())
             .await
             .unwrap();
-        let write = |sequence| Command::Write {
-            generation: 1,
-            sequence,
-            samples: vec![8000, 8000],
-        };
-        audio.0.control(&key(1), &*admitted(), write(1)).unwrap();
+        let (request, samples) = packet_of(1, vec![8000, 8000]);
+        audio
+            .0
+            .control(&key(1), &*admitted(), request, samples)
+            .unwrap();
         audio
             .0
             .control(
                 &key(1),
                 &*admitted(),
-                Command::Pause {
+                Request::Pause {
                     generation: 1,
                     paused: true,
                 },
+                Vec::new(),
             )
             .unwrap();
         assert_eq!(
@@ -722,10 +743,11 @@ mod tests {
             .control(
                 &key(1),
                 &*admitted(),
-                Command::Pause {
+                Request::Pause {
                     generation: 1,
                     paused: false,
                 },
+                Vec::new(),
             )
             .unwrap();
         audio
@@ -733,10 +755,11 @@ mod tests {
             .control(
                 &key(1),
                 &*admitted(),
-                Command::Volume {
+                Request::Volume {
                     generation: 1,
                     percent: 50,
                 },
+                Vec::new(),
             )
             .unwrap();
         let played = rendered(device, 0, 1);
@@ -744,14 +767,28 @@ mod tests {
             (played[0] - 8000.0 / 32768.0 / 2.0).abs() < 1e-6,
             "half the gain it was given: {played:?}"
         );
-        audio.0.control(&key(1), &*admitted(), write(2)).unwrap();
+        let (request, samples) = packet_of(2, vec![8000, 8000]);
         audio
             .0
-            .control(&key(1), &*admitted(), Command::Flush { generation: 1 })
+            .control(&key(1), &*admitted(), request, samples)
+            .unwrap();
+        audio
+            .0
+            .control(
+                &key(1),
+                &*admitted(),
+                Request::Flush { generation: 1 },
+                Vec::new(),
+            )
             .unwrap();
         let flushed = audio
             .0
-            .control(&key(1), &*admitted(), Command::Status { generation: 1 })
+            .control(
+                &key(1),
+                &*admitted(),
+                Request::Status { generation: 1 },
+                Vec::new(),
+            )
             .unwrap();
         assert_eq!(
             flushed.queued_frames, 0,
@@ -774,15 +811,8 @@ mod tests {
             .unwrap();
         let ended: Arc<dyn Fn() -> Result<(), String> + Send + Sync> =
             Arc::new(|| Err("committed read launcher ownership ended".into()));
-        let refused = audio.0.control(
-            &key(1),
-            &*ended,
-            Command::Write {
-                generation: 1,
-                sequence: 1,
-                samples: vec![1, 1],
-            },
-        );
+        let (request, samples) = packet_of(1, vec![1, 1]);
+        let refused = audio.0.control(&key(1), &*ended, request, samples);
         assert!(
             refused.is_err(),
             "an admission that ended refuses every command"
@@ -809,14 +839,24 @@ mod tests {
             .unwrap();
         let closed = audio
             .0
-            .control(&key(1), &*admitted(), Command::Close { generation: 1 })
+            .control(
+                &key(1),
+                &*admitted(),
+                Request::Close { generation: 1 },
+                Vec::new(),
+            )
             .unwrap();
         assert!(closed.closed);
         device.ended(0);
         assert!(
             audio
                 .0
-                .control(&key(1), &*admitted(), Command::Status { generation: 1 })
+                .control(
+                    &key(1),
+                    &*admitted(),
+                    Request::Status { generation: 1 },
+                    Vec::new(),
+                )
                 .is_err(),
             "a closed generation is gone"
         );

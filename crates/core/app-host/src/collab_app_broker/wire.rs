@@ -248,72 +248,64 @@ impl ChannelSession {
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<Reply, String>>>> {
         let channel = Rc::clone(&self.channel);
         let failed = Refusal::refusal;
-        let answer =
-            match service {
-                Service::AudioOutput => channel.audio_output_dispatch(body).map_err(failed).map(
-                    |snapshot| -> Answering {
-                        Box::pin(async move {
-                            serde_json::to_vec(&snapshot.await?)
-                                .map_err(|_| "audio output reply encoding failed".to_owned())
-                        })
-                    },
-                ),
-                Service::NativeMedia => channel.native_media_dispatch(body).map_err(failed).map(
-                    |snapshot| -> Answering {
+        let answer = match service {
+            Service::NativeMedia => {
+                channel
+                    .native_media_dispatch(body)
+                    .map_err(failed)
+                    .map(|snapshot| -> Answering {
                         Box::pin(async move { snapshot.await?.encode().map_err(Into::into) })
-                    },
-                ),
-                // The secret answer moves onto the wire without a copy left
-                // behind. An item's use is waited for here, by the answer, and
-                // never by the dispatch that started it.
-                Service::BrowserServiceSession => channel
-                    .browser_service_session_dispatch(body)
+                    })
+            }
+            // The secret answer moves onto the wire without a copy left
+            // behind. An item's use is waited for here, by the answer, and
+            // never by the dispatch that started it.
+            Service::BrowserServiceSession => channel
+                .browser_service_session_dispatch(body)
+                .map_err(failed)
+                .map(|reply| -> Answering {
+                    Box::pin(async move {
+                        reply
+                            .await
+                            .map(|mut reply| std::mem::take(&mut *reply))
+                            .map_err(Refusal::refusal)
+                    })
+                }),
+            Service::CommittedDocument => runtime_collab::committed_document::Request::decode(body)
+                .map_err(Into::into)
+                .map(|request| -> Answering {
+                    Box::pin(async move {
+                        channel
+                            .committed_document_answer(request)
+                            .await?
+                            .encode()
+                            .map_err(Into::into)
+                    })
+                }),
+            Service::LocalFile => channel
+                .local_file_dispatch(body, on_behalf_of)
+                .map_err(failed)
+                .map(|reply| -> Answering {
+                    Box::pin(async move { reply.await.map_err(Refusal::refusal) })
+                }),
+            Service::RemoteAction => {
+                let reply = channel.remote_action_dispatch(body);
+                Ok(Box::pin(async move { reply.await.map_err(Refusal::refusal) }) as Answering)
+            }
+            Service::Resources => {
+                // Keep the continuation reference so the broker can refuse unsupported writes.
+                channel
+                    .resources_dispatch(body, on_behalf_of, &self.record_runs)
                     .map_err(failed)
                     .map(|reply| -> Answering {
                         Box::pin(async move {
-                            reply
-                                .await
-                                .map(|mut reply| std::mem::take(&mut *reply))
-                                .map_err(Refusal::refusal)
+                            let reply = reply.await.map_err(failed)?;
+                            serde_json::to_vec(&reply)
+                                .map_err(|_| "the store's answer cannot be encoded".to_owned())
                         })
-                    }),
-                Service::CommittedDocument => {
-                    runtime_collab::committed_document::Request::decode(body)
-                        .map_err(Into::into)
-                        .map(|request| -> Answering {
-                            Box::pin(async move {
-                                channel
-                                    .committed_document_answer(request)
-                                    .await?
-                                    .encode()
-                                    .map_err(Into::into)
-                            })
-                        })
-                }
-                Service::LocalFile => channel
-                    .local_file_dispatch(body, on_behalf_of)
-                    .map_err(failed)
-                    .map(|reply| -> Answering {
-                        Box::pin(async move { reply.await.map_err(Refusal::refusal) })
-                    }),
-                Service::RemoteAction => {
-                    let reply = channel.remote_action_dispatch(body);
-                    Ok(Box::pin(async move { reply.await.map_err(Refusal::refusal) }) as Answering)
-                }
-                Service::Resources => {
-                    // Keep the continuation reference so the broker can refuse unsupported writes.
-                    channel
-                        .resources_dispatch(body, on_behalf_of, &self.record_runs)
-                        .map_err(failed)
-                        .map(|reply| -> Answering {
-                            Box::pin(async move {
-                                let reply = reply.await.map_err(failed)?;
-                                serde_json::to_vec(&reply)
-                                    .map_err(|_| "the store's answer cannot be encoded".to_owned())
-                            })
-                        })
-                }
-            };
+                    })
+            }
+        };
         Box::pin(async move { Ok(Reply::Answer(answer?.await?)) })
     }
 }

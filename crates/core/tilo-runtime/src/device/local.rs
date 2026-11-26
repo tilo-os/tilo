@@ -48,6 +48,9 @@ pub(crate) struct Frames {
     /// The call lane an app's connection carries, when the connection is an app's: its setup, or
     /// why this device will carry no call for it.
     lane: Option<Result<tilo_live::app_call::CallSetup, String>>,
+    /// The sound output lane an app's connection carries: the device's output as that app
+    /// process plays it.
+    audio: Option<Arc<super::audio_output::AudioLane>>,
     /// Whether a connection may be carried to another of the person's devices
     /// ([`super::carry`]): the person's own alone.
     carrying: super::carry::Carrying,
@@ -63,6 +66,7 @@ impl Frames {
             uploads: Arc::default(),
             own_process: None,
             lane: None,
+            audio: None,
             carrying: super::carry::Carrying::Refused(super::carry::NOT_THE_PERSON),
         }
     }
@@ -131,6 +135,7 @@ impl Frames {
         // workspace's accounts: the one its connection holds, never a person's.
         let caller = daemon.app_caller(&at.app, &at.workspace);
         let lane = daemon.app_call_setup(at);
+        let audio = super::audio_output::lane_for(daemon, at).map(Arc::new);
         let (daemon, app, workspace) =
             (Arc::downgrade(daemon), at.app.clone(), at.workspace.clone());
         let mut frames = Self::new(move |named| {
@@ -146,6 +151,7 @@ impl Frames {
         });
         frames.own_process = Some((Arc::new(own) as Tree, caller));
         frames.lane = Some(lane);
+        frames.audio = audio;
         frames
     }
 
@@ -265,12 +271,16 @@ impl Frames {
                 }) as tilo_live::app_call::Out
             })
         });
-        let lane = match (&self.lane, out) {
+        let call = match (&self.lane, out) {
             (Some(granted), Some(Some(out))) => {
                 Some(tilo_live::app_call::AppLane::new(granted.clone(), out))
             }
             _ => None,
         };
+        let lanes = (call.is_some() || self.audio.is_some()).then(|| Lanes {
+            call,
+            audio: self.audio.as_deref(),
+        });
         remote::serve_lines_handing(
             in_workspace,
             &self.uploads,
@@ -281,10 +291,50 @@ impl Frames {
                 answering,
             },
             SLACK,
-            lane.as_ref()
-                .map(|lane| lane.as_ref() as &dyn remote::CallLanes),
+            lanes.as_ref().map(|lanes| lanes as &dyn remote::CallLanes),
             handover,
         )
+    }
+}
+
+/// The lanes an app's connection owns beside the action wire: its outside calls, and its sound
+/// output.
+struct Lanes<'a> {
+    call: Option<Arc<tilo_live::app_call::AppLane>>,
+    audio: Option<&'a super::audio_output::AudioLane>,
+}
+
+impl remote::CallLanes for Lanes<'_> {
+    fn take(&self, message: &RemoteActionMessage) -> remote::Take {
+        if let Some(audio) = self.audio {
+            match remote::CallLanes::take(audio, message) {
+                remote::Take::NotCall => {}
+                taken => return taken,
+            }
+        }
+        self.call.as_ref().map_or(remote::Take::NotCall, |call| {
+            remote::CallLanes::take(call.as_ref(), message)
+        })
+    }
+
+    fn body_len(&self, message: &RemoteActionMessage) -> Option<usize> {
+        self.audio
+            .and_then(|audio| remote::CallLanes::body_len(audio, message))
+    }
+
+    fn take_body(&self, message: &RemoteActionMessage, body: &[u8]) -> remote::Take {
+        self.audio.map_or(remote::Take::NotCall, |audio| {
+            remote::CallLanes::take_body(audio, message, body)
+        })
+    }
+}
+
+impl Drop for Frames {
+    fn drop(&mut self) {
+        if let Some(audio) = &self.audio {
+            // The app's process ended, or its connection did: nothing it opened sounds any more.
+            audio.disconnect();
+        }
     }
 }
 

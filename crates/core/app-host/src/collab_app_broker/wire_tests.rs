@@ -933,7 +933,6 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
             let mut endpoint = workspace.endpoint(9);
             let channel = endpoint.channel.clone();
             for service in [
-                Service::AudioOutput,
                 Service::NativeMedia,
                 Service::BrowserServiceSession,
                 Service::LocalFile,

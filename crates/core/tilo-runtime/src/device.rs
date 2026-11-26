@@ -31,6 +31,7 @@ mod app_listing_tests;
 #[cfg(target_os = "linux")]
 pub(crate) mod approved_checks;
 mod asked;
+pub(crate) mod audio_output;
 mod boot_unlock;
 #[cfg(test)]
 mod boot_unlock_tests;

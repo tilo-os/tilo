@@ -278,15 +278,6 @@ pub(super) async fn join_route(
             })
             .ok();
     media_routes.insert(channel_id.clone(), channel.clone());
-    #[cfg(feature = "audio")]
-    if spec.document.is_none()
-        && member_kind == "person"
-        && crate::process::environment()
-            .identity
-            .collab_service_configured
-    {
-        super::audio_output::install(channel.clone());
-    }
     Ok(SdkRoute {
         _moderation: moderation,
         document: DocumentRoute {
