@@ -143,9 +143,9 @@ pub struct TreeViewNodeProps {
     pub change: Option<ChangeMarkProps>,
 }
 
-tilo_ui_base::component::part_type!(TreeViewNodeProps);
-tilo_ui_base::component::part_type!(TreeViewRowProps);
-tilo_ui_base::component::part_type!(ButtonProps);
+tilo_ui_base::part_type!(TreeViewNodeProps);
+tilo_ui_base::part_type!(TreeViewRowProps);
+tilo_ui_base::part_type!(ButtonProps);
 
 impl TreeViewRows {
     /// The nodes the view gave whole, as it wrote them.

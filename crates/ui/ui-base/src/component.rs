@@ -630,22 +630,31 @@ macro_rules! choice {
 }
 
 
+/// What one child of a part of many is read as: a component's props, or one of the kinds of
+/// component the part takes ([`Accepts::OneOf`]).
+pub trait PartItem: Sized {
+    fn accepts() -> Accepts;
+
+    /// Read every child of the part `part` from `source`.
+    fn read_all(source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String>;
+}
+
+/// [`PartItem`] for a component's props: a part of many of it reads each child's props.
+#[doc(hidden)]
+#[macro_export]
 macro_rules! part_type {
     ($props:ty) => {
-        impl $crate::component::PartType for Vec<$props> {
-            const MANY: bool = true;
-
+        impl $crate::component::PartItem for $props {
             fn accepts() -> $crate::component::Accepts {
                 $crate::component::Accepts::Component(
                     <$props as $crate::component::Component>::NAME.into(),
                 )
             }
 
-            fn fill(
-                &mut self,
+            fn read_all(
                 source: &mut dyn $crate::component::Source,
                 part: &str,
-            ) -> Result<(), String> {
+            ) -> Result<Vec<Self>, String> {
                 let mut read = Vec::new();
                 source.components(part, &mut |child| {
                     read.push(
@@ -654,14 +663,24 @@ macro_rules! part_type {
                     );
                     Ok(())
                 })?;
-                *self = read;
-                Ok(())
+                Ok(read)
             }
         }
     };
 }
 
-pub use part_type;
+impl<T: PartItem> PartType for Vec<T> {
+    const MANY: bool = true;
+
+    fn accepts() -> Accepts {
+        T::accepts()
+    }
+
+    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
+        *self = T::read_all(source, part)?;
+        Ok(())
+    }
+}
 
 choice!(crate::tokens::TextRole, "TextRole", {
     Display => "display",

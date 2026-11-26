@@ -26,7 +26,7 @@ pub struct KeyHintProps {
     pub label: String,
 }
 
-tilo_ui_base::component::part_type!(KeyHintProps);
+tilo_ui_base::part_type!(KeyHintProps);
 
 impl Described for KeyHints {
     type Props = KeyHintsProps;

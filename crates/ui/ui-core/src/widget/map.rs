@@ -32,7 +32,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Vec2};
 use vello::peniko::{BlendMode, Fill};
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::PartType, component::PartViews, component::ResourceId, component::Source};
+use tilo_ui_base::{component::Component, component::Described, component::Event, component::PartItem, component::PartViews, component::ResourceId, component::Source};
 use tilo_ui_base::{gesture::GesturePhase, gesture::TouchGestureArena, gesture::TouchGestureEvent};
 
 use tilo_ui_base::text_render::TextRenderer;
@@ -462,14 +462,13 @@ pub struct MapPinProps {
     pub body: Vec<Element>,
 }
 
-impl PartType for Vec<MapPinProps> {
-    const MANY: bool = true;
-
+impl PartItem for MapPinProps {
     fn accepts() -> tilo_ui_base::component::Accepts {
         tilo_ui_base::component::Accepts::Component(MapPinProps::NAME.into())
     }
 
-    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
+    fn read_all(
+        source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
         let mut out = Vec::new();
         let mut failed: Option<String> = None;
         source.components(part, &mut |child| match MapPinProps::from_source(child) {
@@ -485,8 +484,7 @@ impl PartType for Vec<MapPinProps> {
         if let Some(error) = failed {
             return Err(error);
         }
-        *self = out;
-        Ok(())
+        Ok(out)
     }
 }
 
@@ -533,7 +531,7 @@ tilo_ui_base::choice!(MapTrackTone, "MapTrackTone", {
     Quiet => "quiet",
 });
 
-tilo_ui_base::component::part_type!(MapTrackProps);
+tilo_ui_base::part_type!(MapTrackProps);
 
 /// What a marker is: the category of place it names, or the part a journey or the device plays in
 /// it. The marker's shape says it, in the theme's inks.
@@ -608,7 +606,7 @@ pub struct MapMarkerProps {
     pub label: bool,
 }
 
-tilo_ui_base::component::part_type!(MapMarkerProps);
+tilo_ui_base::part_type!(MapMarkerProps);
 
 /// A press that may become a pan.
 #[derive(Clone, Copy, Debug)]

@@ -97,7 +97,7 @@ pub struct TimelineItemProps {
     pub resized: Event,
 }
 
-tilo_ui_base::component::part_type!(TimelineItemProps);
+tilo_ui_base::part_type!(TimelineItemProps);
 
 /// The grid's items and each item's own handlers, in order.
 fn place(props: Vec<TimelineItemProps>, theme: &Theme) -> (Vec<TimelineItem>, Vec<ItemEvents>) {

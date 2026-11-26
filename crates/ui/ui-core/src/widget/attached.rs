@@ -4,7 +4,7 @@
 //! the view it stands in. A layout runs the menu a view places in it, around the whole layout
 //! ([`crate::widget::ContextMenuArea`]); a list item runs its row's menu, toolbar and swipe.
 
-use tilo_ui_base::{component::Accepts, component::Component, component::Event, component::PartType, component::Source};
+use tilo_ui_base::{component::Accepts, component::Component, component::Event, component::PartItem, component::PartType, component::Source};
 use crate::{widget::MenuEntry, widget::MenuItemProps, widget::SwipeActionProps};
 use tilo_ui_base::widget::Element;
 
@@ -100,14 +100,13 @@ impl MenuPart {
 const MENU_PARTS: [&str; 3] = ["MenuItem", "MenuSeparator", "EmojiBar"];
 
 /// A menu's parts, in order: commands, separators and an emoji bar.
-impl PartType for Vec<MenuPart> {
-    const MANY: bool = true;
-
+impl PartItem for MenuPart {
     fn accepts() -> Accepts {
         Accepts::OneOf(MENU_PARTS.iter().map(|name| (*name).to_owned()).collect())
     }
 
-    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
+    fn read_all(
+        source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
         let kinds = source.part_kinds(part);
         let mut parts = Vec::with_capacity(kinds.len());
         let mut index = 0usize;
@@ -130,8 +129,7 @@ impl PartType for Vec<MenuPart> {
             });
             Ok(())
         })?;
-        *self = parts;
-        Ok(())
+        Ok(parts)
     }
 }
 

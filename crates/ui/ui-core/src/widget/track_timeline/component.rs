@@ -112,7 +112,7 @@ pub struct TimelineTrackProps {
     pub toggled_lock: Event,
 }
 
-tilo_ui_base::component::part_type!(TimelineTrackProps);
+tilo_ui_base::part_type!(TimelineTrackProps);
 
 /// One thing standing on a track for a stretch of time: a clip, a sound, a title. It shows its
 /// name, its colour, a strip of its frames and the shape of its sound when the view gives them.
@@ -160,7 +160,7 @@ pub struct TimelineSpanProps {
     pub trimmed: Event,
 }
 
-tilo_ui_base::component::part_type!(TimelineSpanProps);
+tilo_ui_base::part_type!(TimelineSpanProps);
 
 /// A moment marked on the ruler: a flag with its name, which a person drags along the time.
 #[derive(Component, Default)]
@@ -184,7 +184,7 @@ pub struct TimelineMarkerProps {
     pub moved: Event,
 }
 
-tilo_ui_base::component::part_type!(TimelineMarkerProps);
+tilo_ui_base::part_type!(TimelineMarkerProps);
 
 fn tracks(props: Vec<TimelineTrackProps>) -> Vec<Track> {
     props

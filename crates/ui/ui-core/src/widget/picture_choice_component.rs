@@ -6,7 +6,7 @@ use crate::widget::Picture;
 use super::{PictureChoice, PictureOption};
 use crate::widget::picture as picture_module;
 
-tilo_ui_base::component::part_type!(PictureOptionProps);
+tilo_ui_base::part_type!(PictureOptionProps);
 
 /// A choice among pictures whose meaning is visual (a text size, a pointer size, a colour
 /// filter), each tile showing its picture over its name, the chosen one edged.

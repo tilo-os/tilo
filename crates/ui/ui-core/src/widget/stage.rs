@@ -26,7 +26,7 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::PartType, component::PartViews, component::Source, component::Value};
+use tilo_ui_base::{component::Component, component::Described, component::Event, component::PartItem, component::PartViews, component::Source, component::Value};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::composition_parts::Parts;
 use crate::widget::context_menu::{ContextMenu, MenuItem};
@@ -163,14 +163,13 @@ pub struct StageProps {
     pub motion: Option<tilo_ui_base::motion::Feel>,
 }
 
-impl PartType for Vec<StagePinProps> {
-    const MANY: bool = true;
-
+impl PartItem for StagePinProps {
     fn accepts() -> tilo_ui_base::component::Accepts {
         tilo_ui_base::component::Accepts::Component(StagePinProps::NAME.into())
     }
 
-    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
+    fn read_all(
+        source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
         let mut out = Vec::new();
         let mut failed: Option<String> = None;
         source.components(part, &mut |child| match StagePinProps::from_source(child) {
@@ -186,8 +185,7 @@ impl PartType for Vec<StagePinProps> {
         if let Some(error) = failed {
             return Err(error);
         }
-        *self = out;
-        Ok(())
+        Ok(out)
     }
 }
 

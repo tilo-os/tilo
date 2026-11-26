@@ -98,9 +98,9 @@ impl PartialEq for DataTableRowProps {
     }
 }
 
-tilo_ui_base::component::part_type!(DataTableColumnProps);
-tilo_ui_base::component::part_type!(DataTableRowProps);
-tilo_ui_base::component::part_type!(DataTableCellProps);
+tilo_ui_base::part_type!(DataTableColumnProps);
+tilo_ui_base::part_type!(DataTableRowProps);
+tilo_ui_base::part_type!(DataTableCellProps);
 
 /// A table of resources as columns and rows: the attributes of a device, the songs in a library, the
 /// rules of a firewall.

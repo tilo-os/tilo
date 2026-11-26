@@ -62,25 +62,20 @@ impl Described for PropertyList {
     }
 }
 
-impl tilo_ui_base::component::PartType for Vec<PropertyProps> {
-    const MANY: bool = true;
-
+impl tilo_ui_base::component::PartItem for PropertyProps {
     fn accepts() -> tilo_ui_base::component::Accepts {
         tilo_ui_base::component::Accepts::Component(PropertyProps::NAME.into())
     }
 
-    fn fill(
-        &mut self,
+    fn read_all(
         source: &mut dyn tilo_ui_base::component::Source,
         part: &str,
-    ) -> Result<(), String> {
-        self.clear();
+    ) -> Result<Vec<Self>, String> {
         let mut read = Vec::new();
         source.components(part, &mut |child| {
             read.push(PropertyProps::from_source(child).map_err(|error| error.to_string())?);
             Ok(())
         })?;
-        *self = read;
-        Ok(())
+        Ok(read)
     }
 }

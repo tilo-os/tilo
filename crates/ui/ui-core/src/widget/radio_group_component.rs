@@ -4,7 +4,7 @@ use tilo_ui_base::{component::Component, component::Described, component::Event,
 
 use super::{RadioGroup, RadioOption};
 
-tilo_ui_base::component::part_type!(RadioProps);
+tilo_ui_base::part_type!(RadioProps);
 
 /// A short list of choices, exactly one of which is made, each a radio beside its words: for a
 /// choice a person reads before making (how a report is sent, who may open a page). A few short

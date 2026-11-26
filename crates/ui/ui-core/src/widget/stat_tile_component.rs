@@ -133,7 +133,7 @@ pub struct StatGroupProps {
     pub tiles: Vec<StatTileProps>,
 }
 
-tilo_ui_base::component::part_type!(StatTileProps);
+tilo_ui_base::part_type!(StatTileProps);
 
 impl Described for StatGroup {
     type Props = StatGroupProps;

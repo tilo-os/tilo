@@ -98,7 +98,7 @@ pub struct GraphNodeProps {
     pub content: Option<Element>,
 }
 
-tilo_ui_base::component::part_type!(GraphNodeProps);
+tilo_ui_base::part_type!(GraphNodeProps);
 
 impl Described for GraphCanvas {
     type Props = GraphCanvasProps;

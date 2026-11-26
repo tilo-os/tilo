@@ -42,7 +42,7 @@ pub struct BreadcrumbSegmentProps {
     pub activate: Event,
 }
 
-tilo_ui_base::component::part_type!(BreadcrumbSegmentProps);
+tilo_ui_base::part_type!(BreadcrumbSegmentProps);
 
 impl Described for Breadcrumb {
     type Props = BreadcrumbProps;

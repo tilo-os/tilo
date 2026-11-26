@@ -1,6 +1,6 @@
 //! [`Toolbar`] and its parts as described components.
 
-use tilo_ui_base::{component::Accepts, component::Component, component::Described, component::Event, component::PartType, component::Source};
+use tilo_ui_base::{component::Accepts, component::Component, component::Described, component::Event, component::PartItem, component::Source};
 use tilo_ui_base::icons::Icon;
 use crate::widget::MenuItemProps;
 
@@ -98,9 +98,7 @@ pub enum ToolbarPart {
 const TOOLBAR_PARTS: [&str; 3] = ["ToolbarButton", "ToolbarSeparator", "ToolbarSpacer"];
 
 /// A toolbar's parts, in order: commands, separators and spacers.
-impl PartType for Vec<ToolbarPart> {
-    const MANY: bool = true;
-
+impl PartItem for ToolbarPart {
     fn accepts() -> Accepts {
         Accepts::OneOf(
             TOOLBAR_PARTS
@@ -110,7 +108,8 @@ impl PartType for Vec<ToolbarPart> {
         )
     }
 
-    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
+    fn read_all(
+        source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
         let kinds = source.part_kinds(part);
         let mut parts = Vec::with_capacity(kinds.len());
         let mut index = 0usize;
@@ -132,8 +131,7 @@ impl PartType for Vec<ToolbarPart> {
             });
             Ok(())
         })?;
-        *self = parts;
-        Ok(())
+        Ok(parts)
     }
 }
 

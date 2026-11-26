@@ -3403,6 +3403,7 @@ mod keys;
 
 #[path = "list_row_shape.rs"]
 mod shape;
+pub use shape::RowShapeFace;
 
 mod kept;
 use kept::KeptRow;

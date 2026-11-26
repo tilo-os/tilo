@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::PartType, component::ResourceId, component::Source, component::Value};
+use tilo_ui_base::{component::Component, component::Described, component::Event, component::PartItem, component::ResourceId, component::Source, component::Value};
 use tilo_ui_base::icons::Icon;
 use crate::{widget::Card, widget::CardBody, widget::CardProps, widget::ContextMenuArea, widget::MenuEntry, widget::MenuItemProps, widget::SectionHeader};
 use tilo_ui_base::{widget::Element, widget::Press, widget::Widget, widget::capability::capability_mut};
@@ -92,30 +92,26 @@ fn read_all<T>(
 }
 
 /// A board's lists: [`BoardListProps`] only.
-impl PartType for Vec<BoardListProps> {
-    const MANY: bool = true;
-
+impl PartItem for BoardListProps {
     fn accepts() -> tilo_ui_base::component::Accepts {
         tilo_ui_base::component::Accepts::Component(BoardListProps::NAME.into())
     }
 
-    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
-        *self = read_all(source, part, BoardListProps::from_source)?;
-        Ok(())
+    fn read_all(
+        source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
+        read_all(source, part, BoardListProps::from_source)
     }
 }
 
 /// A list's cards: [`BoardCardProps`] only.
-impl PartType for Vec<BoardCardProps> {
-    const MANY: bool = true;
-
+impl PartItem for BoardCardProps {
     fn accepts() -> tilo_ui_base::component::Accepts {
         tilo_ui_base::component::Accepts::Component(BoardCardProps::NAME.into())
     }
 
-    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
-        *self = read_all(source, part, BoardCardProps::from_source)?;
-        Ok(())
+    fn read_all(
+        source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
+        read_all(source, part, BoardCardProps::from_source)
     }
 }
 

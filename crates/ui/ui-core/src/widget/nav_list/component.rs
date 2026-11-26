@@ -404,18 +404,15 @@ impl NavList {
 const NAV_PARTS: [&str; 2] = ["NavItem", "NavSection"];
 
 /// A navigation list's places and sections, in order.
-impl tilo_ui_base::component::PartType for Vec<NavEntry> {
-    const MANY: bool = true;
-
+impl tilo_ui_base::component::PartItem for NavEntry {
     fn accepts() -> tilo_ui_base::component::Accepts {
         tilo_ui_base::component::Accepts::OneOf(NAV_PARTS.iter().map(|name| (*name).to_owned()).collect())
     }
 
-    fn fill(
-        &mut self,
+    fn read_all(
         source: &mut dyn tilo_ui_base::component::Source,
         part: &str,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<Self>, String> {
         let kinds = source.part_kinds(part);
         let mut read = Vec::with_capacity(kinds.len());
         let mut index = 0usize;
@@ -437,29 +434,24 @@ impl tilo_ui_base::component::PartType for Vec<NavEntry> {
             });
             Ok(())
         })?;
-        *self = read;
-        Ok(())
+        Ok(read)
     }
 }
 
-impl tilo_ui_base::component::PartType for Vec<NavItemProps> {
-    const MANY: bool = true;
-
+impl tilo_ui_base::component::PartItem for NavItemProps {
     fn accepts() -> tilo_ui_base::component::Accepts {
         tilo_ui_base::component::Accepts::Component(NavItemProps::NAME.into())
     }
 
-    fn fill(
-        &mut self,
+    fn read_all(
         source: &mut dyn tilo_ui_base::component::Source,
         part: &str,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<Self>, String> {
         let mut read = Vec::new();
         source.components(part, &mut |child| {
             read.push(NavItemProps::from_source(child).map_err(|error| error.to_string())?);
             Ok(())
         })?;
-        *self = read;
-        Ok(())
+        Ok(read)
     }
 }

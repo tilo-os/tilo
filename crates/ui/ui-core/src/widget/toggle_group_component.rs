@@ -7,7 +7,7 @@ use crate::widget::ControlSize;
 use super::{Press, Segment, ToggleGroup};
 use crate::widget::ViewTabs;
 
-tilo_ui_base::component::part_type!(SegmentProps);
+tilo_ui_base::part_type!(SegmentProps);
 
 /// A small set of choices, one of which is made: an alignment, a density, a unit. The chosen one is
 /// a thumb lifted off the track.

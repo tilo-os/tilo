@@ -7,7 +7,7 @@ use tilo_ui_base::widget::Tone;
 use super::{EnumField, field};
 use tilo_ui_base::widget::binding::derived;
 
-tilo_ui_base::component::part_type!(EnumOptionProps);
+tilo_ui_base::part_type!(EnumOptionProps);
 
 /// One case an [`EnumField`] offers: its name, what it reads as, and how it reads.
 #[derive(Clone, Component, Default)]

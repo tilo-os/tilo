@@ -33,7 +33,7 @@ pub struct FactProps {
     pub priority: i64,
 }
 
-tilo_ui_base::component::part_type!(FactProps);
+tilo_ui_base::part_type!(FactProps);
 
 impl From<FactProps> for Fact {
     fn from(props: FactProps) -> Self {

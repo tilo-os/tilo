@@ -1,6 +1,6 @@
 //! A menu's commands and the button that opens them as described components.
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::OfferedAction, component::PartType, component::Person, component::ResourceId, component::Source};
+use tilo_ui_base::{component::Component, component::Described, component::Event, component::OfferedAction, component::PartItem, component::Person, component::ResourceId, component::Source};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::text_render::FontChoice;
 use crate::{widget::ButtonRole, widget::MenuEntry};
@@ -162,9 +162,7 @@ impl From<OfferedAction> for MenuItemProps {
 /// The parts a menu holds, in order: its commands and the rules between their groups.
 const MENU_ROW_PARTS: [&str; 2] = ["MenuItem", "MenuSeparator"];
 
-impl PartType for Vec<MenuItemProps> {
-    const MANY: bool = true;
-
+impl PartItem for MenuItemProps {
     fn accepts() -> tilo_ui_base::component::Accepts {
         tilo_ui_base::component::Accepts::OneOf(
             MENU_ROW_PARTS
@@ -174,7 +172,8 @@ impl PartType for Vec<MenuItemProps> {
         )
     }
 
-    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
+    fn read_all(
+        source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
         let kinds = source.part_kinds(part);
         let mut read = Vec::with_capacity(kinds.len());
         let mut index = 0usize;
@@ -199,8 +198,7 @@ impl PartType for Vec<MenuItemProps> {
             }
             Ok(())
         })?;
-        *self = read;
-        Ok(())
+        Ok(read)
     }
 }
 

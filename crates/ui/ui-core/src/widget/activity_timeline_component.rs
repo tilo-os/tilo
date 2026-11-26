@@ -68,7 +68,7 @@ pub struct ActivityEntryProps {
     pub artifact: Option<ActivityArtifact>,
 }
 
-tilo_ui_base::component::part_type!(ActivityEntryProps);
+tilo_ui_base::part_type!(ActivityEntryProps);
 
 /// The history of a document, grouped: runs of typing fold into one band that opens to its changes,
 /// each day's changes sit under the day's heading, and a change's menu offers reverting it.

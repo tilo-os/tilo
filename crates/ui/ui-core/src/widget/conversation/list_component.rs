@@ -44,7 +44,7 @@ pub struct ConversationEntryProps {
     pub delivery: Option<DeliveryState>,
 }
 
-tilo_ui_base::component::part_type!(ConversationEntryProps);
+tilo_ui_base::part_type!(ConversationEntryProps);
 
 /// A conversation, drawn as every conversation is drawn: each line on its own side, runs of one
 /// person's consecutive messages under their name once, a divider where the day changes, and the time

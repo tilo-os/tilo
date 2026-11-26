@@ -18,7 +18,7 @@ use tilo_ui_base::{component::Component, component::Described, component::Event,
 use tilo_ui_base::icons::Icon;
 use crate::widget::{TabBar, TabDescriptor, TabFaceSpec, TabMark};
 
-tilo_ui_base::component::part_type!(TabItemProps);
+tilo_ui_base::part_type!(TabItemProps);
 
 /// One tab of a frame: the resource it shows, and what its pill says.
 #[derive(Component, Default, Clone)]
@@ -69,7 +69,7 @@ pub struct PresenceFaceProps {
     pub name: Option<String>,
 }
 
-tilo_ui_base::component::part_type!(PresenceFaceProps);
+tilo_ui_base::part_type!(PresenceFaceProps);
 
 impl TabItemProps {
     /// The pill as the strip takes it: its title, and the glyph its type names.

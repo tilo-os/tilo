@@ -5,7 +5,7 @@ use tilo_ui_base::{component::Bound, component::Component, component::Described,
 use super::{Autocomplete, RowRole, Suggestion};
 use crate::widget::TextInput;
 
-tilo_ui_base::component::part_type!(SuggestionProps);
+tilo_ui_base::part_type!(SuggestionProps);
 
 /// A field that suggests completions under it as it is typed into: a search over a site's catalogue, a
 /// mention, a command.

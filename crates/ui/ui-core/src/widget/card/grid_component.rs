@@ -37,7 +37,7 @@ pub struct CardGridCardProps {
     pub activate: Event,
 }
 
-tilo_ui_base::component::part_type!(CardGridCardProps);
+tilo_ui_base::part_type!(CardGridCardProps);
 
 /// Cards in equal, aligned columns: the apps of a store, the devices of a network, the paragraphs of a
 /// review.
