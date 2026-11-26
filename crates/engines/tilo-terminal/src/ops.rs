@@ -427,7 +427,7 @@ impl Provider for Answers {
         let ask = parse(input);
         let live = live_of(&ask)?;
         let command = text(&ask)?.to_owned();
-        begin_run_told(job, live, command, moved);
+        begin_run_told(job, live, command, &moved);
         Ok(())
     }
 
@@ -462,7 +462,7 @@ fn running() -> &'static std::sync::Mutex<std::collections::BTreeMap<String, Arc
 
 /// Run `command` in `live` as the job `job`, telling `moved` each move it makes: running once
 /// the line is sent, done with the run the shell marked, or failed why nothing ran.
-fn begin_run_told(job: &str, live: Arc<Live>, command: String, moved: JobSink) {
+fn begin_run_told(job: &str, live: Arc<Live>, command: String, moved: &JobSink) {
     let job = job.to_owned();
     if let Ok(mut jobs) = running().lock() {
         jobs.insert(job.clone(), Arc::clone(&live));

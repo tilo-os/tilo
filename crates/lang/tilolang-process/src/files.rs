@@ -553,10 +553,7 @@ pub fn compress(paths: &[String], to: &str) -> Result<i64, String> {
     } else {
         return Err("name the archive `.zip` or `.tar.zst`".to_owned());
     };
-    let sources: Vec<std::path::PathBuf> = paths
-        .iter()
-        .map(|path| std::path::PathBuf::from(path))
-        .collect();
+    let sources: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
     let file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -1484,6 +1481,10 @@ mod tests {
 
     #[cfg(unix)]
     impl tilo_dialogs::chooser_service::Person for ChoosesFolder {
+        #[expect(
+            clippy::panic_in_result_fn,
+            reason = "the stand-in person fails the test when the app asks the wrong question"
+        )]
         fn choose(
             &self,
             _caller: &tilo_dialogs::chooser_service::Caller,

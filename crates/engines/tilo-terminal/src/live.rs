@@ -779,9 +779,8 @@ mod tests {
 
     impl std::io::Read for Output {
         fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-            let bytes = match self.0.recv() {
-                Ok(bytes) => bytes,
-                Err(_) => return Ok(0),
+            let Ok(bytes) = self.0.recv() else {
+                return Ok(0);
             };
             let taken = bytes.len().min(buffer.len());
             buffer[..taken].copy_from_slice(&bytes[..taken]);

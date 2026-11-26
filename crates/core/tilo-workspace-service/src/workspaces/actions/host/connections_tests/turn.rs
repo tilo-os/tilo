@@ -513,7 +513,10 @@ async fn a_turn_with_no_device_reads_the_workspaces_connections_and_no_other_cal
     let id = team.connects(&service).await;
     the_turn_reads_what_the_workspace_connected(&team, &service, &id).await;
     the_turn_calls_what_only_reads(&team, &service, &id).await;
-    another_members_turn_reaches_what_the_workspace_connected(&team, &service, &id).await;
+    Box::pin(another_members_turn_reaches_what_the_workspace_connected(
+        &team, &service, &id,
+    ))
+    .await;
     started.shutdown().await;
 }
 

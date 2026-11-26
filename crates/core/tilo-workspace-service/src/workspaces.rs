@@ -2176,13 +2176,13 @@ impl Workspaces {
         if app == tilo_workspace_agent::OWNER
             && record == collab_types::workspace_document_id(tilo_workspace_agent::KIND)
         {
-            let mut written = self
-                .inner
+            self.inner
                 .agents_written
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let count = written.entry(workspace.to_owned()).or_default();
-            *count = count.saturating_add(1);
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(workspace.to_owned())
+                .and_modify(|count| *count = count.saturating_add(1))
+                .or_insert(1);
         }
     }
 

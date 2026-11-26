@@ -24,7 +24,9 @@ pub fn linked_ui() -> *const () {
 pub fn publish_root<A: ResourceApp>() -> i32 {
     let mut reader = None;
     if let Ok(doc) = tilo_resource::founding::new_record::<A::Resource>("") {
-        on_doc(doc, &mut |doc| reader = Reader::<A::Resource>::read(doc).ok());
+        on_doc(doc, &mut |doc| {
+            reader = Reader::<A::Resource>::read(doc).ok();
+        });
     }
     let Some(reader) = reader else {
         return 0;
@@ -55,6 +57,7 @@ pub fn publish_root<A: ResourceApp>() -> i32 {
 #[inline(never)]
 fn on_doc(doc: Doc, apply: &mut dyn FnMut(&Doc)) {
     apply(&doc);
+    drop(doc);
 }
 
 /// Copy one window's state back to the host.
