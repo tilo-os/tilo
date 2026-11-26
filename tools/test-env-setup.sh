@@ -20,7 +20,7 @@
 # a step of its own, `fonts` and `audio`, which nextest runs only for the
 # packages whose code can use it (.config/nextest.toml,
 # tools/ci/setup_filters.py); so are the values only some packages' tests need
-# (`ntfs` and the four below). `runtime` still promises both to every test
+# (the four below). `runtime` still promises both to every test
 # (TILO_REQUIRE_FONTS, TILO_REQUIRE_AUDIO), so a test that needs one in a
 # package the step leaves out fails, naming it, and never skips.
 #
@@ -56,14 +56,6 @@
 #          environment already has (an enclosing tools/test-env.sh) is kept;
 #          with TILO_REQUIRE_AUDIO=0 (the machine promises no audio) there is
 #          none.
-# ntfs     TILO_NTFS_FIXTURES: the native NTFS images, generated once per
-#          fixture generator revision and cached below TILO_TEST_CACHE_DIR.
-#          An existing TILO_NTFS_FIXTURES is kept. nextest runs this step only
-#          when the run selects a test of tilo-ntfs-helper's `it` binary, as
-#          only those read the images, which take a minute to build. A job that finds no set
-#          makes one in a directory of its own and places it with one rename,
-#          so no job waits on another's generation, and a set a job raced to
-#          make is dropped whole rather than written over the one that landed.
 # swtpm    TILO_REQUIRE_SWTPM=1: the sign-in and rollback tests observe an emulated
 #          TPM, which the builder has (dist/ci/install-build-deps.sh); one that
 #          cannot start it fails instead of passing by skipping.
@@ -95,7 +87,7 @@
 set -euo pipefail
 
 if [[ $# -eq 0 ]]; then
-    echo "usage: $0 runtime|fonts|audio|ntfs|swtpm|pdf-sandbox|pam-module|throughput|property-cases ..." >&2
+    echo "usage: $0 runtime|fonts|audio|swtpm|pdf-sandbox|pam-module|throughput|property-cases ..." >&2
     exit 2
 fi
 env_file=${NEXTEST_ENV:?test-env-setup.sh writes the environment to the file NEXTEST_ENV names}
@@ -272,45 +264,6 @@ audio() {
     rm -rf -- "$ready"
 }
 
-ntfs() {
-    local crate="$repo/crates/os/tilo-ntfs-helper"
-    local key root dir stage status=0
-    if [[ -n ${TILO_NTFS_FIXTURES:-} ]]; then
-        provide TILO_NTFS_FIXTURES "$TILO_NTFS_FIXTURES"
-        return
-    fi
-    # The generator, the build it drives (which pins the vendored source by
-    # digest) and the C fixture writer determine the images.
-    key=$(cat "$crate/tests/build_native_fixtures.py" "$crate/build_native.py" \
-        "$crate/source_artifact.py" "$crate/tests/fixture_builder.c" | sha256sum | cut -c1-16)
-    root="$cache_dir/ntfs-fixtures"
-    dir="$root/$key"
-    if [[ ! -e $dir/manifest.json ]]; then
-        mkdir -p "$root"
-        echo "test-env: generating native NTFS fixtures in $dir" >&2
-        stage=$(mktemp -d "$root/.stage.XXXXXX")
-        if python3 "$crate/tests/build_native_fixtures.py" \
-            --output "$stage/fixtures" --tools-output "$stage/tools" \
-            >"$stage/log" 2>&1; then
-            # The rename fails when another job placed the set first; the
-            # images are the same either way, so its set is the one read.
-            mv -- "$stage/fixtures" "$dir" 2>/dev/null || true
-        else
-            status=$?
-            cat "$stage/log" >&2
-        fi
-        rm -rf -- "$stage"
-        if [[ $status -eq 0 && ! -e $dir/manifest.json ]]; then
-            echo "test-env: the native NTFS fixtures did not land in $dir" >&2
-            status=1
-        fi
-        if [[ $status -ne 0 ]]; then
-            echo "test-env: native NTFS fixture generation failed" >&2
-            exit "$status"
-        fi
-    fi
-    provide TILO_NTFS_FIXTURES "$dir"
-}
 
 swtpm() {
     provide TILO_REQUIRE_SWTPM 1
@@ -349,7 +302,7 @@ property-cases() {
 
 for step; do
     case $step in
-        runtime | fonts | audio | ntfs | swtpm | pdf-sandbox | pam-module | throughput | property-cases)
+        runtime | fonts | audio | swtpm | pdf-sandbox | pam-module | throughput | property-cases)
             "$step" ;;
         *) echo "unknown test environment step: $step" >&2; exit 2 ;;
     esac

@@ -87,8 +87,6 @@ members = [
     "crates/engines/paint-stream",
     "crates/engines/passwords-engine",
     "crates/engines/publisher-engine",
-    "crates/os/tilo-ntfs-helper",
-    "crates/os/tilo-ntfs-protocol",
     "crates/engines/chromium-blocker",
     "crates/engines/content-blocker",
     # Core product surfaces

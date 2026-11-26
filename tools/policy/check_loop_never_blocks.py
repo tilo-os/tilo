@@ -69,8 +69,6 @@ WINDOW_CODE += (
     "crates/os/install-plan",
     "crates/os/install-profile-model",
     "crates/integrations/messaging-service",
-    "crates/os/tilo-ntfs-helper",
-    "crates/os/tilo-ntfs-protocol",
 )
 WAITING_OPEN = re.compile(r"\bSessionResource::open\s*\(")
 OFF_UI_THREAD = re.compile(r"\boff_ui_thread\s*\(\s*\)")

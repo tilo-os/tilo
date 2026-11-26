@@ -40,8 +40,6 @@
 #   catalog and a private software audio endpoint that lives as long as
 #   COMMAND. A nextest run prepares the last two only for the packages that
 #   can use them; a command here may be anything, so it gets them all;
-# - its ntfs step (the native NTFS images) unless TILO_TEST_NTFS_FIXTURES=0 or a cargo command
-#   names its packages without tilo-ntfs-helper.
 set -euo pipefail
 
 if [[ $# -eq 0 ]]; then
@@ -75,32 +73,6 @@ if [[ $mode == nextest ]]; then
         exec "$@"
     fi
 fi
-
-# The native NTFS images are read by tilo-ntfs-helper's tests alone, as nextest's registration
-# says (.config/nextest.toml). A cargo command that names its packages without that one never
-# reads them, so it isn't made to wait the minutes their generator takes; one naming none, or the
-# whole workspace, and any other command, may.
-ntfs_read() {
-    [[ $mode == handoff ]] || return 0
-    local argument named=0 next=0
-    for argument in "${@:3}"; do
-        if ((next)); then
-            [[ $argument == tilo-ntfs-helper ]] && return 0
-            next=0 named=1
-            continue
-        fi
-        case $argument in
-            --) break ;;
-            --workspace | --all) return 0 ;;
-            -p | --package) next=1 ;;
-            -p* | --package=*)
-                named=1
-                [[ ${argument#-p} == tilo-ntfs-helper || ${argument#--package=} == tilo-ntfs-helper ]] && return 0
-                ;;
-        esac
-    done
-    ((named == 0))
-}
 
 # What a `-p` names: a package's name, or t's package id spec for a run that
 # asks for a few packages (`path+file:///src/crates/desktop/settings#settings-store@0.1.0`).
@@ -163,12 +135,6 @@ capability_skips() {
     fi
 }
 steps=(runtime fonts audio)
-if [[ ${TILO_TEST_NTFS_FIXTURES:-1} != 0 ]] && ntfs_read "$@"; then
-    steps+=(ntfs)
-fi
-# The switch is this script's, not a build's or a test's: cargo's environment keys every build
-# script's and proc macro's cache entry by it, so the command started in it must not carry it.
-unset TILO_TEST_NTFS_FIXTURES
 # A build: the caller's environment and the build inputs above, prepared by the same script every
 # other build of the suite is given them by.
 if [[ ${1:-} == --build ]]; then

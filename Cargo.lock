@@ -18641,23 +18641,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-ntfs-helper"
-version = "0.1.0"
-dependencies = [
- "hex",
- "libc",
- "rustix 1.1.6",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "tilo-ntfs-protocol",
- "tilo-test-env",
- "tilo-wire-frame",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-ntfs-mount"
 version = "0.1.0"
 dependencies = [
@@ -18670,19 +18653,6 @@ dependencies = [
  "tilo-peer-facts",
  "tilo-sandbox-core",
  "tilo-test-env",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-ntfs-protocol"
-version = "0.1.0"
-dependencies = [
- "hex",
- "libc",
- "rustix 1.1.6",
- "serde",
- "serde_json",
- "sha2 0.11.0",
  "workspace-hack",
 ]
 
@@ -27616,9 +27586,7 @@ dependencies = [
  "tilo-nm",
  "tilo-notifications-service",
  "tilo-notify",
- "tilo-ntfs-helper",
  "tilo-ntfs-mount",
- "tilo-ntfs-protocol",
  "tilo-oauth",
  "tilo-oci-images",
  "tilo-ocr",

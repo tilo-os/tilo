@@ -39,10 +39,9 @@
 # refused, and its check told, instead of making every run of the check the network's.
 #
 # What a declaration says:
-# - `code.tilo.so:443`, pinned: the checks that fetch test fixtures, fonts and the NTFS source
+# - `code.tilo.so:443`, pinned: the checks that fetch test fixtures and fonts
 #   from tilo's package store, each named by the SHA-256 its sources pin (tools/test-assets.py,
-#   tools/font-catalog.py, crates/os/tilo-ntfs-helper): `font-seed`, `test-assets` and
-#   `ntfs-source`. A cargo build that compiles one of the packages whose build reads them is given
+#   tools/font-catalog.py): `font-seed` and `test-assets`. A cargo build that compiles one of the packages whose build reads them is given
 #   their outputs (`[cargo_builds]` below) and fetches none itself; a build of a crate that
 #   reaches none of them is given nothing and queues no job. Every `[[cargo]]` family still
 #   declares it for its test binaries' runs.
@@ -95,16 +94,15 @@ WGPU_BACKEND = "vulkan"
 WGPU_ADAPTER_NAME = "llvmpipe"
 
 # A cargo build t runs is given the seeds whose build script it compiles, and no others: the
-# pinned fonts (tilo-font-catalog), the test fixtures (tilo-pdf, tilo-doc-codecs) and the NTFS
-# source (tilo-ntfs-helper), each the output of its check below, at /target. t gives them to a
+# pinned fonts (tilo-font-catalog) and the test fixtures (tilo-pdf, tilo-doc-codecs), each the output of its check below, at /target. t gives them to a
 # build of a package named here, or of a package that depends on one, so a build of a crate that
 # reads none of them (a page crate, say) queues no seed job. The offline flags make a pin no seed
 # holds fail the build, naming what is missing, instead of fetching it. A family whose tests read
 # a seed themselves names it in the family's own `needs` (the visual goldens' baselines, an
 # example's fonts).
 [cargo_builds]
-package_needs = { "tilo-font-catalog" = ["font-seed"], "tilo-doc-codecs" = ["test-assets"], "tilo-pdf" = ["test-assets"], "tilo-ntfs-helper" = ["ntfs-source"] }
-env = { TILO_FONT_IMAGE_SEED = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_TEST_ASSET_SEED = "/target/test-assets", TILO_TEST_ASSETS_OFFLINE = "1", TILO_NTFS_SOURCE_CACHE = "/target/ntfs-source", TILO_NTFS_SOURCE_OFFLINE = "1" }
+package_needs = { "tilo-font-catalog" = ["font-seed"], "tilo-doc-codecs" = ["test-assets"], "tilo-pdf" = ["test-assets"] }
+env = { TILO_FONT_IMAGE_SEED = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_TEST_ASSET_SEED = "/target/test-assets", TILO_TEST_ASSETS_OFFLINE = "1" }
 
 # The workspace packages whose own sources differ between x86_64 and aarch64. Their tests and
 # lints run once per architecture (`test-x86_64`, `test-aarch64`, `clippy-x86_64`,
@@ -248,7 +246,7 @@ heavy = true
 on = ["dispatch"]
 
 # Every package's examples build and run (`cargo test --examples`) in the test environment, which
-# prepares the pinned font catalog the tests that set text read, with its asset and NTFS caches in
+# prepares the pinned font catalog the tests that set text read, with its asset cache in
 # the build directory. Dozens of programs nothing else compiles. It declares `unify` too, so the
 # libraries these examples share with the other families are built as those families build them,
 # once.
@@ -257,7 +255,7 @@ name = "examples"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "test"
 requires = ["arch=x86_64"]
-wrapper = ["bash", "-c", "export TILO_TEST_ASSET_CACHE=\"$CARGO_TARGET_DIR/test-assets\" TILO_NTFS_SOURCE_CACHE=\"$CARGO_TARGET_DIR/ntfs-source\"; exec bash tools/test-env.sh \"$@\"", "examples"]
+wrapper = ["bash", "-c", "export TILO_TEST_ASSET_CACHE=\"$CARGO_TARGET_DIR/test-assets\"; exec bash tools/test-env.sh \"$@\"", "examples"]
 args = ["--locked", "--examples"]
 unify = "workspace-unify"
 # tools/test-env.sh prepares the pinned font catalog for every command it runs, not only a package
@@ -270,15 +268,11 @@ packages = [
     "tilo-agent-session", "tilo-app", "tilo-bluez",
     "tilo-session-client", "tilo-clipboard", "tilo-cpu-raster", "tilo-dialogs", "tilo-doc-codecs",
     "tilo-doc-pdf", "tilo-files", "tilo-font-catalog", "tilo-fs", "tilo-install-helpers",
-    "tilo-location", "tilo-model-gateway", "tilo-notify", "tilo-ntfs-protocol",
+    "tilo-location", "tilo-model-gateway", "tilo-notify",
     "tilo-paint-stream", "tilo-pdf", "tilo-server", "tilo-staging-reclaim", "tilo-ui", "tilo-device-steps",
     "tilo-web-search", "tilo-wet-media", "tilolang-process", "tilolang-tilo",
     "ui-examples", "ush", "windows-vm",
 ]
-# tools/test-env.sh reads this to leave out the native NTFS images, which no example reads: the
-# harness's switch, not the tests', and it is unset before cargo runs, so no build carries it. The
-# runtime values (VK_DRIVER_FILES among them) come from the harness to the tests it starts.
-env = { TILO_TEST_NTFS_FIXTURES = "0" }
 heavy = true
 on = ["dispatch"]
 
@@ -772,7 +766,7 @@ name = "miracast-capture"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/test-env.sh cargo test --locked -p tilo-projector-broker --bin tilo-projector session::miracast"
 image = { check = "image-ci-builder-x86_64", path = "/target/publish/ci-builder/x86_64/image.oci.tar" }
-env = { TILO_REQUIRE_SCREEN_CAPTURE = "1", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_TEST_NTFS_FIXTURES = "0" }
+env = { TILO_REQUIRE_SCREEN_CAPTURE = "1", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1" }
 requires = ["arch=x86_64"]
 on = ["dispatch"]
 heavy = true
@@ -1063,7 +1057,7 @@ name = "visual-goldens"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/test-env.sh cargo nextest run --locked --profile ci --tests --no-tests=pass -p tilo-ui -E '(package(tilo-ui) and test(typography_visual_regression::))'"
 image = "registry.tilo.so/tilo/tilo-builder@sha256:e4763a8c16005f544dde0206014c2cc088fff0d5d28f1857ea24961677c666f6"
-env = { TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
+env = { TILO_REQUIRE_GPU = "1" }
 requires = ["arch=x86_64"]
 on = ["dispatch"]
 heavy = true
@@ -1247,7 +1241,7 @@ env = { CARGO_NET_OFFLINE = "false" }
 name = "example-scenarios"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/example-scenarios.sh -p tilo-app-builder"
-env = { TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
+env = { TILO_REQUIRE_GPU = "1" }
 on = ["dispatch", "idle", "stable"]
 heavy = true
 
@@ -1843,7 +1837,7 @@ on = ["idle", "stable"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "set -eu\n# The guest's /var/tmp is on the step's own scratch disk, an empty ext4 t makes for each step\n# (its README, \"Micro-VM steps\"), not the node's filesystem. The tests assert the filesystem\n# themselves and fail, naming it, on any other. /var/tmp itself is world-writable, which the\n# publication of an installed system refuses among its target's ancestors (as a job's private\n# TMPDIR never is), so a directory on it is mounted at /imager, below / alone.\necho \"imager-tests-{arch}/{shard}: $(nproc) vCPUs; /var/tmp is $(awk '$2 == \"/var/tmp\" { print $3 }' /proc/mounts)\"\nmkdir -p /var/tmp/imager /imager\nmount --bind /var/tmp/imager /imager\nchmod 700 /imager\nexport TMPDIR=/imager/tmp TILO_IMAGER_TEST_CACHE_ROOT=/imager/cache\nmkdir -p \"$TMPDIR\" \"$TILO_IMAGER_TEST_CACHE_ROOT\"\n# The tests run as the guest's root, with its capabilities: the original-image review's refusal\n# of a changed held image is observed only so (as uid 0 without capabilities, the job\n# sandbox's identity, it fails), and the fixtures that need root run instead of skipping.\n# nextest's store, as in imager-tests-build-{arch}: not in the read-only sources.\nprintf '[store]\\ndir = \"/var/tmp/nextest\"\\n' > /var/tmp/nextest-store.toml\nbash tools/test-env.sh cargo nextest run --profile ci --no-fail-fast \\\n  --tool-config-file t:/var/tmp/nextest-store.toml \\\n  --archive-file /target/vm/imager-tests-{arch}.tar.zst --workspace-remap /src \\\n  --partition hash:{shard}/8\n"
 needs = ["font-seed", "imager-tests-build-{arch}"]
-env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
+env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
 requires = ["arch={arch}"]
 isolation = "vm"
 [check.matrix]
@@ -1853,7 +1847,7 @@ shard = ["1", "2", "3", "4", "5", "6", "7", "8"]
 [[check]]
 name = "nightly-check"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source\ncargo check --workspace --locked --all-targets\n"
+run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets\ncargo check --workspace --locked --all-targets\n"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
 requires = ["arch=x86_64"]
 on = ["schedule:0 3 * * *", "dispatch"]
@@ -1861,7 +1855,7 @@ on = ["schedule:0 3 * * *", "dispatch"]
 [[check]]
 name = "nightly-examples"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source TILO_TEST_NTFS_FIXTURES=0\nbash tools/test-env.sh cargo test --workspace --examples --locked\n"
+run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets\nbash tools/test-env.sh cargo test --workspace --examples --locked\n"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
 requires = ["arch=x86_64"]
 on = ["schedule:0 3 * * *", "dispatch"]
@@ -1876,7 +1870,7 @@ on = ["schedule:0 3 * * *", "dispatch"]
 [[check]]
 name = "nightly-arm64-check"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source\ncargo check --workspace --locked --all-targets\n"
+run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets\ncargo check --workspace --locked --all-targets\n"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json" }
 requires = ["arch=arm64"]
 on = ["schedule:0 3 * * *", "dispatch"]
@@ -1884,7 +1878,7 @@ on = ["schedule:0 3 * * *", "dispatch"]
 [[check]]
 name = "nightly-arm64-examples"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source TILO_TEST_NTFS_FIXTURES=0\nbash tools/test-env.sh cargo test --workspace --examples --locked\n"
+run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets\nbash tools/test-env.sh cargo test --workspace --examples --locked\n"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json" }
 requires = ["arch=arm64"]
 on = ["schedule:0 3 * * *", "dispatch"]
@@ -1892,7 +1886,7 @@ on = ["schedule:0 3 * * *", "dispatch"]
 [[check]]
 name = "nightly-arm64-certify"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source\ncargo run --locked -p tilolang-cli --bin tilolang -- certify --workspace\n"
+run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets\ncargo run --locked -p tilolang-cli --bin tilolang -- certify --workspace\n"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1" }
 requires = ["arch=arm64"]
 on = ["schedule:0 3 * * *", "dispatch"]
@@ -1902,7 +1896,7 @@ name = "nightly-arm64-goldens"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/test-env.sh cargo nextest run --locked --profile ci --tests --no-tests=pass -p tilo-ui -E '(package(tilo-ui) and test(typography_visual_regression::))'"
 image = "registry.tilo.so/tilo/tilo-builder@sha256:e4763a8c16005f544dde0206014c2cc088fff0d5d28f1857ea24961677c666f6"
-env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
+env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1" }
 requires = ["arch=arm64"]
 on = ["schedule:0 3 * * *", "dispatch"]
 
@@ -1936,7 +1930,7 @@ heavy = true
 [[check]]
 name = "weekly-release"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source\ncargo build --release --workspace --locked\ntools/check-binary-size.sh \"$CARGO_TARGET_DIR/release\"\n"
+run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets\ncargo build --release --workspace --locked\ntools/check-binary-size.sh \"$CARGO_TARGET_DIR/release\"\n"
 requires = ["disk-100g"]
 on = ["dispatch"]
 heavy = true
@@ -1978,7 +1972,7 @@ starts = { tilo-daemon = ["tilo-test-env:tilo-capability-probe", "install:tilo-i
 [[check]]
 name = "security-isolation-{part}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_TEST_NTFS_FIXTURES=0\nany() { local e=\"\" t; for t; do e=\"${e:+$e | }test($t)\"; done; printf '%s' \"$e\"; }\nrun() { bash tools/test-env.sh cargo nextest run --locked --profile ci --no-tests=fail \"$@\"; }\ncase {part} in\n  server)\n    run -p tilo-server --lib -E \"$(any workspace_access compute_content host_authority)\"\n    run -p tilo-server --test it -E \"$(any tenant_isolation:: listed_workspaces:: member_list_access:: workspace_admission:: auth_reject:: federation_cross_user_reject:: cross_user_workspace_host:: compute_content:: remote_action_routing::)\"\n    ;;\n  server-agents)\n    run -p tilo-server --features agents --test it -E \"$(any tenant_isolation:: listed_workspaces:: member_list_access:: workspace_admission:: auth_reject:: compute_content::)\"\n    ;;\n  agent-session)\n    run -p tilo-agent-session --test it -E \"$(any worker_isolation::)\"\n    run -p tilo-agent-session --test it -E \"$(any workspace_actions::listed_delegate::)\"\n    ;;\nesac\n"
+run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets\nany() { local e=\"\" t; for t; do e=\"${e:+$e | }test($t)\"; done; printf '%s' \"$e\"; }\nrun() { bash tools/test-env.sh cargo nextest run --locked --profile ci --no-tests=fail \"$@\"; }\ncase {part} in\n  server)\n    run -p tilo-server --lib -E \"$(any workspace_access compute_content host_authority)\"\n    run -p tilo-server --test it -E \"$(any tenant_isolation:: listed_workspaces:: member_list_access:: workspace_admission:: auth_reject:: federation_cross_user_reject:: cross_user_workspace_host:: compute_content:: remote_action_routing::)\"\n    ;;\n  server-agents)\n    run -p tilo-server --features agents --test it -E \"$(any tenant_isolation:: listed_workspaces:: member_list_access:: workspace_admission:: auth_reject:: compute_content::)\"\n    ;;\n  agent-session)\n    run -p tilo-agent-session --test it -E \"$(any worker_isolation::)\"\n    run -p tilo-agent-session --test it -E \"$(any workspace_actions::listed_delegate::)\"\n    ;;\nesac\n"
 env = { RUST_BACKTRACE = "1" }
 timeout_secs = 5400
 on = ["dispatch"]
@@ -3698,7 +3692,6 @@ name = "layout-check/{size}"
 on = ["idle", "stable"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/layout-check.sh {size}"
-env = { TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]
 outputs = ["/target/layout-check/{size}/**"]
 timeout_secs = 1800
@@ -3712,7 +3705,6 @@ name = "app-screenshots"
 # Chromium engine Browser's pictures need, and the build scripts' pinned assets.
 egress = { to = ["code.tilo.so:443", "cef-builds.spotifycdn.com:443"], pinned = true }
 run = "bash tools/ci/ensure-browser-dependencies.sh\ncommand -v cmake >/dev/null || dnf install -y cmake\npython3 scripts/browser/build-host.py --jobs 8\nbash tools/screenshots/build.sh \"$CARGO_TARGET_DIR/app-screenshots-build\"\nrm -rf /target/app-screenshots\nTILO_CHROMIUM_HOST=\"$PWD/target/chromium/tilo-chromium-host\" \\\n  bash tools/test-env.sh python3 -I tools/screenshots/run.py --out /target/app-screenshots \\\n  --bin-dir \"$CARGO_TARGET_DIR/app-screenshots-build/bin\" --lib-dir \"$CARGO_TARGET_DIR/app-screenshots-build/lib\" \\\n  --apps \"${T_INPUT_APPS:-}\"\n"
-env = { TILO_TEST_NTFS_FIXTURES = "0" }
 dispatch_inputs = { apps = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/app-screenshots/**"]
@@ -3736,7 +3728,6 @@ default = false
 name = "shell-ui-shots"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "rm -rf /target/shell-ui-shots\nSHELL_UI_SHOTS_OUT=/target/shell-ui-shots bash tools/test-env.sh cargo test --locked -p tilo-session --test it -- network_agent_questions::\n"
-env = { TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]
 outputs = ["/target/shell-ui-shots/**"]
 timeout_secs = 3600
@@ -6667,16 +6658,6 @@ run = "python3 -I tools/test-assets.py --cache-root /target/test-assets crates/e
 outputs = ["/target/test-assets/**"]
 default = false
 
-# The NTFS helper's pinned ntfs-3g source, laid out by its digest, for every cargo build
-# (`[cargo_builds]`) to take instead of fetching it (crates/os/tilo-ntfs-helper/source_artifact.py).
-[[check]]
-name = "ntfs-source"
-requires = ["arch=any"]
-egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "TILO_NTFS_SOURCE_CACHE=/target/ntfs-source python3 -I crates/os/tilo-ntfs-helper/source_artifact.py"
-outputs = ["/target/ntfs-source/**"]
-default = false
-
 [[check]]
 name = "os-assembler-x86_64"
 # dnf installs podman into the guest from Fedora's mirrors, which are no fixed host list.
@@ -7544,7 +7525,7 @@ name = "e2e/{proof}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/test-env.sh bash tools/ci/session-proofs.sh {proof}"
 needs = ["font-seed", "nested-session", "collab-probe-binary"]
-env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_COLLAB_PROBE = "/target/debug/tilo-collab-probe", TILO_TEST_NTFS_FIXTURES = "0" }
+env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_COLLAB_PROBE = "/target/debug/tilo-collab-probe" }
 requires = ["arch=x86_64"]
 isolation = "vm"
 outputs = ["/target/e2e/{proof}/**"]
@@ -7573,7 +7554,7 @@ proof = ["tilolang", "two-people", "mail-two-members", "agent-sessions", "sessio
 name = "app-walk/{app}"
 run = "bash tools/test-env.sh bash tools/ci/app-walk.sh /target/app-walk/{app} {app} ${T_INPUT_WALK:+--only-walk \"$T_INPUT_WALK\"}"
 needs = ["font-seed", "nested-session", "tilolang-cli-binary"]
-env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TILOLANG = "/target/debug/tilolang", TILO_TEST_NTFS_FIXTURES = "0" }
+env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TILOLANG = "/target/debug/tilolang" }
 requires = ["arch=x86_64"]
 isolation = "vm"
 outputs = ["/target/app-walk/{app}/**"]
@@ -7608,8 +7589,7 @@ name = "run-headless"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/test-env.sh /target/debug/tilo-local headless --check --no-build --apps activity"
 needs = ["font-seed", "nested-session", "tilo-local-binaries"]
-# The session's apps read no NTFS image, whose set takes a minute to build.
-env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_NTFS_FIXTURES = "0" }
+env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_NESTED_SESSION_BUILD = "/target/nested-session" }
 requires = ["arch=x86_64"]
 isolation = "vm"
 timeout_secs = 1200
@@ -7620,8 +7600,7 @@ name = "run-desktop"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/test-env.sh /target/debug/tilo-local desktop --check --no-build --apps activity"
 needs = ["font-seed", "nested-session", "tilo-local-binaries"]
-# The window's apps read no NTFS image, whose set takes a minute to build.
-env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_NTFS_FIXTURES = "0" }
+env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_NESTED_SESSION_BUILD = "/target/nested-session" }
 requires = ["arch=x86_64"]
 isolation = "vm"
 timeout_secs = 1200
@@ -8121,10 +8100,10 @@ needs = ["font-seed", "nested-session", "lounge-check-cli"]
 # pinned: dnf installs the newest builds Fedora's updates repository holds, and pip the newest
 # Anthropic SDK, from hosts no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False podman ffmpeg-free python3-pip && dnf clean all && python3 -m pip install --no-cache-dir anthropic", egress = { to = ["0.0.0.0/0", "::/0"] } }
-# The session's apps read no NTFS image, whose set takes a minute to build. A story's people run
+# A story's people run
 # the `tilo` command against their own desktop, at the socket it serves its person's programs on
 # (the desktop API): it is the release the page stories drive, built once for them.
-env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_NTFS_FIXTURES = "0", TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo" }
+env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo" }
 # The account folders a cloud story's person sees are FUSE mounts.
 requires = ["/dev/fuse", "arch=x86_64"]
 isolation = "vm"
@@ -9266,16 +9245,3 @@ python3 os/tests/installed_material_audit.py
 requires = ["arch=x86_64"]
 isolation = "vm"
 on = ["idle", "stable", "dispatch"]
-
-# The NTFS helper's staged archive: the real binary sealed with its parser-free source and tested
-# from the archive alone, which the crate's own tests never see.
-[[check]]
-name = "ntfs-stage-install"
-on = ["idle", "stable"]
-# The build fetches crates from code.tilo.so, pinned by the lock.
-egress = { to = ["code.tilo.so:443"], pinned = true }
-run = '''set -eu
-cargo build --locked -p tilo-ntfs-helper --bin tilo-ntfs-probe
-TILO_NTFS_STAGING_BINARY="$CARGO_TARGET_DIR/debug/tilo-ntfs-probe" python3 crates/os/tilo-ntfs-helper/tests/test_stage_install.py
-'''
-requires = ["arch=x86_64"]

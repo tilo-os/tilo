@@ -59,8 +59,7 @@ nextest=0
 # Whether the command starts tests. t's build of a test family lists the test binaries (`cargo
 # nextest list`, which builds them) and builds the programs their tests start (`cargo build`), both
 # through this wrapper: neither starts a test, so neither needs a program built for one or the test
-# environment. In that environment `cargo build` waited minutes for the native NTFS images, which
-# only tilo-ntfs-helper's tests read, in every build of a family whose packages start a program.
+# environment.
 runs_tests=1
 if [[ ${1:-} == cargo ]]; then
     case ${2:-} in

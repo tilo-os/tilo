@@ -997,17 +997,9 @@
       "libraries": 9383852,
       "tests": 23142952
     },
-    "tilo-ntfs-helper": {
-      "libraries": 6556907,
-      "tests": 23801744
-    },
     "tilo-ntfs-mount": {
       "libraries": 7863362,
       "tests": 16602592
-    },
-    "tilo-ntfs-protocol": {
-      "libraries": 5291937,
-      "tests": 3887408
     },
     "tilo-oauth": {
       "libraries": 3893952,

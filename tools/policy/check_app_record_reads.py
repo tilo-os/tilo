@@ -77,8 +77,6 @@ UNREAD += (
     "crates/os/install-plan",
     "crates/os/install-profile-model",
     "crates/integrations/messaging-service",
-    "crates/os/tilo-ntfs-helper",
-    "crates/os/tilo-ntfs-protocol",
 )
 
 DECLARATION = re.compile(r"#\[resource\(")

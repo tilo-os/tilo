@@ -827,7 +827,7 @@ class WrapperHandedProgramTests(unittest.TestCase):
             dumped = Path(work) / "env"
             (programs / "cargo").write_text(f'#!/bin/sh\npython3 -c \'{DUMP}\' >"{dumped}"\n')
             (programs / "cargo").chmod(0o755)
-            excluded = ("TILO_TEST_NTFS_FIXTURES", "TILO_REQUIRE_SWTPM",
+            excluded = ("TILO_REQUIRE_SWTPM",
                         "TILO_REQUIRE_PDF_SANDBOX", "TILO_PAM_TILO_MODULE", "TILO_VIDEO_RENDER",
                         # The capabilities every test is promised, and the deep family's count:
                         # the ci profile's setup sets them for the tests, and no family's `env`
@@ -835,7 +835,7 @@ class WrapperHandedProgramTests(unittest.TestCase):
                         "TILO_REQUIRE_MEDIA", "TILO_REQUIRE_AUDIO", "TILO_REQUIRE_GPU",
                         "PROPTEST_CASES")
             # Every package whose tests needed one of them.
-            for package in ("tilo-ntfs-helper", "tilo-pdf", "tilo-thumbnail",
+            for package in ("tilo-pdf", "tilo-thumbnail",
                             "tilo-agent-session", "pam-tilo", "tilo-auth", "tilo-rollback"):
                 with self.subTest(package=package):
                     env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",

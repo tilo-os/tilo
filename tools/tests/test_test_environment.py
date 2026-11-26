@@ -254,13 +254,6 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                          "the PAM module is built on the platform its sibling setups are")
         self.assertEqual(rules("ci", "pam-module"), [],
                          "ci inherits the default profile's PAM module")
-        # The native NTFS images are generated once for the tests that read them; a test
-        # started without them fails saying so, so every profile serves them too.
-        (ntfs,) = rules("default", "ntfs-fixtures")
-        self.assertEqual(ntfs["filter"], "package(tilo-ntfs-helper) and binary(it)")
-        self.assertEqual(ntfs["platform"], siblings_rule["platform"])
-        self.assertEqual(rules("ci", "ntfs-fixtures"), [],
-                         "ci inherits the default profile's NTFS fixtures")
         # The session's app-open tests start the installed apps and the launcher
         # itself, and time the session's opening against their manifests' splash
         # budgets: the run builds each of them first.
@@ -299,7 +292,6 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         steps = {name: script["command"][2:] for name, script in scripts.items()}
         self.assertEqual(steps, {"test-runtime": ["runtime"], "font-catalog": ["fonts"],
                                  "headless-audio": ["audio"],
-                                 "ntfs-fixtures": ["ntfs"],
                                  "swtpm": ["swtpm"], "pdf-sandbox": ["pdf-sandbox"],
                                  "property-cases": ["property-cases"],
                                  "throughput": ["throughput"]})
@@ -517,10 +509,9 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         self.assertIn("lavapipe", result.stderr)
 
     def test_existing_settings_and_endpoints_are_kept(self) -> None:
-        result, env = self.setup("audio", "ntfs", TILO_REQUIRE_AUDIO="0",
-                                 TILO_NTFS_FIXTURES="/fixtures")
+        result, env = self.setup("audio", TILO_REQUIRE_AUDIO="0")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(env, {"TILO_NTFS_FIXTURES": "/fixtures"})
+        self.assertEqual(env, {})
         result, _ = self.setup("bogus")
         self.assertEqual(result.returncode, 2)
 
@@ -774,8 +765,7 @@ class CargoRunnerTests(unittest.TestCase):
             (programs / "cargo").chmod(0o755)
             env = {**SEED, "PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
                    "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target"),
-                   "TILO_REQUIRE_GPU": "0", "TILO_REQUIRE_AUDIO": "0",
-                   "TILO_TEST_NTFS_FIXTURES": "0"}
+                   "TILO_REQUIRE_GPU": "0", "TILO_REQUIRE_AUDIO": "0"}
             result = subprocess.run(["bash", str(TEST_ENV), "cargo", "test", "--no-run"], env=env,
                                     capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -806,8 +796,7 @@ class CargoRunnerTests(unittest.TestCase):
             (programs / "cargo").chmod(0o755)
             env = {**SEED, "PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
                    "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target"),
-                   "TILO_REQUIRE_GPU": "0", "TILO_REQUIRE_AUDIO": "0",
-                   "TILO_TEST_NTFS_FIXTURES": "0"}
+                   "TILO_REQUIRE_GPU": "0", "TILO_REQUIRE_AUDIO": "0"}
             result = subprocess.run(
                 ["bash", str(TEST_ENV), "cargo", "run", "--example", "window_share_shots"],
                 env=env, capture_output=True, text=True, check=False)
@@ -835,8 +824,7 @@ class CargoRunnerTests(unittest.TestCase):
                 f'#!/bin/sh\npython3 -c \'{DUMP}\' >"{dumped}"\n')
             (programs / "cargo").chmod(0o755)
             env = {**SEED, "PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
-                   "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target"),
-                   "TILO_TEST_NTFS_FIXTURES": "0"}
+                   "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target")}
             result = subprocess.run(
                 ["bash", str(TEST_ENV), "--build", "cargo", "build", "--locked"],
                 env=env, capture_output=True, text=True, check=False)
@@ -847,8 +835,7 @@ class CargoRunnerTests(unittest.TestCase):
                              str(work / "target" / "font-artifacts"),
                              "the build inputs every job's build shares are exported")
             for name in ("PULSE_SERVER", "PULSE_RUNTIME_PATH", "MESA_SHADER_CACHE_DIR",
-                         "TILO_TEST_CACHE_DIR", "TILO_REQUIRE_MEDIA", "TILO_TEST_ENVIRONMENT",
-                         "TILO_TEST_NTFS_FIXTURES"):
+                         "TILO_TEST_CACHE_DIR", "TILO_REQUIRE_MEDIA", "TILO_TEST_ENVIRONMENT"):
                 self.assertNotIn(name, cargo_env, "the build carries no test environment")
             self.assertFalse((work / "target").exists(), "no environment was prepared")
 
@@ -866,8 +853,7 @@ class CargoRunnerTests(unittest.TestCase):
             (programs / "probe").chmod(0o755)
             env = {**SEED, "PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
                    "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target"),
-                   "TILO_REQUIRE_GPU": "0", "TILO_REQUIRE_AUDIO": "0",
-                   "TILO_TEST_NTFS_FIXTURES": "0"}
+                   "TILO_REQUIRE_GPU": "0", "TILO_REQUIRE_AUDIO": "0"}
             result = subprocess.run(["bash", str(TEST_ENV), "probe"], env=env,
                                     capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -1013,7 +999,6 @@ class CapabilitySkipTests(unittest.TestCase):
         env = {**SEED, "PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
                "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target"),
                "TILO_REQUIRE_GPU": "0", "TILO_REQUIRE_AUDIO": "0",
-               "TILO_TEST_NTFS_FIXTURES": "0",
                "TILO_FONT_ASSET_CACHE": str(work / "fonts"),
                "NEXTEST_BIN_EXE_tilo-capability-probe": str(report)}
         result = subprocess.run(["bash", str(TEST_ENV), "cargo", "test", *arguments],

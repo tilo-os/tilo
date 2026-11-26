@@ -1182,9 +1182,7 @@ doc = false
 "tilo-nm" = { path = "../../crates/os/tilo-nm", default-features = false, features = [] }
 "tilo-notifications-service" = { path = "../../crates/desktop/notifications-service", default-features = false, features = [] }
 "tilo-notify" = { path = "../../crates/platform/tilo-notify", default-features = false, features = ["host-portals"] }
-"tilo-ntfs-helper" = { path = "../../crates/os/tilo-ntfs-helper", default-features = false, features = [] }
 "tilo-ntfs-mount" = { path = "../../crates/os/ntfs-mount", default-features = false, features = ["default", "service"] }
-"tilo-ntfs-protocol" = { path = "../../crates/os/tilo-ntfs-protocol", default-features = false, features = [] }
 "tilo-oauth" = { path = "../../crates/integrations/tilo-oauth", default-features = false, features = ["client", "default", "fake"] }
 "tilo-oci-images" = { path = "../../crates/vm/oci-images", default-features = false, features = [] }
 "tilo-ocr" = { path = "../../crates/engines/ocr", default-features = false, features = [] }
@@ -3633,9 +3631,7 @@ doc = false
 "tilo-nm" = { path = "../../crates/os/tilo-nm", default-features = false, features = [] }
 "tilo-notifications-service" = { path = "../../crates/desktop/notifications-service", default-features = false, features = [] }
 "tilo-notify" = { path = "../../crates/platform/tilo-notify", default-features = false, features = [] }
-"tilo-ntfs-helper" = { path = "../../crates/os/tilo-ntfs-helper", default-features = false, features = [] }
 "tilo-ntfs-mount" = { path = "../../crates/os/ntfs-mount", default-features = false, features = ["default", "service"] }
-"tilo-ntfs-protocol" = { path = "../../crates/os/tilo-ntfs-protocol", default-features = false, features = [] }
 "tilo-oauth" = { path = "../../crates/integrations/tilo-oauth", default-features = false, features = ["client", "default", "fake"] }
 "tilo-oci-images" = { path = "../../crates/vm/oci-images", default-features = false, features = [] }
 "tilo-ocr" = { path = "../../crates/engines/ocr", default-features = false, features = [] }

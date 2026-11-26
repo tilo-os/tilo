@@ -499,11 +499,6 @@ inputs = ["tools/ci/native-stores.sh", "tools/ci/native-store-virtio.py", "tools
 suites = ["tools/ci/test_native_store_virtio.py"]
 
 [[group]]
-name = "ntfs-helper"
-inputs = ["crates/os/tilo-ntfs-helper/"]
-suites = ["crates/os/tilo-ntfs-helper/tests/test_build_native.py", "crates/os/tilo-ntfs-helper/tests/test_source_artifact.py"]
-
-[[group]]
 name = "dist"
 inputs = ["dist/", "os/registry-runtime-publisher.hex", "tools/ci/publish/cli-release.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh"]
 suites = [
@@ -1886,10 +1881,6 @@ check = "test-image-host"
 suite = "os/containers/tilo-api/test-image.sh"
 reason = "starts the built API server image with buildah as root in a loopback network, so it needs the archive image-api writes and a micro-VM step"
 check = "test-image-api"
-
-[[covered]]
-suite = "crates/os/tilo-ntfs-helper/tests/test_stage_install.py"
-check = "ntfs-stage-install"
 
 [[unrequired]]
 suite = "dist/arch/test-package.sh"

@@ -708,8 +708,6 @@ SURFACE_ROOTS += (
     "crates/os/install-plan/",
     "crates/os/install-profile-model/",
     "crates/integrations/messaging-service/",
-    "crates/os/tilo-ntfs-helper/",
-    "crates/os/tilo-ntfs-protocol/",
 )
 
 # Crates a window's words can be written in without painting a window of their
@@ -753,8 +751,6 @@ LIBRARY_SKIP += (
     "crates/os/install-plan/",
     "crates/os/install-profile-model/",
     "crates/integrations/messaging-service/",
-    "crates/os/tilo-ntfs-helper/",
-    "crates/os/tilo-ntfs-protocol/",
 )
 
 

@@ -84,10 +84,6 @@ allow = [
     "Unlicense",
     "0BSD",
     "CDLA-Permissive-2.0",
-    # tilo-ntfs-helper statically links the pinned GPL-2.0-or-later ntfs-3g
-    # reader and is distributed with its corresponding source. We exercise the
-    # "or later" option as GPLv3 when combining it with the AGPLv3 system.
-    "GPL-2.0-or-later",
     # rustypipe 0.11.4 publishes the deprecated spelling; SPDX defines it as
     # GPL-3.0-only and the crate's license text matches that interpretation.
     "GPL-3.0",
@@ -98,12 +94,6 @@ allow = [
     "AGPL-3.0-or-later",
 ]
 confidence-threshold = 0.9
-
-# This standalone helper links pinned NTFS-3G; no other workspace crate links it.
-# Its staging layout includes COPYING and the helper, protocol, and NTFS sources.
-[[licenses.exceptions]]
-crate = "tilo-ntfs-helper@=0.1.0"
-allow = ["GPL-2.0-or-later"]
 
 # libbz2-rs-sys, the pure-Rust port of libbzip2 behind Files' bzip2 and 7z
 # reading, keeps libbzip2's own license: BSD-style (redistribution with the

@@ -48,7 +48,6 @@ inherits = "ci"
 # test binary, or one shard of it), so that one starts no interpreter and
 # prepares nothing. What takes work runs for the packages that can use it: the
 # pinned font catalog, and a private audio endpoint for the run's lifetime;
-# the native NTFS images only for a run that selects a test reading them.
 # tools/test-env-setup.sh describes each step; every test binary also runs in
 # tools/with-test-environment.sh (tools/cargo-runner.sh).
 [scripts.setup.test-runtime]
@@ -59,9 +58,6 @@ command = ["bash", "tools/test-env-setup.sh", "fonts"]
 
 [scripts.setup.headless-audio]
 command = ["bash", "tools/test-env-setup.sh", "audio"]
-
-[scripts.setup.ntfs-fixtures]
-command = ["bash", "tools/test-env-setup.sh", "ntfs"]
 
 # The values only some packages' tests need. They are handed to the test processes, never to the
 # job's environment: a variable there keys every build script's and proc macro's cache entry by
@@ -278,17 +274,6 @@ setup = "view-siblings"
 platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-daemon) and binary(it) and test(language::throughput::)"
 setup = "throughput"
-
-# The native NTFS images the helper's integration tests read are generated once
-# and handed to the tests as TILO_NTFS_FIXTURES; Cargo builds none, and a test
-# that starts without them fails saying so. Its library's tests read none: a run
-# of them alone waited a minute for images it never opened. In every profile:
-# the release is graded with the default profile, and ci inherits this
-# registration.
-[[profile.default.scripts]]
-platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-ntfs-helper) and binary(it)"
-setup = "ntfs-fixtures"
 
 # The values only some packages' tests need, for those packages: the ones
 # tools/ci/nextest.sh gave the job's environment before, which every build

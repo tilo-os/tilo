@@ -116,8 +116,6 @@ SCANNED += (
     Path("crates/os/install-plan"),
     Path("crates/os/install-profile-model"),
     Path("crates/integrations/messaging-service"),
-    Path("crates/os/tilo-ntfs-helper"),
-    Path("crates/os/tilo-ntfs-protocol"),
 )
 
 # Where motion math belongs.
