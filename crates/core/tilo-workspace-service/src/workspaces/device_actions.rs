@@ -883,7 +883,7 @@ fn not_served() -> ActionCallError {
 /// The providers this device's dispatch answers an app's own connection for (Mail's connector
 /// reading the sign-ins and releasing a login's secret): the workspace's accounts and its vault.
 pub(crate) const APP_CONNECTION_PROVIDERS: [&str; 2] = [
-    tilo_actions::remote::person_accounts::PROVIDER,
+    crate::workspace_accounts::PROVIDER,
     tilo_actions::remote::person_vault::PROVIDER,
 ];
 

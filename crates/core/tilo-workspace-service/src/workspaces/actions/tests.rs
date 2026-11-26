@@ -779,8 +779,9 @@ async fn the_workspaces_owners_and_moderators_rename_it() {
 #[tokio::test]
 async fn the_persons_vault_models_and_mail_are_paths_of_the_workspace() {
     use crate::models as model_providers;
+    use crate::workspace_accounts;
     use tilo_actions::remote::{
-        WORKSPACE_MAIL_ACCOUNTS, WORKSPACE_MODELS, WORKSPACE_VAULT, person_accounts, person_vault,
+        WORKSPACE_MAIL_ACCOUNTS, WORKSPACE_MODELS, WORKSPACE_VAULT, person_vault,
     };
 
     let dir = tempfile::tempdir().unwrap();
@@ -838,7 +839,7 @@ async fn the_persons_vault_models_and_mail_are_paths_of_the_workspace() {
     );
     assert_eq!(
         super::mail::account_action(&add),
-        Some((workspace.as_str(), person_accounts::ADD_MAIL))
+        Some((workspace.as_str(), workspace_accounts::ADD_MAIL))
     );
     // Asking one is handed to its provider, never refused as unknown here.
     for address in [listed, add_provider, add] {

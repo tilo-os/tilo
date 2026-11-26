@@ -16,10 +16,10 @@
 
 use std::sync::Arc;
 
+use crate::workspace_accounts;
 use accounts::person::AccountList;
 use ed25519_dalek::SigningKey;
 use tilo_account_probe::AccountTester as _;
-use tilo_actions::remote::person_accounts;
 use tilo_actions::remote::person_vault;
 use tilo_actions::remote::person_vault::ItemRef;
 use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
@@ -495,7 +495,7 @@ async fn a_change_a_device_makes_for_another_member_names_the_member_who_asked()
     };
 
     // Each of Bo's asks reaches Ada's device as the call Bo's device signed.
-    let mut keeping = asking(person_accounts::LIST, &serde_json::json!({}));
+    let mut keeping = asking(workspace_accounts::LIST, &serde_json::json!({}));
     keeping.target =
         tilo_actions::remote::person_vault::target(tilo_actions::remote::person_vault::ADD);
     let keeping = members.signed(keeping);
@@ -528,7 +528,7 @@ async fn a_change_a_device_makes_for_another_member_names_the_member_who_asked()
     );
 
     let signing_out = members.signed(asking(
-        person_accounts::REMOVE,
+        workspace_accounts::REMOVE,
         &serde_json::json!({"account": ADDRESS}),
     ));
     assert!(
@@ -618,7 +618,7 @@ async fn a_member_whose_role_leaves_passwords_out_is_not_released_the_password()
 fn asking(action: &str, argument: &serde_json::Value) -> InvokeRequest {
     InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
-        target: person_accounts::target(action),
+        target: workspace_accounts::target(action),
         argument: InvokeArgument::Json(argument.as_object().unwrap().clone()),
         context: None,
         confirmation: None,
@@ -1074,25 +1074,24 @@ async fn a_device_that_may_not_read_the_vault_releases_its_connection_nothing() 
 /// one of that record's own actions, in Settings' record of that kind.
 #[test]
 fn the_account_actions_declare_steps_the_accounts_record_takes() {
-    use tilo_actions::remote::person_accounts;
+    use crate::workspace_accounts;
     use tilo_resource::Resource as _;
     let verbs: Vec<_> = AccountList::declarations()
         .into_iter()
         .map(|declared| declared.id)
         .collect();
     let mut declared = 0;
-    for (resource, action) in [
-        (person_accounts::RESOURCE, person_accounts::ADD_MAIL),
-        (
-            person_accounts::RESOURCE,
-            person_accounts::ADD_MAIL_WITH_ITEM,
-        ),
-        (person_accounts::RESOURCE, person_accounts::BEGIN_SIGN_IN),
-        (person_accounts::RESOURCE, person_accounts::RECONNECT),
-        (person_accounts::RESOURCE, person_accounts::REMOVE),
-        (person_accounts::RESOURCE, person_accounts::SET_SERVICES),
+    let effects =
+        |action| tilo_actions::remote::declared_effects(&workspace_accounts::target(action));
+    for action in [
+        workspace_accounts::ADD_MAIL,
+        workspace_accounts::ADD_MAIL_WITH_ITEM,
+        workspace_accounts::BEGIN_SIGN_IN,
+        workspace_accounts::RECONNECT,
+        workspace_accounts::REMOVE,
+        workspace_accounts::SET_SERVICES,
     ] {
-        for effect in person_accounts::effects(resource, action)
+        for effect in effects(action)
             .into_iter()
             .filter(|effect| effect.kind == AccountList::KIND)
         {
@@ -1106,7 +1105,7 @@ fn the_account_actions_declare_steps_the_accounts_record_takes() {
         "every account action that writes the record declares its step"
     );
     assert!(
-        person_accounts::effects(person_accounts::RESOURCE, person_accounts::LIST).is_empty(),
+        effects(workspace_accounts::LIST).is_empty(),
         "a read writes nothing"
     );
 }

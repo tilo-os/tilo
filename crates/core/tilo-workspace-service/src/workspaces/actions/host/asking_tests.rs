@@ -508,7 +508,7 @@ async fn a_persons_own_call_the_rules_ask_first_runs_only_on_their_confirmation(
     // Her own calls wait, nothing of them done: a login she keeps, and a look at Mail's accounts.
     let adding = keeping("https://example.test");
     let listing = calling(
-        tilo_actions::remote::person_accounts::target(tilo_actions::remote::person_accounts::LIST),
+        crate::workspace_accounts::target(crate::workspace_accounts::LIST),
         json!({}),
     );
     for call in [&adding, &listing] {

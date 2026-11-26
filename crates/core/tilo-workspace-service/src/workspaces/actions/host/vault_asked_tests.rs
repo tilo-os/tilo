@@ -336,13 +336,13 @@ async fn kept_accounts(
     workspace_id: tilo_server_protocol::WorkspaceId,
     ada: &DeviceCert,
 ) -> Result<Vec<String>, ActionCallError> {
+    use crate::workspace_accounts;
     use tilo_actions::remote::ActionProvider as _;
-    use tilo_actions::remote::person_accounts;
 
     let page = service.in_workspace_as(workspace_id, ada);
     let request = InvokeRequest {
         invocation: InvocationId::new(),
-        target: person_accounts::target(person_accounts::LIST),
+        target: workspace_accounts::target(workspace_accounts::LIST),
         argument: InvokeArgument::Json(json!({}).as_object().cloned().unwrap_or_default()),
         context: None,
         confirmation: None,

@@ -370,9 +370,15 @@ fn the_mail_connector_signs_in_with_the_password_the_workspace_keeps() {
                     .expect("the daemon hands Mail's connection"),
             )
             .expect("Mail's connection reads");
-            let told = probe.sign_ins().unwrap_or_else(|refused| {
-                panic!("the dispatch refused Mail's sign-ins: {refused}")
-            });
+            let told = probe
+                .sign_ins::<tilo_workspace_service::workspace_accounts::MailSignIns>(
+                    tilo_workspace_service::workspace_accounts::target(
+                        tilo_workspace_service::workspace_accounts::SIGN_INS,
+                    ),
+                )
+                .unwrap_or_else(|refused| {
+                    panic!("the dispatch refused Mail's sign-ins: {refused}")
+                });
             assert!(
                 told.sign_ins.iter().any(|login| login
                     .account
@@ -435,9 +441,15 @@ fn a_mail_account_added_later_signs_in_once_its_entry_is_allowed() {
                     .expect("the daemon hands Mail's connection"),
             )
             .expect("Mail's connection reads");
-            probe.sign_ins().unwrap_or_else(|refused| {
-                panic!("the dispatch refused Mail's sign-ins: {refused}")
-            });
+            probe
+                .sign_ins::<tilo_workspace_service::workspace_accounts::MailSignIns>(
+                    tilo_workspace_service::workspace_accounts::target(
+                        tilo_workspace_service::workspace_accounts::SIGN_INS,
+                    ),
+                )
+                .unwrap_or_else(|refused| {
+                    panic!("the dispatch refused Mail's sign-ins: {refused}")
+                });
         }
         let link = host
             .daemon()
@@ -510,7 +522,11 @@ fn an_app_that_does_not_sign_in_is_refused_the_logins() {
         )
         .expect("Notes' connection reads");
         let refused = probe
-            .sign_ins()
+            .sign_ins::<tilo_workspace_service::workspace_accounts::MailSignIns>(
+                tilo_workspace_service::workspace_accounts::target(
+                    tilo_workspace_service::workspace_accounts::SIGN_INS,
+                ),
+            )
             .expect_err("an app that does not sign in reads no login");
         assert!(!refused.is_empty(), "the refusal is in words");
         assert!(

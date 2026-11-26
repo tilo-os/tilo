@@ -19,6 +19,9 @@ accounts = { package = "tilo-accounts", path = "../accounts", optional = true }
 # The app's own reading of the workspace's accounts and their secrets, over its connection to
 # the device's dispatch.
 tilo-actions = { path = "../../core/actions", optional = true }
+# The calls the connector makes of the workspace's accounts, bound at build time to the surface
+# their service publishes.
+tilo-resource-macros = { path = "../../core/tilo-resource-macros", optional = true }
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame" }
 tilo-content = { path = "../../core/content", optional = true }
@@ -61,6 +64,7 @@ engine = [
     "dep:runtime-portal",
     "dep:accounts",
     "dep:tilo-actions",
+    "dep:tilo-resource-macros",
     "dep:tokio",
 ]
 # The harness other tests of the connector run: a package's records over a real store, the

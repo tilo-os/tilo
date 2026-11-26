@@ -1457,10 +1457,33 @@ inputs = [
   "os/usr/share/tilo/fs-capabilities.json", "crates/engines/doc-fixtures/artifacts.json",
   "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*",
   "tools/test-assets.py", "tools/test-assets-build.rs",
+  # A mount binds its calls of the workspace's accounts to the surface their service publishes.
+  "crates/core/tilo-workspace-service/accounts-surface.json",
 ]
 readers = [
   "crates/core/fs/src/main.rs",
   "crates/core/fs/tests/cloud_mount.rs",
+]
+
+[[cargo]]
+package = "tilolang-mail"
+# The connector binds its calls of the workspace's accounts to the surface their service
+# publishes.
+inputs = ["crates/core/tilo-workspace-service/accounts-surface.json"]
+
+[[cargo]]
+package = "tilolang-calendar"
+# The connector binds its calls of the workspace's accounts to the surface their service
+# publishes.
+inputs = ["crates/core/tilo-workspace-service/accounts-surface.json"]
+
+[[cargo]]
+package = "tilo-session-core"
+# The session's tests name the targets of the workspace's accounts and model providers from the
+# surfaces their service publishes.
+inputs = [
+  "crates/core/tilo-workspace-service/accounts-surface.json",
+  "crates/core/tilo-workspace-service/models-surface.json",
 ]
 
 [[cargo]]

@@ -14,24 +14,24 @@
 //! What is begun is kept in memory alone, one entry per sign-in, expiring;
 //! no secret is ever answered to a caller.
 //!
-//! [`BEGIN_SIGN_IN`]: tilo_actions::remote::person_accounts::BEGIN_SIGN_IN
-//! [`SUBMIT_SIGN_IN_CODE`]: tilo_actions::remote::person_accounts::SUBMIT_SIGN_IN_CODE
+//! [`BEGIN_SIGN_IN`]: crate::workspace_accounts::BEGIN_SIGN_IN
+//! [`SUBMIT_SIGN_IN_CODE`]: crate::workspace_accounts::SUBMIT_SIGN_IN_CODE
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, mpsc};
 use std::time::Duration;
 
+use crate::workspace_accounts::{
+    BeginCloudSignIn, BeginSignIn, CancelSignIn, CloudKind, Provider, Services, SignInStep,
+    SigningIn, SubmitSignInCode,
+};
 use account_credentials::icloud::{ICloudAuth, ICloudChallenge, ICloudSignIn, WebICloud};
 use account_credentials::nextcloud;
 use account_credentials::{
     Authorization, CredentialStore, OAuthCloud, OAuthIssuer, icloud_secret, oauth_secret,
 };
 use serde_json::{Value, json};
-use tilo_actions::remote::person_accounts::{
-    BeginCloudSignIn, BeginSignIn, CancelSignIn, CloudKind, Provider, Services, SignInStep,
-    SigningIn, SubmitSignInCode,
-};
 use tilo_net::Url;
 use zeroize::Zeroizing;
 
@@ -197,7 +197,7 @@ impl Workspaces {
     /// would ask is one it may not call, or too many sign-ins are already
     /// begun.
     ///
-    /// [`BEGIN_SIGN_IN`]: tilo_actions::remote::person_accounts::BEGIN_SIGN_IN
+    /// [`BEGIN_SIGN_IN`]: crate::workspace_accounts::BEGIN_SIGN_IN
     pub(super) async fn begin_sign_in(
         &self,
         (person, workspace, call): ([u8; 32], &str, Option<&tilo_actions::remote::InvokeRequest>),
@@ -921,7 +921,7 @@ pub(super) async fn accounts_sign_in(
     workspace: &str,
     request: &tilo_actions::remote::InvokeRequest,
 ) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
-    use tilo_actions::remote::person_accounts::{
+    use crate::workspace_accounts::{
         BEGIN_CLOUD_SIGN_IN, BEGIN_SIGN_IN, CANCEL_SIGN_IN, SUBMIT_SIGN_IN_CODE,
     };
 

@@ -3,8 +3,8 @@
 //! own workspace, read back only by the app that described the issuer, and an issuer that
 //! refuses the address the browser came back to says which address to register.
 
+use crate::workspace_accounts::{self, ConnectedAccount, SignInStep};
 use serde_json::{Value, json};
-use tilo_actions::remote::person_accounts::{self, ConnectedAccount, SignInStep};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, InvocationReceipt, ReceiptStatus,
 };
@@ -61,7 +61,7 @@ async fn connected(
     issuer: Value,
 ) -> Result<ConnectedAccount, ActionCallError> {
     let step: SignInStep = answered(
-        settled(page.invoke(who, asking(person_accounts::CONNECT_ACCOUNT, issuer)))
+        settled(page.invoke(who, asking(workspace_accounts::CONNECT_ACCOUNT, issuer)))
             .await
             .unwrap(),
     );
@@ -70,7 +70,7 @@ async fn connected(
     let came = settled(page.invoke(
         who,
         asking(
-            person_accounts::FINISH_CONNECT_ACCOUNT,
+            workspace_accounts::FINISH_CONNECT_ACCOUNT,
             json!({"signIn": step.id}),
         ),
     ))
@@ -184,7 +184,7 @@ async fn a_person_connects_their_account_at_an_issuer_an_app_describes() {
     // Only a person, through the app that describes the issuer, connects an account there.
     let outside = settled(page.invoke(
         &caller(&device),
-        asking(person_accounts::CONNECT_ACCOUNT, connect(&server, port)),
+        asking(workspace_accounts::CONNECT_ACCOUNT, connect(&server, port)),
     ))
     .await
     .unwrap_err();
@@ -192,7 +192,7 @@ async fn a_person_connects_their_account_at_an_issuer_an_app_describes() {
     // Nor does anyone on a device that is not theirs: what they connect is kept on their own.
     let elsewhere = settled(actions.device_page(workspace_id, &bo).invoke(
         &caller(&bo).through_app(BRIDGE),
-        asking(person_accounts::CONNECT_ACCOUNT, connect(&server, port)),
+        asking(workspace_accounts::CONNECT_ACCOUNT, connect(&server, port)),
     ))
     .await
     .unwrap_err();
@@ -248,7 +248,7 @@ async fn a_person_connects_their_account_at_an_issuer_an_app_describes() {
     let stray: SignInStep = answered(
         settled(page.invoke(
             &in_bridge,
-            asking(person_accounts::CONNECT_ACCOUNT, connect(&server, port)),
+            asking(workspace_accounts::CONNECT_ACCOUNT, connect(&server, port)),
         ))
         .await
         .unwrap(),
@@ -256,7 +256,7 @@ async fn a_person_connects_their_account_at_an_issuer_an_app_describes() {
     let other = settled(page.invoke(
         &caller(&device).through_app("so.tilo.other"),
         asking(
-            person_accounts::FINISH_CONNECT_ACCOUNT,
+            workspace_accounts::FINISH_CONNECT_ACCOUNT,
             json!({"signIn": stray.id}),
         ),
     ))
@@ -299,7 +299,7 @@ async fn a_person_forgets_an_account_they_connected() {
     // The grant leaves the vault and goes back to the issuer.
     let forget = || {
         asking(
-            person_accounts::FORGET_CONNECTED_ACCOUNT,
+            workspace_accounts::FORGET_CONNECTED_ACCOUNT,
             json!({"app": BRIDGE, "issuer": "fake"}),
         )
     };

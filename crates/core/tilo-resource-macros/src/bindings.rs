@@ -134,18 +134,21 @@ fn camel(name: &str) -> String {
         .collect()
 }
 
-/// A wire name as a Rust identifier, raw where it is a keyword.
+/// A wire name as a Rust identifier, raw where it is a keyword: `signIns` is `sign_ins`.
 fn snake(name: &str) -> Ident {
-    let snake: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '_'
-            }
-        })
-        .collect();
+    let mut snake = String::with_capacity(name.len().saturating_mul(2));
+    let mut lower_before = false;
+    for c in name.chars() {
+        if c.is_ascii_uppercase() && lower_before {
+            snake.push('_');
+        }
+        lower_before = c.is_ascii_lowercase() || c.is_ascii_digit();
+        snake.push(if c.is_ascii_alphanumeric() {
+            c.to_ascii_lowercase()
+        } else {
+            '_'
+        });
+    }
     syn::parse_str::<Ident>(&snake).unwrap_or_else(|_| format_ident!("r#{}", snake))
 }
 

@@ -17,7 +17,6 @@ use std::time::Duration;
 
 use serde_json::{Map, Value};
 
-use super::person_accounts::{self, MailSignIn, MailSignIns};
 use super::person_vault::{self, ItemRef};
 use super::{
     ActionProvider as _, Caller, InvokeRequest, LineClient, ReceiptStatus, RemoteActionTarget,
@@ -55,15 +54,17 @@ impl SigningIn {
         })
     }
 
-    /// The logins the workspace's vault keeps, each with the account it signs in for.
+    /// The logins the workspace's vault keeps, each with the account it signs in for, as
+    /// `sign_ins` (the accounts' `sign-ins` action, bound by the app from the surface their
+    /// service publishes) answers them.
     ///
     /// # Errors
     /// The dispatch refused, or answered something else, in words a person reads.
-    pub fn sign_ins(&self) -> Result<MailSignIns, String> {
-        let answer = self.ask(
-            person_accounts::target(person_accounts::SIGN_INS),
-            Map::new(),
-        )?;
+    pub fn sign_ins<T: serde::de::DeserializeOwned>(
+        &self,
+        sign_ins: RemoteActionTarget,
+    ) -> Result<T, String> {
+        let answer = self.ask(sign_ins, Map::new())?;
         serde_json::from_value(answer)
             .map_err(|error| format!("That is no list of logins: {error}"))
     }
@@ -73,20 +74,20 @@ impl SigningIn {
     ///
     /// # Errors
     /// The dispatch refused, in words a person reads, or answered no released secret.
-    pub fn secret(&mut self, account: &str, login: &MailSignIn) -> Result<String, String> {
+    pub fn secret(&mut self, account: &str, login: &str) -> Result<String, String> {
         if let Some((entry, secret)) = self.released.get(account)
-            && *entry == login.id
+            && *entry == login
         {
             return Ok(secret.clone());
         }
-        let reference = ItemRef::parse(&login.id)
-            .ok_or_else(|| format!("`{}` names no entry of the vault", login.id))?;
+        let reference = ItemRef::parse(login)
+            .ok_or_else(|| format!("`{login}` names no entry of the vault"))?;
         let answer = self.ask(person_vault::release_target(&reference), Map::new())?;
         let released: person_vault::Released = serde_json::from_value(answer)
             .map_err(|error| format!("That is no released secret: {error}"))?;
         self.released.insert(
             account.to_owned(),
-            (login.id.clone(), released.secret.clone()),
+            (login.to_owned(), released.secret.clone()),
         );
         Ok(released.secret)
     }

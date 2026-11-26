@@ -1398,13 +1398,16 @@ mod tests {
     /// answered.
     #[test]
     fn a_vault_reveal_is_recorded_as_answering_a_secret() {
-        use super::super::{person_accounts, person_vault};
+        use super::super::{ACCOUNTS_PROVIDER, person_vault};
         let invocations = Arc::new(Invocations::default());
         let asked = Caller::local_person("ada").in_new_execution();
         let mut reveal = request();
         reveal.target = person_vault::target(person_vault::REVEAL);
         let mut credential = request();
-        credential.target = person_accounts::target(person_accounts::CLOUD_CREDENTIAL);
+        credential.target = RemoteActionTarget {
+            provider: ACCOUNTS_PROVIDER.to_owned(),
+            address: crate::ActionAddress::new("accounts", "cloud-credential"),
+        };
         let serde_json::Value::Object(signing_in) = serde_json::json!({
             "account": "files-1",
         }) else {

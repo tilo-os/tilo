@@ -3,8 +3,8 @@
 //! A mount runs outside any sandbox and keeps no vault: it holds a cloud account's files at
 //! `~/Remote` and speaks to the provider over HTTPS. Everything it needs to sign in comes from
 //! here, where the workspace's accounts and vault are: each mount is told the accounts it mounts
-//! ([`person_accounts::CLOUD_ACCOUNTS`]), and hands back what one signs in with now
-//! ([`person_accounts::CLOUD_CREDENTIAL`]): a password, a grant's current access token, or an
+//! ([`workspace_accounts::CLOUD_ACCOUNTS`]), and hands back what one signs in with now
+//! ([`workspace_accounts::CLOUD_CREDENTIAL`]): a password, a grant's current access token, or an
 //! iCloud session's headers. A grant that was renewed is kept in the workspace's vault here, so
 //! the mount never writes a sign-in down.
 //!
@@ -13,12 +13,12 @@
 //! answer is a secret ([`tilo_actions::SECRET_ANSWER_TAG`]): the receipt carries it, and nothing
 //! is kept of it.
 
-use accounts::vault_items::ItemKind;
-use serde_json::Value;
-use tilo_actions::remote::person_accounts::{
+use crate::workspace_accounts::{
     self, CloudAccount, CloudAccounts, CloudCredential, CloudCredentialAt, CloudCredentialKind,
     SyncReport,
 };
+use accounts::vault_items::ItemKind;
+use serde_json::Value;
 use tilo_actions::remote::{ActionCallError, InvokeRequest};
 use zeroize::Zeroizing;
 
@@ -41,7 +41,7 @@ pub(super) async fn invoke(
     request: &InvokeRequest,
 ) -> Result<Value, ActionCallError> {
     match request.target.address.action.as_str() {
-        person_accounts::CLOUD_ACCOUNTS => {
+        workspace_accounts::CLOUD_ACCOUNTS => {
             let held = signing
                 .vault
                 .accounts()
@@ -65,7 +65,7 @@ pub(super) async fn invoke(
                 .collect();
             answer(&Ok::<_, String>(CloudAccounts { accounts }))
         }
-        person_accounts::CLOUD_CREDENTIAL => {
+        workspace_accounts::CLOUD_CREDENTIAL => {
             let asking: CloudCredentialAt = argument(request, "an account to sign in with")?;
             let credential = credential(workspaces, signing, asking)
                 .await
@@ -76,7 +76,7 @@ pub(super) async fn invoke(
                 })?,
             )
         }
-        person_accounts::REPORT_SYNC_VERB => {
+        workspace_accounts::REPORT_SYNC => {
             let report: SyncReport = argument(request, "how a mount's sync went")?;
             Box::pin(report_sync(workspaces, workspace, acting, report))
                 .await
@@ -172,7 +172,9 @@ async fn credential(
     let Some(made_credential) = made.credential else {
         return Err("That account's sign-in needs renewing. Sign in again".to_owned());
     };
-    Ok(account_credentials::for_mount(made_credential))
+    Ok(crate::workspace_accounts::CloudCredential::for_mount(
+        made_credential,
+    ))
 }
 
 /// Report how the sync of `report`'s account went on this device, as every member's Settings

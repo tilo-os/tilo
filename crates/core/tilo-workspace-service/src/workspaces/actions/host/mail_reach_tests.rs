@@ -8,9 +8,9 @@
 
 use std::net::{Ipv4Addr, TcpListener};
 
+use crate::workspace_accounts;
 use serde_json::json;
 use tilo_actions::remote::ActionProvider as _;
-use tilo_actions::remote::person_accounts;
 
 use super::super::tests::{admit, caller, hosted, settled};
 use super::accounts_tests::asking;
@@ -46,7 +46,7 @@ async fn a_mail_server_whose_name_answers_inside_is_refused_and_connected_to_by_
     let port = listener.local_addr().expect("its address").port();
     let adding = || {
         asking(
-            person_accounts::ADD_MAIL,
+            workspace_accounts::ADD_MAIL,
             json!({
                 "address": "ada@example.test",
                 "incomingHost": "localhost",

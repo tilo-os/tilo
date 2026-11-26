@@ -33,7 +33,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{ActionAddress, CatalogueRow, MODELS_PROVIDER, RemoteActionTarget, person_accounts};
+use super::{ACCOUNTS_PROVIDER, ActionAddress, CatalogueRow, MODELS_PROVIDER, RemoteActionTarget};
 
 /// The provider that answers the person's vault under.
 pub const PROVIDER: &str = "tilo.vault";
@@ -817,15 +817,8 @@ pub fn use_rows() -> Vec<CatalogueRow> {
     use crate::{ActionParam, ParamType};
     vec![
         use_row(
-            (
-                person_accounts::PROVIDER,
-                person_accounts::RESOURCE,
-                "Mail accounts",
-            ),
-            (
-                person_accounts::ADD_MAIL_WITH_ITEM,
-                "Add mail account from vault",
-            ),
+            (ACCOUNTS_PROVIDER, "accounts", "Mail accounts"),
+            ("add-mail-with-item", "Add mail account from vault"),
             format!(
                 "Add a mail account for your person, signing in with a password their vault \
                  keeps. You never hold the password. To get it, call the vault's `ask` with \
@@ -1947,7 +1940,11 @@ mod tests {
             );
         }
         assert!(use_of(&target(LIST)).is_none());
-        assert!(use_of(&person_accounts::target(person_accounts::ADD_MAIL)).is_none());
+        let accounts = |action: &str| RemoteActionTarget {
+            provider: ACCOUNTS_PROVIDER.to_owned(),
+            address: ActionAddress::new("accounts", action),
+        };
+        assert!(use_of(&accounts("add-mail")).is_none());
         assert!(
             use_of(&RemoteActionTarget {
                 provider: MODELS_PROVIDER.to_owned(),
@@ -1957,10 +1954,7 @@ mod tests {
         );
 
         // A review of a use shows the reference withheld, as it shows a secret.
-        let mail = use_of(&person_accounts::target(
-            person_accounts::ADD_MAIL_WITH_ITEM,
-        ))
-        .unwrap();
+        let mail = use_of(&accounts("add-mail-with-item")).unwrap();
         let arguments = serde_json::json!({
             "address": "ada@example.test",
             "incomingHost": "imap.example.test",

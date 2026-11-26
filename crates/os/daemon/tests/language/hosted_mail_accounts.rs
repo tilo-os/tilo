@@ -11,7 +11,7 @@
 
 use serde_json::{Value, json};
 use tilo_actions::InvocationUpdate;
-use tilo_actions::remote::person_accounts;
+use tilo_workspace_service::workspace_accounts;
 
 use crate::language::host;
 
@@ -117,8 +117,8 @@ fn a_migrated_account_is_connected_and_kept_for_mail() {
         let laptop = host.member("Ada's laptop", &workspace).await;
         let kept = laptop
             .call(
-                person_accounts::PROVIDER,
-                person_accounts::target(person_accounts::LIST).address,
+                workspace_accounts::PROVIDER,
+                workspace_accounts::target(workspace_accounts::LIST).address,
                 &json!({}),
             )
             .await

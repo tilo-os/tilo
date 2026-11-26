@@ -2,13 +2,13 @@
 //!
 //! The service keeps no vault and holds no sign-in of its own. The daemon that runs the
 //! workspace keeps the accounts and the vault, and answers this device's mount through the one
-//! dispatch ([`tilo_actions::remote::person_accounts`]): the accounts the workspace keeps, each
+//! dispatch (`tilo.accounts`): the accounts the workspace keeps, each
 //! with the settings its mount reads and never its secret, and, for one account whenever its
 //! mount asks, what it signs in with now: a password, a grant's current access token, or an
 //! iCloud session's headers. A grant's renewal is kept in the workspace's vault by the daemon,
 //! never written here.
 //!
-//! How each account's mount syncs goes back the same way ([`person_accounts::REPORT_SYNC_VERB`]),
+//! How each account's mount syncs goes back the same way (`report-sync`),
 //! as this device's report in the workspace's accounts.
 //!
 //! The daemon answers only a connection of the person's own on this computer, which is what
@@ -26,13 +26,20 @@ use accounts::{Account, AccountId, SyncHealth};
 use cloud_source::{Credential, CredentialSource};
 use serde_json::{Map, Value};
 use tilo_actions::ActionAddress;
-use tilo_actions::remote::person_accounts;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvokeRequest, LineClient, ReceiptStatus,
     RemoteActionTarget,
 };
 use tilo_lock::MutexRecover as _;
 use zeroize::Zeroizing;
+
+/// The workspace's accounts, as the service that keeps them publishes their actions.
+mod workspace_accounts {
+    tilo_resource_macros::bindings!(
+        provider = "tilo.accounts",
+        surface = "../tilo-workspace-service/accounts-surface.json"
+    );
+}
 
 /// The cloud service's file accounts and their sign-ins.
 pub trait AccountSource: Send + Sync {
@@ -239,7 +246,7 @@ impl Inner {
         for workspace in workspaces_of(&list) {
             let listed = match self.ask.invoke(
                 Some(&workspace),
-                remote(person_accounts::RESOURCE, person_accounts::CLOUD_ACCOUNTS),
+                workspace_accounts::accounts::cloud_accounts(),
                 Map::new(),
             ) {
                 Ok(listed) => listed,
@@ -275,11 +282,6 @@ impl Inner {
     fn workspace_of(&self, account: &AccountId) -> Option<String> {
         self.held(account, |held| held.workspace.clone())
     }
-}
-
-/// The target of `action` of `resource` under the accounts provider.
-fn remote(resource: &str, action: &str) -> RemoteActionTarget {
-    target(person_accounts::PROVIDER, resource, action)
 }
 
 /// The target of `action` of `resource` under the person's account provider.
@@ -416,7 +418,7 @@ impl AccountSource for SessionAccounts {
         arguments.insert("account".into(), Value::String(account.as_str().to_owned()));
         arguments.insert("health".into(), Value::String(health.word().to_owned()));
         arguments.insert("message".into(), Value::String(health.summary().to_owned()));
-        let ask = remote(person_accounts::RESOURCE, person_accounts::REPORT_SYNC_VERB);
+        let ask = workspace_accounts::accounts::report_sync();
         match self.inner.ask.invoke(Some(&workspace), ask, arguments) {
             Ok(_) => {}
             Err(error) => {
@@ -484,7 +486,7 @@ impl ProviderCredential {
         }
         self.inner.ask.invoke(
             Some(&workspace),
-            remote(person_accounts::RESOURCE, person_accounts::CLOUD_CREDENTIAL),
+            workspace_accounts::accounts::cloud_credential(),
             arguments,
         )
     }

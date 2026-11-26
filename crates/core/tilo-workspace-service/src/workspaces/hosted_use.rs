@@ -68,6 +68,7 @@
 use std::path::Path;
 
 use crate::models::{self as model_providers, SetKeyFromItem};
+use crate::workspace_accounts::{self, AddMailWithItem};
 use accounts::vault_items::{self, Allowance, ItemId, Place, UsedFor, VaultItems};
 use serde_json::{Map, Value, json};
 use tilo_action_policy::{ActionKind, Answer, Context, Grantee, Party, TreePath, WorkspacePolicy};
@@ -75,7 +76,6 @@ use tilo_actions::remote::ActionCallError::{self, InvalidRequest, NotPermitted, 
 #[cfg(feature = "agents")]
 use tilo_actions::remote::CatalogueRow;
 use tilo_actions::remote::asked::{AskedFacts, Fact};
-use tilo_actions::remote::person_accounts::{self, AddMailWithItem};
 #[cfg(feature = "agents")]
 use tilo_actions::remote::person_vault::FillPage;
 use tilo_actions::remote::person_vault::{self, ItemRef};
@@ -226,8 +226,8 @@ impl TurnCall {
         if target.provider == person_connections::PROVIDER {
             return Some(Self::Connections);
         }
-        if target.provider != person_accounts::PROVIDER
-            || target.address.resource != person_accounts::RESOURCE
+        if target.provider != workspace_accounts::PROVIDER
+            || target.address.resource != workspace_accounts::RESOURCE
         {
             return None;
         }
@@ -261,7 +261,7 @@ pub fn takes(target: &RemoteActionTarget) -> bool {
 /// person who asked it ([`Workspaces::turn_rows`]).
 pub const TURN_PROVIDERS: [&str; 4] = [
     person_vault::PROVIDER,
-    person_accounts::PROVIDER,
+    workspace_accounts::PROVIDER,
     model_providers::PROVIDER,
     person_connections::PROVIDER,
 ];
@@ -557,7 +557,7 @@ impl Use {
         };
         let arguments = Value::Object(arguments.clone());
         match (target.provider.as_str(), target.address.action.as_str()) {
-            (person_accounts::PROVIDER, person_accounts::ADD_MAIL_WITH_ITEM) => {
+            (workspace_accounts::PROVIDER, workspace_accounts::ADD_MAIL_WITH_ITEM) => {
                 serde_json::from_value(arguments).map(Self::Mail).map_err(|_| {
                     invalid(
                         "a mail account to add names its address, its servers and the vault item that is its password",
@@ -976,7 +976,7 @@ fn use_asked(
         ));
     }
     // The account it signs in, where it signs one in.
-    if *target == person_accounts::target(person_accounts::ADD_MAIL_WITH_ITEM) {
+    if *target == workspace_accounts::target(workspace_accounts::ADD_MAIL_WITH_ITEM) {
         facts.push(Fact::new("Account", said("address")));
     }
     AskedFacts {

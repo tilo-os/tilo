@@ -13,11 +13,10 @@
 //! carries out, the workspace's policy lets that agent reach its calendars, and an agent anything
 //! narrows holds a rule that names the very action. Unknown and forbidden are one answer.
 
+use crate::workspace_accounts;
 use serde_json::Value;
 use tilo_action_policy::ActionKind;
-use tilo_actions::remote::{
-    ActionCallError, CatalogueRow, InvokeRequest, RemoteActionTarget, person_accounts,
-};
+use tilo_actions::remote::{ActionCallError, CatalogueRow, InvokeRequest, RemoteActionTarget};
 
 use super::kept_sign_ins::Signing;
 use super::sign_in;
@@ -27,9 +26,9 @@ use crate::workspaces::workspace_stores::Store;
 
 /// The calendar actions a turn is offered, and the ones it may call.
 pub(in crate::workspaces) const TURN_ACTIONS: [&str; 3] = [
-    person_accounts::BEGIN_SIGN_IN,
-    person_accounts::DISCOVER_CALENDARS,
-    person_accounts::SET_CALENDARS,
+    workspace_accounts::BEGIN_SIGN_IN,
+    workspace_accounts::DISCOVER_CALENDARS,
+    workspace_accounts::SET_CALENDARS,
 ];
 
 impl Workspaces {
@@ -84,8 +83,8 @@ impl Workspaces {
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
         let target = &request.target;
-        if target.provider != person_accounts::PROVIDER
-            || target.address.resource != person_accounts::RESOURCE
+        if target.provider != workspace_accounts::PROVIDER
+            || target.address.resource != workspace_accounts::RESOURCE
             || !TURN_ACTIONS.contains(&target.address.action.as_str())
         {
             return Err(ActionCallError::UnknownAction);
@@ -99,10 +98,10 @@ impl Workspaces {
         {
             return Err(ActionCallError::NotPermitted);
         }
-        if action == person_accounts::BEGIN_SIGN_IN {
+        if action == workspace_accounts::BEGIN_SIGN_IN {
             // A turn connects an account for its calendars alone: the person's mail and files are
             // not reached with the calendars' grant.
-            let signing_in: person_accounts::BeginSignIn =
+            let signing_in: workspace_accounts::BeginSignIn =
                 super::argument(request, "a provider to sign in with")?;
             let services = signing_in.services();
             if !services.calendar || services.mail || services.files {

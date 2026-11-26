@@ -14,20 +14,20 @@
 //! member, and no app but the one that described the issuer, reads any of it; that app reads
 //! only the account's id and name ([`Workspaces::connected_account`]).
 //!
-//! [`CONNECT_ACCOUNT`]: tilo_actions::remote::person_accounts::CONNECT_ACCOUNT
-//! [`FINISH_CONNECT_ACCOUNT`]: tilo_actions::remote::person_accounts::FINISH_CONNECT_ACCOUNT
+//! [`CONNECT_ACCOUNT`]: crate::workspace_accounts::CONNECT_ACCOUNT
+//! [`FINISH_CONNECT_ACCOUNT`]: crate::workspace_accounts::FINISH_CONNECT_ACCOUNT
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use accounts::vault_items::{ItemId, ItemKind, NewItem, Place};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use tilo_actions::remote::person_accounts::{
+use crate::workspace_accounts::{
     AccountIssuer, CONNECT_ACCOUNT, ConnectAccount, ConnectedAccount, FINISH_CONNECT_ACCOUNT,
     FORGET_CONNECTED_ACCOUNT, FinishConnectAccount, ForgetConnectedAccount, SignInStep,
 };
+use accounts::vault_items::{ItemId, ItemKind, NewItem, Place};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_lock::MutexRecover as _;
 use tilo_oauth::OAuthError;

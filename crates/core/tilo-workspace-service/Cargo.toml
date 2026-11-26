@@ -179,6 +179,8 @@ tilo-account-probe = { path = "../../integrations/account-probe" }
 # The client registrations, token renewal and Nextcloud login flow a
 # provider's own page leaves a person's account signed in with.
 account-credentials = { path = "../../integrations/account-credentials", features = ["store"] }
+# The sign-in a cloud mount is handed, in the shape the accounts answer it.
+cloud-source = { package = "tilo-cloud-source", path = "../../integrations/cloud-source" }
 # The cookies of a website session Browser opens a site with.
 browser-continuity-core = { package = "tilo-browser-continuity-core", path = "../browser-continuity-core", optional = true }
 tilo-oauth = { path = "../../integrations/tilo-oauth" }

@@ -12,18 +12,19 @@
 //! silently denied: the account is kept only once they answer yes, and a no
 //! leaves it unconnected.
 
+use crate::workspace_accounts;
 use tilo_actions::remote::{
-    CatalogueRow, WORKSPACE_MAIL_ACCOUNTS, person_accounts, person_vault,
-    workspace_governance_child, workspace_governance_resource,
+    CatalogueRow, WORKSPACE_MAIL_ACCOUNTS, person_vault, workspace_governance_child,
+    workspace_governance_resource,
 };
-use tilo_actions::{ActionKind, ActionParam, ParamType};
+use tilo_actions::{ActionKind, ActionParam};
 
 use super::{Publisher, Verb};
 use crate::workspaces::workspace_stores::Store;
 
 /// A workspace's mail accounts, as their holder publishes them.
 pub(super) const MAIL: Publisher = Publisher {
-    provider: person_accounts::PROVIDER,
+    provider: workspace_accounts::PROVIDER,
     kind: "tilo.accounts",
 };
 
@@ -31,7 +32,7 @@ pub(super) const MAIL: Publisher = Publisher {
 /// order: the accounts it may read and send from. Mail's own reading and
 /// sending are the app's, reached as any other app's actions are.
 const VERBS: [Verb; 1] = [Verb {
-    id: person_accounts::LIST,
+    id: workspace_accounts::LIST,
     label: "List mail accounts",
     check: "",
     kind: ActionKind::Read,
@@ -42,7 +43,7 @@ const VERBS: [Verb; 1] = [Verb {
 pub(super) fn assistant_rows() -> Vec<CatalogueRow> {
     VERBS
         .iter()
-        .map(|verb| verb.row(MAIL, person_accounts::RESOURCE, "Mail"))
+        .map(|verb| verb.row(MAIL, workspace_accounts::RESOURCE, "Mail"))
         .collect()
 }
 
@@ -52,7 +53,12 @@ impl super::super::Workspaces {
     pub(super) async fn mail_rows(&self, asked: super::Asked<'_>) -> Vec<CatalogueRow> {
         let mut rows = Vec::new();
         if self
-            .reaching(asked, Store::MAIL, person_accounts::LIST, ActionKind::Read)
+            .reaching(
+                asked,
+                Store::MAIL,
+                workspace_accounts::LIST,
+                ActionKind::Read,
+            )
             .await
             .is_ok()
         {
@@ -64,22 +70,22 @@ impl super::super::Workspaces {
             .reaching(
                 asked,
                 Store::MAIL,
-                person_accounts::SIGN_INS,
+                workspace_accounts::SIGN_INS,
                 ActionKind::Read,
             )
             .await
             .is_ok()
         {
-            rows.push(SIGN_INS_VERB.row(MAIL, person_accounts::RESOURCE, "Mail"));
+            rows.push(SIGN_INS_VERB.row(MAIL, workspace_accounts::RESOURCE, "Mail"));
         }
         rows
     }
 }
 
-/// Reading the vault's logins and the account each signs in for ([`person_accounts::SIGN_INS`]):
+/// Reading the vault's logins and the account each signs in for ([`workspace_accounts::SIGN_INS`]):
 /// the read an app that signs in makes.
 const SIGN_INS_VERB: Verb = Verb {
-    id: person_accounts::SIGN_INS,
+    id: workspace_accounts::SIGN_INS,
     label: "Read the logins the vault keeps",
     check: "",
     kind: ActionKind::Read,
@@ -91,7 +97,7 @@ const SIGN_INS_VERB: Verb = Verb {
 /// vault keeps by reference. Each is decided by the workspace's policy on its mail as any call
 /// of it is.
 const ACCOUNT_VERBS: [(&Verb, &str); 3] = [
-    (&VERBS[0], person_accounts::LIST),
+    (&VERBS[0], workspace_accounts::LIST),
     (
         &Verb {
             id: "add",
@@ -100,83 +106,42 @@ const ACCOUNT_VERBS: [(&Verb, &str); 3] = [
             kind: ActionKind::Outside,
             params: add_account_params,
         },
-        person_accounts::ADD_MAIL,
+        workspace_accounts::ADD_MAIL,
     ),
     (
         &Verb {
-            id: person_accounts::ADD_MAIL_WITH_ITEM,
+            id: workspace_accounts::ADD_MAIL_WITH_ITEM,
             label: "Add a mail account from the vault",
             check: "",
             kind: ActionKind::Outside,
             params: add_account_with_item_params,
         },
-        person_accounts::ADD_MAIL_WITH_ITEM,
+        workspace_accounts::ADD_MAIL_WITH_ITEM,
     ),
 ];
 
+/// The parameters `add-mail` is declared with.
 pub(super) fn add_account_params() -> Vec<ActionParam> {
-    vec![
-        ActionParam::required("address", ParamType::Text, "The account's address."),
-        ActionParam::optional(
-            "displayName",
-            ParamType::Text,
-            "The name its mail is sent under.",
-        ),
-        ActionParam::optional(
-            "username",
-            ParamType::Text,
-            "The sign-in name, when it is not the address.",
-        ),
-        ActionParam::optional(
-            "incomingHost",
-            ParamType::Text,
-            "The IMAP server; left out, the server finds both from the address.",
-        ),
-        ActionParam::optional("incomingPort", ParamType::Integer, "The IMAP port."),
-        ActionParam::optional("outgoingHost", ParamType::Text, "The SMTP server."),
-        ActionParam::optional("outgoingPort", ParamType::Integer, "The SMTP port."),
-        ActionParam::required(
-            "password",
-            ParamType::Secret,
-            "The account's password or app password: sealed in the workspace's vault, never \
-             answered back.",
-        ),
-        ActionParam::optional(
-            "identities",
-            ParamType::Array,
-            "Other names and addresses it sends as, each `Name <address>`.",
-        ),
-    ]
+    workspace_accounts::params_of(workspace_accounts::ADD_MAIL).unwrap_or_default()
 }
 
+/// The parameters `add-mail-with-item` is declared with, its sign-in taken as the vault item
+/// it names by reference: what an agent passes where the secret would stand.
 fn add_account_with_item_params() -> Vec<ActionParam> {
-    vec![
-        ActionParam::required("address", ParamType::Text, "The account's address."),
-        ActionParam::optional(
-            "displayName",
-            ParamType::Text,
-            "The name its mail is sent under.",
-        ),
-        ActionParam::optional(
-            "username",
-            ParamType::Text,
-            "The sign-in name, when it is neither the item's own nor the address.",
-        ),
-        ActionParam::required("incomingHost", ParamType::Text, "The IMAP server."),
-        ActionParam::optional("incomingPort", ParamType::Integer, "The IMAP port."),
-        ActionParam::required("outgoingHost", ParamType::Text, "The SMTP server."),
-        ActionParam::optional("outgoingPort", ParamType::Integer, "The SMTP port."),
-        person_vault::item_param(
-            "password",
-            "The vault item that is the account's sign-in, by its reference.",
-        ),
-        ActionParam::optional(
-            "reason",
-            ParamType::Text,
-            "Why whoever asks needs it, in one sentence their person reads when they are asked \
-             whether they may.",
-        ),
-    ]
+    workspace_accounts::params_of(workspace_accounts::ADD_MAIL_WITH_ITEM)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|param| {
+            if param.name == "password" {
+                person_vault::item_param(
+                    "password",
+                    "The vault item that is the account's sign-in, by its reference.",
+                )
+            } else {
+                param
+            }
+        })
+        .collect()
 }
 
 /// The parameters the mail accounts' action `action` (a `tilo.accounts` action, or a verb of
@@ -224,7 +189,7 @@ impl crate::workspaces::Workspaces {
                 let mut row = verb.row(super::GOVERNANCE, &resource, "Mail accounts");
                 row.parent_resource.clone_from(&root);
                 // Reading `workspace/mail-accounts` lists them.
-                if action == person_accounts::LIST
+                if action == workspace_accounts::LIST
                     && let Some(listing) = row.action.as_mut()
                 {
                     listing
@@ -256,10 +221,10 @@ impl crate::workspaces::Workspaces {
             return Err(tilo_actions::remote::ActionCallError::UnknownAction);
         }
         let mut asking = request.clone();
-        asking.target = person_accounts::target(action);
+        asking.target = workspace_accounts::target(action);
         // It takes its sign-in from the vault by reference, which the provider
         // resolves on this host.
-        if action == person_accounts::ADD_MAIL_WITH_ITEM {
+        if action == workspace_accounts::ADD_MAIL_WITH_ITEM {
             return Box::pin(self.vault_use_invoke(workspace_id, caller, certificate, &asking))
                 .await;
         }

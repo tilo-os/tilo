@@ -14,6 +14,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::models as model_providers;
+use crate::workspace_accounts;
 use serde_json::{Value, json};
 use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet, Rule, TreePath};
 use tilo_actions::InvocationId;
@@ -21,8 +22,8 @@ use tilo_actions::InvocationId;
 use tilo_actions::remote::ActionCallError::NotPermitted;
 use tilo_actions::remote::ActionCallError::{self, InvalidRequest, Refused, UnknownAction};
 use tilo_actions::remote::asked::{AskedBy, AskedFacts, Named};
+use tilo_actions::remote::person_vault;
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
-use tilo_actions::remote::{person_accounts, person_vault};
 use tilo_user_identity::DeviceCert;
 
 use super::super::tests::{admit, caller, hosted};
@@ -246,7 +247,7 @@ fn request(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
 /// `incoming` instead, with the vault item `password` names.
 pub(super) fn add_mail(address: &str, incoming: &str, password: &Value) -> InvokeRequest {
     request(
-        person_accounts::target(person_accounts::ADD_MAIL_WITH_ITEM),
+        workspace_accounts::target(workspace_accounts::ADD_MAIL_WITH_ITEM),
         json!({
             "address": address,
             "incomingHost": incoming,
@@ -843,15 +844,15 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_use() {
     let named = |action: &str, answer: Answer| {
         naming(
             &workspace,
-            person_accounts::PROVIDER,
-            person_accounts::RESOURCE,
+            workspace_accounts::PROVIDER,
+            workspace_accounts::RESOURCE,
             action,
             answer,
         )
     };
     // Every change of the provider's that can be undone: no outside effect.
     let whole_provider = Rule::new(
-        TreePath::workspace(&workspace).app(person_accounts::PROVIDER),
+        TreePath::workspace(&workspace).app(workspace_accounts::PROVIDER),
         KindSet::of(ActionKind::Undoable),
         Answer::Allow,
     );
@@ -867,13 +868,13 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_use() {
         ),
         (
             "a rule for another action",
-            vec![named(person_accounts::LIST, Answer::Allow)],
+            vec![named(workspace_accounts::LIST, Answer::Allow)],
         ),
         (
             "a rule that denies the use",
             vec![
                 whole_provider,
-                named(person_accounts::ADD_MAIL_WITH_ITEM, Answer::Deny),
+                named(workspace_accounts::ADD_MAIL_WITH_ITEM, Answer::Deny),
             ],
         ),
     ] {
@@ -891,7 +892,7 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_use() {
         );
     }
 
-    let bound = vec![named(person_accounts::ADD_MAIL_WITH_ITEM, Answer::Allow)];
+    let bound = vec![named(workspace_accounts::ADD_MAIL_WITH_ITEM, Answer::Allow)];
     let policy = narrowing(&workspace_id.to_string(), &scout, &bound);
     let turn = HostedTurn {
         workspace: workspace_id,
@@ -976,7 +977,10 @@ async fn a_use_the_vault_refuses_asks_nobody() {
         matches!(&unread, Err(InvalidRequest { reason }) if !reason.contains(PASSWORD)),
         "{unread:?}"
     );
-    let other = request(person_accounts::target(person_accounts::LIST), json!({}));
+    let other = request(
+        workspace_accounts::target(workspace_accounts::LIST),
+        json!({}),
+    );
     assert_eq!(
         dispatched(workspaces, &turn, &other).await,
         Err(UnknownAction),

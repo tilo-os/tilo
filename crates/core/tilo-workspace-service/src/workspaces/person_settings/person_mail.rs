@@ -7,13 +7,13 @@
 
 use std::path::Path;
 
-use serde_json::{Map, Value};
-use tilo_account_probe::mail_servers::MailServers;
-use tilo_actions::remote::person_accounts::{
+use crate::workspace_accounts::{
     self, AddCalendarAccount, AddMailAccount, FindServers, FoundServers, MailAccount, MailAccounts,
     MailSignIn, MailSignIns, Provider, ServerAt, Services, SetCalendars, SetFilesMode, SetServices,
     SignedInAccount, SyncControl,
 };
+use serde_json::{Map, Value};
+use tilo_account_probe::mail_servers::MailServers;
 use tilo_actions::remote::{ActionCallError, InvokeRequest};
 
 use super::cloud_control::Request;
@@ -232,7 +232,7 @@ impl Workspaces {
     async fn replace_password(
         &self,
         signing: Signing<'_>,
-        replacing: tilo_actions::remote::person_accounts::ReplacePassword,
+        replacing: crate::workspace_accounts::ReplacePassword,
     ) -> Result<(), String> {
         let (kept, _) = super::account_with_secret(signing, &replacing.account).await?;
         let places = super::kept_sign_ins::places_of(&kept)?;
@@ -507,13 +507,13 @@ impl Workspaces {
             return Err("Only a cloud-storage account's files sync on this device".to_owned());
         }
         let request = match action {
-            person_accounts::SYNC_NOW => Request::SyncNow {
+            workspace_accounts::SYNC_NOW => Request::SyncNow {
                 account: control.account.clone(),
             },
-            person_accounts::PAUSE_SYNC => Request::Pause {
+            workspace_accounts::PAUSE_SYNC => Request::Pause {
                 account: control.account.clone(),
             },
-            person_accounts::RESUME_SYNC => Request::Resume {
+            workspace_accounts::RESUME_SYNC => Request::Resume {
                 account: control.account.clone(),
             },
             _ => return Err("That is no cloud-sync action".to_owned()),
@@ -674,68 +674,68 @@ impl Workspaces {
         request: &InvokeRequest,
     ) -> Result<Option<Value>, ActionCallError> {
         let answered = match request.target.address.action.as_str() {
-            person_accounts::FIND_SERVERS => {
+            workspace_accounts::FIND_SERVERS => {
                 let asking: FindServers = argument(request, "an address whose servers to find")?;
                 answer(&self.find_servers(&asking.address).await)
             }
-            person_accounts::ADD_MAIL => {
+            workspace_accounts::ADD_MAIL => {
                 let adding: AddMailAccount = argument(request, "an account to add")?;
                 self.answered_account_change(&self.add_mail(signing, adding).await)
             }
-            person_accounts::ADD_CALENDAR => {
+            workspace_accounts::ADD_CALENDAR => {
                 let adding: AddCalendarAccount =
                     argument(request, "a calendar server and its sign-in")?;
                 self.answered_account_change(&Box::pin(self.add_calendar(signing, adding)).await)
             }
-            person_accounts::RECONNECT => {
+            workspace_accounts::RECONNECT => {
                 let account = one_account(request)?;
                 self.answered_account_change(
                     &Box::pin(self.reconnect(signing, workspace, acting, &account)).await,
                 )
             }
-            person_accounts::CHECK => {
+            workspace_accounts::CHECK => {
                 let account = one_account(request)?;
                 let checked = Box::pin(self.check_saved_sign_in(signing, &account)).await;
                 answer(&checked)
             }
-            person_accounts::REPLACE_PASSWORD => {
-                let replacing: tilo_actions::remote::person_accounts::ReplacePassword =
+            workspace_accounts::REPLACE_PASSWORD => {
+                let replacing: crate::workspace_accounts::ReplacePassword =
                     argument(request, "an account and its new password")?;
                 self.answered_account_change(
                     &Box::pin(self.replace_password(signing, replacing)).await,
                 )
             }
-            person_accounts::DISCOVER_CALENDARS => {
+            workspace_accounts::DISCOVER_CALENDARS => {
                 let account = one_account(request)?;
                 self.answered_account_change(
                     &Box::pin(self.discover_calendars(signing, &account)).await,
                 )
             }
-            person_accounts::SET_CALENDARS => {
+            workspace_accounts::SET_CALENDARS => {
                 let choosing: SetCalendars =
                     argument(request, "a calendar account and its calendars")?;
                 self.answered_account_change(&Box::pin(self.set_calendars(signing, choosing)).await)
             }
-            person_accounts::SET_SERVICES => {
+            workspace_accounts::SET_SERVICES => {
                 let saying: SetServices = argument(request, "an account and its services")?;
                 self.answered_account_change(&Box::pin(self.set_services(signing, saying)).await)
             }
-            person_accounts::SIGN_INS => answer(&self.vault_sign_ins(workspace).await),
-            person_accounts::SET_FILES_MODE => {
+            workspace_accounts::SIGN_INS => answer(&self.vault_sign_ins(workspace).await),
+            workspace_accounts::SET_FILES_MODE => {
                 let saying: SetFilesMode =
                     argument(request, "an account and the files mode it takes")?;
                 self.answered_account_change(&Box::pin(self.set_files_mode(signing, saying)).await)
             }
-            person_accounts::SYNC_NOW
-            | person_accounts::PAUSE_SYNC
-            | person_accounts::RESUME_SYNC => {
+            workspace_accounts::SYNC_NOW
+            | workspace_accounts::PAUSE_SYNC
+            | workspace_accounts::RESUME_SYNC => {
                 let control: SyncControl = argument(request, "an account whose sync to control")?;
                 let action = request.target.address.action.clone();
                 self.answered_account_change(
                     &Box::pin(self.control_sync(signing, &action, control)).await,
                 )
             }
-            person_accounts::REMOVE => {
+            workspace_accounts::REMOVE => {
                 let account = one_account(request)?;
                 self.answered_account_change(
                     &remove_mail((signing.vault, signing.root), &account).await,

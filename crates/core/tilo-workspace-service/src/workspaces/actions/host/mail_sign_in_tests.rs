@@ -14,12 +14,12 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::workspace_accounts::{
+    self, MailAccount, MailAccounts, MailSignIns, Provider, SetFilesMode, SyncControl,
+};
 use collab_types::WorkspaceId;
 use serde_json::{Value, json};
 use tilo_account_probe::mail_servers::{Found, MailServers, Server};
-use tilo_actions::remote::person_accounts::{
-    self, MailAccount, MailAccounts, MailSignIns, Provider, SetFilesMode, SyncControl,
-};
 use tilo_actions::remote::person_vault;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, InvokeArgument, InvokeRequest, ReceiptStatus,
@@ -119,7 +119,7 @@ impl Setup {
     ) -> Result<Value, ActionCallError> {
         self.ask_target(
             device,
-            person_accounts::PROVIDER,
+            workspace_accounts::PROVIDER,
             resource,
             action,
             argument,
@@ -167,8 +167,8 @@ impl Setup {
 
     async fn add_mail(&self, argument: Value) -> Result<MailAccount, ActionCallError> {
         self.ask(
-            person_accounts::RESOURCE,
-            person_accounts::ADD_MAIL,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::ADD_MAIL,
             argument,
         )
         .await
@@ -177,8 +177,8 @@ impl Setup {
 
     async fn listed(&self) -> MailAccounts {
         self.ask(
-            person_accounts::RESOURCE,
-            person_accounts::LIST,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::LIST,
             Value::Null,
         )
         .await
@@ -234,8 +234,8 @@ async fn an_account_is_added_from_its_address_and_password_alone() {
     let listed: MailAccounts = serde_json::from_value(
         setup
             .ask(
-                person_accounts::RESOURCE,
-                person_accounts::SET_SERVICES,
+                workspace_accounts::RESOURCE,
+                workspace_accounts::SET_SERVICES,
                 json!({"account": EXAMPLE, "mail": false, "calendar": false, "files": false}),
             )
             .await
@@ -258,8 +258,8 @@ async fn finding_servers_that_answer_nowhere_names_the_domain() {
     setup.discover(Arc::new(Mutex::new(Vec::new())));
     let refused = setup
         .ask(
-            person_accounts::RESOURCE,
-            person_accounts::FIND_SERVERS,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::FIND_SERVERS,
             json!({"address": "ada@nowhere.example"}),
         )
         .await
@@ -349,8 +349,8 @@ async fn the_accounts_reading_lists_an_account_connected_signed_in_again_and_rem
     setup
         .ask_as(
             &setup.owner,
-            person_accounts::RESOURCE,
-            person_accounts::ADD_MAIL,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::ADD_MAIL,
             json!({"address": EXAMPLE, "password": "typed-password"}),
         )
         .await
@@ -403,8 +403,8 @@ async fn the_accounts_reading_lists_an_account_connected_signed_in_again_and_rem
     let refused = setup
         .ask_as(
             &setup.owner,
-            person_accounts::RESOURCE,
-            person_accounts::RECONNECT,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::RECONNECT,
             json!({"account": EXAMPLE}),
         )
         .await
@@ -426,8 +426,8 @@ async fn the_accounts_reading_lists_an_account_connected_signed_in_again_and_rem
     setup
         .ask_as(
             &setup.owner,
-            person_accounts::RESOURCE,
-            person_accounts::RECONNECT,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::RECONNECT,
             json!({"account": EXAMPLE}),
         )
         .await
@@ -439,8 +439,8 @@ async fn the_accounts_reading_lists_an_account_connected_signed_in_again_and_rem
     setup
         .ask_as(
             &setup.owner,
-            person_accounts::RESOURCE,
-            person_accounts::REMOVE,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::REMOVE,
             json!({"account": EXAMPLE}),
         )
         .await
@@ -509,8 +509,8 @@ async fn an_account_added_in_settings_is_kept_for_mail_and_removed_with_it() {
     // Removing it in Settings takes it from Mail: its listing no longer has it.
     setup
         .ask(
-            person_accounts::RESOURCE,
-            person_accounts::REMOVE,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::REMOVE,
             json!({"account": ADDRESS}),
         )
         .await
@@ -612,8 +612,8 @@ async fn an_icloud_account_asked_for_calendars_keeps_them_beside_its_mail() {
     // Turning its calendars off takes the calendar account with it.
     setup
         .ask(
-            person_accounts::RESOURCE,
-            person_accounts::SET_SERVICES,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::SET_SERVICES,
             json!({"account": ADDRESS, "mail": true, "calendar": false, "files": false}),
         )
         .await
@@ -643,8 +643,8 @@ async fn an_icloud_account_asked_for_calendars_keeps_them_beside_its_mail() {
     // Turning them on again keeps them with the sign-in the vault holds.
     setup
         .ask(
-            person_accounts::RESOURCE,
-            person_accounts::SET_SERVICES,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::SET_SERVICES,
             json!({"account": ADDRESS, "mail": true, "calendar": true, "files": false}),
         )
         .await
@@ -687,8 +687,8 @@ async fn an_icloud_account_asked_for_calendars_keeps_them_beside_its_mail() {
     // Removing the account takes the calendar account with it.
     setup
         .ask(
-            person_accounts::RESOURCE,
-            person_accounts::REMOVE,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::REMOVE,
             json!({"account": ADDRESS}),
         )
         .await
@@ -703,8 +703,8 @@ async fn an_icloud_account_asked_for_calendars_keeps_them_beside_its_mail() {
     assert!(
         setup
             .ask(
-                person_accounts::RESOURCE,
-                person_accounts::LIST,
+                workspace_accounts::RESOURCE,
+                workspace_accounts::LIST,
                 Value::Null,
             )
             .await
@@ -722,8 +722,8 @@ async fn a_mail_account_keeps_the_servers_its_person_wrote() {
     setup
         .ask_as(
             &setup.owner,
-            person_accounts::RESOURCE,
-            person_accounts::ADD_MAIL,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::ADD_MAIL,
             json!({
                 "address": EXAMPLE,
                 "password": "typed-password",
@@ -746,8 +746,8 @@ async fn a_mail_account_keeps_the_servers_its_person_wrote() {
     let wrong = setup
         .ask_as(
             &setup.owner,
-            person_accounts::RESOURCE,
-            person_accounts::ADD_MAIL,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::ADD_MAIL,
             json!({"address": EXAMPLE, "password": "typed-password", "incomingHost": "imaps://x"}),
         )
         .await
@@ -762,8 +762,8 @@ async fn a_mail_account_keeps_the_servers_its_person_wrote() {
     setup
         .ask_as(
             &setup.owner,
-            person_accounts::RESOURCE,
-            person_accounts::ADD_MAIL,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::ADD_MAIL,
             json!({
                 "address": EXAMPLE,
                 "password": "",
@@ -806,8 +806,8 @@ async fn another_member_lists_the_account_and_checks_its_server() {
     setup
         .ask_as(
             &setup.owner,
-            person_accounts::RESOURCE,
-            person_accounts::ADD_MAIL,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::ADD_MAIL,
             json!({"address": EXAMPLE, "password": "typed-password"}),
         )
         .await
@@ -836,8 +836,8 @@ async fn another_member_lists_the_account_and_checks_its_server() {
     let listed = setup
         .ask_as(
             &bo,
-            person_accounts::RESOURCE,
-            person_accounts::LIST,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::LIST,
             Value::Null,
         )
         .await
@@ -847,8 +847,8 @@ async fn another_member_lists_the_account_and_checks_its_server() {
     let checked = setup
         .ask_as(
             &setup.owner,
-            person_accounts::RESOURCE,
-            person_accounts::CHECK,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::CHECK,
             json!({"account": EXAMPLE}),
         )
         .await
@@ -919,8 +919,8 @@ async fn the_listing_offers_every_kept_login(setup: &Setup, reference: &str, sit
     let offered: MailSignIns = serde_json::from_value(
         setup
             .ask(
-                person_accounts::RESOURCE,
-                person_accounts::SIGN_INS,
+                workspace_accounts::RESOURCE,
+                workspace_accounts::SIGN_INS,
                 Value::Null,
             )
             .await
@@ -960,8 +960,8 @@ async fn an_account_added_from_its_login(setup: &Setup, reference: &str) {
     let added: MailAccount = serde_json::from_value(
         setup
             .ask(
-                person_accounts::RESOURCE,
-                person_accounts::ADD_MAIL_WITH_ITEM,
+                workspace_accounts::RESOURCE,
+                workspace_accounts::ADD_MAIL_WITH_ITEM,
                 json!({
                     "address": EXAMPLE,
                     "incomingHost": "imap.example.test",
@@ -986,8 +986,8 @@ async fn an_account_added_from_its_login(setup: &Setup, reference: &str) {
     assert!(
         setup
             .ask(
-                person_accounts::RESOURCE,
-                person_accounts::LIST,
+                workspace_accounts::RESOURCE,
+                workspace_accounts::LIST,
                 Value::Null,
             )
             .await
@@ -1086,8 +1086,8 @@ async fn its_files_mode_is_chosen(setup: &Setup, id: &str) {
     };
     setup
         .ask(
-            person_accounts::RESOURCE,
-            person_accounts::SET_FILES_MODE,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::SET_FILES_MODE,
             serde_json::to_value(&kept).unwrap(),
         )
         .await
@@ -1098,8 +1098,8 @@ async fn its_files_mode_is_chosen(setup: &Setup, id: &str) {
     );
     let refused = setup
         .ask(
-            person_accounts::RESOURCE,
-            person_accounts::SET_FILES_MODE,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::SET_FILES_MODE,
             json!({"account": id, "mode": "sometimes"}),
         )
         .await
@@ -1118,8 +1118,8 @@ async fn sync_controls_reach_the_files_service(setup: &Setup, cloud: &StandInClo
     .unwrap();
     setup
         .ask(
-            person_accounts::RESOURCE,
-            person_accounts::SYNC_NOW,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::SYNC_NOW,
             sync.clone(),
         )
         .await
@@ -1129,8 +1129,8 @@ async fn sync_controls_reach_the_files_service(setup: &Setup, cloud: &StandInClo
     });
     setup
         .ask(
-            person_accounts::RESOURCE,
-            person_accounts::PAUSE_SYNC,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::PAUSE_SYNC,
             sync.clone(),
         )
         .await
@@ -1140,8 +1140,8 @@ async fn sync_controls_reach_the_files_service(setup: &Setup, cloud: &StandInClo
     });
     setup
         .ask(
-            person_accounts::RESOURCE,
-            person_accounts::RESUME_SYNC,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::RESUME_SYNC,
             sync,
         )
         .await
@@ -1155,16 +1155,16 @@ async fn sync_controls_reach_the_files_service(setup: &Setup, cloud: &StandInClo
 async fn a_mail_accounts_files_do_not_sync(setup: &Setup) {
     setup
         .ask(
-            person_accounts::RESOURCE,
-            person_accounts::ADD_MAIL,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::ADD_MAIL,
             json!({"address": EXAMPLE, "password": "typed", "incomingHost": "imap.example.test", "outgoingHost": "smtp.example.test"}),
         )
         .await
         .expect("a mail account is added");
     let refused = setup
         .ask(
-            person_accounts::RESOURCE,
-            person_accounts::SYNC_NOW,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::SYNC_NOW,
             json!({"account": EXAMPLE}),
         )
         .await
@@ -1194,7 +1194,7 @@ async fn a_paused_mount_reads_paused(setup: &Setup, cloud: &StandInCloud, id: &s
 fn cloud_request(action: &str, argument: Value) -> InvokeRequest {
     InvokeRequest {
         invocation: InvocationId::new(),
-        target: person_accounts::target(action),
+        target: workspace_accounts::target(action),
         argument: match argument {
             Value::Object(map) if !map.is_empty() => InvokeArgument::Json(map),
             _ => InvokeArgument::None,
@@ -1255,7 +1255,7 @@ async fn a_cloud_mount_is_handed_its_sign_in_by_the_workspace() {
             Some(setup.workspace),
             &own,
             None,
-            &cloud_request(person_accounts::CLOUD_ACCOUNTS, Value::Null),
+            &cloud_request(workspace_accounts::CLOUD_ACCOUNTS, Value::Null),
         )
         .await
         .expect("the mount reads the accounts it keeps");
@@ -1269,7 +1269,7 @@ async fn a_cloud_mount_is_handed_its_sign_in_by_the_workspace() {
             &own,
             None,
             &cloud_request(
-                person_accounts::CLOUD_CREDENTIAL,
+                workspace_accounts::CLOUD_CREDENTIAL,
                 json!({"account": "files-1"}),
             ),
         )
@@ -1282,8 +1282,8 @@ async fn a_cloud_mount_is_handed_its_sign_in_by_the_workspace() {
     // A page of the member's is not a connection of their own: the same ask there is refused.
     let refused = setup
         .ask(
-            person_accounts::RESOURCE,
-            person_accounts::CLOUD_CREDENTIAL,
+            workspace_accounts::RESOURCE,
+            workspace_accounts::CLOUD_CREDENTIAL,
             json!({"account": "files-1"}),
         )
         .await;
@@ -1299,7 +1299,7 @@ async fn a_cloud_mount_is_handed_its_sign_in_by_the_workspace() {
             &own,
             None,
             &cloud_request(
-                person_accounts::REPORT_SYNC_VERB,
+                workspace_accounts::REPORT_SYNC,
                 json!({"account": "files-1", "health": "healthy"}),
             ),
         )

@@ -22,10 +22,11 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::workspace_accounts;
 use collab_types::WorkspaceId;
 use serde_json::{Value, json};
 use tilo_actions::remote::asked::Offer;
-use tilo_actions::remote::{ActionCallError, Caller, person_accounts, person_vault};
+use tilo_actions::remote::{ActionCallError, Caller, person_vault};
 use tilo_dav::discovery::CalendarCollection;
 use tilo_user_identity::DeviceCert;
 
@@ -115,7 +116,7 @@ impl Hers {
             &self.service,
             self.workspace_id,
             (device, who),
-            person_accounts::target(person_accounts::ADD_CALENDAR),
+            workspace_accounts::target(workspace_accounts::ADD_CALENDAR),
             argument,
         )
         .await
@@ -307,7 +308,7 @@ async fn a_calendar_account_connected_for_reading_only_stays_so_whoever_adds_it_
         &hers.service,
         hers.workspace_id,
         (&hers.ada, &caller(&hers.ada)),
-        person_accounts::target(person_accounts::REMOVE),
+        workspace_accounts::target(workspace_accounts::REMOVE),
         json!({"account": ACCOUNT}),
     )
     .await
@@ -359,7 +360,7 @@ async fn her_agents_connect_waits_for_her_and_her_no_connects_nothing() {
 
     // Her no.
     let declined = super::vault_tests::request_of(
-        person_accounts::target(person_accounts::ADD_CALENDAR),
+        workspace_accounts::target(workspace_accounts::ADD_CALENDAR),
         telling(SERVER, PASSWORD),
     );
     asks(
@@ -381,7 +382,7 @@ async fn her_agents_connect_waits_for_her_and_her_no_connects_nothing() {
 
     // Her yes.
     let allowed = super::vault_tests::request_of(
-        person_accounts::target(person_accounts::ADD_CALENDAR),
+        workspace_accounts::target(workspace_accounts::ADD_CALENDAR),
         telling(SERVER, PASSWORD),
     );
     asks(
@@ -422,7 +423,7 @@ async fn another_members_agent_connects_for_the_workspace_and_an_app_connects_no
         "scout",
     ));
     let connecting = super::vault_tests::request_of(
-        person_accounts::target(person_accounts::ADD_CALENDAR),
+        workspace_accounts::target(workspace_accounts::ADD_CALENDAR),
         telling(SERVER, PASSWORD),
     );
     asks(

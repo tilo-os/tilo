@@ -73,7 +73,6 @@ pub mod formats;
 mod nodes;
 pub mod own_device;
 mod pending;
-pub mod person_accounts;
 pub mod person_connections;
 pub mod person_telling;
 pub mod person_vault;
@@ -480,6 +479,82 @@ pub const MODEL_VAULT_STEPS: [(&str, &[&str]); 11] = {
     ]
 };
 
+/// The provider a workspace's connected accounts answer under. Their provider declares their
+/// actions (`tilo_workspace_service::workspace_accounts`); what this crate knows of them is that
+/// a workspace's host keeps them ([`WORKSPACE_KEPT_PROVIDERS`]), what each writes
+/// ([`ACCOUNT_STEPS`]) and which answer a secret ([`ACCOUNT_SECRET_ANSWERS`]).
+pub const ACCOUNTS_PROVIDER: &str = "tilo.accounts";
+
+/// What each accounts action writes besides its own resource, by its id, as the host answering
+/// it takes it: its steps in the workspace's vault, then its steps in the record Settings keeps
+/// the workspace's accounts in. In the vault, a password typed in is kept, a removed account's
+/// sign-in goes, and every sign-in to a server with what the vault keeps writes down that use,
+/// the first one included. In the accounts record, an account added or changed is kept
+/// (`save-account`), a removed one goes (`remove-account`), and a sign-in says how it went
+/// (`report-sync`). An action not named writes nothing besides.
+pub const ACCOUNT_STEPS: [(&str, &[&str], &[&str]); 18] = {
+    use person_vault::{KEEP_SEALED, KEEP_USES, REMOVE_SEALED};
+    const SAVE: &str = "save-account";
+    const REMOVE: &str = "remove-account";
+    const REPORT: &str = "report-sync";
+    const ADDS: (&[&str], &[&str]) = (&[KEEP_SEALED, KEEP_USES, REMOVE_SEALED], &[SAVE]);
+    [
+        ("add-mail", ADDS.0, ADDS.1),
+        ("add-calendar", ADDS.0, ADDS.1),
+        ("begin-sign-in", ADDS.0, ADDS.1),
+        ("replace-password", &[KEEP_SEALED], &[]),
+        // A sign-in begun on a provider's own page keeps its account and the entry its page
+        // leaves in the vault once it finishes, and one finished with a code the same.
+        ("begin-cloud-sign-in", &[KEEP_SEALED], &[SAVE]),
+        ("submit-sign-in-code", &[KEEP_SEALED], &[SAVE]),
+        ("remove", &[REMOVE_SEALED], &[REMOVE]),
+        ("add-mail-with-item", &[KEEP_USES, REMOVE_SEALED], &[SAVE]),
+        ("discover-calendars", &[KEEP_USES, REMOVE_SEALED], &[SAVE]),
+        ("reconnect", &[KEEP_USES], &[REPORT]),
+        ("check", &[KEEP_USES], &[REPORT]),
+        // Turning an account's calendars on keeps the calendar server's sign-in in the vault
+        // and uses the mail account's; turning them off forgets the calendar's.
+        (
+            "set-services",
+            &[KEEP_SEALED, KEEP_USES, REMOVE_SEALED],
+            &[SAVE, REMOVE],
+        ),
+        ("set-calendars", &[REMOVE_SEALED], &[SAVE, REMOVE]),
+        ("set-files-mode", &[], &[SAVE]),
+        // A connected account keeps its grant in the person's vault, in place of the one an
+        // earlier connect of the same account kept.
+        ("connect-account", &[KEEP_SEALED, REMOVE_SEALED], &[]),
+        // Forgetting one reads its grant once, to give it back to the issuer, and removes it.
+        ("forget-connected-account", &[KEEP_USES, REMOVE_SEALED], &[]),
+        // A mount asking for its account's sign-in writes down the use, as every sign-in to a
+        // server with what the workspace's vault keeps does, and keeps a grant it renewed; what
+        // it reports is the record's.
+        ("cloud-credential", &[KEEP_USES, KEEP_SEALED], &[]),
+        ("report-sync", &[], &[REPORT]),
+    ]
+};
+
+/// The accounts actions whose answer is a secret ([`crate::SECRET_ANSWER_TAG`]): a cloud mount's
+/// sign-in, and the sign-ins whose answers carry a one-time code.
+pub const ACCOUNT_SECRET_ANSWERS: [&str; 3] =
+    ["cloud-credential", "begin-sign-in", "begin-cloud-sign-in"];
+
+/// [`ACCOUNT_STEPS`] of the accounts action `action`.
+fn account_steps(action: &str) -> Vec<crate::ActionEffect> {
+    ACCOUNT_STEPS
+        .iter()
+        .find(|(id, _, _)| *id == action)
+        .map_or_else(Vec::new, |(_, vault, record)| {
+            vault
+                .iter()
+                .map(|verb| person_vault::vault_step(verb))
+                .chain(record.iter().map(|verb| {
+                    crate::ActionEffect::new(tilo_app_id::apps::SETTINGS, ACCOUNTS_PROVIDER, *verb)
+                }))
+                .collect()
+        })
+}
+
 /// [`MODEL_VAULT_STEPS`] of the model provider action `action`.
 fn model_vault_steps(action: &str) -> Vec<crate::ActionEffect> {
     MODEL_VAULT_STEPS
@@ -529,14 +604,11 @@ pub fn declared_effects(target: &RemoteActionTarget) -> Vec<crate::ActionEffect>
             .and_then(|workspace| workspace.strip_suffix('/'))
             .is_some_and(|workspace| !workspace.is_empty() && !workspace.contains('/'));
     let mut effects = match target.provider.as_str() {
-        _ if in_mail_accounts => person_accounts::effects(
-            person_accounts::RESOURCE,
-            match address.action.as_str() {
-                "add" => person_accounts::ADD_MAIL,
-                action => action,
-            },
-        ),
-        person_accounts::PROVIDER => person_accounts::effects(&address.resource, &address.action),
+        _ if in_mail_accounts => account_steps(match address.action.as_str() {
+            "add" => "add-mail",
+            action => action,
+        }),
+        ACCOUNTS_PROVIDER if address.resource == "accounts" => account_steps(&address.action),
         MODELS_PROVIDER => model_vault_steps(&address.action),
         person_connections::PROVIDER => person_connections::effects(&address.action),
         // A moderation undo takes a person's changes back in the chat's record.
@@ -561,14 +633,8 @@ pub fn declared_effects(target: &RemoteActionTarget) -> Vec<crate::ActionEffect>
 /// carry a one-time code, wherever a host publishes them.
 #[must_use]
 pub fn answers_a_secret(action: &str) -> bool {
-    matches!(
-        action,
-        person_vault::REVEAL
-            | person_vault::CODE
-            | person_accounts::CLOUD_CREDENTIAL
-            | person_accounts::BEGIN_SIGN_IN
-            | person_accounts::BEGIN_CLOUD_SIGN_IN
-    )
+    matches!(action, person_vault::REVEAL | person_vault::CODE)
+        || ACCOUNT_SECRET_ANSWERS.contains(&action)
 }
 
 /// The resource `child` of `workspace`'s governance tree: the root for `None`.
@@ -1376,7 +1442,7 @@ pub const ACTIONS_PROVIDER: &str = "tilo.actions";
 /// theirs reaches them over the device action service, as the person the transport certified,
 /// and its own dispatch answers nothing of them locally.
 pub const WORKSPACE_KEPT_PROVIDERS: [&str; 6] = [
-    person_accounts::PROVIDER,
+    ACCOUNTS_PROVIDER,
     MODELS_PROVIDER,
     person_vault::PROVIDER,
     person_telling::PROVIDER,

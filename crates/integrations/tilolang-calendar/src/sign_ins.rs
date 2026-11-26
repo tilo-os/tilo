@@ -20,6 +20,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tilo_actions::remote::signing_in::{NOT_ANSWERED, SigningIn};
+
+/// The workspace's accounts, as the service that keeps them publishes their actions.
+mod workspace_accounts {
+    tilo_resource::bindings!(
+        provider = "tilo.accounts",
+        surface = "../../core/tilo-workspace-service/accounts-surface.json"
+    );
+}
 use tilo_socket::Stream;
 
 use crate::engine::AccountSource;
@@ -60,7 +68,9 @@ pub fn follow(link: Stream, changed: impl Fn() + Send + 'static) -> AccountSourc
 
 fn following(mut signing: SigningIn, signed: &Mutex<Vec<CalendarAccount>>, changed: &dyn Fn()) {
     loop {
-        let told = match signing.sign_ins() {
+        let told = match signing
+            .sign_ins::<workspace_accounts::MailSignIns>(workspace_accounts::accounts::sign_ins())
+        {
             Ok(sign_ins) => sign_ins,
             Err(error) => {
                 tracing::info!(%error, "the calendar connector reads no accounts now");
@@ -112,7 +122,7 @@ fn following(mut signing: SigningIn, signed: &Mutex<Vec<CalendarAccount>>, chang
             };
             // A password released for this entry already is kept: a second release writes
             // another use into it.
-            match signing.secret(&calendar.id, login) {
+            match signing.secret(&calendar.id, &login.id) {
                 Ok(secret) => calendar.password = secret,
                 Err(error) => calendar.refused = Some(error),
             }

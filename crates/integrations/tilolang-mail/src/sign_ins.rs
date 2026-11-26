@@ -20,9 +20,17 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tilo_actions::remote::person_accounts::MailSignIn;
 use tilo_actions::remote::signing_in::{NOT_ANSWERED, SigningIn};
+
+/// The workspace's accounts, as the service that keeps them publishes their actions.
+mod workspace_accounts {
+    tilo_resource_macros::bindings!(
+        provider = "tilo.accounts",
+        surface = "../../core/tilo-workspace-service/accounts-surface.json"
+    );
+}
 use tilo_socket::Stream;
+use workspace_accounts::{MailSignIn, MailSignIns};
 
 use crate::engine::{AccountSource, MailAccount};
 
@@ -58,7 +66,7 @@ pub fn follow(link: Stream, changed: impl Fn() + Send + 'static) -> AccountSourc
 
 fn following(mut signing: SigningIn, signed: &Mutex<Vec<MailAccount>>, changed: &dyn Fn()) {
     loop {
-        let told = match signing.sign_ins() {
+        let told = match signing.sign_ins::<MailSignIns>(workspace_accounts::accounts::sign_ins()) {
             Ok(sign_ins) => sign_ins,
             Err(error) => {
                 tracing::info!(%error, "the mail connector reads no accounts now");
@@ -118,7 +126,7 @@ fn signed_in(signing: &mut SigningIn, login: &MailSignIn) -> Option<MailAccount>
     // A password, or for an account its provider's page signed in, the access token its grant
     // holds now: the device never hands out the grant itself.
     if !config.import_pending {
-        match signing.secret(&account.id, login) {
+        match signing.secret(&account.id, &login.id) {
             Ok(secret) => config.password = secret,
             Err(error) => refused = Some(error),
         }

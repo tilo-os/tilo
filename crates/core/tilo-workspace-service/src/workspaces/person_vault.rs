@@ -35,11 +35,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::models::{self as model_providers, ProviderView, SetKey, SetKeyFromItem};
+use crate::workspace_accounts::{self, AddMailAccount, AddMailWithItem, MailAccount};
 use accounts::vault_items::{self, ItemFacts, NewItem, Place, UsedFor, VaultItems};
 use serde_json::Value;
 use tilo_action_policy::{ActionKind, Answer, Grant, Level};
 use tilo_actions::remote::asked::{AskedFacts, Fact};
-use tilo_actions::remote::person_accounts::{self, AddMailAccount, AddMailWithItem, MailAccount};
 use tilo_actions::remote::person_vault::{
     self, AddItem, AlwaysUse, AskForItem, ItemKind, ItemRef, ItemUse, ItemUses, ItemView,
     KeptItems, RemoveItem, Revealed, ShowItem, TakeBack, UsesOf,
@@ -425,7 +425,7 @@ impl Workspaces {
     }
 
     /// Answer a request that uses a vault item by its reference:
-    /// [`person_accounts::ADD_MAIL_WITH_ITEM`] or
+    /// [`workspace_accounts::ADD_MAIL_WITH_ITEM`] or
     /// [`model_providers::SET_KEY_FROM_ITEM`].
     pub(super) async fn vault_use_invoke(
         &self,
@@ -439,7 +439,7 @@ impl Workspaces {
         let asked = (workspace_id, caller, certificate);
         // The item is used, never read: whoever reaches the vault's items
         // and what the item is used for may.
-        let used_for = if target.provider == person_accounts::PROVIDER {
+        let used_for = if target.provider == workspace_accounts::PROVIDER {
             Store::MAIL
         } else {
             Store::MODELS
@@ -460,7 +460,7 @@ impl Workspaces {
             ..UsedFor::default()
         };
         match (target.provider.as_str(), target.address.action.as_str()) {
-            (person_accounts::PROVIDER, person_accounts::ADD_MAIL_WITH_ITEM) => {
+            (workspace_accounts::PROVIDER, workspace_accounts::ADD_MAIL_WITH_ITEM) => {
                 let adding: AddMailWithItem = argument(
                     request,
                     "a mail account to add names its address, its servers and the vault item that is its password",
@@ -806,8 +806,8 @@ fn vault_approval(grant: &Grant, item: &ItemRef) -> Option<AlwaysUse> {
     if !matches!(
         (app, action),
         (
-            person_accounts::PROVIDER,
-            person_accounts::ADD_MAIL_WITH_ITEM
+            workspace_accounts::PROVIDER,
+            workspace_accounts::ADD_MAIL_WITH_ITEM
         ) | (
             model_providers::PROVIDER,
             model_providers::SET_KEY_FROM_ITEM
@@ -930,10 +930,10 @@ impl Workspaces {
                 outgoing_port: adding.outgoing_port,
                 password: sign_in.secret.to_string(),
                 identities: Vec::new(),
-                services: person_accounts::Services::default(),
+                services: workspace_accounts::Services::default(),
             },
             Some(kept),
-            person_accounts::Provider::Other,
+            workspace_accounts::Provider::Other,
             None,
         ))
         .await

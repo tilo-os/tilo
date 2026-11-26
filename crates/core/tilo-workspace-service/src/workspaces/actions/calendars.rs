@@ -3,14 +3,15 @@
 //! show. The rows are the accounts surface's three calendar verbs, published on the person's
 //! accounts, as a Settings page reads them.
 
-use tilo_actions::remote::{CatalogueRow, person_accounts};
+use crate::workspace_accounts;
+use tilo_actions::remote::CatalogueRow;
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 
 use super::{Publisher, Verb};
 
 /// A person's calendar accounts, as the host publishes them.
 const CALENDARS: Publisher = Publisher {
-    provider: person_accounts::PROVIDER,
+    provider: workspace_accounts::PROVIDER,
     kind: "tilo.accounts",
 };
 
@@ -18,21 +19,21 @@ const CALENDARS: Publisher = Publisher {
 pub(in crate::workspaces) fn rows() -> Vec<CatalogueRow> {
     [
         Verb {
-            id: person_accounts::BEGIN_SIGN_IN,
+            id: workspace_accounts::BEGIN_SIGN_IN,
             label: "Sign in to an account for its calendars",
             check: "",
             kind: ActionKind::Undoable,
             params: begin_sign_in_params,
         },
         Verb {
-            id: person_accounts::DISCOVER_CALENDARS,
+            id: workspace_accounts::DISCOVER_CALENDARS,
             label: "Find an account's calendars",
             check: "",
             kind: ActionKind::Undoable,
             params: account_params,
         },
         Verb {
-            id: person_accounts::SET_CALENDARS,
+            id: workspace_accounts::SET_CALENDARS,
             label: "Choose an account's calendars",
             check: "",
             kind: ActionKind::Undoable,
@@ -40,7 +41,7 @@ pub(in crate::workspaces) fn rows() -> Vec<CatalogueRow> {
         },
     ]
     .iter()
-    .map(|verb| verb.row(CALENDARS, person_accounts::RESOURCE, "Calendars"))
+    .map(|verb| verb.row(CALENDARS, workspace_accounts::RESOURCE, "Calendars"))
     .collect()
 }
 

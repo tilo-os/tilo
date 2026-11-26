@@ -7,8 +7,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::workspace_accounts::{self, MailAccounts, SignInStep};
 use serde_json::{Value, json};
-use tilo_actions::remote::person_accounts::{self, MailAccounts, SignInStep};
 use tilo_actions::remote::{ActionProvider as _, InvocationReceipt, ReceiptStatus};
 
 use super::super::tests::{admit, caller, hosted, settled};
@@ -131,7 +131,7 @@ async fn a_nextcloud_login_flow_keeps_the_account_and_its_calendar() {
         settled(page.invoke(
             &ada,
             asking(
-                person_accounts::BEGIN_SIGN_IN,
+                workspace_accounts::BEGIN_SIGN_IN,
                 json!({"provider": "nextcloud", "server": responder.url()}),
             ),
         ))
@@ -162,7 +162,7 @@ async fn a_nextcloud_login_flow_keeps_the_account_and_its_calendar() {
         settled(page.invoke(
             &ada,
             asking(
-                person_accounts::BEGIN_SIGN_IN,
+                workspace_accounts::BEGIN_SIGN_IN,
                 json!({"provider": "nextcloud", "server": responder.url()}),
             ),
         ))
@@ -170,7 +170,7 @@ async fn a_nextcloud_login_flow_keeps_the_account_and_its_calendar() {
         .unwrap(),
     );
     let listed: MailAccounts = answered(
-        settled(page.invoke(&ada, asking(person_accounts::LIST, json!({}))))
+        settled(page.invoke(&ada, asking(workspace_accounts::LIST, json!({}))))
             .await
             .unwrap(),
     );
@@ -183,7 +183,7 @@ async fn a_nextcloud_login_flow_keeps_the_account_and_its_calendar() {
     let theirs: MailAccounts = answered(
         settled(bob_page.invoke(
             &caller(&bob_device),
-            asking(person_accounts::LIST, json!({})),
+            asking(workspace_accounts::LIST, json!({})),
         ))
         .await
         .unwrap(),
@@ -193,7 +193,7 @@ async fn a_nextcloud_login_flow_keeps_the_account_and_its_calendar() {
         settled(bob_page.invoke(
             &caller(&bob_device),
             asking(
-                person_accounts::CANCEL_SIGN_IN,
+                workspace_accounts::CANCEL_SIGN_IN,
                 json!({"signIn": waiting.id})
             ),
         ))
@@ -204,7 +204,7 @@ async fn a_nextcloud_login_flow_keeps_the_account_and_its_calendar() {
         settled(page.invoke(
             &ada,
             asking(
-                person_accounts::CANCEL_SIGN_IN,
+                workspace_accounts::CANCEL_SIGN_IN,
                 json!({"signIn": waiting.id}),
             ),
         ))
@@ -239,7 +239,7 @@ async fn a_nextcloud_sign_in_to_an_inside_address_is_refused_and_touches_nobody(
         let refused = settled(page.invoke(
             &ada,
             asking(
-                person_accounts::BEGIN_SIGN_IN,
+                workspace_accounts::BEGIN_SIGN_IN,
                 json!({"provider": "nextcloud", "server": inside}),
             ),
         ))
@@ -333,7 +333,7 @@ async fn an_icloud_drive_waits_for_the_code_apple_sends() {
         settled(page.invoke(
             &ada,
             asking(
-                person_accounts::BEGIN_CLOUD_SIGN_IN,
+                workspace_accounts::BEGIN_CLOUD_SIGN_IN,
                 json!({
                     "kind": "icloud-drive",
                     "name": "My iCloud",
@@ -360,7 +360,7 @@ async fn an_icloud_drive_waits_for_the_code_apple_sends() {
     let wrong = settled(page.invoke(
         &ada,
         asking(
-            person_accounts::SUBMIT_SIGN_IN_CODE,
+            workspace_accounts::SUBMIT_SIGN_IN_CODE,
             json!({"signIn": step.id, "code": "000000"}),
         ),
     ))
@@ -374,7 +374,7 @@ async fn an_icloud_drive_waits_for_the_code_apple_sends() {
     let submitted = settled(page.invoke(
         &ada,
         asking(
-            person_accounts::SUBMIT_SIGN_IN_CODE,
+            workspace_accounts::SUBMIT_SIGN_IN_CODE,
             json!({"signIn": step.id, "code": "123456"}),
         ),
     ))
@@ -451,7 +451,7 @@ async fn a_drive_is_kept_once_its_provider_page_approves_it() {
         settled(page.invoke(
             &ada,
             asking(
-                person_accounts::BEGIN_CLOUD_SIGN_IN,
+                workspace_accounts::BEGIN_CLOUD_SIGN_IN,
                 json!({"kind": "google-drive", "name": "My Drive"}),
             ),
         ))
@@ -504,7 +504,7 @@ async fn a_webdav_server_is_kept_from_what_its_person_typed() {
         settled(page.invoke(
             &ada,
             asking(
-                person_accounts::BEGIN_CLOUD_SIGN_IN,
+                workspace_accounts::BEGIN_CLOUD_SIGN_IN,
                 json!({
                     "kind": "webdav",
                     "name": "Work files",
@@ -539,7 +539,7 @@ async fn a_webdav_server_is_kept_from_what_its_person_typed() {
     let refused = settled(page.invoke(
         &ada,
         asking(
-            person_accounts::BEGIN_CLOUD_SIGN_IN,
+            workspace_accounts::BEGIN_CLOUD_SIGN_IN,
             json!({"kind": "webdav", "server": "not an address", "username": "ada", "password": "x"}),
         ),
     ))
@@ -584,7 +584,7 @@ async fn a_mail_account_is_kept_once_google_s_page_approves_it() {
         settled(page.invoke(
             &ada,
             asking(
-                person_accounts::BEGIN_SIGN_IN,
+                workspace_accounts::BEGIN_SIGN_IN,
                 json!({"provider": "google", "address": "ada@gmail.example", "mail": true}),
             ),
         ))
@@ -672,7 +672,7 @@ async fn a_microsoft_mail_account_keeps_the_address_its_person_typed() {
     let refused = settled(page.invoke(
         &ada,
         asking(
-            person_accounts::BEGIN_SIGN_IN,
+            workspace_accounts::BEGIN_SIGN_IN,
             json!({"provider": "microsoft", "mail": true}),
         ),
     ))
@@ -687,7 +687,7 @@ async fn a_microsoft_mail_account_keeps_the_address_its_person_typed() {
         settled(page.invoke(
             &ada,
             asking(
-                person_accounts::BEGIN_SIGN_IN,
+                workspace_accounts::BEGIN_SIGN_IN,
                 json!({
                     "provider": "microsoft",
                     "address": "ada@outlook.example",

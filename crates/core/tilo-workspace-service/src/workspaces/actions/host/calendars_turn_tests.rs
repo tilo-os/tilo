@@ -11,8 +11,8 @@
     reason = "in a test these are the assertion"
 )]
 
+use crate::workspace_accounts;
 use serde_json::{Value, json};
-use tilo_actions::remote::person_accounts;
 use tilo_actions::remote::{ActionCallError, Caller};
 
 use super::accounts_tests::asking;
@@ -114,9 +114,9 @@ async fn a_members_turn_chooses_the_calendars_their_account_reads() {
     assert_eq!(
         offered(&workspaces, &asking_turn).await,
         [
-            person_accounts::BEGIN_SIGN_IN,
-            person_accounts::DISCOVER_CALENDARS,
-            person_accounts::SET_CALENDARS,
+            workspace_accounts::BEGIN_SIGN_IN,
+            workspace_accounts::DISCOVER_CALENDARS,
+            workspace_accounts::SET_CALENDARS,
         ]
     );
 
@@ -125,7 +125,7 @@ async fn a_members_turn_chooses_the_calendars_their_account_reads() {
     let answered = asks(
         &workspaces,
         &asking_turn,
-        person_accounts::SET_CALENDARS,
+        workspace_accounts::SET_CALENDARS,
         asked.clone(),
     )
     .await
@@ -145,7 +145,7 @@ async fn a_members_turn_chooses_the_calendars_their_account_reads() {
     let refused = asks(
         &workspaces,
         &asking_turn,
-        person_accounts::DISCOVER_CALENDARS,
+        workspace_accounts::DISCOVER_CALENDARS,
         json!({"account": ACCOUNT}),
     )
     .await;
@@ -162,7 +162,7 @@ async fn a_members_turn_chooses_the_calendars_their_account_reads() {
         asks(
             &workspaces,
             &narrowed_turn,
-            person_accounts::SET_CALENDARS,
+            workspace_accounts::SET_CALENDARS,
             asked
         )
         .await,
@@ -178,7 +178,7 @@ async fn a_members_turn_chooses_the_calendars_their_account_reads() {
         asks(
             &workspaces,
             &no_turn,
-            person_accounts::SET_CALENDARS,
+            workspace_accounts::SET_CALENDARS,
             json!({"account": ACCOUNT, "calendars": ["work"]})
         )
         .await,
@@ -207,7 +207,7 @@ async fn only_a_turn_of_a_members_own_agent_is_offered_the_connecting() {
     assert!(
         offered(&workspaces, &bos_turn)
             .await
-            .contains(&person_accounts::BEGIN_SIGN_IN.to_owned()),
+            .contains(&workspace_accounts::BEGIN_SIGN_IN.to_owned()),
         "another member's agent connects the workspace's calendars"
     );
     for (who, caller) in super::turn_use_tests::not_hosted_turns(&ada, &workspace) {
@@ -227,7 +227,7 @@ async fn only_a_turn_of_a_members_own_agent_is_offered_the_connecting() {
         asks(
             &workspaces,
             &hers,
-            person_accounts::BEGIN_SIGN_IN,
+            workspace_accounts::BEGIN_SIGN_IN,
             with_mail
         )
         .await,

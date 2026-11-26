@@ -156,8 +156,9 @@ fn a_calendar_server_that_refuses_the_password_keeps_no_entry() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_icloud_account_asked_for_calendars_lists_them_in_the_calendar() {
     use tilo_actions::remote::{
-        ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, person_accounts,
+        ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
     };
+    use tilo_workspace_service::workspace_accounts;
     use tilolang_calendar::engine::CalendarAccount;
 
     const ADDRESS: &str = "ada@icloud.example";
@@ -205,7 +206,7 @@ async fn an_icloud_account_asked_for_calendars_lists_them_in_the_calendar() {
             &herself,
             InvokeRequest {
                 invocation: tilo_actions::InvocationId::new(),
-                target: person_accounts::target(person_accounts::ADD_MAIL),
+                target: workspace_accounts::target(workspace_accounts::ADD_MAIL),
                 argument: InvokeArgument::Json(adding),
                 context: None,
                 confirmation: None,

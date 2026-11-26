@@ -4,17 +4,20 @@
 //!
 //! The reading is the accounts record's ([`crate::workspaces::account_logins`]), which the
 //! workspace keeps as one document: the same record
-//! [`list`](tilo_actions::remote::person_accounts::LIST) answers, and it carries no secret. A
+//! [`list`](crate::workspace_accounts::LIST) answers, and it carries no secret. A
 //! secret stays in the workspace's vault and is named by the account's settings alone, so nothing
 //! here reads one back. Changing an account is the record's own actions
-//! ([`tilo_actions::remote::person_accounts`]), answered where the workspace runs.
+//! ([`crate::workspace_accounts`]), answered where the workspace runs.
 
-use serde::Serialize;
 use serde_json::Value;
 
 use super::Workspaces;
 use super::person_settings;
 use super::person_settings::cloud_control::Mount;
+use crate::workspace_accounts::{
+    AccountKind as Kind, AccountServices, AccountStatus as Status, AccountView as View, Accounts,
+    CalendarView,
+};
 
 impl Workspaces {
     /// The accounts `workspace` keeps, as the apps this host serves read them: the same record
@@ -54,108 +57,11 @@ async fn reading(workspaces: &Workspaces, workspace: &str) -> Value {
         Some(person) => workspaces.connected_accounts(person).await,
         None => Vec::new(),
     };
-    let reading = Reading {
+    let reading = Accounts {
         accounts,
         connected,
     };
     serde_json::to_value(reading).unwrap_or(Value::Null)
-}
-
-/// A workspace's accounts, as one reading.
-#[derive(Debug, Serialize)]
-struct Reading {
-    accounts: Vec<View>,
-    connected: Vec<tilo_actions::remote::person_accounts::ConnectedAccount>,
-}
-
-/// One account of the workspace's, without its secret.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct View {
-    /// The account's id, as every action names it.
-    id: String,
-    /// The kind of service it is.
-    kind: Kind,
-    /// What its person calls it.
-    name: String,
-    /// The address or name it signs in at.
-    address: String,
-    /// The name it signs in with.
-    username: String,
-    /// The provider it belongs to.
-    provider: String,
-    /// How its last sync went.
-    status: Status,
-    /// What a person reads about that, when the account's device said something.
-    words: String,
-    /// Whether the account is in use.
-    enabled: bool,
-    /// A mail account's incoming server as a person writes it.
-    incoming: String,
-    /// Its outgoing server as a person writes it.
-    outgoing: String,
-    /// The other addresses a mail account sends as, each `Name <address>`.
-    identities: Vec<String>,
-    /// A calendar account's calendars and which of them show.
-    calendars: Vec<CalendarView>,
-    /// Which of its services the account feeds.
-    services: ServicesView,
-    /// A cloud-storage account's files: `sync` kept in sync, `import` copied into the
-    /// workspace once; empty for an account that mounts no files.
-    files_mode: String,
-    /// Whether its background sync and uploads are paused on this device.
-    paused: bool,
-}
-
-/// Which of an account's services its person uses, as its row reads them.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ServicesView {
-    mail: bool,
-    calendar: bool,
-    files: bool,
-}
-
-/// One of a calendar account's calendars, as its person chooses which show.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CalendarView {
-    /// Its id, as its server keeps it and the selection names it.
-    id: String,
-    /// What its server calls it.
-    name: String,
-    /// Whether its events show in the calendar.
-    visible: bool,
-    /// Whether its server lets this workspace change it.
-    read_only: bool,
-}
-
-/// The kinds of account the reading lists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum Kind {
-    Mail,
-    Calendar,
-    Cloud,
-    Other,
-}
-
-/// How an account's last sync went, as a person reads it on the account's row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum Status {
-    /// Up to date.
-    Connected,
-    /// Its person has to sign in again.
-    NeedsReconnect,
-    /// Its last sync failed.
-    Error,
-    /// Waiting for a connection.
-    Waiting,
-    /// Syncing now.
-    Syncing,
-    /// Nothing has synced it yet.
-    Never,
 }
 
 /// The kind `type_id` names; a kind this build does not know is [`Kind::Other`].
@@ -272,7 +178,7 @@ fn view_of(
                     .collect()
             })
             .unwrap_or_default(),
-        services: ServicesView {
+        services: AccountServices {
             mail: services.mail,
             calendar: services.calendar,
             files: services.files,

@@ -113,6 +113,9 @@ pub mod workspace;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod workspace_access;
+/// The workspace's connected accounts: their actions, declared once, and what they read as.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod workspace_accounts;
 pub mod workspace_documents;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod workspace_files;

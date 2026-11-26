@@ -3267,9 +3267,10 @@ const SECRET_ARGUMENT_TEST: &str =
 )]
 fn a_secret_argument_is_kept_out_of_every_invocation_record() {
     use serde_json::json;
-    use tilo_actions::remote::{InvokeRequest, person_accounts};
+    use tilo_actions::remote::InvokeRequest;
     use tilo_actions::{ActionAddress, InvocationId};
     use tilo_workspace_service::models as model_providers;
+    use tilo_workspace_service::workspace_accounts;
 
     let Some(root) = isolated_root(SECRET_ARGUMENT_TEST) else {
         return;
@@ -3308,8 +3309,8 @@ fn a_secret_argument_is_kept_out_of_every_invocation_record() {
     });
     let secrets = daemon.workspaces().secret_parameters();
     assert_eq!(
-        secrets(&person_accounts::target(
-            person_accounts::SUBMIT_SIGN_IN_CODE
+        secrets(&workspace_accounts::target(
+            workspace_accounts::SUBMIT_SIGN_IN_CODE
         )),
         Some(vec!["code".to_owned()]),
         "a sign-in's code is declared secret, and its sign-in is not"
@@ -3332,9 +3333,9 @@ fn a_secret_argument_is_kept_out_of_every_invocation_record() {
     // The one-time code a sign-in finishes with.
     let code = "made-up-code-9182";
     let request = ask(
-        person_accounts::PROVIDER,
-        person_accounts::RESOURCE,
-        person_accounts::SUBMIT_SIGN_IN_CODE,
+        workspace_accounts::PROVIDER,
+        workspace_accounts::RESOURCE,
+        workspace_accounts::SUBMIT_SIGN_IN_CODE,
         json!({ "signIn": "made-up-sign-in", "code": code }),
     );
     let code_invocation = request.invocation;

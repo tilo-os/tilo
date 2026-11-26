@@ -12,12 +12,13 @@
 use std::sync::Arc;
 
 use crate::models as model_providers;
+use crate::workspace_accounts;
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;
+use tilo_actions::remote::person_vault;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget,
 };
-use tilo_actions::remote::{person_accounts, person_vault};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
@@ -1557,7 +1558,7 @@ async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
     .await
     .expect("Ada keeps her mail sign-in");
     let sign_in = kept["reference"].clone();
-    let with_item = person_accounts::target(person_accounts::ADD_MAIL_WITH_ITEM);
+    let with_item = workspace_accounts::target(workspace_accounts::ADD_MAIL_WITH_ITEM);
 
     for (incoming, port, outgoing) in [
         ("imap.attacker.example", 993, "smtp.example.test"),
@@ -1589,7 +1590,7 @@ async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
         &service,
         workspace_id,
         (&ada, &helper),
-        person_accounts::target(person_accounts::ADD_MAIL),
+        workspace_accounts::target(workspace_accounts::ADD_MAIL),
         json!({
             "address": NAME,
             "incomingHost": "imap.example.test",
@@ -1607,7 +1608,7 @@ async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
         &service,
         workspace_id,
         hers,
-        person_accounts::target(person_accounts::LIST),
+        workspace_accounts::target(workspace_accounts::LIST),
         json!({}),
     )
     .await
@@ -2425,7 +2426,7 @@ async fn an_app_reaches_a_store_by_its_grants_never_by_its_name() {
     let (workspace, workspace_id, _) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let mail = tilo_app_id::apps::MAIL;
-    let sign_ins = (Store::MAIL, person_accounts::SIGN_INS, ActionKind::Read);
+    let sign_ins = (Store::MAIL, workspace_accounts::SIGN_INS, ActionKind::Read);
 
     // Named Mail, with no grant: nothing.
     let named = Caller::launched(mail).in_workspace(&workspace);
@@ -2439,9 +2440,9 @@ async fn an_app_reaches_a_store_by_its_grants_never_by_its_name() {
 
     // With the grant its signed manifest declares: the sign-ins, and nothing else.
     let declared = named.clone().granting(vec![tilo_action_policy::Grant::new(
-        person_accounts::sign_in_grant_id(mail, &workspace),
+        workspace_accounts::sign_in_grant_id(mail, &workspace),
         tilo_action_policy::Grantee::app(mail),
-        person_accounts::sign_ins_node(&workspace),
+        workspace_accounts::sign_ins_node(&workspace),
         tilo_action_policy::KindSet::READ,
         Answer::Allow,
         tilo_action_policy::Grantee::person(hex::encode(ada.user_public_key)),
@@ -2453,7 +2454,7 @@ async fn an_app_reaches_a_store_by_its_grants_never_by_its_name() {
     for (store, action, effect) in [
         (
             Store::MAIL,
-            person_accounts::SET_SERVICES,
+            workspace_accounts::SET_SERVICES,
             ActionKind::Undoable,
         ),
         (Store::VAULT, person_vault::LIST, ActionKind::Read),

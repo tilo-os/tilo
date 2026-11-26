@@ -40,6 +40,7 @@ filesystem = [
     "dep:collab-types",
     "dep:tilo-action-policy",
     "dep:tilo-actions",
+    "dep:tilo-resource-macros",
     "dep:fs-protocol",
     "dep:tilo-thumbnail",
     "dep:tilo-user-identity",
@@ -118,6 +119,9 @@ tilo-action-policy = { version = "0.1.0", path = "../action-policy", optional = 
 # A capability may name the app whose sandbox it is; the pre-rename list is read into it.
 # A change of the tree names the file action it is and who made it, as every resource's does.
 tilo-actions = { version = "0.1.0", path = "../actions", optional = true }
+# The calls a mount makes of the workspace's accounts, bound at build time to the surface their
+# service publishes.
+tilo-resource-macros = { path = "../tilo-resource-macros", optional = true }
 fs-protocol = { package = "tilo-fs-protocol", version = "0.1.0", path = "../fs-protocol", optional = true }
 # What the workspace's host answered about a record it was opened on.
 tilo-server-protocol = { version = "0.1.0", path = "../tilo-server-protocol", optional = true }

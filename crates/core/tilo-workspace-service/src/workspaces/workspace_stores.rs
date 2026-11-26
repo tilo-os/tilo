@@ -43,13 +43,13 @@ impl Store {
     /// The workspace's mail accounts, in Mail.
     pub const MAIL: Self = Self {
         app: tilo_app_id::apps::MAIL,
-        kind: tilo_actions::remote::person_accounts::PROVIDER,
+        kind: crate::workspace_accounts::PROVIDER,
     };
     /// The workspace's calendar accounts, in Calendar: only agents' hosts keep them.
     #[cfg(feature = "agents")]
     pub const CALENDARS: Self = Self {
         app: tilo_app_id::apps::CALENDAR,
-        kind: tilo_actions::remote::person_accounts::PROVIDER,
+        kind: crate::workspace_accounts::PROVIDER,
     };
     /// The items of the workspace's vault, in Passwords.
     pub const VAULT: Self = Self {

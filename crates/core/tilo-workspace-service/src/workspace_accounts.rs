@@ -1,92 +1,475 @@
-//! The person's mail accounts, kept where their workspace runs.
+//! The workspace's connected accounts, kept where the workspace runs, and the actions a page, a
+//! window, a device's mount or an agent asks of them: declared here, once, as
+//! [`AccountsAction`].
 //!
-//! A page has no mail connection and no vault of its own. Adding a mail
-//! account from a browser therefore asks the host that runs the workspace:
-//! it opens the server's session with the password once, keeps the account
-//! and its secret in the workspace's own vault, and answers what it kept.
-//! Nothing here carries a secret back: a reading names an account's address
-//! and its servers, never its password.
+//! A page has no mail connection and no vault of its own. Adding a mail account from a browser
+//! therefore asks the host that runs the workspace: it opens the server's session with the
+//! password once, keeps the account and its secret in the workspace's own vault, and answers
+//! what it kept. Nothing here carries a secret back: a reading names an account's address and
+//! its servers, never its password.
 //!
-//! The accounts are the host's to keep, and the mail itself is Mail's: the
-//! app's connector signs in with the account's secret and keeps what its
-//! server holds, so reading, searching and sending are its actions, reached
-//! as any app's are.
+//! The accounts are the host's to keep, and the mail itself is Mail's: the app's connector signs
+//! in with the account's secret and keeps what its server holds, so reading, searching and
+//! sending are its actions, reached as any app's are.
 //!
-//! The same actions answer a device that keeps its own accounts, so the page
-//! and the device read and change accounts through one vocabulary.
+//! The same actions answer a device that keeps its own accounts, so the page and the device read
+//! and change accounts through one vocabulary.
 //!
-//! A page open in a tab keeps the build it loaded while its server moves
-//! on, so every message here reads past a field it does not know: a field
-//! is added as an optional one, and an older page reads the newer answer.
+//! A page open in a tab keeps the build it loaded while its server moves on, so every message
+//! here reads past a field it does not know: a field is added as an optional one, and an older
+//! page reads the newer answer.
+//!
+//! What this declaration publishes ([`surface`]) is written beside this crate as
+//! `accounts-surface.json`: a tilolang view compiles against it, and a crate that does not
+//! depend on this one calls the actions through `tilo_resource::bindings!` of that file.
 
 use serde::{Deserialize, Serialize};
+use tilo_actions::ActionAddress;
+use tilo_actions::remote::RemoteActionTarget;
+use tilo_resource::Effect as _;
 
-use super::{ActionAddress, RemoteActionTarget};
-
-/// The provider that answers the person's mail accounts under.
-pub const PROVIDER: &str = "tilo.accounts";
+/// The provider that answers the workspace's accounts under.
+pub const PROVIDER: &str = <AccountsAction as tilo_resource::Effect>::OPERATION;
 /// The resource the accounts are actions of.
 pub const RESOURCE: &str = "accounts";
-/// The mail accounts the person's vault keeps, as a [`MailAccounts`].
-pub const LIST: &str = "list";
-/// Live: the same accounts as [`LIST`], sent again whenever they change,
-/// until the caller cancels. What a window follows so an account added in
-/// another one reaches it without asking again.
-pub const WATCH: &str = "watch";
-/// Add a mail account, once its server accepted its sign-in
-/// ([`AddMailAccount`]), and answer it as a [`MailAccount`].
-pub const ADD_MAIL: &str = "add-mail";
-/// Add a mail account whose sign-in the person's vault already keeps
-/// ([`AddMailWithItem`]), and answer it as a [`MailAccount`]. The password is
-/// named by reference and the host resolves it, only for the two servers the
-/// item belongs to. It carries no secret, so unlike [`ADD_MAIL`] an agent
-/// acting for the person may ask it.
-pub const ADD_MAIL_WITH_ITEM: &str = "add-mail-with-item";
-/// Connect a calendar account at a `CalDAV` server its person names
-/// ([`AddCalendarAccount`]), once that server took the sign-in, and answer it
-/// as a [`MailAccount`]: what a person who rents a calendar from no mail
-/// provider connects.
-pub const ADD_CALENDAR: &str = "add-calendar";
-/// Sign an account in again (`account`) with the entry the workspace's vault
-/// keeps for it, through the same sign-in the account was added with: the
-/// accounts reading then says how it went.
-pub const RECONNECT: &str = "reconnect";
-/// Check that an account's server still takes the sign-in the workspace's vault
-/// keeps (`account`), answering the probe's own words `{ "result": "…" }`, or
-/// the reason it refused them. Nothing is written.
-pub const CHECK: &str = "check";
-/// Replace an account's saved sign-in ([`ReplacePassword`]) once the server took
-/// the new one: the vault's entry is the account's own, under the same reference.
-pub const REPLACE_PASSWORD: &str = "replace-password";
-/// Remove a mail account and its secret (`account`), answering the accounts
-/// that remain as a [`MailAccounts`].
-pub const REMOVE: &str = "remove";
-/// Ask a calendar account's server for the calendars it holds (`account`) and
-/// keep them on the account, keeping the choice its person made for the ones it
-/// held before. What the review shows before they choose.
-pub const DISCOVER_CALENDARS: &str = "discover-calendars";
-/// Say which of a calendar account's calendars show ([`SetCalendars`]): the
-/// others keep their events out of the calendar on this workspace's devices.
-pub const SET_CALENDARS: &str = "set-calendars";
-/// Where the mail of an address lives ([`FindServers`]), worked out from the
-/// address alone, answering [`FoundServers`]. Nothing signs in: the person
-/// sees the servers before they type a password for them.
-pub const FIND_SERVERS: &str = "find-servers";
-/// Begin signing in on a provider's own page ([`BeginSignIn`]), answering
-/// where the person's browser goes ([`SignInStep`]). The server finishes the
-/// sign-in itself when the provider sends the browser back, keeps the
-/// account, and every window following [`WATCH`] sees it arrive; until then
-/// [`MailAccounts::signing_in`] names it.
-pub const BEGIN_SIGN_IN: &str = "begin-sign-in";
-/// Stop waiting for a sign-in begun with [`BEGIN_SIGN_IN`] (`signIn`), or
-/// forget one that failed, answering the accounts as [`MailAccounts`].
-pub const CANCEL_SIGN_IN: &str = "cancel-sign-in";
-/// Say which of an account's services the person uses ([`SetServices`]),
-/// answering the accounts as [`MailAccounts`].
-pub const SET_SERVICES: &str = "set-services";
+
+/// The accounts' actions, each with the parameters its argument carries. A password or a code
+/// typed in travels in as a secret and is never answered back.
+#[derive(Clone, tilo_resource::Effect)]
+#[effect(operation = "tilo.accounts")]
+pub enum AccountsAction {
+    /// List mail accounts
+    ///
+    /// The mail accounts the workspace's vault keeps, as a [`MailAccounts`].
+    #[effect(kind = "read")]
+    List,
+    /// Follow the mail accounts
+    ///
+    /// The same accounts as `list`, sent again whenever they change, until the caller cancels:
+    /// what a window follows so an account added in another one reaches it without asking again.
+    #[effect(kind = "read")]
+    Watch,
+    /// Add a mail account
+    ///
+    /// Adds a mail account once its server accepted its sign-in, and answers it as a
+    /// [`MailAccount`].
+    #[effect(kind = "undoable")]
+    AddMail {
+        #[param("The account's address.")]
+        address: String,
+        #[param("The name its mail is sent under.", name = "displayName")]
+        display_name: Option<String>,
+        #[param("The sign-in name, when it is not the address.")]
+        username: Option<String>,
+        #[param(
+            "The IMAP server; left out, the server finds both from the address.",
+            name = "incomingHost"
+        )]
+        incoming_host: Option<String>,
+        #[param("The IMAP port.", name = "incomingPort")]
+        incoming_port: Option<u16>,
+        #[param("The SMTP server.", name = "outgoingHost")]
+        outgoing_host: Option<String>,
+        #[param("The SMTP port.", name = "outgoingPort")]
+        outgoing_port: Option<u16>,
+        #[param(
+            secret,
+            "The account's password or app password: sealed in the workspace's vault, never \
+             answered back."
+        )]
+        password: String,
+        #[param("Other names and addresses it sends as, each `Name <address>`.")]
+        identities: Option<Vec<String>>,
+    },
+    /// Add a mail account from the vault
+    ///
+    /// Adds a mail account whose sign-in the workspace's vault already keeps, and answers it as
+    /// a [`MailAccount`]. The password is named by reference and the host resolves it, only for
+    /// the two servers the item belongs to. It carries no secret, so unlike `add-mail` an agent
+    /// acting for the person may ask it.
+    #[effect(kind = "undoable")]
+    AddMailWithItem {
+        #[param("The account's address.")]
+        address: String,
+        #[param("The name its mail is sent under.", name = "displayName")]
+        display_name: Option<String>,
+        #[param("The sign-in name, when it is neither the item's nor the address.")]
+        username: Option<String>,
+        #[param("The IMAP server.", name = "incomingHost")]
+        incoming_host: String,
+        #[param("The IMAP port.", name = "incomingPort")]
+        incoming_port: Option<u16>,
+        #[param("The SMTP server.", name = "outgoingHost")]
+        outgoing_host: String,
+        #[param("The SMTP port.", name = "outgoingPort")]
+        outgoing_port: Option<u16>,
+        // The reference as Passwords names it (`vault.item:<id>`): a view, an agent and a
+        // script spell it the same way, and the vault hands out only a login that belongs to
+        // both servers the account names.
+        #[param("The vault item that is the account's sign-in, by its reference.")]
+        password: String,
+        #[param(
+            "Why whoever asks needs it, in one sentence their person reads when they are asked \
+             whether they may."
+        )]
+        reason: Option<String>,
+    },
+    /// Connect a calendar server
+    ///
+    /// Connects a calendar account at a `CalDAV` server its person names, once that server took
+    /// the sign-in, and answers it as a [`MailAccount`]: what a person who rents a calendar from
+    /// no mail provider connects.
+    #[effect(kind = "undoable")]
+    AddCalendar {
+        #[param(
+            "The CalDAV server's address, such as `dav.example.org`: a bare name is that server \
+             over https."
+        )]
+        server: String,
+        #[param("The name it signs in with.")]
+        username: String,
+        #[param(
+            secret,
+            "Its password or app password, sealed in the workspace's vault once the server took \
+             it and never answered back."
+        )]
+        password: String,
+        #[param("The name the account is shown under.")]
+        name: Option<String>,
+        #[param(
+            "Connect it for reading only: nothing is ever written to its server, until the \
+             account is removed.",
+            name = "readOnly"
+        )]
+        read_only: Option<bool>,
+    },
+    /// Sign an account in again
+    ///
+    /// Signs the account in again with the entry the workspace's vault keeps for it, through the
+    /// same sign-in the account was added with: the accounts reading then says how it went.
+    #[effect(kind = "undoable")]
+    Reconnect {
+        #[param("The account's id, as the accounts list names it.")]
+        account: String,
+    },
+    /// Check an account's server
+    ///
+    /// Checks that an account's server still takes the sign-in the workspace's vault keeps,
+    /// answering the probe's own words `{ "result": "…" }`, or the reason it refused them.
+    /// Nothing is written.
+    #[effect(kind = "read")]
+    Check {
+        #[param("The account's id, as the accounts list names it.")]
+        account: String,
+    },
+    /// Replace an account's sign-in
+    ///
+    /// Replaces an account's saved sign-in once the server took the new one: the vault's entry
+    /// is the account's own, under the same reference.
+    #[effect(kind = "undoable")]
+    ReplacePassword {
+        #[param("The account's id, as the accounts list names it.")]
+        account: String,
+        #[param(
+            secret,
+            "The password or app password the server took: sealed in the workspace's vault, \
+             never answered back."
+        )]
+        password: String,
+    },
+    /// Remove an account
+    ///
+    /// Removes an account and its secret, answering the accounts that remain as a
+    /// [`MailAccounts`].
+    #[effect(kind = "undoable")]
+    Remove {
+        #[param("The account's id, as the accounts list names it.")]
+        account: String,
+    },
+    /// Find an account's calendars
+    ///
+    /// Asks a calendar account's server for the calendars it holds and keeps them on the
+    /// account, keeping the choice its person made for the ones it held before: what the review
+    /// shows before they choose.
+    #[effect(kind = "undoable")]
+    DiscoverCalendars {
+        #[param("The account's id, as the accounts list names it.")]
+        account: String,
+    },
+    /// Choose an account's calendars
+    ///
+    /// The others keep their events out of the calendar on this workspace's devices.
+    #[effect(kind = "undoable")]
+    SetCalendars {
+        #[param("The account's id, as the accounts list names it.")]
+        account: String,
+        #[param("The ids of the calendars that show, as the accounts reading names them.")]
+        calendars: Vec<String>,
+    },
+    /// Find where an address's mail lives
+    ///
+    /// Worked out from the address alone, answering [`FoundServers`]. Nothing signs in: the
+    /// person sees the servers before they type a password for them.
+    #[effect(kind = "read")]
+    FindServers {
+        #[param("The address whose servers to find.")]
+        address: String,
+    },
+    /// Sign in to an account on its provider's page
+    ///
+    /// Answers where the person's browser goes. The server finishes the sign-in itself when the
+    /// provider sends the browser back, keeps the account, and every window following `watch`
+    /// sees it arrive; until then [`MailAccounts::signing_in`] names it.
+    #[effect(kind = "undoable", returns = SignInStep)]
+    BeginSignIn {
+        #[param("The provider: `nextcloud`, `google`, `microsoft`, `icloud` or `other`.")]
+        provider: String,
+        #[param("The Nextcloud server's address; left out for the others.")]
+        server: Option<String>,
+        #[param("The name the account is shown under.")]
+        name: Option<String>,
+        #[param("The address a provider's own page signs in to, for a mail account.")]
+        address: Option<String>,
+        #[param("Whether its mail shows in Mail.")]
+        mail: Option<bool>,
+        #[param("Whether its calendars show in Calendar.")]
+        calendar: Option<bool>,
+        #[param("Whether its files mount in Files.")]
+        files: Option<bool>,
+        #[param("The account this signs in again, when its sign-in stopped working.")]
+        account: Option<String>,
+    },
+    /// Stop waiting for a sign-in
+    ///
+    /// Stops waiting for a sign-in begun on a provider's page, or forgets one that failed,
+    /// answering the accounts as [`MailAccounts`].
+    #[effect(kind = "undoable")]
+    CancelSignIn {
+        #[param("The sign-in's id, as beginning it answered.", name = "signIn")]
+        sign_in: String,
+    },
+    /// Choose an account's services
+    ///
+    /// Answers the accounts as [`MailAccounts`].
+    #[effect(kind = "undoable")]
+    SetServices {
+        #[param("The account's id, as the accounts list names it.")]
+        account: String,
+        #[param("Whether its mail shows, where it is a mail account.")]
+        mail: Option<bool>,
+        #[param("Whether its calendars show in Calendar.")]
+        calendar: Option<bool>,
+        #[param("Whether its files mount in Files.")]
+        files: Option<bool>,
+    },
+    /// Read the logins the vault keeps
+    ///
+    /// Their names, sign-in names, the places each belongs to and the account each signs in
+    /// for, never their secrets. An app picks from them the ones its own places name, as Mail's
+    /// does for its `imap` and `smtp` servers and Calendar's for its `https` server; an item's
+    /// secret comes only from `vault#release`.
+    #[effect(kind = "read", returns = MailSignIns)]
+    SignIns,
+    /// Choose how an account's files are kept
+    ///
+    /// Whether a cloud-storage account's files stay in sync or are copied into the workspace
+    /// once, answering the accounts as [`MailAccounts`].
+    #[effect(kind = "undoable")]
+    SetFilesMode {
+        #[param("The cloud-storage account.")]
+        account: String,
+        #[param(
+            "`sync` to keep its files in sync, `import` to copy them into the workspace once."
+        )]
+        mode: String,
+    },
+    /// Read the accounts a cloud mount keeps
+    ///
+    /// Each account's settings, and whether its person signed in, never its secret (a
+    /// [`CloudAccounts`]). Answered only to the person on a connection of their own.
+    #[effect(kind = "read")]
+    CloudAccounts,
+    /// Sign a cloud mount in
+    ///
+    /// What a device's cloud mount for the account signs in with now, answered as a
+    /// [`CloudCredential`] in the receipt alone: its password, or the access token of the grant
+    /// the workspace's vault keeps, renewed when it was due or when the mount refused the last
+    /// one. The renewed grant is kept in the workspace's vault, never by the mount. Answered only
+    /// to the person on a connection of their own.
+    #[effect(kind = "read")]
+    CloudCredential {
+        #[param("The account's id.")]
+        account: String,
+        #[param("The mount refused the last sign-in, so its grant is renewed once more.")]
+        rejected: Option<bool>,
+    },
+    /// Say how a cloud mount's sync went
+    ///
+    /// How a cloud mount's sync of the account went on this device, as every member's Settings
+    /// reads it: what its own device could not say itself.
+    #[effect(kind = "undoable")]
+    ReportSync {
+        #[param("The account's id.")]
+        account: String,
+        #[param(
+            "How its sync went: `healthy`, `offline`, `needs_sign_in`, `error`, `syncing` or \
+             `never`."
+        )]
+        health: String,
+        #[param("Whether its person just signed in to it.", name = "signedIn")]
+        signed_in: Option<bool>,
+        #[param("A short summary a person reads.")]
+        message: Option<String>,
+    },
+    /// Sync an account now
+    ///
+    /// Cuts a failure's wait short and tries an account whose mount could not start.
+    #[effect(kind = "undoable")]
+    SyncNow {
+        #[param("The cloud-storage account whose sync it is.")]
+        account: String,
+    },
+    /// Pause an account's sync
+    ///
+    /// Stops a cloud-storage account's background sync and uploads until it is resumed; reads
+    /// still fetch on demand.
+    #[effect(kind = "undoable")]
+    PauseSync {
+        #[param("The cloud-storage account whose sync it is.")]
+        account: String,
+    },
+    /// Resume an account's sync
+    ///
+    /// Resumes a paused cloud-storage account and syncs it now.
+    #[effect(kind = "undoable")]
+    ResumeSync {
+        #[param("The cloud-storage account whose sync it is.")]
+        account: String,
+    },
+    /// Connect cloud storage
+    ///
+    /// Answers where the person's browser goes. A sign-in the provider shows a code for, or
+    /// iCloud's, is finished with `submit-sign-in-code`; one approved on the provider's page
+    /// finishes itself and the accounts reading shows the account arrive.
+    #[effect(kind = "undoable", returns = SignInStep)]
+    BeginCloudSignIn {
+        #[param("The storage: `google-drive`, `onedrive`, `dropbox`, `icloud-drive` or `webdav`.")]
+        kind: String,
+        #[param("The name the account is shown under.")]
+        name: Option<String>,
+        #[param("A `WebDAV` server's address.")]
+        server: Option<String>,
+        #[param("The sign-in name: a `WebDAV` server's, or the Apple ID.")]
+        username: Option<String>,
+        #[param(
+            secret,
+            "Its password or app password, used once and never answered back."
+        )]
+        password: Option<String>,
+    },
+    /// Finish signing in with a code
+    ///
+    /// iCloud's verification code, or the code a provider showed instead of redirecting back.
+    /// Answers the accounts as [`MailAccounts`] once the account is kept.
+    #[effect(kind = "undoable")]
+    SubmitSignInCode {
+        #[param("The sign-in's id, as beginning it answered.", name = "signIn")]
+        sign_in: String,
+        #[param(secret, "The code the provider sent or showed.")]
+        code: String,
+    },
+    /// Connect an account at an app's issuer
+    ///
+    /// Connects the person's account at an issuer an app describes, so the app can tell who
+    /// they are there: answered with where their browser goes, and finished with
+    /// `finish-connect-account`. Only a person asks it, from that app. The grant stays in their
+    /// vault; the app reads back only the account the issuer confirmed, its id and name, and
+    /// only for issuers it described itself.
+    #[effect(kind = "undoable", returns = SignInStep)]
+    ConnectAccount {
+        #[param("The issuer the app describes.")]
+        issuer: AccountIssuer,
+        #[param("The public client the app signs in as there.", name = "clientId")]
+        client_id: String,
+    },
+    /// Wait for a connected account
+    ///
+    /// Waits for a `connect-account` to come back from the person's browser, answering the
+    /// [`ConnectedAccount`] the issuer confirmed, or why it did not, in words the person reads.
+    #[effect(kind = "undoable", returns = ConnectedAccount)]
+    FinishConnectAccount {
+        #[param("The connect's id, as beginning it answered.", name = "signIn")]
+        sign_in: String,
+    },
+    /// Forget a connected account
+    ///
+    /// Its grant leaves the person's vault and is given back to the issuer where it takes one
+    /// back. Only the person asks it.
+    #[effect(kind = "undoable")]
+    ForgetConnectedAccount {
+        #[param("The app that described the account's issuer.")]
+        app: String,
+        #[param("The issuer's id, as that app names it.")]
+        issuer: String,
+    },
+}
+
+/// Each action's id, as its declaration in [`AccountsAction`] names it.
+macro_rules! ids {
+    ($($id:ident),* $(,)?) => {
+        $(
+            #[doc = concat!("The id of [`AccountsAction::", stringify!($id), "`].")]
+            pub const $id: &str = AccountsAction::$id.id();
+        )*
+    };
+}
+
+ids! {
+    LIST, WATCH, ADD_MAIL, ADD_MAIL_WITH_ITEM, ADD_CALENDAR, RECONNECT, CHECK, REPLACE_PASSWORD, REMOVE,
+    DISCOVER_CALENDARS, SET_CALENDARS, FIND_SERVERS, BEGIN_SIGN_IN, CANCEL_SIGN_IN, SET_SERVICES,
+    SIGN_INS, SET_FILES_MODE, CLOUD_ACCOUNTS, CLOUD_CREDENTIAL, REPORT_SYNC, SYNC_NOW, PAUSE_SYNC,
+    RESUME_SYNC, BEGIN_CLOUD_SIGN_IN, SUBMIT_SIGN_IN_CODE, CONNECT_ACCOUNT, FINISH_CONNECT_ACCOUNT,
+    FORGET_CONNECTED_ACCOUNT
+}
+
+/// The declaration of the action `action`, when it is one of [`AccountsAction`].
+#[must_use]
+pub fn declaration(action: &str) -> Option<tilo_resource::EffectDecl> {
+    AccountsAction::declarations()
+        .into_iter()
+        .find(|decl| decl.id == action)
+}
+
+/// The parameters the action `action` is published with, where it is one of
+/// [`AccountsAction`]: what the device keeps none of where a parameter is a secret.
+#[must_use]
+pub fn params_of(action: &str) -> Option<Vec<tilo_actions::ActionParam>> {
+    declaration(action).map(|decl| decl.params)
+}
+
+/// The target of action `action` of [`RESOURCE`].
+#[must_use]
+pub fn target(action: &str) -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: PROVIDER.to_owned(),
+        address: ActionAddress::new(RESOURCE, action),
+    }
+}
+
+/// The workspace's accounts as a view of another language reads and changes them
+/// (`accounts.accounts`): the reading's fields, the records it holds and the actions a view
+/// calls.
+#[must_use]
+pub fn surface() -> tilo_actions::surface::Surface {
+    tilo_resource::surface::reading_surface::<Accounts, AccountsAction>(
+        RESOURCE,
+        "Connected accounts",
+    )
+}
+
 /// The id of the grant a device hands an app's own connection for the workspace's accounts:
-/// what the app's signed manifest declares by naming [`super::person_accounts::SIGN_INS`]'s
-/// capability, and what lets it read the logins there and nothing else of the accounts.
+/// what the app's signed manifest declares by naming [`SIGN_INS`]'s capability, and what lets it
+/// read the logins there and nothing else of the accounts.
 #[must_use]
 pub fn sign_in_grant_id(app: &str, workspace: &str) -> String {
     format!("manifest:{app}:{workspace}:sign-ins")
@@ -104,130 +487,103 @@ pub fn sign_ins_node(workspace: &str) -> tilo_action_policy::TreePath {
         .action(SIGN_INS)
 }
 
-/// Read the logins the workspace's vault keeps, as a [`MailSignIns`]: their names, sign-in
-/// names, the places each belongs to and the account each signs in for, never their secrets. An
-/// app picks from them the ones its own places name, as Mail's does for its `imap` and `smtp`
-/// servers and Calendar's for its `https` server; an item's secret comes only from
-/// `vault#release`.
-pub const SIGN_INS: &str = "sign-ins";
-/// Say whether a cloud-storage account's files stay in sync or are copied into
-/// the workspace once ([`SetFilesMode`]), answering the accounts as
-/// [`MailAccounts`].
-pub const SET_FILES_MODE: &str = "set-files-mode";
-/// The cloud-storage accounts the workspace keeps, as a device's cloud mount reads
-/// them: each account's settings, and whether its person signed in, never its secret
-/// (a [`CloudAccounts`]). Answered only to the person on a connection of their own.
-pub const CLOUD_ACCOUNTS: &str = "cloud-accounts";
-/// What a device's cloud mount for `account` signs in with now ([`CloudCredentialAt`]),
-/// answered as a [`CloudCredential`] in the receipt alone: its password, or the access
-/// token of the grant the workspace's vault keeps, renewed when it was due or when the
-/// mount refused the last one. The renewed grant is kept in the workspace's vault, never
-/// by the mount. Answered only to the person on a connection of their own.
-pub const CLOUD_CREDENTIAL: &str = "cloud-credential";
-/// How a cloud mount's sync of `account` went on this device ([`SyncReport`]), as every
-/// member's Settings reads it: what its own device could not say itself.
-pub const REPORT_SYNC_VERB: &str = "report-sync";
-/// Sync a cloud-storage account now, cutting a failure's wait short and trying
-/// an account whose mount could not start ([`SyncControl`]).
-pub const SYNC_NOW: &str = "sync-now";
-/// Stop a cloud-storage account's background sync and uploads until it is
-/// resumed; reads still fetch on demand ([`SyncControl`]).
-pub const PAUSE_SYNC: &str = "pause-sync";
-/// Resume a paused cloud-storage account and sync it now ([`SyncControl`]).
-pub const RESUME_SYNC: &str = "resume-sync";
-/// Begin connecting a cloud-storage account ([`BeginCloudSignIn`]),
-/// answering where the person's browser goes ([`SignInStep`]). A sign-in
-/// the provider shows a code for, or iCloud's, is finished with
-/// [`SUBMIT_SIGN_IN_CODE`]; one approved on the provider's page finishes
-/// itself and the accounts reading shows the account arrive.
-pub const BEGIN_CLOUD_SIGN_IN: &str = "begin-cloud-sign-in";
-/// Finish a sign-in that waits for a code ([`SubmitSignInCode`]): iCloud's
-/// verification code, or the code a provider showed instead of redirecting
-/// back. Answers the accounts as [`MailAccounts`] once the account is kept.
-pub const SUBMIT_SIGN_IN_CODE: &str = "submit-sign-in-code";
-/// Connect the person's account at an issuer an app describes ([`ConnectAccount`]), so the app
-/// can tell who they are there: answered with where their browser goes ([`SignInStep`]), and
-/// finished with [`FINISH_CONNECT_ACCOUNT`]. Only a person asks it, from that app. The grant
-/// stays in their vault; the app reads back only the account the issuer confirmed, its id and
-/// name, and only for issuers it described itself.
-pub const CONNECT_ACCOUNT: &str = "connect-account";
-/// Wait for a [`CONNECT_ACCOUNT`] to come back from the person's browser
-/// ([`FinishConnectAccount`]), answering the [`ConnectedAccount`] the issuer confirmed, or why
-/// it did not, in words the person reads.
-pub const FINISH_CONNECT_ACCOUNT: &str = "finish-connect-account";
-/// Forget an account the person connected ([`ForgetConnectedAccount`]): its grant leaves their
-/// vault and is given back to the issuer where it takes one back. Only the person asks it.
-pub const FORGET_CONNECTED_ACCOUNT: &str = "forget-connected-account";
-/// The kind of the record Settings keeps the workspace's accounts in, without their secrets.
-pub const ACCOUNTS_RECORD_KIND: &str = "tilo.accounts";
-/// The accounts record's step that keeps an account, added or changed.
-pub const SAVE_ACCOUNT: &str = "save-account";
-/// The accounts record's step that removes an account.
-pub const REMOVE_ACCOUNT: &str = "remove-account";
-/// The accounts record's step that says how an account's sign-in or sync went.
-pub const REPORT_SYNC: &str = "report-sync";
-
-/// The step `verb` of the record Settings keeps the workspace's accounts in.
-fn accounts_step(verb: &str) -> crate::ActionEffect {
-    crate::ActionEffect::new(tilo_app_id::apps::SETTINGS, ACCOUNTS_RECORD_KIND, verb)
+/// A workspace's accounts, as one reading (`accounts.accounts`).
+#[derive(Debug, Serialize, tilo_resource::JsonSchema)]
+pub struct Accounts {
+    /// The accounts the workspace connected, in the record's order.
+    pub accounts: Vec<AccountView>,
+    /// The accounts this device's person connected at issuers their apps describe.
+    pub connected: Vec<ConnectedAccount>,
 }
 
-/// What the action `action` of `resource` ([`RESOURCE`]) writes
-/// besides its own resource, as the host answering it takes it. In the workspace's vault: a
-/// password typed in is kept, a removed account's sign-in goes, and every sign-in to a server
-/// with what the vault keeps writes down that use, the first one included. In the accounts record: an account added or
-/// changed is kept, a removed one goes, and a sign-in says how it went. The action's own
-/// declaration, read wherever the action is listed and wherever a device reads those records.
-#[must_use]
-pub fn effects(resource: &str, action: &str) -> Vec<crate::ActionEffect> {
-    use super::person_vault::{KEEP_SEALED, KEEP_USES, REMOVE_SEALED, vault_step};
-    let (vault, accounts): (&[&str], &[&str]) = match (resource, action) {
-        (RESOURCE, ADD_MAIL | ADD_CALENDAR | BEGIN_SIGN_IN) => {
-            (&[KEEP_SEALED, KEEP_USES, REMOVE_SEALED], &[SAVE_ACCOUNT])
-        }
-        (RESOURCE, REPLACE_PASSWORD) => (&[KEEP_SEALED], &[]),
-        // A sign-in begun on a provider's own page keeps its account and the entry its page
-        // leaves in the vault once it finishes, and one finished with a code the same.
-        (RESOURCE, BEGIN_CLOUD_SIGN_IN | SUBMIT_SIGN_IN_CODE) => (&[KEEP_SEALED], &[SAVE_ACCOUNT]),
-        (RESOURCE, REMOVE) => (&[REMOVE_SEALED], &[REMOVE_ACCOUNT]),
-        (RESOURCE, ADD_MAIL_WITH_ITEM | DISCOVER_CALENDARS) => {
-            (&[KEEP_USES, REMOVE_SEALED], &[SAVE_ACCOUNT])
-        }
-        (RESOURCE, RECONNECT | CHECK) => (&[KEEP_USES], &[REPORT_SYNC]),
-        // Turning an account's calendars on keeps the calendar server's sign-in in the
-        // vault and uses the mail account's; turning them off forgets the calendar's.
-        (RESOURCE, SET_SERVICES) => (
-            &[KEEP_SEALED, KEEP_USES, REMOVE_SEALED],
-            &[SAVE_ACCOUNT, REMOVE_ACCOUNT],
-        ),
-        (RESOURCE, SET_CALENDARS) => (&[REMOVE_SEALED], &[SAVE_ACCOUNT, REMOVE_ACCOUNT]),
-        (RESOURCE, SET_FILES_MODE) => (&[], &[SAVE_ACCOUNT]),
-        // A connected account keeps its grant in the person's vault, in place of the one an
-        // earlier connect of the same account kept.
-        (RESOURCE, CONNECT_ACCOUNT) => (&[KEEP_SEALED, REMOVE_SEALED], &[]),
-        // Forgetting one reads its grant once, to give it back to the issuer, and removes it.
-        (RESOURCE, FORGET_CONNECTED_ACCOUNT) => (&[KEEP_USES, REMOVE_SEALED], &[]),
-        // A mount asking for its account's sign-in writes down the use, as every sign-in to a
-        // server with what the workspace's vault keeps does, and keeps a grant it renewed; what
-        // it reports is the record's.
-        (RESOURCE, CLOUD_CREDENTIAL) => (&[KEEP_USES, KEEP_SEALED], &[]),
-        (RESOURCE, REPORT_SYNC_VERB) => (&[], &[REPORT_SYNC]),
-        _ => (&[], &[]),
-    };
-    vault
-        .iter()
-        .map(|verb| vault_step(verb))
-        .chain(accounts.iter().map(|verb| accounts_step(verb)))
-        .collect()
+/// One account the workspace connected, without its secret.
+#[derive(Debug, Serialize, tilo_resource::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountView {
+    /// The account's id, as every action names it.
+    pub id: String,
+    /// The kind of service it is.
+    pub kind: AccountKind,
+    /// What its person calls it.
+    pub name: String,
+    /// The address or name it signs in at.
+    pub address: String,
+    /// The name it signs in with.
+    pub username: String,
+    /// The provider it belongs to.
+    pub provider: String,
+    /// How its last sync went.
+    pub status: AccountStatus,
+    /// What a person reads about that, when the account's device said something.
+    pub words: String,
+    /// Whether the account is in use.
+    pub enabled: bool,
+    /// A mail account's incoming server as a person writes it.
+    pub incoming: String,
+    /// Its outgoing server as a person writes it.
+    pub outgoing: String,
+    /// The other addresses a mail account sends as, each `Name <address>`.
+    pub identities: Vec<String>,
+    /// A calendar account's calendars and which of them show.
+    pub calendars: Vec<CalendarView>,
+    /// Which of its services the account feeds.
+    pub services: AccountServices,
+    /// A cloud-storage account's files: `sync` kept in sync, `import` copied into the
+    /// workspace once; empty for an account that mounts no files.
+    pub files_mode: String,
+    /// Whether its background sync and uploads are paused on this device.
+    pub paused: bool,
 }
 
-/// The target of action `action` of [`RESOURCE`].
-#[must_use]
-pub fn target(action: &str) -> RemoteActionTarget {
-    RemoteActionTarget {
-        provider: PROVIDER.to_owned(),
-        address: ActionAddress::new(RESOURCE, action),
-    }
+/// Which of one account's services its person uses, as its row reads them.
+#[derive(Debug, Serialize, tilo_resource::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountServices {
+    pub mail: bool,
+    pub calendar: bool,
+    pub files: bool,
+}
+
+/// One of a calendar account's calendars, as its person chooses which show.
+#[derive(Debug, Serialize, tilo_resource::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarView {
+    /// Its id, as its server keeps it and the selection names it.
+    pub id: String,
+    /// What its server calls it.
+    pub name: String,
+    /// Whether its events show in the calendar.
+    pub visible: bool,
+    /// Whether its server lets this workspace change it.
+    pub read_only: bool,
+}
+
+/// The kind of service an account is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, tilo_resource::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum AccountKind {
+    Mail,
+    Calendar,
+    Cloud,
+    Other,
+}
+
+/// How an account's last sync went, as a person reads it on the account's row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, tilo_resource::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum AccountStatus {
+    /// Up to date.
+    Connected,
+    /// Its person has to sign in again.
+    NeedsReconnect,
+    /// Its last sync failed.
+    Error,
+    /// Waiting for a connection.
+    Waiting,
+    /// Syncing now.
+    Syncing,
+    /// Nothing has synced it yet.
+    Never,
 }
 
 /// Who provides an account: a provider whose own page signs a person in, one
@@ -255,7 +611,14 @@ impl Provider {
     /// The provider by the name the wire gives it.
     #[must_use]
     pub fn from_key(key: &str) -> Option<Self> {
-        serde_json::from_value(serde_json::Value::String(key.to_owned())).ok()
+        Some(match key {
+            "google" => Self::Google,
+            "microsoft" => Self::Microsoft,
+            "icloud" => Self::Icloud,
+            "nextcloud" => Self::Nextcloud,
+            "other" => Self::Other,
+            _ => return None,
+        })
     }
 
     /// The name the wire gives it.
@@ -569,8 +932,8 @@ impl std::fmt::Debug for BeginCloudSignIn {
     }
 }
 
-/// Where the person's browser goes to sign in.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Where the person's browser goes to sign in, and what the sign-in waits for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SignInStep {
     /// The sign-in's id, as [`MailAccounts::signing_in`] and
@@ -631,7 +994,7 @@ impl SetServices {
 /// endpoints, what it is asked for, which fields of its identity answer name the account, and
 /// the one loopback port its client registered `http://127.0.0.1:<port>/oauth` for. Data, never
 /// code: every issuer is signed in to the same way.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountIssuer {
     /// Unique among the issuers one app describes.
@@ -677,8 +1040,9 @@ pub struct ForgetConnectedAccount {
     pub issuer: String,
 }
 
-/// An account of the person's an issuer confirmed: all of it an app reads.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// An account its person connected at an issuer an app describes: who they are there, never
+/// what signs them in.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectedAccount {
     /// The app that described the issuer.
@@ -693,9 +1057,11 @@ pub struct ConnectedAccount {
     pub name: String,
 }
 
-/// One login of the workspace's vault, as [`SIGN_INS`] lists it: where it belongs, never what
-/// it signs in with.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// A login of the workspace's vault, as [`SIGN_INS`] lists it: where it belongs, never what it
+/// signs in with.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct MailSignIn {
     /// The item's reference, as [`ADD_MAIL_WITH_ITEM`] names it.
@@ -714,7 +1080,9 @@ pub struct MailSignIn {
 
 /// An account of the workspace's that has a sign-in, as [`SIGN_INS`] shows it to the app that
 /// signs it in: where it signs in, never what it signs in with.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct SignedInAccount {
     /// The account's id, as every action names it.
@@ -738,7 +1106,9 @@ pub struct SignedInAccount {
 }
 
 /// Every login of the workspace's vault ([`SIGN_INS`]), each with the account it signs in for.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct MailSignIns {
     pub sign_ins: Vec<MailSignIn>,
@@ -787,7 +1157,8 @@ pub struct CloudCredentialAt {
 }
 
 /// What a cloud mount signs in with ([`CLOUD_CREDENTIAL`]): one of a password, an
-/// `OAuth` access token, or an iCloud web session's headers.
+/// `OAuth` access token, or an iCloud web session's headers. A secret answer, so no surface
+/// names it.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CloudCredential {
@@ -818,6 +1189,52 @@ impl std::fmt::Debug for CloudCredential {
     }
 }
 
+impl CloudCredential {
+    /// What a cloud mount is handed for `credential`: the same sign-in, in the shape every
+    /// mount reads.
+    #[must_use]
+    pub fn for_mount(credential: cloud_source::Credential) -> Self {
+        let expires_at_ms = match &credential {
+            cloud_source::Credential::Bearer { expires, .. }
+            | cloud_source::Credential::Session { expires, .. } => expires.and_then(|time| {
+                time.duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .and_then(|since| u64::try_from(since.as_millis()).ok())
+            }),
+            cloud_source::Credential::Basic { .. } => None,
+        };
+        match credential {
+            cloud_source::Credential::Basic { username, password } => Self {
+                kind: CloudCredentialKind::Basic,
+                username,
+                secret: password.to_string(),
+                headers: Vec::new(),
+                expires_at_ms,
+            },
+            cloud_source::Credential::Bearer { token, .. } => Self {
+                kind: CloudCredentialKind::Bearer,
+                username: String::new(),
+                secret: token.to_string(),
+                headers: Vec::new(),
+                expires_at_ms,
+            },
+            cloud_source::Credential::Session { headers, .. } => Self {
+                kind: CloudCredentialKind::Session,
+                username: String::new(),
+                secret: String::new(),
+                headers: headers
+                    .into_iter()
+                    .map(|(name, value)| CloudHeader {
+                        name,
+                        value: value.to_string(),
+                    })
+                    .collect(),
+                expires_at_ms,
+            },
+        }
+    }
+}
+
 /// What a cloud mount signs in with ([`CloudCredential`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -845,7 +1262,7 @@ impl std::fmt::Debug for CloudHeader {
     }
 }
 
-/// How a cloud mount's sync of one account went on this device ([`REPORT_SYNC_VERB`]).
+/// How a cloud mount's sync of one account went on this device ([`REPORT_SYNC`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncReport {
@@ -858,13 +1275,6 @@ pub struct SyncReport {
     /// A short summary a person reads, never a server's own words.
     #[serde(default)]
     pub message: String,
-}
-
-/// Whether `target` is the cloud mount's ask for its account's credential, whose answer
-/// is a secret ([`crate::SECRET_ANSWER_TAG`]).
-#[must_use]
-pub fn is_cloud_credential(asked: &RemoteActionTarget) -> bool {
-    *asked == target(CLOUD_CREDENTIAL)
 }
 
 /// One cloud-storage account whose sync is controlled ([`SYNC_NOW`],
@@ -985,11 +1395,39 @@ pub struct AddMailWithItem {
     #[serde(default = "default_submissions_port")]
     pub outgoing_port: u16,
     /// The vault item that is the account's sign-in.
-    pub password: super::person_vault::ItemRef,
+    pub password: tilo_actions::remote::person_vault::ItemRef,
     /// Why whoever asks needs it, in a sentence its person reads when they
     /// are asked first; empty when nothing was said.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub reason: String,
+}
+
+/// A new sign-in for an account whose saved one no longer works: the account's id and the
+/// password or app password its server took.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplacePassword {
+    pub account: String,
+    pub password: String,
+}
+
+impl std::fmt::Debug for ReplacePassword {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReplacePassword")
+            .field("account", &self.account)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Which of a calendar account's calendars show: the account's id and the ids
+/// of the calendars it keeps on show, as the accounts reading names them. The
+/// calendars left out are kept, with their events out of the calendar.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetCalendars {
+    pub account: String,
+    #[serde(default)]
+    pub calendars: Vec<String>,
 }
 
 #[cfg(test)]
@@ -1001,6 +1439,63 @@ mod tests {
     )]
 
     use super::*;
+
+    /// The file a tilolang view compiles the workspace's accounts against, and a crate that does
+    /// not depend on this one binds its calls to, is what this crate declares.
+    /// `UPDATE_SNAPSHOTS=1` writes it.
+    #[test]
+    fn the_accounts_surface_file_is_what_this_crate_publishes() {
+        let text =
+            tilo_surface_compile::canonical(&serde_json::json!({ "resources": [surface()] }));
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("accounts-surface.json");
+        if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|value| value == "1") {
+            std::fs::write(&path, &text).expect("the surface file is written");
+            return;
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).ok().as_deref(),
+            Some(text.as_str()),
+            "crates/core/tilo-workspace-service/accounts-surface.json is not what this crate \
+             publishes; regenerate it with UPDATE_SNAPSHOTS=1"
+        );
+    }
+
+    /// What the action registry knows of the accounts without this crate names them as they
+    /// are declared here: the provider they answer under, the actions it says write in the vault
+    /// and the accounts record, and the ones it says answer a secret.
+    #[test]
+    fn the_registry_names_the_declared_actions() {
+        use tilo_actions::remote::{ACCOUNT_SECRET_ANSWERS, ACCOUNT_STEPS, ACCOUNTS_PROVIDER};
+        assert_eq!(PROVIDER, ACCOUNTS_PROVIDER);
+        for (action, _, _) in ACCOUNT_STEPS {
+            assert!(
+                declaration(action).is_some(),
+                "{action} is declared nowhere"
+            );
+        }
+        for action in ACCOUNT_SECRET_ANSWERS {
+            assert!(
+                declaration(action).is_some(),
+                "{action} is declared nowhere"
+            );
+            assert!(tilo_actions::remote::answers_a_secret(action));
+        }
+        let adding = tilo_actions::remote::declared_effects(&target(ADD_MAIL));
+        assert!(!adding.is_empty(), "adding an account writes in the vault");
+        assert!(tilo_actions::remote::declared_effects(&target(LIST)).is_empty());
+        // A secret typed in is declared one, so no record of a call keeps it.
+        for (action, secret) in [
+            (ADD_MAIL, "password"),
+            (ADD_CALENDAR, "password"),
+            (REPLACE_PASSWORD, "password"),
+            (BEGIN_CLOUD_SIGN_IN, "password"),
+            (SUBMIT_SIGN_IN_CODE, "code"),
+        ] {
+            let params = params_of(action).unwrap();
+            let param = params.iter().find(|param| param.name == secret).unwrap();
+            assert_eq!(param.ty, tilo_actions::ParamType::Secret, "{action}");
+        }
+    }
 
     /// A tab whose page is older than its server reads the server's answer
     /// past a field added since, so updating the server breaks no open tab.
@@ -1019,8 +1514,8 @@ mod tests {
         let read: MailAccounts = serde_json::from_value(answered).unwrap();
         assert_eq!(read.accounts[0].address, "ada@example.test");
 
-        // No message of a person's accounts refuses what it does not know.
-        let source = include_str!("person_accounts.rs");
+        // No message of the accounts refuses what it does not know.
+        let source = include_str!("workspace_accounts.rs");
         assert!(!source.contains(concat!("deny_unknown", "_fields")));
     }
 
@@ -1075,32 +1570,4 @@ mod tests {
         assert_eq!(adding.incoming_port, 993);
         assert_eq!(adding.outgoing_port, 465);
     }
-}
-
-/// A new sign-in for an account whose saved one no longer works: the account's id and the
-/// password or app password its server took.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReplacePassword {
-    pub account: String,
-    pub password: String,
-}
-
-impl std::fmt::Debug for ReplacePassword {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ReplacePassword")
-            .field("account", &self.account)
-            .finish_non_exhaustive()
-    }
-}
-
-/// Which of a calendar account's calendars show: the account's id and the ids
-/// of the calendars it keeps on show, as the accounts reading names them. The
-/// calendars left out are kept, with their events out of the calendar.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SetCalendars {
-    pub account: String,
-    #[serde(default)]
-    pub calendars: Vec<String>,
 }

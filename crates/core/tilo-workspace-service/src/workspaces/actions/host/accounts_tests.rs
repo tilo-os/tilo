@@ -6,9 +6,9 @@
 //! accounts the workspace keeps, and another member's add or removal must
 //! reach it when it happens.
 
+use crate::workspace_accounts::{self, MailAccounts};
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;
-use tilo_actions::remote::person_accounts::{self, MailAccounts};
 use tilo_actions::remote::{
     ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
 };
@@ -24,7 +24,7 @@ pub(super) fn asking(action: &str, argument: Value) -> InvokeRequest {
     };
     InvokeRequest {
         invocation: InvocationId::new(),
-        target: person_accounts::target(action),
+        target: workspace_accounts::target(action),
         argument,
         context: None,
         confirmation: None,
@@ -88,7 +88,7 @@ async fn a_window_following_the_accounts_is_sent_them_again_when_they_change() {
     let bo = caller(&bo);
 
     // Her window follows them: the host reads them as they are.
-    let receipt = settled(hers.invoke(&ada, asking(person_accounts::WATCH, json!({}))))
+    let receipt = settled(hers.invoke(&ada, asking(workspace_accounts::WATCH, json!({}))))
         .await
         .unwrap();
     let id = receipt.invocation;
@@ -105,7 +105,7 @@ async fn a_window_following_the_accounts_is_sent_them_again_when_they_change() {
     settled(bos_page.invoke(
         &bo,
         asking(
-            person_accounts::REMOVE,
+            workspace_accounts::REMOVE,
             json!({"account": "bob@example.test"}),
         ),
     ))

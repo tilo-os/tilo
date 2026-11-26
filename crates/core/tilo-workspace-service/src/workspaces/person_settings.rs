@@ -32,12 +32,11 @@ use crate::models as model_providers;
 use crate::models::{
     Assignment, ModelProviders, OfferedModel, ProviderView, SetAssignment, SetKey,
 };
+use crate::workspace_accounts;
+use crate::workspace_accounts::{AddMailAccount, MailAccount, MailAccounts};
 use serde_json::Value;
 use tilo_account_probe::AccountTester;
-use tilo_actions::remote::person_accounts::{AddMailAccount, MailAccount, MailAccounts};
-use tilo_actions::remote::{
-    ActionCallError, Caller, InvokeArgument, InvokeRequest, person_accounts,
-};
+use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
 use tilo_net::proxy::host::Destinations;
 use tilo_user_identity::DeviceCert;
 
@@ -61,8 +60,8 @@ impl Workspaces {
         self.inner.dir.join("people").join(hex::encode(person))
     }
 
-    /// The mail accounts `workspace` keeps, as [`person_accounts::LIST`]
-    /// answers them: what a window following [`person_accounts::WATCH`] is
+    /// The mail accounts `workspace` keeps, as [`workspace_accounts::LIST`]
+    /// answers them: what a window following [`workspace_accounts::WATCH`] is
     /// sent again whenever they change.
     pub(super) async fn accounts_listing(&self, workspace: &str) -> Result<Value, ActionCallError> {
         let held = self
@@ -401,7 +400,7 @@ impl Workspaces {
         Ok(certificate.user_public_key)
     }
 
-    /// Answer a [`person_accounts::PROVIDER`] request: the workspace's
+    /// Answer a [`workspace_accounts::PROVIDER`] request: the workspace's
     /// accounts, as the workspace's policy lets the caller reach them at Mail
     /// ([`Store::MAIL`]).
     pub(super) async fn person_accounts_invoke(
@@ -418,9 +417,9 @@ impl Workspaces {
         // workspace's own rules for them, as the vault's releases are.
         if matches!(
             action,
-            person_accounts::CLOUD_ACCOUNTS
-                | person_accounts::CLOUD_CREDENTIAL
-                | person_accounts::REPORT_SYNC_VERB
+            workspace_accounts::CLOUD_ACCOUNTS
+                | workspace_accounts::CLOUD_CREDENTIAL
+                | workspace_accounts::REPORT_SYNC
         ) {
             return self.cloud_mount_invoke(workspace_id, caller, request).await;
         }
@@ -436,14 +435,14 @@ impl Workspaces {
         let reach = self.reaching(asked, Store::MAIL, action, effect).await?;
         // An agent's connect of a calendar account the workspace keeps already adds nothing, and
         // nobody is asked about it: signing a connected account in again is its person's.
-        if action == person_accounts::ADD_CALENDAR && reach.agent.is_some() {
+        if action == workspace_accounts::ADD_CALENDAR && reach.agent.is_some() {
             let here = reach.workspace.to_string();
             let kept = self
                 .vault_for(&here, &reach.acting)
                 .accounts()
                 .await
                 .map_err(ActionCallError::refused)?;
-            let adding: person_accounts::AddCalendarAccount =
+            let adding: workspace_accounts::AddCalendarAccount =
                 argument(request, "a calendar server and its sign-in")?;
             if let Some(id) = person_mail::calendar_account_id(&adding)
                 && kept.account(&id).is_some()
@@ -468,16 +467,16 @@ impl Workspaces {
         // accounts as they are.
         if matches!(
             action,
-            person_accounts::BEGIN_SIGN_IN
-                | person_accounts::BEGIN_CLOUD_SIGN_IN
-                | person_accounts::SUBMIT_SIGN_IN_CODE
-                | person_accounts::CANCEL_SIGN_IN
+            workspace_accounts::BEGIN_SIGN_IN
+                | workspace_accounts::BEGIN_CLOUD_SIGN_IN
+                | workspace_accounts::SUBMIT_SIGN_IN_CODE
+                | workspace_accounts::CANCEL_SIGN_IN
         ) {
             return sign_in::accounts_sign_in(self, reach.person, &here, request).await;
         }
         // An account added from an entry of the workspace's vault is that entry's use,
         // decided at the vault as well: the same path a provider's key takes.
-        if action == person_accounts::ADD_MAIL_WITH_ITEM {
+        if action == workspace_accounts::ADD_MAIL_WITH_ITEM {
             return Box::pin(self.vault_use_invoke(workspace_id, caller, certificate, request))
                 .await;
         }
@@ -490,7 +489,7 @@ impl Workspaces {
             return Ok(answered);
         }
         // The workspace's mail accounts, without their secrets.
-        if action == person_accounts::LIST {
+        if action == workspace_accounts::LIST {
             let held = signing
                 .vault
                 .accounts()
@@ -548,12 +547,12 @@ impl Workspaces {
 pub(super) fn mail_effect(action: &str) -> tilo_action_policy::ActionKind {
     use tilo_action_policy::ActionKind;
     match action {
-        person_accounts::LIST
-        | person_accounts::WATCH
-        | person_accounts::FIND_SERVERS
-        | person_accounts::SIGN_INS
-        | person_accounts::CLOUD_ACCOUNTS
-        | person_accounts::CLOUD_CREDENTIAL => ActionKind::Read,
+        workspace_accounts::LIST
+        | workspace_accounts::WATCH
+        | workspace_accounts::FIND_SERVERS
+        | workspace_accounts::SIGN_INS
+        | workspace_accounts::CLOUD_ACCOUNTS
+        | workspace_accounts::CLOUD_CREDENTIAL => ActionKind::Read,
         _ => ActionKind::Undoable,
     }
 }
@@ -631,7 +630,7 @@ pub(crate) fn provider_key(account: &accounts::Account) -> String {
 }
 
 /// The services `account` feeds, as its row reads them.
-pub(crate) fn services_of(account: &accounts::Account) -> person_accounts::Services {
+pub(crate) fn services_of(account: &accounts::Account) -> workspace_accounts::Services {
     person_mail::services_of(account, person_mail::provider_of_account(account))
 }
 
@@ -640,7 +639,7 @@ pub(crate) fn services_of(account: &accounts::Account) -> person_accounts::Servi
 /// beside it.
 fn described_account(
     adding: &AddMailAccount,
-    provider: person_accounts::Provider,
+    provider: workspace_accounts::Provider,
     linked: Option<&(accounts::Account, String)>,
 ) -> Result<(accounts::Account, accounts::email::AccountConfig), String> {
     let config = accounts::email::AccountConfig {
@@ -711,7 +710,7 @@ pub(super) async fn add_mail_with(
     (vault, root): (VaultAt<'_>, &Path),
     adding: AddMailAccount,
     kept: Option<tilo_actions::remote::person_vault::ItemRef>,
-    provider: person_accounts::Provider,
+    provider: workspace_accounts::Provider,
     linked: Option<(accounts::Account, String)>,
 ) -> Result<MailAccount, String> {
     let keeps_identities = adding.identities.is_empty();
@@ -1299,7 +1298,7 @@ mod tests {
     fn an_account_it_cannot_read_is_refused_without_its_values() {
         let request = InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
-            target: person_accounts::target(person_accounts::ADD_MAIL),
+            target: workspace_accounts::target(workspace_accounts::ADD_MAIL),
             argument: InvokeArgument::Json(
                 serde_json::json!({
                     "address": "ada@example.test",
@@ -1323,7 +1322,7 @@ mod tests {
             signed: None,
         };
         let Err(ActionCallError::InvalidRequest { reason }) =
-            argument::<person_accounts::AddMailAccount>(&request, "an account to add")
+            argument::<workspace_accounts::AddMailAccount>(&request, "an account to add")
         else {
             panic!("an account of the wrong shape is refused");
         };
@@ -1717,10 +1716,10 @@ mod accounts_sign_in_tests {
                     outgoing_port: 465,
                     password: "thunderbird-secret".into(),
                     identities: vec!["Ada at work <ada@work.example.test>".into()],
-                    services: person_accounts::Services::default(),
+                    services: workspace_accounts::Services::default(),
                 },
                 None,
-                person_accounts::Provider::Other,
+                workspace_accounts::Provider::Other,
                 None,
             ))
             .unwrap();
@@ -1791,10 +1790,10 @@ mod accounts_sign_in_tests {
                     outgoing_port: 465,
                     password: String::new(),
                     identities: Vec::new(),
-                    services: person_accounts::Services::default(),
+                    services: workspace_accounts::Services::default(),
                 },
                 None,
-                person_accounts::Provider::Other,
+                workspace_accounts::Provider::Other,
                 None,
             ))
             .unwrap();

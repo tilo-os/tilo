@@ -11,7 +11,6 @@ use std::time::Duration;
 
 use accounts::{Account, AccountId, Secret, SecretVault};
 use serde::{Deserialize, Serialize};
-use tilo_actions::remote::person_accounts::{CloudCredential, CloudCredentialKind, CloudHeader};
 use tilo_oauth::client::{Authorization, OAuthClient};
 use tilo_oauth::device::DeviceAuthorization;
 use tilo_oauth::{OAuthError, Provider, Registration, TokenSet};
@@ -1244,50 +1243,6 @@ impl CredentialStore {
 /// A moment `unix` seconds after the epoch.
 fn expires_at(unix: Option<u64>) -> Option<std::time::SystemTime> {
     unix.and_then(|secs| std::time::UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
-}
-
-/// What a cloud mount is handed for `credential` over the workspace's accounts action
-/// (`tilo_actions::remote::person_accounts::CLOUD_CREDENTIAL`): the same sign-in, in the shape every mount reads.
-#[must_use]
-pub fn for_mount(credential: cloud_source::Credential) -> CloudCredential {
-    let expires_at_ms = match &credential {
-        cloud_source::Credential::Bearer { expires, .. }
-        | cloud_source::Credential::Session { expires, .. } => expires.and_then(|time| {
-            time.duration_since(std::time::UNIX_EPOCH)
-                .ok()
-                .and_then(|since| u64::try_from(since.as_millis()).ok())
-        }),
-        cloud_source::Credential::Basic { .. } => None,
-    };
-    match credential {
-        cloud_source::Credential::Basic { username, password } => CloudCredential {
-            kind: CloudCredentialKind::Basic,
-            username,
-            secret: password.to_string(),
-            headers: Vec::new(),
-            expires_at_ms,
-        },
-        cloud_source::Credential::Bearer { token, .. } => CloudCredential {
-            kind: CloudCredentialKind::Bearer,
-            username: String::new(),
-            secret: token.to_string(),
-            headers: Vec::new(),
-            expires_at_ms,
-        },
-        cloud_source::Credential::Session { headers, .. } => CloudCredential {
-            kind: CloudCredentialKind::Session,
-            username: String::new(),
-            secret: String::new(),
-            headers: headers
-                .into_iter()
-                .map(|(name, value)| CloudHeader {
-                    name,
-                    value: value.to_string(),
-                })
-                .collect(),
-            expires_at_ms,
-        },
-    }
 }
 
 /// A drive's credential, and the sign-in to keep in its place where it was renewed
