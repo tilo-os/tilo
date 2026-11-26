@@ -911,13 +911,13 @@ tilo_test_env::scenario! {
             live: None,
             setters: false,
         };
-        let written = tilo_resource::surface::file::render(
+        let written = tilo_surface_compile::file::render(
             "# Written by a test\n\n",
             &[serde_json::to_value(&surface).unwrap()],
             &[],
         )
         .unwrap();
-        let filed = tilo_resource::surface::file::filed(
+        let filed = tilo_surface_compile::file::filed(
             &serde_json::to_value(&surface).unwrap(),
         );
         let param = &filed["verbs"][0]["params"][0];

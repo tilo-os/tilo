@@ -7,7 +7,7 @@ license = "MIT"
 readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
-description = "Compiles an app's authored surface.toml into the canonical compiled surface the system commits, addresses, hashes and sends."
+description = "Writes an app's surface.toml from what its code publishes, and compiles it into the canonical compiled surface the system commits, addresses, hashes and sends."
 
 [lib]
 name = "tilo_surface_compile"
@@ -17,6 +17,8 @@ path = "src/lib.rs"
 serde_json.workspace = true
 tilo-canonical-json = { version = "0.1.0", path = "../../platform/tilo-canonical-json" }
 toml.workspace = true
+sha2.workspace = true
+tilo-actions = { version = "0.1.0", path = "../actions" }
 
 [lints]
 workspace = true
@@ -28,3 +30,4 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 # The pinned address of a compiled surface.
 blake3.workspace = true
+hex.workspace = true

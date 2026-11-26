@@ -19,6 +19,7 @@ tilo-app-builder = { path = "../../crates/lang/tilo-app-builder" }
 # written from, as `tilolang check` compares an app's.
 [dev-dependencies]
 serde_json.workspace = true
+tilo-surface-compile = { path = "../../crates/core/tilo-surface-compile" }
 toml.workspace = true
 
 # The smoke crate compiles sources emitted by `tilolang add` through `include!`, so

@@ -9,6 +9,8 @@
 //! (`collab_types::surface::SurfaceFile`), and refuses anything else: a surface sent in the
 //! authored form has no address the system would have given it.
 
+pub mod file;
+
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;

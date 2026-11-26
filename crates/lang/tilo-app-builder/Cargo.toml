@@ -20,7 +20,6 @@ rustix = { workspace = true, features = ["process"] }
 image = { workspace = true, features = ["png"] }
 tilo-app-id.workspace = true
 tilo-app-package = { version = "0.1.0", path = "../../core/tilo-app-package" }
-tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
 # Inside a Tilo session, `dev` hands the app the session's services (the
 # shell's file chooser, the model gateway) named for it as the launcher does,
 # and the clipboard, the session's or this computer's own.

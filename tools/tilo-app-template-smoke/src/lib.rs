@@ -247,7 +247,7 @@ mod tests {
 #[cfg(test)]
 mod surface_tests {
     use serde_json::Value;
-    use ui::tilo_resource::surface::file::filed;
+    use tilo_surface_compile::file::filed;
 
     /// The line every surface file starts with.
     const HEADER: &str = "# Written by `tilolang surface`; review changes like an API change.\n\n";
@@ -333,7 +333,7 @@ mod surface_tests {
     #[ignore = "prints each template's surface instead of comparing it"]
     fn print_template_surfaces() {
         for (name, report, _) in templates() {
-            let surface = ui::tilo_resource::surface::file::render(HEADER, resources(&report), &[])
+            let surface = tilo_surface_compile::file::render(HEADER, resources(&report), &[])
                 .expect("a rendered surface");
             println!("== {name}\n{surface}");
         }

@@ -5432,10 +5432,10 @@ mod surface_tests {
         );
         let resources: Vec<Value> = resources
             .iter()
-            .map(tilo_resource::surface::file::filed)
+            .map(tilo_surface_compile::file::filed)
             .collect();
         tilo_surface_compile::canonical(&json!({
-            "format": tilo_resource::surface::file::FORMAT,
+            "format": tilo_surface_compile::file::FORMAT,
             "resources": resources,
         }))
     }

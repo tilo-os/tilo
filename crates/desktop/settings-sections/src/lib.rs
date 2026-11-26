@@ -147,15 +147,14 @@ pub fn surface_file() -> Result<String, String> {
     let resources: Vec<serde_json::Value> = resources
         .iter()
         .map(|resource| {
-            serde_json::to_value(resource)
-                .map(|value| ui::tilo_resource::surface::file::filed(&value))
+            serde_json::to_value(resource).map(|value| tilo_surface_compile::file::filed(&value))
         })
         .collect::<Result<_, _>>()
         .map_err(|error| error.to_string())?;
     let mut file = serde_json::Map::new();
     file.insert(
         "format".into(),
-        serde_json::Value::from(ui::tilo_resource::surface::file::FORMAT),
+        serde_json::Value::from(tilo_surface_compile::file::FORMAT),
     );
     file.insert(
         "resources".into(),
@@ -165,7 +164,7 @@ pub fn surface_file() -> Result<String, String> {
         "roots".into(),
         serde_json::to_value(roots).map_err(|error| error.to_string())?,
     );
-    Ok(tilo_canonical_json::to_string(&serde_json::Value::Object(
+    Ok(tilo_surface_compile::canonical(&serde_json::Value::Object(
         file,
     )))
 }

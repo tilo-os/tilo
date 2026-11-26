@@ -61,9 +61,9 @@ pub const FLAG: &str = "--surface";
 
 const HEADER: &str = "# Written by `tilolang surface`; review changes like an API change.\n\n";
 
-use tilo_resource::surface::file::normalized;
+use tilo_surface_compile::file::normalized;
 /// The file's format, written at its top. See [`Committed`].
-pub use tilo_resource::surface::file::{FORMAT, filed};
+pub use tilo_surface_compile::file::{FORMAT, filed};
 
 /// A committed surface as its app has it: the format the file was written in,
 /// and its resources.
@@ -454,7 +454,7 @@ pub fn keep_report(app: &Path, executable: &Path, dir: &Path) -> Result<PathBuf>
     Ok(file)
 }
 
-/// The app's surface file for `resources` (see [`ui::tilo_resource::surface::file`]).
+/// The app's surface file for `resources` (see [`tilo_surface_compile::file`]).
 ///
 /// # Errors
 /// A resource that is no table, or holds a null.
@@ -465,7 +465,7 @@ pub fn render(resources: &[Value], reads: &[String]) -> Result<String> {
 /// [`render`] under `header`, the line that says what wrote the file: a
 /// surface a test writes beside the code that publishes it names its test.
 pub fn render_with(resources: &[Value], reads: &[String], header: &str) -> Result<String> {
-    tilo_resource::surface::file::render(header, resources, reads).map_err(anyhow::Error::msg)
+    tilo_surface_compile::file::render(header, resources, reads).map_err(anyhow::Error::msg)
 }
 
 /// Write `resources` to the app's [`FILE`], the kinds it reads of other apps

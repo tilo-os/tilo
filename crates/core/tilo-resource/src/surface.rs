@@ -10,8 +10,6 @@ pub use tilo_actions::surface::{
     TYPE_VERB, TypeCase, TypeField, TypeSet, VerbSurface,
 };
 
-pub mod file;
-
 use crate::resource::Resource;
 use crate::shape::Shape;
 use crate::vocabulary::{Declaration, vocabulary};
