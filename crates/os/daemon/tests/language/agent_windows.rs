@@ -1,7 +1,7 @@
 //! What the person's page shows of their agent's work: the app the agent opens reaches the
 //! person's layout as one window, named as the agent's run's; a write answers as soon as the
-//! host ran it, without waiting for a window to show it on; and the window the page keeps is
-//! read by the agent, as lines and as a picture.
+//! host ran it, without waiting for a window to show it on; and the agent reads a window as
+//! text, calls the action it names and reads the change.
 
 use std::time::{Duration, Instant};
 
@@ -10,8 +10,6 @@ use serde_json::json;
 use crate::language::agent_fixture::{act, ls, said};
 use crate::language::host;
 
-/// What the note in the sheets app says.
-const TITLE: &str = "Launch plan for Friday";
 /// The longest a write may take, or a read of a window.
 const WRITE_WITHIN: Duration = Duration::from_secs(3);
 const READ_BOUND: Duration = Duration::from_secs(5);
@@ -183,50 +181,75 @@ fn an_agents_writes_answer_without_waiting_out_a_timeout() {
     });
 }
 
-/// The person's page keeps Sheets' window: the agent lists it among what is open, and the view
-/// the page draws shows the sheet the agent made, named as it named it.
+/// An agent opens Counter and reads its window as text: the count, and the action each of its
+/// buttons runs by the address it is called by. It calls the action the Increment line names,
+/// as it stands, and the next read shows the count it changed.
 #[test]
-fn an_agent_lists_and_reads_the_window_a_persons_page_holds() {
-    use tilo_server_protocol::page::window::WindowLink;
-    host::run_with(&["sheets"], |host| async move {
+fn an_agent_reads_a_window_calls_the_action_it_names_and_reads_the_change() {
+    host::run_with(&["counter"], |host| async move {
+        // The person installs Counter in the workspace, which gives it its own records: its
+        // count is kept there.
+        let workspace = host.workspace().to_owned();
+        let laptop = host.member("Ada's laptop", &workspace).await;
+        let installed = laptop
+            .call(
+                tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER,
+                tilo_actions::remote::workspace_governance_address(&workspace, "install-app"),
+                &json!({
+                    "app": "so.tilo.lang.counter",
+                    "version": "0.1.0",
+                    "surface": "00".repeat(32),
+                    "package": "00".repeat(32),
+                    "publisher": "00".repeat(32),
+                    "dev": true,
+                }),
+            )
+            .await;
+        assert!(
+            matches!(
+                installed,
+                Ok(tilo_actions::InvocationUpdate::Succeeded { .. })
+            ),
+            "Counter is installed in the workspace: {installed:?}"
+        );
         let agent = host.agent();
-        // The window the person's page holds, opened by their agent on the layout.
-        let (opened, failed) = act(&agent, "sheets#open", json!({})).await;
-        assert!(!failed, "the agent opens Sheets: {opened}");
-        let (made, failed) = act(&agent, "sheets#new_sheet", json!({"name": TITLE})).await;
-        assert!(
-            !failed,
-            "the agent makes the sheet the person's window shows: {made}"
-        );
-        let (apps, failed) = ls(&agent, None).await;
-        assert!(!failed, "{apps}");
-        assert!(
-            apps.lines()
-                .any(|line| line.starts_with("sheets ") && line.ends_with("running")),
-            "the person's Sheets is listed as running: {apps}"
-        );
+        let (opened, failed) = act(&agent, "counter#open", json!({})).await;
+        assert!(!failed, "the agent opens Counter: {opened}");
 
-        // Its lines say what it shows: the sheet the person made, named as they named it. A
-        // device with no session draws no window of its own, so the view is read where the
-        // person's page draws it, laid out by the app's own window.
-        let (daemon, caller, workspace) =
-            (host.daemon(), host.caller(), host.workspace().to_owned());
-        let body = tokio::task::spawn_blocking(move || {
-            let link = daemon
-                .open_view(&caller, "so.tilo.sheets", &workspace, None, None)
-                .expect("the view of Sheets opens");
-            WindowLink::over(link)
-                .open(None)
-                .expect("its window answers the page")
-                .2
-        })
-        .await
-        .unwrap();
+        let lines = view(&agent).await;
         assert!(
-            body.contains(TITLE),
-            "the view shows the person's sheet: {body}"
+            lines.contains("text \"0\""),
+            "the window reads the count: {lines}"
+        );
+        let increment = lines
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with("button \"Increment\""))
+            .and_then(|line| line.split_once(" → "))
+            .map(|(_, address)| address.to_owned())
+            .unwrap_or_else(|| panic!("the Increment button names its action: {lines}"));
+
+        let (done, failed) = act(&agent, &increment, json!({})).await;
+        assert!(!failed, "the action the window names runs as named: {done}");
+        let lines = view(&agent).await;
+        assert!(
+            lines.contains("text \"1\""),
+            "the next read shows the count the action changed: {lines}"
         );
     });
+}
+
+/// What `agent` reads of Counter's window, as lines, read as fast as the person sees it.
+async fn view(agent: &host::Agent) -> String {
+    let asked = Instant::now();
+    let (lines, failed) = said(&agent.tool("tilo_view", &json!({"path": "counter"})).await);
+    assert!(!failed, "{lines}");
+    assert!(
+        asked.elapsed() < READ_BOUND,
+        "a view read answers as fast as the person sees it: {:?}",
+        asked.elapsed()
+    );
+    lines
 }
 
 /// The agent opens Sheets: the view stands on the person's layout, named as the agent's

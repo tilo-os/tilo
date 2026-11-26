@@ -32,8 +32,10 @@ use serde::{Deserialize, Serialize};
 
 pub use window_actions::{
     APPLICATION_ACTIVATE_ACTION, APPLICATION_ACTIVATE_TYPE, APPLICATION_OPEN_LINK_ACTION,
-    APPLICATION_OPEN_LINK_TYPE, APPLICATION_OPEN_TYPE, OPEN_LINK_PARAM, activate_spec,
-    activation_requested, link_scheme, open_link_arguments,
+    APPLICATION_OPEN_LINK_TYPE, APPLICATION_OPEN_TYPE, APPLICATION_OUTLINE_ACTION,
+    APPLICATION_OUTLINE_TYPE, OPEN_LINK_PARAM, OUTLINE_ANCHOR_PARAM, OUTLINE_PICTURE_UNAVAILABLE,
+    activate_spec, activation_requested, link_scheme, open_link_arguments, outline_anchor,
+    outline_asked, outline_spec,
 };
 
 pub mod admitted;

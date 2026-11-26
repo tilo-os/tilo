@@ -103,7 +103,7 @@ impl Presentation {
         content: &mut dyn ui_core::widget::Widget,
         mut output: tilo_actions::ActionOutput,
     ) -> Result<tilo_actions::ActionOutput, String> {
-        let (picture, _) = super::outline::asked(payload)?;
+        let (picture, _) = tilo_actions::remote::outline_asked(payload)?;
         if !picture {
             return Ok(output);
         }
@@ -317,4 +317,4 @@ fn render_spec() -> tilo_actions::ActionSpec {
 }
 
 /// The `anchor` parameter, which the shared outline names for both actions.
-use super::outline::ANCHOR_PARAM;
+use tilo_actions::remote::OUTLINE_ANCHOR_PARAM as ANCHOR_PARAM;

@@ -42,6 +42,9 @@ mod children;
 /// A job outlives its window and its process, and its end reaches the app.
 #[path = "process/jobs.rs"]
 mod jobs;
+/// An agent reads a window as text, calls an action it names, and reads the change.
+#[path = "process/outline.rs"]
+mod outline;
 /// A paste past a mebibyte, kept and undone.
 #[path = "process/paste.rs"]
 mod paste;

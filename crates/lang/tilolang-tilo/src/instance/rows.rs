@@ -175,6 +175,42 @@ impl ListRows {
         }
     }
 
+    /// The rows rendered now, as the window holds them: how many the list has and, from its
+    /// first rendered row on, each row's key and its rows: what a read of the window is given,
+    /// taken without rendering or forgetting any.
+    #[must_use]
+    pub fn as_shown(&self) -> Requested {
+        let len = self.len();
+        let (mut start, mut keys, mut rows) = (None, Vec::new(), Vec::new());
+        if let Ok(view) = self.view.try_borrow() {
+            for index in 0..len {
+                if keys.len() >= self.keys.shown.len() {
+                    break;
+                }
+                let Some(key) = self.key_at(&view, index) else {
+                    break;
+                };
+                if !self.keys.shown.contains(&key) {
+                    if start.is_some() {
+                        break;
+                    }
+                    continue;
+                }
+                start.get_or_insert(index);
+                if let Some(row) = view.find(&key) {
+                    rows.push(row.clone());
+                }
+                keys.push(key);
+            }
+        }
+        Requested {
+            len,
+            start: start.unwrap_or(0),
+            keys,
+            rows,
+        }
+    }
+
     /// The view replaced the list as a whole: its rows are read anew.
     pub fn reread(&mut self) -> Vec<RowChange> {
         self.keys = Keys::default();

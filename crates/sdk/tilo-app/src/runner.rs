@@ -47,7 +47,7 @@ pub(crate) const RENDER_TYPE: &str = "tilo.app.render";
 /// The `outline` operation: the app's answer to "what does this window
 /// show", the view's semantic tree as lines an agent reads, and, asked for,
 /// the same view as a picture.
-pub(crate) const OUTLINE_TYPE: &str = "tilo.app.outline";
+pub(crate) use tilo_actions::remote::APPLICATION_OUTLINE_TYPE as OUTLINE_TYPE;
 
 mod outline;
 
@@ -56,7 +56,7 @@ mod outline;
 pub(crate) fn with_view_operations(
     mut resource: tilo_actions::ResourceSpec,
 ) -> tilo_actions::ResourceSpec {
-    let spec = outline::spec();
+    let spec = tilo_actions::remote::outline_spec();
     if !resource
         .actions
         .iter()
@@ -73,12 +73,12 @@ pub(crate) use presentation::{DrawPast, Presentation, operation_types, with_nati
 
 /// The item a payload of [`OUTLINE_TYPE`] or [`RENDER_TYPE`] asks to be shown first, when
 /// it asks for one: the app stages that item before it reads its view.
-pub(crate) use outline::rendered_anchor;
+pub(crate) use tilo_actions::remote::outline_anchor as rendered_anchor;
 
 /// The value's key explaining that this host cannot picture the view it just described: a
 /// page draws none for a caller, so it says so rather than answering nothing.
 #[cfg(target_family = "wasm")]
-const PICTURE_UNAVAILABLE: &str = "picture_unavailable";
+use tilo_actions::remote::OUTLINE_PICTURE_UNAVAILABLE as PICTURE_UNAVAILABLE;
 
 #[cfg(target_family = "wasm")]
 #[derive(Default)]
@@ -120,7 +120,7 @@ impl Presentation {
         if request.type_id != OUTLINE_TYPE {
             return Ok(None);
         }
-        let (picture, _) = outline::asked(request.payload)?;
+        let (picture, _) = tilo_actions::remote::outline_asked(request.payload)?;
         let theme = self.theme.clone().unwrap_or_else(ui_core::Theme::dark);
         let mut output = outline::answer(&*content, doc, &theme);
         if picture

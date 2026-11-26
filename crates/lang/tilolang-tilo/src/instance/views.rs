@@ -65,6 +65,24 @@ impl Instance {
         }
     }
 
+    /// Open the package's root view where none is open yet, so what its window would show can be
+    /// read ([`Self::shown_now`]): an instance that shows nothing opens no view of its own until
+    /// something reads it, and keeps it current from then on as a window's instance does.
+    pub fn open_to_read(&mut self) {
+        if self.root.is_none()
+            && self.open_failed.is_none()
+            && let Some(host) = self.host()
+        {
+            self.open_root(&host);
+        }
+    }
+
+    /// Why the package's root view did not open, when it did not.
+    #[must_use]
+    pub fn open_failed(&self) -> Option<&str> {
+        self.open_failed.as_deref()
+    }
+
     /// Open the package's root view.
     pub(super) fn open_root(&mut self, host: &Host) {
         match host.open_layer_at(&self.app, &self.root_view) {
@@ -404,6 +422,71 @@ impl Instance {
         self.track_lists(level);
         self.tell_spaces(level);
         self.send_bound(level);
+    }
+
+    /// This instance's views as they stand, as a window opened now would be sent them: each
+    /// level's tree, the rows its lists show and the values its bound controls hold, what the
+    /// person typed included. Nothing the instance keeps of its own window moves: this is how
+    /// its window is read as the lines an agent reads.
+    #[must_use]
+    pub fn shown_now(&self) -> Vec<ToUi> {
+        let Some(host) = self.host() else {
+            return Vec::new();
+        };
+        let names = &*self.names;
+        let mut out = Vec::new();
+        for level in [Level::Root, Level::Detail] {
+            let Some(view) = self.level(level) else {
+                continue;
+            };
+            out.push(ToUi::Open {
+                level,
+                target: wire::resource(&view.target),
+                tree: window_tree(&host, names, &view.view, view.with.is_some()),
+                front: None,
+                capture_protected: view.view.borrow().capture_protected(),
+            });
+            for (list, rows) in &view.lists {
+                out.push(rows_message(
+                    &host,
+                    names,
+                    &view.view,
+                    level,
+                    list,
+                    rows.as_shown(),
+                ));
+            }
+            let mut bound: Vec<(String, ui::Value)> = Vec::new();
+            convert_with(&host, names, &view.view, |convert, instance| {
+                bound_values(instance.tree(), instance, convert, &mut bound);
+                for rows in view.lists.values() {
+                    for key in rows.shown() {
+                        if let Some(row) = instance.find(key) {
+                            bound_values(row, instance, convert, &mut bound);
+                        }
+                    }
+                }
+            });
+            out.extend(bound.into_iter().map(|(key, value)| ToUi::Bound {
+                level,
+                acked: view.acked.get(&key).copied().unwrap_or(0),
+                key,
+                value,
+            }));
+        }
+        // A resource whose type declares no view shows its facts page in the detail level.
+        if self.detail.is_none()
+            && let Some(facts) = &self.facts
+        {
+            out.push(ToUi::Open {
+                level: Level::Detail,
+                target: wire::resource(&facts.target),
+                tree: facts.sent.clone(),
+                front: None,
+                capture_protected: false,
+            });
+        }
+        out
     }
 
     /// Keep the rows of every virtual list of the view of `level`, sending the window the first

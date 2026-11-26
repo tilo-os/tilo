@@ -55,6 +55,8 @@ pub mod invocations;
 /// The engines this process opens from its runtime bundle the first time an app asks one.
 #[cfg(feature = "app-launch")]
 pub mod loaded_engines;
+/// `outline`: a window read as the lines an agent reads.
+pub mod outline;
 pub mod page_prompts;
 /// Passwords' secrets, carried between the system's card, chosen files and the workspace's vault.
 #[cfg(all(

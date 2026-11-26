@@ -1,5 +1,5 @@
-//! The view actions every app's window publishes: "Show this window", and showing the item at
-//! an anchor.
+//! The view actions every app's window publishes: "Show this window", showing the item at an
+//! anchor, and reading what the window shows (`outline`).
 
 /// The shared view action that asks the platform to reveal a running window.
 pub const APPLICATION_ACTIVATE_ACTION: &str = "activate-window";
@@ -82,6 +82,112 @@ pub fn activation_requested() -> crate::ActionOutput {
         value: Some(serde_json::json!({"activation_requested": true})),
         resources: Vec::new(),
     }
+}
+
+/// The view action every app's window publishes that answers what it shows as lines an agent
+/// reads: each part's words and value, and the action it offers.
+pub const APPLICATION_OUTLINE_ACTION: &str = "outline";
+/// Encoded operation of [`APPLICATION_OUTLINE_ACTION`].
+pub const APPLICATION_OUTLINE_TYPE: &str = "tilo.app.outline";
+/// The parameter of [`APPLICATION_OUTLINE_ACTION`] naming an item to show before reading.
+pub const OUTLINE_ANCHOR_PARAM: &str = "anchor";
+/// The key of an [`APPLICATION_OUTLINE_ACTION`] answer saying why it carries no picture where
+/// one was asked for.
+pub const OUTLINE_PICTURE_UNAVAILABLE: &str = "picture_unavailable";
+
+/// [`APPLICATION_OUTLINE_ACTION`]: what the app's window shows now, as the lines of a view.
+#[must_use]
+pub fn outline_spec() -> crate::ActionSpec {
+    let mut spec = crate::ActionSpec::typed_operation(
+        APPLICATION_OUTLINE_ACTION,
+        "Read the view",
+        "Read the view",
+        crate::OperationKind::View,
+        APPLICATION_OUTLINE_TYPE,
+        vec![
+            crate::ActionParam::optional(
+                OUTLINE_ANCHOR_PARAM,
+                crate::ParamType::Text,
+                "An item of the app's to show first: the anchor of a search hit, or an item \
+                 resource's id",
+            )
+            .nullable(),
+            crate::ActionParam::optional(
+                "picture",
+                crate::ParamType::Boolean,
+                "Also answer the view as a picture of it, where its window is drawn (default: \
+                 text only)",
+            )
+            .nullable(),
+            crate::ActionParam::optional(
+                "scale",
+                crate::ParamType::Number,
+                "Pixels per point of the picture, 0.5 to 2 (default 1)",
+            )
+            .nullable(),
+        ],
+        |args| {
+            crate::EncodedAction::encode_operation(
+                APPLICATION_OUTLINE_TYPE,
+                &serde_json::json!({
+                    "picture": args.boolean("picture"),
+                    "scale": args.number("scale"),
+                    OUTLINE_ANCHOR_PARAM: args.text(OUTLINE_ANCHOR_PARAM),
+                }),
+            )
+            .unwrap_or_else(|_| crate::EncodedAction {
+                type_id: APPLICATION_OUTLINE_TYPE.into(),
+                payload: Vec::new(),
+            })
+        },
+    )
+    .of_kind(crate::ActionKind::Read)
+    .with_description(
+        "Read what the app's window shows as lines: every label, value and control in reading \
+         order, and the action each control runs, which is called by the address the line \
+         names. With picture, also the view as a picture. With an anchor, shows that item first.",
+    )
+    // How an agent looks at what the person sees: never a row of the person's.
+    .for_audience(crate::Audience::Agents);
+    spec.type_mut().contract.result = crate::ResultSpec::Json {
+        schema: serde_json::json!({"type": "object"}),
+    };
+    spec
+}
+
+/// The item an [`APPLICATION_OUTLINE_TYPE`] payload asks to be shown first, when it asks for one.
+#[must_use]
+pub fn outline_anchor(payload: &[u8]) -> Option<String> {
+    let args: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    args.get(OUTLINE_ANCHOR_PARAM)
+        .and_then(serde_json::Value::as_str)
+        .filter(|anchor| !anchor.is_empty())
+        .map(str::to_owned)
+}
+
+/// What an [`APPLICATION_OUTLINE_TYPE`] payload asks besides the lines: a picture of the view,
+/// and its scale.
+///
+/// # Errors
+/// The payload is no JSON, or its scale is outside 0.5 to 2.
+pub fn outline_asked(payload: &[u8]) -> Result<(bool, f64), String> {
+    let args: serde_json::Value = if payload.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(payload).map_err(|error| error.to_string())?
+    };
+    let scale = args
+        .get("scale")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(1.0);
+    if !(0.5..=2.0).contains(&scale) {
+        return Err("scale must be within 0.5..=2".into());
+    }
+    let picture = args
+        .get("picture")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    Ok((picture, scale))
 }
 
 #[cfg(test)]

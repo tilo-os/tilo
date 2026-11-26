@@ -15,9 +15,10 @@
 //!   ([`PublishedDirectory`]): what makes the instance one the API and agents can browse.
 //! - **What every app publishes:** on its app's resource the instance publishes the history
 //!   verbs (Undo, Redo, History, ...: `collab_types::history::verbs`), `read`
-//!   (`tilo_resource::read`) and, where it shows a window, "Show this window"
-//!   (`tilo_actions::remote::activate_spec`), and answers them as a framework app does: undo and
-//!   redo through the store, `read` through the runtime, and "Show this window" by asking its
+//!   (`tilo_resource::read`), `outline` (`tilo_actions::remote::outline_spec`) and, where it
+//!   shows a window, "Show this window" (`tilo_actions::remote::activate_spec`), and answers them
+//!   as a framework app does: undo and redo through the store, `read` through the runtime,
+//!   `outline` as the lines of its views (`crate::outline`), and "Show this window" by asking its
 //!   window to come forward. The person's Undo on a notice in the window is the same `undo`, as
 //!   theirs: there is one undo.
 //! - **The window:** a window's instance sends it patches and hears what the person did over the
@@ -234,9 +235,9 @@ type DirectoryInputs = (u64, Vec<tilolang_tilo::runtime::PackageId>, u64);
 struct Surface {
     /// The instance's app: its resource carries what every app publishes.
     app: String,
-    /// "Show this window", in the person's language: a window's alone (`None` for an instance
-    /// that shows nothing).
-    activate: Option<tilo_actions::ActionSpec>,
+    /// The verbs of its window: "Show this window", in the person's language, a window's alone,
+    /// and reading what it shows.
+    window: Vec<tilo_actions::ActionSpec>,
     /// Whether the surface publishes the resources anyone may call on, since no view bounds what
     /// it holds: a call that shows nothing, whose caller names what it calls.
     everything: bool,
@@ -248,7 +249,7 @@ struct Surface {
 impl Surface {
     fn new(
         app: &str,
-        activate: Option<tilo_actions::ActionSpec>,
+        window: Vec<tilo_actions::ActionSpec>,
         everything: bool,
         host: &Host,
     ) -> Self {
@@ -265,7 +266,7 @@ impl Surface {
         let planner: Arc<dyn Planner> = handle;
         let surface = Self {
             app: app.to_owned(),
-            activate,
+            window,
             everything,
             host: host.clone(),
             planner,
@@ -318,7 +319,7 @@ impl Surface {
         for package in self.host.packages() {
             let mut resource = publish_package(&package.meta, &self.planner, &*words);
             if package.meta.app == self.app {
-                resource = with_app_actions(resource, self.activate.as_ref());
+                resource = with_app_actions(resource, &self.window);
             }
             if !resource.actions.is_empty() {
                 out.push(resource);
@@ -428,13 +429,10 @@ impl Publication for Held {
 }
 
 /// `resource` with what every app publishes, those it does not offer itself: the history verbs
-/// of its document, `read`, and "Show this window" where the instance shows one.
-fn with_app_actions(
-    resource: ResourceSpec,
-    activate: Option<&tilo_actions::ActionSpec>,
-) -> ResourceSpec {
+/// of its document, `read`, and the verbs of its window where the instance shows one.
+fn with_app_actions(resource: ResourceSpec, window: &[tilo_actions::ActionSpec]) -> ResourceSpec {
     let mut resource = tilolang_service::with_history(resource);
-    for spec in std::iter::once(tilo_resource::read::spec(None)).chain(activate.cloned()) {
+    for spec in std::iter::once(tilo_resource::read::spec(None)).chain(window.iter().cloned()) {
         if !resource
             .actions
             .iter()
@@ -1332,19 +1330,23 @@ impl Platform for HostPlatform {
 
     fn publish(&self, host: &Host) -> Option<Box<dyn Publication>> {
         // A window's instance offers to bring its window forward; one that shows nothing has none
-        // to bring.
-        let activate = (self.shows == Shows::View).then(|| {
-            tilo_actions::remote::activate_spec(
+        // to bring. Either reads what its window shows, as every app's window does: one that
+        // shows nothing reads what a window of it would, so looking at an app needs nothing of
+        // it opened first.
+        let mut window = Vec::new();
+        if self.shows == Shows::View {
+            window.push(tilo_actions::remote::activate_spec(
                 self.phrases.say("app-activate-window", &[]),
                 self.phrases.say("app-activate-window-description", &[]),
-            )
-        });
+            ));
+        }
+        window.push(tilo_actions::remote::outline_spec());
         // A call that shows nothing has no view to bound what it holds: it publishes the app's
         // resources, which is what a caller names when it calls.
         let everything = self.shows == Shows::Nothing;
         let surface = Rc::new(Surface::new(
             &self.bundle.meta.app,
-            activate,
+            window,
             everything,
             host,
         ));
@@ -4080,6 +4082,33 @@ impl Hosted {
             self.instance.activate_window();
             return Ok(Ran::Done(tilo_actions::remote::activation_requested()));
         }
+        if encoded.type_id == tilo_actions::remote::APPLICATION_OUTLINE_TYPE {
+            // The window is read as it stands: what it shows is the person's to open.
+            if tilo_actions::remote::outline_anchor(&encoded.payload).is_some() {
+                return Err(Refused::new(
+                    "action_invalid_arguments",
+                    "a tilolang window is read as it stands; open the item first",
+                ));
+            }
+            let (picture, _) = tilo_actions::remote::outline_asked(&encoded.payload)
+                .map_err(|why| Refused::new("action_invalid_arguments", why))?;
+            self.instance.open_to_read();
+            let mut read = crate::outline::read(&self.instance);
+            if picture
+                && let Some(fields) = read
+                    .value
+                    .as_mut()
+                    .and_then(serde_json::Value::as_object_mut)
+            {
+                fields.insert(
+                    tilo_actions::remote::OUTLINE_PICTURE_UNAVAILABLE.into(),
+                    "a tilolang window is read as text: its lines are exactly what it shows, \
+                     with the address of each control's action"
+                        .into(),
+                );
+            }
+            return Ok(Ran::Done(read));
+        }
         if encoded.type_id == ACTION_TYPE {
             let action: DynAction = serde_json::from_slice(&encoded.payload)
                 .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
@@ -4307,6 +4336,8 @@ impl Hosted {
             // The link into an app that opens links, which this host answers by running the
             // app's own `open_link` ([`Self::open_link_from_action`]).
             tilo_actions::remote::APPLICATION_OPEN_LINK_TYPE.to_owned(),
+            // What the window shows, read as lines (`crate::outline`).
+            tilo_actions::remote::APPLICATION_OUTLINE_TYPE.to_owned(),
         ]);
         let registry = tilo_actions::ActionRegistry::with(tilolang_tilo::action::register_actions);
         let violations = tilo_actions::validate_surface(&resources, &registry, &handlers);
