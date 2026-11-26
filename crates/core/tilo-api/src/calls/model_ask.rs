@@ -115,6 +115,8 @@ pub(crate) async fn follow<P: ActionProvider + Sync>(
     let until = now.checked_add(TURN).unwrap_or(now);
     let mut seen = UpdateMark::Accepted;
     let mut shown = Shown::default();
+    // Whether a look made after the provider said nothing more would come was made.
+    let mut past_the_end = false;
     let stopped = || ("unavailable", format!("{answering} stopped answering"));
     loop {
         match status {
@@ -134,15 +136,29 @@ pub(crate) async fn follow<P: ActionProvider + Sync>(
                 return Err(("refused", "the ask was stopped".into()));
             }
         }
-        // Asked for before looking, so a change between the two is never missed.
-        let change = provider
-            .next_change(caller, &invocation)
-            .ok_or_else(stopped)?;
+        // Looked at before a wait is asked for: a wait is for what comes after what was read,
+        // and one asked for beside a look that turns out to hold a change is a wait whose
+        // answer is thrown away — the provider moved for a caller that never read it, and what
+        // it wrote next is then read in one piece with that change instead of on its own.
+        // Over a connection the wait still carries what was last read, so nothing that lands
+        // between this look and the wait is lost.
         let state = provider.observe(caller, &invocation).ok_or_else(stopped)?;
         if UpdateMark::of(&state.update) == seen {
-            change.await.ok_or_else(stopped)?;
+            // Nothing new: wait for the invocation to move, then look again.
+            match provider.next_change(caller, &invocation) {
+                Some(change) => {
+                    change.await.ok_or_else(stopped)?;
+                    past_the_end = false;
+                }
+                // A provider that answers no wait at all has seen the invocation end: the look
+                // after it reads where the turn ended. Only a look that still shows nothing is
+                // the provider having gone quiet.
+                None if !past_the_end => past_the_end = true,
+                None => return Err(stopped()),
+            }
             continue;
         }
+        past_the_end = false;
         seen = UpdateMark::of(&state.update);
         if let InvocationUpdate::Item { value, .. } = &state.update
             && !shown.tell(value, told)
@@ -450,6 +466,99 @@ mod tests {
         assert_eq!(asked.len(), 1);
         assert_eq!(asked[0]["workspace"], "own");
         assert_eq!(asked[0]["request"]["max_output_tokens"], 64);
+    }
+
+    /// A provider that answers no wait at all after a look that still read the word before the
+    /// end, as one having seen the invocation end does, and whose next look reads where the
+    /// turn ended: the ask reads the end rather than taking the absent wait for silence.
+    struct EndedWhileLooking {
+        looks: Mutex<Vec<Option<InvocationState>>>,
+        waits: Mutex<Vec<Option<()>>>,
+    }
+
+    impl ActionProvider for EndedWhileLooking {
+        fn query(
+            &self,
+            _: &Caller,
+            query: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionCallError>> {
+            Pending::ready(Ok(CataloguePage::from_rows(
+                "r1".into(),
+                Vec::new(),
+                &query,
+            )))
+        }
+
+        fn invoke(
+            &self,
+            _: &Caller,
+            _: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+            Pending::ready(Err(ActionCallError::UnknownAction))
+        }
+
+        fn observe(&self, _: &Caller, _: &InvocationId) -> Option<InvocationState> {
+            self.looks.lock().unwrap().remove(0)
+        }
+
+        fn next_change(&self, _: &Caller, _: &InvocationId) -> Option<Pending<()>> {
+            self.waits
+                .lock()
+                .unwrap()
+                .remove(0)
+                .map(|()| Pending::ready(()))
+        }
+
+        fn cancel(&self, _: &Caller, _: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+            Pending::ready(Ok(()))
+        }
+    }
+
+    /// A provider whose waits run out before its look shows the end still reads the whole turn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_wait_that_answers_at_the_end_still_reads_the_whole_turn() {
+        let invocation = InvocationId::new();
+        let state = |update| InvocationState::new(invocation, update);
+        let item = state(InvocationUpdate::Item {
+            invocation,
+            sequence: 1,
+            value: json!({"text": "word "}),
+        });
+        let done = state(InvocationUpdate::Succeeded {
+            invocation,
+            output: ActionOutput {
+                value: Some(whole_turn("word ")),
+                resources: Vec::new(),
+            },
+        });
+        let provider = EndedWhileLooking {
+            // The word is read before the end is seen: the wait asked for after that look
+            // answers nothing, and the look after it reads where the turn ended.
+            looks: Mutex::new(vec![
+                Some(state(InvocationUpdate::Accepted { invocation })),
+                Some(item.clone()),
+                Some(item),
+                Some(done),
+            ]),
+            waits: Mutex::new(vec![Some(()), None, None, None]),
+        };
+        let mut told = Vec::new();
+        let answer = follow(
+            &provider,
+            &Caller::local_person("ada"),
+            invocation,
+            ReceiptStatus::Accepted,
+            "the daemon",
+            &mut |kind, data| {
+                told.push((kind.to_owned(), data));
+                true
+            },
+        )
+        .await
+        .unwrap()
+        .expect("the whole turn");
+        assert_eq!(answer, whole_turn("word "));
+        assert_eq!(told, vec![("text".to_owned(), json!({"text": "word "}))]);
     }
 
     /// An ask let go of in the middle closes its connection, so the daemon hears it left, and
