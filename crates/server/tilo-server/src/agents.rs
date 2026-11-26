@@ -242,6 +242,7 @@ impl AgentHostLink for ServerAgentLink {
     }
 
     fn withdraw(&self, device_public_key: [u8; 32]) {
+        self.certification.withdraw_delegate(device_public_key);
         self.withdraw_device(device_public_key);
     }
 }
@@ -760,10 +761,18 @@ impl crate::AppActionServer for WorkspaceActionsServer {
         {
             return Some(answer);
         }
-        if let (Some(roster), Some(supervisor)) = (&self.roster, &self.supervisor)
-            && let Some(answer) = roster.serve(workspace, caller, certificate, &message, supervisor)
-        {
-            return Some(answer);
+        if let (Some(roster), Some(supervisor)) = (&self.roster, &self.supervisor) {
+            if let Some(answer) = roster.serve(workspace, caller, certificate, &message, supervisor)
+            {
+                return Some(answer);
+            }
+            if let Some(answer) =
+                roster.catalogue(workspace, caller, certificate, supervisor, &message, || {
+                    self.serve(workspace, caller, message.clone())
+                })
+            {
+                return Some(answer);
+            }
         }
         self.serve(workspace, caller, message)
     }
@@ -1985,7 +1994,8 @@ impl WorkspaceActionsServer {
         use tilo_workspace_service::agents::events::Authority;
 
         self.roster.as_ref()?;
-        let authority = certificate.map_or(Authority::Turn, Authority::of);
+        let authority =
+            certificate.map_or_else(|| Authority::hosted(caller, &self.actions), Authority::of);
         if tilo_workspace_service::agents::events::addresses(&message) {
             return match self.events.get() {
                 Some(events) => events.serve(workspace, caller, authority, message),

@@ -663,6 +663,13 @@ impl Worker {
              aria-label=\"Search the workspace\">Search apps, actions and records</a>\
              <button type=\"button\" data-pair-device>Pair a new device</button>"
         );
+        if let Some(href) = self.personal_workspace_entry(workspace_id, "own-workspace") {
+            let _ = write!(
+                body,
+                "<a href=\"{}\">Open your personal workspace</a>",
+                escape(&href)
+            );
+        }
         // Who is here is said only when the live session says someone is: a
         // page that claims "0 here" of a workspace someone is reading is
         // wrong about the one person it can see.
@@ -843,12 +850,7 @@ impl Worker {
             && query
                 .split_whitespace()
                 .all(|word| "new create workspace".contains(word))
-            && let Some(locator) = self
-                .shared
-                .link
-                .get()
-                .and_then(|link| link.personal_workspace_host(workspace_id))
-            && let Some(href) = new_workspace_entry(workspace_id, &locator)
+            && let Some(href) = self.personal_workspace_entry(workspace_id, "new-workspace")
         {
             rows.push(SearchRow {
                 id: SEARCH_FIRST_ROW.saturating_add(u32::try_from(rows.len()).unwrap_or_default()),
@@ -1735,26 +1737,26 @@ fn field_title(name: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The site's naming form. The link only re-enters this workspace on its host;
-/// the admitted browser's device creates and enters the named workspace.
-fn new_workspace_entry(
-    workspace: WorkspaceId,
-    locator: &tilo_actions::remote::ResourceViewLocator,
-) -> Option<String> {
-    use ui::tilo_reference::link::{HostOrigin, Link, LinkTarget, Mode, Scope, WebEntry};
+impl Worker {
+    /// Re-enter the current workspace with the browser's device, which can then enter its
+    /// person's own workspace or explicitly create a named workspace at the same host.
+    fn personal_workspace_entry(&self, workspace: WorkspaceId, action: &str) -> Option<String> {
+        use ui::tilo_reference::link::{HostOrigin, Link, LinkTarget, Mode, Scope, WebEntry};
 
-    let entry = WebEntry::new(locator.web_entry.as_deref()?).ok()?;
-    let link = Link {
-        mode: Mode::Desktop,
-        target: LinkTarget::new(Scope::Workspace {
-            host: HostOrigin::new(&locator.origin).ok()?,
-            id: workspace.as_uuid(),
-            slug: None,
-        }),
-        secrets: Default::default(),
-    };
-    let address = link.to_url(&entry).ok()?;
-    Some(address.replacen('#', "?new-workspace=1#", 1))
+        let locator = self.shared.link.get()?.personal_workspace_host(workspace)?;
+        let entry = WebEntry::new(locator.web_entry.as_deref()?).ok()?;
+        let link = Link {
+            mode: Mode::Desktop,
+            target: LinkTarget::new(Scope::Workspace {
+                host: HostOrigin::new(&locator.origin).ok()?,
+                id: workspace.as_uuid(),
+                slug: None,
+            }),
+            secrets: Default::default(),
+        };
+        let address = link.to_url(&entry).ok()?;
+        Some(address.replacen('#', &format!("?{action}=1#"), 1))
+    }
 }
 
 /// The fields the action `label` asks for, holding what was typed: a form

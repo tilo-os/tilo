@@ -267,6 +267,35 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         if case .noAssistant = setupNow.current { setupNow.set(.ready) }
     }
 
+    public func requestChatPermission() async throws {
+        try requestAccess(.chat)
+    }
+
+    public func requestAssistantWorkPermission() async throws {
+        try requestAccess(.work)
+    }
+
+    private func requestAccess(_ scope: AssistantAccess) throws {
+        try signedIn()
+        guard case .chatPermission(let permission) = setupNow.current, permission.canRequest,
+              supervisionNow.current.assistantAccess?.revocable != true else {
+            throw SourceProblem.refused(AssistantWords.chatPermissionUnavailable.said)
+        }
+        supervisionNow.change {
+            $0.assistantAccess = .init(state: .pending, apps: scope.apps, expires: now().addingTimeInterval(6 * 24 * 3600), ready: false)
+        }
+        setupNow.set(.chatPermission(.pending(code: nil)))
+    }
+
+    public func revokeChatPermission() async throws {
+        try signedIn()
+        guard let held = supervisionNow.current.assistantAccess, held.revocable else {
+            throw SourceProblem.refused(AssistantWords.chatPermissionUnavailable.said)
+        }
+        supervisionNow.change { $0.assistantAccess = .init(state: .revoked, apps: held.apps, expires: held.expires, ready: false) }
+        setupNow.set(.chatPermission(.revoked))
+    }
+
     public func link(_ provider: ProviderChoice.ID, key: Secret) async throws -> [ModelChoice] {
         try signedIn()
         guard !key.isEmpty else { throw SourceProblem.refused("Nothing was typed.") }

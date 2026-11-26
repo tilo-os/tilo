@@ -24,6 +24,8 @@ import WebKit
 ///   {"do": "pair", "file": "…"}                      a file that holds a pairing link
 ///   {"do": "add-device"}   {"do": "stop-pairing"}    as the two buttons under what Tilo asks before it pairs
 ///   {"do": "make-assistant"}                         as Try again does where the assistant could not be made
+///   {"do": "chat-permission"}   {"do": "assistant-work-permission"}   request one scope of assistant access
+///   {"do": "check-chat-permission"}   {"do": "revoke-chat-permission", "confirm": true}   check or withdraw access
 ///   {"do": "choose", "model": "…"}                    as the main chat's choice of a model
 ///   {"do": "send", "text": "…", "files": ["…"]}       as the message field sends, with the files picked under it
 ///   {"do": "answer", "question": "…", "choice": "…"}  as a question's button answers
@@ -229,6 +231,17 @@ final class AssistantDrive {
         case .makingWorkspace: once("setup", ["is": "makingWorkspace"])
         case .makingAssistant: once("setup", ["is": "makingAssistant"])
         case .noAssistant(let why): once("setup", ["is": "noAssistant", "why": .string(why)])
+        case .chatPermission(let permission):
+            let state: String = switch permission {
+            case .needed: "needed"
+            case .pending: "pending"
+            case .joining: "joining"
+            case .declined: "declined"
+            case .expired: "expired"
+            case .revoked: "revoked"
+            case .unavailable: "unavailable"
+            }
+            once("setup", ["is": "chatPermission", "state": .string(state)])
         case .needsProvider(let providers): once("setup", ["is": "needsProvider", "providers": .array(providers.map { .string($0.id.value) })])
         case .needsModel(let models): once("setup", ["is": "needsModel", "models": .number(Double(models.count))])
         case .ready: once("setup", ["is": "ready"])
@@ -483,6 +496,22 @@ final class AssistantDrive {
             // The person's own press under what Tilo asked: whoever drives this program is its person.
             model.answerPairing(goOn: what == "add-device")
             AssistantDrive.say(["asked": .string(what)])
+        case "chat-permission":
+            _ = await model.requestChatPermission()
+            AssistantDrive.say(["asked": "chat-permission"])
+        case "assistant-work-permission":
+            _ = await model.requestAssistantWorkPermission()
+            AssistantDrive.say(["asked": "assistant-work-permission"])
+        case "revoke-chat-permission":
+            guard step["confirm"]?.bool == true, let access = model.supervision.assistantAccess else {
+                AssistantDrive.say(["error": "revoking access needs a current grant and confirmation"])
+                return
+            }
+            _ = await model.revokeChatPermission(expected: access)
+            AssistantDrive.say(["asked": "revoke-chat-permission"])
+        case "check-chat-permission":
+            await model.checkChatPermission()
+            AssistantDrive.say(["asked": "check-chat-permission"])
         case "make-assistant":
             model.makeAssistant()
             AssistantDrive.say(["asked": "make-assistant"])

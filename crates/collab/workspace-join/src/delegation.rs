@@ -153,22 +153,14 @@ impl Delegation {
         issued_at_ns: u64,
         expires_at_ns: u64,
     ) -> Result<Self, DelegationError> {
-        let mut delegation = Self {
-            user_public_key: root.public_key(),
-            device_public_key,
+        DelegateProposal {
             delegate,
             label: label.into(),
             color,
             scope,
-            issued_at_ns,
             expires_at_ns,
-            signature: [0; 64],
-        };
-        delegation.validate()?;
-        delegation.signature = root
-            .sign_digest(&delegation.digest()?)
-            .map_err(|error| DelegationError::Unsigned(error.to_string()))?;
-        Ok(delegation)
+        }
+        .sign(root, device_public_key, issued_at_ns)
     }
 
     fn digest(&self) -> Result<[u8; 32], DelegationError> {
@@ -305,16 +297,58 @@ impl DelegateProposal {
         device_public_key: [u8; 32],
         now_ns: u64,
     ) -> Result<Delegation, DelegationError> {
-        Delegation::sign(
-            root,
-            device_public_key,
-            self.delegate.clone(),
-            self.label.clone(),
-            self.color,
-            self.scope.clone(),
-            now_ns,
-            self.expires_at_ns,
+        let mut delegation = self.for_device(root.public_key(), device_public_key, now_ns)?;
+        delegation.signature = root
+            .sign_digest(&delegation.digest()?)
+            .map_err(|error| DelegationError::Unsigned(error.to_string()))?;
+        Ok(delegation)
+    }
+
+    /// Sign the same proposal with a root held by a page or another asynchronous keystore.
+    ///
+    /// # Errors
+    /// The proposal is invalid or the person's root refused the signature.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        allow(
+            clippy::future_not_send,
+            reason = "a page's root signs through WebCrypto"
         )
+    )]
+    pub async fn sign_async(
+        &self,
+        root: &dyn collab_types::signer::DeviceSigner,
+        device_public_key: [u8; 32],
+        now_ns: u64,
+    ) -> Result<Delegation, DelegationError> {
+        let mut delegation =
+            self.for_device(root.device_public_key(), device_public_key, now_ns)?;
+        delegation.signature = root
+            .sign(delegation.digest()?.to_vec())
+            .await
+            .map_err(|error| DelegationError::Unsigned(error.to_string()))?;
+        Ok(delegation)
+    }
+
+    fn for_device(
+        &self,
+        user_public_key: [u8; 32],
+        device_public_key: [u8; 32],
+        issued_at_ns: u64,
+    ) -> Result<Delegation, DelegationError> {
+        let delegation = Delegation {
+            user_public_key,
+            device_public_key,
+            delegate: self.delegate.clone(),
+            label: self.label.clone(),
+            color: self.color,
+            scope: self.scope.clone(),
+            issued_at_ns,
+            expires_at_ns: self.expires_at_ns,
+            signature: [0; 64],
+        };
+        delegation.validate()?;
+        Ok(delegation)
     }
 
     /// Whether `delegation` grants no more than this proposal: the same

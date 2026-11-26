@@ -187,6 +187,8 @@ struct SetupStep: View {
             case .noAssistant(let why):
                 Bubble { MarkdownText(text: why) }
                 Button(AssistantWords.tryAgain.said) { model.makeAssistant() }.buttonStyle(BoxButtonStyle(isMain: true))
+            case .chatPermission(let permission):
+                chatAccess(permission)
             case .needsProvider(let providers):
                 ProviderCard(providers: providers) { offered = $0 }
             case .needsModel(let models):
@@ -200,6 +202,45 @@ struct SetupStep: View {
             }
         }
         .onChange(of: model.conversation(.main).items.count) { offered = [] }
+    }
+
+    @ViewBuilder private func chatAccess(_ permission: ChatPermission) -> some View {
+        Bubble {
+            VStack(alignment: .leading, spacing: 8) {
+                switch permission {
+                case .needed: EmptyView()
+                case .declined: Text(AssistantWords.chatPermissionDeclined.said)
+                case .expired: Text(AssistantWords.chatPermissionExpired.said)
+                case .revoked: Text(AssistantWords.chatPermissionRevoked.said)
+                case .pending(let code):
+                    Text(AssistantWords.chatPermissionPending.said)
+                    if let code, !code.isEmpty {
+                        Text(AssistantWords.chatPermissionCode.said(["code": code])).monospacedDigit()
+                    }
+                case .joining: Text(AssistantWords.chatPermissionJoining.said)
+                case .unavailable(let reason):
+                    Text(AssistantWords.chatPermissionUnavailable.said)
+                    if !reason.isEmpty { Text(verbatim: reason) }
+                }
+                if permission.canRequest { Text(AssistantWords.chatPermissionScope.said) }
+            }
+        }
+        if permission.canRequest {
+            Button(AssistantWords.requestChatPermission.said) { Task { await model.requestChatPermission() } }
+                .buttonStyle(BoxButtonStyle(isMain: true))
+                .accessibilityIdentifier("request-chat-permission")
+                .disabled(model.chatPermissionBusy)
+            Button(AssistantWords.requestAssistantWorkPermission.said) { Task { await model.requestAssistantWorkPermission() } }
+                .buttonStyle(BoxButtonStyle())
+                .accessibilityIdentifier("request-assistant-work-permission")
+                .disabled(model.chatPermissionBusy)
+        } else {
+            let retry = if case .unavailable = permission { true } else { false }
+            Button((retry ? AssistantWords.tryAgain : .checkChatPermission).said) { Task { await model.checkChatPermission() } }
+                .buttonStyle(BoxButtonStyle())
+                .accessibilityIdentifier("check-chat-permission")
+                .disabled(model.chatPermissionBusy)
+        }
     }
 
     /// The provider step as a person comes back to it from the assistant view, with the

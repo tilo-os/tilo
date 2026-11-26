@@ -183,6 +183,18 @@ final class TiloSourceTests: XCTestCase {
               listed.models = [{id: 'm-1', label: 'Model one'}, {id: 'm-2', label: 'Model two'}];
               return done({provider: listed});
             }
+            case 'agents grant-status': case 'agents request-chat-grant': case 'agents request-assistant-work-grant': case 'agents revoke': {
+              if (!window.chatGrant || target.address.resource !== 'agent:reed' || argument !== null) noAgents();
+              if (target.address.action === 'grant-status') return done(window.chatGrant);
+              if (target.address.action === 'revoke') {
+                Object.assign(window.chatGrant, {state: 'revoked', ready: false});
+                return done({});
+              }
+              const work = target.address.action === 'request-assistant-work-grant';
+              const apps = work ? ['so.tilo.chat', 'so.tilo.tasks', 'so.tilo.assistant', 'so.tilo.shortcuts'] : ['so.tilo.chat'];
+              Object.assign(window.chatGrant, {state: 'pending', ready: false, apps, expiresAtMs: Date.now() + 6 * 86400000});
+              return done({grant: 'reed', pairingCode: work ? '291 804' : '493 127'});
+            }
             case AGENTS + ' read': {
               // A server whose answer never comes (`window.hangs`).
               if (window.hangs) return new Promise(() => {});
@@ -252,11 +264,15 @@ final class TiloSourceTests: XCTestCase {
           }
         },
       });
-      window.enter = async withDevice => {
+      window.enter = async (withDevice, hosted = false) => {
         localStorage.setItem('tilo-host-memberships', JSON.stringify({home: {workspace: 'ws-1', userPublicKey: ADA}}));
-        if (withDevice) await giveDevice(device);
+        if (withDevice) {
+          const entry = hosted ? Object.assign(Object.create(device), {workspaceRecord: async app => `record:${app}:`}) : device;
+          await giveDevice(entry);
+        }
         root.dataset.arrival = 'done';
         root.dataset.entry = 'open';
+        if (hosted) return;
         globalThis.tiloMount = {
           semantics: document.getElementById('semantics'),
           state: () => ({workspaceName: 'Ada\'s workspace'}),
@@ -1394,6 +1410,136 @@ final class TiloSourceTests: XCTestCase {
         XCTAssertEqual(writes, #"["agents ensure-personal-assistant"]"#)
         try await run("window.resumeChat()")
         try await until("the held read delivers the original message") { self.held.map(self.words) == ["Kept in Chat"] }
+    }
+
+    /// Open the workspace's hosted page, where the admitted native device serves Chat without a local mount.
+    private func enterHostedAssistant(_ prepare: String) async throws {
+        try await start(.assistant, livesInOwn: true)
+        listening.append(Task { for await facts in self.source.supervision() { self.supervisions.append(facts) } })
+        try await run("""
+            window.wholeRows = true; window.agents = [kept('someone-else'), kept('reed')];
+            window.personal = {[ADA]: 'reed'};
+            \(prepare)
+            location.hash = '#/@host.example:8443/w/own-7/so.tilo.chat'; return await enter(true, true)
+            """)
+    }
+
+    func testChoosingAModelNeedsTheHostedAssistantsOwnChatGrantBeforeItCanReply() async throws {
+        try await enterHostedAssistant("""
+            window.unlinked = true;
+            window.added = [{id: 'p1', name: 'Local', configured: true, models: [{id: 'm1', label: 'First'}]}];
+            window.chatGrant = {state: 'missing', ready: false, apps: [], expiresAtMs: null};
+            """)
+        try await until("the person's hosted workspace offers their model") {
+            if case .needsModel = self.setups.last { return true }
+            return false
+        }
+        XCTAssertTrue(source.engine.hosted)
+        try await source.choose("p1/m1", for: .request, .task)
+        try await until("the chosen model needs Chat access for the personal assistant") {
+            self.setups.last == .chatPermission(.needed)
+        }
+        func requests() async throws -> String {
+            try await page("return String(window.hostAsked.filter(a => a === 'agents request-chat-grant').length)")
+        }
+        let before = try await requests()
+        XCTAssertEqual(before, "0")
+
+        try await source.requestChatPermission()
+        try await until("the person can compare the code from their signed request") {
+            self.setups.last == .chatPermission(.pending(code: "493 127"))
+        }
+        await source.checkChatPermission()
+        XCTAssertEqual(setups.last, .chatPermission(.pending(code: "493 127")))
+        try await run("window.chatGrant.apps.push('so.tilo.tasks')")
+        await source.checkChatPermission()
+        try await until("a different pending scope drops the earlier comparison code") {
+            self.setups.last == .chatPermission(.pending(code: nil))
+        }
+        try await run("window.chatGrant.state = 'denied'")
+        await source.checkChatPermission()
+        try await until("the root browser's refusal reaches the requester") { self.setups.last == .chatPermission(.declined) }
+        let afterDenial = try await requests()
+        XCTAssertEqual(afterDenial, "1")
+
+        // The same visible route can outlive its admitted device. Its old permission card may
+        // not send an agent request into the workspace the device now belongs to.
+        try await run("window.admittedTo = 'another-workspace'")
+        do {
+            try await source.requestChatPermission()
+            XCTFail("a stale workspace could request Chat access")
+        } catch let problem as SourceProblem {
+            XCTAssertEqual(problem, .refused("Your account or workspace changed"))
+        }
+        let afterSwitch = try await requests()
+        XCTAssertEqual(afterSwitch, afterDenial)
+        try await run("window.admittedTo = 'own-7'")
+        await source.checkChatPermission()
+        try await until("the person's own refusal is read again") { self.setups.last == .chatPermission(.declined) }
+
+        try await source.requestChatPermission()
+        try await until("the person has another pending request") { self.setups.last == .chatPermission(.pending(code: "493 127")) }
+        try await run("window.chatGrant.expiresAtMs += 60000")
+        await source.checkChatPermission()
+        try await until("a replacement with another expiry drops the comparison code") {
+            self.setups.last == .chatPermission(.pending(code: nil))
+        }
+        try await run("Object.assign(window.chatGrant, {state:'approved', apps:['so.tilo.chat'], expiresAtMs: Date.now() + 3600000})")
+        await source.checkChatPermission()
+        try await until("root approval is waiting for a signing session") { self.setups.last == .chatPermission(.joining) }
+        XCTAssertFalse(setups.contains(.ready))
+        try await run("window.chatGrant.ready = true")
+        try await until("the pending check observes that the Chat signer is available") { self.setups.last == .ready }
+        let afterApproval = try await requests()
+        XCTAssertEqual(afterApproval, "2", "only the person's two explicit requests write a grant")
+        XCTAssertFalse(String(describing: defaults.dictionaryRepresentation()).contains("493 127"))
+    }
+
+    func testExpandingAHostedAssistantsApprovedChatScopeRequiresRevocationAndFreshConsent() async throws {
+        try await enterHostedAssistant("""
+            window.chatGrant = {state: 'approved', ready: true, apps: ['so.tilo.chat'], expiresAtMs: 2000000000000};
+            """)
+        try await until("the assistant's granted Chat access is reported") {
+            self.setups.last == .ready && self.supervisions.last?.assistantAccess?.state == .approved
+        }
+        let chat = try XCTUnwrap(supervisions.last?.assistantAccess)
+        XCTAssertEqual(chat.apps, ["so.tilo.chat"])
+        XCTAssertTrue(chat.ready)
+        XCTAssertEqual(chat.expires, Date(timeIntervalSince1970: 2_000_000_000))
+        func decisions() async throws -> String {
+            try await page("return JSON.stringify(window.hostAsked.filter(a => a.startsWith('agents ') && a !== 'agents grant-status'))")
+        }
+        // Asking for more cannot replace the already approved grant.
+        do {
+            try await source.requestAssistantWorkPermission()
+        } catch is SourceProblem { }
+        let before = try await decisions()
+        XCTAssertEqual(before, "[]")
+        try await source.revokeChatPermission()
+        try await until("the old signer is revoked") {
+            self.setups.last == .chatPermission(.revoked) && self.supervisions.last?.assistantAccess?.state == .revoked
+        }
+        let revoked = try await decisions()
+        XCTAssertEqual(revoked, #"["agents revoke"]"#)
+        try await source.requestAssistantWorkPermission()
+        try await until("the new scope is awaiting its own approval") {
+            self.setups.last == .chatPermission(.pending(code: "291 804")) && self.supervisions.last?.assistantAccess?.state == .pending
+        }
+        let apps: Set<String> = ["so.tilo.chat", "so.tilo.tasks", "so.tilo.assistant", "so.tilo.shortcuts"]
+        let pending = try XCTUnwrap(supervisions.last?.assistantAccess)
+        XCTAssertEqual(Set(pending.apps), apps)
+        XCTAssertFalse(pending.ready)
+        try await run("Object.assign(window.chatGrant, {state: 'approved', ready: true, expiresAtMs: 2000100000000})")
+        await source.checkChatPermission()
+        try await until("the granted work scope is live") {
+            self.setups.last == .ready && self.supervisions.last?.assistantAccess?.ready == true
+        }
+        let approved = try XCTUnwrap(supervisions.last?.assistantAccess)
+        XCTAssertEqual(approved.state, .approved)
+        XCTAssertEqual(Set(approved.apps), apps)
+        XCTAssertEqual(approved.expires, Date(timeIntervalSince1970: 2_000_100_000))
+        let finished = try await decisions()
+        XCTAssertEqual(finished, #"["agents revoke","agents request-assistant-work-grant"]"#)
     }
 
     func testWithNoProviderLinkedTheMainChatOffersTheStepAndTheKeyGoesToThePersonsServerOnly() async throws {

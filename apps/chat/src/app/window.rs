@@ -29,6 +29,8 @@ pub(crate) type SharedChat = Rc<RefCell<ChatApp>>;
 /// The chat window: the [`ChatApp`] it shares with the view.
 pub struct ChatWindow {
     chat: SharedChat,
+    /// The personal assistant DM shown in this signed-in person's live window.
+    pub(crate) assistant_dm: Option<ui::LocalState<Option<String>>>,
     /// What the window shows, as its title names it: the thread, the call or the conversation.
     title: String,
     /// A capture's scenario, staged on the next sync.
@@ -44,6 +46,7 @@ impl ChatWindow {
     pub(crate) fn new(chat: SharedChat) -> Self {
         Self {
             chat,
+            assistant_dm: None,
             title: String::new(),
             #[cfg(feature = "samples")]
             staged: Rc::default(),
@@ -144,6 +147,9 @@ impl Widget for ChatWindow {
             chat.stage_scenario(scenario.as_deref().unwrap_or_default());
         }
         self.state().sync(doc, path);
+        if let Some(selected) = &self.assistant_dm {
+            selected.set_if_changed(self.chat.borrow().personal_dm());
+        }
     }
 
     fn composition_follows_allocation(&self) -> bool {

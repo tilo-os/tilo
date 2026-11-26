@@ -95,11 +95,44 @@ public enum Setup: Equatable, Sendable {
     case makingAssistant
     /// It could not be found or made. The sentence says why, in Tilo's own words where it has any.
     case noAssistant(String)
+    /// The hosted assistant needs this workspace's permission to use Chat.
+    case chatPermission(ChatPermission)
     /// No provider is linked. These can be, each with a key of the person's own.
     case needsProvider([ProviderChoice])
     /// A provider is linked and no model answers in the main chat yet. These are offered.
     case needsModel([ModelChoice])
     case ready
+}
+
+/// The workspace owner's decision on the hosted assistant's access to Chat.
+public enum ChatPermission: Equatable, Sendable {
+    case needed
+    case pending(code: String?)
+    case joining
+    case declined
+    case expired
+    case revoked
+    case unavailable(String)
+
+    /// A fresh request can be sent only when the workspace has none awaiting a decision.
+    public var canRequest: Bool {
+        switch self {
+        case .needed, .declined, .expired, .revoked: true
+        case .pending, .joining, .unavailable: false
+        }
+    }
+}
+
+/// The two app scopes a person may request for their hosted assistant.
+public enum AssistantAccess: Equatable, Sendable {
+    case chat, work
+
+    public var apps: [String] {
+        switch self {
+        case .chat: ["so.tilo.chat"]
+        case .work: ["so.tilo.chat", "so.tilo.tasks", "so.tilo.assistant", "so.tilo.shortcuts"]
+        }
+    }
 }
 
 /// A model provider the person can link with a key of their own.
@@ -839,6 +872,8 @@ public struct Supervision: Equatable, Sendable {
 
     /// The assistant's state in the workspace roster, when known.
     public var state: State?
+    /// The workspace's latest answer about the hosted assistant's access.
+    public var assistantAccess: AssistantPermission?
     /// The model of the main chat. Nil while the person has linked no provider.
     public var model: String?
     public var usage: Usage
@@ -859,8 +894,9 @@ public struct Supervision: Equatable, Sendable {
     public init(state: State? = nil, model: String? = nil, usage: Usage = Usage(), connections: [Connection] = [],
                 logins: [Login] = [], manager: ManagerLogins? = nil, importance: [String] = [],
                 situations: [Situation] = [], learned: [Learned] = [], learnedCount: Int? = nil,
-                places: [Place] = [], workspaces: [String] = []) {
+                places: [Place] = [], workspaces: [String] = [], assistantAccess: AssistantPermission? = nil) {
         self.state = state
+        self.assistantAccess = assistantAccess
         self.model = model
         self.usage = usage
         self.connections = connections
@@ -872,6 +908,26 @@ public struct Supervision: Equatable, Sendable {
         self.learnedCount = learnedCount ?? learned.count
         self.places = places
         self.workspaces = workspaces
+    }
+
+    public struct AssistantPermission: Equatable, Sendable {
+        public enum State: String, Sendable {
+            case missing, pending, approved, denied, expired, revoked
+        }
+
+        public let state: State
+        public let apps: [String]
+        public let expires: Date?
+        public let ready: Bool
+
+        public init(state: State, apps: [String], expires: Date?, ready: Bool) {
+            self.state = state
+            self.apps = apps
+            self.expires = expires
+            self.ready = ready
+        }
+
+        public var revocable: Bool { state == .approved || state == .pending }
     }
 
     public struct Usage: Equatable, Sendable {

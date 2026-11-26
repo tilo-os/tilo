@@ -1091,6 +1091,65 @@ impl PairingHost {
             .transpose()
     }
 
+    /// Pending roster grants this root can approve for this workspace. The page displays
+    /// the agent, app scope and expiry and returns the matching token when the person decides.
+    ///
+    /// # Errors
+    /// The root is locked, the workspace is invalid or the host refused the request.
+    #[wasm_bindgen(js_name = pendingAgentGrants)]
+    pub async fn pending_agent_grants(
+        &self,
+        root: JsValue,
+        workspace: &str,
+    ) -> Result<String, JsError> {
+        let root = PageSigner::from_js(&root)?;
+        let workspace = workspace_id(workspace)?;
+        let pending = tilo_server_client::pairing::pending_agent_grants(&self.0, &root, workspace)
+            .await
+            .map_err(js_error)?;
+        let mut grants = Vec::with_capacity(pending.len());
+        for entry in pending {
+            let token = hex::encode(postcard::to_allocvec(&entry).map_err(js_error)?);
+            grants.push(serde_json::json!({
+                "agent": entry.proposal.delegate.agent_id(),
+                "label": entry.proposal.label,
+                "workspace": workspace.to_string(),
+                "apps": entry.proposal.scope.apps,
+                "expiresAtMs": entry.proposal.expires_at_ns / 1_000_000,
+                "digest": hex::encode(entry.request_digest),
+                "token": token,
+            }));
+        }
+        serde_json::to_string(&grants).map_err(js_error)
+    }
+
+    /// Approve or decline the exact roster grant shown by `pendingAgentGrants`.
+    ///
+    /// # Errors
+    /// The request is stale, the token or workspace is invalid, the root is locked, or the
+    /// host refused the answer.
+    #[wasm_bindgen(js_name = answerAgentGrant)]
+    pub async fn answer_agent_grant(
+        &self,
+        root: JsValue,
+        workspace: &str,
+        token: &str,
+        approved: bool,
+    ) -> Result<(), JsError> {
+        let root = PageSigner::from_js(&root)?;
+        let token = hex::decode(token).map_err(js_error)?;
+        let shown = postcard::from_bytes(&token).map_err(js_error)?;
+        tilo_server_client::pairing::answer_agent_grant(
+            &self.0,
+            &root,
+            workspace_id(workspace)?,
+            &shown,
+            approved,
+        )
+        .await
+        .map_err(js_error)
+    }
+
     /// Let go of the host: the page pairs nothing more through it.
     pub async fn close(&self) {
         if let PairingReach::Own(approver) = &self.0 {

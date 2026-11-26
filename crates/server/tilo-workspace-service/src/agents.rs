@@ -247,6 +247,12 @@ impl WorkspaceActionProvider {
         self.actions.landed(self.workspace, route);
     }
 
+    fn turn_authority(&self, caller: &Caller) -> Authority {
+        self.actions
+            .host()
+            .map_or(Authority::Turn, |host| Authority::hosted(caller, host))
+    }
+
     /// What `caller` is offered of the workspace's records, its events and
     /// its assistant's initiative, as the workspace's policy decides it for a
     /// turn this server carries out for them.
@@ -259,20 +265,20 @@ impl WorkspaceActionProvider {
             && query.provider.as_deref() == Some(workspace_events::PROVIDER)
         {
             return Ok(events
-                .catalogue(self.workspace, caller, &Authority::Turn, &query)
+                .catalogue(self.workspace, caller, &self.turn_authority(caller), &query)
                 .await);
         }
         if let Some(initiative) = &self.initiative
             && query.provider.as_deref() == Some(workspace_initiative::PROVIDER)
         {
             return Ok(initiative
-                .catalogue(self.workspace, caller, &Authority::Turn, &query)
+                .catalogue(self.workspace, caller, &self.turn_authority(caller), &query)
                 .await);
         }
         let initiative = match &self.initiative {
             Some(initiative) if query.provider.is_none() => {
                 initiative
-                    .provider(self.workspace, caller, &Authority::Turn)
+                    .provider(self.workspace, caller, &self.turn_authority(caller))
                     .await
             }
             _ => None,
@@ -281,7 +287,7 @@ impl WorkspaceActionProvider {
         let events = match &self.events {
             Some(events) if query.provider.is_none() => {
                 events
-                    .provider(self.workspace, caller, &Authority::Turn)
+                    .provider(self.workspace, caller, &self.turn_authority(caller))
                     .await
             }
             _ => None,
@@ -448,7 +454,7 @@ impl ActionProvider for WorkspaceActionProvider {
             let (answered, by) = (self.answered.clone(), caller.clone());
             let (completer, answer) = pending();
             events
-                .invoking(self.workspace, caller, Authority::Turn, request)
+                .invoking(self.workspace, caller, self.turn_authority(caller), request)
                 .then(move |receipt| {
                     if let Some(receipt) = receipt {
                         answered.keep(&by, &receipt);
@@ -464,7 +470,7 @@ impl ActionProvider for WorkspaceActionProvider {
             let (answered, by) = (self.answered.clone(), caller.clone());
             let (completer, answer) = pending();
             initiative
-                .invoking(self.workspace, caller, Authority::Turn, request)
+                .invoking(self.workspace, caller, self.turn_authority(caller), request)
                 .then(move |receipt| {
                     if let Some(receipt) = receipt {
                         answered.keep(&by, &receipt);
@@ -963,19 +969,42 @@ impl ServerAgents {
         agent: &Agent,
         person: [u8; 32],
     ) -> Result<Caller, String> {
-        // A sub-agent acts under the approval of the agent that heads its line.
+        let signer = self.signing_agent(&workspace.to_string(), agent).await?;
+        let caller = agent_caller(&self.roster, workspace, &signer, person).await?;
+        Ok(if agent.sub.is_some() {
+            caller.working_under(agent.id.0.clone(), &agent.name)
+        } else {
+            caller
+        })
+    }
+
+    /// The current roster authority both the turn's lease and its signed actions require.
+    /// A child uses its own keeper's active lead, never a separate signing grant.
+    async fn signing_agent<'a>(
+        &self,
+        workspace: &str,
+        agent: &'a Agent,
+    ) -> Result<std::borrow::Cow<'a, Agent>, String> {
         if agent.sub.is_none() {
-            return agent_caller(&self.roster, workspace, agent, person).await;
+            return Ok(std::borrow::Cow::Borrowed(agent));
         }
-        let roster = roster(&self.workspaces, &workspace.to_string())
+        let roster = roster(&self.workspaces, workspace)
             .await?
             .ok_or("the workspace keeps no list of its agents")?;
-        // A line whose head is gone ends at the sub-agent itself, which holds no approval:
-        // nothing is done in its name then.
-        let approved = roster.root_of(agent);
-        Ok(agent_caller(&self.roster, workspace, approved, person)
-            .await?
-            .working_under(agent.id.0.clone(), &agent.name))
+        let child = roster
+            .get(&agent.id)
+            .filter(|entry| {
+                entry.is_active()
+                    && entry.is_sub()
+                    && entry.created_at == agent.created_at
+                    && entry.keeper.eq_ignore_ascii_case(&agent.keeper)
+            })
+            .ok_or("the sub-agent is no longer active for its keeper")?;
+        let lead = roster.root_of(child);
+        if lead.is_sub() || !lead.is_active() || !lead.keeper.eq_ignore_ascii_case(&child.keeper) {
+            return Err("the sub-agent has no active lead belonging to its keeper".into());
+        }
+        Ok(std::borrow::Cow::Owned(lead.clone()))
     }
 
     /// These agents, told the devices this server placed itself for its workspaces' windows:
@@ -1253,8 +1282,16 @@ impl ServerAgents {
             Ask::Issue { record, .. } => (TASKS, record),
         };
         let (_, agent, place) = going::place(workspace, turn);
+        let signer = match self.signing_agent(workspace, &turn.agent).await {
+            Ok(signer) => signer,
+            Err(error) => {
+                tracing::debug!(%workspace, %agent, %error, "no signing agent can claim this turn");
+                return None;
+            }
+        };
         let ask = crate::work::Turn::Agent {
             agent: agent.clone(),
+            signer: signer.id.0.clone(),
             place,
             acts_for: keeper,
             app: app.to_owned(),

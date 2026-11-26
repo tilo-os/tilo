@@ -110,7 +110,7 @@ public final class TiloEngine: NSObject {
     /// script, or the app, can read it.
     let pass: String
     /// The current site hands this device the server's action catalogue.
-    private(set) var hosted = false
+    public private(set) var hosted = false
     /// What was asked of the page and is not answered yet. A page that is loaded again under
     /// an ask never answers it, so these end when the page they were asked of is put away.
     private var asked: [UUID: CheckedContinuation<String?, Never>] = [:]

@@ -639,10 +639,11 @@ export async function startEntryPage({mode}) {
         state(page.peer.getSnapshot());
         return true;
       }
-      if (!embed && !guestTicket && !enteredViaEntry && query.get('new-workspace') === '1' &&
+      const ownRequested = query.get('own-workspace') === '1';
+      if (!embed && !guestTicket && !enteredViaEntry && (ownRequested || query.get('new-workspace') === '1') &&
           page.peer === admitted && page.workspace === admitted?.workspace &&
           admitted?.host?.hostCert?.capabilities?.can_own_workspaces) {
-        const own = await askNewWorkspace(admitted, messages);
+        const own = ownRequested ? await ensureOwnWorkspace(admitted) : await askNewWorkspace(admitted, messages);
         if (!own) return false;
         remembering(() => chooseWorkspace({origin: own.origin, workspace: own.id}));
         rememberPageWorkspace({workspace: own.id, name: own.name});

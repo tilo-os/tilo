@@ -1012,50 +1012,52 @@ fn refused_in_words(answer: &str) -> bool {
     .any(|said| answer.contains(said))
 }
 
-/// What a sub-agent writes is kept under its own name. Only the person's own agent is
-/// approved; the sub-agent it starts holds no approval of its own and works under its
-/// starter's. Its answer stands in its own conversation as its words, and History reads every
-/// change of it as the sub-agent's, working for its person.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_sub_agents_write_is_kept_under_its_own_name() {
-    team!(
-        root, browser, actions, workspaces, workspace, page, person, served
-    );
+/// A member's sub-agent on another person's host signs its own answer and History
+/// entry under its lead's grant. The member asks for it through Chat.
+pub(in super::super) async fn child_writes_as_itself(
+    runner: ServerAgents,
+    workspaces: &Workspaces,
+    workspace: &str,
+    actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
+    caller: &Caller,
+    person: &str,
+) {
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = worked(
-        &served,
-        &workspace,
-        plays(&asked, |request| {
-            if of_sub_agent(request) {
-                says("The notes are tidy.")
-            } else {
-                says("Told.")
-            }
-        }),
+    let agents = runner.scripted(plays(&asked, |request| {
+        if of_sub_agent(request) {
+            says("The notes are tidy.")
+        } else {
+            says("Told.")
+        }
+    }));
+    let thread = chat::Chat::direct_id([MemberId::person(person), MemberId::agent(SCOUT)]);
+    asks_for_one(
+        actions,
+        workspace,
+        caller,
+        &thread,
+        ("Writer", "Tidy the notes.", "tidy"),
     )
-    .await;
-    starts(
-        &workspaces,
-        &workspace,
-        &person,
-        ("Writer", "Tidy the notes."),
-    )
-    .await;
-    let own = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent("writer")]);
-    agents.look(&workspace).await.unwrap();
-    let job = caused(&workspaces, &workspace, (own.as_str(), "job"), 1).await[0]
+    .await
+    .expect("the member asks their agent for a child");
+    agents.look(workspace).await.unwrap();
+    let ask = chat::cause::message_id(&MemberId::person(person), "tidy");
+    let child = format!("sub-{}", &ask.as_str()[..12]);
+    let own = chat::Chat::direct_id([MemberId::person(person), MemberId::agent(&child)]);
+    agents.look(workspace).await.unwrap();
+    let job = caused(workspaces, workspace, (own.as_str(), "job"), 1).await[0]
         .0
         .clone();
-    agents.look(&workspace).await.unwrap();
-    let answered = reply_of(&workspaces, &workspace, &job, "writer").await;
+    agents.look(workspace).await.unwrap();
+    let answered = reply_of(workspaces, workspace, &job, &child).await;
     assert_eq!(
         (answered.text.as_str(), &answered.author),
-        ("The notes are tidy.", &MemberId::agent("writer")),
+        ("The notes are tidy.", &MemberId::agent(&child)),
         "its answer is its own words"
     );
 
     let saved = workspaces
-        .resource_document(&workspace, "so.tilo.chat", chat::parts::part(0).as_str())
+        .resource_document(workspace, CHAT, chat::parts::part(0).as_str())
         .await
         .unwrap()
         .unwrap();
@@ -1070,18 +1072,17 @@ async fn a_sub_agents_write_is_kept_under_its_own_name() {
             acting
                 .nodes()
                 .iter()
-                .any(|node| node.agent_id() == Some("writer"))
+                .any(|node| node.agent_id() == Some(child.as_str()))
         })
         .collect();
     assert!(!by_it.is_empty(), "History holds the sub-agent's writes");
     for acting in &by_it {
         assert_eq!(
             (acting.agent_id(), acting.acted_for_person()),
-            (Some("writer"), Some(person.as_str())),
+            (Some(child.as_str()), Some(person)),
             "each is the sub-agent's own, working for its person: {acting:?}"
         );
     }
-    page.peer.close();
 }
 
 /// A team from inside a turn: the person's own agent starts and steers its sub-agents from

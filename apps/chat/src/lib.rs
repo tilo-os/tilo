@@ -48,6 +48,7 @@
 
 pub mod agent_stream;
 pub mod app;
+mod assistant_grant;
 mod attachment_view;
 pub mod body;
 pub mod call;

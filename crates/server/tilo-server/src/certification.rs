@@ -590,6 +590,18 @@ impl CertificationProtocol {
             .map(|(digest, code, _)| (digest, code))
     }
 
+    /// Remove a withdrawn roster grant from the keeper's outstanding proposals.
+    pub(crate) fn withdraw_delegate(&self, device: [u8; 32]) {
+        let mut pending = self.lock();
+        let count = pending.len();
+        pending.retain(|_, entry| {
+            entry.agent.is_none() || entry.entry.request.device_public_key != device
+        });
+        if pending.len() != count {
+            self.moved();
+        }
+    }
+
     /// The approver's answer to agent request `digest`: its certificate and
     /// delegation, or why there are none. Waits until decided or expired.
     pub async fn delegate_answer(

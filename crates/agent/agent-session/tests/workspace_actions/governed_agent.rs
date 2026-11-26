@@ -213,6 +213,90 @@ async fn a_hosted_roster_turn() {
     )
     .await;
     let agent = super::hosted_agent_turns::SCOUT;
+    let resource = format!("{AGENT_RESOURCE_PREFIX}{agent}");
+    let status = || {
+        request(
+            AGENTS_PROVIDER,
+            ActionAddress::new(&resource, "grant-status"),
+            InvokeArgument::None,
+        )
+    };
+    let initial = supervise(&mut page, &resource, "grant-status", InvokeArgument::None).await;
+    assert_eq!(
+        initial,
+        serde_json::json!({"state": "missing", "ready": false, "apps": [], "expiresAtMs": null})
+    );
+    assert!(matches!(
+        guest.invoke(status()).await.status,
+        ReceiptStatus::Rejected { .. }
+    ));
+    assert!(matches!(
+        wrong.invoke(status()).await.status,
+        ReceiptStatus::Rejected { .. }
+    ));
+    // A certified keeper can discover precisely the grant actions their assistant offers.
+    let catalogue = |provider: Option<&str>| tilo_actions::remote::CatalogueQuery {
+        provider: provider.map(str::to_owned),
+        ..Default::default()
+    };
+    let discovery = page.catalogue(catalogue(None)).await.unwrap();
+    assert!(discovery.providers.iter().any(|entry| {
+        entry.provider == AGENTS_PROVIDER && entry.workspace == workspace.workspace
+    }));
+    let offered = page
+        .catalogue(catalogue(Some(AGENTS_PROVIDER)))
+        .await
+        .unwrap();
+    let offered: Vec<_> = offered
+        .rows
+        .iter()
+        .filter_map(|row| row.action.as_ref())
+        .collect();
+    assert_eq!(
+        offered.len(),
+        3,
+        "an assistant with no grant has nothing to revoke"
+    );
+    assert!(
+        offered
+            .iter()
+            .all(|action| action.address.resource == resource)
+    );
+    assert!(
+        offered
+            .iter()
+            .any(|action| action.address.action == "grant-status"
+                && action.contract.kind == tilo_actions::ActionKind::Read)
+    );
+    assert!(
+        offered
+            .iter()
+            .any(|action| action.address.action == "request-chat-grant")
+    );
+    assert!(
+        offered
+            .iter()
+            .any(|action| action.address.action == "request-assistant-work-grant")
+    );
+    for other in [&mut guest, &mut wrong] {
+        assert!(
+            other
+                .catalogue(catalogue(Some(AGENTS_PROVIDER)))
+                .await
+                .unwrap()
+                .rows
+                .is_empty()
+        );
+        assert!(
+            !other
+                .catalogue(catalogue(None))
+                .await
+                .unwrap()
+                .providers
+                .iter()
+                .any(|entry| entry.provider == AGENTS_PROVIDER)
+        );
+    }
     let ask = || {
         request(
             AGENTS_PROVIDER,
@@ -284,7 +368,19 @@ async fn a_hosted_roster_turn() {
     };
     let first = output(first);
     assert_eq!(first["grant"], agent);
+    let offered = page
+        .catalogue(catalogue(Some(AGENTS_PROVIDER)))
+        .await
+        .unwrap();
+    assert!(offered.rows.iter().any(|row| {
+        row.action
+            .as_ref()
+            .is_some_and(|action| action.address == ActionAddress::new(&resource, REVOKE_ACTION))
+    }));
     assert_eq!(first, output(repeated));
+    let waiting = output(second.invoke(status()).await);
+    assert_eq!(waiting["state"], "pending");
+    assert_eq!(waiting["ready"], false);
     let proposals = approver.list_agent_proposals().await.unwrap();
     assert_eq!(proposals.len(), 1);
     let proposal = &proposals[0];
@@ -312,6 +408,7 @@ async fn a_hosted_roster_turn() {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     assert!(sessions.link(&first_device).is_none());
+    assert_eq!(output(second.invoke(status()).await)["state"], "denied");
     assert_eq!(output(page.invoke(declined).await), first);
     assert!(approver.list_agent_proposals().await.unwrap().is_empty());
 
@@ -537,6 +634,71 @@ async fn a_hosted_roster_turn() {
         caller: &as_agent,
         device,
     };
+    // Services beside the records must honor the signed app list on a turn too.
+    {
+        use tilo_actions::remote::{
+            ActionCallError, ActionProvider, workspace_events, workspace_initiative,
+        };
+        let tools = tilo_workspace_service::agents::WorkspaceActionProvider::new(
+            roster.actions.clone(),
+            workspace.workspace_id,
+        )
+        .offering(roster.events.clone())
+        .offering_initiative(roster.initiative.clone());
+        let dm = chat::Chat::direct_id([
+            tilo_actions::MemberId::person(hex::encode(keeper)),
+            tilo_actions::MemberId::agent(agent),
+        ]);
+        let turn = as_agent
+            .clone()
+            .on_roster_turn(tilo_action_policy::turn::Turn::new(
+                chat::summons::conversation_address(&dm),
+                "ask",
+            ));
+        for (provider, resource, list) in [
+            (
+                workspace_events::PROVIDER,
+                workspace_events::RESOURCE,
+                workspace_events::LIST,
+            ),
+            (
+                workspace_initiative::PROVIDER,
+                workspace_initiative::PROPOSALS,
+                workspace_initiative::LIST,
+            ),
+        ] {
+            let offers = tools
+                .query(&turn, catalogue(Some(provider)))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                offers.rows.is_empty(),
+                "{provider} was offered outside the grant"
+            );
+            let answer = tools
+                .invoke(
+                    &turn,
+                    request(
+                        provider,
+                        ActionAddress::new(resource, list),
+                        InvokeArgument::None,
+                    ),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(
+                    answer.status,
+                    ReceiptStatus::Rejected {
+                        error: ActionCallError::NotPermitted
+                    }
+                ),
+                "{answer:?}"
+            );
+        }
+    }
     let unsigned = direct
         .run(sheet_request(&workbook, "Unsigned"), false)
         .await;
@@ -724,6 +886,44 @@ async fn a_hosted_roster_turn() {
         page.invoke(ask()).await.status,
         ReceiptStatus::Rejected { .. }
     ));
+    assert_eq!(output(second.invoke(status()).await)["state"], "revoked");
+    let fresh = supervise(
+        &mut page,
+        &resource,
+        "request-chat-grant",
+        InvokeArgument::None,
+    )
+    .await;
+    assert_eq!(fresh["grant"], agent);
+    let proposal = approver
+        .list_agent_proposals()
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(proposal.proposal.scope.workspaces, [workspace.workspace_id]);
+    assert_eq!(proposal.proposal.scope.apps, ["so.tilo.chat"]);
+    assert_eq!(output(second.invoke(status()).await)["state"], "pending");
+    supervise(&mut page, &resource, REVOKE_ACTION, InvokeArgument::None).await;
+    assert!(approver.list_agent_proposals().await.unwrap().is_empty());
+    supervise(
+        &mut page,
+        &resource,
+        "request-assistant-work-grant",
+        InvokeArgument::None,
+    )
+    .await;
+    let proposals = approver.list_agent_proposals().await.unwrap();
+    assert_eq!(proposals.len(), 1);
+    assert_eq!(
+        proposals[0].proposal.scope.apps,
+        [
+            "so.tilo.chat",
+            "so.tilo.tasks",
+            "so.tilo.assistant",
+            "so.tilo.shortcuts"
+        ]
+    );
     for page in [&page, &second, &wrong, &guest] {
         page.peer.close();
     }

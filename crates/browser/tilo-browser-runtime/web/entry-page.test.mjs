@@ -187,6 +187,25 @@ async function fixture({boot, remembered = [], own = false, search = '', session
 
 /** A workspace of the host other than its listed one (the Lounge), which a link names. */
 const STUDIO = '7d7cf1fb-7214-4cce-9b34-1b5fdf9c0d3c';
+test('the personal workspace link admits this existing device to its own workspace', async () => {
+  let asks = 0;
+  const {failure, at} = await fixture({search: '?own-workspace=1', member: {
+    host: {hostCert: {device_public_key: Array(32).fill(0xcd), capabilities: {can_own_workspaces: true}}},
+    enterOwnWorkspace: async options => {
+      assert.equal(options.name, undefined, 'the existing workspace is requested');
+      asks++;
+      return {workspace: STUDIO, name: 'Private'};
+    },
+  }, boot: async ({deps}, page) => {
+    await deps.onAdmitted(page.peer);
+    assert.equal(await deps.holdFirstScreen({...page, workspace: 'current'}), true);
+  }});
+  assert.ifError(failure);
+  assert.equal(asks, 1);
+  assert.equal(at(), 'https://web.example/w/' + STUDIO);
+  assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, workspace: STUDIO});
+});
+
 test('New workspace waits for a name and reuses the signed create after a lost answer', async () => {
   const asks = [];
   const hosted = {user_public_key: Array(32).fill(170), device_public_key: Array(32).fill(0xcd),

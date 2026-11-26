@@ -8,10 +8,10 @@
 
 #[cfg(feature = "dial")]
 use tilo_server_protocol::certify::{
-    ApproverDecision, ApproverReply, ApproverRequest, MemberApproval,
+    ApproverDecision, ApproverReply, ApproverRequest, MemberApproval, PendingDelegate,
 };
 use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry_async};
-#[cfg(test)]
+#[cfg(any(test, feature = "dial"))]
 use tilo_user_identity::{RevocationList, issue_device_cert_async};
 
 #[cfg(feature = "dial")]
@@ -119,6 +119,100 @@ pub async fn pending_pairings(
         ApproverReply::Pending(pending) => Ok(pending),
         _ => Err(CertifyError::Denied(
             "the server answered something else".into(),
+        )),
+    }
+}
+
+/// The pending roster grants the root holder can review in this workspace.
+///
+/// # Errors
+/// The server was not reached or the proposal or answer was refused.
+#[cfg(feature = "dial")]
+pub async fn pending_agent_grants(
+    server: &impl MemberServer,
+    root: &dyn DeviceSigner,
+    workspace: collab_types::WorkspaceId,
+) -> Result<Vec<PendingDelegate>, CertifyError> {
+    match approve(server, root, ApproverRequest::DelegateProposals).await? {
+        ApproverReply::DelegateProposals(mut proposals) => {
+            proposals.retain(|entry| {
+                entry.proposal.scope.workspaces.as_slice() == [workspace]
+                    && entry.proposal.delegate.agent_id().is_some()
+            });
+            Ok(proposals)
+        }
+        _ => Err(CertifyError::Denied(
+            "the server did not return pending agent grants".into(),
+        )),
+    }
+}
+
+/// Answer exactly the roster grant the root holder reviewed. A changed scope, certification
+/// request, or workspace requires a fresh review.
+///
+/// # Errors
+/// The server was not reached or the proposal or answer was refused.
+#[cfg(feature = "dial")]
+pub async fn answer_agent_grant(
+    server: &impl MemberServer,
+    root: &dyn DeviceSigner,
+    workspace: collab_types::WorkspaceId,
+    shown: &PendingDelegate,
+    approved: bool,
+) -> Result<(), CertifyError> {
+    if !pending_agent_grants(server, root, workspace)
+        .await?
+        .contains(shown)
+    {
+        return Err(CertifyError::Denied(
+            "that agent grant is no longer pending as shown".into(),
+        ));
+    }
+    let decision = if approved {
+        let request = pending_pairings(server, root)
+            .await?
+            .into_iter()
+            .find(|entry| entry.request_digest == shown.request_digest)
+            .ok_or_else(|| CertifyError::Denied("that agent no longer waits".into()))?
+            .request;
+        let invalid = |error: &dyn std::fmt::Display| CertifyError::Request(error.to_string());
+        if request.digest().map_err(|error| invalid(&error))? != shown.request_digest {
+            return Err(CertifyError::Denied(
+                "the agent's certification request changed".into(),
+            ));
+        }
+        let now = tilo_clock::unix_now_ns();
+        let cert = issue_device_cert_async(
+            &request,
+            root,
+            &tilo_user_identity::CertificationPolicy::agent(),
+            &RevocationList::new(),
+            now,
+        )
+        .await
+        .map_err(|error| invalid(&error))?;
+        let delegation = shown
+            .proposal
+            .sign_async(root, request.device_public_key, now)
+            .await
+            .map_err(|error| invalid(&error))?;
+        ApproverDecision::IssueDelegate { cert, delegation }
+    } else {
+        ApproverDecision::Deny
+    };
+    match approve(
+        server,
+        root,
+        ApproverRequest::Decide {
+            request_digest: shown.request_digest,
+            decision,
+        },
+    )
+    .await?
+    {
+        ApproverReply::Decided => Ok(()),
+        _ => Err(CertifyError::Denied(
+            "the server did not settle the grant".into(),
         )),
     }
 }

@@ -81,7 +81,7 @@ const QUESTION_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
 /// kind of resource it is in that app.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Store {
-    app: &'static str,
+    pub(crate) app: &'static str,
     kind: &'static str,
 }
 

@@ -301,6 +301,18 @@ it. Where the page says which workspace is the person's own, the app goes there,
 that is where the assistant lives. Tasks come from the workspace tracker; attached files
 use the device’s workspace content service when available.
 
+**Approving a hosted assistant.** In the personal assistant conversation, request Chat access
+to let the assistant reply. To let it work on tasks, proposals and schedules, choose the
+option that lists Chat, Tasks, Assistant and Shortcuts. Each request covers this workspace
+for up to six days. In the browser where you created or restored your Tilo identity, choose
+**Open your personal workspace** from the Lounge. Review the assistant, workspace, apps and
+expiry, compare the displayed code when available, and choose **Approve** or **Decline**.
+With a model connected, the assistant can reply once its approved session connects.
+
+You can request access again after a denial or expiry. To change the apps it may use, open
+**Manage assistant access** in Chat or **Assistant access** in the Swift app, revoke its
+current access, and request the new scope. The same browser approval applies.
+
 **A service by its address.** The person gives their assistant a service's address. Their
 server looks at it and asks them in their conversation whether to connect it: a question that
 keeps the service's card beside its words (`tilo.connections`, `propose`). The app draws that

@@ -349,6 +349,24 @@ impl ChatApp {
             })
     }
 
+    /// The agent in this person's direct conversation with their assistant. A confined
+    /// view without roster access leaves the keeper check to the signed service.
+    pub(crate) fn personal_dm(&self) -> Option<String> {
+        let keeper = self.me.id.person_id()?;
+        let agent = self.conversation_agent()?;
+        let dm = Chat::direct_id([self.me.id.clone(), MemberId::agent(&agent)]);
+        if self.alone.is_some() || dm.as_str() != self.active_channel {
+            return None;
+        }
+        if let Some(record) = self.agents_record().filter(|record| record.may_read()) {
+            let state = record.get();
+            if state.personal_assistant(keeper)?.id.0 != agent {
+                return None;
+            }
+        }
+        Some(agent)
+    }
+
     pub(crate) fn agents_record(
         &self,
     ) -> Option<ui::prelude::WorkspaceResource<ui::tilo_workspace_agent::WorkspaceAgents>> {

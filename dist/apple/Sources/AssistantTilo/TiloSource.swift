@@ -149,6 +149,19 @@ public final class TiloSource: AssistantSource {
     private var rosterRefused = false
     /// What the main chat says of the person's providers, as their server last listed them.
     private var providerSetup = Setup.unknown
+    /// The hosted agent must have its own approved Chat signing session. The comparison
+    /// code lives only in the current device's setup view.
+    private struct ChatGrantTarget: Equatable {
+        let agent: String
+        let person: String
+        let workspace: String
+        var device: (person: String, workspace: String) { (person, workspace) }
+    }
+    private var grantTarget: ChatGrantTarget?
+    private var grantSetup = Setup.unknown
+    private var grantRead: UUID?
+    private var grantRequest: UUID?
+    private let grantAgain = Again()
     /// Nor one of what was learned.
     private var keepsNothingLearned = false
     /// What was learned, by where it is kept: the person's own record in Chat (agents on their
@@ -409,6 +422,7 @@ public final class TiloSource: AssistantSource {
         rosterRefused = false
         agentsAgain.settle()
         providerSetup = .unknown
+        resetChatGrant()
         setups.set(.unknown)
         keepsNothingLearned = false
         learnedInChat = []
@@ -600,6 +614,7 @@ public final class TiloSource: AssistantSource {
     /// The page is in: who the person is, whether this is where the assistant lives, and which
     /// conversation is the main chat.
     private func arrived(at route: String) async {
+        resetChatGrant()
         standsInOwn = false
         var root: String?
         finds = true
@@ -872,6 +887,7 @@ public final class TiloSource: AssistantSource {
                 agentsAgain.settle()
                 var seen = supervisionNow.now
                 await sayAgents(all, into: &seen)
+                seen.assistantAccess = supervisionNow.now.assistantAccess
                 supervisionNow.set(seen)
             } catch TiloEngine.Problem.refused(let code, _) where code == "unknown_action" {
                 rosterRefused = true
@@ -1066,7 +1082,137 @@ public final class TiloSource: AssistantSource {
         // Her assistant is found and what answers for it is not read yet: the start goes on,
         // and nothing is said between the two.
         if starts, providerSetup == .unknown { return }
-        setups.set(providerSetup)
+        if mainChat == .assistant, engine.hosted, providerSetup == .ready {
+            // A model can answer only once this host may sign Chat as the assistant.
+            if grantSetup != .unknown, grantTarget == currentChatGrant { setups.set(grantSetup) }
+        } else {
+            setups.set(providerSetup)
+        }
+    }
+
+    private var currentChatGrant: ChatGrantTarget? {
+        guard engine.hosted, mainChat == .assistant, let assistant, let person,
+              let scope = try? signedDevice(for: person) else { return nil }
+        return ChatGrantTarget(agent: assistant, person: scope.person, workspace: scope.workspace)
+    }
+
+    private func resetChatGrant() {
+        grantAgain.settle()
+        grantTarget = nil
+        grantSetup = .unknown
+        grantRead = nil
+        grantRequest = nil
+        publishChatAccess(nil)
+    }
+
+    private func publishChatAccess(_ access: Supervision.AssistantPermission?) {
+        var seen = supervisionNow.now
+        seen.assistantAccess = access
+        supervisionNow.set(seen)
+    }
+
+    /// This read never proposes or renews a grant. Only the person's explicit request does.
+    public func checkChatPermission() async {
+        guard let target = currentChatGrant else { return }
+        if grantTarget != target {
+            resetChatGrant()
+            grantTarget = target
+        }
+        let read = UUID()
+        grantRead = read
+        var expires: Date?
+        do {
+            let grant = try await engine.chatGrantStatus(agent: target.agent, forDevice: target.device)
+            guard grantRead == read, currentChatGrant == target else { return }
+            guard let state = Supervision.AssistantPermission.State(rawValue: grant.state.rawValue) else { throw TiloEngine.Problem.noAnswer }
+            let previous = supervisionNow.now.assistantAccess
+            expires = grant.expiresAtMs.map { Date(timeIntervalSince1970: Double($0) / 1000) }
+            publishChatAccess(.init(state: state, apps: grant.apps, expires: expires, ready: grant.ready))
+            if grant.ready, grant.state == .approved {
+                grantSetup = .ready
+            } else {
+                let permission: ChatPermission
+                switch grant.state {
+                case .missing: permission = .needed
+                case .pending:
+                    let sameRequest = previous?.state != .pending || (previous?.apps == grant.apps && previous?.expires == expires)
+                    if sameRequest, case .chatPermission(.pending(let code)) = grantSetup { permission = .pending(code: code) }
+                    else { permission = .pending(code: nil) }
+                case .approved:
+                    permission = grant.apps.isEmpty || grant.apps.contains("so.tilo.chat") ? .joining
+                        : .unavailable(AssistantWords.chatPermissionExcludesChat.said)
+                case .denied: permission = .declined
+                case .expired: permission = .expired
+                case .revoked: permission = .revoked
+                }
+                grantSetup = .chatPermission(permission)
+            }
+        } catch {
+            guard grantRead == read, currentChatGrant == target else { return }
+            publishChatAccess(nil)
+            let reason: String
+            if case TiloEngine.Problem.refused(_, let message) = error, !message.isEmpty { reason = message }
+            else { reason = AssistantWords.unreachable.said }
+            grantSetup = .chatPermission(.unavailable(reason))
+        }
+        saySetup()
+        switch grantSetup {
+        case .chatPermission(.pending), .chatPermission(.joining), .chatPermission(.unavailable):
+            grantAgain.later(first: .seconds(2)) { [weak self] in
+                guard let self, self.currentChatGrant == target else { return }
+                await self.checkChatPermission()
+            }
+        case .ready:
+            grantAgain.settle()
+            if let expires {
+                grantAgain.later(first: .seconds(max(1, expires.timeIntervalSinceNow + 1))) { [weak self] in
+                    guard let self, self.currentChatGrant == target else { return }
+                    await self.checkChatPermission()
+                }
+            }
+        default: grantAgain.settle()
+        }
+    }
+
+    public func requestChatPermission() async throws { try await changeChatGrant(.request(.chat)) }
+    public func requestAssistantWorkPermission() async throws { try await changeChatGrant(.request(.work)) }
+    public func revokeChatPermission() async throws { try await changeChatGrant(.revoke) }
+
+    private enum GrantChange { case request(AssistantAccess), revoke }
+
+    private func changeChatGrant(_ change: GrantChange) async throws {
+        guard let target = currentChatGrant, grantTarget == target else { throw SourceProblem.signedOut }
+        guard grantRequest == nil, let access = supervisionNow.now.assistantAccess else { return }
+        switch (change, access.state) {
+        case (.request, .missing), (.request, .denied), (.request, .expired), (.request, .revoked),
+             (.revoke, .pending), (.revoke, .approved): break
+        default: return
+        }
+        let request = UUID()
+        grantRequest = request
+        grantRead = nil
+        defer { if grantRequest == request { grantRequest = nil } }
+        do {
+            var code: String?
+            try await taken {
+                switch change {
+                case .request(.chat): code = try await self.engine.requestChatGrant(agent: target.agent, forDevice: target.device)
+                case .request(.work): code = try await self.engine.requestAssistantWorkGrant(agent: target.agent, forDevice: target.device)
+                case .revoke: try await self.engine.revokeChatGrant(agent: target.agent, forDevice: target.device)
+                }
+            }
+            guard grantRequest == request, currentChatGrant == target else { throw SourceProblem.signedOut }
+            grantRead = nil
+            if case .request = change {
+                grantSetup = .chatPermission(code.map { .pending(code: $0) } ?? .joining)
+                saySetup()
+            }
+        } catch {
+            // A lost receipt can still have changed the grant. Reconcile with a read.
+            if currentChatGrant == target { await checkChatPermission() }
+            throw error
+        }
+        await checkChatPermission()
     }
 
     public nonisolated func setup() -> AsyncStream<Setup> { setups.stream() }
@@ -2038,7 +2184,7 @@ public final class TiloSource: AssistantSource {
 
     /// Bind each read or decision to the workspace the person was viewing when they made it.
     /// The bridge also checks this identity on the device that actually sends the request.
-    private func initiativeDevice(for expected: Person) throws -> (person: String, workspace: String) {
+    private func signedDevice(for expected: Person) throws -> (person: String, workspace: String) {
         guard person?.id == expected.id, let workspace = expected.workspaceRoute, person?.workspaceRoute == workspace,
               case .open(let route) = engine.state, EngineAddress.workspace(of: route) == workspace,
               (!livesInOwn || standsInOwn), let id = workspace.split(separator: "/").last else {
@@ -2048,7 +2194,7 @@ public final class TiloSource: AssistantSource {
     }
 
     public func proposalReview(for expected: Person) async throws -> ProposalReview? {
-        let scope = try initiativeDevice(for: expected)
+        let scope = try signedDevice(for: expected)
         do {
             let reply = try await engine.ask(.initiative, "list", of: "proposals", forDevice: scope)
             guard let rows = reply["proposals"]?.array, let workspace = expected.workspaceRoute else {
@@ -2066,7 +2212,7 @@ public final class TiloSource: AssistantSource {
                                     eventCondition: event?["onlyIf"]?.string)
             }
             let offers = try await engine.personActions(.initiative, forDevice: scope)
-            _ = try initiativeDevice(for: expected)
+            _ = try signedDevice(for: expected)
             func offered(_ action: String, on resource: String = "proposals") -> JSON? {
                 offers.first { $0["resource"]?.string == resource && $0["action"]?.string == action }
             }
@@ -2105,10 +2251,10 @@ public final class TiloSource: AssistantSource {
         var arguments: [String: JSON] = ["proposal": .string(proposal.id.value)]
         if always { arguments["always"] = true }
         try await taken {
-            let scope = try self.initiativeDevice(for: expected)
+            let scope = try self.signedDevice(for: expected)
             let result = try await engine.ask(.initiative, accept ? "accept" : "decline", of: "proposals",
                                               arguments, forDevice: scope)
-            _ = try self.initiativeDevice(for: expected)
+            _ = try self.signedDevice(for: expected)
             guard result["id"]?.string == proposal.id.value, let state = result["state"]?.string else {
                 throw SourceProblem.unreachable
             }
@@ -2117,7 +2263,7 @@ public final class TiloSource: AssistantSource {
             }
             if always {
                 let listed = try await engine.ask(.initiative, "list", of: "proposals", forDevice: scope)
-                _ = try self.initiativeDevice(for: expected)
+                _ = try self.signedDevice(for: expected)
                 guard listed["proposals"]?.array != nil else { throw SourceProblem.unreachable }
                 let kind = listed["kinds"]?.array?.first { $0["kind"]?.string == proposal.kind }
                 guard kind?["always"]?.bool == true else {
@@ -2130,10 +2276,10 @@ public final class TiloSource: AssistantSource {
     public func changePreference(_ preference: ProposalPreference, suggestAgain: Bool, for expected: Person) async throws {
         guard preference.person == expected.id, preference.workspace == expected.workspaceRoute else { throw SourceProblem.signedOut }
         try await taken {
-            let scope = try self.initiativeDevice(for: expected)
+            let scope = try self.signedDevice(for: expected)
             let result = try await engine.ask(.initiative, suggestAgain ? "propose-again" : "ask-first", of: "proposals",
                                               ["kind": .string(preference.kind)], forDevice: scope)
-            _ = try self.initiativeDevice(for: expected)
+            _ = try self.signedDevice(for: expected)
             guard result["proposals"]?.array != nil else { throw SourceProblem.unreachable }
             let current = result["kinds"]?.array?.first { $0["kind"]?.string == preference.kind }
             if let current, current[suggestAgain ? "quiet" : "always"]?.bool != false {
@@ -2144,9 +2290,9 @@ public final class TiloSource: AssistantSource {
 
     public func lookNow(for expected: Person) async throws {
         try await taken {
-            let scope = try self.initiativeDevice(for: expected)
+            let scope = try self.signedDevice(for: expected)
             let state = try await engine.ask(.initiative, "look-now", of: "look-round", forDevice: scope)
-            _ = try self.initiativeDevice(for: expected)
+            _ = try self.signedDevice(for: expected)
             guard state["on"]?.bool != nil else { throw SourceProblem.unreachable }
         }
     }
@@ -2373,6 +2519,8 @@ public final class TiloSource: AssistantSource {
             seen.learnedCount = max(seen.learned.count, seen.learnedCount)
             // The one workspace the assistant works in. Nothing is said of any other of the person's.
             seen.workspaces = worksIn
+            // A permission read or revocation may have completed during the other reads.
+            seen.assistantAccess = supervisionNow.now.assistantAccess
             supervisionNow.set(seen)
             next = surveyAgain
         }
@@ -2492,6 +2640,7 @@ public final class TiloSource: AssistantSource {
             // What the main chat says of it: none linked, none chosen, or nothing in the way.
             providerSetup = TiloSource.setup(of: linked)
             saySetup()
+            if providerSetup == .ready { await checkChatPermission() }
         }
     }
 

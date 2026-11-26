@@ -156,6 +156,11 @@ final class EngineTests: XCTestCase {
               throw Object.assign(new Error('The provider did not accept ' + argument.key), {code: 'key-refused'});
             case 'tilo.events pause':
               return {invocation: 'i-2', state: 'failed', error: {code: 'forbidden', message: 'This event is not yours'}};
+            case 'agents grant-status':
+            case 'agents request-chat-grant':
+            case 'agents request-assistant-work-grant':
+            case 'agents revoke':
+              return window.grantReceipt ?? done(window.grantAnswer);
             default:
               throw Object.assign(new Error('No such action is offered'), {code: 'unknown_action'});
           }
@@ -590,7 +595,7 @@ final class EngineTests: XCTestCase {
         // With the engine's own pass: what the device could ask its host, and the engine does not.
         let refused = try await engine.view.callAsyncJavaScript(#"""
             const said = [];
-            for (const provider of ['tilo.environment', 'tilo.mcp-server', 'tilo.device-pairing', 'tilo.accounts', 'tilo.server',
+            for (const provider of ['tilo.environment', 'tilo.mcp-server', 'tilo.device-pairing', 'tilo.accounts', 'tilo.server', 'agents',
                                     'workspace.permissions:ws-1', 'record:so.tilo.chat:x', 'tilo.models ', 'TILO.MODELS', '']) {
               said.push(JSON.parse(await __tiloLive.person(pass, provider, 'models', 'list', null, null)).error?.code ?? 'answered');
             }
@@ -1151,6 +1156,123 @@ final class EngineTests: XCTestCase {
         XCTAssertTrue(bare.contains("unknown_action"), bare)
         let count = try await said("return String(window.asked.length)")
         XCTAssertEqual(count, "4")
+    }
+
+    func testChatGrantReadsAndRequestsAddressOnlyTheNamedAgentOnTheCurrentDevice() async throws {
+        try await enterAsADevice()
+        let whose = try await engine.whose()
+        let scope = try XCTUnwrap(whose)
+        try await run("window.grantAnswer = {state: 'approved', ready: true, apps: ['so.tilo.chat'], expiresAtMs: 1794900000123}")
+        let status = try await engine.chatGrantStatus(agent: "scout", forDevice: scope)
+        XCTAssertEqual(status.state, .approved)
+        XCTAssertTrue(status.ready)
+        XCTAssertEqual(status.apps, ["so.tilo.chat"])
+        XCTAssertEqual(status.expiresAtMs, 1_794_900_000_123)
+        try await run("window.grantAnswer = {grant: 'scout', pairingCode: 'example-code'}")
+        let code = try await engine.requestChatGrant(agent: "scout", forDevice: scope)
+        XCTAssertEqual(code, "example-code")
+        let calls = try await asked()
+        XCTAssertEqual(JSON(text: calls), [
+            ["target": ["provider": "agents", "address": ["resource": "agent:scout", "action": "grant-status"]], "argument": .null],
+            ["target": ["provider": "agents", "address": ["resource": "agent:scout", "action": "request-chat-grant"]], "argument": .null],
+        ])
+
+        try await run("window.grantAnswer = {state: 'missing', ready: false, apps: [], expiresAtMs: null}")
+        let missing = try await engine.chatGrantStatus(agent: "scout", forDevice: scope)
+        XCTAssertEqual(missing.state, .missing)
+        XCTAssertFalse(missing.ready)
+        XCTAssertEqual(missing.apps, [])
+        XCTAssertNil(missing.expiresAtMs)
+        for field in ["ready: 1", "state: 'unknown'", "apps: [42]", "expiresAtMs: 12.5", "state: 'pending', ready: true"] {
+            try await run("window.grantAnswer = {state: 'approved', ready: false, apps: [], expiresAtMs: null, " + field + "}")
+            do {
+                _ = try await engine.chatGrantStatus(agent: "scout", forDevice: scope)
+                XCTFail("The malformed grant status was accepted: " + field)
+            } catch let problem as TiloEngine.Problem {
+                XCTAssertEqual(problem, .noAnswer, field)
+            }
+        }
+        try await run("window.grantAnswer = {grant: 'scout', pairingCode: ''}")
+        let alreadyApproved = try await engine.requestChatGrant(agent: "scout", forDevice: scope)
+        XCTAssertNil(alreadyApproved)
+
+        for answer in ["{grant: 'other', pairingCode: 'example-code'}", "{grant: 'scout'}",
+                       "{grant: 'scout', pairingCode: null}", "{grant: 'scout', pairingCode: 42}"] {
+            try await run("window.grantAnswer = " + answer)
+            do {
+                _ = try await engine.requestChatGrant(agent: "scout", forDevice: scope)
+                XCTFail("The malformed grant receipt was accepted")
+            } catch let problem as TiloEngine.Problem {
+                XCTAssertEqual(problem, .noAnswer)
+            }
+        }
+        try await run("window.grantReceipt = {state: 'failed', error: {code: 'not_permitted', message: 'Only the keeper may request this grant'}}")
+        do {
+            _ = try await engine.requestChatGrant(agent: "scout", forDevice: scope)
+            XCTFail("A refused grant was accepted")
+        } catch let problem as TiloEngine.Problem {
+            XCTAssertEqual(problem, .refused(code: "not_permitted", reason: "Only the keeper may request this grant"))
+        }
+    }
+
+    func testAssistantWorkGrantAndRevocationAddressOnlyTheNamedAgent() async throws {
+        try await enterAsADevice()
+        let whose = try await engine.whose()
+        let scope = try XCTUnwrap(whose)
+        try await run("window.grantAnswer = {grant: 'scout', pairingCode: 'example-code'}")
+        let code = try await engine.requestAssistantWorkGrant(agent: "scout", forDevice: scope)
+        XCTAssertEqual(code, "example-code")
+        try await run("window.grantAnswer = {}")
+        try await engine.revokeChatGrant(agent: "scout", forDevice: scope)
+        let calls = try await asked()
+        XCTAssertEqual(JSON(text: calls), [
+            ["target": ["provider": "agents", "address": ["resource": "agent:scout", "action": "request-assistant-work-grant"]], "argument": .null],
+            ["target": ["provider": "agents", "address": ["resource": "agent:scout", "action": "revoke"]], "argument": .null],
+        ])
+
+        try await run("window.grantAnswer = {grant: 'scout', pairingCode: ''}")
+        let alreadyApproved = try await engine.requestAssistantWorkGrant(agent: "scout", forDevice: scope)
+        XCTAssertNil(alreadyApproved)
+        try await run("window.grantAnswer = {grant: 'other', pairingCode: 'example-code'}")
+        do {
+            _ = try await engine.requestAssistantWorkGrant(agent: "scout", forDevice: scope)
+            XCTFail("Another agent's work grant was accepted")
+        } catch let problem as TiloEngine.Problem {
+            XCTAssertEqual(problem, .noAnswer)
+        }
+        try await run("window.grantReceipt = {state: 'failed', error: {code: 'not_permitted', message: 'Only the keeper may revoke this grant'}}")
+        do {
+            try await engine.revokeChatGrant(agent: "scout", forDevice: scope)
+            XCTFail("A refused revocation was reported as successful")
+        } catch let problem as TiloEngine.Problem {
+            XCTAssertEqual(problem, .refused(code: "not_permitted", reason: "Only the keeper may revoke this grant"))
+        }
+    }
+
+    func testChatGrantChecksTheEnginePassActionAgentAndDeviceBeforeAskingTheHost() async throws {
+        try await enterAsADevice()
+        let rejected = try await said(#"""
+            const scope = {person: 'ad'.repeat(32), workspace: 'ws-1'};
+            const check = async (given, action, agent, where) =>
+              JSON.parse(await __tiloLive.chatGrant(given, action, agent, where)).error?.code;
+            return JSON.stringify([
+              await check('', 'request-chat-grant', 'scout', scope),
+              await check(pass, 'other-action', 'scout', scope),
+              await check(pass, 'grant-status', 'two agents', scope),
+              await check(pass, 'request-chat-grant', 'scout', null),
+              await check(pass, 'request-chat-grant', 'scout', {...scope, person: 'other'}),
+              await check(pass, 'grant-status', 'scout', {...scope, workspace: 'ws-2'}),
+              await check('', 'revoke', 'scout', scope),
+              await check(pass, 'revoke', 'scout', null),
+              await check(pass, 'revoke', 'scout', {...scope, workspace: 'ws-2'}),
+              await check(pass, 'request-assistant-work-grant', 'scout', {...scope, person: 'other'}),
+              window.asked.length,
+            ]);
+            """#, ["pass": engine.pass])
+        XCTAssertEqual(JSON(text: rejected), [
+            "unknown_action", "unknown_action", "unknown_action", "wrong_device", "wrong_device", "wrong_device",
+            "unknown_action", "wrong_device", "wrong_device", "wrong_device", 0,
+        ])
     }
 
     private func run(_ script: String) async throws {

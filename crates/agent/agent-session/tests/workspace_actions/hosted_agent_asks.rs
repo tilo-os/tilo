@@ -793,7 +793,7 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
 
 /// Sub-agents: started by the person's own agent, working in conversations of their own.
 #[path = "hosted_sub_agents.rs"]
-mod sub_agents;
+pub(super) mod sub_agents;
 
 /// A reminder a person's assistant set up itself, from the asking to the answer.
 #[path = "hosted_agent_reminders.rs"]

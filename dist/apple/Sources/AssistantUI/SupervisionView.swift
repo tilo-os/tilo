@@ -8,6 +8,7 @@ public struct SupervisionView: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.dynamicTypeSize) private var textSize
     @State private var detail: Detail?
+    @State private var permissionToRevoke: Supervision.AssistantPermission?
 
     enum Detail: String, Identifiable {
         case logins, importance, learned, places, workspaces
@@ -31,6 +32,19 @@ public struct SupervisionView: View {
                 }
 
                 VStack(spacing: 0) {
+                    if let permission = facts.assistantAccess {
+                        FactLine(key: .assistantAccess, line: accessLine(permission)) {
+                            VStack(alignment: .trailing, spacing: 8) {
+                                link(.checkChatPermission) { Task { await model.checkChatPermission() } }
+                                    .accessibilityIdentifier("check-chat-permission")
+                                if permission.revocable {
+                                    link(.revokeChatPermission) { permissionToRevoke = permission }
+                                        .accessibilityIdentifier("revoke-chat-permission")
+                                }
+                            }
+                            .disabled(model.chatPermissionBusy)
+                        }
+                    }
                     FactLine(key: .model, line: wording.model(facts)) {
                         Menu {
                             if model.models.isEmpty { Text(AssistantWords.noModelNote.said) }
@@ -81,11 +95,64 @@ public struct SupervisionView: View {
         .scrollClipDisabled()
         .background(Token.page)
         .onAppear { model.loadModels() }
+        .task { await model.checkChatPermission() }
         .sheet(item: $detail) { DetailSheet(detail: $0) }
+        .alert(AssistantWords.revokeChatPermission.said, isPresented: Binding(
+            get: { permissionToRevoke != nil },
+            set: { if !$0 { permissionToRevoke = nil } }
+        ), presenting: permissionToRevoke) { captured in
+            Button(AssistantWords.revokeChatPermission.said, role: .destructive) {
+                Task { await model.revokeChatPermission(expected: captured) }
+            }
+            .accessibilityIdentifier("confirm-revoke-chat-permission")
+            Button(AssistantWords.cancel.said, role: .cancel) {}
+        } message: { captured in
+            let line = accessLine(captured)
+            Text([line.first, line.second, AssistantWords.confirmRevokeChatPermission.said]
+                .compactMap { $0 }.joined(separator: "\n"))
+        }
     }
 
     private func link(_ words: AssistantWords, _ action: @escaping () -> Void) -> some View {
         Button(words.said, action: action).buttonStyle(LinkStyle()).font(.tilo(14, .medium))
+    }
+
+    private func accessLine(_ permission: Supervision.AssistantPermission) -> Wording.Line {
+        let status: AssistantWords
+        switch permission.state {
+        case .missing: return .init(first: AssistantWords.assistantAccessMissing.said)
+        case .denied: return .init(first: AssistantWords.chatPermissionDeclined.said)
+        case .expired: return .init(first: AssistantWords.chatPermissionExpired.said)
+        case .revoked: return .init(first: AssistantWords.chatPermissionRevoked.said)
+        case .pending: status = .assistantAccessPending
+        case .approved:
+            if permission.ready { status = .assistantAccessReady }
+            else if permission.apps.isEmpty || permission.apps.contains("so.tilo.chat") { status = .chatPermissionJoining }
+            else { status = .chatPermissionExcludesChat }
+        }
+
+        let apps = permission.apps.map { id in
+            switch id {
+            case "so.tilo.chat": AssistantWords.chatApp.said
+            case "so.tilo.tasks": AssistantWords.tasks.said
+            case "so.tilo.assistant": AssistantWords.assistant.said
+            case "so.tilo.shortcuts": AssistantWords.shortcutsApp.said
+            default: id
+            }
+        }
+        let appList = apps.isEmpty ? AssistantWords.assistantAccessAllApps.said
+            : apps.formatted(.list(type: .and).locale(wording.locale))
+        let scope: String
+        if permission.state == .pending { scope = AssistantWords.assistantAccessRequestedApps.said(["apps": appList]) }
+        else if apps.isEmpty { scope = appList }
+        else { scope = AssistantWords.assistantAccessApps.said(["apps": appList]) }
+
+        let expiry = permission.expires.map { date in
+            let format = Date.FormatStyle(date: .abbreviated, time: .shortened, locale: wording.locale,
+                                          calendar: wording.calendar, timeZone: wording.calendar.timeZone)
+            return AssistantWords.assistantAccessExpires.said(["date": date.formatted(format)])
+        }
+        return .init(first: status.said, second: [scope, expiry, AssistantWords.assistantAccessChange.said].compactMap { $0 }.joined(separator: "\n"))
     }
 
     /// Messages, tokens and money of the day: `.use`.

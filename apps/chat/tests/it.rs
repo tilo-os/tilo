@@ -12,3 +12,5 @@ mod record_search;
 
 #[path = "native_chat_fixture.rs"]
 mod native_chat_fixture;
+
+mod assistant_grant;

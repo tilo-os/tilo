@@ -79,6 +79,7 @@ tilo-reference = { path = "../../crates/collab/reference" }
 # Message bodies and drafts are rich text, written in the SDK editor.
 tilo-document = { path = "../../crates/doc/tilo-document" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
+tilo-server-protocol = { path = "../../crates/server/tilo-server-protocol" }
 # Content addressing everywhere; the on-disk store, and the device store where
 # the launcher hands one over.
 tilo-content = { path = "../../crates/system/content", features = ["dir"] }

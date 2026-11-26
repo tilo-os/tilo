@@ -46,6 +46,7 @@ fn turn_in(person: &DeviceCert, part: &str) -> (Turn, String) {
     let lease = format!("turn/scout/{part}");
     let turn = Turn::Agent {
         agent: "scout".to_owned(),
+        signer: "scout".to_owned(),
         place: part.to_owned(),
         acts_for: person.user_public_key,
         app: CHAT.to_owned(),

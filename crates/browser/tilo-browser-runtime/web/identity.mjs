@@ -318,15 +318,21 @@ export async function approvalHost(origin, {fetch: fetcher} = {}) {
   return made;
 }
 
-/**
- * The devices waiting at `host` that sign a browser in: those the host marks `signIn`, since a
- * tab's request is told from a device pairing by the ticket's direction and never guessed from
- * its shape. Each is `{digest, label, device, capability}` (`PairingHost.pending`).
- */
-export async function signInsWaiting(host, root) {
+/** The sign-ins waiting for this root, and the roster proposals for the workspace the root's
+ * certified device opened. The certification digest binds the code to the displayed proposal. */
+export async function workspaceApprovals(host, root, workspace) {
   const pending = JSON.parse(await host.pending(root));
-  return pending.filter(request => request?.signIn === true);
+  const signIns = pending.filter(request => request.signIn === true);
+  const candidates = new Map(pending.filter(request => !request.signIn && !request.invite)
+    .map(request => [request.digest, request.pairingCode]));
+  if (!workspace || !candidates.size || !host.pendingAgentGrants) return signIns;
+  const proposals = JSON.parse(await host.pendingAgentGrants(root, workspace));
+  const grants = proposals.filter(grant => grant.workspace === workspace && candidates.has(grant.digest));
+  return signIns.concat(grants.map(grant => ({...grant, kind: 'agent', pairingCode: candidates.get(grant.digest)})));
 }
+
+// Earlier hosted pages ask only about browser sign-ins, without an open workspace.
+export {workspaceApprovals as signInsWaiting};
 
 /**
  * Approve (`approved`) or turn away the sign-in `digest` with `root`, the person's root: the host
@@ -335,6 +341,16 @@ export async function signInsWaiting(host, root) {
  */
 export async function answerSignIn(host, root, digest, approved) {
   return host.answer(root, digest, approved);
+}
+
+/** Answer only what the root was shown. The host checks that the exact proposal still waits. */
+export async function answerWorkspaceApproval(host, root, workspace, request, approved) {
+  if (request.kind === 'agent') {
+    if (!workspace || request.workspace !== workspace) throw new Error('Reopen the workspace where this assistant was requested.');
+    return host.answerAgentGrant(root, workspace, request.token, approved);
+  }
+  if (request.signIn === true) return answerSignIn(host, root, request.digest, approved);
+  throw new Error('This request cannot be answered here.');
 }
 
 /**

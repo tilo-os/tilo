@@ -131,7 +131,7 @@ pub fn not_served(message: RemoteActionMessage) -> Option<Pending<RemoteActionMe
 
 /// Who asks of a workspace's events: a caller on a device the handshake
 /// verified, or a turn this server carries out with no device behind it.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum Authority {
     /// A caller on `certificate`'s device. What an agent on a person's
     /// session changes asks its person first, unless they answered that
@@ -140,6 +140,18 @@ pub enum Authority {
     /// A turn this server carries out for a member, with no device behind
     /// it: the member acting as themselves.
     Turn,
+    /// A host acts through its roster agent's currently approved signing session.
+    HostedAgent(tilo_agent_session::WorkspaceActions),
+}
+
+impl std::fmt::Debug for Authority {
+    fn fmt(&self, format: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Device(certificate) => format.debug_tuple("Device").field(certificate).finish(),
+            Self::Turn => format.write_str("Turn"),
+            Self::HostedAgent(_) => format.write_str("HostedAgent"),
+        }
+    }
 }
 
 impl Authority {
@@ -147,6 +159,17 @@ impl Authority {
     #[must_use]
     pub fn of(certificate: &DeviceCert) -> Self {
         Self::Device(Box::new(certificate.clone()))
+    }
+
+    /// The authority of an internal call on the host, including its signed app scope for a
+    /// roster agent. Personal devices take their turns through their own broker.
+    #[must_use]
+    pub fn hosted(caller: &Caller, actions: &tilo_agent_session::WorkspaceActions) -> Self {
+        if caller.roster_created_at().is_some() {
+            Self::HostedAgent(actions.clone())
+        } else {
+            Self::Turn
+        }
     }
 }
 
@@ -590,7 +613,12 @@ impl WorkspaceEvents {
                     by: member_of(caller, &reach.person),
                 })
             }
-            Authority::Turn => {
+            Authority::Turn | Authority::HostedAgent(_) => {
+                if let Authority::HostedAgent(actions) = authority
+                    && !actions.agent_may_use_app(workspace_id, caller, store.app)
+                {
+                    return Err(ActionCallError::NotPermitted);
+                }
                 // A turn has no device behind it: it is the agent working for
                 // the person who asked, or the member acting as themselves.
                 let person = caller

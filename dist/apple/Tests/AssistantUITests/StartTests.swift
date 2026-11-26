@@ -113,6 +113,138 @@ final class StartTests: XCTestCase {
         XCTAssertFalse(drive.shows(AssistantWords.pairing.said))
     }
 
+    private func withPermissionWindow<Content: View>(setup: Setup, access: Supervision.AssistantPermission? = nil,
+                                                    place: AssistantModel.Place = .chat(.main),
+                                                    @ViewBuilder view: () -> Content,
+                                                    check: @MainActor (MemorySource, AssistantModel, Drive) async throws -> Void) async rethrows {
+        var content = MemorySource.Content()
+        content.session = .signedIn(Drawing.person)
+        content.setup = setup
+        content.supervision.assistantAccess = access
+        let source = MemorySource(content, now: { Drawing.now })
+        let model = AssistantModel(source: source)
+        model.place = place
+        NSApplication.shared.setActivationPolicy(.prohibited)
+        let window = HeldWindow.make(NSRect(x: 0, y: 0, width: 800, height: 740), [.borderless])
+        let drive = Drive(window)
+        window.contentView = NSHostingView(rootView: AssistantRoot(model: model, content: view))
+        defer {
+            window.contentView = nil
+            window.close()
+        }
+        model.start()
+        try await check(source, model, drive)
+    }
+
+    func testChatAccessInTheConversationRequiresARequestAndAnExternalApproval() async throws {
+        let offers: [(ChatPermission, AssistantWords, AssistantWords)] = [
+            (.needed, .chatPermissionScope, .requestChatPermission),
+            (.declined, .chatPermissionDeclined, .requestAssistantWorkPermission),
+            (.expired, .chatPermissionExpired, .requestChatPermission),
+            (.revoked, .chatPermissionRevoked, .requestAssistantWorkPermission),
+        ]
+        let codeInstruction = try XCTUnwrap(AssistantWords.chatPermissionCode.said
+            .components(separatedBy: "{code}").max { $0.count < $1.count })
+        for (permission, message, choice) in offers {
+            await withPermissionWindow(setup: .chatPermission(permission), view: { ConversationView(chat: .main) }) { _, model, drive in
+                await drive.until("the two scopes for \(permission)") { drive.shows(message.said) && drive.has(choice.said, role: "AXButton") }
+                XCTAssertEqual(drive.tree().filter(\.isButton).map(\.name).sorted(),
+                               [AssistantWords.requestChatPermission.said, AssistantWords.requestAssistantWorkPermission.said].sorted())
+                XCTAssertTrue(drive.shows(AssistantWords.chatPermissionScope.said))
+                XCTAssertNil(model.supervision.assistantAccess)
+                drive.press(choice.said, role: "AXButton")
+                await drive.until("the explicit request to reach the workspace") {
+                    model.supervision.assistantAccess != nil && drive.shows(AssistantWords.chatPermissionPending.said)
+                }
+                let apps = choice == .requestChatPermission ? ["so.tilo.chat"]
+                    : ["so.tilo.chat", "so.tilo.tasks", "so.tilo.assistant", "so.tilo.shortcuts"]
+                XCTAssertEqual(model.supervision.assistantAccess, .init(state: .pending, apps: apps,
+                    expires: Drawing.now.addingTimeInterval(6 * 24 * 3600), ready: false))
+                XCTAssertEqual(model.setup, .chatPermission(.pending(code: nil)))
+                XCTAssertEqual(drive.tree().filter(\.isButton).map(\.name), [AssistantWords.checkChatPermission.said])
+                XCTAssertFalse(drive.shows(codeInstruction), "an uncoded request showed a comparison instruction")
+            }
+        }
+    }
+
+    func testCheckingApprovalPreservesThePendingRequestUntilTheWorkspaceAdmitsIt() async {
+        let code = "243168"
+        let pending = Setup.chatPermission(.pending(code: code))
+        await withPermissionWindow(setup: pending, view: { ConversationView(chat: .main) }) { source, model, drive in
+            let comparison = AssistantWords.chatPermissionCode.said(["code": code])
+            await drive.until("the optional comparison code") { drive.shows(comparison) }
+            XCTAssertTrue(drive.shows(AssistantWords.chatPermissionPending.said))
+            drive.press(AssistantWords.checkChatPermission.said, role: "AXButton")
+            await drive.settle()
+            XCTAssertEqual(model.setup, pending)
+            XCTAssertTrue(drive.shows(comparison))
+            XCTAssertNil(model.problem)
+
+            let uncoded = Setup.chatPermission(.pending(code: ""))
+            source.set(uncoded)
+            await drive.until("the empty code to disappear") { model.setup == uncoded && !drive.shows(comparison) }
+            XCTAssertTrue(drive.shows(AssistantWords.chatPermissionPending.said))
+            XCTAssertFalse(drive.shows(AssistantWords.chatPermissionCode.said(["code": ""])))
+
+            let unavailable = ChatPermission.unavailable("Workspace offline")
+            source.set(.chatPermission(unavailable))
+            await drive.until("the workspace's error") { drive.shows("Workspace offline") }
+            XCTAssertTrue(drive.shows(AssistantWords.chatPermissionUnavailable.said))
+            XCTAssertEqual(drive.tree().filter(\.isButton).map(\.name), [AssistantWords.tryAgain.said])
+            XCTAssertFalse(drive.shows(comparison))
+            drive.press(AssistantWords.tryAgain.said, role: "AXButton")
+            await drive.settle()
+            XCTAssertEqual(model.setup, .chatPermission(unavailable))
+            XCTAssertNil(model.problem)
+
+            source.set(.chatPermission(.joining))
+            await drive.until("the assistant to join") { drive.shows(AssistantWords.chatPermissionJoining.said) }
+            XCTAssertEqual(drive.tree().filter(\.isButton).map(\.name), [AssistantWords.checkChatPermission.said])
+            source.set(Setup.ready)
+            await drive.until("the empty conversation after admission") { drive.shows(AssistantWords.nothingYet.said) }
+            XCTAssertFalse(drive.has(AssistantWords.checkChatPermission.said, role: "AXButton"))
+        }
+    }
+
+    func testAssistantAccessShowsTheRequestedOrApprovedAppsAndConfirmsBeforeRevoking() async throws {
+        let expires = Drawing.now.addingTimeInterval(6 * 24 * 3600)
+        let unknown = "example.workspace.custom-app"
+        let pending = Supervision.AssistantPermission(state: .pending, apps: [unknown], expires: expires, ready: false)
+        let approved = Supervision.AssistantPermission(state: .approved, apps: [], expires: expires, ready: true)
+        for permission in [pending, approved] {
+            try await withPermissionWindow(setup: .ready, access: permission, place: .assistantView, view: { SupervisionView() }) { _, model, drive in
+                let isPending = permission.state == .pending
+                let scope = isPending ? AssistantWords.assistantAccessRequestedApps.said(["apps": unknown]) : AssistantWords.assistantAccessAllApps.said
+                let status = isPending ? AssistantWords.assistantAccessPending.said : AssistantWords.assistantAccessReady.said
+                await drive.until("the permission's actual app scope") { drive.shows(scope) && drive.shows(status) }
+                XCTAssertTrue(drive.shows(AssistantWords.assistantAccess.said))
+                let expiry = AssistantWords.assistantAccessExpires.said(["date": expires.formatted(date: .abbreviated, time: .shortened)])
+                XCTAssertTrue(drive.shows(expiry))
+                drive.press(AssistantWords.checkChatPermission.said, role: "AXButton")
+                await drive.settle()
+                XCTAssertEqual(model.supervision.assistantAccess, permission)
+
+                drive.press(AssistantWords.revokeChatPermission.said, role: "AXButton")
+                await drive.until("the revocation confirmation") { !drive.window.heldSheets.isEmpty }
+                let sheet = try XCTUnwrap(drive.window.heldSheets.first?.contentView)
+                await drive.until("the scope under review") { drive.shows(scope, in: sheet) }
+                XCTAssertTrue(drive.shows(AssistantWords.confirmRevokeChatPermission.said, in: sheet))
+                XCTAssertEqual(model.supervision.assistantAccess, permission)
+                let choice = isPending ? AssistantWords.cancel.said : AssistantWords.revokeChatPermission.said
+                let button = try XCTUnwrap(drive.tree(of: sheet).first { $0.isButton && $0.name == choice })
+                drive.press(button, in: sheet)
+                await drive.until("the confirmation to close") { drive.window.heldSheets.isEmpty }
+                if isPending {
+                    XCTAssertEqual(model.supervision.assistantAccess, pending)
+                } else {
+                    await drive.until("the revoked status") { drive.shows(AssistantWords.chatPermissionRevoked.said) }
+                    XCTAssertEqual(model.supervision.assistantAccess?.state, .revoked)
+                    XCTAssertFalse(drive.has(AssistantWords.revokeChatPermission.said, role: "AXButton"))
+                }
+            }
+        }
+    }
+
     func testAMessageSentBeforeItIsKnownWaitsAndGoesOutOnceTheTryGetsIn() async throws {
         let source = Drawing.source()
         let model = AssistantModel(source: source)

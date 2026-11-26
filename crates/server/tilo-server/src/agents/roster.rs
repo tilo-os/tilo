@@ -1,19 +1,22 @@
 //! Provision a hosted roster entry's signing peer through device certification.
 
+mod catalogue;
+
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use tilo_actions::remote::{
-    ActionCallError, Caller, InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, pending,
-    refuse,
+    ActionCallError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, Pending,
+    ReceiptStatus, RemoteActionMessage, pending, refuse,
 };
 use tilo_agent_session::grants::RosterAdmissionDone;
 use tilo_agent_session::{AgentIdentity, AgentSessions, AgentSupervisor, ApprovalDone};
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::agents::{
-    AGENT_RESOURCE_PREFIX, AGENTS_PROVIDER, GrantRequest, REQUEST_GRANT_ACTION, REVOKE_ACTION,
-    RosterGrantRequest, SUPERVISOR_RESOURCE,
+    AGENT_RESOURCE_PREFIX, AGENTS_PROVIDER, GRANT_STATUS_ACTION, GrantRequest, GrantState,
+    REQUEST_ASSISTANT_WORK_GRANT_ACTION, REQUEST_CHAT_GRANT_ACTION, REQUEST_GRANT_ACTION,
+    REVOKE_ACTION, RosterGrantRequest, SUPERVISOR_RESOURCE,
 };
 use tilo_server_protocol::delegation::DelegateProposal;
 use tilo_user_identity::DeviceCert;
@@ -67,21 +70,21 @@ impl RosterProvisioning {
             return None;
         }
         let address = &request.target.address;
-        let revoke = if address.action == REVOKE_ACTION {
-            Some(
-                address
-                    .resource
-                    .strip_prefix(AGENT_RESOURCE_PREFIX)
-                    .filter(|id| supervisor.has_roster_grant(workspace, id))?
-                    .to_owned(),
-            )
-        } else if address.resource == SUPERVISOR_RESOURCE
+        let agent = if address.resource == SUPERVISOR_RESOURCE
             && address.action == REQUEST_GRANT_ACTION
             && matches!(&request.argument, InvokeArgument::Json(arguments) if arguments.contains_key("agentId"))
         {
             None
         } else {
-            return None;
+            let id = address.resource.strip_prefix(AGENT_RESOURCE_PREFIX)?;
+            match address.action.as_str() {
+                GRANT_STATUS_ACTION
+                | REQUEST_CHAT_GRANT_ACTION
+                | REQUEST_ASSISTANT_WORK_GRANT_ACTION => {}
+                REVOKE_ACTION if supervisor.has_roster_grant(workspace, id) => {}
+                _ => return None,
+            }
+            Some(id.to_owned())
         };
         let Some(link) = self.link.get().and_then(Weak::upgrade) else {
             return refuse(
@@ -93,6 +96,7 @@ impl RosterProvisioning {
             .map(Pending::ready);
         };
         let (done, answer) = pending();
+        let sessions = self.sessions.clone();
         let (caller, cert, request, supervisor) = (
             caller.clone(),
             cert.clone(),
@@ -100,9 +104,20 @@ impl RosterProvisioning {
             supervisor.clone(),
         );
         link.runtime.clone().spawn(async move {
-            let result = match revoke {
-                Some(id) => {
+            let result = match agent {
+                Some(id) if request.target.address.action == REVOKE_ACTION => {
                     revoke_grant(&link, workspace, &caller, &cert, &request, &supervisor, &id).await
+                }
+                Some(id) => {
+                    personal_grant(
+                        (&link, &sessions, &supervisor),
+                        workspace,
+                        &caller,
+                        &cert,
+                        &request,
+                        &id,
+                    )
+                    .await
                 }
                 None => provision(&link, workspace, &caller, &cert, &request, &supervisor).await,
             };
@@ -114,6 +129,94 @@ impl RosterProvisioning {
         });
         Some(answer)
     }
+}
+
+/// The keeper reads their personal assistant's current grant, or asks for a new one.
+async fn personal_grant(
+    (link, sessions, supervisor): (&ServerAgentLink, &AgentSessions, &AgentSupervisor),
+    workspace: WorkspaceId,
+    caller: &Caller,
+    cert: &DeviceCert,
+    request: &InvokeRequest,
+    agent: &str,
+) -> Result<InvocationReceipt, ActionCallError> {
+    const CHAT: &str = "so.tilo.chat";
+    tilo_actions::appearance::refuse_here(request)?;
+    if !matches!(&request.argument, InvokeArgument::None)
+        && !matches!(&request.argument, InvokeArgument::Json(fields) if fields.is_empty())
+    {
+        return Err(ActionCallError::InvalidRequest {
+            reason: "this action takes no arguments".into(),
+        });
+    }
+    let entry = personal_entry(link, workspace, caller, cert)
+        .await?
+        .filter(|entry| entry.id.0 == agent)
+        .ok_or_else(keeper_required)?;
+    if request.target.address.action != GRANT_STATUS_ACTION {
+        let mut apps = vec![CHAT.to_owned()];
+        if request.target.address.action == REQUEST_ASSISTANT_WORK_GRANT_ACTION {
+            apps.extend(
+                ["so.tilo.tasks", "so.tilo.assistant", "so.tilo.shortcuts"].map(str::to_owned),
+            );
+        }
+        let grant = GrantRequest {
+            label: entry.name.trim().to_owned(),
+            color: None,
+            workspaces: vec![workspace.to_string()],
+            // The native agent certificate lasts a week, including clock allowance.
+            apps,
+            expires_in_secs: 6 * 24 * 60 * 60,
+        };
+        return supervisor.invoke_roster_grant(
+            caller,
+            request,
+            &grant,
+            agent,
+            entry.created_at,
+            cert,
+        );
+    }
+    let keeper = &cert.user_public_key;
+    let mut status = supervisor.agent_grant_status(workspace, agent, keeper, entry.created_at);
+    status.ready = status.state == GrantState::Approved
+        && (status.apps.is_empty() || status.apps.iter().any(|app| app == CHAT))
+        && link
+            .roster_session_device(sessions, workspace, agent, keeper)
+            .await
+            .is_some();
+    Ok(InvocationReceipt {
+        invocation: request.invocation,
+        status: ReceiptStatus::Completed {
+            output: tilo_actions::ActionOutput {
+                value: Some(serde_json::json!(status)),
+                resources: Vec::new(),
+            },
+        },
+    })
+}
+
+async fn personal_entry(
+    link: &ServerAgentLink,
+    workspace: WorkspaceId,
+    caller: &Caller,
+    cert: &DeviceCert,
+) -> Result<Option<tilo_workspace_agent::Agent>, ActionCallError> {
+    check_the_persons_session(caller, cert)?;
+    let workspaces = link.workspaces.as_ref().ok_or_else(keeper_required)?;
+    if !workspaces
+        .roster_keeper_device(workspace, &cert.user_public_key, cert)
+        .await
+    {
+        return Err(keeper_required());
+    }
+    tilo_workspace_service::agents::assistant::assistant_of(
+        workspaces,
+        &workspace.to_string(),
+        &cert.user_public_key,
+    )
+    .await
+    .map_err(|reason| ActionCallError::Unavailable { reason })
 }
 
 fn keeper_required() -> ActionCallError {

@@ -172,7 +172,13 @@ impl ResourceApp for ChatShell {
         }
         app.jobs = Some(cx.window_jobs::<ChatWindow>());
         let chat: SharedChat = Rc::new(RefCell::new(app));
-        let window = ChatWindow::new(Rc::clone(&chat));
+        let mut window = ChatWindow::new(Rc::clone(&chat));
+        let assistant_dm = cx
+            .me()
+            .and_then(|person| person.person_id())
+            .filter(|id| live && !id.is_empty())
+            .map(|_| cx.local(None));
+        window.assistant_dm.clone_from(&assistant_dm);
         #[cfg(feature = "samples")]
         cx.on_stage(window.stager());
         let answering = Rc::clone(&chat);
@@ -202,7 +208,7 @@ impl ResourceApp for ChatShell {
                 .search_entries(move || unrecorded.borrow().unrecorded_conversation_entries()),
             Box::new(window),
         );
-        let window = conversation_setup(cx, &chat, window);
+        let window = conversation_setup(cx, &chat, assistant_dm, window);
         Box::new(
             shell
                 .sidebar(crate::sidebar::sidebar(
@@ -305,19 +311,19 @@ impl ResourceApp for ChatShell {
 
 /// Navigation from a conversation to the workspace apps that own the person's settings and
 /// proposals. Assistant can also set up the person's agent when Chat cannot read the roster.
-fn conversation_setup(cx: &ViewCx<Chat>, chat: &SharedChat, window: Element) -> Element {
+fn conversation_setup(
+    cx: &ViewCx<Chat>,
+    chat: &SharedChat,
+    assistant_dm: Option<ui::LocalState<Option<String>>>,
+    window: Element,
+) -> Element {
     use ui::tilo_reference::ResourceRef;
     use ui::widget::arrange::{Fit, Stack};
     use ui::widget::{Button, When};
 
-    if !cx.mode().is_live()
-        || cx
-            .me()
-            .and_then(|me| me.person_id())
-            .is_none_or(str::is_empty)
-    {
+    let Some(assistant_dm) = assistant_dm else {
         return window;
-    }
+    };
     let open_assistant = cx.dispatcher();
     let assistant = Button::new(
         "chat-open-assistant",
@@ -363,32 +369,8 @@ fn conversation_setup(cx: &ViewCx<Chat>, chat: &SharedChat, window: Element) -> 
             crate::i18n::t("chat-review-proposals"),
         ),
     );
-    let in_direct = Rc::clone(chat);
-    let proposals = When::new(proposals, move || {
-        let chat = in_direct.borrow();
-        let Some(keeper) = chat.me.id.person_id() else {
-            return false;
-        };
-        let Some(agent) = chat.conversation_agent() else {
-            return false;
-        };
-        let peer = ui::tilo_resource::MemberId::agent(agent.clone());
-        if chat.alone.is_some()
-            || Chat::direct_id([chat.me.id.clone(), peer]).as_str() != chat.active_channel
-        {
-            return false;
-        }
-        // A confined host can show this link without disclosing the roster: Assistant
-        // opens the signed-in person's proposals, with its own authorization.
-        chat.agents_record()
-            .filter(|record| record.may_read())
-            .is_none_or(|record| {
-                record
-                    .get()
-                    .personal_assistant(keeper)
-                    .is_some_and(|assistant| assistant.id.0 == agent)
-            })
-    });
+    let grant = crate::assistant_grant::view(cx, &assistant_dm);
+    let proposals = When::new(proposals, move || assistant_dm.with(Option::is_some));
     let controls = Stack::row()
         .wrap()
         .push(Box::new(assistant))
@@ -400,6 +382,7 @@ fn conversation_setup(cx: &ViewCx<Chat>, chat: &SharedChat, window: Element) -> 
             .fill_width()
             .fill_height()
             .push(Box::new(controls))
+            .push(grant)
             .push_fit(window, Fit::fill(1.0)),
     )
 }

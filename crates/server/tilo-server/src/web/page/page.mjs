@@ -368,6 +368,16 @@ export function pagePerson(cert) {
     (!issuer.issuer && personal(issuer.capabilities))) ? hex(cert.user_public_key) : null;
 }
 
+/** What this root would authorize, before it signs. User-provided names are shown as text. */
+export function approvalPrompt(request, workspaceName) {
+  if (request.kind !== 'agent') return `Sign “${request.label}” in? It becomes one of your devices: ${request.capability}.`;
+  const workspace = workspaceName ? `${workspaceName} (${request.workspace})` : request.workspace;
+  const apps = request.apps.length ? request.apps.join(', ') : 'all apps';
+  return [`Allow “${request.label}” (${request.agent}) to act for you in ${workspace}?`,
+    `Access to ${apps} until ${new Date(request.expiresAtMs).toLocaleString()}.`,
+    `Compare code ${request.pairingCode} with the code on the device that requested access.`].join('\n');
+}
+
 function start() {
   const config = JSON.parse(document.getElementById('tilo-page-config').textContent);
   const page = document.getElementById('tilo-page');
@@ -841,82 +851,101 @@ function start() {
     ask({open: addressOf()});
   });
 
-  // ---- A browser of the person's waiting to be signed in ----
-  // A tab that holds no root shows a ticket, and the person runs `tilo device add` with it on a
-  // device of theirs. That device may hold no root either: it hands the signing on, and this
-  // page, which holds the person's root, is where it happens. The page lists what waits for its
-  // person (`identity.mjs`'s `signInsWaiting`, the host's `devices#pending` list) and asks about
-  // one: the device's name and what certifying it makes it. The root signs, the host answers the
-  // tab's request, and the tab is signed in. Separate device pairing requests are shown only
-  // for invitations this person explicitly opened in this workspace session.
-  let signInAsked = null;
+  // This page's root answers sign-in tickets and agent grants. Only its certified session
+  // in the requested workspace can review a grant. Device pairing keeps its explicit invite.
+  let shownRequest = null;
   let personHeld = null;
   let personAbsent = false;
-  const signInsAnswered = new Set();
-  const signInBar = () => {
+  let looking = false;
+  let answering = false;
+  let resultUntil = 0;
+  const approvalWorkspace = () => view.shown && signedInPerson && personHeld?.userPublicKey === signedInPerson &&
+    !personHeld.locked && deviceSession && !deviceSession.signal.aborted ? config.address.workspace : null;
+  const approvalBar = () => {
     let bar = document.getElementById('tilo-sign-in');
     if (bar) return bar;
     bar = document.createElement('div');
     bar.id = 'tilo-sign-in';
     bar.hidden = true;
     bar.setAttribute('role', 'alertdialog');
-    bar.innerHTML = '<p></p><button type="button" id="tilo-sign-in-allow" data-sign-in-answer="allow">Sign in</button>'
-      + '<button type="button" id="tilo-sign-in-deny" data-sign-in-answer="deny">Not now</button>';
+    bar.innerHTML = '<p></p><button type="button" data-approval-answer="allow"></button>'
+      + '<button type="button" data-approval-answer="deny"></button>';
     bar.addEventListener('click', event => {
-      const answer = event.target.closest('[data-sign-in-answer]');
+      const answer = event.target.closest('[data-approval-answer]');
       if (!answer) return;
       event.preventDefault();
-      answerSignInShown(answer.dataset.signInAnswer === 'allow');
+      void answerShown(answer.dataset.approvalAnswer === 'allow');
     });
     document.body.append(bar);
     return bar;
   };
-  const showSignIn = request => {
-    signInAsked = request;
-    const bar = signInBar();
-    bar.dataset.signIn = request.label;
-    bar.querySelector('p').textContent =
-      `Sign “${request.label}” in? It becomes one of your devices: ${request.capability}.`;
+  const showApproval = request => {
+    shownRequest = request;
+    const bar = approvalBar();
+    const agent = request.kind === 'agent';
+    delete bar.dataset.agentGrant;
+    delete bar.dataset.signIn;
+    if (agent) bar.dataset.agentGrant = request.agent;
+    else bar.dataset.signIn = request.label;
+    bar.setAttribute('aria-label', agent ? 'Assistant access request' : 'Browser sign-in request');
+    bar.querySelector('p').textContent = approvalPrompt(request, workspaceName);
+    const allow = bar.querySelector('[data-approval-answer="allow"]');
+    const deny = bar.querySelector('[data-approval-answer="deny"]');
+    allow.id = agent ? 'tilo-agent-grant-allow' : 'tilo-sign-in-allow';
+    deny.id = agent ? 'tilo-agent-grant-deny' : 'tilo-sign-in-deny';
+    allow.textContent = agent ? 'Approve' : 'Sign in';
+    deny.textContent = agent ? 'Decline' : 'Not now';
     for (const button of bar.querySelectorAll('button')) button.hidden = false;
     bar.hidden = false;
   };
-  const hideSignIn = () => {
-    signInAsked = null;
+  const hideApproval = () => {
+    shownRequest = null;
     const bar = document.getElementById('tilo-sign-in');
     if (!bar) return;
     bar.hidden = true;
     delete bar.dataset.signIn;
+    delete bar.dataset.agentGrant;
   };
-  const answerSignInShown = async approved => {
-    const request = signInAsked;
-    if (!request) return;
-    signInsAnswered.add(request.digest);
+  const answerShown = async approved => {
+    const request = shownRequest;
+    if (!request || answering) return;
+    answering = true;
     const bar = document.getElementById('tilo-sign-in');
     // The bar says how it ended in place of the answer, then goes.
     for (const button of bar?.querySelectorAll('button') ?? []) button.hidden = true;
     try {
       const id = await identityModule();
       const host = await id.approvalHost(peer);
-      await id.answerSignIn(host, personHeld, request.digest, approved);
-      signInAsked = null;
-      if (bar) {
-        bar.querySelector('p').textContent = approved
-          ? `“${request.label}” is signed in.`
-          : `“${request.label}” was not signed in.`;
-        setTimeout(hideSignIn, 4000);
+      const root = await id.browserIdentity({create: false});
+      if (request !== shownRequest) return;
+      if (!root?.sign || root.locked || root.userPublicKey !== personHeld?.userPublicKey) {
+        personHeld = null;
+        hideApproval();
+        return;
       }
+      if (id.answerWorkspaceApproval) {
+        await id.answerWorkspaceApproval(host, root, approvalWorkspace(), request, approved);
+      } else {
+        await id.answerSignIn(host, root, request.digest, approved);
+      }
+      if (request !== shownRequest) return;
+      const result = request.kind === 'agent' ? (approved ? 'approved' : 'declined') :
+        (approved ? 'signed in' : 'not signed in');
+      bar.querySelector('p').textContent = `“${request.label}” was ${result}.`;
+      resultUntil = Date.now() + 4000;
+      shownRequest = null;
     } catch (error) {
-      // Answered nowhere: the next look asks again.
-      signInsAnswered.delete(request.digest);
-      if (bar) {
-        for (const button of bar.querySelectorAll('button')) button.hidden = false;
-        bar.querySelector('p').textContent = 'That did not work. Try again.';
-      }
-      console.warn('sign-in: answering the waiting browser', error);
+      if (request !== shownRequest) return;
+      showApproval(request);
+      bar.querySelector('p').textContent += '\nCould not complete this request. Try again.';
+      console.warn('workspace approval: could not answer', error);
+    } finally {
+      answering = false;
     }
   };
-  const lookForSignIns = async () => {
-    if (!peer || signInAsked || personAbsent) return;
+  const lookForApprovals = async () => {
+    if (!peer || looking || answering || personAbsent || Date.now() < resultUntil) return;
+    looking = true;
     try {
       const id = await identityModule();
       if (!personHeld) {
@@ -926,16 +955,22 @@ function start() {
         if (!personHeld) return;
       }
       const host = await id.approvalHost(peer);
-      const waiting = await id.signInsWaiting(host, personHeld).catch(() => []);
-      const next = waiting.find(request => !signInsAnswered.has(request.digest));
-      if (next) showSignIn(next);
+      const session = deviceSession;
+      const waiting = id.workspaceApprovals
+        ? await id.workspaceApprovals(host, personHeld, approvalWorkspace())
+        : await id.signInsWaiting(host, personHeld);
+      if (answering || Date.now() < resultUntil || session !== deviceSession) return;
+      const next = waiting.find(request => request.kind !== 'agent' || request.workspace === approvalWorkspace());
+      if (!next) hideApproval();
+      else if (next.digest !== shownRequest?.digest || next.token !== shownRequest?.token) showApproval(next);
     } catch (error) {
-      // The host not reached, its modules not in: the next look tries again.
-      console.warn('sign-in: the browsers waiting', error);
+      console.warn('workspace approval: could not read requests', error);
+    } finally {
+      looking = false;
     }
   };
-  lookForSignIns();
-  setInterval(lookForSignIns, 2000);
+  void lookForApprovals();
+  setInterval(lookForApprovals, 2000);
 
   const connect = async () => {
     if (!config.link || !globalThis.WebTransport) { say('refused', 'This browser cannot open this page.'); return; }
@@ -960,6 +995,7 @@ function start() {
       view.connect(null);
       opened.close();
       deviceSession.abort();
+      if (shownRequest?.kind === 'agent') hideApproval();
       deviceSession = null;
       signedInPerson = null;
       settled.clear();

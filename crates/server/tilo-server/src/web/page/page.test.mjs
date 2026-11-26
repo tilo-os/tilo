@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {ack2, authenticatedPage, blake3Block, hello, pagePerson, parseExact, sameSecretEntry, serverNonce, workspaceItemPath} from './page.mjs';
+import {ack2, approvalPrompt, authenticatedPage, blake3Block, hello, pagePerson, parseExact, sameSecretEntry, serverNonce, workspaceItemPath} from './page.mjs';
 
 const golden = JSON.parse(readFileSync(new URL('./handshake.json', import.meta.url), 'utf8'));
 const bytes = text => Uint8Array.from(text.match(/../g) ?? [], pair => parseInt(pair, 16));
@@ -70,6 +70,16 @@ test('only a personal page device may start pairing', () => {
   }
   assert.equal(pagePerson({...person, issuer: {...person, capabilities: {workspace_service: true}}}), null);
   assert.equal(pagePerson({...person, issuer: {...person, capabilities: {stand_in: true}}}), 'ab');
+});
+
+test('assistant approval identifies the exact agent, workspace, apps, expiry and comparison code', () => {
+  const request = {kind: 'agent', agent: 'agent-id', label: 'Assistant', workspace: 'workspace-id',
+    apps: ['so.tilo.chat'], expiresAtMs: Date.UTC(2027, 1, 1), pairingCode: '123456'};
+  const prompt = approvalPrompt(request, 'Home');
+  for (const detail of ['agent-id', 'Assistant', 'workspace-id', 'Home', 'so.tilo.chat', '2027', '123456']) {
+    assert.ok(prompt.includes(detail), detail);
+  }
+  assert.match(approvalPrompt({...request, apps: []}), /all apps/i);
 });
 
 test('a hello carries the certificate exactly as it was issued', () => {

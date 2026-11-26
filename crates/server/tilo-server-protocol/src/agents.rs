@@ -15,6 +15,9 @@
 //! |---|---|---|---|
 //! | [`SUPERVISOR_RESOURCE`] | [`REQUEST_GRANT_ACTION`] | [`RosterGrantRequest`] JSON | `{grant, pairingCode}` |
 //! | `agent:<id>` | [`REVOKE_ACTION`] | none | `{}` |
+//! | `agent:<id>` | [`GRANT_STATUS_ACTION`] | none | [`AgentGrantStatus`] |
+//! | `agent:<id>` | [`REQUEST_CHAT_GRANT_ACTION`] | none | `{grant, pairingCode}` |
+//! | `agent:<id>` | [`REQUEST_ASSISTANT_WORK_GRANT_ACTION`] | none | `{grant, pairingCode}` |
 //!
 //! A grant is approved on a root-holding device in one step: the host queues a certification
 //! request for a fresh agent key carrying the [`crate::delegation::DelegateProposal`], and the
@@ -32,6 +35,12 @@ pub const AGENT_RESOURCE_PREFIX: &str = "agent:";
 pub const REQUEST_GRANT_ACTION: &str = "request-grant";
 /// Withdraw a grant: the host refuses its device.
 pub const REVOKE_ACTION: &str = "revoke";
+/// Read whether the keeper's hosted personal assistant can answer Chat.
+pub const GRANT_STATUS_ACTION: &str = "grant-status";
+/// Ask the keeper to allow their personal assistant to answer Chat in this workspace.
+pub const REQUEST_CHAT_GRANT_ACTION: &str = "request-chat-grant";
+/// Ask to allow Chat, Tasks, Assistant and Shortcuts in the keeper's workspace.
+pub const REQUEST_ASSISTANT_WORK_GRANT_ACTION: &str = "request-assistant-work-grant";
 
 /// A grant as the host asks it of the approver: the roster entry's name, colour, workspaces,
 /// apps and lifetime.
@@ -86,11 +95,39 @@ pub enum GrantState {
     Expired,
     /// Withdrawn by a person.
     Revoked,
+    /// The workspace's host has no grant for this roster entry.
+    Missing,
+}
+
+/// What a keeper's certified device can see about its personal assistant's grant.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentGrantStatus {
+    pub state: GrantState,
+    /// The host currently holds a live Chat-capable signing session.
+    pub ready: bool,
+    pub apps: Vec<String>,
+    pub expires_at_ms: Option<u64>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_grant_states_keep_their_wire_values() {
+        for (byte, state) in [
+            (0, GrantState::Pending),
+            (1, GrantState::Approved),
+            (2, GrantState::Denied),
+            (3, GrantState::Expired),
+            (4, GrantState::Revoked),
+            (5, GrantState::Missing),
+        ] {
+            assert_eq!(postcard::from_bytes::<GrantState>(&[byte]).unwrap(), state);
+            assert_eq!(postcard::to_allocvec(&state).unwrap(), [byte]);
+        }
+    }
 
     #[test]
     fn colors_use_the_css_hex_spelling() {

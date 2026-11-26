@@ -368,6 +368,8 @@ public enum EngineScript {
       const pass = %PASS%;
       const providers = new Set(%PROVIDERS%);
       const agentActions = new Set(['read', 'ensure-personal-assistant', 'stop-sub-agent']);
+      const grantActions = new Set(['grant-status', 'request-chat-grant', 'request-assistant-work-grant', 'revoke']);
+      const agentNamed = item => typeof item === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(item);
       // An app's own document of the workspace, as the workspace's server names what it offers
       // of one: the app and nothing after it. Under any longer name the server offers nothing of it.
       const ownDocument = app => device.workspaceRecord ? device.workspaceRecord(app) : `record:${app}:`;
@@ -406,8 +408,13 @@ public enum EngineScript {
         JSON.stringify({error: {code: 'unknown_action', reason: `no action addressed by (${provider}, ${action})`}});
       const noDevice = () =>
         JSON.stringify({error: {code: 'unavailable', reason: 'This page hands a native app no way to its person\'s own providers'}});
-      const inScope = scope => device && scope && scope.person === device.person && scope.workspace === device.workspace;
+      const inScope = scope => device && typeof scope?.person === 'string' && scope.person.length > 0
+        && typeof scope.workspace === 'string' && scope.workspace.length > 0
+        && scope.person === device.person && scope.workspace === device.workspace;
       const changedDevice = () => JSON.stringify({error: {code: 'wrong_device', reason: 'Your account or workspace changed'}});
+      const deviceAnswer = (answer, hidden = '') => JSON.stringify({ok: without({
+        state: answer?.state ?? null, value: answer?.output?.value ?? null, error: answer?.error ?? null,
+      }, hidden)});
 
       // The steps of putting one file into the workspace this page is in (`put` below).
       const putSteps = new Set(['offered', 'begin', 'append', 'finish']);
@@ -431,8 +438,7 @@ public enum EngineScript {
             const plain = argument && Object.keys(argument).length ? argument : null;
             const answer = await device.invoke({provider, address: {resource, action}},
               hidden ? {...(argument ?? {}), [hidden.field]: secret} : plain);
-            return JSON.stringify({ok: without({state: answer?.state ?? null, value: answer?.output?.value ?? null,
-              error: answer?.error ?? null}, secret)});
+            return deviceAnswer(answer, secret);
           } catch (error) { return JSON.stringify({error: without(failure(error), secret)}); }
         },
         async personActions(given, provider, scope) {
@@ -524,15 +530,24 @@ public enum EngineScript {
         // action that sets up a person's assistant, and the one that stops a sub-agent. Nothing else of Assistant's
         // document is asked this way.
         async agents(given, action, argument, item) {
-          const named = item === null || item === undefined || (typeof item === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(item));
+          const named = item === null || item === undefined || agentNamed(item);
           if (!holds(given) || !agentActions.has(action) || !named || (item && action !== 'read')) return unknown('tilo.workspace.agent', action);
           if (!device) return noDevice();
           try {
             const provider = await ownDocument('so.tilo.assistant');
             const answer = await device.invoke({provider, address: {resource: item ? `tilo.workspace.agent/agents/${item}` : 'tilo.workspace.agent', action}},
               argument && Object.keys(argument).length ? argument : null);
-            return JSON.stringify({ok: without({state: answer?.state ?? null, value: answer?.output?.value ?? null,
-              error: answer?.error ?? null}, '')});
+            return deviceAnswer(answer);
+          } catch (error) { return JSON.stringify({error: failure(error)}); }
+        },
+        // The certified person may inspect, request or withdraw one roster agent's grant.
+        async chatGrant(given, action, agent, scope) {
+          if (!holds(given) || !agentNamed(agent) || !grantActions.has(action)) return unknown('agents', action);
+          if (!device) return noDevice();
+          if (!inScope(scope)) return changedDevice();
+          try {
+            const answer = await device.invoke({provider: 'agents', address: {resource: `agent:${agent}`, action}}, null);
+            return inScope(scope) ? deviceAnswer(answer) : changedDevice();
           } catch (error) { return JSON.stringify({error: failure(error)}); }
         },
         // The tasks of the person's assistant are issues of the workspace's tracker, which this
@@ -545,8 +560,7 @@ public enum EngineScript {
           try {
             const answer = await device.invoke({provider: await ownDocument('so.tilo.tasks'), address: {resource: issues, action}},
               argument && Object.keys(argument).length ? argument : null, {invocation: invocation ?? undefined});
-            return JSON.stringify({ok: without({state: answer?.state ?? null, value: answer?.output?.value ?? null,
-              error: answer?.error ?? null}, '')});
+            return deviceAnswer(answer);
           } catch (error) { return JSON.stringify({error: failure(error)}); }
         },
         async actions(resource, id, given, kind) {

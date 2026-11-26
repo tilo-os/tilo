@@ -94,6 +94,7 @@ public final class AssistantModel {
     private var mended: Set<Item.ID> = []
     /// What stands between the person and their assistant's first answer.
     public private(set) var setup = Setup.unknown
+    public private(set) var chatPermissionBusy = false
     /// From the app's opening until the main chat stands: its page, its session, the look for
     /// the assistant and the reading of what answers for it. The window says one sentence
     /// through all of it and names no step.
@@ -783,6 +784,50 @@ public final class AssistantModel {
     /// Find the person's assistant once more, and make it where they keep none.
     public func makeAssistant() {
         Task { await self.call { try await self.source.makeAssistant() } }
+    }
+
+    /// The same action as the request button in the conversation.
+    @discardableResult
+    public func requestChatPermission() async -> Bool {
+        await requestAccess(.chat)
+    }
+
+    @discardableResult
+    public func requestAssistantWorkPermission() async -> Bool {
+        await requestAccess(.work)
+    }
+
+    private func requestAccess(_ scope: AssistantAccess) async -> Bool {
+        guard person != nil, place == .chat(.main), case .chatPermission(let permission) = setup, permission.canRequest,
+              supervision.assistantAccess?.revocable != true, !chatPermissionBusy else { return false }
+        chatPermissionBusy = true
+        defer { chatPermissionBusy = false }
+        return await call {
+            switch scope {
+            case .chat: try await source.requestChatPermission()
+            case .work: try await source.requestAssistantWorkPermission()
+            }
+        }
+    }
+
+    public func checkChatPermission() async {
+        guard person != nil, !chatPermissionBusy else { return }
+        if place != .assistantView {
+            guard place == .chat(.main), case .chatPermission(let permission) = setup, !permission.canRequest else { return }
+        }
+        chatPermissionBusy = true
+        defer { chatPermissionBusy = false }
+        await source.checkChatPermission()
+    }
+
+    /// The confirmation applies to the access the person reviewed, including its scope and expiry.
+    @discardableResult
+    public func revokeChatPermission(expected: Supervision.AssistantPermission) async -> Bool {
+        guard person != nil, place == .assistantView, expected.revocable,
+              supervision.assistantAccess == expected, !chatPermissionBusy else { return false }
+        chatPermissionBusy = true
+        defer { chatPermissionBusy = false }
+        return await call { try await source.revokeChatPermission() }
     }
 
     /// Hand the key typed in the protected field to the person's vault, for this provider.

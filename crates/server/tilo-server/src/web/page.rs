@@ -285,6 +285,8 @@ async fn write<W: AsyncWrite + Unpin>(send: &mut W, answer: &PageAnswer) -> std:
 /// The question sheet a page draws over its app: the card a person answers in,
 /// in the theme's colours, over the app's content.
 const SHEET_CSS: &str = "\
+#tilo-sign-in[data-agent-grant]{flex-wrap:wrap}#tilo-sign-in[data-agent-grant] p{flex-basis:100%;\
+white-space:pre-line;overflow-wrap:anywhere}\
 .tilo-question-sheet{position:fixed;inset:0;display:grid;place-items:center;z-index:20;\
 background:color-mix(in srgb,var(--tilo-ground,#000) 55%,transparent)}\
 .tilo-question-sheet[hidden]{display:none}\

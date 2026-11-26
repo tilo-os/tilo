@@ -2245,6 +2245,7 @@ dependencies = [
  "tilo-paths",
  "tilo-reference",
  "tilo-rich-text",
+ "tilo-server-protocol",
  "tilo-test-env",
  "tilo-vello",
  "tilo-view",

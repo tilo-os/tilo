@@ -85,6 +85,18 @@ public protocol AssistantSource: Sendable {
     /// source does by itself, for the person to ask again after it did not go through.
     func makeAssistant() async throws
 
+    /// Ask the workspace owner to allow this assistant to use Chat. A person's press starts the request.
+    func requestChatPermission() async throws
+
+    /// Ask for Chat, Tasks, Assistant and Shortcuts in this workspace.
+    func requestAssistantWorkPermission() async throws
+
+    /// Revoke the hosted assistant's pending or approved access in this workspace.
+    func revokeChatPermission() async throws
+
+    /// Read the current decision without starting or renewing a request.
+    func checkChatPermission() async
+
     /// Link a provider with the key the person typed into the protected field, and answer the
     /// models that can be chosen then. The key goes to the person's vault and nowhere else: not
     /// into the conversation, not to a model, not into a log.
@@ -269,6 +281,10 @@ extension AssistantSource {
     public func goOn() async {}
     public func setup() -> AsyncStream<Setup> { AsyncStream { $0.yield(.ready) } }
     public func makeAssistant() async throws {}
+    public func requestChatPermission() async throws { throw SourceProblem.refused(AssistantWords.chatPermissionUnavailable.said) }
+    public func requestAssistantWorkPermission() async throws { throw SourceProblem.refused(AssistantWords.chatPermissionUnavailable.said) }
+    public func revokeChatPermission() async throws { throw SourceProblem.refused(AssistantWords.chatPermissionUnavailable.said) }
+    public func checkChatPermission() async {}
     public func link(_ provider: ProviderChoice.ID, key: Secret) async throws -> [ModelChoice] {
         throw SourceProblem.refused("No provider can be linked here")
     }

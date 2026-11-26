@@ -158,6 +158,8 @@ pub enum Turn {
     Agent {
         /// The agent that answers.
         agent: String,
+        /// The agent with the signing grant: the lead when a child answers.
+        signer: String,
         /// Where the turn was started: the conversation, or the task, it
         /// answers in. One device answers there at a time.
         place: String,
@@ -424,7 +426,7 @@ async fn eligibility(
             }
         }
         Turn::Agent {
-            agent,
+            signer,
             acts_for,
             app,
             record,
@@ -439,7 +441,7 @@ async fn eligibility(
             let Some(keys) = workspaces.agent_keys() else {
                 return Err(Ineligible::RunsNoAgents);
             };
-            if keys.holds(workspace, agent, acts_for).await {
+            if keys.holds(workspace, signer, acts_for).await {
                 return Ok(());
             }
             device_of(workspaces, acts_for).await

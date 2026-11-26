@@ -23,7 +23,10 @@ use tilo_actions::remote::{
 };
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_protocol::agents::{GrantRequest, GrantState, parse_color_hex};
+use tilo_server_protocol::agents::{
+    AgentGrantStatus, GrantRequest, GrantState, REQUEST_ASSISTANT_WORK_GRANT_ACTION,
+    REQUEST_CHAT_GRANT_ACTION, parse_color_hex,
+};
 use tilo_server_protocol::delegation::{
     Delegate, DelegateProposal, DelegateScope, Delegation, MAX_DELEGATE_TEXT_BYTES,
     MAX_DELEGATED_APPS, MAX_DELEGATED_WORKSPACES,
@@ -44,6 +47,14 @@ pub struct AgentIdentity {
     pub cert: DeviceCert,
     /// Its root-signed delegation.
     pub delegation: Delegation,
+}
+
+impl AgentIdentity {
+    fn expires_at(&self) -> u64 {
+        self.delegation
+            .expires_at_ns
+            .min(self.cert.expires_at_ns.unwrap_or(u64::MAX))
+    }
 }
 
 /// The agent id `delegation` names. The supervisor only ever holds agent
@@ -331,6 +342,12 @@ impl Grant {
         self.proposal.scope.workspaces.as_slice() == [workspace]
     }
 
+    fn expires_at(&self) -> u64 {
+        self.identity
+            .as_ref()
+            .map_or(self.proposal.expires_at_ns, AgentIdentity::expires_at)
+    }
+
     /// Settle the grant: drop its key material and say why.
     fn settle(&mut self, state: GrantState, reason: &str) {
         self.state = state;
@@ -348,6 +365,9 @@ impl Grant {
 pub struct GrantRecord {
     /// What was asked.
     pub proposal: DelegateProposal,
+    /// Who requested the grant, including after its key was withdrawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keeper: Option<[u8; 32]>,
     /// Which existing roster entry this grant provisions. A record that names none is no
     /// roster grant and is not read back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -413,7 +433,7 @@ impl AgentSupervisor {
         self.grants()
             .iter()
             .filter(|grant| grant.state == GrantState::Approved)
-            .map(|grant| grant.proposal.expires_at_ns)
+            .map(Grant::expires_at)
             .min()
     }
 
@@ -455,7 +475,10 @@ impl AgentSupervisor {
             let pairing_code = self
                 .request_grant(
                     request,
-                    tilo_clock::unix_now_ns(),
+                    matches!(
+                        invocation.target.address.action.as_str(),
+                        REQUEST_CHAT_GRANT_ACTION | REQUEST_ASSISTANT_WORK_GRANT_ACTION
+                    ),
                     agent,
                     created_at,
                     requester,
@@ -491,7 +514,7 @@ impl AgentSupervisor {
     fn request_grant(
         &self,
         request: &GrantRequest,
-        now_ns: u64,
+        renew: bool,
         agent: &str,
         created_at: RosterCreatedAt,
         requester: &DeviceCert,
@@ -502,7 +525,9 @@ impl AgentSupervisor {
         let key = SigningKey::from_bytes(&secret);
         let device = key.verifying_key().to_bytes();
         let keeper = requester.user_public_key;
-        let proposal = grant_proposal(request, now_ns, agent)?;
+        let now = tilo_clock::unix_now_ns();
+        let proposal = grant_proposal(request, now, agent)?;
+        self.expire(now);
         let mut grants = self.grants();
         let prior = grants.iter().position(|grant| {
             grant.id() == agent
@@ -525,6 +550,7 @@ impl AgentSupervisor {
                     return Ok(String::new());
                 }
                 GrantState::Denied | GrantState::Expired => {}
+                GrantState::Revoked if renew => {}
                 _ => return Err("that agent already has a different or withdrawn grant".into()),
             }
         }
@@ -643,6 +669,50 @@ impl AgentSupervisor {
             .any(|grant| grant.id() == id && grant.is_in(workspace))
     }
 
+    /// The public scope and state of this keeper's exact roster entry. Session readiness
+    /// is checked separately against current governance by the workspace serving the read.
+    #[must_use]
+    pub fn agent_grant_status(
+        &self,
+        workspace: WorkspaceId,
+        agent: &str,
+        keeper: &[u8; 32],
+        created_at: RosterCreatedAt,
+    ) -> AgentGrantStatus {
+        let grants = self.grants();
+        let Some(grant) = grants.iter().find(|grant| {
+            grant.is_in(workspace)
+                && grant.id() == agent
+                && &grant.keeper == keeper
+                && grant.roster_created_at == created_at
+        }) else {
+            return AgentGrantStatus {
+                state: GrantState::Missing,
+                ready: false,
+                apps: Vec::new(),
+                expires_at_ms: None,
+            };
+        };
+        let apps = grant
+            .identity
+            .as_ref()
+            .map_or(&grant.proposal.scope.apps, |identity| {
+                &identity.delegation.scope.apps
+            });
+        let expires = grant.expires_at();
+        let state = if grant.state == GrantState::Approved && expires <= tilo_clock::unix_now_ns() {
+            GrantState::Expired
+        } else {
+            grant.state
+        };
+        AgentGrantStatus {
+            state,
+            ready: false,
+            apps: apps.clone(),
+            expires_at_ms: Some(expires / 1_000_000),
+        }
+    }
+
     /// Withdraw the signing grant in the workspace of this certified request: the host
     /// refuses its device and the agent's key is forgotten.
     pub fn invoke_roster_revoke(
@@ -679,8 +749,13 @@ impl AgentSupervisor {
                     && the_persons_session(caller, &grant.keeper)
             })
             .ok_or("no such agent")?;
-        if let (Some(identity), Some(link)) = (&grant.identity, self.link()) {
-            link.withdraw(identity.cert.device_public_key);
+        let device = grant
+            .identity
+            .as_ref()
+            .map(|identity| identity.cert.device_public_key)
+            .or_else(|| grant.key.as_ref().map(|key| key.verifying_key().to_bytes()));
+        if let (Some(device), Some(link)) = (device, self.link()) {
+            link.withdraw(device);
         }
         grant.settle(GrantState::Revoked, "revoked by a person");
         drop(grants);
@@ -696,7 +771,7 @@ impl AgentSupervisor {
         let due = grants
             .iter_mut()
             .filter_map(|grant| {
-                if grant.state != GrantState::Approved || grant.proposal.expires_at_ns > now_ns {
+                if grant.state != GrantState::Approved || grant.expires_at() > now_ns {
                     return None;
                 }
                 if let (Some(identity), Some(link)) = (&grant.identity, &link) {
@@ -722,6 +797,7 @@ impl AgentSupervisor {
                 .iter()
                 .map(|grant| GrantRecord {
                     proposal: grant.proposal.clone(),
+                    keeper: Some(grant.keeper),
                     roster_created_at: Some(grant.roster_created_at),
                     state: grant.state,
                     key: grant
@@ -754,8 +830,7 @@ impl AgentSupervisor {
             };
             let mut grant = Grant {
                 proposal: saved.proposal,
-                // Only an approved grant has an identity, and it names its keeper's root.
-                keeper: [0; 32],
+                keeper: saved.keeper.unwrap_or([0; 32]),
                 roster_created_at,
                 state: saved.state,
                 key: None,
@@ -764,12 +839,14 @@ impl AgentSupervisor {
                 reason: saved.reason,
             };
             match grant.state {
+                GrantState::Missing => continue,
                 GrantState::Pending => {
                     grant.settle(GrantState::Denied, "the host restarted before the approval");
                 }
                 GrantState::Approved => {
                     match restore_identity(saved.key, saved.cert, saved.delegation) {
-                        Some(identity) if identity.delegation.expires_at_ns <= now_ns => {
+                        Some(identity) if identity.expires_at() <= now_ns => {
+                            grant.keeper = identity.delegation.user_public_key;
                             if let Some(link) = &link {
                                 link.withdraw(identity.delegation.device_public_key);
                             }

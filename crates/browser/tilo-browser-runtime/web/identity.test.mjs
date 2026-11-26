@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import {hex as sharedHex} from './hex.mjs';
 import {
   answerSignIn, fetchProfile, fitDisplayName, hex, IdentityError, installNodeCertificate, MAX_DISPLAY_NAME_BYTES,
-  nodeInstallInfo, publishProfile, signInsWaiting, unhex,
+  answerWorkspaceApproval, nodeInstallInfo, publishProfile, signInsWaiting, unhex, workspaceApprovals,
 } from './identity.mjs';
 
 /** What resolved a promise: its value, or the error it refused with. */
@@ -175,4 +175,37 @@ test('a page asks about the browsers waiting to sign in, and answers only those,
     'a device pairing is the person’s own Tilo’s to ask about, not this page’s');
   await answerSignIn(host, root, 'bb', true);
   assert.deepEqual(answers, [['bb', true]]);
+});
+
+test('a hosted assistant grant is reviewed in its own workspace and answered with the displayed token', async () => {
+  const root = signingIdentity();
+  const workspace = 'home';
+  const grant = {agent: 'my-assistant', label: 'Assistant', workspace, apps: ['so.tilo.chat'],
+    expiresAtMs: 1770000000000, digest: 'roster', token: 'exact proposal'};
+  const calls = [];
+  const host = {
+    pending: async () => JSON.stringify([
+      {digest: 'roster', pairingCode: '135790'}, {digest: 'device', invite: 'one-use'},
+      {digest: 'other'}, {digest: 'browser', signIn: true},
+    ]),
+    pendingAgentGrants: async (signer, location) => {
+      assert.equal(signer, root);
+      assert.equal(location, workspace);
+      return JSON.stringify([grant, {...grant, digest: 'other', workspace: 'another'}, {...grant, digest: 'gone'}]);
+    },
+    answerAgentGrant: async (...args) => { calls.push(args); },
+    answer: assert.fail,
+  };
+  const waiting = await workspaceApprovals(host, root, workspace);
+  assert.equal(waiting.length, 2);
+  const [signIn, approval] = waiting;
+  assert.equal(signIn.digest, 'browser');
+  assert.deepEqual(approval, {...grant, kind: 'agent', pairingCode: '135790'});
+  assert.equal((await workspaceApprovals(host, root, null)).length, 1);
+  await assert.rejects(answerWorkspaceApproval(host, root, 'another', approval, true));
+  assert.deepEqual(calls, []);
+  for (const approved of [false, true]) {
+    await answerWorkspaceApproval(host, root, workspace, approval, approved);
+    assert.deepEqual(calls.at(-1), [root, workspace, grant.token, approved]);
+  }
 });
