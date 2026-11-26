@@ -480,16 +480,14 @@ fn login_environment(state: &Path) -> Vec<(&'static str, PathBuf)> {
 }
 
 /// One request to the daemon's native endpoint, and the line it answers.
+///
+/// A start answers only once its app is up, which takes what the app takes: the call waits for
+/// the answer rather than cutting it off at a time it invented. A session that ends without
+/// answering closes the connection, which is what ends the wait with an error.
 fn native_call(socket: &Path, request: &serde_json::Value) -> Result<serde_json::Value, String> {
     use std::io::{BufRead as _, BufReader, Write as _};
     let refused = |error: std::io::Error| format!("{}: {error}", socket.display());
     let mut stream = tilo_files::native::socket::connect(socket).map_err(refused)?;
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
-        .map_err(refused)?;
-    stream
-        .set_write_timeout(Some(std::time::Duration::from_secs(30)))
-        .map_err(refused)?;
     stream
         .write_all(format!("{request}\n").as_bytes())
         .map_err(refused)?;
@@ -497,6 +495,12 @@ fn native_call(socket: &Path, request: &serde_json::Value) -> Result<serde_json:
     BufReader::new(stream)
         .read_line(&mut line)
         .map_err(refused)?;
+    if line.trim().is_empty() {
+        return Err(format!(
+            "{}: the session ended before it answered",
+            socket.display()
+        ));
+    }
     serde_json::from_str(&line).map_err(|error| format!("the daemon answered no line: {error}"))
 }
 
@@ -540,6 +544,31 @@ mod tests {
                 Path::new("/work/shared/current")
             );
         }
+    }
+
+    /// A start answers once its app is up, which takes what the app takes: the call waits for
+    /// the daemon's answer instead of cutting it off at a time the tool invented.
+    #[cfg(unix)]
+    #[test]
+    fn a_call_waits_for_an_answer_the_session_takes_its_time_for() {
+        use std::io::{BufRead as _, BufReader, Write as _};
+        let scratch = tempfile::tempdir().unwrap();
+        let socket = scratch.path().join("native.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let answering = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            assert!(line.contains("status"), "{line}");
+            // An app that takes its time to come up.
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            writeln!(stream, "{{\"workspace\":\"served\"}}").unwrap();
+        });
+        let answer = native_call(&socket, &serde_json::json!({"native": "status"})).unwrap();
+        assert_eq!(answer["workspace"], "served");
+        answering.join().unwrap();
     }
 
     /// The session the tool attaches to when a command names none is the newest one running for
