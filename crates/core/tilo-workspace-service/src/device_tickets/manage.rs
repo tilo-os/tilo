@@ -12,6 +12,8 @@
 use serde_json::{Value, json};
 use tilo_user_identity::{RevocationEntry, RevocationReason};
 
+use tilo_action_services::device_tickets::device_in;
+
 use super::TicketServer;
 use crate::workspaces::person_workspace::devices::{DEVICES, Devices, Listed};
 use crate::workspaces::{Workspaces, person_workspace};
@@ -127,22 +129,6 @@ async fn held(workspaces: &Workspaces, person: &[u8; 32], key: &str) -> Option<L
         .listed(person)
         .into_iter()
         .find(|listed| listed.key == key)
-}
-
-/// The device `args` names by its key, when it names one.
-fn device_in(args: &Value) -> Result<Option<[u8; 32]>, String> {
-    let Some(text) = args
-        .get("device")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-    else {
-        return Ok(None);
-    };
-    let mut key = [0; 32];
-    hex::decode_to_slice(text, &mut key)
-        .map_err(|_| format!("{text} is not a device's key: `tilo device ls` lists them"))?;
-    Ok(Some(key))
 }
 
 /// Why `args` says a device is revoked: retired when it says nothing.

@@ -29,6 +29,25 @@ pub const PROTECT_IDENTITY: &str = "protectIdentity";
 /// store and takes every step, so no application reads a secret or signs with the root.
 pub const IDENTITY_STEPS: [&str; 4] = [IDENTITIES, USE_IDENTITY, REMOVE_IDENTITY, PROTECT_IDENTITY];
 
+/// The device the arguments `args` of a device action name by its key, when they name one.
+///
+/// # Errors
+/// `device` is not a device's key.
+pub fn device_in(args: &serde_json::Value) -> Result<Option<[u8; 32]>, String> {
+    let Some(text) = args
+        .get("device")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    else {
+        return Ok(None);
+    };
+    let mut key = [0; 32];
+    hex::decode_to_slice(text, &mut key)
+        .map_err(|_| format!("{text} is not a device's key: `tilo device ls` lists them"))?;
+    Ok(Some(key))
+}
+
 #[must_use]
 pub fn target(action: &str) -> RemoteActionTarget {
     RemoteActionTarget {
@@ -294,13 +313,20 @@ pub enum KeyKind {
     Agent,
     /// A key they made for their own script or backend.
     Script,
+    /// A host's placement grant: the host, none of their devices, places devices for the
+    /// records it names.
+    Placing,
 }
 
 impl KeyKind {
-    /// What the key `capabilities` certify is.
+    /// What a key is whose certificate grants placement (`placing`), is a script's
+    /// (`server_key`) or an agent's (`agent`): every list of the person's keys reads it by this
+    /// one rule.
     #[must_use]
-    pub fn of(agent: bool, server_key: bool) -> Self {
-        if server_key {
+    pub fn of(placing: bool, server_key: bool, agent: bool) -> Self {
+        if placing {
+            Self::Placing
+        } else if server_key {
             Self::Script
         } else if agent {
             Self::Agent
@@ -309,13 +335,15 @@ impl KeyKind {
         }
     }
 
-    /// The word a list shows it by, as it is serialized: `device`, `agent` or `script`.
+    /// The word a list shows it by, as it is serialized: `device`, `agent`, `script` or
+    /// `placing`.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Device => "device",
             Self::Agent => "agent",
             Self::Script => "script",
+            Self::Placing => "placing",
         }
     }
 }

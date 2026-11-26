@@ -12,6 +12,7 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, anyhow, bail};
 use iroh::{EndpointAddr, EndpointId};
 use serde_json::{Map, Value, json};
+use tilo_action_services::device_tickets;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, RemoteActionTarget,
@@ -112,7 +113,7 @@ impl Tickets {
 
     /// Update the device `args` names: this one here, another by asking it.
     async fn update(&self, args: &Value) -> Result<Value> {
-        match device_in(args)? {
+        match device_tickets::device_in(args).map_err(anyhow::Error::msg)? {
             Some(device) if device != self.this() => {
                 self.ask_device(device, (RESOURCE, UPDATE), args, None)
                     .await
@@ -239,22 +240,6 @@ fn start_update() -> Result<(), String> {
     Ok(())
 }
 
-/// The device `args` names by its key, when it names one.
-pub(super) fn device_in(args: &Value) -> Result<Option<[u8; 32]>> {
-    let Some(text) = args
-        .get("device")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-    else {
-        return Ok(None);
-    };
-    let mut key = [0; 32];
-    hex::decode_to_slice(text, &mut key)
-        .map_err(|_| anyhow!("{text} is not a device's key: `tilo device ls` lists them"))?;
-    Ok(Some(key))
-}
-
 /// What this device answers the person's other devices on its action service: the device
 /// actions that are its own to carry out, and the calls about a ticket it serves, which the
 /// device's one set of tickets answers ([`tilo_peer_state::new_device::Tickets`]). Their caller
@@ -346,7 +331,7 @@ impl ActionProvider for OnThisDevice {
         if address.resource != RESOURCE || address.action != UPDATE {
             return Pending::ready(Err(ActionCallError::UnknownAction));
         }
-        let update = match device_in(&args) {
+        let update = match device_tickets::device_in(&args) {
             Ok(Some(device)) if device != self.0.this() => {
                 return Pending::ready(Err(ActionCallError::refused(
                     "this device carries out only what is asked of itself",
@@ -357,7 +342,7 @@ impl ActionProvider for OnThisDevice {
                 Err(error) => failed(invocation, &format!("{error:#}")),
             },
             Err(error) => {
-                return Pending::ready(Err(ActionCallError::refused(format!("{error:#}"))));
+                return Pending::ready(Err(ActionCallError::refused(error)));
             }
         };
         Pending::ready(Ok(self.keep(invocation, update)))

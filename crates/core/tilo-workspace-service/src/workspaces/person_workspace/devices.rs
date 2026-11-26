@@ -302,14 +302,17 @@ impl KeyKind {
     /// What `cert` certifies.
     #[must_use]
     pub fn of(cert: &DeviceCert) -> Self {
-        if cert.capabilities.placing.is_some() {
-            Self::Placing
-        } else if cert.capabilities.server_key {
-            Self::Script
-        } else if cert.capabilities.agent.is_some() {
-            Self::Agent
-        } else {
-            Self::Device
+        use tilo_action_services::device_tickets::KeyKind as Listed;
+        let capabilities = &cert.capabilities;
+        match Listed::of(
+            capabilities.placing.is_some(),
+            capabilities.server_key,
+            capabilities.agent.is_some(),
+        ) {
+            Listed::Device => Self::Device,
+            Listed::Agent => Self::Agent,
+            Listed::Script => Self::Script,
+            Listed::Placing => Self::Placing,
         }
     }
 }

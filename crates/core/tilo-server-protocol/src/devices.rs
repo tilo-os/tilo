@@ -206,8 +206,9 @@ pub fn fleet(
                     .and_then(|kind| serde_json::from_value::<KeyKind>(kind.clone()).ok())
                     .unwrap_or_else(|| {
                         KeyKind::of(
-                            cert.capabilities.agent.is_some(),
+                            cert.capabilities.placing.is_some(),
                             cert.capabilities.server_key,
+                            cert.capabilities.agent.is_some(),
                         )
                     }),
                 browser: records

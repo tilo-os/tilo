@@ -1550,7 +1550,7 @@ impl Tickets {
         (action, args): (&str, &Value),
         confirmation: Option<tilo_actions::remote::Confirmation>,
     ) -> Result<Value, String> {
-        match manage::device_in(args) {
+        match tilo_action_services::device_tickets::device_in(args) {
             Ok(Some(device)) if device != self.this() => {
                 if handed {
                     return Err("This server carries out only what is asked of itself.".to_owned());
@@ -1560,7 +1560,7 @@ impl Tickets {
                     .await
                     .map_err(|error| format!("{error:#}"));
             }
-            Err(error) => return Err(format!("{error:#}")),
+            Err(error) => return Err(error),
             Ok(_) => {}
         }
         let controls = controls.ok_or_else(|| {
