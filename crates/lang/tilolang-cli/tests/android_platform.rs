@@ -252,8 +252,13 @@ fn a_scaffolded_app_builds_a_debug_apk_from_its_library() {
 
     let args = fixture.log("cargo-args");
     let args: Vec<&str> = args.lines().collect();
+    // The build's own flags (`-Zbuild-std`, its target config) stand before the invocation.
+    let rustc = args
+        .iter()
+        .position(|arg| *arg == "rustc")
+        .unwrap_or_else(|| panic!("no rustc invocation: {args:?}"));
     assert_eq!(
-        &args[..4],
+        &args[rustc..rustc.saturating_add(4)],
         ["rustc", "--lib", "--crate-type", "cdylib"],
         "{args:?}"
     );

@@ -515,18 +515,22 @@ fn the_splash_budget_a_header_declares_is_the_manifests_entrypoint_budget() {
     );
 }
 
-/// Write a Fluent comment large enough to push a tilolang package's `.tapp`
+/// Write a Fluent catalogue large enough to push a tilolang package's `.tapp`
 /// archive past [`tilo_app_package::MAX_APP_TAPP_BYTES`] without touching its
-/// manifest or breaking compilation.
+/// manifest or breaking compilation. It carries messages, not comments: the
+/// module keeps a catalogue's words and drops its comments.
 fn bloat_locale_past_app_limit(package_dir: &Path) {
     let locale_dir = package_dir.join("locales");
     std::fs::create_dir_all(&locale_dir).unwrap();
-    let line = format!("# {}\n", "a".repeat(1020));
-    let lines = usize::try_from(tilo_app_package::MAX_APP_TAPP_BYTES)
-        .unwrap()
-        .div_ceil(line.len())
-        .saturating_add(1);
-    std::fs::write(locale_dir.join("zz-ZZ.ftl"), line.repeat(lines)).unwrap();
+    let mut catalogue = String::new();
+    let mut entry = 0_u64;
+    while (catalogue.len() as u64) <= tilo_app_package::MAX_APP_TAPP_BYTES {
+        catalogue.push_str(&format!(
+            "zz-word-{entry} = a word of the app that nobody typed in it yet\n"
+        ));
+        entry = entry.saturating_add(1);
+    }
+    std::fs::write(locale_dir.join("zz-ZZ.ftl"), catalogue).unwrap();
 }
 
 fn dir_entries(dir: &Path) -> Vec<String> {

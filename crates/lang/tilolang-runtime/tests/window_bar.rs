@@ -887,8 +887,12 @@ view note_page(n: Note) {
                 }
             }
             // A call of the builtin `actions(r)`: the word alone, not the end of a longer name
-            // (`bar_lists_actions`), a component's (`ui.Reactions`) or a comment's.
+            // (`bar_lists_actions`), a component's (`ui.Reactions`), a comment's or a view's own
+            // declaration (`view actions(content: View)`).
             fn call_at(line: &str) -> Option<usize> {
+                if line.trim_start().starts_with("view actions(") {
+                    return None;
+                }
                 line.match_indices("actions(")
                     .map(|(at, _)| at)
                     .find(|&at| {

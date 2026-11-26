@@ -102,7 +102,6 @@ fn a_word_the_source_dropped_is_reported_until_its_translation_drops_it() {
     drop_decrement(&dir);
     // A package commits no source catalogue: its words are its sources' alone.
     let source = dir.join("locales/en-US.ftl");
-    std::fs::remove_file(&source).expect("the package ships a catalogue to drop");
     let key = format!("d-{}", id_of(&dir, "decrement@Counter"));
 
     let (passed, stderr) = check(&dir, false);

@@ -41,38 +41,49 @@ tilo_test_env::scenario! {
     // Run in a package, `build`, `run` and `dev` are the package's.
     {
         let package = package_dir();
+        // The first line of what each is told: the command's own words, or the command
+        // line's when it reads a flag it does not know before the command does.
         let rows: [(&[&str], &str); 11] = [
             (
                 &["build", "--no-such-flag"],
-                "unknown option --no-such-flag",
+                "tilolang: unknown option --no-such-flag",
             ),
-            (&["build", "--out"], "--out needs a value"),
+            (&["build", "--out"], "tilolang: --out needs a value"),
             (
                 &["describe", "--no-such-flag"],
-                "unknown option --no-such-flag",
+                "tilolang: unknown option --no-such-flag",
             ),
-            (&["run", "--no-such-flag"], "unknown option --no-such-flag"),
-            (&["dev", "--no-such-flag"], "unknown option --no-such-flag"),
+            (
+                &["run", "--no-such-flag"],
+                "tilolang: unknown option --no-such-flag",
+            ),
+            (
+                &["dev", "--no-such-flag"],
+                "tilolang: unknown option --no-such-flag",
+            ),
             (
                 &["dev", "--runtime", "tilolang-process"],
-                "unknown option --runtime",
+                "error: unexpected argument '--runtime' found",
             ),
-            (&["repl", "--no-such-flag"], "unknown option --no-such-flag"),
+            (
+                &["repl", "--no-such-flag"],
+                "tilolang: unknown option --no-such-flag",
+            ),
             (
                 &["repl", "--color", "sometimes"],
-                "--color is always, never or auto, not sometimes",
+                "tilolang: --color is always, never or auto, not sometimes",
             ),
             (
                 &["profile", "--no-such-flag"],
-                "profile: no flag --no-such-flag",
+                "tilolang: profile: no flag --no-such-flag",
             ),
             (
                 &["profile", "--seed", "many"],
-                "--seed many: not a number of items",
+                "tilolang: --seed many: not a number of items",
             ),
             (
                 &["profile", "--size", "1280xtall"],
-                "--size 1280xtall: \"tall\" is not a size",
+                "tilolang: --size 1280xtall: \"tall\" is not a size",
             ),
         ];
         for (args, said) in rows {
@@ -80,7 +91,7 @@ tilo_test_env::scenario! {
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert_eq!(
                 stderr.lines().next(),
-                Some(format!("tilolang: {said}").as_str()),
+                Some(said),
                 "{args:?} says what is wrong with it first: {stderr}"
             );
             assert_eq!(

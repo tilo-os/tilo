@@ -2979,11 +2979,27 @@ mod tests {
     #[test]
     fn workspace_certification_skips_only_windowless_services() {
         let apps = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
-        // The one service with nothing to show is certified nowhere.
-        assert!(is_windowless_service(&apps.join("thumbnails")));
         // A window is always certified, a service's own too (the launcher).
         assert!(!is_windowless_service(&apps.join("launcher")));
         assert!(!is_windowless_service(&apps.join("messages")));
+        // A service with nothing to show is certified nowhere: one that runs and draws no
+        // window.
+        let root = tempfile::tempdir().expect("a scratch directory");
+        let service = root.path().join("compute");
+        std::fs::create_dir(&service).expect("the service's directory");
+        std::fs::write(
+            service.join("tilo-app.toml"),
+            format!(
+                "[package]\nid = \"so.tilo.example.compute\"\nversion = \"0.1.0\"\n\
+                 kind = \"service\"\n\n[publisher]\nidentity = \"ed25519:{}\"\n\n\
+                 [sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\n\
+                 [sandbox.net]\nmode = \"off\"\n\n\
+                 [entrypoint]\nbin = \"bin/compute\"\ntype = \"cli\"\n",
+                "00".repeat(32)
+            ),
+        )
+        .expect("the service's manifest");
+        assert!(is_windowless_service(&service));
     }
 
     fn parse(args: &[&str]) -> Command {
