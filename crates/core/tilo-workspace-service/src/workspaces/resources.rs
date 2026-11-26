@@ -1688,9 +1688,10 @@ impl Workspaces {
         // write that waits for its app's surface is told apart by them.
         let surface = |hash: Option<[u8; 32]>| hash.map_or_else(|| "none".to_owned(), hex::encode);
         let versions = format!(
-            "the write names surface {}, the workspace runs {}",
+            "the write names surface {}, the workspace runs {}, which declares no {:?} of it",
             surface(envelopes.last().and_then(|envelope| envelope.surface)),
             surface(candidate.running_surface(app)),
+            undeclared_kinds(app, write),
         );
         let opened = candidate
             .publication()
@@ -3651,6 +3652,33 @@ pub(super) fn may_read_in(
 mod app_records;
 mod record_changes;
 mod verb_grants;
+
+/// The kinds of the records `write` makes or writes that this device declares for none of
+/// `app`'s: neither the surface it runs `app` with nor a record the system keeps for it.
+fn undeclared_kinds(app: &str, write: &tilo_resource_store::Written) -> Vec<String> {
+    let known = collab_types::app_surface::Surfaces::process();
+    let declared = collab_types::app_surface::bytes_of(app)
+        .and_then(|bytes| collab_types::surface::SurfaceFile::compiled(bytes).ok());
+    let mut kinds = collab_types::claim::kinds_made_in(&write.change);
+    kinds.extend(
+        collab_types::claim::store_record_kinds(
+            &write.doc,
+            None,
+            std::slice::from_ref(&write.change),
+        )
+        .into_values()
+        .flatten(),
+    );
+    kinds
+        .into_iter()
+        .filter(|kind| {
+            known.system_resource(app, kind).is_none()
+                && declared
+                    .as_ref()
+                    .is_none_or(|file| file.resource(kind).is_none())
+        })
+        .collect()
+}
 
 // The tests write and read a device's resources through the store (`apps`) and
 // the members around it (`agents`, for the device the sealed fixtures make).

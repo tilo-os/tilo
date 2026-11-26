@@ -243,9 +243,10 @@ impl SurfaceSource for ContentSurfaces {
         // A record the system keeps for its app is judged by the type the system declares for it,
         // on every device and whatever version of the app the change names: the app's package
         // does not declare it ([`crate::app_surface::Surfaces::register_package`]). No package
-        // judges such a kind, so another app's record of it finds no surface here.
-        if let Some(kind) = kind {
-            let known = crate::app_surface::Surfaces::process();
+        // judges such a kind, so another app's record of it finds no surface here. A change that
+        // names no kind is of the record it writes, never of the package's own resource.
+        let known = crate::app_surface::Surfaces::process();
+        if let Some(kind) = kind.or_else(|| system_kind_of(known, document)) {
             if let Some(kept) = known.system_resource(document.app, kind) {
                 return Some(Arc::new(KindSurface(kept)));
             }
@@ -260,6 +261,24 @@ impl SurfaceSource for ContentSurfaces {
         };
         Some(Arc::new(KindSurface(surface)))
     }
+}
+
+/// The kind of `document` when it is a record the system keeps for its app, as its id names it:
+/// a store's document of that kind (`<readers>/<kind>/<id>~<n>`, `<readers>/<kind>#<n>`), or the
+/// record whose id is bound to it.
+fn system_kind_of<'a>(
+    known: &crate::app_surface::Surfaces,
+    document: &WrittenDocument<'a>,
+) -> Option<&'a str> {
+    let record = document.document;
+    let named = crate::claim::content_kind(record).or_else(|| {
+        crate::store_document_readers(record)?;
+        let (_, rest) = record.split_once('/')?;
+        rest.rsplit_once('#').map(|(kind, _)| kind)
+    });
+    named
+        .or_else(|| crate::bound_kind(record))
+        .filter(|kind| known.system_resource(document.app, kind).is_some())
 }
 
 /// Whether the footprint unit `allowed` covers the written unit `unit`:
@@ -664,11 +683,12 @@ writes = ["document", "comments.*"]
                 .find(|bytes| blake3::hash(bytes.as_bytes()).to_hex().as_str() == wanted)
                 .map(|bytes| bytes.as_bytes().to_vec())
         });
-        let record = |app| WrittenDocument {
+        let record_named = |app, document| WrittenDocument {
             workspace: "w",
             app,
-            document: "vault",
+            document,
         };
+        let record = |app| record_named(app, "vault");
         assert!(
             source
                 .surface(
@@ -685,6 +705,22 @@ writes = ["document", "comments.*"]
                 .is_some(),
             "whatever version of Passwords they name"
         );
+        let fixed = crate::workspace_document_of_kind(VAULT)
+            .and_then(|kept| kept.fixed)
+            .expect("the vault's fixed id");
+        for vault in [fixed, "*/passwords.workspace-vault#0"] {
+            assert_eq!(
+                source
+                    .surface(
+                        &record_named("so.tilo.passwords", vault),
+                        None,
+                        Some(&package_hash)
+                    )
+                    .map(|surface| surface.kind().to_owned()),
+                Some(VAULT.to_owned()),
+                "a change of {vault} naming no kind is the vault's, not the package's own"
+            );
+        }
         assert!(
             source
                 .surface(&record("test.squatter"), Some(VAULT), Some(&squatter_hash))

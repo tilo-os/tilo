@@ -701,7 +701,7 @@ pub fn kinds_made_in(change: &automerge::Change) -> std::collections::BTreeSet<S
 
 /// The kind of the one resource a content document of a resource store holds, as its id names it
 /// (`<readers>/<kind>/<id>~<n>`); `None` for a document of resources.
-fn content_kind(record: &str) -> Option<&str> {
+pub(crate) fn content_kind(record: &str) -> Option<&str> {
     let (rest, number) = record.rsplit_once('~')?;
     if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;

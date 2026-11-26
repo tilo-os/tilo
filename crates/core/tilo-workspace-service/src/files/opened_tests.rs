@@ -961,12 +961,14 @@ async fn a_founded_workspace_takes_its_first_vault_write_and_file_from_packaged_
     }
     let known = collab_types::app_surface::Surfaces::process();
     crate::workspaces::person_workspace::declare_kinds(known).unwrap();
+    // Each package's own resource is written by its verbs alone, as an app's usually is: judged by
+    // it, a write of the vault or the tree would be refused.
     for (app, kind) in [
         (crate::workspaces::vault::APP, "passwords.item"),
         (FILES_APP, "files.folder-view"),
     ] {
         let surface = format!(
-            r#"{{"format":2,"resources":[{{"fields":[{{"path":"title","type":"text"}}],"kind":"{kind}","label":"Item","verbs":[{{"id":"type","kind":"undoable"}}],"version":1}}]}}"#
+            r#"{{"format":2,"resources":[{{"fields":[{{"path":"title","readonly":true,"type":"text"}}],"kind":"{kind}","label":"Item","verbs":[{{"id":"type","kind":"undoable"}}],"version":1}}]}}"#
         );
         known.register_package(app, surface.as_bytes());
         assert!(known.hash_of(app).is_some(), "{app} runs from its package");
@@ -998,6 +1000,26 @@ async fn a_founded_workspace_takes_its_first_vault_write_and_file_from_packaged_
     let vault = put.workspaces.open_vault(&put.name).await.unwrap();
     assert_eq!(vault.entries().len(), 1, "{vault:?}");
     assert_eq!(vault.entries()[0].0, entry);
+    // And the next: what the vault keeps after its first entry.
+    let second = accounts::SecretItem::login("Other", "ada", "another battery staple");
+    put.workspaces
+        .write_vault(
+            &vault,
+            vec![accounts::vault_items::VaultChange::Keep(second)],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        put.workspaces
+            .open_vault(&put.name)
+            .await
+            .unwrap()
+            .entries()
+            .len(),
+        2
+    );
 
     let note = b"first file";
     let content = put_content(&put.shelf, put.workspace, note);
