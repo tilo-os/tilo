@@ -585,7 +585,8 @@ export function createFirstScreen({view: drawn, clipboard, storage = null, now =
         const made = at.made;
         let polled;
         try {
-          polled = await bounded(Promise.resolve().then(() => made.follow()), ASK_MS, later, clear);
+          const current = () => round === watchRound && at.made === made && onScreen(kind);
+          polled = await bounded(Promise.resolve().then(() => made.follow(current)), ASK_MS, later, clear);
         } catch (error) {
           // A page that cannot follow codes yet looks again once it can; a
           // host that did not answer, too (asking for the prompt says so).
@@ -624,10 +625,10 @@ export function createFirstScreen({view: drawn, clipboard, storage = null, now =
   };
   // A kept code shown and copied before the page can follow codes again:
   // following it waits for the page (`not-loaded`, no failure of the host).
-  const waitingFor = saved => ({code: saved.code, expiresAt: saved.expiresAt, saved, early: true, follow: async () => {
+  const waitingFor = saved => ({code: saved.code, expiresAt: saved.expiresAt, saved, early: true, follow: async current => {
     const made = codes.setup.resume?.(saved);
     if (!made) throw Object.assign(new Error('this page cannot follow its code yet'), {code: 'not-loaded'});
-    return made.follow();
+    return made.follow(current);
   }});
   // The setup code another tab keeps on its start, taken in place of this
   // one's: the same prompt shows in both. Whether there was one to take.
@@ -699,7 +700,7 @@ export function createFirstScreen({view: drawn, clipboard, storage = null, now =
   // The page offers its codes: it did load, so a wait that said it did not
   // no longer holds.
   const loaded = at => { if (at.error?.code === 'not-loaded') at.error = null; };
-  // Follow `made` (`{code, expiresAt, follow()}`): count its time down
+  // Follow `made` (`{code, expiresAt, follow(current)}`): count its time down
   // until a computer resolves it, then show each step it reports. `known`
   // is what was heard of it before this page (kept with the setup);
   // `resumed` says the screen shows what was kept until the host answers.
@@ -730,8 +731,9 @@ export function createFirstScreen({view: drawn, clipboard, storage = null, now =
       if (mode === 'setup' && steps.includes('logged-in')) { finished = true; stop(); leave(); return; }
       expire();
     };
+    const current = () => mine === attempt && !closed && !leaving && !finished;
     const tick = async () => {
-      if (mine !== attempt || closed || finished) return;
+      if (!current()) return;
       if (!resolved && now() >= made.expiresAt) { expire(); return; }
       if (!resolved) view.left(minutesLeft(made.expiresAt, now()));
       if (asking) return;
@@ -739,7 +741,7 @@ export function createFirstScreen({view: drawn, clipboard, storage = null, now =
       let polled;
       try {
         let asked;
-        try { asked = made.follow(); } catch (error) { asked = Promise.reject(error); }
+        try { asked = made.follow(current); } catch (error) { asked = Promise.reject(error); }
         polled = await bounded(asked, ASK_MS, later, clear);
       } catch (error) {
         if (mine !== attempt || closed || finished) return;
@@ -928,11 +930,12 @@ export function createFirstScreen({view: drawn, clipboard, storage = null, now =
     // the click returns — an agent handed it that fast is told a code the
     // host does not know yet. What the screen says of the code still waits
     // for the copy's answer, which only the click can give.
-    follow(made, mode, ++attempt);
+    const mine = ++attempt;
+    follow(made, mode, mine);
     let writing;
     try { writing = Promise.resolve(clipboard.copy(text)); } catch (error) { writing = Promise.reject(error); }
     return writing.then(() => true, error => { console.warn('first screen: copy', error); return false; }).then(copied => {
-      if (closed) return copied;
+      if (mine !== attempt || closed || leaving) return copied;
       use(kind, mode, made, text, {copied});
       return copied;
     });
@@ -947,8 +950,8 @@ export function createFirstScreen({view: drawn, clipboard, storage = null, now =
     // Once a computer resolves it, the screen follows its steps.
     const made = at.made;
     const mine = ++attempt;
-    follow({...made, follow: async () => {
-      const polled = await made.follow();
+    follow({...made, follow: async current => {
+      const polled = await made.follow(current);
       if (polled.resolved && manualShown && mine === attempt) {
         manualShown = false;
         view.manual(false);
@@ -1031,7 +1034,8 @@ export function createFirstScreen({view: drawn, clipboard, storage = null, now =
     },
     /**
      * The page can make setup codes: `make()` resolves to `{code, expiresAt,
-     * follow(), saved}`, `saved` what the setup keeps of it, and
+     * follow(current), saved}`. Before answering the host, `current()` says this
+     * ticket still has the person’s attention. `saved` is what the setup keeps, and
      * `resume(saved)` follows a kept one again (`null` when it is no longer
      * this tab's to follow). A first visit's code names a workspace the
      * server makes when it is asked for, so it is made when the person asks

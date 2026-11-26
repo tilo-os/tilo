@@ -5,6 +5,7 @@ import {chosenWorkspace, enteredWorkspaces, joinViaHost} from './workspaces.mjs'
 import {AdmissionError, admit} from './admission.mjs';
 import {assistantAddress, PAIRING_CLOCK, PAIRING_DECLINED, PAIRING_SAME_PERSON} from './pairing.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
+import {createFirstScreen} from './first-screen.mjs';
 
 const USER = 'aa'.repeat(32);
 const ORIGIN = 'https://node.example';
@@ -277,18 +278,20 @@ test('the first screen mints, resumes and approves the agent ticket without chan
     const replies = [
       Response.json({id: 'follow-id', ticket: 'login-ticket'}),
       new Response(`{"asked":${asked},"agent":"Reviewer","steps":[]}`),
-      new Response(null, {status: 204}),
-      Response.json({agent: 'Reviewer', steps: ['logged-in', 'tools-added', 'entered']}),
+      new Error('approval receipt lost'),
+      new Response(`{"asked":${asked},"certified":"stored certificate","agent":"Reviewer","steps":["logged-in","tools-added","entered"]}`),
     ];
     globalThis.fetch = async (url, {method, body}) => {
       requests.push([url, method, body]);
-      return replies.shift();
+      const reply = replies.shift();
+      if (reply instanceof Error) throw reply;
+      return reply;
     };
     const made = await make();
     assert.equal(made.code, 'login-ticket');
     const resumed = resume(made.saved);
-    assert.deepEqual((await resumed.follow()).steps, [], 'signing alone reports no completed CLI steps');
-    assert.deepEqual((await resumed.follow()).steps, ['logged-in', 'tools-added', 'entered']);
+    await assert.rejects(resumed.follow(() => true), /approval receipt lost/);
+    assert.deepEqual((await resumed.follow(() => true)).steps, ['logged-in', 'tools-added', 'entered']);
     assert.deepEqual(requests, [
       [ORIGIN + '/peer/v1/ticket', 'POST', JSON.stringify({user: USER, workspace: STUDIO, name: 'My studio', site: 'https://web.example'})],
       [ORIGIN + '/peer/v1/ticket/asked', 'POST', '{"id":"follow-id"}'],
@@ -299,6 +302,87 @@ test('the first screen mints, resumes and approves the agent ticket without chan
     globalThis.fetch = before;
   }
 });
+
+// Exercise the real first-screen controller and ticket requests, stopping at
+// the two asynchronous boundaries that precede sending an approval to the host.
+for (const stage of ['host read', 'signature', 'failed signature']) {
+  test(`leaving agent setup during a ${stage} sends no answer to the old ticket`, async () => {
+    const reached = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const minted = Promise.withResolvers();
+    const answers = [];
+    let signing = 0;
+    let polls = 0;
+    let tickets = 0;
+    let advance;
+    const firstScreen = createFirstScreen({
+      view: new Proxy({}, {get: () => () => {}}),
+      clipboard: {copy: async () => true},
+      every: callback => { advance = callback; return () => {}; },
+      later: () => 0, clear() {},
+    });
+    const {failure} = await fixture({firstScreen,
+      member: {
+        enterOwnWorkspace: async () => ({workspace: STUDIO, name: 'Studio', origin: ORIGIN}),
+        approveAsked: async () => {
+          signing++;
+          reached.resolve();
+          return release.promise;
+        },
+      },
+      boot: async ({deps}, page) => {
+        await deps.onAdmitted(page.peer);
+        assert.equal(await deps.holdFirstScreen(page), true);
+        return null;
+      }});
+    assert.ifError(failure);
+    let offerQuestion = stage === 'host read';
+    const before = globalThis.fetch;
+    globalThis.fetch = async (url, {body}) => {
+      const route = new URL(url).pathname;
+      if (route === '/peer/v1/ticket') {
+        minted.resolve();
+        ++tickets;
+        return Response.json({id: String(tickets), ticket: 'tilo1' + tickets});
+      }
+      if (route === '/peer/v1/ticket/answer') {
+        answers.push(JSON.parse(body));
+        return new Response(null, {status: 204});
+      }
+      assert.equal(route, '/peer/v1/ticket/asked');
+      polls++;
+      if (JSON.parse(body).id !== '1' || !offerQuestion) return Response.json({});
+      if (stage === 'host read') {
+        reached.resolve();
+        await release.promise;
+      }
+      return Response.json({asked: {digest: [42]}});
+    };
+    try {
+      await firstScreen.copy();
+      await minted.promise;
+      await tick();
+      assert.ok(polls > 0, 'the new offer is followed while it is shown');
+      if (stage !== 'host read') {
+        await firstScreen.copy();
+        await tick();
+        offerQuestion = true;
+        advance();
+      }
+      await reached.promise;
+      if (stage === 'host read') firstScreen.skip();
+      else firstScreen.back();
+      if (stage === 'failed signature') release.reject(new Error('root locked'));
+      else release.resolve('{"signature":[42]}');
+      await tick();
+      assert.equal(signing, stage === 'host read' ? 0 : 1);
+      assert.deepEqual(answers, []);
+    } finally {
+      firstScreen.close();
+      globalThis.fetch = before;
+    }
+  });
+}
 
 /** The way-in rules for a link to such a workspace, by a browser with no account there
  * (tilo-session-client's `way_in`, tested there): come back as the person, take the

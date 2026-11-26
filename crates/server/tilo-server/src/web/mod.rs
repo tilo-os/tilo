@@ -1223,7 +1223,9 @@ fn ticket_refused(refusal: &tickets::Refusal) -> Response<Body> {
         tickets::Refusal::NotWaiting
         | tickets::Refusal::NotThisPerson
         | tickets::Refusal::NotSignedIn
-        | tickets::Refusal::Spent => StatusCode::CONFLICT,
+        | tickets::Refusal::Spent
+        | tickets::Refusal::NoQuestion
+        | tickets::Refusal::Answered => StatusCode::CONFLICT,
     };
     refused(status, refusal.message())
 }

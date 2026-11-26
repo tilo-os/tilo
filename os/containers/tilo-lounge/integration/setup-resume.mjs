@@ -229,9 +229,16 @@ const clipboardText = tab => tab.evaluate(
 // button is there once the entry let the tab in; a press before then lands
 // nowhere.
 const makePrompt = async tab => {
-  await until(tab, `document.documentElement.dataset.firstScreen === ''
-    && getComputedStyle(document.getElementById('first-screen')).display !== 'none'`);
-  await click(tab, 'first-screen-agent');
+  const state = await until(tab, `(() => {
+    const screen = document.getElementById('first-screen');
+    if (document.documentElement.dataset.firstScreen !== '' || !screen || getComputedStyle(screen).display === 'none'
+      || screen.dataset.setup === 'waiting') return '';
+    return screen.dataset.setup ?? 'idle';
+  })()`);
+  if (!state || state === 'failed') return null;
+  // After Back, another tab may already have requested the next prompt. A
+  // click makes one only when the screen is idle; clicking a ready one copies it.
+  if (state === 'idle') await click(tab, 'first-screen-agent');
   return until(tab, `document.getElementById('first-screen')?.dataset.setup === 'ready' && document.getElementById('first-screen-offer').textContent`);
 };
 // What a click on Copy wrote: the prompt the clipboard holds once it no longer
@@ -279,7 +286,10 @@ const login = (code, env) => {
   const child = execFile(tiloBin, ['login', code, '--agent', 'Reviewer'], {env, timeout: 600_000, maxBuffer: 1 << 20});
   let stdout = '', stderr = '';
   child.stdout.on('data', chunk => { stdout += chunk; });
-  child.stderr.on('data', chunk => { stderr += chunk; if (/Waiting for the person/.test(stderr)) saidWaiting(true); });
+  child.stderr.on('data', chunk => {
+    stderr += chunk;
+    if (stderr.includes('Asking your device to add this computer')) saidWaiting(true);
+  });
   const loggedIn = new Promise(resolve => child.on('close', code => { saidWaiting(false); resolve({code: code ?? 1, stdout, stderr}); }));
   const ended = loggedIn.then(ran => {
     if (ran.code !== 0) return ran;
@@ -360,8 +370,9 @@ await close(second);
 // Copy again in the first tab (a fresh code), then close it and reopen. It
 // offers the prompt again at the start, which is the state the copy is made
 // on: a tab still on the step it was at copies that step's code.
-check(await until(tab, `document.documentElement.dataset.firstScreen === '' && document.getElementById('first-screen')?.dataset.setup === 'ready'`, stepLimit(3)),
-  '2. the first tab offers the start again, which the next copy is made on', JSON.stringify(await where(tab)));
+const offeredB = await makePrompt(tab);
+check(codeOf(offeredB) && codeOf(offeredB) !== codeOf(prompt),
+  '2. the first tab offers a fresh setup ticket after Back', JSON.stringify(await where(tab)));
 // What the person pastes: the clipboard, or (where this browser will not
 // read it back to the harness in a tab that was behind another) the prompt
 // the page shows once it says it copied it; case 2 proved those are one.
@@ -369,12 +380,17 @@ const readB = await copy(tab, 'first-screen-agent');
 const promptB = readB ?? await until(tab, `document.getElementById('first-screen')?.dataset.copied === 'true'
   && document.getElementById('first-screen-prompt').textContent`, stepLimit(1));
 report.promptBFrom = readB ? 'clipboard' : 'screen';
-check(codeOf(promptB) && promptB !== prompt, '2. a new copy after Back is a fresh code');
+check(promptB && promptB === offeredB && codeOf(promptB) !== codeOf(prompt),
+  '2. the new copy after Back is exactly the fresh prompt shown');
+check(await until(tab, `document.documentElement.dataset.firstScreen === 'waiting'
+  && JSON.parse(localStorage.getItem('tilo-setup') ?? 'null')?.code?.code === ${JSON.stringify(codeOf(promptB))}`, stepLimit(1)),
+  '2. the first tab kept the ticket it handed the agent before the tab is closed');
 await close(tab);
 
 // 3. Agent installing while the tab is closed: it waits for this browser to approve it.
 const agent = login(codeOf(promptB), computer('one'));
-await Promise.race([agent.asked, sleep(stepLimit(1))]);
+check(await Promise.race([agent.asked, sleep(stepLimit(3)).then(() => false)]),
+  '3. the agent started the login while the tab was closed');
 tab = await tabIn(person, 'reopened');
 await tab.navigate(site);
 frame = await firstFrame(tab);

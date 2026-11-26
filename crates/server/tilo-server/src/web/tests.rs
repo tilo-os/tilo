@@ -1399,6 +1399,104 @@ fn another_origin_a_server_is_reached_under_is_an_origin_beside_its_public_one()
     );
 }
 
+/// Follow the setup just as the page does, through the host's ticket status.
+async fn ticket_showing(addr: SocketAddr, id: &str, field: &str) -> serde_json::Value {
+    tilo_test_env::within(field, async {
+        loop {
+            let (code, _, status) = call_json(
+                addr,
+                tickets::ASKED_ROUTE,
+                &serde_json::json!({"id": id}),
+                None,
+            )
+            .await;
+            assert_eq!(code, 200, "{status}");
+            if status.get(field).is_some() {
+                return status;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+}
+
+/// The computer spends the real login ticket; its person's first signed decision survives a
+/// lost HTTP response, and a later conflicting decision cannot reverse it.
+async fn answer_setup_once(
+    addr: SocketAddr,
+    router: tickets::Router,
+    id: &str,
+    ticket: &tilo_device_identity::login::Ticket,
+    root: &SigningKey,
+    keeper: &Host,
+) {
+    use ed25519_dalek::Signer as _;
+    use tilo_actions::remote::{ActionProvider as _, Caller, InvokeRequest, RemoteActionTarget};
+    use tilo_device_identity::login::{Approved, Asked, CERTIFY, PROVIDER, RESOURCE};
+    let decline = serde_json::json!({"id": id, "declined": "Do not add it"});
+    assert_eq!(
+        call_json(addr, tickets::ANSWER_ROUTE, &decline, None)
+            .await
+            .0,
+        409
+    );
+
+    let computer = SigningKey::from_bytes(&[153; 32])
+        .verifying_key()
+        .to_bytes();
+    let arguments = serde_json::json!({
+        "secret": ticket.secret_hex(), "device_public_key": hex::encode(computer), "agent": "Tilo",
+    });
+    let request = InvokeRequest::plain(
+        RemoteActionTarget {
+            provider: PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(RESOURCE, CERTIFY),
+        },
+        arguments.as_object().unwrap().clone(),
+    );
+    router
+        .invoke(&Caller::visitor(computer), request)
+        .await
+        .unwrap();
+    let status = ticket_showing(addr, id, "asked").await;
+    let asked: Asked = serde_json::from_value(status["asked"].clone()).unwrap();
+    let mut cert = asked.cert;
+    tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
+    let mut approved = Approved {
+        cert: cert.clone(),
+        approver: keeper.cert.clone(),
+        signature: [0; 64],
+    };
+    let unsigned = serde_json::json!({"id": id, "approved": approved});
+    assert_eq!(
+        call_json(addr, tickets::ANSWER_ROUTE, &unsigned, None)
+            .await
+            .0,
+        400
+    );
+
+    approved.signature = keeper.key.sign(&asked.digest).to_bytes();
+    let yes = serde_json::json!({"id": id, "approved": approved});
+    for _ in 0..2 {
+        assert_eq!(
+            call_json(addr, tickets::ANSWER_ROUTE, &yes, None).await.0,
+            204
+        );
+    }
+    assert_eq!(
+        call_json(addr, tickets::ANSWER_ROUTE, &decline, None)
+            .await
+            .0,
+        409
+    );
+    let final_status = ticket_showing(addr, id, "certified").await;
+    assert_eq!(
+        serde_json::from_str::<DeviceCert>(final_status["certified"].as_str().unwrap()).unwrap(),
+        cert
+    );
+    assert!(final_status.get("declined").is_none(), "{final_status}");
+}
+
 /// A page asks its host for the ticket its agent works with, follows it, and gets a ticket for
 /// each direction it asks in: what the ticket routes answer, and what they refuse.
 #[tokio::test]
@@ -1416,6 +1514,7 @@ async fn a_page_asks_its_host_for_the_ticket_its_agent_works_with() {
         relay_url: None,
         web: None,
     });
+    let router = tickets::Router::new(web.tickets.clone());
     let (addr, serving) = serve_web(Arc::new(web)).await;
 
     // Setting up: the ticket names the person and the workspace their computer enters.
@@ -1452,6 +1551,8 @@ async fn a_page_asks_its_host_for_the_ticket_its_agent_works_with() {
         "{asked}"
     );
 
+    answer_setup_once(addr, router, &id, &ticket, &root, &keeper).await;
+
     // Signing a browser in: the ticket names no person, and no workspace.
     let (code, _, minted) = call_json(
         addr,
@@ -1464,6 +1565,13 @@ async fn a_page_asks_its_host_for_the_ticket_its_agent_works_with() {
     let ticket = tilo_device_identity::login::Ticket::parse(minted["ticket"].as_str().unwrap())
         .expect("the page is shown a ticket");
     assert_eq!(ticket.direction, Direction::SignIn);
+    let answer = serde_json::json!({"id": minted["id"], "declined": "wrong direction"});
+    assert_eq!(
+        call_json(addr, tickets::ANSWER_ROUTE, &answer, None)
+            .await
+            .0,
+        409
+    );
 
     // A setup ticket without its person is no request this route takes, and a ticket no page
     // made is none to answer.

@@ -36,7 +36,7 @@ use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_device_identity::login::{
     APPROVE, Approval, Approved, Approver, Asked, Declined, Direction, Entry, PENDING, PROVIDER,
     REPORTED, Reached, Report, ServerAddress, SigningIn, Step, TICKET_LIFETIME_NS, Tab, Ticket,
-    tab_capability,
+    check_approval, tab_capability,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::new_device::ServedTicket;
@@ -154,6 +154,8 @@ pub(super) enum Refusal {
     NotThisPerson,
     NotSignedIn,
     Spent,
+    NoQuestion,
+    Answered,
 }
 
 impl Refusal {
@@ -166,6 +168,8 @@ impl Refusal {
             Self::NotThisPerson => "this ticket is being signed in for another person",
             Self::NotSignedIn => "this ticket does not sign a browser in",
             Self::Spent => "this browser is signed in already: ask for a new ticket",
+            Self::NoQuestion => "no computer is asking to be added with this ticket",
+            Self::Answered => "this computer's request has already been answered",
         }
     }
 }
@@ -224,8 +228,6 @@ struct Slot {
     decision: tokio::sync::watch::Sender<Option<Result<Approved, Declined>>>,
     /// Setting up: the certificate the host answered the computer with.
     certified: Mutex<Option<DeviceCert>>,
-    /// Why a computer's call ended without a certificate.
-    declined: Mutex<Option<String>>,
     /// The latest failure a computer reported, for the page to say.
     detail: Mutex<Option<String>>,
     /// The steps the computer reported.
@@ -334,7 +336,6 @@ impl Tickets {
                     asked: Mutex::default(),
                     decision: tokio::sync::watch::Sender::new(None),
                     certified: Mutex::default(),
-                    declined: Mutex::default(),
                     detail: Mutex::default(),
                     steps: Mutex::default(),
                     agent: Mutex::default(),
@@ -365,7 +366,6 @@ impl Tickets {
                     asked: Mutex::default(),
                     decision: tokio::sync::watch::Sender::new(None),
                     certified: Mutex::default(),
-                    declined: Mutex::default(),
                     detail: Mutex::default(),
                     steps: Mutex::default(),
                     agent: Mutex::default(),
@@ -468,7 +468,12 @@ impl Tickets {
                 .lock_recover()
                 .as_ref()
                 .and_then(|cert| serde_json::to_string(cert).ok()),
-            declined: slot.declined.lock_recover().clone(),
+            declined: slot
+                .decision
+                .borrow()
+                .as_ref()
+                .and_then(|decision| decision.as_ref().err())
+                .map(|declined| declined.0.clone()),
             detail: slot.detail.lock_recover().clone(),
             steps: slot.steps.lock_recover().clone(),
             claimed,
@@ -478,7 +483,8 @@ impl Tickets {
     /// Take the page's answer to the computer's question.
     ///
     /// # Errors
-    /// No such ticket is live here, or it was answered already.
+    /// The ticket has no live question, the approval does not verify, or a different answer
+    /// was already accepted. An exact retry is acknowledged.
     pub(super) fn answer(&self, answer: &Answering) -> Result<(), Refusal> {
         let slot = self.get(&answer.id)?;
         let decision = match (&answer.approved, &answer.declined) {
@@ -487,10 +493,31 @@ impl Tickets {
             (None, None) => Err(Declined("the page said no".to_owned())),
             (Some(_), Some(_)) => return Err(Refusal::Malformed),
         };
-        if let Err(declined) = &decision {
-            *slot.declined.lock_recover() = Some(declined.0.clone());
+        // Keep the question locked until its answer is published: concurrent replies can only
+        // acknowledge the same decision. Only setup tickets ever have a computer's question.
+        let question = slot.asked.lock_recover();
+        let asked = question.as_ref().ok_or(Refusal::NoQuestion)?;
+        if let Some(previous) = slot.decision.borrow().as_ref() {
+            return if previous == &decision {
+                Ok(())
+            } else {
+                Err(Refusal::Answered)
+            };
+        }
+        if expired(&slot) {
+            return Err(Refusal::Unknown);
+        }
+        if let Ok(approved) = &decision {
+            check_approval(
+                asked,
+                approved,
+                &self.certification.revocations(),
+                tilo_clock::unix_now_ns(),
+            )
+            .map_err(|_| Refusal::Malformed)?;
         }
         slot.decision.send_replace(Some(decision));
+        drop(question);
         Ok(())
     }
 

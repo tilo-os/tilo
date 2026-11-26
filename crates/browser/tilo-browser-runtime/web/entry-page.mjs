@@ -1589,8 +1589,28 @@ function ticketCodes({origin, identity}) {
   const kept = (ticket, id, direction) => ({code: ticket, expiresAt: Date.now() + TICKET_LIFE_MS, follow: id, id, direction});
   const answerer = saved => {
     let answering = false;
+    const answer = async (asked, current) => {
+      let body;
+      try {
+        const peer = await setupPeer();
+        if (!current()) return;
+        const person = currentIdentity();
+        if (!peer?.approveAsked || !person) throw new Error('this tab cannot approve your agent');
+        // Rounding a nanosecond timestamp here invalidates the host's certificate.
+        const approved = await peer.approveAsked(person, asked);
+        if (currentIdentity() !== person || person.locked) throw new Error('this tab no longer holds your unlocked identity');
+        body = objectText({id: JSON.stringify(saved.follow), approved});
+      } catch (error) {
+        if (!current()) return;
+        console.warn('first screen: approving your agent', error);
+        body = JSON.stringify({id: saved.follow, declined: String(error?.message ?? error)});
+      }
+      // Back, Skip or a replacement offer withdraws an answer up to the moment
+      // we send it. If a reply goes missing, the next poll asks what the host kept.
+      if (current()) await send(TICKET_ANSWER, body);
+    };
     return {code: saved.code, expiresAt: saved.expiresAt, saved: {...saved},
-      follow: async () => {
+      follow: async current => {
         const wire = await send(TICKET_ASKED, JSON.stringify({id: saved.follow}));
         const status = wire ? JSON.parse(wire) : {};
         const agent = status.agent ?? null;
@@ -1607,23 +1627,10 @@ function ticketCodes({origin, identity}) {
         if (status.declined) {
           return {resolved: true, expired: false, steps: ['failed'], agent, detail: status.declined};
         }
-        if (status.asked && !answering) {
+        if (status.asked && !status.certified && !answering && current()) {
           answering = true;
-          try {
-            const peer = await setupPeer();
-            const person = currentIdentity();
-            if (!peer?.approveAsked || !person) throw new Error('this tab cannot approve your agent');
-            // Rounding a nanosecond timestamp here invalidates the host's certificate.
-            const approved = await peer.approveAsked(person, memberText(wire, 'asked'));
-            if (currentIdentity() !== person || person.locked) throw new Error('this tab no longer holds your unlocked identity');
-            await send(TICKET_ANSWER, objectText({id: JSON.stringify(saved.follow), approved}));
-          } catch (error) {
-            console.warn('first screen: approving your agent', error);
-            await call(TICKET_ANSWER, {id: saved.follow, declined: String(error?.message ?? error)})
-              .catch(() => {});
-          } finally {
-            answering = false;
-          }
+          try { await answer(memberText(wire, 'asked'), current); }
+          finally { answering = false; }
         }
         // The steps are the ones the computer reported: it logged in, added Tilo's tools, and
         // entered. Approval is not a step the screen claims on its own.

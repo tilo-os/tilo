@@ -190,6 +190,19 @@ test('the code is followed before the clipboard holds it: the host knows it when
   assert.deepEqual(copied, [setupPrompt(CODE)], 'the prompt went to the clipboard');
 });
 
+test('finishing a clipboard write after Skip leaves the setup closed to that ticket', async () => {
+  const receipt = Promise.withResolvers();
+  const {screen, names, kept} = fixture({copy: () => receipt.promise});
+  screen.offerSetup(maker(fakeCode()).make);
+  await settle();
+  const copying = screen.copy();
+  screen.skip();
+  receipt.resolve();
+  await copying;
+  assert.ok(!names().includes('waiting'));
+  assert.equal(kept().step, 'opening');
+});
+
 test('a code shown and never copied is kept at once, and the steps say what the agent is doing without a copy', async () => {
   // A person who selects the prompt and copies it by hand, or types the code
   // their agent asks about, hands it over without the button: the host knows
