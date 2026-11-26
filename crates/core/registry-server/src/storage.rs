@@ -90,6 +90,39 @@ pub struct HistoryCompaction {
     pub through_snapshot_hash_hex: String,
 }
 
+/// The catalogue an owner retired because this build cannot read its format: its last snapshot,
+/// which the first snapshot after it continues by sequence and hash, and the directory under
+/// `retired/` that keeps its snapshots, entries and submissions. A device's checkpoint only ever
+/// moves forward, so the catalogue that replaces it carries on the retired one's sequence instead
+/// of starting again at 1.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetiredCatalogue {
+    pub protocol: u32,
+    pub through_sequence: u64,
+    pub through_snapshot_hash_hex: String,
+    pub archive: String,
+}
+
+/// What a retired catalogue consists of, relative to the data directory: everything that holds its
+/// entries or names its snapshots. Identity, the publisher allowlist, the channel authorization,
+/// moderation records and stored package bytes stay.
+const RETIRED_CATALOGUE_FILES: [&str; 5] = [
+    "published-snapshot.json",
+    "published-compact-snapshot.json",
+    "snapshot-publish.pending.json",
+    "first-party-promotion.pending.json",
+    "first-party-promotion.staged.json",
+];
+const RETIRED_CATALOGUE_DIRS: [&str; 7] = [
+    "snapshots",
+    "entries",
+    "pending",
+    "deferred-pending",
+    "quarantined",
+    "reviews",
+    "version-indexes",
+];
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct HistoryCompactionReport {
     pub pruned: usize,
@@ -717,6 +750,35 @@ impl Storage {
         )
     }
 
+    fn retired_catalogue_path(&self) -> PathBuf {
+        self.root.join("retired-catalogue.json")
+    }
+
+    /// The catalogue last retired at a format this build cannot read, if any.
+    pub fn retired_catalogue(&self) -> Result<Option<RetiredCatalogue>, StorageError> {
+        load_json(&self.retired_catalogue_path(), "retired catalogue")
+    }
+
+    /// The `protocol` the published snapshot was signed at, read without decoding the rest of it,
+    /// so it answers for a catalogue this build cannot decode too.
+    pub fn published_protocol(&self) -> Result<Option<u32>, StorageError> {
+        Ok(self
+            .published_header()?
+            .map(|(protocol, _sequence)| protocol))
+    }
+
+    fn published_header(&self) -> Result<Option<(u32, u64)>, StorageError> {
+        #[derive(Deserialize)]
+        struct Header {
+            protocol: u32,
+            sequence: u64,
+        }
+        Ok(
+            load_json::<Header>(&self.snapshot_path(), "published registry snapshot")?
+                .map(|header| (header.protocol, header.sequence)),
+        )
+    }
+
     fn history_members(&self) -> Result<BTreeMap<u64, (PathBuf, u64)>, StorageError> {
         let mut members = BTreeMap::new();
         for item in std::fs::read_dir(self.root.join("snapshots"))
@@ -1123,6 +1185,88 @@ impl<'a> SnapshotLock<'a> {
 
     pub fn archive_current(&self, snapshot: &SignedRegistrySnapshot) -> Result<(), StorageError> {
         self.storage.archive_snapshot(snapshot)
+    }
+
+    /// Move the published catalogue, which is at a format this build cannot read, out of the way:
+    /// its snapshots, entries and every submission naming its entries go under
+    /// `retired/format-<protocol>-through-<sequence>/`, and [`RetiredCatalogue`] records the last
+    /// snapshot, which the next one published continues. Its entries' publisher signatures cover a
+    /// signed form this build does not have, so none of them can be carried over: their publishers
+    /// submit them again. A run stopped part way finishes the same move when repeated.
+    pub fn retire_unreadable_catalogue(&self) -> Result<RetiredCatalogue, StorageError> {
+        let storage = self.storage;
+        let retired = match storage.published_header()? {
+            Some((protocol, sequence))
+                if !registry_types::READABLE_CATALOGUE_FORMATS.contains(&protocol) =>
+            {
+                let through_snapshot_hash_hex = storage
+                    .history_members()?
+                    .get(&sequence)
+                    .and_then(|(path, _)| {
+                        let name = path.file_name()?.to_str()?.strip_suffix(".json")?;
+                        Some(name.split_once('-')?.1.to_ascii_lowercase())
+                    })
+                    .ok_or_else(|| {
+                        StorageError::Parse(format!(
+                            "the published snapshot {sequence} is not in the snapshot history, so \
+                             its hash is unknown; refusing to retire it"
+                        ))
+                    })?;
+                let retired = RetiredCatalogue {
+                    protocol,
+                    through_sequence: sequence,
+                    through_snapshot_hash_hex,
+                    archive: format!("format-{protocol}-through-{sequence:020}"),
+                };
+                match storage.retired_catalogue()? {
+                    Some(earlier) if earlier == retired => {}
+                    Some(earlier) if earlier.through_sequence >= sequence => {
+                        return Err(StorageError::Parse(format!(
+                            "a catalogue through sequence {} was already retired; refusing to \
+                             retire sequence {sequence}",
+                            earlier.through_sequence
+                        )));
+                    }
+                    _ => save_json(&storage.retired_catalogue_path(), &retired)?,
+                }
+                retired
+            }
+            Some((protocol, _)) => {
+                return Err(StorageError::Parse(format!(
+                    "the published catalogue is at package format {protocol}, which this build \
+                     reads: there is nothing to retire"
+                )));
+            }
+            // Repeated after the published snapshot already moved: finish that move.
+            None => storage.retired_catalogue()?.ok_or_else(|| {
+                StorageError::Parse("there is no published catalogue to retire".into())
+            })?,
+        };
+        let archive = storage.root.join("retired").join(&retired.archive);
+        std::fs::create_dir_all(&archive)
+            .map_err(|e| StorageError::Io(format!("create {}: {e}", archive.display())))?;
+        for name in RETIRED_CATALOGUE_FILES
+            .iter()
+            .chain(RETIRED_CATALOGUE_DIRS.iter())
+        {
+            let from = storage.root.join(name);
+            let to = archive.join(name);
+            // A directory this move already took was made again, empty, in its place.
+            if !from.exists() || to.exists() {
+                continue;
+            }
+            std::fs::rename(&from, &to).map_err(|e| {
+                StorageError::Io(format!("move {} to {}: {e}", from.display(), to.display()))
+            })?;
+        }
+        for name in RETIRED_CATALOGUE_DIRS {
+            let dir = storage.root.join(name);
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| StorageError::Io(format!("create {}: {e}", dir.display())))?;
+        }
+        sync_dir(&archive);
+        sync_dir(&storage.root);
+        Ok(retired)
     }
 
     /// Exact signed transaction left by a crashed writer, if any. Callers verify its owner
@@ -1581,11 +1725,27 @@ impl<'a> SnapshotLock<'a> {
                         compaction.through_sequence
                     )));
                 }
-                if snapshot.sequence != 1 || !snapshot.previous_snapshot_hash_hex.is_empty() {
-                    return Err(StorageError::Parse(
-                        "first snapshot transaction must be sequence 1 without a predecessor"
-                            .into(),
-                    ));
+                // The first snapshot either starts the registry or continues the catalogue
+                // an owner retired.
+                let (sequence, previous) = match self.storage.retired_catalogue()? {
+                    Some(retired) => (
+                        retired.through_sequence.checked_add(1).ok_or_else(|| {
+                            StorageError::Parse("snapshot sequence is exhausted".into())
+                        })?,
+                        retired.through_snapshot_hash_hex,
+                    ),
+                    None => (1, String::new()),
+                };
+                if snapshot.sequence != sequence || snapshot.previous_snapshot_hash_hex != previous
+                {
+                    return Err(StorageError::Parse(if sequence == 1 {
+                        "first snapshot transaction must be sequence 1 without a predecessor".into()
+                    } else {
+                        format!(
+                            "the first snapshot after the retired catalogue must be sequence \
+                             {sequence} and name its last snapshot as predecessor"
+                        )
+                    }));
                 }
             }
         }

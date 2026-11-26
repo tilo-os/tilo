@@ -229,6 +229,13 @@ enum Cmd {
         /// Snapshot lifetime. Short validity bounds freeze attacks.
         #[arg(long, default_value_t = 86_400)]
         valid_for_seconds: u64,
+        /// The published catalogue is at a format whose signed form this
+        /// build does not have, so its entries cannot be verified or carried
+        /// over: move it aside under `retired/` and sign an empty catalogue
+        /// that continues its sequence. Publishers then submit their entries
+        /// again at this format.
+        #[arg(long)]
+        retire_unreadable_catalogue: bool,
     },
     /// Publish a new monotonic snapshot containing the entries from an older
     /// sequence. This is a forward-moving rollback: clients never see a lower
@@ -474,7 +481,13 @@ async fn serve_cli() -> anyhow::Result<()> {
         Cmd::SignSnapshot {
             owner_key_file,
             valid_for_seconds,
-        } => cmd_sign_snapshot(&storage, &owner_key_file, valid_for_seconds),
+            retire_unreadable_catalogue,
+        } => cmd_sign_snapshot(
+            &storage,
+            &owner_key_file,
+            valid_for_seconds,
+            retire_unreadable_catalogue,
+        ),
         Cmd::RollbackSnapshot {
             to_sequence,
             owner_key_file,
@@ -1387,6 +1400,7 @@ fn cmd_sign_snapshot(
     storage: &Storage,
     owner_key_file: &std::path::Path,
     valid_for_seconds: u64,
+    retire_unreadable_catalogue: bool,
 ) -> anyhow::Result<()> {
     if valid_for_seconds == 0 || valid_for_seconds > registry_types::MAX_SNAPSHOT_VALIDITY_SECONDS {
         anyhow::bail!("snapshot validity must be between 1 second and 7 days");
@@ -1394,9 +1408,29 @@ fn cmd_sign_snapshot(
     let writer = storage.lock_snapshot()?;
     let identity = storage.load_identity()?;
     let key = load_owner_key(owner_key_file, &identity.owner_pubkey_hex)?;
+    if retire_unreadable_catalogue {
+        let retired = writer.retire_unreadable_catalogue()?;
+        eprintln!(
+            "retired the catalogue at package format {} through sequence {} to retired/{}",
+            retired.protocol, retired.through_sequence, retired.archive
+        );
+    }
     recover_snapshot_transaction(&writer, &identity.owner_pubkey_hex)?;
     refuse_active_promotion(storage)?;
-    let previous = writer.current()?;
+    let previous = writer
+        .current()
+        .map_err(|error| match storage.published_protocol() {
+            Ok(Some(protocol))
+                if !registry_types::READABLE_CATALOGUE_FORMATS.contains(&protocol) =>
+            {
+                anyhow::anyhow!(
+                    "the published catalogue is at package format {protocol}, which this build \
+                     cannot decode ({error}); sign with --retire-unreadable-catalogue to move it \
+                     aside and publish this format's catalogue in its place"
+                )
+            }
+            _ => error.into(),
+        })?;
     if let Some(snapshot) = &previous {
         // The owner's signature is how a registry moves to a new package
         // format. A predecessor at another format cannot be verified by this
@@ -1416,8 +1450,23 @@ fn cmd_sign_snapshot(
         // were introduced. Saving identical bytes is idempotent.
         writer.archive_current(snapshot)?;
     }
+    let retired = storage.retired_catalogue()?;
     let (sequence, previous_snapshot_hash_hex) = previous.as_ref().map_or_else(
-        || Ok((1, String::new())),
+        // The first snapshot continues the catalogue an owner retired, if there was one.
+        || {
+            retired.as_ref().map_or_else(
+                || Ok((1, String::new())),
+                |retired| {
+                    Ok((
+                        retired
+                            .through_sequence
+                            .checked_add(1)
+                            .ok_or(registry_types::SnapshotError::Sequence)?,
+                        retired.through_snapshot_hash_hex.clone(),
+                    ))
+                },
+            )
+        },
         |snapshot| {
             Ok::<_, registry_types::SnapshotError>((
                 snapshot
@@ -2757,7 +2806,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt as _;
             std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
-        cmd_sign_snapshot(&storage, &key_file, 3_600).unwrap();
+        cmd_sign_snapshot(&storage, &key_file, 3_600, false).unwrap();
 
         let current = storage.load_snapshot().unwrap().unwrap();
         assert_eq!(current.protocol, PACKAGE_FORMAT_VERSION);
@@ -2776,7 +2825,144 @@ mod tests {
         let writer = storage.lock_snapshot().unwrap();
         writer.publish(&forged).unwrap();
         drop(writer);
-        assert!(cmd_sign_snapshot(&storage, &key_file, 3_600).is_err());
+        assert!(cmd_sign_snapshot(&storage, &key_file, 3_600, false).is_err());
         assert_eq!(storage.load_snapshot().unwrap().unwrap(), forged);
+    }
+
+    /// A registry owned by `owner` whose first-party publisher is `publisher`, and the owner's key
+    /// in a file the signing commands take.
+    fn owned_registry(
+        owner: &ed25519_dalek::SigningKey,
+        publisher: &ed25519_dalek::SigningKey,
+    ) -> (tempfile::TempDir, Storage, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        storage
+            .save_identity(&ServerIdentity {
+                owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
+                name: "test".into(),
+                description: "test".into(),
+                base_url: "http://127.0.0.1".into(),
+            })
+            .unwrap();
+        cmd_add_publisher(
+            &storage,
+            &hex::encode(publisher.verifying_key().to_bytes()),
+            true,
+            String::new(),
+            NamespaceGrant {
+                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
+                first_party: true,
+                extending: false,
+            },
+        )
+        .unwrap();
+        let key_file = dir.path().join("owner.seed");
+        std::fs::write(&key_file, hex::encode(owner.to_bytes())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        (dir, storage, key_file)
+    }
+
+    #[test]
+    fn owner_retires_a_catalogue_whose_signed_form_this_build_lacks() {
+        let owner = ed25519_dalek::SigningKey::from_bytes(&[63; 32]);
+        let publisher = ed25519_dalek::SigningKey::from_bytes(&[64; 32]);
+        let owner_hex = hex::encode(owner.verifying_key().to_bytes());
+        let (dir, storage, key_file) = owned_registry(&owner, &publisher);
+
+        // What a build of an earlier format left on disk: its snapshot, the same snapshot in the
+        // history under the hash that build computed, and an entry, each without the field this
+        // format added to every version, so none of them decodes here.
+        let entry = publisher_entry(&publisher);
+        let mut earlier = serde_json::to_value(
+            build_signed_snapshot(&storage, None, vec![entry.clone()], &owner, 3_600).unwrap(),
+        )
+        .unwrap();
+        earlier["protocol"] = serde_json::json!(2);
+        earlier["sequence"] = serde_json::json!(41);
+        for version in earlier["entries"][0]["versions"].as_array_mut().unwrap() {
+            version.as_object_mut().unwrap().remove("tapp_surface_hex");
+        }
+        let mut old_entry = serde_json::to_value(&entry).unwrap();
+        for version in old_entry["versions"].as_array_mut().unwrap() {
+            version.as_object_mut().unwrap().remove("tapp_surface_hex");
+        }
+        let earlier_hash = "ee".repeat(32);
+        let earlier_bytes = serde_json::to_vec(&earlier).unwrap();
+        std::fs::write(storage.snapshot_path(), &earlier_bytes).unwrap();
+        std::fs::write(
+            dir.path()
+                .join("snapshots")
+                .join(format!("{:020}-{earlier_hash}.json", 41)),
+            &earlier_bytes,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("entries").join("earlier.json"),
+            serde_json::to_vec(&old_entry).unwrap(),
+        )
+        .unwrap();
+        assert!(storage.load_snapshot().is_err());
+
+        // Without being asked to, the owner's signing names the way out and changes nothing.
+        let refused = cmd_sign_snapshot(&storage, &key_file, 3_600, false)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("package format 2")
+                && refused.contains("--retire-unreadable-catalogue"),
+            "{refused}"
+        );
+        assert_eq!(
+            std::fs::read(storage.snapshot_path()).unwrap(),
+            earlier_bytes
+        );
+
+        cmd_sign_snapshot(&storage, &key_file, 3_600, true).unwrap();
+        let current = storage.load_snapshot().unwrap().unwrap();
+        assert_eq!(current.protocol, PACKAGE_FORMAT_VERSION);
+        assert_eq!(
+            current.sequence, 42,
+            "a device's checkpoint at 41 still moves forward"
+        );
+        assert_eq!(current.previous_snapshot_hash_hex, earlier_hash);
+        assert!(
+            current.entries.is_empty(),
+            "no earlier entry verifies at this format"
+        );
+        registry_types::verify_snapshot(&current, &owner_hex, current.issued_at_unix).unwrap();
+        assert!(storage.load_entries().unwrap().is_empty());
+        let archive = dir
+            .path()
+            .join("retired")
+            .join(format!("format-2-through-{:020}", 41));
+        assert_eq!(
+            std::fs::read(archive.join("published-snapshot.json")).unwrap(),
+            earlier_bytes
+        );
+        assert!(archive.join("entries").join("earlier.json").is_file());
+        assert!(
+            archive
+                .join("snapshots")
+                .join(format!("{:020}-{earlier_hash}.json", 41))
+                .is_file()
+        );
+
+        // From here the catalogue moves on as any other, and there is nothing left to retire.
+        cmd_sign_snapshot(&storage, &key_file, 3_600, false).unwrap();
+        let next = storage.load_snapshot().unwrap().unwrap();
+        assert_eq!(next.sequence, 43);
+        assert_eq!(
+            next.previous_snapshot_hash_hex,
+            registry_types::snapshot_hash(&current).unwrap()
+        );
+        let again = cmd_sign_snapshot(&storage, &key_file, 3_600, true)
+            .unwrap_err()
+            .to_string();
+        assert!(again.contains("nothing to retire"), "{again}");
     }
 }
