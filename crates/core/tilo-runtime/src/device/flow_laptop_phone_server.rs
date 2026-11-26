@@ -864,14 +864,23 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
         .release_server_controls(laptop_cert.device_public_key)
         .await
         .expect("the server's controls are taken back");
-    let answer = ask_as(&carol_cert, &studio)
-        .await
-        .expect("the machine answers");
-    assert_eq!(
-        answer.err(),
-        Some(refused.clone()),
-        "a server that serves the studio no more controls nothing for its administrators"
-    );
+    // The machine reads the release once its copy of the person's workspace follows the
+    // server's.
+    tilo_test_env::within(
+        "a server that serves the studio no more controls nothing for its administrators",
+        async {
+            loop {
+                let answer = ask_as(&carol_cert, &studio)
+                    .await
+                    .expect("the machine answers");
+                if answer.err() == Some(refused.clone()) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        },
+    )
+    .await;
 
     // Carol stops administering the studio: the controls she held go with that place.
     grant_server_controls(&hosted, &laptop.own, &own, &studio, &carol).await;
