@@ -433,7 +433,8 @@ RELEASE_SESSION = ("cargo", "build", "--locked", "--release", "-p", "tilo-sessio
 # `footprint` measures published artifacts, so it has no A/B.
 GROUPS: dict[str, Group] = {group.name: group for group in (
     Group("server", "release", "none",
-          (("cargo", "build", "--locked", "--release", "-p", "tilo-server", "--example", "server_load"),),
+          (("cargo", "build", "--locked", "--release", "-p", "tilo-runtime", "--features", "test-support",
+            "--example", "server_load"),),
           {"server_load": "target/release/examples/server_load"}, {}, {}, run_server,
           {"keystroke_writes": ("crates/core/tilo-server/examples/keystroke_writes.rs",
                                 ("cargo", "build", "--locked", "-p", "tilo-server", "--example",

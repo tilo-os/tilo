@@ -343,18 +343,6 @@ slow-timeout = { period = "60s", terminate-after = 60 }
 filter = 'package(imager) and (test(/^setup::import_view::tests::/) or test(/^setup::desktop_continuation::tests::/) or test(/^setup::migration_worker::tests::/) or test(/^setup::internal_cache::/) or test(/^setup::internal_download::/) or test(/^setup::internal_download_flow::/))'
 test-group = "imager-durable-disk"
 
-# A thousand keystrokes, each a durable server commit (file and directory
-# fsyncs) before it fans out: the run time is the node's fsync latency a
-# thousand times over, not CPU. Alone on a busy CI node it took 348 s at 0.4
-# cores; beside the parallel suite it passed the 8 min suite-wide bound while
-# still progressing. Every keystroke's round trip is held to the test-env hang
-# bound already, so this bound only has to catch a run that stopped; it starts
-# with the longest tests.
-[[profile.default.overrides]]
-filter = 'package(tilo-server) and binary(it) and test(=server_cost::one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk)'
-priority = 50
-slow-timeout = { period = "30s", terminate-after = 40 }
-
 # Megabytes of fsynced commits: these take the runner's disk and CPUs, so
 # they run alone rather than slowing every test beside them.
 [[profile.default.overrides]]
@@ -362,5 +350,5 @@ filter = 'package(tilo-session-client) and binary(it) and test(compaction::)'
 threads-required = "num-cpus"
 
 [[profile.default.overrides]]
-filter = '(package(tilo-fs) and (test(/^fs::checked_restore::tests::/) or (binary(it) and test(collab_release_matrix::)))) or (package(tilo-media) and test(/::real::/)) or (package(imager) and test(/^setup::staging::fake::tests::/)) or (package(tilo-rollback) and binary(mechanism)) or (package(tilo-automerge) and binary(it) and test(patch_log_memory::)) or (package(tilo-server) and (test(/^daemon::tests::/) or test(=store::replay::tests::bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch) or test(=store::shell_selection::tests::projected_checkpoint_prefix_exposes_the_route_count_cutoff) or test(=peer::private_transport_tests::thirty_four_route_prefix_uses_one_all_original_selection_then_converges))) or (package(tilo-ui-app) and test(/^incremental_render_regressions::/)) or (package(tilo-ui) and (binary(held-memory) or test(/^app::large_document_tests::/) or test(/^app::semantic_tree_app_tests::/) or test(/^presence::render::tests::/)))'
+filter = '(package(tilo-fs) and (test(/^fs::checked_restore::tests::/) or (binary(it) and test(collab_release_matrix::)))) or (package(tilo-media) and test(/::real::/)) or (package(imager) and test(/^setup::staging::fake::tests::/)) or (package(tilo-rollback) and binary(mechanism)) or (package(tilo-automerge) and binary(it) and test(patch_log_memory::)) or (package(tilo-runtime) and test(/^device::keep::server::tests::/)) or (package(tilo-ui-app) and test(/^incremental_render_regressions::/)) or (package(tilo-ui) and (binary(held-memory) or test(/^app::large_document_tests::/) or test(/^app::semantic_tree_app_tests::/) or test(/^presence::render::tests::/)))'
 priority = 50

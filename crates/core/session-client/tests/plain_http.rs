@@ -1,7 +1,7 @@
 //! Local review: the host also serves its browser routes as plain HTTP on a
 //! loopback address, and refuses a plain listener anywhere else.
 
-use tilo_server::web::{TlsSource, WebConfig};
+use tilo_runtime::device::keep::web::{TlsSource, WebConfig};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -53,7 +53,6 @@ async fn host_routes_answer_over_loopback_plain_http_only() {
             plain_listen: Some("0.0.0.0:0".parse().unwrap()),
             public_origin: None,
             fetch_proxy: None,
-            link: None,
             site: None,
         })
         .await

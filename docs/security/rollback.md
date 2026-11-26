@@ -92,7 +92,7 @@ approvals into a bricked machine.
 A paired server has no person at its keyboard, and its person's root is an
 Ed25519 key, which cannot sign a TPM approval. So the person has one RSA
 **floor key**, kept in their admin workspace's floor resource
-(`crates/core/tilo-server/src/servers/floor.rs`): its public half signed by their root, its
+(`crates/core/tilo-runtime/src/device/keep/servers/floor.rs`): its public half signed by their root, its
 private half sealed to their root-derived secret-sync key, so it opens only on
 a device that holds the root, as a sibling unlock half does. Each server's
 entry in the admin workspace says which key its floor counter takes approvals

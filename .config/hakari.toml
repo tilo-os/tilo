@@ -59,7 +59,7 @@ platforms = [
 # every crate's union at once, and the hack would take all of them.
 workspace-members = ["tilo-winit-x11", "workspace-unify", "tilo-failure"]
 # Every managed member builds every crate listed in the hack, so none may need
-# a system library: server containers (tilo-server, registry-server) and cross
+# a system library: server containers (the server image, registry-server) and cross
 # builds have no desktop development packages. Media stays optional
 # everywhere: hermetic builds, `--shots` and CI must not need gstreamer-1.0.
 third-party = [

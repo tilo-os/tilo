@@ -2898,7 +2898,7 @@ fn a_hosting_daemon_answers_its_environments_media_key_ask() {
         )
         .env(ush::hosted_vm::PLANS_ENV, deployment.join("plans.toml"))
         .env(
-            tilo_server::hosted_browser::SERVER_ENV,
+            crate::device::keep::hosted_browser::SERVER_ENV,
             format!("{}@127.0.0.1:1", hex::encode(served)),
         );
     let log = root.join("child.stdout");

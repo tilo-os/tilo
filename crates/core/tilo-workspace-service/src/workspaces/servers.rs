@@ -35,7 +35,7 @@
 //!
 //! Why the person's servers are a workspace, and not part of the person's own
 //! store beside their devices and workspace list: the servers restart into an
-//! update one at a time under a lease of this workspace (`tilo_server::rollout`),
+//! update one at a time under a lease of this workspace (`tilo_runtime::device::keep::rollout`),
 //! exactly-once work that only a hosted workspace orders, and a server takes
 //! no part in the person's own store.
 //!

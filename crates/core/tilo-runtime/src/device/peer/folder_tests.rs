@@ -101,7 +101,7 @@ async fn server_file(server: &Workspaces, workspace: &str, name: &str) -> Option
 /// would: its content kept in the server's store, chunked as the tree names files, and the
 /// tree's records changed by the server, each sealed with the keys of the tree's group.
 async fn put_on_server(
-    server: &tilo_server::daemon::Server,
+    server: &crate::device::keep::server::Server,
     workspace: &str,
     name: &str,
     bytes: &[u8],
@@ -191,7 +191,7 @@ async fn holds(path: &Path, bytes: &[u8], what: &str) {
 /// Wait until the server's tree names `name` with `bytes`' size and its store holds the file's
 /// content: its manifest and every chunk it lists.
 async fn reaches_server(
-    server: &tilo_server::daemon::Server,
+    server: &crate::device::keep::server::Server,
     workspace: &str,
     name: &str,
     bytes: &[u8],
@@ -287,7 +287,7 @@ impl Computer {
 /// The computer's login, as `tilo login` left it, naming `server`'s address: the device whose
 /// certificate is `laptop`, in `workspace`.
 fn login_to(
-    server: &tilo_server::daemon::Server,
+    server: &crate::device::keep::server::Server,
     workspace: &str,
     (laptop_cert, server_cert): (&DeviceCert, &DeviceCert),
 ) -> tilo_device_identity::login::Device {
@@ -347,9 +347,9 @@ async fn a_mounted_folder_follows_the_server_both_ways_across_a_restart() {
     let (server_key, server_cert) = enrol(&root, "home-server", DeviceCapabilities::member());
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let server = tilo_server::daemon::Server::start_with_relay_mode(
-        tilo_server::ServerConfig::loopback(state.path().join("server")),
-        tilo_server::daemon::ServerIdentity {
+    let server = crate::device::keep::server::Server::start_with_relay_mode(
+        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+        crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),
@@ -511,9 +511,9 @@ async fn a_workspace_made_elsewhere_gets_a_folder_that_syncs() {
     let (server_key, server_cert) = enrol(&root, "home-server", DeviceCapabilities::member());
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let server = tilo_server::daemon::Server::start_with_relay_mode(
-        tilo_server::ServerConfig::loopback(state.path().join("server")),
-        tilo_server::daemon::ServerIdentity {
+    let server = crate::device::keep::server::Server::start_with_relay_mode(
+        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+        crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),

@@ -21,7 +21,7 @@ use key_group::{Access, GroupPeer, PeerEvent, VaultKey};
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::direct::{DirectSync, Heard, Reader};
-use tilo_server::daemon::Server;
+use tilo_runtime::device::keep::server::Server;
 use tilo_server_client::ServerAddress;
 use tilo_server_client::link::{Dialer, Purpose};
 use tilo_server_protocol::WorkspaceId;

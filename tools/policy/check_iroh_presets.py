@@ -17,7 +17,7 @@ a device's identity:
   used and dropped, and never outlives the test that binds it. Nothing to
   list: the test attribute is what exempts it.
 * A process that is not a desktop. ``EXEMPT`` names each file and why:
-  ``tilo-server``'s daemon, the initrd's sibling unlock and enrolment, and a
+  a server's keeping (``tilo-runtime`` ``device::keep``), the initrd's sibling unlock and enrolment, and a
   peer network that dials the peers its caller names. Each lives as
   long as the command that started it, dials an address it was handed, or is
   the server devices are meant to find. They are listed so that a device
@@ -49,7 +49,7 @@ EXEMPT = {
     # a boot already holds, and the process ends with the unlock.
     "crates/os/tilo-auth/src/sibling/exchange.rs": "initrd unlock exchange",
     # The server daemon's own endpoint, which is what devices dial.
-    "crates/core/tilo-server/src/daemon.rs": "server daemon",
+    "crates/core/tilo-runtime/src/device/keep/server.rs": "server daemon",
 }
 
 PRESET = re.compile(r"\bpresets::N0\b")

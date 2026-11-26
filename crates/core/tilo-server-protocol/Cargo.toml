@@ -12,10 +12,8 @@ homepage.workspace = true
 # Clients of the server (the shell, Settings, Remote) read and write these
 # records without linking the daemon. Keep this crate free of the server's
 # transport, storage and sandbox dependencies: the frame codec belongs in
-# `tilo-server-client`, the iroh endpoint, runtime and storage in `tilo-server`.
+# `tilo-server-client`, the iroh endpoint, runtime and storage in `tilo-runtime`'s `device::keep`.
 [dependencies]
-# Crash-safe replacement of the metrics snapshot.
-tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # One rule for which language a locale names, shared with the packs.
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 # Certificates embedded in home-peer registrations and checked by the

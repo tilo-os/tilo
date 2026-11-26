@@ -586,10 +586,6 @@ test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["apps", "content", "test-support"] }
 tilo-person-services = { path = "../../core/person-services", features = ["test-support"] }
 tilo-app-host = { path = "../../core/app-host", features = ["test-support"] }
-# A site's workspace as a site runs it: the host on this machine that
-# serves the workspace a join enrolls into, folding what its pages write,
-# and the page of its person that recorded there first.
-tilo-server = { path = "../../core/tilo-server", features = ["web"] }
 # What `NetworkManager` says, fed in rather than read from a bus.
 tilo-nm = { path = "../../os/tilo-nm" }
 # The other device's tunnel and this one's, in memory, for what a route
@@ -597,7 +593,7 @@ tilo-nm = { path = "../../os/tilo-nm" }
 tilo-device-vpn = { path = "../../os/device-vpn", default-features = false, features = ["test-support"] }
 tilo-endpoint-reachability = { path = "../../core/endpoint-reachability", features = ["test-support"] }
 # A server host on this machine's loopback, which is what a test's devices relay through.
-test-server = { path = "../../../tools/test-server", features = ["questions"] }
+test-server = { path = "../../../tools/test-server" }
 futures-util.workspace = true
 tilo-copy-lint = { path = "../../../tools/copy-lint" }
 tilo-audio-service = { path = "../../os/audio-service" }

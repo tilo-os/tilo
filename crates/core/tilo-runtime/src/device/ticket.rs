@@ -65,7 +65,7 @@ pub(crate) const BOOTED: &str = "booted";
 /// Ask the person's devices for this server's rollback floor to move.
 pub(crate) const FLOOR: &str = "floor";
 /// The resource the machine controls are on: what a server's person, and the administrators of
-/// the workspaces it serves, ask the machine itself to do ([`tilo_server::operations::ACTIONS`]).
+/// the workspaces it serves, ask the machine itself to do ([`crate::device::keep::operations::ACTIONS`]).
 pub(crate) const SERVER: &str = "server";
 /// What a caller who may not control this machine reads.
 const NOT_YOURS: &str = "Only the person this server belongs to, and the administrators of the \
@@ -425,7 +425,7 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
     } else {
         Vec::new()
     };
-    let server_rows = if tilo_server::operations::ACTIONS
+    let server_rows = if crate::device::keep::operations::ACTIONS
         .iter()
         .any(|action| keep(action))
     {
@@ -522,7 +522,7 @@ fn server_rows() -> Vec<CatalogueRow> {
     };
     let service = |what: &'static str| ActionParam::required("service", ParamType::Text, what);
     let mut rows = vec![row(None)];
-    for action in tilo_server::operations::ACTIONS {
+    for action in crate::device::keep::operations::ACTIONS {
         let (label, description, mut params) = match action {
             "status" => (
                 "Ask a server how it is",
@@ -606,7 +606,7 @@ fn server_rows() -> Vec<CatalogueRow> {
 /// record; anyone else only by a grant naming them there. A workspace's ownership or role never
 /// reaches it.
 async fn allows_control(
-    controls: Option<&tilo_server::operations::Controls>,
+    controls: Option<&crate::device::keep::operations::Controls>,
     own: &DeviceCert,
     caller: &tilo_actions::remote::Caller,
     (action, confirmation): (&str, Option<&tilo_actions::remote::Confirmation>),
@@ -649,7 +649,7 @@ async fn allows_control(
 /// Ask the person's devices, from this machine, for its rollback floor to move,
 /// and keep what they signed where `tilo-rollback-confirm` spends it.
 async fn floor_answer(
-    machine: &tilo_server::rollout::ServerMachine,
+    machine: &crate::device::keep::rollout::ServerMachine,
     args: &Value,
 ) -> Result<Value, String> {
     let text = |field: &str| {
@@ -659,7 +659,7 @@ async fn floor_answer(
             .filter(|said| !said.trim().is_empty())
             .ok_or_else(|| format!("floor names no {field}"))
     };
-    let asked = tilo_server::servers::floor::Asked {
+    let asked = crate::device::keep::servers::floor::Asked {
         generation: args
             .get("generation")
             .and_then(Value::as_u64)
@@ -672,13 +672,13 @@ async fn floor_answer(
     let staging = machine.state_root().join("approvals-next");
     let answer = match machine.floor(asked).await? {
         Ok(approvals) => {
-            tilo_server::rollout::store_approvals(&staging, &approvals)?;
-            tilo_server::rollout::Answer::Floor {
+            crate::device::keep::rollout::store_approvals(&staging, &approvals)?;
+            crate::device::keep::rollout::Answer::Floor {
                 approvals,
                 why: String::new(),
             }
         }
-        Err(why) => tilo_server::rollout::Answer::Floor {
+        Err(why) => crate::device::keep::rollout::Answer::Floor {
             approvals: Vec::new(),
             why,
         },
@@ -963,10 +963,10 @@ struct Inner {
     update: std::sync::OnceLock<manage::UpdateStart>,
     /// This machine's part in its person's update rollout, when this computer is
     /// one of their servers: what the update actions take its turn through.
-    rollout: std::sync::Mutex<Option<tilo_server::rollout::ServerMachine>>,
+    rollout: std::sync::Mutex<Option<crate::device::keep::rollout::ServerMachine>>,
     /// The machine's controls, when this computer is a server: what the [`SERVER`] actions are
     /// carried out through.
-    controls: std::sync::Mutex<Option<tilo_server::operations::Controls>>,
+    controls: std::sync::Mutex<Option<crate::device::keep::operations::Controls>>,
     /// Where the person's devices are reached that no lookup finds.
     reach: std::sync::Mutex<HashMap<[u8; 32], iroh::EndpointAddr>>,
     /// Told whenever a device action that waited ended.
@@ -1065,14 +1065,20 @@ impl Tickets {
 
     /// This machine's part in its person's update rollout, when this computer is
     /// one of their servers: the update actions take its turn through it.
-    pub(crate) fn with_rollout(self, rollout: Option<tilo_server::rollout::ServerMachine>) -> Self {
+    pub(crate) fn with_rollout(
+        self,
+        rollout: Option<crate::device::keep::rollout::ServerMachine>,
+    ) -> Self {
         *self.0.rollout.lock_recover() = rollout;
         self
     }
 
     /// The machine's controls, when this computer is a server: the [`SERVER`] actions are carried
     /// out through them.
-    pub(crate) fn with_controls(self, controls: Option<tilo_server::operations::Controls>) -> Self {
+    pub(crate) fn with_controls(
+        self,
+        controls: Option<crate::device::keep::operations::Controls>,
+    ) -> Self {
         *self.0.controls.lock_recover() = controls;
         self
     }
@@ -1110,7 +1116,7 @@ impl Tickets {
                         PREPARE | BOOTED | FLOOR
                     ))
                 || (request.target.address.resource == SERVER
-                    && tilo_server::operations::ACTIONS
+                    && crate::device::keep::operations::ACTIONS
                         .contains(&request.target.address.action.as_str())))
     }
 
@@ -1463,7 +1469,7 @@ impl Tickets {
         self.0.runtime.spawn(async move {
             let answer = match action.as_str() {
                 FLOOR => floor_answer(&machine, &args).await,
-                other => tilo_server::rollout::answer_action(&machine, other, &args)
+                other => crate::device::keep::rollout::answer_action(&machine, other, &args)
                     .await
                     .and_then(|answer| {
                         serde_json::to_value(answer).map_err(|error| error.to_string())
@@ -1545,7 +1551,7 @@ impl Tickets {
     /// another of the person's and this call is not itself one another device asked.
     async fn carry_control(
         &self,
-        controls: Option<tilo_server::operations::Controls>,
+        controls: Option<crate::device::keep::operations::Controls>,
         handed: bool,
         (action, args): (&str, &Value),
         confirmation: Option<tilo_actions::remote::Confirmation>,

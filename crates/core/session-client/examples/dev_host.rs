@@ -28,8 +28,8 @@ use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_server::daemon::{Server, ServerIdentity};
-use tilo_server::web::{TlsSource, WebConfig};
+use tilo_runtime::device::keep::server::{Server, ServerIdentity};
+use tilo_runtime::device::keep::web::{TlsSource, WebConfig};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
@@ -68,7 +68,7 @@ async fn main() {
     let user = root.verifying_key().to_bytes();
     let (host_key, server_cert) = enrol(&root, "dev host", DeviceCapabilities::member());
 
-    let cfg = tilo_server::ServerConfig {
+    let cfg = tilo_server_protocol::config::ServerConfig {
         state_root: state.path().to_path_buf(),
         ..Default::default()
     };
@@ -94,7 +94,6 @@ async fn main() {
             plain_listen: None,
             public_origin: None,
             fetch_proxy: None,
-            link: None,
             site: None,
         })
         .await

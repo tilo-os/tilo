@@ -60,7 +60,7 @@ Each adapter reads what a benchmark already prints and emits records through
   focus-order recomputation inside it) and `.native_recompute_ms.<size>` (one
   recomputation of the live window's order); every timing is a sample.
 - `server-load REPORT_JSON`: the server load bench's `server-load.json`
-  (`crates/core/tilo-server/examples/server_load`). Each KPI it measured
+  (`crates/core/tilo-runtime/examples/server_load`). Each KPI it measured
   becomes `<kpi>.n<members>`, one sample per measured minute (fan-out
   latency: one per delivered edit), and each provider in
   `tools/perf/prices.toml` adds `server.cost_usd_per_collab_hour.<provider>`

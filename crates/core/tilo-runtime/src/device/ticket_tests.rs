@@ -53,7 +53,7 @@ pub(super) async fn endpoint(key: &SigningKey) -> iroh::Endpoint {
 /// The computer's login, naming `server`'s address: the device whose certificate is `laptop`, in
 /// `workspace`.
 pub(super) fn login_to(
-    server: &tilo_server::daemon::Server,
+    server: &crate::device::keep::server::Server,
     workspace: &str,
     (laptop_cert, server_cert): (&DeviceCert, &DeviceCert),
 ) -> tilo_device_identity::login::Device {
@@ -225,7 +225,7 @@ pub(super) async fn ask_on(
 /// The person's own server on this machine's loopback, keeping their workspace "Studio" that
 /// their laptop entered, and the laptop's key, certificate and login to it.
 pub(super) struct Studio {
-    pub(super) server: tilo_server::daemon::Server,
+    pub(super) server: crate::device::keep::server::Server,
     pub(super) hosted: tilo_workspace_service::workspaces::Workspaces,
     pub(super) workspace: String,
     pub(super) laptop_key: SigningKey,
@@ -240,9 +240,9 @@ pub(super) struct Studio {
 pub(super) async fn studio(root: &SigningKey, state: &std::path::Path) -> Studio {
     let (server_key, server_cert) = enrol(root, "home-server", DeviceCapabilities::member());
     let (laptop_key, laptop_cert) = enrol(root, "laptop", DeviceCapabilities::primary());
-    let server = tilo_server::daemon::Server::start_with_relay_mode(
-        tilo_server::ServerConfig::loopback(state.join("server")),
-        tilo_server::daemon::ServerIdentity {
+    let server = crate::device::keep::server::Server::start_with_relay_mode(
+        tilo_server_protocol::config::ServerConfig::loopback(state.join("server")),
+        crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key.clone(),
             device_cert: server_cert.clone(),
@@ -1106,7 +1106,7 @@ async fn a_founding_issues_the_first_tickets_its_person_asked_for_as_their_own_a
 
 /// The person's own server, holding their Servers workspace: where a role's entry is written.
 struct ServersHost {
-    server: tilo_server::daemon::Server,
+    server: crate::device::keep::server::Server,
     hosted: tilo_workspace_service::workspaces::Workspaces,
     issuer_key: SigningKey,
     issuer_cert: DeviceCert,
@@ -1120,12 +1120,12 @@ async fn servers_host(root: &SigningKey) -> ServersHost {
     let (server_key, server_cert) = enrol(root, "home-server", DeviceCapabilities::member());
     let (issuer_key, issuer_cert) = enrol(root, "laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let server = tilo_server::daemon::Server::start_with_relay_mode(
-        tilo_server::ServerConfig {
+    let server = crate::device::keep::server::Server::start_with_relay_mode(
+        tilo_server_protocol::config::ServerConfig {
             state_root: state.path().join("server"),
             ..Default::default()
         },
-        tilo_server::daemon::ServerIdentity {
+        crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),
@@ -1791,9 +1791,9 @@ async fn a_root_holders_login_at_a_server_names_it_among_the_persons_hosts() {
     let (server_key, server_cert) = enrol(&root, "home-server", DeviceCapabilities::member());
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let server = tilo_server::daemon::Server::start_with_relay_mode(
-        tilo_server::ServerConfig::loopback(state.path().join("server")),
-        tilo_server::daemon::ServerIdentity {
+    let server = crate::device::keep::server::Server::start_with_relay_mode(
+        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+        crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),

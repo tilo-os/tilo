@@ -122,7 +122,10 @@ async fn rig() -> Rig {
     let desk_host =
         start_workspace_host_relaying(&root, &desk, desk_state.path(), false, true).await;
     let desk_workspaces = desk_host.server.workspaces().unwrap();
-    let person_workspace = tilo_server::servers::found(desk_workspaces).await.unwrap();
+    let person_workspace =
+        tilo_workspace_service::workspaces::person_workspace::found(desk_workspaces)
+            .await
+            .unwrap();
     assert_eq!(person_workspace, person_workspace_id(&person));
     desk_workspaces
         .attach_server(

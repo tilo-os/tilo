@@ -37,11 +37,11 @@ use tilo_peer_state::owner::session::{
 };
 use tilo_peer_state::owner::{DeviceWorkspaces, open_file};
 use tilo_peer_state::{CLOCK_SKEW_NS, CopyRole, unranked};
-use tilo_server::Reaching;
-use tilo_server::service::{ServiceConfig, WorkspaceService};
-use tilo_server::workspaces::IssueInvitationRequest;
 use tilo_user_identity::DeviceCert;
+use tilo_workspace_service::Reaching;
 use tilo_workspace_service::own_device::{self, KeyService, Opened};
+use tilo_workspace_service::service::{ServiceConfig, WorkspaceService};
+use tilo_workspace_service::workspaces::IssueInvitationRequest;
 use web_time::SystemTime;
 
 const WORKSPACE: &str = "a0a0a0a0-a0a0-4a0a-8a0a-a0a0a0a0a0a0";

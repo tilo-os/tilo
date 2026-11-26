@@ -116,7 +116,7 @@ struct Running {
     relays: EndpointRelays,
     /// Where the host answers, as its devices are told to dial it.
     addr: iroh::EndpointAddr,
-    workspaces: tilo_server::workspaces::Workspaces,
+    workspaces: tilo_workspace_service::workspaces::Workspaces,
     workspace: Option<String>,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -160,15 +160,15 @@ impl Running {
                         .expect("the host's runtime");
                     let handle = runtime.handle().clone();
                     runtime.block_on(async move {
-                        let server = tilo_server::daemon::Server::start(
-                            tilo_server::ServerConfig {
+                        let server = tilo_runtime::device::keep::server::Server::start(
+                            tilo_server_protocol::config::ServerConfig {
                                 state_root: host_root.join("host"),
                                 identity_root: host_root.join("identity"),
                                 packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
-                                ..tilo_server::ServerConfig::default()
+                                ..tilo_server_protocol::config::ServerConfig::default()
                             }
                             .on_loopback(),
-                            tilo_server::daemon::ServerIdentity {
+                            tilo_runtime::device::keep::server::ServerIdentity {
                                 user_public_key,
                                 device_signing_key: host_key.clone(),
                                 device_cert: cert.clone(),
@@ -386,7 +386,7 @@ impl Host {
         assert!(
             host.0
                 .workspaces
-                .offer_own_workspaces(tilo_server::workspaces::OwnWorkspaceOffer::free(
+                .offer_own_workspaces(tilo_workspace_service::workspaces::OwnWorkspaceOffer::free(
                     "site.test"
                 ))
                 .expect("the site keeps workspaces of people's own")
@@ -410,7 +410,7 @@ impl Host {
     /// The workspaces this host serves, for a test that hands one of them a package as
     /// a developer does, without a device's session.
     #[must_use]
-    pub fn workspaces(&self) -> &tilo_server::workspaces::Workspaces {
+    pub fn workspaces(&self) -> &tilo_workspace_service::workspaces::Workspaces {
         &self.0.workspaces
     }
 
@@ -469,7 +469,7 @@ impl Host {
             .block_on(self.0.workspaces.remove_member(
                 workspace,
                 &self.0.cert,
-                tilo_server::workspaces::RemoveMemberRequest {
+                tilo_workspace_service::workspaces::RemoveMemberRequest {
                     request_id: [request; 32],
                     user_public_key: person,
                 },

@@ -39,14 +39,14 @@ use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use tilo_device_identity::{IdentityPaths, persist};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server::ServerConfig;
-use tilo_server::daemon::{Server, ServerIdentity};
-use tilo_server::web::install::{InstallListener, SessionDevice};
-use tilo_server::web::{TlsSource, WebConfig};
+use tilo_runtime::device::keep::server::{Server, ServerIdentity};
+use tilo_runtime::device::keep::web::install::{InstallListener, SessionDevice};
+use tilo_runtime::device::keep::web::{TlsSource, WebConfig};
 use tilo_server_client::certification::{IssuedRole, certify_with_root, issue_device_cert};
 use tilo_server_client::https::invitation as invitation_offer;
 use tilo_server_client::invite::guest_certificate;
 use tilo_server_client::{DeviceSigner, ServerAddress, SignError, SignFuture};
+use tilo_server_protocol::config::ServerConfig;
 use tilo_server_protocol::workspaces::{
     JoinReply, PreAdmission, Role, WorkspaceNotice, WorkspacesReply, WorkspacesRequest,
 };
@@ -188,7 +188,6 @@ async fn a_company_node_hosts_and_seals_the_workspace_people_join() {
             plain_listen: Some("127.0.0.1:0".parse().unwrap()),
             public_origin: None,
             fetch_proxy: None,
-            link: None,
             site: None,
         },
         paths.clone(),
@@ -274,7 +273,6 @@ async fn a_company_node_hosts_and_seals_the_workspace_people_join() {
             plain_listen: None,
             public_origin: None,
             fetch_proxy: None,
-            link: None,
             site: None,
         })
         .await

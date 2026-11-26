@@ -33,13 +33,13 @@ use tilo_desktop_model::{
     WorkspaceId, shared_resource,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server::workspaces::RemoveMemberRequest;
 use tilo_server_client::ServerAddress;
 use tilo_server_protocol::directory::{DirectoryEntry, DirectoryPage, Face, entry_path};
 use tilo_server_protocol::workspaces::Role;
 use tilo_session::{Options, Session};
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_sheets::SheetState as _;
+use tilo_workspace_service::workspaces::RemoveMemberRequest;
 
 use crate::common::directory::{
     community_site, held, layout, open_directory, pointer_here, recorded_layout, tile_here,
@@ -684,13 +684,13 @@ fn chat_with(line: &str) -> automerge::AutoCommit {
 /// Dropping it takes the page down before the runtime it runs on, and shuts the host down.
 struct Lounge {
     page: Option<Link>,
-    server: Option<tilo_server::daemon::Server>,
+    server: Option<tilo_runtime::device::keep::server::Server>,
     _entry: Responder,
     /// The host's web listener, which serves the entry's host (`/host`) a device asks before its
     /// session enters through the entry.
-    _web: tilo_server::web::WebHandle,
+    _web: tilo_runtime::device::keep::web::WebHandle,
     runtime: tokio::runtime::Runtime,
-    workspaces: tilo_server::workspaces::Workspaces,
+    workspaces: tilo_workspace_service::workspaces::Workspaces,
     server_cert: tilo_user_identity::DeviceCert,
     /// The certificate of the site's page, the device that recorded in the workspace before anyone
     /// joined.
@@ -812,8 +812,8 @@ fn lounge_key() -> [u8; 32] {
 /// The host behind the lounge's site: a server of this machine, certified under a key root of the
 /// test's own, which hosts the lounge's workspace and keeps what its page writes sealed.
 struct LoungeHost {
-    server: tilo_server::daemon::Server,
-    workspaces: tilo_server::workspaces::Workspaces,
+    server: tilo_runtime::device::keep::server::Server,
+    workspaces: tilo_workspace_service::workspaces::Workspaces,
     server_cert: tilo_user_identity::DeviceCert,
     /// The key and certificate of the site's page, the device that recorded in the workspace before
     /// anyone joined.
@@ -842,9 +842,9 @@ impl LoungeHost {
         );
         let (server, workspaces, workspace) =
             block_on_within(runtime, "the lounge's host to start", async {
-                let server = tilo_server::daemon::Server::start_with_relay_mode(
-                    tilo_server::ServerConfig::loopback(state.join("host")),
-                    tilo_server::daemon::ServerIdentity {
+                let server = tilo_runtime::device::keep::server::Server::start_with_relay_mode(
+                    tilo_server_protocol::config::ServerConfig::loopback(state.join("host")),
+                    tilo_runtime::device::keep::server::ServerIdentity {
                         user_public_key: owner_key.verifying_key().to_bytes(),
                         device_signing_key: host_key.clone(),
                         device_cert: server_cert.clone(),
@@ -945,7 +945,11 @@ impl LoungeHost {
         &self,
         runtime: &tokio::runtime::Runtime,
         state: &std::path::Path,
-    ) -> (Responder, tilo_server::web::WebHandle, String) {
+    ) -> (
+        Responder,
+        tilo_runtime::device::keep::web::WebHandle,
+        String,
+    ) {
         let web = block_on_within(runtime, "the lounge's host to serve its web", async {
             self.workspaces
                 .publish(
@@ -959,9 +963,9 @@ impl LoungeHost {
                 .await
                 .expect("the lounge is public");
             self.server
-                .serve_web(tilo_server::web::WebConfig {
+                .serve_web(tilo_runtime::device::keep::web::WebConfig {
                     listen: "127.0.0.1:0".parse().expect("an address"),
-                    tls: tilo_server::web::TlsSource::Development {
+                    tls: tilo_runtime::device::keep::web::TlsSource::Development {
                         hosts: vec!["localhost".into(), "127.0.0.1".into()],
                         store: Some(state.join("web-dev-identity")),
                     },
@@ -969,7 +973,6 @@ impl LoungeHost {
                     plain_listen: Some("127.0.0.1:0".parse().expect("an address")),
                     public_origin: None,
                     fetch_proxy: None,
-                    link: None,
                     site: None,
                 })
                 .await

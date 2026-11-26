@@ -79,7 +79,7 @@ pub(crate) mod home;
 mod host_runs;
 mod hosts;
 pub(crate) mod jobs;
-mod keep;
+pub mod keep;
 pub(crate) mod key_use;
 pub(crate) mod layout;
 mod live;

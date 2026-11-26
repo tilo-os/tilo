@@ -23,8 +23,6 @@ use tilo_server_protocol::WorkspaceId;
 pub use revocation_log::{
     REVOCATIONS_FILE, append_revocation, append_revocations, load_revocations, save_revocations,
 };
-/// The metrics snapshot file is read by clients as well as the daemon.
-pub use tilo_server_protocol::metrics::{METRICS_FILE, load_metrics, save_metrics};
 
 /// A host file could not be read or written.
 #[derive(Debug, thiserror::Error)]

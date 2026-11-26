@@ -731,9 +731,9 @@ async fn tilo_device_add_signs_a_browser_in_at_a_server_serving_a_workspace() {
     let (server_key, server_cert) = enrol(&root, "eu1", DeviceCapabilities::member());
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let reached = endpoint(&server_key).await;
-    let server = tilo_server::daemon::Server::start_on_endpoint_with_protocols(
-        tilo_server::ServerConfig::loopback(state.path().join("server")),
-        tilo_server::daemon::ServerIdentity {
+    let server = crate::device::keep::server::Server::start_on_endpoint_with_protocols(
+        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+        crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),
@@ -813,7 +813,7 @@ async fn tilo_device_add_signs_a_browser_in_at_a_server_serving_a_workspace() {
 /// Ada and is shown a ticket, `tilo device add <ticket>` on the laptop approves what waits, and
 /// the tab ends signed in with the certificate the root signed for it.
 async fn the_tab_signs_in_at_the_server(
-    server: &tilo_server::daemon::Server,
+    server: &crate::device::keep::server::Server,
     root: &SigningKey,
     server_cert: &DeviceCert,
     laptop: &Tickets,

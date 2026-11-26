@@ -11,12 +11,13 @@ description = "A host on this machine's loopback and fresh device keys for tests
 # Test support only: depend on this from [dev-dependencies], never from a
 # production dependency table.
 
-[features]
-# A host that puts questions to a person's approving devices ([`Host::ask`]).
-questions = ["tilo-server/web"]
-
 [dependencies]
-tilo-server = { path = "../../crates/core/tilo-server" }
+# The device daemon's keeping, which the loopback host runs. Its start on an endpoint of its own
+# is `test-support`, which each test's dev-dependency on tilo-runtime turns on: a normal
+# dependency turning it on would reach a shipping build's feature set.
+tilo-runtime = { path = "../../crates/core/tilo-runtime" }
+tilo-server-protocol = { path = "../../crates/core/tilo-server-protocol" }
+tilo-workspace-service = { path = "../../crates/core/tilo-workspace-service" }
 tilo-endpoint-reachability = { path = "../../crates/core/endpoint-reachability" }
 settings-store = { package = "tilo-settings-store", path = "../../crates/desktop/settings" }
 tilo-workspace-join = { path = "../../crates/core/workspace-join" }

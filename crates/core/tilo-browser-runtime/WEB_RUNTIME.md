@@ -5,7 +5,7 @@ and the WebAssembly module those pages use to get it into a workspace. The
 page reads the link, signs the person in or takes their invitation, makes this
 browser a certified device of the workspace (`admission.mjs`, `peer.mjs`), and
 then hands it to the page the server renders of that workspace at
-`/w/<workspace>/<app>` (`crates/core/tilo-server/src/web/page.rs`,
+`/w/<workspace>/<app>` (`crates/core/tilo-runtime/src/device/keep/web/page.rs`,
 [Widgets as HTML](../../../docs/architecture/html-renderer.md)). No app runs
 in this module, and it draws no desktop.
 

@@ -23,10 +23,11 @@ use std::time::Duration;
 use ed25519_dalek::SigningKey;
 use tilo_identity::identity_store::DeviceIdentity;
 use tilo_peer_state::join::{self, Role};
-use tilo_server::workspace_join::WorkspaceJoinClient;
-use tilo_server::workspaces::IssueInvitationRequest;
-use tilo_server::{Server, ServerConfig};
+use tilo_peer_state::join_transport::WorkspaceJoinClient;
+use tilo_runtime::device::keep::server::Server;
+use tilo_server_protocol::config::ServerConfig;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+use tilo_workspace_service::workspaces::IssueInvitationRequest;
 
 const SECOND: u64 = 1_000_000_000;
 
@@ -87,7 +88,7 @@ impl Admitted {
         // relay, which this test's device would reach over the internet or not at all.
         let server = Server::start_with_relay_mode(
             ServerConfig::loopback(state.path().to_path_buf()),
-            tilo_server::daemon::ServerIdentity {
+            tilo_runtime::device::keep::server::ServerIdentity {
                 user_public_key: alice.verifying_key().to_bytes(),
                 device_signing_key: host_key.clone(),
                 device_cert: host.clone(),

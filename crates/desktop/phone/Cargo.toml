@@ -75,7 +75,6 @@ jni = "0.21.1"
 tilo-process = { path = "../../../crates/platform/tilo-process" }
 
 [dev-dependencies]
-tilo-runtime = { path = "../../../crates/core/tilo-runtime", features = ["test-support"] }
 # The Android receiver's JNI entry is type-checked by the unit tests.
 jni = "0.21.1"
 tempfile.workspace = true
@@ -93,7 +92,7 @@ tilo-person-services = { path = "../../../crates/core/person-services", features
 tilo-app-host = { path = "../../../crates/core/app-host", features = ["files", "test-support", "agents"] }
 # The host's WebPush sender, which reaches a push service on this machine in tests, and the
 # teller that hands it what waits for a person with nothing of theirs looking.
-tilo-server = { path = "../../../crates/core/tilo-server", features = ["web", "test-support", "agents"] }
+tilo-runtime = { path = "../../../crates/core/tilo-runtime", features = ["test-support", "agents"] }
 # A push service on this machine, which the sender is told to trust.
 rcgen.workspace = true
 rustls.workspace = true

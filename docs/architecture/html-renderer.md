@@ -1,7 +1,7 @@
 # Views as HTML
 
 A workspace's apps open as web pages at `/w/<workspace>/<app>`
-(`crates/core/tilo-server/src/web/page.rs`). The page is not one picture of a
+(`crates/core/tilo-runtime/src/device/keep/web/page.rs`). The page is not one picture of a
 painted frame. It is written from the semantics tree every window already
 publishes for assistive technology and automation: each node's role, name,
 value, state, actions and bounds. One renderer turns that tree into semantic
@@ -69,7 +69,7 @@ acts on carries `data-p`, a number `Page` keeps for the widget's path (and, for 
 node the widget publishes, the node's key under it) from one render to the next;
 `data-a` names the action (`activate`, `toggle`, `slider`, `edit`, `value`) and
 `data-t` the node's action target. The script
-(`crates/core/tilo-server/src/web/page/page.mjs`) sends one `PageAsk::Act` per
+(`crates/core/tilo-runtime/src/device/keep/web/page/page.mjs`) sends one `PageAsk::Act` per
 click, key or edit (`tilo_server_protocol::page`); the app worker
 (`crates/core/agent-session/src/workspace_actions/pages.rs`) performs it on the
 widget the number names through `perform_semantic_named`, the same path a
@@ -100,6 +100,6 @@ gets the same page in the other look.
 
 `crates/ui/ui-core/src/composition/page.rs`'s own tests, the widgets' and apps'
 tests that render their windows as pages, and the server page's flow in
-`crates/core/tilo-server/src/web/page/tests.rs` and
-`crates/core/tilo-server/src/web/page/page.test.mjs`. The page walks
+`crates/core/tilo-runtime/src/device/keep/web/page/tests.rs` and
+`crates/core/tilo-runtime/src/device/keep/web/page/page.test.mjs`. The page walks
 (`t test page-notes`, `t test page-tour`) drive real pages in a browser.

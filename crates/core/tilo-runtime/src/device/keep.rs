@@ -1,6 +1,6 @@
 //! What this device keeps beyond its own copies when its machine is a server: the workspaces
 //! placed on it, hosted here, with the certification, live origin, kept content, place among
-//! its person's servers and rollout that come with keeping them ([`tilo_server::daemon::Server`]),
+//! its person's servers and rollout that come with keeping them ([`crate::device::keep::server::Server`]),
 //! and the packet relay it is reached through.
 //!
 //! A machine is a server when it has a server configuration ([`CONFIG`], or the file
@@ -8,14 +8,41 @@
 //! person's devices (`tilo device add`, then `tilo login <ticket>` or the `tilo.ticket`
 //! credential); until then it is no one's and keeps nothing.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::string_slice,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
+#[cfg(feature = "agents")]
+pub mod apple_push;
+#[cfg(feature = "agents")]
+pub mod browser_actions;
+pub mod browser_sessions;
+pub mod content;
+pub mod entry;
+#[cfg(feature = "agents")]
+pub mod hosted_browser;
+pub mod kept_content;
+pub mod operations;
+mod page_tickets;
+pub mod rollout;
+pub mod server;
+pub mod servers;
+pub mod web;
+pub mod web_push;
+
 use std::io;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::device::keep::server::{OnDevice, PacketRelay, Protocols, Server, ServerIdentity};
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::{EntryMail, EntryPolicy, ListingPolicy, Role};
-use tilo_server::daemon::{OnDevice, PacketRelay, Protocols, Server, ServerIdentity};
 use tilo_server_protocol::config::{KeptWorkspace, ServerConfig, WebTls};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tilo_workspace_service::service::{ServiceConfig, WorkspaceService};
@@ -154,7 +181,7 @@ impl Keeping {
             self.cfg.packet_relay = Some((self.cfg.iroh_listen.ip(), 0).into());
         }
         self.runtime
-            .block_on(tilo_server::daemon::bind_keeping(&self.cfg, key))
+            .block_on(crate::device::keep::server::bind_keeping(&self.cfg, key))
             .map_err(|error| io::Error::other(format!("this server's endpoint: {error}")))
     }
 
@@ -230,7 +257,7 @@ impl Keeping {
         cert: &DeviceCert,
         dir: &Path,
     ) -> io::Result<ServerIdentity> {
-        tilo_server::daemon::with_persisted_revocations(
+        crate::device::keep::server::with_persisted_revocations(
             ServerIdentity {
                 user_public_key: cert.user_public_key,
                 device_signing_key: key.clone(),
@@ -286,7 +313,7 @@ impl Keeping {
         };
         let config = web_config(&self.cfg, listen);
         self.runtime
-            .block_on(tilo_server::web::install::await_certificate(
+            .block_on(crate::device::keep::web::install::await_certificate(
                 &config, paths, &token, session,
             ))
             .map_err(|error| {
@@ -391,7 +418,7 @@ const SESSION_ENV_OUT_ENV: &str = "TILO_SERVER_SESSION_ENV_OUT";
 
 /// The session beside a node, as its install certifies it: the device key `key` (hex), and
 /// where its certificate and the person's user key are written.
-fn beside_session(key: &str) -> io::Result<tilo_server::web::install::SessionDevice> {
+fn beside_session(key: &str) -> io::Result<crate::device::keep::web::install::SessionDevice> {
     let public_key: [u8; 32] = hex::decode(key.trim())
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
@@ -413,7 +440,7 @@ fn beside_session(key: &str) -> io::Result<tilo_server::web::install::SessionDev
             )
         })?;
     let paths = tilo_device_identity::IdentityPaths::under(&root);
-    Ok(tilo_server::web::install::SessionDevice {
+    Ok(crate::device::keep::web::install::SessionDevice {
         public_key,
         cert_out: paths.device_cert,
         user_key_out: Some(paths.user_pubkey),
@@ -422,8 +449,8 @@ fn beside_session(key: &str) -> io::Result<tilo_server::web::install::SessionDev
 
 /// The browser listener a server serves its own web UI at `listen` with: the certificate
 /// its configuration names, or a development one kept below its state.
-fn web_config(cfg: &ServerConfig, listen: SocketAddr) -> tilo_server::web::WebConfig {
-    use tilo_server::web::{TlsSource, WebConfig};
+fn web_config(cfg: &ServerConfig, listen: SocketAddr) -> crate::device::keep::web::WebConfig {
+    use crate::device::keep::web::{TlsSource, WebConfig};
     let tls = match &cfg.web_tls {
         WebTls::Dev => TlsSource::Development {
             hosts: dev_hosts(listen),
@@ -445,7 +472,6 @@ fn web_config(cfg: &ServerConfig, listen: SocketAddr) -> tilo_server::web::WebCo
         plain_listen: None,
         public_origin: None,
         fetch_proxy: None,
-        link: None,
         site: cfg.web_entry.clone(),
     }
 }
@@ -511,13 +537,13 @@ pub(crate) struct On<'a> {
     pub(crate) relay: PacketRelay,
     /// What answers the apps' actions and serves their pages as a browser opens them: this
     /// device's keys' sessions, and the Browser it places for its workspaces' machines
-    /// (`crate::device::services`, `tilo_server::hosted_browser::app_serving`).
+    /// (`crate::device::services`, `crate::device::keep::hosted_browser::app_serving`).
     pub(crate) app_serving: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
     /// The Browser the device places for its workspaces' pages, when it pays for their machines:
     /// made before its workspace service opened, which answers their devices' app frames with
     /// it, and wired by the host it keeps.
     #[cfg(feature = "agents")]
-    pub(crate) browsers: Option<Arc<tilo_server::hosted_browser::HostedBrowsers>>,
+    pub(crate) browsers: Option<Arc<crate::device::keep::hosted_browser::HostedBrowsers>>,
 }
 
 impl Kept {
@@ -533,7 +559,7 @@ pub(crate) struct Kept {
     server: Option<Server>,
     relay: Option<PacketRelay>,
     /// Its own web UI, when it serves one: dropped, it stops serving.
-    web: Option<tilo_server::web::WebHandle>,
+    web: Option<crate::device::keep::web::WebHandle>,
     runtime: Option<tokio::runtime::Runtime>,
     /// Where what it keeps has its state, as its update turn's leases and the
     /// image it restarted into are kept there.
@@ -544,20 +570,20 @@ impl Kept {
     /// This server's part in its person's update rollout: the workspaces it
     /// hosts, and where it keeps the image it restarted into. The daemon's
     /// update action takes its turn through it.
-    pub(crate) fn machine(&self) -> Option<tilo_server::rollout::ServerMachine> {
+    pub(crate) fn machine(&self) -> Option<crate::device::keep::rollout::ServerMachine> {
         let server = self.server.as_ref()?;
-        Some(tilo_server::rollout::ServerMachine::new(
+        Some(crate::device::keep::rollout::ServerMachine::new(
             server.workspaces()?.clone(),
             self.state_root.clone(),
         ))
     }
 
-    /// This machine's controls ([`tilo_server::operations::Controls`]): the workspaces it
+    /// This machine's controls ([`crate::device::keep::operations::Controls`]): the workspaces it
     /// hosts, whose administrators may control it, and where its root helper reads what it is
     /// asked and answers.
-    pub(crate) fn controls(&self) -> Option<tilo_server::operations::Controls> {
+    pub(crate) fn controls(&self) -> Option<crate::device::keep::operations::Controls> {
         let server = self.server.as_ref()?;
-        Some(tilo_server::operations::Controls::new(
+        Some(crate::device::keep::operations::Controls::new(
             server.workspaces()?.clone(),
             self.state_root.clone(),
         ))

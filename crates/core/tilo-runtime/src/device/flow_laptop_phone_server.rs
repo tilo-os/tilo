@@ -120,7 +120,7 @@ struct Daemon {
 async fn daemon(
     dir: &std::path::Path,
     (key, cert): (&SigningKey, &DeviceCert),
-    (server, server_cert): (&tilo_server::daemon::Server, &DeviceCert),
+    (server, server_cert): (&crate::device::keep::server::Server, &DeviceCert),
     workspace: &str,
     as_server: bool,
 ) -> Daemon {
@@ -274,9 +274,9 @@ async fn flow_every_device_manages_every_other() {
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let (phone_key, phone_cert) = enrol(&root, "android-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let server = tilo_server::daemon::Server::start_with_relay_mode(
-        tilo_server::ServerConfig::loopback(state.path().join("server")),
-        tilo_server::daemon::ServerIdentity {
+    let server = crate::device::keep::server::Server::start_with_relay_mode(
+        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+        crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),
@@ -487,8 +487,8 @@ fn root_helper(
     state_root: &std::path::Path,
     asked: Arc<Mutex<Vec<String>>>,
 ) -> tokio::task::JoinHandle<()> {
-    let request = state_root.join(tilo_server::operations::CONTROL_REQUEST);
-    let result = state_root.join(tilo_server::operations::CONTROL_RESULT);
+    let request = state_root.join(crate::device::keep::operations::CONTROL_REQUEST);
+    let result = state_root.join(crate::device::keep::operations::CONTROL_RESULT);
     tokio::spawn(async move {
         let mut seen = String::new();
         loop {
@@ -544,9 +544,9 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
     let (_, bob_cert) = enrol(&bob, "Bob", DeviceCapabilities::primary());
     let (_, carol_cert) = enrol(&carol, "Carol", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let server = tilo_server::daemon::Server::start_with_relay_mode(
-        tilo_server::ServerConfig::loopback(state.path().join("server")),
-        tilo_server::daemon::ServerIdentity {
+    let server = crate::device::keep::server::Server::start_with_relay_mode(
+        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+        crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),
@@ -617,8 +617,11 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
     let asked = Arc::new(Mutex::new(Vec::new()));
     let helper = root_helper(machine.path(), Arc::clone(&asked));
     let controlled = laptop.tickets.clone().with_controls(Some(
-        tilo_server::operations::Controls::new(hosted.clone(), machine.path().to_path_buf())
-            .waiting(std::time::Duration::from_secs(10)),
+        crate::device::keep::operations::Controls::new(
+            hosted.clone(),
+            machine.path().to_path_buf(),
+        )
+        .waiting(std::time::Duration::from_secs(10)),
     ));
     phone
         .tickets
@@ -995,9 +998,9 @@ async fn detaching_a_server_revokes_its_administrators_and_refuses_its_writes() 
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let (_, carol_cert) = enrol(&carol, "Carol", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let server = tilo_server::daemon::Server::start_with_relay_mode(
-        tilo_server::ServerConfig::loopback(state.path().join("server")),
-        tilo_server::daemon::ServerIdentity {
+    let server = crate::device::keep::server::Server::start_with_relay_mode(
+        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+        crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),
@@ -1091,8 +1094,11 @@ async fn detaching_a_server_revokes_its_administrators_and_refuses_its_writes() 
     let helper = root_helper(machine.path(), Arc::clone(&asked));
     let on_the_machine = OnThisDevice(
         laptop.tickets.clone().with_controls(Some(
-            tilo_server::operations::Controls::new(hosted.clone(), machine.path().to_path_buf())
-                .waiting(std::time::Duration::from_secs(10)),
+            crate::device::keep::operations::Controls::new(
+                hosted.clone(),
+                machine.path().to_path_buf(),
+            )
+            .waiting(std::time::Duration::from_secs(10)),
         )),
     );
     let caller = Caller::authenticated(carol_cert.user_public_key, carol_cert.device_public_key)
@@ -1225,9 +1231,9 @@ async fn a_removed_owners_server_writes_nothing_into_the_workspace() {
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let (phone_key, phone_cert) = enrol(&root, "android-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let server = tilo_server::daemon::Server::start_with_relay_mode(
-        tilo_server::ServerConfig::loopback(state.path().join("server")),
-        tilo_server::daemon::ServerIdentity {
+    let server = crate::device::keep::server::Server::start_with_relay_mode(
+        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+        crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),
@@ -1360,9 +1366,9 @@ async fn a_removed_server_is_told_it_was_removed_and_servers_add_brings_it_back(
     let (server_key, server_cert) = enrol(&root, "the-server", DeviceCapabilities::member());
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let server = tilo_server::daemon::Server::start_with_relay_mode(
-        tilo_server::ServerConfig::loopback(state.path().join("server")),
-        tilo_server::daemon::ServerIdentity {
+    let server = crate::device::keep::server::Server::start_with_relay_mode(
+        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+        crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),
@@ -1544,9 +1550,9 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let (phone_key, phone_cert) = enrol(&root, "android-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let server = tilo_server::daemon::Server::start_with_relay_mode(
-        tilo_server::ServerConfig::loopback(state.path().join("server")),
-        tilo_server::daemon::ServerIdentity {
+    let server = crate::device::keep::server::Server::start_with_relay_mode(
+        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+        crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),

@@ -992,7 +992,7 @@ p99 = 33.4
 min_delta = 2.0
 source = "vm-acceptance R04: compositor CPU (frame trace cpu_us) per painted frame during overview, focus and zoom interactions"
 
-# Server cost: crates/core/tilo-server/examples/server_load,
+# Server cost: crates/core/tilo-runtime/examples/server_load,
 # 100 members in workspaces of four, ten measured minutes, one sample per
 # minute; tools/perf/adapters.py server-load prices them with
 # tools/perf/prices.toml. The KPI target is at most $0.001 per

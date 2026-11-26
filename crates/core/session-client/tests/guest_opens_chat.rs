@@ -67,7 +67,7 @@ const OPENED_TO_READ: Duration = Duration::from_secs(3);
 /// A person coming through `workspace`'s entry with a device of their own,
 /// leaving no session behind: the member the workspace made of them.
 async fn through_the_entry(
-    workspaces: &tilo_server::workspaces::Workspaces,
+    workspaces: &tilo_workspace_service::workspaces::Workspaces,
     workspace: &str,
     name: &str,
 ) {
@@ -93,7 +93,7 @@ async fn through_the_entry(
         .await
         .unwrap();
     let admitted = match listed {
-        tilo_server::workspaces::Listed::Invited(issued) => {
+        tilo_workspace_service::workspaces::Listed::Invited(issued) => {
             workspaces
                 .admit_proven(
                     issued.signed_invitation,
@@ -104,7 +104,7 @@ async fn through_the_entry(
                 )
                 .await
         }
-        tilo_server::workspaces::Listed::Open => {
+        tilo_workspace_service::workspaces::Listed::Open => {
             let request_id = rand::random();
             let signed = workspaces.entry_signed_changes(workspace).await.unwrap();
             let admission = tilo_peer_state::own_admission::sign_entry_admission(

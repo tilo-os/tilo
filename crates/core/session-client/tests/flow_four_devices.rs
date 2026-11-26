@@ -95,7 +95,9 @@ async fn four_devices() -> Four {
     let work = workspaces.create("Work").await.unwrap().workspace;
     let home = workspaces.create("Home").await.unwrap().workspace;
     // The person's own workspace, founded on their server as a server founds it.
-    let person_workspace = tilo_server::servers::found(workspaces).await.unwrap();
+    let person_workspace = tilo_workspace_service::workspaces::person_workspace::found(workspaces)
+        .await
+        .unwrap();
     assert_eq!(person_workspace, person_workspace_id(&person));
     let desktop_session = flow::session(&host, &desktop, &server_device.cert);
     let pi_session = flow::session(&host, &pi, &server_device.cert);
@@ -107,7 +109,7 @@ async fn four_devices() -> Four {
     }
     // tilo.sh is the person's always-on server: it has its entry among their servers, as a
     // server enters itself there once it has their workspace.
-    tilo_server::servers::enroll(workspaces, &host.server.node_addr(), None)
+    tilo_workspace_service::workspaces::servers::enroll(workspaces, &host.server.node_addr(), None)
         .await
         .expect("the server enters itself among the person's servers");
     let (desktop_home, desktop_person) = (desktop_session.clone(), desktop_session.clone());

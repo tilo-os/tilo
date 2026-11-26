@@ -239,7 +239,7 @@ async fn a_session_whose_server_went_silently_is_served_again_within_seconds_of_
 
 /// Where `server`'s endpoint is reached on this machine's loopback: the port of the IPv4 address
 /// it names, which it listens on for every address of the machine.
-fn loopback_of(server: &tilo_server::daemon::Server) -> SocketAddr {
+fn loopback_of(server: &tilo_runtime::device::keep::server::Server) -> SocketAddr {
     let port = server
         .node_addr()
         .ip_addrs()

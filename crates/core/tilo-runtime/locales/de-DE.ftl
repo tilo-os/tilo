@@ -137,3 +137,5 @@ version-mismatch-unknown-updating-title = Ein anderes Gerät hat ein neueres Til
 version-mismatch-unknown-updating-body = Dieser Rechner aktualisiert und startet neu, sobald der Bildschirm eine Weile gesperrt ist.
 version-mismatch-unknown-needs-update-title = Ein anderes Gerät muss aktualisieren
 version-mismatch-unknown-needs-update-body = Aktualisiere Tilo dort, dann arbeiten beide wieder zusammen.
+
+so-tilo-browser-open = Browser öffnen

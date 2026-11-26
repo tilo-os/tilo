@@ -16,9 +16,9 @@ use std::{
     time::Duration,
 };
 use tilo_peer_state::join::Role;
-use tilo_server::workspaces::IssueInvitationRequest;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+use tilo_workspace_service::workspaces::IssueInvitationRequest;
 
 const TEST: &str = "device::take_work::files::replica::tests::\
     a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_the_vm_host";
@@ -85,7 +85,7 @@ fn certificate(
 
 /// The server tilo.sh runs: a certified host of its operator, hosting the
 /// workspaces it creates.
-async fn server(state: &Path, operator: &SigningKey) -> tilo_server::Server {
+async fn server(state: &Path, operator: &SigningKey) -> crate::device::keep::server::Server {
     let key = SigningKey::from_bytes(&tilo_test_env::node_key());
     // It owns the workspaces it hosts, so it takes part in their channels
     // and their records are sealed.
@@ -101,20 +101,20 @@ async fn server(state: &Path, operator: &SigningKey) -> tilo_server::Server {
     // endpoint waits for it to name where it is reached, which an endpoint
     // naming nowhere holds for the whole wait.
     let endpoint = test_server::endpoint(iroh::SecretKey::from_bytes(&key.to_bytes())).await;
-    tilo_server::Server::start_on_endpoint_with_protocols(
-        tilo_server::ServerConfig {
+    crate::device::keep::server::Server::start_on_endpoint_with_protocols(
+        tilo_server_protocol::config::ServerConfig {
             state_root: state.join("state"),
             identity_root: state.join("identity"),
             ..Default::default()
         },
-        tilo_server::daemon::ServerIdentity {
+        crate::device::keep::server::ServerIdentity {
             user_public_key: operator.verifying_key().to_bytes(),
             device_signing_key: key,
             device_cert: cert,
             revocations: RevocationList::new(),
         },
         endpoint,
-        tilo_server::Reaching::OnItsOwn,
+        tilo_workspace_service::Reaching::OnItsOwn,
         Vec::new(),
     )
     .await
@@ -124,7 +124,7 @@ async fn server(state: &Path, operator: &SigningKey) -> tilo_server::Server {
 /// An editor's invitation to `workspace`, as text, that the operator's own
 /// device `shell` issues; for anyone's device when `person` is `None`.
 async fn invitation(
-    server: &tilo_server::Server,
+    server: &crate::device::keep::server::Server,
     workspace: &str,
     shell: &DeviceCert,
     person: Option<[u8; 32]>,
@@ -370,7 +370,7 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
 /// Keep this process's logs at the channels these tests read.
 fn keep_logs() {
     let _ = tracing_subscriber::fmt()
-        .with_env_filter("warn,tilo_fs=debug,tilo_runtime=debug,tilo_server=debug")
+        .with_env_filter("warn,tilo_fs=debug,tilo_runtime=debug")
         .with_writer(std::io::stderr)
         .try_init();
 }
@@ -461,7 +461,7 @@ fn a_file_the_server_kept_reaches_a_device_that_joins_after_its_writer_left() {
     // still here: the member leaves entirely before anything reads them again.
     let kept = state
         .join("state")
-        .join(tilo_server::content::DIRECTORY)
+        .join(crate::device::keep::content::DIRECTORY)
         .join(&workspace);
     let written = u64::try_from(report.len() + build.len()).unwrap();
     wait_for_kept(
@@ -520,7 +520,7 @@ fn a_file_the_server_kept_reaches_a_device_that_joins_after_its_writer_left() {
 fn content_the_server_let_go_of_comes_back_from_the_writer_that_was_away() {
     require_fuse!();
     let _ = tracing_subscriber::fmt()
-        .with_env_filter("warn,tilo_fs=debug,tilo_runtime=debug,tilo_server=debug")
+        .with_env_filter("warn,tilo_fs=debug,tilo_runtime=debug")
         .with_writer(std::io::stderr)
         .try_init();
     let Some(profile) = isolated_root(RETURN_TEST) else {
@@ -570,7 +570,7 @@ fn content_the_server_let_go_of_comes_back_from_the_writer_that_was_away() {
     std::fs::write(member_folder.join("draft.txt"), &draft).unwrap();
     let kept = state
         .join("state")
-        .join(tilo_server::content::DIRECTORY)
+        .join(crate::device::keep::content::DIRECTORY)
         .join(&workspace);
     let length = u64::try_from(draft.len()).unwrap();
     wait_for_kept(&kept, length, "the draft the member wrote, on the server");
@@ -952,7 +952,7 @@ fn wait_for_files(
 /// Wait until the server keeps every file written on the member: all their
 /// bytes, a member's hold on each, and nothing of them still arriving.
 fn wait_until_kept(
-    server: &tilo_server::Server,
+    server: &crate::device::keep::server::Server,
     workspace: &str,
     kept: &Path,
     written_files: &[(PathBuf, Vec<u8>)],
@@ -1063,7 +1063,7 @@ fn a_member_whose_disk_was_wiped_gets_the_workspaces_files_back() {
     let written_files = write_tree(&folder);
     let kept = state
         .join("state")
-        .join(tilo_server::content::DIRECTORY)
+        .join(crate::device::keep::content::DIRECTORY)
         .join(&workspace);
     wait_until_kept(&server, &workspace, &kept, &written_files, started, &|| {
         said("first")

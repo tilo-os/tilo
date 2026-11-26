@@ -295,14 +295,14 @@ mod tests {
         let auth = key.auth_bytes().unwrap();
         let plain =
             br#"{"kind":"told","tag":"abc","title":"An agent needs you","body":"Open Tilo."}"#;
-        let body = tilo_server::web_push::encrypt_for_device(&p256dh, &auth, plain);
+        let body = tilo_runtime::device::keep::web_push::encrypt_for_device(&p256dh, &auth, plain);
         assert_eq!(key.open(&body).unwrap(), plain);
         let push = Push::read(&key.open(&body).unwrap()).unwrap();
         assert_eq!(push.title, "An agent needs you");
         assert_eq!(push.body, "Open Tilo.");
         assert!(!push.gone);
         // A push that says what this device does not read is refused.
-        let other = tilo_server::web_push::encrypt_for_device(
+        let other = tilo_runtime::device::keep::web_push::encrypt_for_device(
             &p256dh,
             &auth,
             br#"{"kind":"other","tag":"x"}"#,

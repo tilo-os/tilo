@@ -141,7 +141,6 @@ tilo-machine.workspace = true
 fake-model-providers = { path = "../../../tools/fake-model-providers" }
 # The relays and DNS a device's endpoint binds with, as a runtime binds its own.
 tilo-endpoint-reachability = { path = "../endpoint-reachability" }
-tilo-server = { path = "../tilo-server", features = ["web", "test-support"] }
 tilo-person-services = { path = "../person-services", features = ["test-support"] }
 # The fetch proxy's host side, as the page's test of it drives it.
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net" }
@@ -170,7 +169,7 @@ tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
 uuid.workspace = true
 # The phone's own device, its daemon run in the test's process as the phone's app runs it, which
 # joins the person's workspace in the laptop-phone-server flow.
-tilo-runtime = { path = "../tilo-runtime" }
+tilo-runtime = { path = "../tilo-runtime", features = ["test-support"] }
 tilo-api = { path = "../tilo-api", features = ["test-support"] }
 
 [target.'cfg(unix)'.dependencies]

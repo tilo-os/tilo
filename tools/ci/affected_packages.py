@@ -345,7 +345,7 @@ TEST_SHARD_APART = (
         "tilo-person-services",
         "tilo-app-host",
         "tilo-peer-state",
-        "tilo-server",
+        "tilo-runtime",
     }),
 )
 

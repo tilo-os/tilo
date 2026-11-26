@@ -279,7 +279,7 @@ impl ActionProvider for OnThisDevice {
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(Ok(catalogue_of(&query, |action| {
             matches!(action, super::INFO | UPDATE | PENDING | APPROVE | REPORTED)
-                || tilo_server::operations::ACTIONS.contains(&action)
+                || crate::device::keep::operations::ACTIONS.contains(&action)
         })))
     }
 

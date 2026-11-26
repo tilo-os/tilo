@@ -54,7 +54,7 @@ use tilo_server_protocol::hosted_vm::{ENVIRONMENT, VmSize};
 use ush::environment_terminals::quic::{Receiving, Sending, dial};
 use ush::environment_terminals::{HANDED_FOR, Handed, NOT_HANDED, Ran as TerminalRan, wire};
 
-use tilo_server::browser_sessions::{AppRefusal, BrowserSessions, Sessions, Started};
+use crate::device::keep::browser_sessions::{AppRefusal, BrowserSessions, Sessions, Started};
 use tilo_workspace_service::workspaces::{WorkspaceMachines, Workspaces};
 
 /// What a run says while no device takes it.

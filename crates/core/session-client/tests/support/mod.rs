@@ -24,15 +24,15 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use sha2::{Digest as _, Sha256};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::workspace_documents::{DeviceDocuments as _, DocumentRead};
-use tilo_server::daemon::{Server, ServerIdentity};
-use tilo_server::web::{TlsSource, WebConfig, WebHandle};
-use tilo_server::workspaces::PreAdmitRequest;
+use tilo_runtime::device::keep::server::{Server, ServerIdentity};
+use tilo_runtime::device::keep::web::{TlsSource, WebConfig, WebHandle};
 use tilo_server_client::Carrier;
 use tilo_server_client::ServerAddress;
 use tilo_server_protocol::workspaces::{JoinReply, PreAdmission, Role};
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+use tilo_workspace_service::workspaces::PreAdmitRequest;
 
 pub const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
@@ -244,7 +244,7 @@ pub struct HostSettings<'a> {
     /// People (user roots) its operator trust policy lets connect.
     pub guests: &'a [[u8; 32]],
     /// The fetch proxy it serves its pages.
-    pub fetch_proxy: Option<tilo_server::web::FetchProxySetup>,
+    pub fetch_proxy: Option<tilo_runtime::device::keep::web::FetchProxySetup>,
     /// Reached through this machine's loopback packet relay, as a host
     /// serving pages is: a page holds no UDP socket and reaches it only
     /// through one, which outlives the host so a restarted one is found at
@@ -268,12 +268,12 @@ pub async fn start_host_serving(
         relayed,
     } = settings;
     let user = root.verifying_key().to_bytes();
-    let mut cfg = tilo_server::ServerConfig {
+    let mut cfg = tilo_server_protocol::config::ServerConfig {
         state_root: state.to_path_buf(),
         ..Default::default()
     };
     if !guests.is_empty() {
-        cfg.trust_policy = tilo_server::TrustPolicy::AllowList {
+        cfg.trust_policy = tilo_server_protocol::policy::TrustPolicy::AllowList {
             users: guests.iter().map(hex::encode).collect(),
         };
     }
@@ -307,7 +307,6 @@ pub async fn start_host_serving(
             plain_listen,
             public_origin: None,
             fetch_proxy,
-            link: None,
             site: None,
         })
         .await
@@ -350,7 +349,7 @@ pub async fn start_workspace_host_relaying(
     keep_web_identity: bool,
     packet_relay: bool,
 ) -> TestHost {
-    let config = tilo_server::ServerConfig {
+    let config = tilo_server_protocol::config::ServerConfig {
         state_root: state.to_path_buf(),
         packet_relay: packet_relay.then(|| (std::net::Ipv4Addr::LOCALHOST, 0).into()),
         ..Default::default()
@@ -384,7 +383,6 @@ pub async fn start_workspace_host_relaying(
             plain_listen: None,
             public_origin: None,
             fetch_proxy: None,
-            link: None,
             site: None,
         })
         .await

@@ -81,10 +81,6 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
   why = "the app host serves apps on the store node's workspaces: it opens their replicas and admits apps' writes into them"
 
   [[rule.allow]]
-  package = "tilo-server"
-  why = "the server embeds the workspace host and keeps workspaces for offline peers, the store node's network side"
-
-  [[rule.allow]]
   package = "tilo-agent-session"
   why = "a member opens the document frame of the record it plans against, the framing every reader of a record's frames speaks"
 

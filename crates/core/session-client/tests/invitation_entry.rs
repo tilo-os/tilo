@@ -285,7 +285,7 @@ async fn a_device_in_a_session_redeems_an_invitation_on_another_stream_of_its_co
         .issue(
             &beta.workspace,
             &host_device.cert,
-            tilo_server::workspaces::IssueInvitationRequest {
+            tilo_workspace_service::workspaces::IssueInvitationRequest {
                 request_id: [9; 32],
                 role: tilo_peer_state::join::Role::Editor,
                 recipient_user_public_key: Some(user),
@@ -362,7 +362,7 @@ async fn an_invitation_asked_again_under_the_same_request_admits_the_device_it_a
         .issue(
             &beta.workspace,
             &host_device.cert,
-            tilo_server::workspaces::IssueInvitationRequest {
+            tilo_workspace_service::workspaces::IssueInvitationRequest {
                 request_id: [9; 32],
                 role: tilo_peer_state::join::Role::Editor,
                 recipient_user_public_key: None,
@@ -694,7 +694,7 @@ async fn a_person_the_server_does_not_know_is_told_so_and_what_to_do() {
     let lounge = workspaces.create("Lounge").await.unwrap();
     assert!(
         workspaces
-            .offer_own_workspaces(tilo_server::workspaces::OwnWorkspaceOffer::free(
+            .offer_own_workspaces(tilo_workspace_service::workspaces::OwnWorkspaceOffer::free(
                 "tilo.test"
             ))
             .unwrap()

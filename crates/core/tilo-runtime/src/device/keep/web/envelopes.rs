@@ -1,0 +1,796 @@
+//! What this host keeps for its members, signed by their roots: their root
+//! envelopes and their profiles.
+//!
+//! A person whose root lives in a browser keeps it wrapped as a root
+//! envelope (`tilo_user_identity::root_envelope`: ciphertext only, opened by
+//! a passkey's PRF output or a recovery key). Every host the person is a
+//! member of keeps a copy, so that on a new browser the passkey alone finds
+//! the person again: the passkey names the root, any of their hosts answers
+//! with the envelope, the passkey opens it.
+//!
+//! The person's profile ([`Kind::Profile`]: `{version: 1, user_public_key,
+//! display_name, photo?}`, JSON) is kept the same way, so each of their
+//! devices, paired or signed in, shows the name and picture they chose, and
+//! everyone here sees that picture beside their name. The picture is a small
+//! square image as a `data:` URL (PNG, JPEG, WebP or GIF, at most
+//! [`MAX_PHOTO_CHARS`] characters); without one their initials show.
+//!
+//! `POST /peer/v1/envelope` keeps one: `{envelope, issued_at_ms, signature}`
+//! where `envelope` is the envelope's JSON text and `signature` (hex) the
+//! root's Ed25519 signature over the statement's digest (`root_statement::digest`).
+//! Only a root admitted to a workspace here may keep one,
+//! and only a newer statement replaces the kept one, so an old envelope
+//! (with a passkey since dropped) cannot be replayed over it.
+//! `POST /peer/v1/envelope/fetch` with the root public key (hex) as its body
+//! answers `{"envelope": <the kept envelope>}`, or `{"envelope": null}` when
+//! none is kept (a new person: the usual case, not an error).
+//! `/peer/v1/profile` and `/peer/v1/profile/fetch` do the same for a
+//! profile (`{profile, issued_at_ms, signature}`, signed under the profile
+//! record's label; `{"profile": null}` when none is kept).
+use std::path::{Path, PathBuf};
+
+use tilo_lock::MutexRecover as _;
+
+use tilo_user_identity::root_envelope::RootEnvelope;
+use tilo_user_identity::root_statement;
+pub(super) use tilo_user_identity::root_statement::Kind;
+
+/// An envelope with a handful of passkeys is about 2 KB.
+pub(super) const MAX_ENVELOPE_BYTES: usize = 16 * 1024;
+/// A profile's picture, as its `data:` URL: the same bound every picture a person or an agent
+/// keeps has.
+pub(super) const MAX_PHOTO_CHARS: usize = collab_types::MAX_PHOTO_CHARS;
+/// A profile is a name, a key, at most one small picture and a few lines.
+const MAX_PROFILE_BYTES: usize = MAX_PHOTO_CHARS + 2048;
+/// How far ahead of this host's clock a statement may be dated.
+const MAX_SKEW_MS: u64 = 10 * 60 * 1000;
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Profile {
+    version: u32,
+    user_public_key: String,
+    display_name: String,
+    /// The picture they chose, as a `data:` URL; none shows their initials.
+    #[serde(default)]
+    photo: Option<String>,
+    /// What they say they are doing, in their own words: one line of at
+    /// most [`MAX_STATUS_CHARS`] characters.
+    #[serde(default)]
+    status: Option<String>,
+    /// How they share what they are doing: `automatic`, `manual` or `off`.
+    #[serde(default)]
+    sharing: Option<String>,
+    /// The service the picture is their account's avatar on ("Discord"),
+    /// when it is not one they uploaded.
+    #[serde(default)]
+    photo_from: Option<String>,
+    /// Their accounts elsewhere that a workspace here linked to them.
+    #[serde(default)]
+    linked: Vec<LinkedHandle>,
+}
+
+/// An account elsewhere a profile names: the service and its handle there.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LinkedHandle {
+    service: String,
+    handle: String,
+}
+
+/// The most accounts elsewhere a profile names.
+const MAX_LINKED: usize = 4;
+/// The longest service name or handle a profile names, in characters.
+const MAX_HANDLE_CHARS: usize = 64;
+
+/// Whether `word` is a service name or handle a profile may carry.
+fn valid_handle(word: &str) -> bool {
+    !word.is_empty()
+        && word.chars().count() <= MAX_HANDLE_CHARS
+        && !word.chars().any(char::is_control)
+}
+
+/// Whether what a profile says of its accounts elsewhere may be kept: a
+/// few named ones, and a picture from one only beside a picture.
+fn valid_links(profile: &Profile) -> bool {
+    profile.linked.len() <= MAX_LINKED
+        && profile
+            .linked
+            .iter()
+            .all(|link| valid_handle(&link.service) && valid_handle(&link.handle))
+        && profile
+            .photo_from
+            .as_deref()
+            .is_none_or(|from| valid_handle(from) && profile.photo.is_some())
+}
+
+/// The longest status a profile keeps, in characters.
+const MAX_STATUS_CHARS: usize = 96;
+
+/// Whether `status` is one line a profile may carry.
+fn valid_status(status: &str) -> bool {
+    status.chars().count() <= MAX_STATUS_CHARS && !status.chars().any(char::is_control)
+}
+
+/// Whether `photo` is a picture a profile may carry: a bounded base64
+/// `data:` URL of an image type pages draw.
+fn valid_photo(photo: &str) -> bool {
+    collab_types::photo(photo).is_ok_and(|kept| kept.is_some())
+}
+
+/// The root the record `text` (JSON) belongs to, once it reads as `kind`.
+fn root_for(kind: Kind, text: &str) -> Result<[u8; 32], Refusal> {
+    match kind {
+        Kind::Envelope => {
+            if text.len() > MAX_ENVELOPE_BYTES {
+                return Err(Refusal::Malformed("envelope too large"));
+            }
+            let envelope: RootEnvelope = serde_json::from_str(text)
+                .map_err(|_| Refusal::Malformed("not a root envelope"))?;
+            if envelope.version != tilo_user_identity::root_envelope::ROOT_ENVELOPE_VERSION
+                || envelope.wraps.is_empty()
+            {
+                return Err(Refusal::Malformed("not a root envelope"));
+            }
+            root_of(&envelope.root_public_key)
+                .ok_or(Refusal::Malformed("malformed root public key"))
+        }
+        Kind::Profile => {
+            if text.len() > MAX_PROFILE_BYTES {
+                return Err(Refusal::Malformed("profile too large"));
+            }
+            let profile: Profile =
+                serde_json::from_str(text).map_err(|_| Refusal::Malformed("not a profile"))?;
+            let name = profile.display_name.as_str();
+            if profile.version != 1
+                || tilo_user_identity::display_name(name) != Ok(name)
+                || profile
+                    .photo
+                    .as_deref()
+                    .is_some_and(|photo| !valid_photo(photo))
+                || profile
+                    .status
+                    .as_deref()
+                    .is_some_and(|status| !valid_status(status))
+                || profile
+                    .sharing
+                    .as_deref()
+                    .is_some_and(|sharing| !matches!(sharing, "automatic" | "manual" | "off"))
+                || !valid_links(&profile)
+            {
+                return Err(Refusal::Malformed("not a profile"));
+            }
+            root_of(&profile.user_public_key).ok_or(Refusal::Malformed("malformed root public key"))
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct Publish {
+    #[serde(alias = "profile")]
+    envelope: String,
+    issued_at_ms: u64,
+    signature: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Kept {
+    issued_at_ms: u64,
+    #[serde(alias = "profile")]
+    envelope: String,
+}
+
+/// Why an envelope was not kept, as the page hears it.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Refusal {
+    Malformed(&'static str),
+    BadSignature,
+    NotMember,
+    Stale,
+    Storage,
+}
+
+impl Refusal {
+    pub(super) const fn message(&self) -> &'static str {
+        match self {
+            Self::Malformed(why) => why,
+            Self::BadSignature => "the root did not sign this",
+            Self::NotMember => "this host keeps this for its members only",
+            Self::Stale => "a newer one is already kept",
+            Self::Storage => "it could not be kept",
+        }
+    }
+}
+
+pub(super) struct Envelopes {
+    dir: PathBuf,
+    kind: Kind,
+    /// One write at a time, so "newer than kept" holds across requests.
+    write: std::sync::Mutex<()>,
+    /// The name each person's kept profile gives, once read: `None` for a person whose server
+    /// keeps none. A profile kept here moves it.
+    names: std::sync::Mutex<std::collections::HashMap<[u8; 32], Option<String>>>,
+    /// The picture each person's kept profile carries, once read, as its image's own bytes: a
+    /// profile kept here moves it.
+    photos: std::sync::Mutex<std::collections::HashMap<[u8; 32], Option<Vec<u8>>>>,
+}
+
+fn root_of(text: &str) -> Option<[u8; 32]> {
+    if text.len() != 64
+        || !text
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return None;
+    }
+    hex::decode(text).ok()?.try_into().ok()
+}
+
+impl Envelopes {
+    pub(super) fn new(dir: PathBuf) -> Self {
+        Self::of(Kind::Envelope, dir)
+    }
+
+    /// A store of the members' records of `kind`, under `dir`.
+    pub(super) fn of(kind: Kind, dir: PathBuf) -> Self {
+        Self {
+            dir,
+            kind,
+            write: std::sync::Mutex::new(()),
+            names: std::sync::Mutex::default(),
+            photos: std::sync::Mutex::default(),
+        }
+    }
+
+    fn path(&self, root: &[u8; 32]) -> PathBuf {
+        self.dir.join(format!("{}.json", hex::encode(root)))
+    }
+
+    fn kept(path: &Path) -> Option<Kept> {
+        serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+    }
+
+    /// The kept envelope of the root named by `body` (hex), as JSON text.
+    #[cfg(test)]
+    fn fetch(&self, body: &[u8]) -> Option<String> {
+        let root = root_of(std::str::from_utf8(body).ok()?.trim())?;
+        Self::kept(&self.path(&root)).map(|kept| kept.envelope)
+    }
+
+    /// The answer to a fetch of the root `body` names (hex): `{"<kind>":
+    /// record, "issued_at_ms": when its root signed it}`, or `{"<kind>":
+    /// null}` when nothing is kept for it (a new person, the usual case).
+    /// `None` when `body` names no root.
+    pub(super) fn answer(&self, body: &[u8]) -> Option<Vec<u8>> {
+        let root = root_of(std::str::from_utf8(body).ok()?.trim())?;
+        let Some(kept) = Self::kept(&self.path(&root)) else {
+            return serde_json::to_vec(&serde_json::json!({ self.kind.name(): null })).ok();
+        };
+        let record = serde_json::from_str::<serde_json::Value>(&kept.envelope)
+            .unwrap_or(serde_json::Value::Null);
+        serde_json::to_vec(&serde_json::json!({
+            self.kind.name(): record,
+            "issued_at_ms": kept.issued_at_ms,
+        }))
+        .ok()
+    }
+
+    /// Keep the envelope `body` publishes, when its root signed it, is
+    /// `member` here, and dated it after the one kept: the root it is kept for.
+    pub(super) async fn publish<F, Fut>(
+        &self,
+        body: &[u8],
+        now_ms: u64,
+        member: F,
+    ) -> Result<[u8; 32], Refusal>
+    where
+        F: FnOnce([u8; 32]) -> Fut,
+        Fut: std::future::Future<Output = bool>,
+    {
+        let publish: Publish =
+            serde_json::from_slice(body).map_err(|_| Refusal::Malformed("malformed body"))?;
+        let root = root_for(self.kind, &publish.envelope)?;
+        if publish.issued_at_ms > now_ms.saturating_add(MAX_SKEW_MS) {
+            return Err(Refusal::Malformed("dated in the future"));
+        }
+        let signature: [u8; 64] = hex::decode(&publish.signature)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or(Refusal::Malformed("malformed signature"))?;
+        root_statement::verify(
+            &root,
+            self.kind,
+            publish.issued_at_ms,
+            &publish.envelope,
+            &signature,
+        )
+        .map_err(|_| Refusal::BadSignature)?;
+        if !member(root).await {
+            return Err(Refusal::NotMember);
+        }
+        let _write = self.write.lock_recover();
+        let path = self.path(&root);
+        if Self::kept(&path).is_some_and(|kept| kept.issued_at_ms >= publish.issued_at_ms) {
+            return Err(Refusal::Stale);
+        }
+        self.write_kept(
+            &path,
+            &Kept {
+                issued_at_ms: publish.issued_at_ms,
+                envelope: publish.envelope,
+            },
+        )?;
+        self.names.lock_recover().remove(&root);
+        self.photos.lock_recover().remove(&root);
+        Ok(root)
+    }
+
+    /// Write `kept` at `path`, under the write lock.
+    fn write_kept(&self, path: &Path, kept: &Kept) -> Result<(), Refusal> {
+        let bytes = serde_json::to_vec(kept).map_err(|_| Refusal::Storage)?;
+        tilo_files::native::atomic::write_creating_parent_with_mode(path, &bytes, 0o644).map_err(
+            |error| {
+                tracing::warn!(%error, kind = self.kind.name(), "member record not kept");
+                Refusal::Storage
+            },
+        )
+    }
+
+    /// The name the profile kept for `root` gives, as the person chose it; `None` before they
+    /// chose one. Read once per person, then from memory until their profile changes.
+    pub(super) fn kept_name(&self, root: &[u8; 32]) -> Option<String> {
+        if let Some(known) = self.names.lock_recover().get(root) {
+            return known.clone();
+        }
+        let name = Self::kept(&self.path(root))
+            .and_then(|kept| serde_json::from_str::<serde_json::Value>(&kept.envelope).ok())
+            .and_then(|profile| profile.get("display_name")?.as_str().map(str::to_owned))
+            .filter(|name| !name.trim().is_empty());
+        self.names.lock_recover().insert(*root, name.clone());
+        name
+    }
+
+    /// The picture the profile kept for `root` carries, as the image's own bytes: what every
+    /// surface showing them as an author draws. `None` before they set one. Read once per
+    /// person, then from memory until their profile changes.
+    pub(super) fn kept_photo(&self, root: &[u8; 32]) -> Option<Vec<u8>> {
+        let known = self.photos.lock_recover().get(root).cloned();
+        if let Some(known) = known {
+            return known;
+        }
+        let photo = Self::kept(&self.path(root))
+            .and_then(|kept| serde_json::from_str::<serde_json::Value>(&kept.envelope).ok())
+            .and_then(|profile| profile.get("photo")?.as_str().map(str::to_owned))
+            .and_then(|photo| collab_types::photo_bytes(&photo));
+        self.photos.lock_recover().insert(*root, photo.clone());
+        photo
+    }
+
+    /// The picture a public avatar's `token` names, when a profile this host
+    /// keeps carries it now: the image's own bytes. `None` for a token no kept
+    /// picture hashes to now — a picture its person replaced or removed, or one
+    /// this host never kept.
+    pub(super) fn photo_for_token(&self, token: &str) -> Option<Vec<u8>> {
+        if !tilo_server_protocol::public_avatars::is_avatar_name(token) {
+            return None;
+        }
+        let entries = std::fs::read_dir(&self.dir).ok()?;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let Some(root) = name.strip_suffix(".json").and_then(root_of) else {
+                continue;
+            };
+            let Some(photo) = self.kept_photo(&root) else {
+                continue;
+            };
+            if tilo_server_protocol::public_avatars::token(&root, &photo) == token {
+                return Some(photo);
+            }
+        }
+        None
+    }
+
+    /// Keep `name` as the one the person `root` goes by, as a device of theirs asked this
+    /// server: the profile kept for them takes it, the rest of it as it was, dated `now_ms` (after
+    /// the one kept, so their devices read it as the newest).
+    pub(super) fn keep_name(
+        &self,
+        root: &[u8; 32],
+        name: &str,
+        now_ms: u64,
+    ) -> Result<(), Refusal> {
+        let name = tilo_user_identity::display_name(name)
+            .map_err(|_| Refusal::Malformed("not a display name"))?;
+        let _write = self.write.lock_recover();
+        let path = self.path(root);
+        let kept = Self::kept(&path);
+        let mut profile = kept
+            .as_ref()
+            .and_then(|kept| serde_json::from_str::<serde_json::Value>(&kept.envelope).ok())
+            .filter(serde_json::Value::is_object)
+            .unwrap_or_else(
+                || serde_json::json!({"version": 1, "user_public_key": hex::encode(root)}),
+            );
+        if profile
+            .get("display_name")
+            .and_then(serde_json::Value::as_str)
+            == Some(name)
+        {
+            return Ok(());
+        }
+        let Some(fields) = profile.as_object_mut() else {
+            return Err(Refusal::Storage);
+        };
+        fields.insert("display_name".into(), name.into());
+        let envelope = serde_json::to_string(&profile).map_err(|_| Refusal::Storage)?;
+        root_for(self.kind, &envelope)?;
+        let issued_at_ms = kept.map_or(now_ms, |kept| {
+            now_ms.max(kept.issued_at_ms.saturating_add(1))
+        });
+        self.write_kept(
+            &path,
+            &Kept {
+                issued_at_ms,
+                envelope,
+            },
+        )?;
+        self.names
+            .lock_recover()
+            .insert(*root, Some(name.to_owned()));
+        Ok(())
+    }
+}
+
+/// The name each person gave themselves is their profile's: the server's workspaces read it there
+/// and keep it there when a device of theirs names them.
+impl tilo_workspace_service::workspaces::PersonNames for Envelopes {
+    fn name_of(&self, person: &[u8; 32]) -> Option<String> {
+        self.kept_name(person)
+    }
+
+    fn keep_name(&self, person: &[u8; 32], name: &str) -> Result<(), String> {
+        Self::keep_name(self, person, name, tilo_clock::unix_now_ms())
+            .map_err(|refusal| refusal.message().to_owned())
+    }
+
+    fn photo_of(&self, person: &[u8; 32]) -> Option<Vec<u8>> {
+        self.kept_photo(person)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::SigningKey;
+
+    fn envelope(root: &SigningKey) -> String {
+        serde_json::json!({
+            "version": 1,
+            "root_public_key": hex::encode(root.verifying_key().to_bytes()),
+            "wraps": [{"kind": "recovery", "salt": "AA", "nonce": "AA", "ciphertext": "AA"}],
+        })
+        .to_string()
+    }
+
+    fn statement(root: &SigningKey, envelope: &str, at: u64) -> Vec<u8> {
+        signed(Kind::Envelope, root, "envelope", envelope, at)
+    }
+
+    /// A publish body of `kind`'s record `text`, signed by `root`.
+    fn signed(kind: Kind, root: &SigningKey, field: &str, text: &str, at: u64) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            field: text,
+            "issued_at_ms": at,
+            "signature": hex::encode(
+                root_statement::sign(root, kind, at, text).expect("a root statement"),
+            ),
+        }))
+        .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn a_member_keeps_its_envelope_and_a_new_browser_fetches_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let envelopes = Envelopes::new(dir.path().join("envelopes"));
+        let root = SigningKey::from_bytes(&[7; 32]);
+        let text = envelope(&root);
+        let hex_root = hex::encode(root.verifying_key().to_bytes());
+        assert_eq!(envelopes.fetch(hex_root.as_bytes()), None);
+        envelopes
+            .publish(&statement(&root, &text, 1_000), 1_000, |_| async { true })
+            .await
+            .expect("kept");
+        assert_eq!(envelopes.fetch(hex_root.as_bytes()), Some(text.clone()));
+        // The same or an older statement does not replace it.
+        assert_eq!(
+            envelopes
+                .publish(&statement(&root, &text, 1_000), 2_000, |_| async { true })
+                .await,
+            Err(Refusal::Stale)
+        );
+        envelopes
+            .publish(&statement(&root, &text, 1_500), 2_000, |_| async { true })
+            .await
+            .expect("newer kept");
+    }
+
+    #[tokio::test]
+    async fn strangers_forgeries_and_far_future_dates_are_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let envelopes = Envelopes::new(dir.path().to_path_buf());
+        let root = SigningKey::from_bytes(&[7; 32]);
+        let text = envelope(&root);
+        assert_eq!(
+            envelopes
+                .publish(&statement(&root, &text, 1), 1, |_| async { false })
+                .await,
+            Err(Refusal::NotMember)
+        );
+        let other = SigningKey::from_bytes(&[8; 32]);
+        assert_eq!(
+            envelopes
+                .publish(&statement(&other, &text, 1), 1, |_| async { true })
+                .await,
+            Err(Refusal::BadSignature)
+        );
+        assert!(matches!(
+            envelopes
+                .publish(&statement(&root, &text, MAX_SKEW_MS + 10), 1, |_| async {
+                    true
+                })
+                .await,
+            Err(Refusal::Malformed(_))
+        ));
+        assert_eq!(envelopes.fetch(b"not hex"), None);
+        assert_eq!(envelopes.answer(b"not hex"), None);
+    }
+
+    /// A name that is no name is refused, and so is a signature over an envelope's label: only a
+    /// member's own profile is kept.
+    async fn refuses_what_is_no_profile(
+        profiles: &Envelopes,
+        profile: &(impl Fn(&str) -> String + Send + Sync),
+        profile_body: &(impl Fn(Kind, &str, u64) -> Vec<u8> + Send + Sync),
+    ) {
+        for bad in [profile(""), profile(" Ada"), profile("A\u{7}da")] {
+            assert!(matches!(
+                profiles
+                    .publish(
+                        &profile_body(Kind::Profile, &bad, 2_000),
+                        2_000,
+                        |_| async { true }
+                    )
+                    .await,
+                Err(Refusal::Malformed(_))
+            ));
+        }
+        assert_eq!(
+            profiles
+                .publish(
+                    &profile_body(Kind::Envelope, &profile("Grace"), 3_000),
+                    3_000,
+                    |_| async { true }
+                )
+                .await,
+            Err(Refusal::BadSignature)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_member_keeps_a_profile_with_a_name_a_picture_and_nothing_else() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profiles = Envelopes::of(Kind::Profile, dir.path().join("profiles"));
+        let root = SigningKey::from_bytes(&[7; 32]);
+        let hex_root = hex::encode(root.verifying_key().to_bytes());
+        let profile = |name: &str| {
+            serde_json::json!({"version": 1, "user_public_key": hex_root, "display_name": name})
+                .to_string()
+        };
+        let profile_body =
+            |kind: Kind, text: &str, at: u64| signed(kind, &root, "profile", text, at);
+        let ada = profile("Ada Lovelace");
+        profiles
+            .publish(
+                &profile_body(Kind::Profile, &ada, 1_000),
+                1_000,
+                |_| async { true },
+            )
+            .await
+            .expect("kept");
+        assert_eq!(profiles.fetch(hex_root.as_bytes()), Some(ada.clone()));
+        let answered: serde_json::Value =
+            serde_json::from_slice(&profiles.answer(hex_root.as_bytes()).expect("a root"))
+                .expect("json");
+        assert_eq!(
+            answered,
+            serde_json::json!({
+                "profile": serde_json::from_str::<serde_json::Value>(&ada).expect("json"),
+                "issued_at_ms": 1_000,
+            }),
+            "the answer says when the profile was kept, so a page fetches it again when that moves"
+        );
+        // Nothing kept for a root is an answer too, not a failure.
+        let stranger = hex::encode(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes());
+        assert_eq!(
+            profiles.answer(stranger.as_bytes()),
+            Some(br#"{"profile":null}"#.to_vec())
+        );
+        refuses_what_is_no_profile(&profiles, &profile, &profile_body).await;
+        // A picture rides along, and when it was kept is known.
+        let pictured = serde_json::json!({"version": 1, "user_public_key": hex_root,
+            "display_name": "Ada Lovelace", "photo": "data:image/webp;base64,UklGRg=="})
+        .to_string();
+        profiles
+            .publish(
+                &profile_body(Kind::Profile, &pictured, 4_000),
+                4_000,
+                |_| async { true },
+            )
+            .await
+            .expect("kept with a picture");
+        assert_eq!(profiles.fetch(hex_root.as_bytes()), Some(pictured));
+        assert_eq!(
+            profiles.kept_photo(&root.verifying_key().to_bytes()),
+            Some(b"RIFF".to_vec()),
+            "the picture every surface showing them as an author draws"
+        );
+        let answer = profiles.answer(hex_root.as_bytes()).expect("a root");
+        assert!(String::from_utf8_lossy(&answer).contains(r#""issued_at_ms":4000"#));
+        // Only a bounded image, never a link elsewhere or a script.
+        let huge = format!("data:image/png;base64,{}", "A".repeat(MAX_PHOTO_CHARS));
+        for bad in [
+            "https://example.org/a.png",
+            "data:text/html;base64,PHNjcmlwdD4=",
+            "data:image/svg+xml;base64,PHN2Zz4=",
+            "data:image/png;base64,",
+            "data:image/png;base64,<>",
+            huge.as_str(),
+        ] {
+            let text = serde_json::json!({"version": 1, "user_public_key": hex_root,
+                "display_name": "Ada", "photo": bad})
+            .to_string();
+            assert!(
+                matches!(
+                    profiles
+                        .publish(
+                            &profile_body(Kind::Profile, &text, 5_000),
+                            5_000,
+                            |_| async { true }
+                        )
+                        .await,
+                    Err(Refusal::Malformed(_))
+                ),
+                "{}",
+                &bad[..bad.len().min(40)]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_profile_keeps_what_they_say_they_are_doing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profiles = Envelopes::of(Kind::Profile, dir.path().join("profiles"));
+        let root = SigningKey::from_bytes(&[8; 32]);
+        let hex_root = hex::encode(root.verifying_key().to_bytes());
+        let profile_body =
+            |kind: Kind, text: &str, at: u64| signed(kind, &root, "profile", text, at);
+        // What they say they are doing, and how they share it, ride along
+        // too; a second line or a way of sharing nobody knows does not.
+        let said = serde_json::json!({"version": 1, "user_public_key": hex_root,
+            "display_name": "Ada", "status": "Sketching the tour", "sharing": "manual"})
+        .to_string();
+        profiles
+            .publish(
+                &profile_body(Kind::Profile, &said, 4_500),
+                4_500,
+                |_| async { true },
+            )
+            .await
+            .expect("kept with a status");
+        for (status, sharing) in [("Two\nlines", "manual"), ("Fine", "sometimes")] {
+            let text = serde_json::json!({"version": 1, "user_public_key": hex_root,
+                "display_name": "Ada", "status": status, "sharing": sharing})
+            .to_string();
+            assert!(matches!(
+                profiles
+                    .publish(
+                        &profile_body(Kind::Profile, &text, 4_600),
+                        4_600,
+                        |_| async { true }
+                    )
+                    .await,
+                Err(Refusal::Malformed(_))
+            ));
+        }
+        assert_eq!(profiles.fetch(hex_root.as_bytes()), Some(said));
+    }
+
+    #[tokio::test]
+    async fn a_profile_names_its_linked_accounts_and_where_its_picture_is_from() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profiles = Envelopes::of(Kind::Profile, dir.path().join("profiles"));
+        let root = SigningKey::from_bytes(&[9; 32]);
+        let hex_root = hex::encode(root.verifying_key().to_bytes());
+        let publish = |text: String, at: u64| {
+            let body = signed(Kind::Profile, &root, "profile", &text, at);
+            let profiles = &profiles;
+            async move { profiles.publish(&body, at, |_| async { true }).await }
+        };
+        let linked = serde_json::json!({"version": 1, "user_public_key": hex_root,
+            "display_name": "Ada", "photo": "data:image/png;base64,iVBORw0KGgo=",
+            "photo_from": "Discord", "linked": [{"service": "Discord", "handle": "ada"}]})
+        .to_string();
+        publish(linked.clone(), 4_000)
+            .await
+            .expect("kept with its link");
+        assert_eq!(profiles.fetch(hex_root.as_bytes()), Some(linked));
+        let five: Vec<_> = (0..5)
+            .map(|i| serde_json::json!({"service": "Discord", "handle": format!("h{i}")}))
+            .collect();
+        for bad in [
+            // A picture from a service, without a picture.
+            serde_json::json!({"photo_from": "Discord"}),
+            serde_json::json!({"linked": [{"service": "Discord", "handle": ""}]}),
+            serde_json::json!({"linked": [{"service": "Discord", "handle": "a\nb"}]}),
+            serde_json::json!({"linked": five}),
+            serde_json::json!({"linked": [{"service": "Discord", "handle": "x", "url": "y"}]}),
+        ] {
+            let mut text = serde_json::json!({"version": 1, "user_public_key": hex_root,
+                "display_name": "Ada"});
+            for (key, value) in bad.as_object().into_iter().flatten() {
+                text[key] = value.clone();
+            }
+            assert!(
+                matches!(
+                    publish(text.to_string(), 5_000).await,
+                    Err(Refusal::Malformed(_))
+                ),
+                "{bad}"
+            );
+        }
+    }
+
+    /// A name the person gives from any device of theirs is kept with their profile: the rest of
+    /// it stays, and it is dated after the one kept, so every device of theirs reads it as newest.
+    #[tokio::test]
+    async fn a_name_given_elsewhere_is_kept_with_the_profile() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profiles = Envelopes::of(Kind::Profile, dir.path().join("profiles"));
+        let root = SigningKey::from_bytes(&[11; 32]);
+        let person = root.verifying_key().to_bytes();
+        let hex_root = hex::encode(person);
+        assert_eq!(profiles.kept_name(&person), None);
+        profiles
+            .keep_name(&person, "Quinten", 10)
+            .expect("kept without a profile");
+        assert_eq!(profiles.kept_name(&person).as_deref(), Some("Quinten"));
+        let pictured = serde_json::json!({"version": 1, "user_public_key": hex_root,
+            "display_name": "Eager Lynx", "photo": "data:image/webp;base64,UklGRg=="})
+        .to_string();
+        let issued = profiles
+            .publish(
+                &signed(Kind::Profile, &root, "profile", &pictured, 5_000),
+                5_000,
+                |_| async { true },
+            )
+            .await
+            .expect("kept");
+        assert_eq!(issued, person);
+        assert_eq!(profiles.kept_name(&person).as_deref(), Some("Eager Lynx"));
+        profiles.keep_name(&person, "Quinten", 1_000).expect("kept");
+        assert_eq!(profiles.kept_name(&person).as_deref(), Some("Quinten"));
+        let answered: serde_json::Value =
+            serde_json::from_slice(&profiles.answer(hex_root.as_bytes()).expect("a root"))
+                .expect("json");
+        assert_eq!(answered["profile"]["display_name"], "Quinten");
+        assert_eq!(
+            answered["profile"]["photo"],
+            "data:image/webp;base64,UklGRg=="
+        );
+        assert_eq!(answered["issued_at_ms"], 5_001);
+        assert!(profiles.keep_name(&person, " ", 6_000).is_err());
+    }
+}

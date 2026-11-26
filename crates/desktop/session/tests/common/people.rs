@@ -57,12 +57,12 @@ use tilo_actions::remote::{
 };
 use tilo_device_identity::IdentityPaths;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
-use tilo_server::workspaces::{EntryRefusal, Listed};
 use tilo_server_protocol::directory::{EntryJoin, Listing, entry_path};
 use tilo_server_protocol::workspaces::Role;
 use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::DeviceCert;
+use tilo_workspace_service::workspaces::{EntryRefusal, Listed};
 
 /// The invitation text a site issues for a person: a [`tilo_workspace_join`] invitation, as a link
 /// carries it.
@@ -129,9 +129,9 @@ const JOIN_OUTCOME_READ: Duration = Duration::from_secs(30);
 /// admits people to it at its entry.
 pub struct Site {
     runtime: tokio::runtime::Runtime,
-    server: Option<tilo_server::daemon::Server>,
+    server: Option<tilo_runtime::device::keep::server::Server>,
     /// The workspaces this site hosts.
-    pub workspaces: tilo_server::workspaces::Workspaces,
+    pub workspaces: tilo_workspace_service::workspaces::Workspaces,
     /// The person this site is: the workspace's owner.
     pub owner: [u8; 32],
     /// The site's device, the one it signs with — a device of [`Self::owner`], as a
@@ -188,13 +188,13 @@ impl Site {
         let host_key = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
             .expect("the site's device key");
         let (server, workspaces, workspace) = runtime.block_on(async {
-            let server = tilo_server::daemon::Server::start_with_relay_mode(
-                tilo_server::ServerConfig {
+            let server = tilo_runtime::device::keep::server::Server::start_with_relay_mode(
+                tilo_server_protocol::config::ServerConfig {
                     state_root: state.path().join("host"),
-                    ..tilo_server::ServerConfig::default()
+                    ..tilo_server_protocol::config::ServerConfig::default()
                 }
                 .on_loopback(),
-                tilo_server::daemon::ServerIdentity {
+                tilo_runtime::device::keep::server::ServerIdentity {
                     user_public_key: owner.public,
                     device_signing_key: host_key.clone(),
                     device_cert: host.clone(),
@@ -374,7 +374,7 @@ impl Site {
             .block_on(self.workspaces.set_member_role(
                 &self.workspace,
                 &self.host,
-                tilo_server::workspaces::SetMemberRoleRequest {
+                tilo_workspace_service::workspaces::SetMemberRoleRequest {
                     request_id: fresh_id(),
                     user_public_key: person,
                     role,
@@ -408,7 +408,7 @@ impl Site {
     /// and whether they are removed.
     pub fn members(
         &self,
-    ) -> std::collections::BTreeMap<String, tilo_server::workspaces::MemberMark> {
+    ) -> std::collections::BTreeMap<String, tilo_workspace_service::workspaces::MemberMark> {
         self.runtime
             .block_on(self.workspaces.membership(&self.workspace))
             .expect("the site's members")
@@ -432,7 +432,7 @@ impl Site {
             .block_on(self.workspaces.remove_member(
                 &self.workspace,
                 &self.host,
-                tilo_server::workspaces::RemoveMemberRequest {
+                tilo_workspace_service::workspaces::RemoveMemberRequest {
                     request_id: fresh_id(),
                     user_public_key: person,
                 },

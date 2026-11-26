@@ -302,7 +302,11 @@ fn pushed_while_it_is_closed(
     let sender = server
         .runtime
         .block_on(async {
-            tilo_server::web_push::WebPush::reaching_here(&host, "mailto:ops@example.com", &trusted)
+            tilo_runtime::device::keep::web_push::WebPush::reaching_here(
+                &host,
+                "mailto:ops@example.com",
+                &trusted,
+            )
         })
         .expect("the host's sender")
         .telling(server.workspaces());

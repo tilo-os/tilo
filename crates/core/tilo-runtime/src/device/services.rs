@@ -2218,7 +2218,7 @@ impl Daemon {
             let sessions = environments.sessions();
             #[cfg(not(target_os = "linux"))]
             let sessions = None;
-            tilo_server::hosted_browser::HostedBrowsers::serving(sessions)
+            crate::device::keep::hosted_browser::HostedBrowsers::serving(sessions)
                 .map(|browsers| browsers.map(Arc::new))
                 .map_err(|error| io::Error::other(format!("this host's Browser: {error}")))?
         } else {
@@ -2228,8 +2228,10 @@ impl Daemon {
             Arc::clone(sessions) as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>
         });
         #[cfg(feature = "agents")]
-        let app_serving =
-            tilo_server::hosted_browser::app_serving(browsers.clone(), key_sessions_serving);
+        let app_serving = crate::device::keep::hosted_browser::app_serving(
+            browsers.clone(),
+            key_sessions_serving,
+        );
         #[cfg(not(feature = "agents"))]
         let app_serving = key_sessions_serving;
         let workspaces = open_workspaces(
@@ -3375,13 +3377,16 @@ fn person_name() -> Option<String> {
 
 /// Open the device's workspace service in its directory: it hosts the workspace founded here
 /// on a computer with no login, and holds the member copies of the login's workspaces otherwise.
-/// `apps` is what answers its devices' app frames (`tilo_server::hosted_browser::app_serving`).
+/// `apps` is what answers its devices' app frames (`crate::device::keep::hosted_browser::app_serving`).
 fn open_workspaces(
     identity: &Identity,
     endpoint: iroh::Endpoint,
     brokers: Arc<Mutex<BrokerChannels>>,
     apps: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
-    keeping: Option<(&super::keep::Keeping, tilo_server::daemon::ServerIdentity)>,
+    keeping: Option<(
+        &super::keep::Keeping,
+        crate::device::keep::server::ServerIdentity,
+    )>,
 ) -> io::Result<Arc<ServiceWorkspaces>> {
     let device = tilo_identity::identity_store::DeviceIdentity::held(
         identity.cert.clone(),
@@ -7554,7 +7559,7 @@ struct EndpointServing<'a> {
     /// workspaces placed on a server: the person's keys open their sessions with it here.
     host: Option<&'a tilo_workspace_service::service::WorkspaceService>,
     /// What a server answers for what it keeps.
-    kept: tilo_server::daemon::Protocols,
+    kept: crate::device::keep::server::Protocols,
     /// The terminal streams of the shells this device runs, which the devices it hands them to
     /// dial.
     terminals: TerminalProtocols,

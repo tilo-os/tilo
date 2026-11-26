@@ -554,7 +554,7 @@ inputs = [
   # baseline_only choice, so kpi-budgets.toml loads.
   # The adapters parse these benchmarks' output, so their format is the suite's.
   "crates/core/fs/tests/performance_timing.rs",
-  "crates/core/tilo-server/examples/server_load/main.rs",
+  "crates/core/tilo-runtime/examples/server_load/main.rs",
   # scripts/perf/render_bench.py reads the dashboard benchmark's output.
   "tools/ui-examples/examples/dashboard_perf_bench.rs",
   # tools/perf/test_tapp_size_ratchet.py holds the budgeted apps equal to the
@@ -2405,7 +2405,7 @@ suite = "sdk/python/tests/test_call_lane.py"
 check = "sdk-python"
 
 [[covered]]
-suite = "crates/core/tilo-server/src/web/page/page.test.mjs"
+suite = "crates/core/tilo-runtime/src/device/keep/web/page/page.test.mjs"
 check = "web-node-tests"
 
 [[unrequired]]

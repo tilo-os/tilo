@@ -127,7 +127,7 @@ class RpmBuildGraphTest(unittest.TestCase):
                         ):
                             expected.add(source.parent.name)
         self.assertEqual(seen, SUPPORT)
-        self.assertEqual(packages, SUPPORT | {"tilo-server", "linux-vm"})
+        self.assertEqual(packages, SUPPORT | {"linux-vm"})
         self.assertEqual(bins, expected)
         self.assertEqual(support[:4], ["build", "--release", "--locked", "--lib"])
         self.assertEqual(

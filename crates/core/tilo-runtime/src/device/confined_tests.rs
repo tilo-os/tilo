@@ -95,7 +95,7 @@ async fn vm_daemon(
     dir: &std::path::Path,
     (key, cert): (&SigningKey, &DeviceCert),
     login: &tilo_device_identity::login::Device,
-    server: &tilo_server::daemon::Server,
+    server: &crate::device::keep::server::Server,
 ) -> (Arc<ServiceWorkspaces>, Arc<Hosts>) {
     let vm = ServiceWorkspaces::open_for_test(
         dir,

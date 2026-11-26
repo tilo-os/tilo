@@ -25,13 +25,14 @@ path = "src/lib.rs"
 dev-overrides = ["tilo-identity/throwaway-test-identity", "package-store/dev-overrides", "launcher/dev-overrides"]
 # A machine that keeps a public workspace runs the apps and agents that answer in
 # it: the server's agent session, which links every web app.
-agents = ["tilo-server/agents"]
+agents = ["dep:tilo-server-account", "dep:linux-vm"]
 # Lets a test hand a session it runs in its own process the shell's end of a link the daemon
-# made ([`daemon::Running::link_shell`]), and a test's daemon start the test build of the session
-# as its person's shell ([`daemon::TEST_SHELL_ENV`]), which is not installed beside it. A
-# production start never builds it: its shell is the session installed beside the daemon.
-# It also gives an embedder's tests the fixtures they issue tickets for a new computer with
-# ([`device::issuing::test_support`]).
+# made ([`daemon::Running::link_shell`]), a test's daemon start the test build of the session
+# as its person's shell ([`daemon::TEST_SHELL_ENV`]), which is not installed beside it, and a
+# test start a host that keeps more on its own endpoint ([`device::keep::server::Server::start`]).
+# A production start never builds it: its shell is the session installed beside the daemon, and
+# what it keeps it keeps on the daemon's endpoint. It also gives an embedder's tests the fixtures
+# they issue tickets for a new computer with ([`device::issuing::test_support`]).
 test-support = ["tilo-workspace-service/test-support", "tilo-peer-state/test-support"]
 
 # The integration tests: one binary, its files included as modules by
@@ -39,6 +40,14 @@ test-support = ["tilo-workspace-service/test-support", "tilo-peer-state/test-sup
 [[test]]
 name = "it"
 path = "tests/it.rs"
+
+# What an active member costs a server in CPU, memory and egress: the scheduled job's `server`
+# group (tools/ci/perf-scheduled.sh). An example, not a binary, so images that build `--bins`
+# leave it out; its unit tests run as a test target. It starts its server as a test does.
+[[example]]
+name = "server_load"
+test = true
+required-features = ["test-support"]
 
 [dependencies]
 accounts = { package = "tilo-accounts", path = "../../integrations/accounts", features = ["person"] }
@@ -194,10 +203,45 @@ tilo-device-identity = { version = "0.1.0", path = "../tilo-device-identity" }
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # The toolkit the Unix launch edge and its surface files are read with.
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model"] }
-# What a device whose machine is a server keeps beyond its own copies: certification, kept
-# content, its place among its person's servers, the packet relay it is reached through and
-# the web UI it serves.
-tilo-server = { path = "../tilo-server", features = ["web"] }
+# What a device whose machine is a server keeps beyond its own copies (`device::keep`): the
+# packet relay it is reached through and runs, and the web listener its pages, certification
+# and entry are served on.
+iroh-relay = { version = "1.0.3", features = ["server"] }
+hyper = { version = "1", features = ["client", "server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
+http-body = "1"
+http-body-util = "0.1"
+bytes.workspace = true
+tokio-rustls.workspace = true
+rustls.workspace = true
+# A server's development certificate, which a page pins.
+rcgen.workspace = true
+# Web Push to a person's browsers: P-256 agreement and signing, HKDF and AES-GCM, from the crate
+# TLS already builds; certificates' canonical encoding in install bodies.
+ring = "0.17"
+base64.workspace = true
+# The keyed hash of a visitor's address the entry's wait-list windows count.
+hmac.workspace = true
+# The fetch proxy a page's apps reach the web through, the page's WebTransport, and the mail
+# the entry sends over HTTPS.
+tilo-net = { path = "../../platform/tilo-net", features = ["http", "json", "proxy-host"] }
+# The page's face (Tilo Sans), whose web cuts a server serves beside its pages.
+tilo-font-catalog = { path = "../../platform/font-catalog", features = ["web"] }
+# A file the folder mount wrote is a manifest of chunks, which a kept workspace's content
+# and its branches read.
+fs-content = { package = "tilo-fs-content", path = "../fs-content" }
+tilo-automerge.workspace = true
+# How much of the disk holding a server's state is free.
+host-fs = { path = "../host-fs" }
+# A planned machine's disk rule and open choices are the installer's own model.
+install-profile-model = { path = "../../os/install-profile-model" }
+# A server's rollback floor moves by approvals the person's floor key signs.
+tilo-rollback = { path = "../../os/tilo-rollback" }
+tilo-crypto = { path = "../tilo-crypto", default-features = false }
+# What a server's account standing is read from, and the machine sizes the Browser page actions
+# it counts are billed at (`agents`).
+tilo-server-account = { path = "../tilo-server-account", optional = true }
+linux-vm = { path = "../../vm/linux-vm", optional = true, default-features = false }
 
 # The launcher's manifest view, service names and developer-override check;
 # its binary builds every Linux app sandbox.
@@ -263,11 +307,27 @@ tilo-capture = { path = "../../engines/tilo-capture", features = ["camera", "mic
 package-store = { package = "tilo-package-store", path = "../package-store", features = ["store"] }
 
 [dev-dependencies]
+# What a server keeps, as its tests exercise it: a folder's zip read back, a page's fetch, the
+# surfaces its changes are decided against, the content an app reaches its store with, and
+# the offloadable action and machine plan its journeys run.
+zip.workspace = true
+# The load example's command line.
+clap.workspace = true
+test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
+tilo-surface-compile = { path = "../tilo-surface-compile" }
+tilo-fs-client = { path = "../tilo-fs-client" }
+tilo-thumbnail = { path = "../../engines/thumbnail" }
+install-plan = { path = "../../os/install-plan" }
+tilo-web-search = { path = "../../integrations/tilo-web-search", features = ["fixture-servers"] }
+tilo-automerge = { workspace = true, features = ["heap-probe"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
+tilo-clock = { path = "../../platform/tilo-clock", features = ["local", "test-support"] }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support", "model"] }
 tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
 # The action provider the workspace tests answer with.
 tilo-actions = { path = "../actions", features = ["test-support"] }
 # The channel fixtures owner tests seal writes with.
-tilo-workspace-service = { path = "../tilo-workspace-service", features = ["apps", "device-keys", "files", "test-support"] }
+tilo-workspace-service = { path = "../tilo-workspace-service", features = ["agents", "apps", "device-keys", "files", "session-pages", "test-support"] }
 tilo-person-services = { path = "../person-services", features = ["test-support"] }
 tilo-app-host = { path = "../app-host", features = ["agents", "files", "test-support"] }
 # The join protocol a runtime joins workspaces over.
@@ -290,8 +350,14 @@ tilolang-cli = { path = "../../lang/tilolang-cli" }
 runtime-bundle = { package = "tilo-runtime-bundle", path = "../runtime-bundle" }
 # A server on this machine's loopback, which is what a test's devices relay through.
 test-server = { path = "../../../tools/test-server" }
+# The integration tests start hosts that keep more on their own endpoints, as test-server does.
+tilo-runtime = { path = ".", features = ["test-support"] }
 # Paused time drives the watch lease's expiry.
 tokio = { workspace = true, features = ["test-util"] }
+
+# A host selling the workspaces' VMs, which keeps what each program it starts was given.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+ush = { path = "../../vm/ush", features = ["quic", "test-host"] }
 
 [lints]
 workspace = true

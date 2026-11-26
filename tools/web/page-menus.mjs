@@ -17,7 +17,7 @@ import {launch, serve} from './chrome.mjs';
 
 const dir = resolve(process.argv[2] ?? '');
 const menus = JSON.parse(readFileSync(join(dir, 'menus.json'), 'utf8'));
-// The page's own patch steps, as crates/core/tilo-server/src/web/page/page.mjs applies them.
+// The page's own patch steps, as crates/core/tilo-runtime/src/device/keep/web/page/page.mjs applies them.
 const APPLY = `(steps) => {
   const element = id => document.querySelector('[data-p="' + id + '"]');
   const fromHtml = html => { const t = document.createElement('template'); t.innerHTML = html; return t.content.firstElementChild; };

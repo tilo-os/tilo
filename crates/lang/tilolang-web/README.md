@@ -134,7 +134,7 @@ window out at a new size, as `app_resize` does.
 | { ok: false, message: string }
 ```
 
-This is the protocol `crates/core/tilo-server/src/web/page/page.mjs` speaks to the server; its
+This is the protocol `crates/core/tilo-runtime/src/device/keep/web/page/page.mjs` speaks to the server; its
 event handlers (`click`, `change`, `input`, composition, `focusin`, caret) and its patch apply
 (keeping the focused field's element so the caret survives, and putting in or taking out only
 the element that came or went) can be copied as they are.

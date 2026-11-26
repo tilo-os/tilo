@@ -23,12 +23,12 @@ use std::cell::Cell;
 use std::sync::Arc;
 
 use serde_json::{Map, json};
-use tilo_server::workspaces::OwnWorkspaceOffer;
 use tilo_server_client::invite::guest_certificate;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_session_client::device::{Device, DeviceRefusal};
 use tilo_session_client::{Outbox as _, PeerConfig};
 use tilo_user_identity::{AgentScope, DeviceCapabilities, UserIdentity};
+use tilo_workspace_service::workspaces::OwnWorkspaceOffer;
 
 use crate::support::{
     enrol, enter as enter_as, enter_page, entry_grant, in_workspace, start_workspace_host,
@@ -36,7 +36,7 @@ use crate::support::{
 
 /// The names the person's list of workspaces gives them, as read on the computer that holds
 /// their own workspace: what a person sees their workspaces in.
-async fn listed_names(workspaces: &tilo_server::workspaces::Workspaces) -> Vec<String> {
+async fn listed_names(workspaces: &tilo_workspace_service::workspaces::Workspaces) -> Vec<String> {
     tilo_workspace_service::workspaces::person_workspace::read::<tilo_user_identity::WorkspaceList>(
         workspaces,
         tilo_server_protocol::workspaces::IDENTITY_LIST,
@@ -53,8 +53,8 @@ async fn listed_names(workspaces: &tilo_server::workspaces::Workspaces) -> Vec<S
 /// it, and holds the copy from then on. Taking one in lists it in the person's own list, written
 /// by the device that hosts that workspace.
 async fn take_in(
-    device: &tilo_server::workspaces::Workspaces,
-    site: &tilo_server::workspaces::Workspaces,
+    device: &tilo_workspace_service::workspaces::Workspaces,
+    site: &tilo_workspace_service::workspaces::Workspaces,
     workspace: &str,
 ) {
     let kept = site
@@ -92,7 +92,9 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     let bob_host = start_workspace_host(&bob, &bob_computer, bob_state.path(), false).await;
     let bob_workspaces = bob_host.server.workspaces().unwrap();
     assert_eq!(
-        tilo_server::servers::found(bob_workspaces).await.unwrap(),
+        tilo_workspace_service::workspaces::person_workspace::found(bob_workspaces)
+            .await
+            .unwrap(),
         person_workspace_id(&bob_person)
     );
     let tab_key = new_key();
@@ -229,7 +231,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         .issue(
             &shared.workspace,
             &host_device.cert,
-            tilo_server::workspaces::IssueInvitationRequest {
+            tilo_workspace_service::workspaces::IssueInvitationRequest {
                 request_id: [7; 32],
                 role: tilo_server_protocol::workspaces::Role::Editor,
                 recipient_user_public_key: Some(bob_person),

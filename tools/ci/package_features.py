@@ -39,10 +39,6 @@ NATIVE_TEST_FEATURES = {
     # build only with it. Its loopback tests of every backend (`desktop`) need
     # the other client features; the public-server ones (`live`) stay ignored.
     "tilo-net": ("proxy-dev-server", "json", "ws", "webtransport", "sockets"),
-    # The listener browsers and the fetch proxy reach a host through, and their
-    # tests, are behind `web`, which every deployed server enables. (`agents`
-    # links every web app, so its tests run with the agent packages.)
-    "tilo-server": ("web",),
     # The rest compile their tests only with a feature their default build
     # leaves to the dependents that want it; each costs a few small crates.
     "tilo-wire-frame": ("tokio", "postcard"),

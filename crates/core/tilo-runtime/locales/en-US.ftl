@@ -137,3 +137,5 @@ version-mismatch-unknown-updating-title = Another device runs a newer Tilo
 version-mismatch-unknown-updating-body = This device updates and restarts onto it once your screen has been locked for a while.
 version-mismatch-unknown-needs-update-title = Another device must update
 version-mismatch-unknown-needs-update-body = Update Tilo there, then both work together again.
+
+so-tilo-browser-open = Open Browser

@@ -865,7 +865,7 @@ fn a_person_gaining_a_server_is_served_through_it_at_once() {
 struct PersonServer {
     line: String,
     cert: tilo_user_identity::DeviceCert,
-    server: tilo_server::daemon::Server,
+    server: crate::device::keep::server::Server,
     serving: tokio::runtime::Runtime,
     /// Where the server keeps what it is given, for as long as the test runs.
     _state: tempfile::TempDir,
@@ -897,12 +897,12 @@ fn person_server() -> PersonServer {
         .unwrap();
     let state = tempfile::tempdir().unwrap();
     let server = serving
-        .block_on(tilo_server::daemon::Server::start_with_relay_mode(
-            tilo_server::ServerConfig {
+        .block_on(crate::device::keep::server::Server::start_with_relay_mode(
+            tilo_server_protocol::config::ServerConfig {
                 state_root: state.path().join("server"),
                 ..Default::default()
             },
-            tilo_server::daemon::ServerIdentity {
+            crate::device::keep::server::ServerIdentity {
                 user_public_key: root.group_public_key(),
                 device_signing_key: server_key,
                 device_cert: cert.clone(),
@@ -1390,7 +1390,7 @@ fn the_persons_server(
 ) -> (
     tokio::runtime::Runtime,
     tempfile::TempDir,
-    tilo_server::daemon::Server,
+    crate::device::keep::server::Server,
     String,
 ) {
     let dir = tilo_identity::store::account_identity_dir_from_env().unwrap();
@@ -1417,12 +1417,12 @@ fn the_persons_server(
         .unwrap();
     let state = tempfile::tempdir().unwrap();
     let server = serving
-        .block_on(tilo_server::daemon::Server::start_with_relay_mode(
-            tilo_server::ServerConfig {
+        .block_on(crate::device::keep::server::Server::start_with_relay_mode(
+            tilo_server_protocol::config::ServerConfig {
                 state_root: state.path().join("server"),
                 ..Default::default()
             },
-            tilo_server::daemon::ServerIdentity {
+            crate::device::keep::server::ServerIdentity {
                 user_public_key: root.group_public_key(),
                 device_signing_key: server_key,
                 device_cert: server_cert.clone(),

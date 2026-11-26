@@ -1083,8 +1083,8 @@ daemon, the person's servers).
 ### Hosting
 
 A server is a device that stores more. It runs the device's one daemon
-(`tilo-runtime`), which reads a server configuration and composes the host
-library `tilo-server`: its own iroh relay, the web entry, certification and the
+(`tilo-runtime`), which reads a server configuration and keeps more
+(`device::keep`): its own iroh relay, the web entry, certification and the
 workspaces it governs. It has no binary of its own, and no operator verbs beside
 it. `tilo-api` (21,745) is the MCP
 and OAuth endpoint with its own grant and token store. A device without a
@@ -1507,7 +1507,6 @@ Measured on main at 0503c21f750; lines are Rust left in what goes. Since then We
 | One engine | `collab_app_broker`, `collaboration`; the join is deleted, with the shared-checklist two-device test passing | ~103k (broker 64k, collaboration 39k) | in parallel, each push deleting what it replaces (history and undo live in the store, a6758222e2e; calls and presence run through the daemon, dfaa6505f17): Rust apps read and write through the device's store (no record copy in the app); undo and history from the one history service; presence and carets over tilo-live frames; the broker's per-app services become the device's actions and resources under `devices/<id>/…` through the one dispatch, and agents' calls reach a Rust process through `provide_app`. Then the rest of both crates goes. The declared-kinds limit is in the one reader (d35581e9297) | One engine |
 | Rust record undo | every Rust app record in ui-core's `ResourceStore` (an app's own kinds, the workspace's and the person's records) is undone in the app process over the record's automerge history, by invoker (`UndoLog::undo_as`), not over the store's stamped versions as settings sections and tilolang records are | | Rust app records onto stamped versions and `Command::Undo`, deleting `UndoLog` | One engine |
 | One endpoint | the VM's own broker and identity broker, the host's stand-in key | | the VM runs the daemon with a certificate reaching its one workspace | One endpoint, One identity |
-| Hosting | `tilo-server` as a second host (47k) | 47k | `tilo-server` onto the one daemon, one push | tilo-server onto the one daemon (Core: hosting) |
 | Actions | `tilo-mcp` (27k), `tilo-api` (21k), `action-policy` (14k); prompts not yet asked records; the session's confirmation copy (97c9e4d5765) | 62k | asks become asked records, the session's confirmation onto them | Core: actions everywhere, UX regressions |
 | tilolang store | `workspace.members` is the Workspace package's root, served by each host from its member list; open, switch and scroll above their bars (289, 60 and 25 ms). The index is resource-store's in memory, rebuilt from snapshots; no disk pager unless a measurement asks for one | | | tilolang onto the resource store |
 | Agents | the other agent engines, the governor | | one runtime | Agent engines |
