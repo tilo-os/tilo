@@ -941,21 +941,27 @@ fn stands(
 }
 
 /// The device's own identity, which signs what it admits for its person, set up in a home of its
-/// own: the home and the environment are returned, to be kept for the test that made them.
-fn device_identity() -> (tempfile::TempDir, tilo_test_env::ScopedEnv) {
+/// own: the home, the environment and the device key taken as its daemon takes it, all returned
+/// to be kept for the test that made them. An account's identity opens only in the process whose
+/// device service took the key, so the test takes it before it opens the identity.
+fn device_identity() -> (
+    tempfile::TempDir,
+    tilo_test_env::ScopedEnv,
+    tilo_device_identity::persist::DeviceKeyLock,
+) {
     let identity = tempfile::tempdir().unwrap();
     let mut identity_env = tilo_test_env::ScopedEnv::new();
     identity_env
         .set("XDG_CONFIG_HOME", identity.path().join("config"))
         .set("TILO_IDENTITY_ROOT", identity.path().join("identity"))
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
-    tilo_identity::provisioning::ensure_collaboration_identity(
+    let taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
         &tilo_identity::store::account_identity_dir(&identity.path().join("config/tilo/identity")),
         &tilo_device_identity::IdentityPaths::under(identity.path().join("identity")),
         tilo_identity::provisioning::IdentityStorage::Files,
     )
     .expect("the device's identity");
-    (identity, identity_env)
+    (identity, identity_env, taken_key)
 }
 
 /// What a test's step answers, driven on the test's one thread.
@@ -1271,6 +1277,7 @@ fn approving_a_sites_prompt(asking: &mut PageAsking) -> Driven<'_, ()> {
 struct PressedAsking {
     _identity: tempfile::TempDir,
     _identity_env: tilo_test_env::ScopedEnv,
+    _taken_key: tilo_device_identity::persist::DeviceKeyLock,
     host: Device,
     workspaces: Workspaces,
     browser: Endpoint,
@@ -1285,7 +1292,7 @@ struct PressedAsking {
 fn pressed_asking(window: u64) -> Driven<'static, PressedAsking> {
     Box::pin(async move {
         use runtime_collab::wire::shell::{ShellCall, ShellReply};
-        let (identity, identity_env) = device_identity();
+        let (identity, identity_env, taken_key) = device_identity();
         let host = device_with_shell().await;
         let workspaces = host.record_host.workspaces().clone();
         host.launched
@@ -1335,6 +1342,7 @@ fn pressed_asking(window: u64) -> Driven<'static, PressedAsking> {
         PressedAsking {
             _identity: identity,
             _identity_env: identity_env,
+            _taken_key: taken_key,
             host,
             workspaces,
             browser,
