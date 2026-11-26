@@ -14,17 +14,12 @@ use std::fmt::Write as _;
 /// the last stretch follow it.
 pub use crate::{INSTRUCTION_CONVERSATION, INSTRUCTION_LEARNED};
 
-/// The most an instruction a turn carries may hold, in bytes: the agent refuses a longer one.
-pub const INSTRUCTION_BYTES: usize = 32 * 1024;
 /// The most a kept summary holds, in bytes.
 pub use tilo_actions::RECALL_SUMMARY_BYTES as SUMMARY_BYTES;
 /// The most one fold adds to a summary, in bytes.
 pub const ADDED_BYTES: usize = 800;
 /// What a summary is written again within, once adding to it would outgrow [`SUMMARY_BYTES`].
 pub const CONDENSED_BYTES: usize = 2 * 1024;
-/// The most of the messages one fold takes in, in bytes: a conversation far ahead of its summary
-/// is caught up over several turns, each with a bounded question.
-pub const FOLD_BYTES: usize = 16 * 1024;
 
 /// What a summary says where its first messages held nothing a later answer needs: a summary is
 /// kept all the same, so those messages are not put to a model again.

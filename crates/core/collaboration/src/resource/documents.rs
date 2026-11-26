@@ -2043,25 +2043,6 @@ impl ResourceStore {
         }))
     }
 
-    /// Change what the store keeps with the open resource `id` beside its document, without lending
-    /// the document: what a toolkit reads of its own part between frames.
-    ///
-    /// # Errors
-    /// `Busy` while the store or the resource is lent; `MissingResource` when it is not open.
-    pub fn with_resource_actions<R>(
-        &self,
-        id: &DocumentId,
-        f: impl FnOnce(&mut ResourceActions) -> R,
-    ) -> Result<R, ResourceOpenError> {
-        let mut set = self.try_set_mut().map_err(|_| ResourceOpenError::Busy)?;
-        set.not_lent(id)?;
-        let parked = set
-            .open
-            .get_mut(id)
-            .ok_or(ResourceOpenError::MissingResource)?;
-        Ok(f(&mut parked.action_state))
-    }
-
     /// The writers this replica has written the open record `id` as, for a route that publishes
     /// this replica's own changes and nobody else's ([`crate::state::DocumentFrontier::delta`]).
     ///

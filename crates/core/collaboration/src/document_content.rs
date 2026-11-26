@@ -67,42 +67,6 @@ pub fn keep_link(window: &crate::WakeHandle, link: Arc<ContentLink>) {
     OWN_LINK.with(|own| *own.borrow_mut() = Some((window.clone(), link)));
 }
 
-/// Hold keys this device mints for the document `document` of `app` in `workspace`: what a
-/// device that keeps the workspace itself has, with no identity service to take the
-/// workspace's document keys from. A document whose keys are held this way can be sealed
-/// and opened on its own; a workspace kept by others takes its keys from its members.
-/// Whether it could be done: `workspace` names a uuid and a key group could be minted.
-///
-/// Test support: the group is fresh, so what was sealed under other keys stays unreadable.
-/// The first caller mints the document's keys and later callers hold the same ones: two
-/// devices of one workspace open what each other sealed.
-#[cfg(any(feature = "test-support", test))]
-#[must_use]
-pub fn hold_local_document_keys(workspace: &str, app: &str, document: &str) -> bool {
-    static MINTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _minting = MINTING
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Ok(cluster) = uuid::Uuid::parse_str(workspace) else {
-        return false;
-    };
-    let spec = crate::RouteSpec::document(app, cluster, document);
-    let link = ContentLink::of(&spec);
-    if link.private_field_epoch().is_some() {
-        return true;
-    }
-    let workspace = collab_types::WorkspaceId::from_u128(cluster.as_u128());
-    let group_id = workspace.document_key_group(app, document);
-    let minted = key_group::MemberKey::generate("local device")
-        .and_then(|member| key_group::KeyGroup::create(group_id, member))
-        .and_then(|group| group.content_keys());
-    let Ok(keys) = minted else {
-        return false;
-    };
-    link.hold_document_keys(&spec, Some(keys));
-    true
-}
-
 /// Largest content one record references.
 pub const MAX_DOCUMENT_CONTENT_BYTES: usize = 64 * 1024 * 1024;
 

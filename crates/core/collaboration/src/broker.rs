@@ -5444,7 +5444,7 @@ mod tests;
     reason = "fixtures for the toolkit's tests"
 )]
 pub mod test_support {
-    use super::{CollabRequest, CollaborationManager, RouteSpec, SdkConnectSource, tests};
+    use super::{CollabRequest, CollaborationManager, SdkConnectSource, tests};
     use std::os::fd::RawFd;
     use uuid::Uuid;
 
@@ -5480,14 +5480,6 @@ pub mod test_support {
             "person",
         )
         .expect("the record route joins")
-    }
-
-    /// Whether the broker worker behind `manager` may publish on `route`.
-    #[must_use]
-    pub fn document_reads_publishable(manager: &CollaborationManager, route: &RouteSpec) -> bool {
-        tests::broker_state(manager)
-            .document_reads
-            .publishable(&route.channel_id())
     }
 
     /// A manager joined to the Browser's route in `cluster`: whether the route was admitted and

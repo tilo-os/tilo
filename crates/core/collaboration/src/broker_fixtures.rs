@@ -216,21 +216,6 @@ impl CollaborationManager {
         tests::connected_manager_for(app, workspace)
     }
 
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub fn native_initial_fixture_held_for_test(
-        app: &str,
-        workspace: Uuid,
-        history: Vec<u8>,
-        hold: tokio::sync::oneshot::Receiver<()>,
-    ) -> (Self, Box<dyn Fn() -> usize>) {
-        tests::native_initial_fixture_held(app, workspace, history, Some(hold))
-    }
-
     /// Socket-backed committed-read fixture; the probe observes real recheck requests.
     #[allow(
         clippy::unwrap_used,

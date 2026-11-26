@@ -284,12 +284,6 @@ impl SurfaceTable {
         self.shapes.contains_key(id)
     }
 
-    /// Whether it holds the template `id`.
-    #[must_use]
-    pub fn holds_template(&self, id: &ShapeId) -> bool {
-        self.templates.contains_key(id)
-    }
-
     /// The templates held, by id.
     pub fn templates(&self) -> impl Iterator<Item = (&ShapeId, &Vec<ShapeId>)> {
         self.templates.iter()

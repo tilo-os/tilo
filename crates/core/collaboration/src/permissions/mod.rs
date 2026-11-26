@@ -401,21 +401,6 @@ impl PermissionContext {
         )
     }
 
-    /// This person, as their workspace told them it permits `kinds` at
-    /// `relative` (a path below the workspace): what a share of one item gave
-    /// them, mirrored so their window lets them do what the workspace keeps.
-    /// The workspace still decides every change.
-    #[must_use]
-    pub fn permitted_at(self, relative: &TreePath, kinds: policy::KindSet) -> Self {
-        let grant = local_grant(
-            policy::Grantee::Member(self.user.clone()),
-            relative,
-            kinds,
-            None,
-        );
-        self.with_grant(grant)
-    }
-
     #[must_use]
     pub fn with_grant(mut self, grant: policy::Grant) -> Self {
         Arc::make_mut(&mut Arc::make_mut(&mut self.access).policy)
@@ -613,17 +598,6 @@ impl PermissionContext {
             action_authority,
             shown: Arc::clone(&self.shown),
         })
-    }
-
-    /// Refresh an execution check, preserving the actual host's retained clock.
-    /// # Errors
-    /// Refuses an unavailable clock or a failed retained host policy sampler.
-    pub fn at_current_time(&self) -> Result<Self, String> {
-        let now = match &self.policy_time {
-            Some(sampler) => (sampler.0)()?,
-            None => tilo_clock::try_unix_now().ok_or("execution time unavailable")?,
-        };
-        Ok(self.clone().at_unix_time(now))
     }
 
     /// The same context reaching one more sandboxed resource.

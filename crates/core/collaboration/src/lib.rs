@@ -243,11 +243,6 @@ mod portable_committed {
     }
 }
 
-/// Reserved `invokePublishedAction.peerId` meaning "the application
-/// connection making this request". Live broker peer ids are allocated from
-/// zero upward; the broker never assigns this sentinel.
-pub const CURRENT_CONNECTION_PEER_ID: u64 = u64::MAX;
-
 pub use collab_types::{CommitAuthor, CommitPart, DocumentMutation, UnitMutation, WorkspaceCommit};
 pub use runtime_collab::NearbyTransferPhase;
 /// The verb an app publishes a check its project's host approved under, whatever language the
@@ -311,19 +306,6 @@ impl SessionResource {
 }
 
 pub use crate::process::ContinuationMetadata;
-/// The numbers a semantic checkpoint carries for the portable schemas a
-/// signed manifest can declare (`continuity.semantic_schema`). The tag says
-/// what the payload means, so a device that has not installed the app can
-/// still check its shape. They match `ContinuitySemanticSchema::wire_tag`
-/// in `tilo-app-package`.
-pub mod semantic_schema {
-    pub const WEB_LOCATION_V1: u16 = 0x0101;
-    pub const PUBLICATION_POSITION_V1: u16 = 0x0102;
-    pub const MEDIA_POSITION_V1: u16 = 0x0103;
-    pub const REALTIME_SESSION_V1: u16 = 0x0104;
-    pub const TEXT_POSITION_V1: u16 = 0x0105;
-}
-
 /// The launcher-only resume payload the process passed this window
 /// ([`crate::process::ProcessIdentity::continuity_resume`]).
 pub fn continuation_restore_env() -> Option<ContinuationMetadata> {

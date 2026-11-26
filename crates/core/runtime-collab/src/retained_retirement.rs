@@ -1,7 +1,6 @@
 //! Cleanup observations only. Possession of a receipt grants no launch or file rights.
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
-pub const ENDPOINT_TAG: u8 = 73;
 const BOUND: usize = 4096;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -398,9 +398,6 @@ pub fn take_manager() -> Option<CollaborationManager> {
     // A nested App must never fall through to ambient FD discovery.
     Some(CollaborationManager::disabled())
 }
-pub fn capture_bridge() -> Option<InitialReadBridge> {
-    current()?.bridge.clone()
-}
 /// Capture the component's connection to the session's services, while
 /// retaining the original worker.
 ///
