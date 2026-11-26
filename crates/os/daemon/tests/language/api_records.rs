@@ -407,7 +407,11 @@ fn a_listing_read_on_after_a_change_carries_on_after_the_row_it_stood_at() {
         while let Some(at) = cursor {
             let reply = list_page(&key, &workspace, &conversation, Some(&at), PAGE).await;
             assert_ne!(reply["isError"], true, "{reply}");
-            restarted |= said(&reply).0.contains("the directory changed");
+            // The answer is asked for structured, so the page says it read on in the field
+            // its caller reads rather than in its words.
+            restarted |= reply["structuredContent"]["restarted"]
+                .as_bool()
+                .unwrap_or(false);
             listed.extend(listed_paths(&reply));
             cursor = reply["structuredContent"]["next_cursor"]
                 .as_str()
