@@ -862,9 +862,6 @@ impl AppBrokerState {
         Arc<Self>,
         std::sync::mpsc::Receiver<ActionDirectoryBridgeRequest>,
     ) {
-        // The evidence this fixture's broker keeps is signed, as a host that opened its
-        // workspaces names its signer.
-        crate::test_support::serve_the_test_signer();
         Self::new_configured(
             &Arc::new(FanoutState::new()),
             Arc::new(Mutex::new(BrokerChannels::default())),

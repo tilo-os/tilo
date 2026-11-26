@@ -60,6 +60,9 @@ fn named_host() -> Option<Arc<HostIdentity>> {
 struct HostIdentity {
     certificate: DeviceCert,
     signer: Arc<dyn DeviceSigner>,
+    /// The workspaces this host opened: the ones its receipts may be signed for. A workspace no
+    /// host here opened has no signer of its own and fails closed.
+    opened: RwLock<std::collections::BTreeSet<String>>,
 }
 
 /// Name what this process signs its receipts as: the host's device certificate and the key that
@@ -69,14 +72,23 @@ pub fn serve_as(certificate: DeviceCert, signer: Arc<dyn DeviceSigner>) {
     name_host(Some(Arc::new(HostIdentity {
         certificate,
         signer,
+        opened: RwLock::default(),
     })));
+}
+
+/// Name `workspace` as one this host opened: the receipts of its calls are signed from now on. A
+/// host calls it as it opens each workspace it serves.
+pub fn opened(workspace: &str) {
+    if let Some(host) = named_host() {
+        host.opened.write().insert(workspace.to_owned());
+    }
 }
 
 /// Whether a host named what signs this process's receipts yet: what a fixture asks before it
 /// waits on evidence, so a missing signer fails at once naming it.
 #[must_use]
 pub fn serves_a_signer() -> bool {
-    HOST.read().is_some()
+    named_host().is_some()
 }
 
 /// Sign already domain-separated semantic receipt bytes with this host's device. The returned
@@ -95,6 +107,9 @@ pub fn sign(workspace: &str, bytes: &[u8]) -> Result<(DeviceCert, [u8; 64]), Str
     }
     let now = tilo_clock::try_unix_now_ns().ok_or("receipt signing clock is unavailable")?;
     let host = named_host().ok_or("no host names what signs this process's receipts")?;
+    if !host.opened.read().contains(workspace) {
+        return Err("no host opened the workspace this receipt is for".into());
+    }
     tilo_user_identity::verify_device_cert_at(&host.certificate, now)
         .map_err(|error| error.to_string())?;
     if !tilo_identity::certificates::admitted_in(
@@ -155,6 +170,7 @@ mod tests {
         {
             let fixture = Fixture::new((241, 242), DeviceCapabilities::member());
             let workspace = uuid::Uuid::new_v4().to_string();
+            opened(&workspace);
             let bytes = b"semantic receipt";
             let (cert, signature) = sign(&workspace, bytes).unwrap();
             assert_eq!(cert, fixture.certificate);
@@ -168,11 +184,13 @@ mod tests {
         phase a_device_its_person_took_back_signs_nothing;
         {
             let fixture = Fixture::new((243, 244), DeviceCapabilities::member());
+            let after = uuid::Uuid::new_v4().to_string();
+            opened(&after);
             tilo_identity::sources::test_trust::revoke(
                 fixture.certificate.user_public_key,
                 fixture.certificate.device_public_key,
             );
-            assert!(sign(&uuid::Uuid::new_v4().to_string(), b"after").is_err());
+            assert!(sign(&after, b"after").is_err());
         }
 
         phase a_device_confined_to_one_workspace_signs_nothing_elsewhere;
@@ -182,6 +200,7 @@ mod tests {
                 (245, 246),
                 DeviceCapabilities::workspace_device(*own.as_bytes()),
             );
+            opened(&own.to_string());
             assert!(sign(&own.to_string(), b"its own workspace").is_ok());
             assert!(sign(&uuid::Uuid::new_v4().to_string(), b"elsewhere").is_err());
         }

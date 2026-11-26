@@ -1139,6 +1139,7 @@ pub(crate) mod signed_test_support {
                 tilo_identity::trusted_device::current(&fixture.workspace).unwrap();
             // The evidence this fixture's broker keeps is signed as the device it acts as.
             tilo_invocation_journal::serve_as(certificate.clone(), Arc::new(key.clone()));
+            tilo_invocation_journal::opened(&fixture.workspace);
             let presentation = runtime_collab::CertifiedJoinIdentity {
                 workspace_id: fixture.workspace.clone(),
                 device_certificate: serde_json::to_vec(&certificate).unwrap(),

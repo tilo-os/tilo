@@ -3186,6 +3186,9 @@ impl Workspaces {
     /// sent the workspace as it stands.
     async fn settle(&self, workspace: &mut HostedWorkspace) -> Result<(), String> {
         let host = &self.inner.host;
+        // This host opened the workspace: the receipts of the calls it admits there are signed
+        // as its device from now on, and no other workspace's are unless it opened that one too.
+        tilo_invocation_journal::opened(&workspace.workspace_id().to_string());
         // A page's device certificate lasts an hour: the row it left goes with
         // it, so a workspace many people visit keeps no row per visit.
         if self.forget_expired_devices(workspace)? {

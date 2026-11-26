@@ -25,6 +25,7 @@ fn state(root: &std::path::Path) -> Arc<AppBrokerState> {
     };
     tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
     tilo_invocation_journal::serve_as(certificate, Arc::new(device));
+    tilo_invocation_journal::opened(tilo_peer_state::owner::testing::WORKSPACE);
     let (state, _bridge) =
         AppBrokerState::test_state(None, crate::services::ProcessServices::default());
     *state.journal.lock().unwrap() = Ok(Some(

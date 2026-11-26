@@ -95,6 +95,7 @@ mod durable_local_matrix {
             // The evidence of a call this host admits is signed as its device, as a host that
             // opened its workspaces names it.
             tilo_invocation_journal::serve_as(cert.clone(), std::sync::Arc::new(key.clone()));
+            tilo_invocation_journal::opened(owner.peer().workspace_id());
             let start = cert.issued_at_ns + 1_000_000_000;
             let (clock, control) = crate::policy_clock::OwnerPolicyClock::for_test(start);
             let origin = clock.new_origin();

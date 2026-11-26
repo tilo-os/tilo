@@ -103,11 +103,10 @@ impl WorkspaceTree {
         WorkspaceTreeHandle(Arc::new(parking_lot::RwLock::new(self)))
     }
 }
-/// Name what signs the evidence this process's fixtures keep: one synthetic device of a person
-/// no workspace knows, served once for the whole process, as a host that opened its workspaces
-/// names its signer (`tilo_invocation_journal::serve_as`). Every fixture's broker then keeps
-/// signed evidence, whatever workspace its tree describes.
-pub fn serve_the_test_signer() {
+/// Name what signs the evidence this process's fixtures keep — one synthetic device, served once
+/// for the whole process — and open `workspaces`, the ones the fixture's host serves: a host
+/// signs the receipts of the workspaces it opens, and no others.
+pub fn serve_the_test_signer(workspaces: impl IntoIterator<Item = String>) {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         tilo_identity::sources::test_trust::install();
@@ -126,13 +125,26 @@ pub fn serve_the_test_signer() {
         tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
         tilo_invocation_journal::serve_as(certificate, Arc::new(device));
     });
+    for workspace in workspaces {
+        tilo_invocation_journal::opened(&workspace);
+    }
 }
 
 impl WorkspaceTreeHandle {
+    /// The workspaces this tree describes, which the fixture's host serves.
+    fn opened(&self) -> Vec<String> {
+        self.read()
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.id().to_string())
+            .collect()
+    }
     pub fn authority(&self) -> crate::services::WorkspaceAuthorityHandle {
+        serve_the_test_signer(self.opened());
         Arc::new(self.clone())
     }
     pub fn services(&self) -> crate::services::ProcessServices {
+        serve_the_test_signer(self.opened());
         crate::services::ProcessServices {
             journal_root: self.journal_root(),
             // The workspaces' `chat.agent` records, as these fixtures keep
