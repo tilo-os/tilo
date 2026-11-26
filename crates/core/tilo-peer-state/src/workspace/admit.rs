@@ -652,8 +652,10 @@ fn only_own_rows(
 }
 
 /// Whether the grants the batch wrote are only `author`'s own: the entry its
-/// key is listed under, naming that key and its person under the scope its
-/// certificate grants, unrevoked, and written over no revocation. The first
+/// key is listed under, naming that key and its person with the scope, expiry,
+/// minting key and issue time its certificate gives, unrevoked, and written over
+/// no revocation. A grant names no role: what the key may do stays its
+/// person's place in the workspace. The first
 /// grant a workspace records makes the map they are kept in.
 fn own_grant(
     (before, candidate): (&AutoCommit, &AutoCommit),
@@ -694,6 +696,13 @@ fn own_grant(
     else {
         return Err(WorkspaceRefusal::WriteForbidden.into());
     };
+    // Everything but its name is its certificate's: where it reaches, until when, which key
+    // minted it and since when, as its own admission writes it
+    // ([`crate::PeerGovernanceMut::author_own_grant`]).
+    let parent = author
+        .issuer
+        .as_deref()
+        .map(|issuer| WorkspaceGrant::id_of(&issuer.device_public_key));
     let own = written.iter().all(|entry| {
         *entry == id
             && read(candidate, entry).is_some_and(|grant| {
@@ -701,6 +710,9 @@ fn own_grant(
                     && grant.device == hex::encode(author.device_public_key)
                     && grant.person == hex::encode(author.user_public_key)
                     && grant.scope == scope
+                    && grant.expires_ms == author.expires_at_ns.map(|expiry| expiry / 1_000_000)
+                    && grant.parent == parent
+                    && grant.created_ms == author.issued_at_ns / 1_000_000
                     && grant.revoked_ms.is_none()
             })
             && super::membership::winner(before, WORKSPACE_GRANTS_KEY, entry)

@@ -1767,3 +1767,150 @@ fn refuses_a_base_whose_changes_its_author_may_not_make(
         "a base renaming the workspace with no operation naming it is refused"
     );
 }
+
+/// The key a Viewer made for an agent, scoped to this workspace and expiring at `expires_ns`.
+fn viewers_agent_key(expires_ns: u64) -> (ed25519_dalek::SigningKey, DeviceCert) {
+    let root = ed25519_dalek::SigningKey::from_bytes(&[0x35; 32]);
+    let key = ed25519_dalek::SigningKey::from_bytes(&[0x3a; 32]);
+    let workspace = *uuid::Uuid::parse_str(WORKSPACE).unwrap().as_bytes();
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "Scribe".to_owned(),
+        capabilities: tilo_user_identity::DeviceCapabilities::agent_grant(
+            tilo_user_identity::AgentScope::agent_in(workspace, "scribe"),
+        ),
+        issued_at_ns: 2_000_000,
+        expires_at_ns: Some(expires_ns),
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+    assert_eq!(cert.user_public_key, viewer_root());
+    (key, cert)
+}
+
+/// The grant `cert`'s key is admitted under, as its own admission writes it.
+fn own_grant_of(cert: &DeviceCert) -> collab_types::workspace_grant::WorkspaceGrant {
+    collab_types::workspace_grant::WorkspaceGrant {
+        id: collab_types::workspace_grant::WorkspaceGrant::id_of(&cert.device_public_key),
+        person: hex::encode(cert.user_public_key),
+        device: hex::encode(cert.device_public_key),
+        name: "Scribe".to_owned(),
+        scope: cert
+            .capabilities
+            .agent
+            .as_ref()
+            .and_then(tilo_user_identity::AgentScope::workspace_name),
+        expires_ms: cert.expires_at_ns.map(|expiry| expiry / 1_000_000),
+        parent: None,
+        created_ms: cert.issued_at_ns / 1_000_000,
+        revoked_ms: None,
+    }
+}
+
+/// The changes writing `grant` among `before`'s grants, under its id.
+fn granting(
+    before: &AutoCommit,
+    grant: &collab_types::workspace_grant::WorkspaceGrant,
+) -> Vec<Vec<u8>> {
+    use collab_types::workspace_grant::WORKSPACE_GRANTS_KEY;
+    changes_after(before, |doc| {
+        let grants = match doc.get(ROOT, WORKSPACE_GRANTS_KEY).unwrap() {
+            Some((_, grants)) => grants,
+            None => doc
+                .put_object(ROOT, WORKSPACE_GRANTS_KEY, automerge::ObjType::Map)
+                .unwrap(),
+        };
+        doc.put(
+            &grants,
+            grant.id.as_str(),
+            serde_json::to_string(grant).unwrap(),
+        )
+        .unwrap();
+    })
+}
+
+/// A Viewer's agent key, listed in the workspace, records only the grant its certificate gives
+/// it beside its row: never one reaching further, lasting longer or hung under another key's.
+/// Recording its own leaves its person a Viewer, as no grant names a role.
+#[test]
+fn a_viewers_agent_key_records_only_the_grant_its_certificate_gives() {
+    use collab_types::workspace_grant::WorkspaceGrant;
+    let expires_ns = 9_000_000_000;
+    let (_, agent) = viewers_agent_key(expires_ns);
+    let mut before = hosted();
+    list_device(&mut before, &agent);
+    let sender = hex::encode(agent.device_public_key);
+    let own = own_grant_of(&agent);
+    let written = |grant: &WorkspaceGrant| {
+        admit(
+            Some(&before),
+            Writer {
+                key: &sender,
+                access: SenderAccess::Enrolling,
+            },
+            &owner_root(),
+            &granting(&before, grant),
+        )
+    };
+    let viewers_device = viewer_device().1.device_public_key;
+    let wider = [
+        (
+            "reaching every workspace of its person's",
+            WorkspaceGrant {
+                scope: None,
+                ..own.clone()
+            },
+        ),
+        (
+            "never ending",
+            WorkspaceGrant {
+                expires_ms: None,
+                ..own.clone()
+            },
+        ),
+        (
+            "ending after its certificate",
+            WorkspaceGrant {
+                expires_ms: Some(expires_ns / 100_000),
+                ..own.clone()
+            },
+        ),
+        (
+            "hung under another key's grant",
+            WorkspaceGrant {
+                parent: Some(WorkspaceGrant::id_of(&editor_device().1.device_public_key)),
+                ..own.clone()
+            },
+        ),
+        (
+            "made before its certificate",
+            WorkspaceGrant {
+                created_ms: 0,
+                ..own.clone()
+            },
+        ),
+        (
+            "of its person's own device",
+            WorkspaceGrant {
+                id: WorkspaceGrant::id_of(&viewers_device),
+                device: hex::encode(viewers_device),
+                ..own.clone()
+            },
+        ),
+    ];
+    for (what, grant) in wider {
+        assert!(
+            matches!(written(&grant), Err(WorkspaceRefusal::WriteForbidden)),
+            "a grant {what} is refused"
+        );
+    }
+    let admitted = written(&own).expect("its own grant is recorded");
+    assert_eq!(
+        crate::workspace::policy_of(&admitted.candidate, WORKSPACE)
+            .active_role(&person_id(viewer_root())),
+        Some(Role::Viewer),
+        "recording its grant leaves its person a Viewer"
+    );
+}
