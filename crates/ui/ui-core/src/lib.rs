@@ -127,6 +127,11 @@ pub mod jobs;
 pub use {tilo_app_id::apps, tilo_app_id::chat};
 pub mod shell;
 extern crate self as tilo_ui;
+/// The base every widget is built on (the widget contract, layout, text, theming, input and
+/// accessibility), named here as before it was a crate of its own: a program that depends on
+/// `tilo-ui` alone writes `tilo_ui::Widget`, `tilo_ui::LocalState` and `tilo_ui::TextRole`. What
+/// this crate names itself takes precedence over the base's.
+pub use tilo_ui_base::*;
 #[cfg(test)]
 #[allow(
     dead_code,
