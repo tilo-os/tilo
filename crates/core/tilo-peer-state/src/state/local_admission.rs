@@ -639,6 +639,8 @@ fn checkpoint_payload(
 mod tests {
     use super::*;
     use crate::NeighbourMsg;
+    use automerge::transaction::Transactable as _;
+    use collab_types::CommitNamed as _;
     use collab_types::Ed25519PublicKey;
     use ed25519_dalek::SigningKey;
     use tilo_user_identity::DeviceCert;
@@ -707,8 +709,6 @@ mod tests {
         );
         // The write that waited is no longer here to be taken later under the number it carried:
         // the next write of the device carries that number, and is admitted as it is.
-        use automerge::transaction::Transactable as _;
-        use collab_types::CommitNamed as _;
         let person = peer
             .certificates()
             .into_iter()

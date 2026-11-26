@@ -73,7 +73,7 @@ action comment(
     step: Text = "",
     lookup: Text = "",
     incorporated: Bool = false,
-) -> Comment (icon: .message_square, label: "Comment", did: "commented") {
+) -> Comment (icon: .message_square, label: "Comment", did: "commented", field: comments) {
     require not text.is_empty() "Write a comment first"
     all.items.insert(
         Comment(
@@ -96,7 +96,12 @@ action edit(c: Comment, text: RichText = c.text) (icon: .pencil, label: "Edit") 
 
 /// Answers a comment: the reply stands under the remark it answers, as a conversation's answer
 /// does, and what it is about is what the remark is about.
-action reply(c: Comment, text: RichText) -> Comment (icon: .reply, label: "Reply", did: "replied") {
+action reply(c: Comment, text: RichText) -> Comment (
+    icon: .reply,
+    label: "Reply",
+    did: "replied",
+    field: comments,
+) {
     require not text.is_empty() "Write a reply first"
     comments.items.insert(Comment(text: text, reply_to: c))
 }
@@ -112,7 +117,11 @@ action resolve(c: Comment, resolved: Bool = true) (
 
 /// Deletes a comment. Only its author may. The platform takes it back rather than asking first,
 /// and the removal is a version of the comment, so who removed it stays answerable.
-destructive action delete(all: Comments, c: Comment) (icon: .trash, label: "Delete") {
+destructive action delete(all: Comments, c: Comment) (
+    icon: .trash,
+    label: "Delete",
+    field: comments,
+) {
     require created(c)?.who == invoker "Only its author can delete a comment"
     all.items.remove(c)
 }

@@ -1142,16 +1142,17 @@ impl HostedWorkspace {
             .collect()
     }
 
-    /// The kind a call of `app`'s action `action` is judged at, as the app's declaration of it in
-    /// this workspace's store says ([`VerbGrants::call_kind`]), with every surface this device
-    /// knows (`surfaces`) declared. `None` for an action no declaration names.
-    pub(crate) fn call_kind(
+    /// What a call of `app`'s action `action` needs, as the app's declaration of it in this
+    /// workspace's store says ([`VerbGrants::call_need`]), with every surface this device knows
+    /// (`surfaces`) declared: the kind it is judged at and the field it sits under. `None` for an
+    /// action no declaration names.
+    pub(crate) fn call_need(
         &mut self,
         surfaces: &collab_types::app_surface::Surfaces,
         app: &str,
         action: &str,
-    ) -> Option<tilo_action_policy::ActionKind> {
-        VerbGrants::call_kind(self.store_with_surfaces(surfaces).schema(), app, action)
+    ) -> Option<tilo_actions::ActionNeed> {
+        VerbGrants::call_need(self.store_with_surfaces(surfaces).schema(), app, action)
     }
 
     /// The grant lookup for a write of `app` by `author`: what the governance the write names

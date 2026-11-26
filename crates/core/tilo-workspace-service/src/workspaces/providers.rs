@@ -721,7 +721,11 @@ impl Providers {
             if judged {
                 let permitted = permits(
                     (&workspaces, &surfaces),
-                    declared.as_ref().map(|declared| declared.contract.kind),
+                    declared.as_ref().map(|declared| tilo_actions::ActionNeed {
+                        kind: declared.contract.kind,
+                        field: declared.contract.field.clone(),
+                        privileged: false,
+                    }),
                     device,
                     &workspace,
                     &app,
@@ -876,16 +880,19 @@ fn record_of(served: &BTreeMap<Arc<str>, Registered>, provider: &str) -> Option<
 }
 
 /// Whether `workspace`'s grants let `device` run `action` on `resource` of the application `app`
-/// now, judged at the kind the action is declared as: by the provider that answers it
-/// (`declared`) and by `app`'s surface in the workspace's store (`surfaces` names what this
-/// device knows of those), the greater where both declare it. The refusal its caller reads when
-/// they do not. An action declared nowhere is refused: nothing says what it is able to do.
+/// now, judged at what the action is declared as: by the provider that answers it (`declared`)
+/// and by `app`'s surface in the workspace's store (`surfaces` names what this device knows of
+/// those), the greater where both declare it. Its kind and the field its declaration places it
+/// under are both judged ([`tilo_peer_state::StatePeer::permits_app_action`]): a commenter's verb
+/// under the `comments` is theirs, though the same kind on the record is not. The refusal its
+/// caller reads when they do not. An action declared nowhere is refused: nothing says what it is
+/// able to do.
 async fn permits(
     (workspaces, surfaces): (
         &super::device_actions::WorkspacesMap,
         &collab_types::app_surface::Surfaces,
     ),
-    declared: Option<tilo_actions::ActionKind>,
+    declared: Option<tilo_actions::ActionNeed>,
     device: [u8; 32],
     workspace: &str,
     app: &str,
@@ -898,14 +905,14 @@ async fn permits(
         });
     };
     let mut kept = kept.lock().await;
-    let Some(kind) = declared.max(kept.call_kind(surfaces, app, action)) else {
+    let Some(need) = the_greater(declared, kept.call_need(surfaces, app, action)) else {
         return Err(ActionCallError::Refused {
             reason: format!("{app} declares no action {resource}#{action}"),
         });
     };
     let permitted =
         kept.peer()
-            .permits_app_action(device, (app, resource, action), kind, tilo_clock::wall());
+            .permits_app_action(device, (app, resource, action), &need, tilo_clock::wall());
     drop(kept);
     match permitted {
         Ok(true) => Ok(()),
@@ -918,5 +925,27 @@ async fn permits(
         Err(error) => Err(ActionCallError::Refused {
             reason: format!("this device is not admitted to the workspace: {error}"),
         }),
+    }
+}
+
+/// The greater of two declarations of one action, `None` where neither declares it: the one able
+/// to do more, and the field it places the action under where its declaration names one. Two
+/// declarations of one kind differ at most in that field, and a declared field bounds the action
+/// as the app's own dispatch bounds it.
+fn the_greater(
+    declared: Option<tilo_actions::ActionNeed>,
+    surface: Option<tilo_actions::ActionNeed>,
+) -> Option<tilo_actions::ActionNeed> {
+    match (declared, surface) {
+        (Some(mut declared), Some(surface)) => {
+            if surface.kind > declared.kind {
+                return Some(surface);
+            }
+            if declared.kind == surface.kind && declared.field.is_none() {
+                declared.field = surface.field;
+            }
+            Some(declared)
+        }
+        (declared, surface) => declared.or(surface),
     }
 }

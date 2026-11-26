@@ -907,9 +907,12 @@ impl StatePeer {
             .map_err(|error| error.to_string())
     }
     /// Whether the device `source` may run `action` of `resource` in `app`
-    /// here now, an action its app declares as `kind`: the workspace's
-    /// per-action permission for whatever its actor is decides it at that
-    /// kind, never the kind of member a device belongs to.
+    /// here now, an action its app declares as `need` (its kind, and the
+    /// field of the resource it sits under, where its declaration names
+    /// one): the workspace's per-action permission for whatever its actor is
+    /// decides it at that kind and field, never the kind of member a device
+    /// belongs to. A verb its app declares under the `comments` is decided
+    /// where comments are, as the app's own dispatch decides it.
     ///
     /// # Errors
     ///
@@ -919,7 +922,7 @@ impl StatePeer {
         &self,
         source: [u8; 32],
         (app, resource, action): (&str, &str, &str),
-        kind: ActionKind,
+        need: &tilo_actions::ActionNeed,
         now: SystemTime,
     ) -> Result<bool, MembershipError> {
         let member = self.permissions(source, now)?;
@@ -927,9 +930,13 @@ impl StatePeer {
             .app(app)
             .rest()
             .resource(resource)
-            .rest()
-            .action(action);
-        Ok(member.allows(&node, kind, now))
+            .rest();
+        let node = match need.field.as_deref() {
+            Some(field) => node.field(field),
+            None => node,
+        }
+        .action(action);
+        Ok(member.allows(&node, need.kind, now))
     }
 
     /// Whether the device `source` may open `resource` of `app` here now: read

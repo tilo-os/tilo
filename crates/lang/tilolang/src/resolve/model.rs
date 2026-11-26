@@ -270,6 +270,10 @@ pub struct Presentation {
     /// so a control bound to the field runs it with the value chosen
     /// ([`crate::meta::ActionMeta::settles`]).
     pub settles: Option<String>,
+    /// `field: comments`: the field of its resource the action writes, where it writes one
+    /// (a comment verb under the `comments`): the node its grants and its change are decided at
+    /// ([`crate::meta::ActionMeta::field`]).
+    pub field: Option<String>,
 }
 
 /// The shortcut an action's or a control's `key:` declares, as it is published and compared: the

@@ -633,6 +633,9 @@ pub(crate) mod invitation_receipts;
 #[path = "state/joined_tests.rs"]
 mod joined_tests;
 #[cfg(test)]
+#[path = "state/member_action_tests.rs"]
+mod member_action_tests;
+#[cfg(test)]
 #[path = "state/member_list_tests.rs"]
 mod member_list_tests;
 mod rebase;

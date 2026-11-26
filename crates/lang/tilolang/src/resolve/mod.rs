@@ -652,6 +652,7 @@ impl Env {
                 shows: a.shows.clone(),
                 takes: a.takes.clone(),
                 settles: a.settles.clone(),
+                field: a.field.clone(),
             };
             add(
                 CKind::Action,
@@ -2483,6 +2484,7 @@ impl Resolver<'_> {
             shows: Vec::new(),
             takes: Vec::new(),
             settles: None,
+            field: None,
         };
         let mut seen: Vec<&str> = Vec::new();
         for opt in &a.opts {
@@ -2686,13 +2688,21 @@ impl Resolver<'_> {
                     opt.value.span,
                     "`opens:` takes a list of the kinds of file the action opens, each a media type in quotes or an extension with a dot: `opens: [\"text/markdown\", .md, .markdown]`",
                 ),
+                // `field: comments`: the field of its resource the action writes, so its grant
+                // and its change are decided under it, where the app's body writes it.
+                ("field", ExprKind::Ident(name)) => out.field = Some(name.clone()),
+                ("field", _) => self.err(
+                    "E090",
+                    opt.value.span,
+                    "`field:` names the field of the action's resource it writes: `field: comments`",
+                ),
                 // `settles: t.status`: the action is how the target's field takes a value, so a
                 // control bound to the field runs it with the value chosen.
                 ("settles", _) => out.settles = self.settled_field(a, params, &opt.value),
                 (other, _) => self.err(
                     "E090",
                     opt.name.span,
-                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `export:`, `did:`, `search:`, `opens:`, `shows:`, `takes:` and `settles:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
+                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `export:`, `did:`, `search:`, `opens:`, `shows:`, `takes:`, `settles:` and `field:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
                 ),
             }
         }

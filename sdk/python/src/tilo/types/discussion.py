@@ -61,7 +61,7 @@ DeleteArgs = TypedDict("DeleteArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.lang.discussion@1452e9a1e755a7ee"
+    __surface__ = "so.tilo.lang.discussion@51764e764ab6d8b0"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -122,7 +122,7 @@ class Notice(Resource):
 
 class Origin(Resource):
     """Origin — `tl.so.tilo.lang.discussion.Origin`."""
-    __surface__ = "so.tilo.lang.discussion@1452e9a1e755a7ee"
+    __surface__ = "so.tilo.lang.discussion@51764e764ab6d8b0"
     xxyuyumk: str  # author
     gmvkzzuz: str | None  # handle
     nfpru2aa: str  # source
@@ -148,7 +148,7 @@ class Origin(Resource):
 
 class Comment(Resource):
     """Comment — `tl.so.tilo.lang.discussion.Comment`."""
-    __surface__ = "so.tilo.lang.discussion@1452e9a1e755a7ee"
+    __surface__ = "so.tilo.lang.discussion@51764e764ab6d8b0"
     @property
     def _5q4mbecw(self) -> str:
         """text (`5q4mbecw` on the wire)."""
@@ -223,7 +223,7 @@ class Comment(Resource):
 
 class Comments(Resource):
     """Comments — `tl.so.tilo.lang.discussion.Comments`."""
-    __surface__ = "so.tilo.lang.discussion@1452e9a1e755a7ee"
+    __surface__ = "so.tilo.lang.discussion@51764e764ab6d8b0"
     @property
     def _3g3duquj(self) -> list[Entry[Comment]]:
         """items (`3g3duquj` on the wire)."""
@@ -269,5 +269,5 @@ class Comments(Resource):
 
 class Discussion(Resource):
     """Discussion — `tl.so.tilo.lang.discussion`."""
-    __surface__ = "so.tilo.lang.discussion@1452e9a1e755a7ee"
+    __surface__ = "so.tilo.lang.discussion@51764e764ab6d8b0"
 

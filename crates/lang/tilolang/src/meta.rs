@@ -808,6 +808,11 @@ pub struct ActionMeta {
     /// this type it writes are what the search places.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search: Option<String>,
+    /// `field: comments`: the field of the resource the action writes, where it writes one
+    /// ([`crate::resolve::Presentation::field`]): the node of the tree its grants and its change
+    /// are decided at, as a native action declaring `field = "..."` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
     /// `opens: ["text/markdown", .md]`: the kinds of file this action takes, each a media type
     /// (`text/markdown`) or an extension without its dot (`md`). A file of one of them opens in the
     /// app with this action, which the platform knows by the manifest's `[providers]`.

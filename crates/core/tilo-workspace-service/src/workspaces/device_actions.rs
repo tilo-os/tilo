@@ -1106,7 +1106,8 @@ impl super::Workspaces {
     }
 
     /// Whether `device` may run `action` (app, resource, action) in `workspace` now, judged at
-    /// the kind its app declares it as. An action its app declares no kind for is not run.
+    /// the kind its app declares it as and the field it declares it under. An action its app
+    /// declares no kind for is not run.
     pub(crate) async fn permits_action(
         &self,
         device: [u8; 32],
@@ -1118,13 +1119,13 @@ impl super::Workspaces {
             return false;
         };
         let mut kept = kept.lock().await;
-        let Some(kind) = kept.call_kind(&self.inner.host.surfaces, app, action) else {
+        let Some(need) = kept.call_need(&self.inner.host.surfaces, app, action) else {
             return false;
         };
         let permitted = kept.peer().permits_app_action(
             device,
             (app, resource, action),
-            kind,
+            &need,
             tilo_clock::wall(),
         );
         drop(kept);

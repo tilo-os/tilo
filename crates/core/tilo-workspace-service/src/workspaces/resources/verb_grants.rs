@@ -41,15 +41,15 @@ impl VerbGrants {
         }
     }
 
-    /// The kind a call of `app`'s action `action` is judged at: what the app's declaration of it,
-    /// as `schema` keeps it, says it is able to do. `None` when no declaration of `app` names it:
-    /// such a call is refused, never judged at a kind it was given.
-    pub(super) fn call_kind(
+    /// What a call of `app`'s action `action` needs as `schema` declares it: the kind it is judged
+    /// at and the field it sits under, where its declaration names one. `None` when no declaration
+    /// of `app` names it: such a call is refused, never judged at a kind it was given.
+    pub(super) fn call_need(
         schema: &Schema,
         app: &str,
         action: &str,
-    ) -> Option<tilo_action_policy::ActionKind> {
-        schema.declared_kind(app, action)
+    ) -> Option<tilo_actions::ActionNeed> {
+        schema.declared_need(app, action)
     }
 
     /// Whether `author` may invoke `verb` on a record of `kind`, at the batch's basis: the grant

@@ -383,7 +383,9 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet, targeted: bool) -
             }
         }),
         writes: vec![RESOURCE_UNIT.to_owned()],
-        field: None,
+        // `field: comments`: the field of its resource the action writes, so a call and its
+        // change are judged under it, as a native action declaring `field = "..."` is.
+        field: action.field.clone(),
         tags: Vec::new(),
         // What its code can queue outside the workspace and whether it tells a person something,
         // as the compiler read its `outside(...)` and `notify(...)` calls (and the effects it

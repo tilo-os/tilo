@@ -345,6 +345,7 @@ fn published() -> tilolang::PackageMeta {
             present: None,
             toggles: None,
             settles: None,
+            field: None,
             key: None,
             group: None,
             export: None,

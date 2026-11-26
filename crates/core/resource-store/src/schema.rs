@@ -172,13 +172,16 @@ pub struct Verb {
     pub declared: BTreeMap<String, Declared>,
 }
 
-/// What one app declares a verb as: the kind of action it is, and the name the action API offers
-/// it by.
+/// What one app declares a verb as: the kind of action it is, the one field of its resource it
+/// sits under when it declares one, and the name the action API offers it by.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Declared {
     /// What it is able to do, as its declaration says. Where two of the app's resources declare
     /// it apart, the most it is able to do.
     pub kind: tilo_actions::ActionKind,
+    /// The field of its resource it writes, when its declaration names one
+    /// ([`tilo_actions::surface::VerbSurface::field`]): a comment verb under the `comments`.
+    pub field: Option<String>,
     /// The name a call names it by ([`tilo_actions::surface::VerbSurface::offered`]).
     pub offered: String,
 }
@@ -444,6 +447,7 @@ impl Schema {
                     app.to_owned(),
                     Declared {
                         kind: declared.kind,
+                        field: declared.field.clone(),
                         offered: declared.offered().to_owned(),
                     },
                 );
@@ -457,14 +461,35 @@ impl Schema {
     /// ([`platform_kind`]): `None` when neither declares such an action.
     #[must_use]
     pub fn declared_kind(&self, app: &str, action: &str) -> Option<tilo_actions::ActionKind> {
+        self.declared_need(app, action).map(|need| need.kind)
+    }
+
+    /// What a call of `app`'s action `action` needs, as the app declares it: the kind it is
+    /// judged at ([`Self::declared_kind`]) and the field of its resource it sits under, where its
+    /// declaration names one (a comment verb under `comments`). The platform's verbs declare no
+    /// field. `None` when no declaration names such an action.
+    #[must_use]
+    pub fn declared_need(&self, app: &str, action: &str) -> Option<tilo_actions::ActionNeed> {
         self.verbs
             .iter()
             .filter_map(|verb| {
                 let declared = verb.declared.get(app)?;
-                (verb.name == action || declared.offered == action).then_some(declared.kind)
+                (verb.name == action || declared.offered == action).then(|| {
+                    tilo_actions::ActionNeed {
+                        kind: declared.kind,
+                        field: declared.field.clone(),
+                        privileged: false,
+                    }
+                })
             })
-            .max()
-            .or_else(|| platform_kind(action))
+            // Two of the app's resources declaring one action apart: the most it is able to do,
+            // and the field its declaration places it under.
+            .max_by(|left, right| {
+                left.kind
+                    .cmp(&right.kind)
+                    .then_with(|| left.field.is_none().cmp(&right.field.is_none()))
+            })
+            .or_else(|| platform_kind(action).map(tilo_actions::ActionNeed::of))
     }
 
     /// What the verb `name` writes, when it is declared.

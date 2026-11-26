@@ -992,6 +992,7 @@ fn record_action(id: &str, label: &str, doc: &str, rest: Vec<ParamMeta>) -> Acti
         present: None,
         toggles: None,
         settles: None,
+        field: None,
         key: None,
         group: None,
         export: None,

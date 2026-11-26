@@ -2583,8 +2583,12 @@ impl Store {
                     known.notice |= verb.notice;
                     for (app, declared) in verb.declared {
                         match known.declared.get_mut(&app) {
-                            // One app's resources declaring it apart: the most it is able to do.
-                            Some(was) => was.kind = was.kind.max(declared.kind),
+                            // One app's resources declaring it apart: the most it is able to do,
+                            // and the field its declaration places it under.
+                            Some(was) if was.kind < declared.kind => *was = declared,
+                            Some(was) => {
+                                was.field = was.field.take().or(declared.field);
+                            }
                             None => {
                                 known.declared.insert(app, declared);
                             }

@@ -149,6 +149,16 @@ value next, every parameter after those has a default, and one action settles a 
 field set whole can be settled (a case, a date, a person, a flag): a text is spliced where it is
 typed, and a collection changes by its items.
 
+An action that writes one field of its resource declares it with `field:`, so its grants and its
+change are decided at that field, as the app's own dispatch decides them. A comment verb writes
+the `comments`, and the workspace's Commenter role allows exactly that field:
+
+```
+action comment(all: Comments, text: RichText, ...) (label: "Comment", field: comments) {
+    all.items.insert(Comment(text: text))
+}
+```
+
 Exporting is the system's. An app publishes each format it can write as an export action on the
 type: it takes the record, answers a `File`, and declares the format as the person reads it with
 `export:`. The system's one Export…, on every resource's menu, lists the formats published for

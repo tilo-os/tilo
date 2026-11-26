@@ -830,6 +830,7 @@ impl Reader<'_> {
                 present: None,
                 toggles: None,
                 settles: None,
+                field: None,
                 key: None,
                 group: None,
                 export: None,
@@ -1077,6 +1078,9 @@ impl Reader<'_> {
             present: None,
             toggles: None,
             settles: None,
+            // The field a native verb declares is the node its grant and its change are judged
+            // at, as for the app's own.
+            field: verb.field.clone(),
             key: None,
             group: None,
             export: None,

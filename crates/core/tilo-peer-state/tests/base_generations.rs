@@ -86,6 +86,10 @@ async fn until(sync: &DirectSync, what: &str, done: impl Fn(&StatePeer) -> bool 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one convergence scenario: three copies, their writes and the base that joins them"
+)]
 async fn a_copy_moves_to_the_base_the_other_made_with_every_change_kept() {
     let root = SigningKey::from_bytes(&[0x31; 32]);
     let (a_key, a_cert) = device(&root, 0x32);
