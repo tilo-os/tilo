@@ -2151,10 +2151,17 @@ impl crate::motion::Framed for Session {
 }
 
 /// A task ticked off in a session's window fills its box over frames that cost what a still frame
-/// costs: the instance answers the press, and the mark's own frames repaint only.
+/// costs: the instance answers the press, and the mark's own frames repaint only. A session's
+/// workspace knows its members, the people the week's scenarios name among them: a workspace's
+/// store takes no member a scenario makes up, so a week staged with no one in it stages nothing.
 #[test]
 fn a_frame_of_the_mark_in_a_sessions_window_costs_what_a_still_frame_costs() {
-    let mut session = Session::tasks();
+    let bus = Rc::new(tilolang_process::testing::Bus::default());
+    for (person, name) in [("ada", "Ada"), ("Mia", "Mia")] {
+        bus.member(ui::tilo_actions::MemberId::person(person), name);
+    }
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = Session::on_bus(&bus, &route, spec_of(&route, "ada"));
     session.instance_mut().stage("a busy week");
     session.settle();
     crate::motion::a_mark_costs_a_still_frame(&mut session);

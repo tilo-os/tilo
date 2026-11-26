@@ -1360,14 +1360,14 @@ impl App {
         }
         // A frame whose model pass took up nothing that arrived, synchronized nothing, published
         // nothing and changed no structure: what a window at rest draws, and what a caller-asked
-        // frame at rest stays.
+        // frame at rest stays. What a widget has yet to paint is this frame's own drawing, not
+        // more work: the frame that ends a mark paints its last pose, and asks for nothing after.
         let quiet = !pump.updated
             && !pump.synced
             && !pump.published
             && !pump.presentation_changed
             && !structure_rebuilt
             && !self.root_widget.needs_idle_sync()
-            && !self.root_widget.needs_redraw()
             && !self.root_widget.needs_animation_frame()
             && !self.wake_pending()
             && !self.actions.bound_calls_running()
