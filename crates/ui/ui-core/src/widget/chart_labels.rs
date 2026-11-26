@@ -79,6 +79,90 @@ pub(crate) fn fit_label(
     Some((shown, f64::from(w), f64::from(h)))
 }
 
+/// The fewest letters a shortened label keeps before its ellipsis: below it the stub names
+/// nothing, and the segment is better left unnamed, since its tooltip and accessible name
+/// still read its whole path.
+pub(crate) const MIN_READABLE_LETTERS: usize = 4;
+
+const CUT: char = '\u{2026}';
+
+fn readable_letters(text: &str) -> usize {
+    text.chars().filter(|c| c.is_alphanumeric()).count()
+}
+
+/// The ways `label` reads short, richest first, for a place too small to hold it whole: cut at
+/// a word boundary keeping the words at both its start and its end (`Integration…clients`),
+/// then cut from the middle of a long word. Every way keeps at least
+/// [`MIN_READABLE_LETTERS`] letters before its ellipsis — a shorter stub names nothing — and
+/// keeps the label's own end wherever it can, so two labels sharing a start still read apart.
+/// The whole label is not among them: ask for it first.
+pub(crate) fn shortened_labels(
+    tr: &mut TextRenderer,
+    label: &str,
+    style: &TextStyle,
+) -> Vec<(String, f64, f64)> {
+    let label = label.trim();
+    if readable_letters(label) <= MIN_READABLE_LETTERS {
+        return Vec::new();
+    }
+    let mut cuts: Vec<(usize, String)> = Vec::new();
+    let mut keep = |head: &str, tail: &str| {
+        let head = head.trim_end();
+        if readable_letters(head) < MIN_READABLE_LETTERS {
+            return;
+        }
+        let tail = tail.trim_start();
+        let mut text = head.to_owned();
+        text.push(CUT);
+        if !tail.is_empty() {
+            text.push_str(tail);
+        }
+        if text != label {
+            cuts.push((readable_letters(&text), text));
+        }
+    };
+    let words: Vec<&str> = label.split_whitespace().collect();
+    if words.len() > 1 {
+        for head_words in 1..words.len() {
+            let head = words.get(..head_words).unwrap_or_default().join(" ");
+            let rest = words.len().saturating_sub(head_words);
+            for tail_words in 0..rest {
+                let tail = words
+                    .get(words.len().saturating_sub(tail_words)..)
+                    .unwrap_or_default()
+                    .join(" ");
+                keep(&head, &tail);
+            }
+        }
+    }
+    // Then the middle of a word: the start and the end of the text, with what will not fit
+    // taken from between them.
+    let chars: Vec<char> = label.chars().collect();
+    let total = chars.len();
+    for kept in (MIN_READABLE_LETTERS..total).rev() {
+        let tail_chars = (kept / 3).min(kept.saturating_sub(MIN_READABLE_LETTERS));
+        let head_chars = kept.saturating_sub(tail_chars);
+        let head: String = chars.get(..head_chars).unwrap_or_default().iter().collect();
+        let tail: String = chars
+            .get(total.saturating_sub(tail_chars)..)
+            .unwrap_or_default()
+            .iter()
+            .collect();
+        keep(&head, &tail);
+    }
+    // The richest reading first: the one that keeps the most of the label. Ties keep the
+    // order they were found in, word cuts before middle ones.
+    cuts.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut seen = std::collections::HashSet::new();
+    cuts.retain(|(_, text)| seen.insert(text.clone()));
+    cuts.into_iter()
+        .map(|(_, text)| {
+            let (w, h) = tr.measure_style(&text, None, style);
+            (text, f64::from(w), f64::from(h))
+        })
+        .collect()
+}
+
 /// A label of `size` outside a ring of `radius` round `center`, at `angle`:
 /// on the right half it starts at the ring, on the left half it ends there,
 /// and it is centred over and under the ring at the top and bottom, so it
