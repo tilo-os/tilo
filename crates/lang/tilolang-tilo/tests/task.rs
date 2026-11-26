@@ -124,7 +124,7 @@ fn a_reading_the_session_has_none_of_reads_as_it_starts() {
     let said = task.said("print(device.time.clock)");
     // No reading: the clock's text starts empty, and the program carries on.
     assert_eq!(said, "", "{said}");
-    let answer = task.step("print(device.time.timer_paused)", false);
+    let answer = task.step("print(device.time.year)", false);
     assert_eq!(answer["state"], "done", "{answer:#}");
 }
 

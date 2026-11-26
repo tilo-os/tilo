@@ -1338,7 +1338,7 @@ mod tests {
                 Some(_) => json!({"ok": {"reading": {}}}),
                 None => json!({"err": format!("the API is asked only for a reading: {message}")}),
             });
-            let answer = ran(&task, "print(device.time.clock, device.time.timer_paused)");
+            let answer = ran(&task, "print(device.time.clock, device.time.year)");
             assert_eq!(answer["state"], "done", "{answer:#}");
             assert_eq!(answer["output"], json!([" 0"]), "{answer:#}");
             closed(&api);
@@ -1346,21 +1346,19 @@ mod tests {
             assert_eq!(calls.len(), 1, "the one resource asked once: {calls:#?}");
         }
 
-        phase a_reading_the_api_has_none_of_fails_the_read_with_why;
+        phase a_reading_the_api_has_none_of_reads_as_it_starts;
         {
-            // A resource the API publishes nothing of at all (an older build's reading) answers
-            // `none`, and the read fails with why rather than reading a field the session says it
-            // has none of.
+            // A resource the session publishes nothing of answers `none`, and reads as its type
+            // starts, never as a fault of the program: a device without Wi-Fi publishes no
+            // networks, and a view draws it so.
             let (task, _reader, api) = task();
             let calls = scripted(&api, |message| match message.get("reading") {
                 Some(_) => json!({"none": true}),
                 None => json!({"err": format!("the API is asked only for a reading: {message}")}),
             });
-            let answer = ran(&task, "print(device.time.clock)");
-            assert_eq!(
-                answer["state"], "failed",
-                "no reading, so no field: {answer:#}"
-            );
+            let answer = ran(&task, "print(device.time.clock, device.time.year)");
+            assert_eq!(answer["state"], "done", "{answer:#}");
+            assert_eq!(answer["output"], json!([" 0"]), "{answer:#}");
             closed(&api);
             let calls = calls.join().expect("the API");
             assert_eq!(calls.len(), 1, "asked once: {calls:#?}");
@@ -1710,7 +1708,12 @@ mod tests {
     /// The bundle of the package `source` declares, its ids lock `ids`.
     fn bundle(source: &str, ids: &str) -> Bundle {
         let lock = tilolang::IdsLock::parse(ids).expect("the ids lock reads");
-        let compiled = tilolang::compile_package(source, &lock, &[]).expect("the package compiles");
+        // Against the platform's packages, as the host compiles an app: the workspace's
+        // package an app's person pickers read its members through among them.
+        let platform =
+            tilolang_tilo::platform_apps::platform_packages().expect("the platform reads");
+        let compiled =
+            tilolang::compile_package(source, &lock, &platform).expect("the package compiles");
         Bundle::new(&compiled, [])
     }
 
