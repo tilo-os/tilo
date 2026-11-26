@@ -2,15 +2,16 @@
 //! Keystore, a file picker) runs through [`with_activity`], with the context [`ndk_context`]
 //! holds.
 //!
-//! Two things publish that context. A content provider, which Android creates before any
-//! activity, or with none at all when another app only browses this one's files: it publishes
-//! the application's `Context` ([`provide_application_context`]), so the Keystore holding the
-//! device's key is reached before any window opens. And android-activity, which publishes the
-//! activity before `android_main` runs and asserts that nothing published one before it: the
-//! activity's Java `onCreate` therefore takes the provider's back first ([`yield_to_activity`]),
-//! and `android_main` says when the activity's is published ([`activity_started`]) and when it is
-//! about to be taken back ([`activity_ended`]). This module reads `ndk_context` only while one of
-//! the two is published, under one lock with the provider's publishing and taking back.
+//! Two things publish that context. The app, as soon as its file provider or its activity is
+//! created, whichever comes first: it publishes the application's `Context`
+//! ([`provide_application_context`]) for the life of the process, so the Keystore holding the
+//! device's key is reached before any window opens, and when another app only browses this one's
+//! files and none ever does. And android-activity, which publishes the activity over it before
+//! `android_main` runs and takes it back once `android_main` returns, leaving the application's
+//! published again: `ndk_context` keeps the contexts as a stack (`vendor/ndk-context`), so there
+//! is no moment without one. `android_main` says when the activity's is published
+//! ([`activity_started`]) and when it is about to be taken back ([`activity_ended`]). This module
+//! reads `ndk_context` only once one of the two is published.
 
 use std::ffi::c_void;
 use std::sync::{Mutex, PoisonError};
@@ -21,57 +22,41 @@ use jni::objects::{GlobalRef, JObject, JString};
 /// Who published the context `ndk_context` holds now.
 #[derive(Default)]
 struct Published {
-    /// android-activity's activity, while `android_main` runs.
+    /// android-activity's activity, while `android_main` runs, over the application's.
     activity: bool,
-    /// The application's context a provider published, while the activity has not taken its
-    /// place.
-    provider: bool,
-    /// The application's context, kept for the process once a provider made it: what the raw
-    /// pointer `ndk_context` holds for the provider points to.
-    application: Option<GlobalRef>,
+    /// The application's context, published for the life of the process.
+    application: bool,
+    /// The global reference the application's published pointer points to, kept for the process.
+    kept: Option<GlobalRef>,
 }
 
 static PUBLISHED: Mutex<Published> = Mutex::new(Published {
     activity: false,
-    provider: false,
-    application: None,
+    application: false,
+    kept: None,
 });
 
 fn published() -> std::sync::MutexGuard<'static, Published> {
     PUBLISHED.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Publish `vm` and `context` in `ndk_context` for the provider, unless a context is published
-/// already. Answers whether this call published it.
+/// Publish `vm` and `context` in `ndk_context` as the application's, for the life of the process,
+/// unless a context is published already. Answers whether this call published it.
 ///
 /// # Safety
 /// `vm` is the process's `JavaVM*` and `context` a global reference to a `Context` that lives as
 /// long as the process.
-unsafe fn publish_for_provider(vm: *mut c_void, context: *mut c_void) -> bool {
+unsafe fn publish_application(vm: *mut c_void, context: *mut c_void) -> bool {
     let mut published = published();
-    if published.activity || published.provider {
+    // The activity's would sit under it, and android-activity's taking it back would take the
+    // application's instead: the activity runs, so the activity's is what calls use.
+    if published.activity || published.application {
         return false;
     }
-    // SAFETY: nothing is published (both flags say so, and only this module and android-activity
-    // publish; android-activity only after `yield_to_activity`, which leaves both unset), and
-    // the caller vouches for the pointers.
+    // SAFETY: the caller vouches for the pointers, which stay valid for the process.
     unsafe { ndk_context::initialize_android_context(vm, context) };
-    published.provider = true;
+    published.application = true;
     true
-}
-
-/// The activity's `onCreate` runs, before android-activity publishes the activity: the
-/// provider's context, if it published one, is taken back, since android-activity refuses to
-/// publish over another. Calls into the framework in between are refused until the activity's is
-/// published.
-pub fn yield_to_activity() {
-    let mut published = published();
-    if published.provider {
-        // SAFETY: the provider's context is the one published, and this is the lock every reader
-        // and publisher of it holds.
-        unsafe { ndk_context::release_android_context() };
-        published.provider = false;
-    }
 }
 
 /// android-activity published the activity in `ndk_context` and runs `android_main` now.
@@ -83,14 +68,16 @@ pub unsafe fn activity_started() {
     published().activity = true;
 }
 
-/// `android_main` returns: android-activity takes its context back.
+/// `android_main` returns: android-activity takes its context back, and the application's, when
+/// it was published, is the one calls use again.
 pub fn activity_ended() {
     published().activity = false;
 }
 
-/// Publish the application's context of `context` (any `Context` of the app, a provider's) in
-/// `ndk_context`, unless a context is published already: what a call into the framework runs with
-/// while no activity does. Answers whether this call published it.
+/// Publish the application's context of `context` (any `Context` of the app: its provider's or
+/// its activity's) in `ndk_context` for the life of the process, unless one is published
+/// already: what a call into the framework runs with while no activity does. Answers whether
+/// this call published it.
 ///
 /// # Errors
 /// What JNI said when the application's context or the VM could not be reached.
@@ -100,7 +87,7 @@ pub fn provide_application_context(
 ) -> Result<bool, String> {
     {
         let published = published();
-        if published.activity || published.provider {
+        if published.activity || published.application {
             return Ok(false);
         }
     }
@@ -123,31 +110,30 @@ pub fn provide_application_context(
     .map_err(|error| error.to_string())?;
     let vm = env.get_java_vm().map_err(|error| error.to_string())?;
     let raw = application.as_obj().as_raw().cast::<c_void>();
-    // SAFETY: the VM is the one this provider is called in, and `application` is a global
-    // reference kept below for the process.
-    let made = unsafe { publish_for_provider(vm.get_java_vm_pointer().cast(), raw) };
+    // SAFETY: the VM is the one this is called in, and `application` is a global reference kept
+    // below for the process.
+    let made = unsafe { publish_application(vm.get_java_vm_pointer().cast(), raw) };
     if made {
-        published().application = Some(application);
+        published().kept = Some(application);
     }
     Ok(made)
 }
 
-/// Why no call into the framework can be made: neither the activity nor a provider published a
-/// context.
-const NO_CONTEXT: &str = "this process has no Android context: neither the app's activity nor \
-                          its file provider has published one";
+/// Why no call into the framework can be made: the app published no context yet, nor did its
+/// activity.
+const NO_CONTEXT: &str = "this process has no Android context: the app has not published its \
+                          application's, and no activity runs";
 
 /// The context `ndk_context` holds, while one is published.
 fn context() -> Result<ndk_context::AndroidContext, String> {
     let published = published();
-    // Read under the lock: the provider's context is taken back under it.
-    let context = (published.activity || published.provider).then(ndk_context::android_context);
+    let context = (published.activity || published.application).then(ndk_context::android_context);
     drop(published);
     context.ok_or_else(|| NO_CONTEXT.to_owned())
 }
 
 /// Run `f` on this thread's JNI environment with the published context: the activity while it
-/// runs, else the application's a provider published.
+/// runs, else the application's.
 /// Local references `f` creates are released when it returns. A Java
 /// exception is cleared and reported as the error, never left pending.
 ///
@@ -213,7 +199,7 @@ mod tests {
     /// The process's one context, in the order Android publishes it: one test, since it is the
     /// process's.
     #[test]
-    fn the_provider_publishes_once_and_yields_to_the_activity() {
+    fn the_application_context_stays_under_the_activity() {
         // Nothing published: the Keystore, a picker or the clipboard are refused by name, never
         // a panic that ends the process.
         let called = std::cell::Cell::new(false);
@@ -224,41 +210,39 @@ mod tests {
         assert_eq!(refused, Err(NO_CONTEXT.to_owned()));
         assert!(!called.get(), "nothing runs without a context");
 
-        // The provider starts first and publishes its context; a second start publishes nothing.
+        // The provider, or the activity's `onCreate`, publishes the application's context; the
+        // other one's call publishes nothing more.
         let (vm, application) = (std::ptr::dangling_mut::<c_void>(), std::ptr::dangling_mut());
         // SAFETY: the pointers are only stored and compared, never dereferenced, in this test.
-        assert!(unsafe { publish_for_provider(vm, application) });
-        let other = std::ptr::without_provenance_mut::<c_void>(16);
+        assert!(unsafe { publish_application(vm, application) });
+        let activity = std::ptr::without_provenance_mut::<c_void>(16);
         // SAFETY: as above.
-        assert!(!unsafe { publish_for_provider(other, other) });
+        assert!(!unsafe { publish_application(activity, activity) });
         assert_eq!(
             context().map(ndk_context::AndroidContext::context),
             Ok(application)
         );
 
-        // The activity's onCreate takes it back, so android-activity's own publishing, which
-        // asserts nothing is there, finds nothing.
-        yield_to_activity();
-        assert_eq!(
-            context().map(ndk_context::AndroidContext::context),
-            Err(NO_CONTEXT.to_owned())
-        );
-        // SAFETY: android-activity's publishing, as its thread does it, then `android_main`.
+        // android-activity publishes the activity over it, as its thread does before
+        // `android_main`: in one step, with the application's context published up to it.
+        // SAFETY: as above.
         unsafe {
-            ndk_context::initialize_android_context(other, other);
+            ndk_context::initialize_android_context(activity, activity);
             activity_started();
         }
         assert_eq!(
             context().map(ndk_context::AndroidContext::context),
-            Ok(other)
+            Ok(activity)
         );
-        // SAFETY: as above.
-        assert!(
-            !unsafe { publish_for_provider(vm, application) },
-            "a provider called while the activity runs uses the activity's"
-        );
+
+        // `android_main` returns and android-activity takes the activity's back: the
+        // application's is published again, for whatever still runs in the process.
         activity_ended();
         // SAFETY: android-activity's taking back, once `android_main` returned.
         unsafe { ndk_context::release_android_context() };
+        assert_eq!(
+            context().map(ndk_context::AndroidContext::context),
+            Ok(application)
+        );
     }
 }

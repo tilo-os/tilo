@@ -8,6 +8,16 @@ synced folder's tree, edited once per file written into the folder, grew from
 1 GB to 4 GB in a minute during a git checkout. `vendor/hexane` shrinks the left
 half after a split; see `vendor/hexane/TILO-PATCH.md`.
 
+## ndk-context keeps the application's context under the activity's
+
+`ndk-context` 0.1.1 asserted that nothing was published before android-activity published the
+activity, so the application's context the app publishes for its Keystore and file provider was
+taken back for the activity's start, and nothing was published for a moment then, nor after
+`android_main` returned. A crate reading it then ended the process. `vendor/ndk-context` keeps
+the contexts as a stack: the activity's is published over the application's, and the
+application's is returned again once the activity's is released. See
+`vendor/ndk-context/TILO-PATCH.md`.
+
 ## iroh relay handshake without its confirmation's round trip
 
 `iroh-relay` 1.0.3 is the checksum-verified registry release with one opt-in

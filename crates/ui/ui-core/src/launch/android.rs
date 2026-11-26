@@ -183,15 +183,19 @@ pub fn safe_area_insets() -> [i32; 4] {
         .map(|inset| inset.load(Ordering::Relaxed))
 }
 
-/// `TiloActivity.nativeYieldContext`, called on the UI thread in the activity's `onCreate`, before
-/// the native activity starts: android-activity publishes the activity as the process's context
-/// and refuses to publish over the one a file provider published.
+/// `TiloActivity.nativeProvideContext`, called on the UI thread in the activity's `onCreate`,
+/// before the native activity starts: the application's context is published for the life of the
+/// process, unless the app's file provider published it already, so android-activity publishes
+/// the activity over it and the application's is there again once `android_main` returns.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_so_tilo_android_TiloActivity_nativeYieldContext(
-    _env: *mut c_void,
-    _class: *mut c_void,
+pub extern "system" fn Java_so_tilo_android_TiloActivity_nativeProvideContext(
+    mut env: jni::JNIEnv<'_>,
+    _class: jni::objects::JClass<'_>,
+    activity: jni::objects::JObject<'_>,
 ) {
-    tilo_process::android::yield_to_activity();
+    if let Err(error) = tilo_process::android::provide_application_context(&mut env, &activity) {
+        tilo_ui_base::diag!("tilo: the application's context was not published: {error}");
+    }
 }
 
 /// `TiloActivity.nativeSafeAreaChanged`, called on the UI thread whenever the window's insets change.

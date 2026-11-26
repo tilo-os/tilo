@@ -4,6 +4,7 @@
 exclude = [
     "vendor/leveldb-sys",
     "vendor/hexane",
+    "vendor/ndk-context",
     "vendor/buffa-build",
     "tools/web/wasm-split",
     "fuzz",
@@ -1651,6 +1652,9 @@ leveldb-sys = { path = "vendor/leveldb-sys" }
 # after it loaded holds what it holds, not every buffer its columns were. See
 # vendor/hexane/TILO-PATCH.md.
 hexane = { path = "vendor/hexane" }
+# The application's context stays published under the activity's, so a crate reading it while
+# the activity starts or after it ends finds one. See vendor/ndk-context/TILO-PATCH.md.
+ndk-context = { path = "vendor/ndk-context" }
 # The content store's metadata database keeps the page cache its owner bounds, not redb's
 # Build outputs must not become Cargo inputs; see vendor/buffa-build/PROVENANCE.md.
 buffa-build = { path = "vendor/buffa-build" }

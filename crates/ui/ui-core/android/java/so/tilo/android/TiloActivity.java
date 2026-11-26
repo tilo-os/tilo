@@ -44,9 +44,10 @@ public class TiloActivity extends NativeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         System.loadLibrary(libraryName());
-        // A file provider the system created first published the application's context for Rust;
-        // the native activity publishes its own as it starts, and takes no other's place.
-        nativeYieldContext();
+        // The application's context stays published for Rust for the life of the process, unless
+        // the file provider the system created first published it already; the native activity
+        // publishes its own over it while it runs.
+        nativeProvideContext(this);
         super.onCreate(savedInstanceState);
         getWindow().getDecorView().setOnApplyWindowInsetsListener(this::applyInsets);
         installExtensions();
@@ -182,5 +183,5 @@ public class TiloActivity extends NativeActivity {
 
     private static native void nativeActivated(String uri);
 
-    private static native void nativeYieldContext();
+    private static native void nativeProvideContext(Context context);
 }
