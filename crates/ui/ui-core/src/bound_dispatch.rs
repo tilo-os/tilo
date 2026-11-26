@@ -31,10 +31,10 @@ use tilo_actions::ResourceSpec;
 mod node_map;
 mod resource_walk;
 #[cfg(feature = "model")]
-pub(crate) use node_map::callback_binding_of;
-#[cfg(feature = "model")]
 pub use node_map::document_edit_stamp;
 pub use node_map::invoke_bound_node;
+#[cfg(feature = "model")]
+pub(crate) use node_map::{bound_target, callback_binding_of, component_control};
 #[cfg(feature = "model")]
 pub(crate) use resource_walk::action_directory_page_at;
 pub(crate) use resource_walk::collect_widget_resources;

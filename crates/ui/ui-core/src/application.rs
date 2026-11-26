@@ -760,7 +760,7 @@ impl ProcessContext {
     pub fn control_domain(&self) -> crate::ControlDomain {
         self.control_domain
             .set_owner(crate::control_domain::ControlOwner::Component(
-                self.callback_binding(),
+                std::rc::Rc::new(self.callback_binding()),
             ));
         self.control_domain.clone()
     }

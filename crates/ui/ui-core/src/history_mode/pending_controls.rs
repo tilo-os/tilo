@@ -50,21 +50,28 @@ impl PendingControlOrigin {
     fn lifetime_id(&self) -> Uuid {
         match self {
             Self::Outer { root_lifetime } => *root_lifetime,
-            Self::Component(target) => target.binding.lifetime_id,
+            Self::Component(control) => {
+                crate::bound_dispatch::callback_binding_of(&*control.binding).lifetime_id
+            }
         }
     }
 
     pub(crate) fn target(&self) -> LocalResourceTarget {
         match self {
             Self::Outer { .. } => LocalResourceTarget::Outer,
-            Self::Component(target) => LocalResourceTarget::Component(target.clone()),
+            Self::Component(control) => {
+                LocalResourceTarget::Component(crate::bound_dispatch::bound_target(control))
+            }
         }
     }
 
     fn description(&self) -> String {
         match self {
             Self::Outer { root_lifetime } => format!("outer root {root_lifetime}"),
-            Self::Component(target) => format!("component {}", target.binding.lifetime_id),
+            Self::Component(control) => format!(
+                "component {}",
+                crate::bound_dispatch::callback_binding_of(&*control.binding).lifetime_id
+            ),
         }
     }
 }

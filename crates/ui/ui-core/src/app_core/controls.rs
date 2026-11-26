@@ -319,7 +319,14 @@ impl crate::app::App {
             .saturating_add(bound.pending.len());
         for (target, intent, on_behalf_of, origin) in components
             .into_iter()
-            .map(|(target, intent)| (target, intent, None, Origin::Person))
+            .map(|(control, intent)| {
+                (
+                    crate::bound_dispatch::bound_target(&control),
+                    intent,
+                    None,
+                    Origin::Person,
+                )
+            })
             .chain(bound.pending)
         {
             if on_behalf_of.is_none()

@@ -184,3 +184,31 @@ pub unsafe fn invoke_bound_node<R>(
     // SAFETY: as above.
     Ok(callback(unsafe { &mut **pointer }, outer, outer_root))
 }
+
+/// The bound target of `control`, a control one of the window's components registered.
+#[cfg(feature = "model")]
+pub(crate) fn bound_target(
+    control: &crate::control_domain::ComponentControl,
+) -> super::BoundActionTarget {
+    let binding = callback_binding_of(&*control.binding).clone();
+    super::BoundActionTarget {
+        input: control.input,
+        address: super::BoundActionAddress {
+            instance_id: binding.instance_id,
+            address: control.address.clone(),
+        },
+        binding,
+    }
+}
+
+/// The control `target` names, as the window's control domain holds a component's.
+#[cfg(feature = "model")]
+pub(crate) fn component_control(
+    target: super::BoundActionTarget,
+) -> crate::control_domain::ComponentControl {
+    crate::control_domain::ComponentControl {
+        input: target.input,
+        address: target.address.address,
+        binding: std::rc::Rc::new(target.binding),
+    }
+}

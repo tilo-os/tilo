@@ -75,14 +75,24 @@ pub(crate) enum PendingControlOrigin {
         root_lifetime: uuid::Uuid,
     },
     #[cfg(feature = "model")]
-    Component(crate::bound_dispatch::BoundActionTarget),
+    Component(ComponentControl),
+}
+
+/// A control one of the window's components registered: the component, the action it addresses,
+/// and the input that produced it.
+#[cfg(feature = "model")]
+#[derive(Clone)]
+pub(crate) struct ComponentControl {
+    pub(crate) input: crate::widget::input_provenance::Input,
+    pub(crate) binding: crate::widget::component_walk::Binding,
+    pub(crate) address: tilo_actions::ActionAddress,
 }
 
 #[derive(Clone)]
 pub(crate) enum ControlOwner {
     Outer(uuid::Uuid),
     #[cfg(feature = "model")]
-    Component(crate::bound_dispatch::CallbackBinding),
+    Component(crate::widget::component_walk::Binding),
 }
 impl ControlOwner {
     fn origin(&self, invocation: &ControlInvocation) -> PendingControlOrigin {
@@ -91,16 +101,11 @@ impl ControlOwner {
                 root_lifetime: *root_lifetime,
             },
             #[cfg(feature = "model")]
-            Self::Component(binding) => {
-                PendingControlOrigin::Component(crate::bound_dispatch::BoundActionTarget {
-                    input: crate::widget::input_provenance::Input::Discrete,
-                    binding: binding.clone(),
-                    address: crate::bound_dispatch::BoundActionAddress {
-                        instance_id: binding.instance_id,
-                        address: invocation.address.clone(),
-                    },
-                })
-            }
+            Self::Component(binding) => PendingControlOrigin::Component(ComponentControl {
+                input: crate::widget::input_provenance::Input::Discrete,
+                binding: std::rc::Rc::clone(binding),
+                address: invocation.address.clone(),
+            }),
         }
     }
 }
@@ -670,7 +675,7 @@ impl RawControlSlot {
 pub(crate) struct RegisteredControls {
     pub(crate) outer: VecDeque<ControlInvocation>,
     #[cfg(feature = "model")]
-    pub(crate) components: Vec<(crate::bound_dispatch::BoundActionTarget, ControlInvocation)>,
+    pub(crate) components: Vec<(ComponentControl, ControlInvocation)>,
 }
 impl ControlDomain {
     pub(crate) fn drain_partitioned(&self) -> RegisteredControls {

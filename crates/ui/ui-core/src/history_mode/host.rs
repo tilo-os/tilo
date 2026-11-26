@@ -726,7 +726,9 @@ impl HistoryHost {
                     .any(|binding| binding.same_component(&sealed.target.binding))
                 {
                     self.pending_controls.capture(
-                        super::pending_controls::PendingControlOrigin::Component(sealed.target),
+                        super::pending_controls::PendingControlOrigin::Component(
+                            crate::bound_dispatch::component_control(sealed.target),
+                        ),
                         sealed.invocation,
                         sealed.observation,
                     );
@@ -791,7 +793,9 @@ impl HistoryHost {
             })
             .collect();
         for (target, invocation) in bound.controls {
-            let origin = super::pending_controls::PendingControlOrigin::Component(target);
+            let origin = super::pending_controls::PendingControlOrigin::Component(
+                crate::bound_dispatch::component_control(target),
+            );
             let observation = crate::bound_dispatch::control_observation(
                 live,
                 doc,
@@ -817,14 +821,16 @@ impl HistoryHost {
             let (origin, observation) = match enclosing {
                 Some(binding) => {
                     let origin = super::pending_controls::PendingControlOrigin::Component(
-                        crate::bound_dispatch::BoundActionTarget {
-                            input: crate::widget::input_provenance::Input::Discrete,
-                            binding: binding.clone(),
-                            address: crate::bound_dispatch::BoundActionAddress {
-                                instance_id: binding.instance_id,
-                                address: invocation.address.clone(),
+                        crate::bound_dispatch::component_control(
+                            crate::bound_dispatch::BoundActionTarget {
+                                input: crate::widget::input_provenance::Input::Discrete,
+                                binding: binding.clone(),
+                                address: crate::bound_dispatch::BoundActionAddress {
+                                    instance_id: binding.instance_id,
+                                    address: invocation.address.clone(),
+                                },
                             },
-                        },
+                        ),
                     );
                     let observation = crate::bound_dispatch::control_observation(
                         live,
@@ -902,7 +908,9 @@ impl HistoryHost {
         // visible refusal instead of losing it on the next History entry.
         for sealed in self.pending_control_recovery.drain(..) {
             self.pending_controls.capture(
-                super::pending_controls::PendingControlOrigin::Component(sealed.target),
+                super::pending_controls::PendingControlOrigin::Component(
+                    crate::bound_dispatch::component_control(sealed.target),
+                ),
                 sealed.invocation,
                 Err(crate::i18n::I18nManager::lookup_plain(
                     "history-mode-ownership-lost",

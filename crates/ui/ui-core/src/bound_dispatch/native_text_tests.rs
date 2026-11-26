@@ -254,7 +254,7 @@ tilo_test_env::scenario! {
         let (binding, _scope, _owner) =
             super::author_writer_tests::mount(&records, &checkout, "You", 1, true);
         let domain = crate::ControlDomain::new();
-        domain.set_owner(crate::control_domain::ControlOwner::Component(binding));
+        domain.set_owner(crate::control_domain::ControlOwner::Component(std::rc::Rc::new(binding)));
         let mut emitter =
             crate::widget::ActionEmitter::new_in(crate::widget::test_string_action_binding(), &domain);
         with_physical_text(true, || emitter.emit("same".into())).unwrap();
@@ -290,7 +290,7 @@ tilo_test_env::scenario! {
         let (binding, _scope, _owner) =
             super::author_writer_tests::mount(&records, &checkout, "You", 1, true);
         let domain = crate::ControlDomain::new();
-        domain.set_owner(crate::control_domain::ControlOwner::Component(binding));
+        domain.set_owner(crate::control_domain::ControlOwner::Component(std::rc::Rc::new(binding)));
         initial
             .attach(&domain, crate::control_domain::DomainAttachment::Initial)
             .unwrap();
