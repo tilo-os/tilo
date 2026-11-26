@@ -299,3 +299,62 @@ fn workspace_accounts_and_models_reach_the_workspace_host_with_no_device() {
         );
     }
 }
+
+#[test]
+fn a_person_reviews_proposals_on_the_workspace_host() {
+    use tilo_actions::remote::workspace_initiative as initiative;
+
+    let (session, _) = super::serve("workspace", Arc::default());
+    let person = Caller::local_person("ada").in_workspace("workspace");
+    let delegated = person.clone().delegated_to("assistant");
+    let server = Arc::new(Host::default());
+    session.serve_workspace_api(server.clone());
+    for action in [
+        initiative::LIST,
+        initiative::ACCEPT,
+        initiative::DECLINE,
+        initiative::ASK_FIRST,
+        initiative::PROPOSE_AGAIN,
+    ] {
+        let request = InvokeRequest {
+            target: initiative::target(initiative::PROPOSALS, action),
+            ..ask(action)
+        };
+        let invocation = request.invocation;
+        let elsewhere = Caller::local_person("ada").in_workspace("elsewhere");
+        assert_eq!(
+            answer(session.invoke(&elsewhere, request.clone())),
+            Err(ActionCallError::UnknownAction)
+        );
+        let continuation = InvokeRequest {
+            on_behalf_of: Some(InvocationId::new()),
+            ..request.clone()
+        };
+        assert_eq!(
+            answer(session.invoke(&person, continuation)),
+            Err(ActionCallError::UnknownAction)
+        );
+        assert_eq!(
+            answer(session.invoke(&delegated, request.clone())),
+            Err(ActionCallError::UnknownAction)
+        );
+        assert!(!server.admitted(&invocation));
+        assert!(answer(session.invoke(&person, request)).is_ok());
+        assert!(server.admitted(&invocation));
+    }
+    for target in [
+        initiative::target(initiative::LOOK_ROUND, initiative::ACCEPT),
+        initiative::target(initiative::PROPOSALS, initiative::PROPOSE),
+    ] {
+        let request = InvokeRequest {
+            target,
+            ..ask(initiative::ACCEPT)
+        };
+        let invocation = request.invocation;
+        assert_eq!(
+            answer(session.invoke(&person, request)),
+            Err(ActionCallError::UnknownAction)
+        );
+        assert!(!server.admitted(&invocation));
+    }
+}

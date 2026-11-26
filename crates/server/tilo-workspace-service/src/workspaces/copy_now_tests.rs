@@ -23,8 +23,15 @@ async fn a_held_workspace_reads_while_its_lock_and_the_registry_are_held() {
         .expect("the workspace reads while its lock is held");
     assert_eq!(copy.name, "Company");
     assert!(!copy.member, "governed here, not a member copy");
-    assert_eq!(copy.peer.governance().workspace_name().as_deref(), Some("Company"));
-    let all: Vec<_> = workspaces.copies_now().into_iter().map(|(held, _)| held).collect();
+    assert_eq!(
+        copy.peer.governance().workspace_name().as_deref(),
+        Some("Company")
+    );
+    let all: Vec<_> = workspaces
+        .copies_now()
+        .into_iter()
+        .map(|(held, _)| held)
+        .collect();
     assert_eq!(all, vec![id]);
     drop((listed, governed));
 

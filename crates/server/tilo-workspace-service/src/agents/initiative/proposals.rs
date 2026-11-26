@@ -9,10 +9,12 @@
 //! nod. Both are the person's to take back. The rule is kept here, in what
 //! the server answers, and not in what a model was told.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::workspace_events::SetUp;
 use tilo_actions::remote::workspace_initiative::{
-    self, Proposal, Proposals, Propose, ProposedTask, State,
+    self, Kind, Proposal, Proposals, Propose, ProposedTask, State,
 };
 use tilo_agent_session::bot::event::{Definition, told_as_of};
 
@@ -31,11 +33,33 @@ pub(super) enum InTracker {
     Dropped,
 }
 
+/// The person's decisions about a kind of proposal.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+struct Preference {
+    declined: u32,
+    always: bool,
+    /// A withdrawal invalidates acceptances whose tracker action is still in flight.
+    revision: u64,
+}
+
+impl Preference {
+    fn require_approval(&mut self) {
+        self.always = false;
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    fn quiet(self) -> bool {
+        self.declined >= workspace_initiative::QUIET_AFTER
+    }
+}
+
 /// A person's proposals, oldest first.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(super) struct Book {
     proposals: Vec<Proposal>,
+    kinds: BTreeMap<String, Preference>,
 }
 
 /// `text` on one line: its words, a single blank between them.
@@ -123,9 +147,26 @@ impl Book {
         &mut self,
         wanted: Propose,
         id: String,
-        look: Option<String>,
+        queues_tasks: bool,
         now_ms: i64,
     ) -> Result<Proposal, String> {
+        if let Ok(existing) = self.get(&id) {
+            if existing.kind != wanted.kind
+                || existing.title != wanted.title
+                || existing.why != wanted.why
+                || existing.event != wanted.event
+            {
+                return Err("this proposal was already filed with different details".into());
+            }
+            return Ok(existing.clone());
+        }
+        let preference = self.kinds.get(&wanted.kind).copied().unwrap_or_default();
+        if preference.quiet() {
+            return Err(format!(
+                "your person turned down this kind of work: {}",
+                wanted.kind
+            ));
+        }
         if let Some(waits) = self.proposals.iter().find(|proposal| {
             proposal.state.waits() && proposal.kind == wanted.kind && proposal.title == wanted.title
         }) {
@@ -137,6 +178,7 @@ impl Book {
                 workspace_initiative::MAX_WAITING
             ));
         }
+        let started = queues_tasks && preference.always && wanted.event.is_none();
         let proposal = Proposal {
             id,
             kind: wanted.kind,
@@ -144,10 +186,14 @@ impl Book {
             why: wanted.why,
             task: None,
             event: wanted.event,
-            state: State::Proposed,
+            state: if started {
+                State::Started
+            } else {
+                State::Proposed
+            },
             proposed_at_ms: now_ms,
-            decided_at_ms: None,
-            look,
+            decided_at_ms: started.then_some(now_ms),
+            look: None,
             set_up: None,
         };
         self.proposals.push(proposal.clone());
@@ -196,7 +242,12 @@ impl Book {
     ///
     /// # Errors
     /// There is no such proposal, or its work was begun already.
-    pub(super) fn decline(&mut self, id: &str, now_ms: i64) -> Result<Proposal, String> {
+    pub(super) fn decline(
+        &mut self,
+        id: &str,
+        now_ms: i64,
+        by_person: bool,
+    ) -> Result<Proposal, String> {
         let proposal = self.get_mut(id)?;
         match proposal.state {
             State::Declined => return Ok(proposal.clone()),
@@ -207,18 +258,60 @@ impl Book {
         }
         proposal.state = State::Declined;
         proposal.decided_at_ms = Some(now_ms);
-        Ok(proposal.clone())
+        let declined = proposal.clone();
+        if !by_person {
+            // A shared task can be cancelled by another editor. It closes this proposal,
+            // but only an authenticated decision changes its person's private preference.
+            return Ok(declined);
+        }
+        let preference = self.kinds.entry(declined.kind.clone()).or_default();
+        preference.declined = preference.declined.saturating_add(1);
+        if preference.quiet() {
+            preference.require_approval();
+        }
+        Ok(declined)
     }
 
     /// Have `id` wait again: its person's nod could not be carried out.
-    /// What was turned down is left as it is.
+    /// A failed assignment leaves the proposal available for its person's decision.
     pub(super) fn waits_again(&mut self, id: &str) {
         if let Ok(proposal) = self.get_mut(id)
-            && proposal.state == State::Accepted
+            && matches!(proposal.state, State::Accepted | State::Started)
         {
             proposal.state = State::Proposed;
             proposal.decided_at_ms = None;
             proposal.set_up = None;
+        }
+    }
+
+    /// Whether future tasks of this kind have the person's standing approval.
+    pub(super) fn may_start(&self, kind: &str) -> bool {
+        self.kinds.get(kind).is_some_and(|p| p.always)
+    }
+
+    /// Capture the current permission before an acceptance begins its tracker action.
+    pub(super) fn approval_revision(&mut self, kind: &str) -> u64 {
+        self.kinds.entry(kind.to_owned()).or_default().revision
+    }
+
+    /// Apply the standing instruction if it was not withdrawn while the task was being given.
+    pub(super) fn allow_tasks(&mut self, kind: &str, revision: u64) {
+        if let Some(preference) = self.kinds.get_mut(kind)
+            && preference.revision == revision
+        {
+            preference.always = true;
+            preference.declined = 0;
+        }
+    }
+
+    /// Withdraw an explicit preference, preserving the person's other choice for this kind.
+    pub(super) fn reset(&mut self, kind: &str, action: &str) {
+        if let Some(preference) = self.kinds.get_mut(kind) {
+            if action == workspace_initiative::ASK_FIRST {
+                preference.require_approval();
+            } else {
+                preference.declined = 0;
+            }
         }
     }
 
@@ -239,7 +332,8 @@ impl Book {
     /// Take `id` back as if it was never proposed: what it should have
     /// stood as could not be written.
     pub(super) fn withdraw(&mut self, id: &str) {
-        self.proposals.retain(|proposal| proposal.id != id);
+        self.proposals
+            .retain(|proposal| proposal.id != id || proposal.task.is_some());
     }
 
     /// Whether anything that waits stands as a task in the tracker.
@@ -273,7 +367,7 @@ impl Book {
             // Each was waiting a moment ago, so neither is refused.
             let _ = match stands {
                 InTracker::Given => self.accept(id, now_ms),
-                InTracker::Dropped => self.decline(id, now_ms),
+                InTracker::Dropped => self.decline(id, now_ms, false),
                 InTracker::Waits => continue,
             };
         }
@@ -284,6 +378,17 @@ impl Book {
     pub(super) fn listed(&self) -> Proposals {
         Proposals {
             proposals: self.proposals.iter().rev().cloned().collect(),
+            kinds: self
+                .kinds
+                .iter()
+                .filter(|(_, preference)| preference.always || preference.declined != 0)
+                .map(|(kind, preference)| Kind {
+                    kind: kind.clone(),
+                    declined: preference.declined,
+                    quiet: preference.quiet(),
+                    always: preference.always,
+                })
+                .collect(),
         }
     }
 
@@ -317,15 +422,25 @@ mod tests {
     }
 
     fn proposed(book: &mut Book, kind: &str, title: &str, id: &str) -> Result<Proposal, String> {
-        book.propose(wanted(kind, title), id.to_owned(), None, 1)
+        book.propose(wanted(kind, title), id.to_owned(), true, 1)
+    }
+
+    #[test]
+    fn withdrawing_permission_during_a_tracker_write_keeps_it_withdrawn() {
+        let mut book = Book::default();
+        let revision = book.approval_revision("reports");
+        book.reset("reports", workspace_initiative::ASK_FIRST);
+        book.allow_tasks("reports", revision);
+        assert!(!book.may_start("reports"));
+        assert!(book.listed().kinds.is_empty());
     }
 
     #[test]
     fn turning_one_down_stays_declined_and_begun_work_is_not_turned_down() {
         let mut book = Book::default();
         proposed(&mut book, "tidy", "Tidy the notes", "a").unwrap();
-        book.decline("a", 2).unwrap();
-        book.decline("a", 3).unwrap();
+        book.decline("a", 2, true).unwrap();
+        book.decline("a", 3, true).unwrap();
         assert!(book.accept("a", 4).is_err(), "turned down stays so");
         proposed(&mut book, "tidy", "Tidy the files", "b").unwrap();
         assert_eq!(
@@ -337,8 +452,8 @@ mod tests {
             Ok(Some(5)),
             "a nod given again changes nothing"
         );
-        assert!(book.decline("b", 7).is_err());
-        assert!(book.decline("nobody", 8).is_err());
+        assert!(book.decline("b", 7, true).is_err());
+        assert!(book.decline("nobody", 8, true).is_err());
     }
 
     #[test]
@@ -385,6 +500,10 @@ mod tests {
         let state = |id: &str| book.get(id).map(|proposal| proposal.state);
         assert_eq!(state("a"), Ok(State::Accepted));
         assert_eq!(state("b"), Ok(State::Declined));
+        assert!(
+            book.listed().kinds.is_empty(),
+            "the shared tracker cannot set private preferences"
+        );
         assert_eq!(state("c"), Ok(State::Proposed));
         assert_eq!(state("e"), Ok(State::Proposed), "no task says nothing");
         // Read again, nothing is counted twice.
@@ -464,7 +583,7 @@ mod tests {
             (State::Proposed, None, None)
         );
         // What was turned down is not made to wait again.
-        book.decline("a", 3).unwrap();
+        book.decline("a", 3, true).unwrap();
         book.waits_again("a");
         assert_eq!(book.get("a").map(|kept| kept.state), Ok(State::Declined));
     }

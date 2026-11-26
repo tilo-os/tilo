@@ -76,7 +76,7 @@ podman. That rehearses what ships, and the images' own checks hold them to
 booting, answering their health route and answering one request per route.
 
 Each service gets the environment its manifest sets in tilo/infra
-(`apps/tilo-sh-server`, `apps/tilo-api` and `apps/tilo-web`); only the public
+(`apps/tilo-sh-relay`, `apps/tilo-api` and `apps/tilo-web`); only the public
 names change to loopback ports and the secrets become throwaway local ones.
 `stack.sh` lists the variables per service in `server_env`, `api_env` and
 `web_env`, and both modes use them, so a change to a production manifest
@@ -318,9 +318,43 @@ candidate=$(git rev-parse HEAD)
 t test --rev "$candidate" image-lounge image-web-entry image-api test-image-api e2e onboarding tilo-sh-admits-a-page
 ```
 
-The release gate checks each published image receipt against the source commit and Git
-reference of the run. To rehearse an existing trusted release run on the build server, use
-a disposable checkout of the infrastructure repository at its current main revision.
+To exercise the three unpublished images, set `candidate_run` to that run's ID. On x86-64
+Linux with rootless Podman and kubectl, download its OCI archives into a scratch directory.
+These commands use Bash.
+
+```bash
+scratch=$(mktemp -d)
+archives=()
+for name in lounge web-entry api; do
+  t outputs --run "$candidate_run" --to "$scratch/$name" "image-$name" || exit 1
+  output="$scratch/$name/target/publish/$name"
+  pin="registry.tilo.so/tilo/$name@$(cat "$output/digest")"
+  printf '%s\n' "$pin"
+  archives+=(--archive "$pin" "$output/image.oci.tar")
+done
+```
+
+In a disposable `tilo/infra` checkout at the deployed revision, set every working-tree
+reference to the Lounge, web-entry and API images to the corresponding printed pin.
+Include any manifest settings the candidate requires. Leave these edits uncommitted so
+`HEAD` still names the baseline. Run the existing pod preflight from this repository.
+
+```bash
+uv run --no-project --with pyyaml python3 tools/release/tilo_sh_preflight.py \
+  --infra "$infra_checkout" --base HEAD --work "$scratch/state" "${archives[@]}"
+```
+
+The preflight checks each archive's manifest digest against its pin and verifies the imported
+image ID. It starts the committed pods on a scratch volume, then runs the candidate pods
+from those local images on the same volume. It checks readiness and compares the Lounge's
+device key and workspace across the upgrade. The baseline images may be pulled from the
+registry. Candidate pods run with `--pull=never`.
+
+Publishing and promotion still require a trusted `release-tilo-sh` run. The release gate
+checks each published image receipt against that run's source commit and Git reference.
+The published web-entry image can have a different digest after carrying the previous
+web version for browsers that still use it. To rehearse the *published* digests on the
+build server, use a fresh disposable infrastructure checkout at its current main revision.
 
 ```sh
 tools/release/tilo-sh.sh --infra "$infra_checkout" --run "$release_run" --expect-commit "$candidate" --no-push

@@ -272,11 +272,32 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     ) -> Result<serde_json::Value, ActionCallError> {
         Err(ActionCallError::UnknownAction)
     }
+
+    /// Run a built-in form's typed action as the person whose device opened it.
+    /// The host checks the app, action, device and its current workspace grants.
+    fn page_form_action(
+        &self,
+        _workspace: WorkspaceId,
+        _caller: &Caller,
+        _certificate: &tilo_user_identity::DeviceCert,
+        _app: &str,
+        _request: tilo_actions::remote::InvokeRequest,
+    ) -> Pending<Result<serde_json::Value, ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownAction))
+    }
     /// A short invite link to `workspace`, made now and kept for the page's
     /// next press of the row that hands one over: a clipboard write happens
     /// inside a press, and the host's answer comes after it. The action makes
     /// the next one. `None` where the host makes none ahead.
     fn ready_invite_link(&self, _workspace: WorkspaceId, _caller: &Caller) -> Option<String> {
+        None
+    }
+    /// The entry where an admitted device can create another personal workspace,
+    /// when the host offers workspaces of people's own.
+    fn personal_workspace_host(
+        &self,
+        _workspace: WorkspaceId,
+    ) -> Option<tilo_actions::remote::ResourceViewLocator> {
         None
     }
     /// The listener-owned public locator; absence cannot mint a browser link.

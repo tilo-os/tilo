@@ -230,6 +230,13 @@ struct Worker {
     mode: Mode,
     catalogue: AppCatalogue,
     replica: Option<Replica>,
+    /// Held until after the built-in form's view is dropped. Parts created while it
+    /// opens or later ask on the same client on this slot's thread.
+    form_remote: Option<(
+        super::proto::PageForm,
+        ui::RemoteActions,
+        ui::remote_actions::CarriedGuard,
+    )>,
     views: Option<(String, automerge::AutoCommit)>,
     /// Loaded before the confinement, for the one component a reader mounts.
     text: Option<ui::TextRenderer>,
@@ -237,6 +244,8 @@ struct Worker {
     /// The page the held document's view is shown as ([`Mode::Page`]): the
     /// numbers its elements carry and what it last answered.
     page: Option<ui::composition::page::Page>,
+    /// The item the page was opened on, until its record or view arrives.
+    reveal: Option<PageReveal>,
     /// What the held record's view is lent as its content store.
     content: WorkerContent,
 }
@@ -304,10 +313,12 @@ impl Worker {
             mode,
             catalogue,
             replica: None,
+            form_remote: None,
             views: None,
             text,
             read: None,
             page: None,
+            reveal: None,
             content: WorkerContent::new(),
         }
     }
@@ -377,6 +388,7 @@ impl Worker {
                 self.page_act(id, target.as_deref(), &action)
             }
             Request::PagePatch => self.page_patch(),
+            Request::PageFormCalls { receipts } => self.page_form_calls(&receipts),
             request => self.replica_request(request),
         }
     }
@@ -386,20 +398,13 @@ impl Worker {
         let Some(replica) = self.replica.as_mut().filter(|_| self.mode == Mode::Page) else {
             return Reply::Failed("this worker shows no page here".into());
         };
-        // The address names what to show by the semantic target its element
-        // carries (a note's row): activated as a click on that row is.
         if let Some(show) = show {
-            let (composition, _) = replica.page();
-            let shown = widget_of_target(&composition, show)
-                .ok_or_else(|| "no element carries it".to_owned())
-                .and_then(|widget| {
-                    replica.act_on_page(&widget, Some(show), &ui::a11y::Action::Activate)
-                });
-            if let Err(reason) = shown {
-                tracing::debug!(%reason, show, "app worker: the page's address names nothing it shows");
-            }
+            self.reveal = Some(PageReveal {
+                item: show.to_owned(),
+                tried_control: false,
+            });
         }
-        let (composition, theme) = replica.page();
+        let (composition, theme) = revealed_page(replica, &mut self.reveal);
         let title = self
             .catalogue
             .get(replica.app_id())
@@ -423,6 +428,7 @@ impl Worker {
         // An element a page numbers for a part of a widget (a document's block,
         // a control) is acted on through the widget it is a part of.
         if let Some(path) = self.page.as_ref().and_then(|page| page.path(id)) {
+            self.reveal = None;
             let widget = path
                 .split_once('#')
                 .map_or(path, |(widget, _)| widget)
@@ -430,7 +436,13 @@ impl Worker {
             if let Err(reason) =
                 replica.act_on_page(&widget, target, &super::proto::semantic(action))
             {
-                tracing::debug!(%reason, widget, "app worker: the page's action was refused");
+                // A semantic refusal can include the supplied value, including
+                // a password entered into a field that has since disappeared.
+                if matches!(action, PageAction::Value(_)) {
+                    tracing::debug!(widget, "app worker: the page refused a field edit");
+                } else {
+                    tracing::debug!(%reason, widget, "app worker: the page's action was refused");
+                }
             }
         }
         self.page_patch()
@@ -438,10 +450,10 @@ impl Worker {
 
     /// What changed on the page since it last answered.
     fn page_patch(&mut self) -> Reply {
-        let Some(replica) = self.replica.as_ref().filter(|_| self.mode == Mode::Page) else {
+        let Some(replica) = self.replica.as_mut().filter(|_| self.mode == Mode::Page) else {
             return Reply::Failed("this worker shows no page here".into());
         };
-        let (composition, _) = replica.page();
+        let (composition, _) = revealed_page(replica, &mut self.reveal);
         let patches = self
             .page
             .get_or_insert_with(ui::composition::page::Page::new)
@@ -452,6 +464,58 @@ impl Worker {
                 .map(|patch| (patch.id, patch.html))
                 .collect(),
         )
+    }
+
+    fn page_form_calls(&mut self, receipts: &str) -> Reply {
+        use tilo_actions::remote::{ActionCallError, RemoteActionMessage, refuse};
+        use ui::collaboration::{CollabEvent, CollabRequest};
+        use ui::widget::Collaborative as _;
+
+        let Some((form, remote, _)) = &mut self.form_remote else {
+            return Reply::Failed("this slot holds no host-backed form".into());
+        };
+        let Ok(receipts) =
+            serde_json::from_str::<Vec<tilo_actions::remote::InvocationReceipt>>(receipts)
+        else {
+            return Reply::Failed("invalid form receipts".into());
+        };
+        for receipt in receipts {
+            remote.handle_collab_event(&CollabEvent::RemoteAction {
+                message: RemoteActionMessage::Receipt(receipt),
+            });
+        }
+        let mut calls = Vec::new();
+        for request in remote.take_collab_requests() {
+            let CollabRequest::RemoteAction { message } = request else {
+                continue;
+            };
+            match message {
+                RemoteActionMessage::Invoke(call)
+                    if form.target(&call.target.address.action).as_ref() == Some(&call.target)
+                        && call.on_behalf_of.is_none()
+                        && call.signed.is_none()
+                        && call.context.is_none()
+                        && call.appearance.is_none()
+                        && call.confirmation.is_none()
+                        && call.revision.is_none() =>
+                {
+                    let Ok(argument) = serde_json::to_string(&call.argument) else {
+                        return Reply::Failed("invalid form argument".into());
+                    };
+                    calls.push(super::proto::PageFormCall {
+                        invocation: call.invocation,
+                        action: call.target.address.action,
+                        argument,
+                    });
+                }
+                other => {
+                    if let Some(message) = refuse(&other, ActionCallError::NotPermitted) {
+                        remote.handle_collab_event(&CollabEvent::RemoteAction { message });
+                    }
+                }
+            }
+        }
+        Reply::PageFormCalls(calls)
     }
 
     fn replica_request(&mut self, request: Request) -> Reply {
@@ -568,6 +632,13 @@ impl Worker {
                 None => return Reply::Failed("invalid record id".into()),
             },
         };
+        let form_remote = super::proto::PageForm::for_app(app_id)
+            .filter(|_| self.mode == Mode::Page)
+            .map(|form| {
+                let remote = ui::RemoteActions::session();
+                let carried = ui::RemoteActions::carrying(remote.clone());
+                (form, remote, carried)
+            });
         match Replica::open_lending(
             &self.catalogue,
             app_id,
@@ -581,6 +652,7 @@ impl Worker {
             Ok(replica) => {
                 let record = replica.document_id().as_str().to_owned();
                 self.replica = Some(replica);
+                self.form_remote = form_remote;
                 Reply::Opened { record }
             }
             Err(error) => Reply::Failed(error.to_string()),
@@ -1005,6 +1077,37 @@ fn taken_document_mutations(replica: &mut crate::Replica) -> Reply {
         ),
         Err(error) => Reply::Failed(error.to_string()),
     }
+}
+
+struct PageReveal {
+    item: String,
+    tried_control: bool,
+}
+
+/// Follow the opening address as the view takes in what the workspace holds.
+/// A visible control is pressed once. Otherwise the app's native item opener
+/// decides when it can show the item, as it does for a window's launch reveal.
+fn revealed_page(
+    replica: &mut Replica,
+    reveal: &mut Option<PageReveal>,
+) -> (ui::composition::Composition, ui::Theme) {
+    let page = replica.page();
+    let Some(pending) = reveal.as_mut() else {
+        return page;
+    };
+    let item = &pending.item;
+    let activated = !pending.tried_control
+        && widget_of_target(&page.0, item).is_some_and(|widget| {
+            pending.tried_control = true;
+            replica
+                .act_on_page(&widget, Some(item), &ui::a11y::Action::Activate)
+                .is_ok()
+        });
+    if !activated && replica.show_page_item(item).is_err() {
+        return page;
+    }
+    *reveal = None;
+    replica.page()
 }
 
 /// The path of the widget whose element carries the semantic target `target`.

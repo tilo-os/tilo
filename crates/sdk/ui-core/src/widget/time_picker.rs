@@ -438,6 +438,7 @@ impl Widget for TimePicker {
             ),
         };
         cx.control(Control::Entry {
+            target: None,
             input: InputKind::Time,
             text,
             placeholder: String::new(),

@@ -1350,15 +1350,14 @@ impl Workspaces {
         workspace_id: WorkspaceId,
         caller: &Caller,
         needle: &str,
-    ) -> CataloguePage {
-        let query = CatalogueQuery {
-            needle: needle.to_owned(),
-            provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.to_owned()),
-            max_results: 40,
-            ..CatalogueQuery::default()
-        };
-        self.catalogue(Some(workspace_id), caller, None, &query)
+    ) -> Vec<CatalogueRow> {
+        self.workspace_offer(workspace_id, caller, None, None)
             .await
+            .rows
+            .into_iter()
+            .filter(|row| row.action.is_some() && row.matches(needle))
+            .take(40)
+            .collect()
     }
 
     /// Run `request`, one of the actions [`Self::page_actions`] offered, for
@@ -1389,20 +1388,16 @@ impl Workspaces {
         };
         let wanted = workspace_governance_address(&workspace, governance::INVITE);
         let query = CatalogueQuery {
-            needle: "invite".to_owned(),
+            target: Some(wanted),
             provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.to_owned()),
-            max_results: 200,
+            max_results: 1,
             ..CatalogueQuery::default()
         };
-        self.catalogue(Some(workspace_id), caller, None, &query)
+        !self
+            .catalogue(Some(workspace_id), caller, None, &query)
             .await
             .rows
-            .iter()
-            .any(|row| {
-                row.action
-                    .as_ref()
-                    .is_some_and(|action| action.address == wanted)
-            })
+            .is_empty()
     }
 
     /// The addresses waiting at the entry of the workspace `workspace_id`, and
@@ -1525,6 +1520,64 @@ impl Workspaces {
         }
     }
 
+    /// Governance rows authorized for this caller. A catalogue query browses one
+    /// parent; a page search (no query) includes the actions on individual people.
+    async fn workspace_offer(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+        query: Option<&CatalogueQuery>,
+    ) -> Offer {
+        let mut offer = Offer::default();
+        let operating = self
+            .server_operator(workspace_id, caller, certificate)
+            .await;
+        if let Some((governed, device)) = self.governed_by(workspace_id, caller).await {
+            // What an agent's grants here refuse it is not offered to it.
+            let person = agents::is_the_person(caller, &device, Some(workspace_id));
+            let grants = if person {
+                None
+            } else {
+                Some(self.agent_grants(Some(workspace_id), caller).await)
+            };
+            let workspace = governed.lock().await;
+            offer.generation = workspace.record.generation;
+            let now = tilo_clock::unix_now_ns();
+            let offered = |verb: &Verb| {
+                self.offers(verb, (caller, &device), &workspace, grants.as_ref(), now)
+            };
+            // Removing is published on each person, under the workspace's people.
+            let mut rows: Vec<CatalogueRow> = VERBS
+                .iter()
+                .filter(|verb| verb.id != governance::REMOVE_MEMBER && offered(verb))
+                .map(|verb| verb.governance_row(workspace.workspace(), &workspace.name()))
+                .collect();
+            let own = device.user_public_key;
+            rows.extend(self.member_rows(&workspace, (query, own), offered));
+            if operating.is_some() {
+                rows.extend(server::rows(&workspace));
+            }
+            let id = workspace.workspace().to_owned();
+            let name = workspace.name();
+            drop(workspace);
+            // The workspace's mail accounts, as its policy on its mail
+            // lets the caller ask them.
+            #[cfg(not(target_arch = "wasm32"))]
+            rows.extend(
+                self.mail_account_rows((Some(workspace_id), caller, certificate), &id)
+                    .await,
+            );
+            offer.add(GOVERNANCE, &id, governance_tree(rows, &name));
+        } else if let Some((governed, _device)) = operating {
+            // An agent of the person's asks what they ask of their
+            // servers: the workspace's governance is not theirs.
+            let workspace = governed.lock().await;
+            offer.add(GOVERNANCE, workspace.workspace(), server::rows(&workspace));
+        }
+        offer
+    }
+
     /// What `caller`, on the device `certificate` when the transport named
     /// it, may do here about workspace `workspace_id` (`None` when asked of
     /// the serving device itself): the governance of the workspace it carries, their own
@@ -1543,56 +1596,13 @@ impl Workspaces {
                 .as_deref()
                 .is_none_or(|wanted| wanted == provider)
         };
-        let mut offer = Offer::default();
-        if wants(WORKSPACE_GOVERNANCE_PROVIDER)
-            && let Some(workspace_id) = workspace_id
-        {
-            let operating = self
-                .server_operator(workspace_id, caller, certificate)
-                .await;
-            if let Some((governed, device)) = self.governed_by(workspace_id, caller).await {
-                // What an agent's grants here refuse it is not offered to it.
-                let person = agents::is_the_person(caller, &device, Some(workspace_id));
-                let grants = if person {
-                    None
-                } else {
-                    Some(self.agent_grants(Some(workspace_id), caller).await)
-                };
-                let workspace = governed.lock().await;
-                offer.generation = workspace.record.generation;
-                let now = tilo_clock::unix_now_ns();
-                let offered = |verb: &Verb| {
-                    self.offers(verb, (caller, &device), &workspace, grants.as_ref(), now)
-                };
-                // Removing is published on each person, under the workspace's people.
-                let mut rows: Vec<CatalogueRow> = VERBS
-                    .iter()
-                    .filter(|verb| verb.id != governance::REMOVE_MEMBER && offered(verb))
-                    .map(|verb| verb.governance_row(workspace.workspace(), &workspace.name()))
-                    .collect();
-                let own = device.user_public_key;
-                rows.extend(self.member_rows(&workspace, (query, own), offered));
-                if operating.is_some() {
-                    rows.extend(server::rows(&workspace));
-                }
-                let id = workspace.workspace().to_owned();
-                let name = workspace.name();
-                drop(workspace);
-                // The workspace's mail accounts, as its policy on its mail
-                // lets the caller ask them.
-                #[cfg(not(target_arch = "wasm32"))]
-                rows.extend(
-                    self.mail_account_rows((Some(workspace_id), caller, certificate), &id)
-                        .await,
-                );
-                offer.add(GOVERNANCE, &id, governance_tree(rows, &name));
-            } else if let Some((governed, _device)) = operating {
-                // An agent of the person's asks what they ask of their
-                // servers: the workspace's governance is not theirs.
-                let workspace = governed.lock().await;
-                offer.add(GOVERNANCE, workspace.workspace(), server::rows(&workspace));
+        let mut offer = match workspace_id.filter(|_| wants(WORKSPACE_GOVERNANCE_PROVIDER)) {
+            Some(id) => {
+                self.workspace_offer(id, caller, certificate, Some(query))
+                    .await
             }
-        }
+            None => Offer::default(),
+        };
         if wants(HOST_ACTIONS_PROVIDER)
             && let Some(certificate) = certificate
             && agents::acts_for_its_person(caller)
@@ -2277,11 +2287,11 @@ impl Workspaces {
     fn member_rows(
         &self,
         workspace: &super::GovernedWorkspace,
-        (query, own): (&CatalogueQuery, [u8; 32]),
+        (query, own): (Option<&CatalogueQuery>, [u8; 32]),
         offered: impl Fn(&Verb) -> bool,
     ) -> Vec<CatalogueRow> {
         let members = workspace_governance_child(workspace.workspace(), Some(WORKSPACE_MEMBERS));
-        if query.parent_resource.as_deref() != Some(members.as_str()) {
+        if query.is_some_and(|query| query.parent_resource.as_deref() != Some(members.as_str())) {
             return Vec::new();
         }
         let verbs: Vec<(&Verb, bool)> = VERBS

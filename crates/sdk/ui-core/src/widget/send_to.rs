@@ -1881,7 +1881,7 @@ fn paint_recipient_mark(ctx: &mut PaintCtx<'_>, recipient: &Recipient, rect: Rec
                 crate::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
         }
-        RecipientKind::Agent => face.agent().paint(ctx, rect),
+        RecipientKind::Assistant | RecipientKind::Agent => face.agent().paint(ctx, rect),
         RecipientKind::Person => face.paint(ctx, rect),
         RecipientKind::Conversation => face
             .glyph(crate::icons::Icon::MessageCircle)

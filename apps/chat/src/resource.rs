@@ -202,9 +202,13 @@ impl ResourceApp for ChatShell {
                 .search_entries(move || unrecorded.borrow().unrecorded_conversation_entries()),
             Box::new(window),
         );
+        let window = conversation_setup(cx, &chat, window);
         Box::new(
             shell
-                .sidebar(crate::sidebar::sidebar(&places))
+                .sidebar(crate::sidebar::sidebar(
+                    &places,
+                    cx.actions().effect(&ChatEffect::SetUpPersonalAssistant),
+                ))
                 .content(window),
         )
     }
@@ -297,6 +301,107 @@ impl ResourceApp for ChatShell {
         }
         vec![Chat::BEGIN_CHAT.with(chat::BeginChat {})]
     }
+}
+
+/// Navigation from a conversation to the workspace apps that own the person's settings and
+/// proposals. Assistant can also set up the person's agent when Chat cannot read the roster.
+fn conversation_setup(cx: &ViewCx<Chat>, chat: &SharedChat, window: Element) -> Element {
+    use ui::tilo_reference::ResourceRef;
+    use ui::widget::arrange::{Fit, Stack};
+    use ui::widget::{Button, When};
+
+    if !cx.mode().is_live()
+        || cx
+            .me()
+            .and_then(|me| me.person_id())
+            .is_none_or(str::is_empty)
+    {
+        return window;
+    }
+    let open_assistant = cx.dispatcher();
+    let assistant = Button::new(
+        "chat-open-assistant",
+        &crate::i18n::t("chat-open-assistant"),
+    )
+    .opening_workspace_app(ui::apps::ASSISTANT)
+    .on_view(move || open_assistant.open_workspace_app(ui::apps::ASSISTANT));
+    let at_home = Rc::clone(chat);
+    let assistant = When::new(assistant.into_widget(), move || {
+        let chat = at_home.borrow();
+        chat.alone.is_none()
+            && chat.conversation_agent().is_none()
+            && chat.agents_record().is_none_or(|agents| !agents.may_read())
+    });
+
+    let open_item = |id: &str, app: &'static str, item: ResourceRef| {
+        let dispatch = cx.dispatcher();
+        Button::new(id, &item.label)
+            .opening_workspace_item(app, &item)
+            .on_view(move || dispatch.open_reference(app, None, &item))
+            .into_widget()
+    };
+    let settings = open_item(
+        "chat-connect-model-provider",
+        ui::apps::SETTINGS,
+        crate::model_choice::settings_reference(),
+    );
+    let in_chat = Rc::clone(chat);
+    let settings = When::new(settings, move || {
+        let chat = in_chat.borrow();
+        if chat.alone.is_some() || chat.conversation_agent().is_none() {
+            return false;
+        }
+        chat.models.poll();
+        !chat.models.has_choices()
+    });
+    let proposals = open_item(
+        "chat-review-proposals",
+        ui::apps::ASSISTANT,
+        ResourceRef::whole(
+            "assistant.section",
+            "assistant.section:proposals",
+            crate::i18n::t("chat-review-proposals"),
+        ),
+    );
+    let in_direct = Rc::clone(chat);
+    let proposals = When::new(proposals, move || {
+        let chat = in_direct.borrow();
+        let Some(keeper) = chat.me.id.person_id() else {
+            return false;
+        };
+        let Some(agent) = chat.conversation_agent() else {
+            return false;
+        };
+        let peer = ui::tilo_resource::MemberId::agent(agent.clone());
+        if chat.alone.is_some()
+            || Chat::direct_id([chat.me.id.clone(), peer]).as_str() != chat.active_channel
+        {
+            return false;
+        }
+        // A confined host can show this link without disclosing the roster: Assistant
+        // opens the signed-in person's proposals, with its own authorization.
+        chat.agents_record()
+            .filter(|record| record.may_read())
+            .is_none_or(|record| {
+                record
+                    .get()
+                    .personal_assistant(keeper)
+                    .is_some_and(|assistant| assistant.id.0 == agent)
+            })
+    });
+    let controls = Stack::row()
+        .wrap()
+        .push(Box::new(assistant))
+        .push(Box::new(settings))
+        .push(Box::new(proposals));
+    Box::new(
+        Stack::stack()
+            .gap(ui::tokens::Rhythm::None)
+            .fill_width()
+            .fill_height()
+            .push(Box::new(controls))
+            .push_fit(window, Fit::fill(1.0)),
+    )
 }
 
 /// The messages a capture of `scenario` shows, staged in the chat's parts
@@ -700,6 +805,7 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
             chat.open_agent(agent, &state);
             return Ok(ui::framework::Effected::done());
         }
+        ChatEffect::SetUpPersonalAssistant => return chat.borrow().set_up_personal_assistant(cx),
         ChatEffect::SendDirectMessage { public_key, text } => {
             let (peer, id) = chat.borrow().direct_conversation(public_key)?;
             if text.trim().is_empty() {

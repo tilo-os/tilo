@@ -6,7 +6,11 @@ format = 2
 kind = "assistant.window"
 label = "Assistant window"
 version = 1
-shows = ["view-main-chat", "view-sub-agent", "view-supervision"]
+shows = ["view-sub-agent", "view-supervision"]
+
+[[resources.verbs]]
+id = "view-main-chat"
+kind = "read"
 
 [[resources]]
 kind = "tilo.workspace.agent"
@@ -53,6 +57,10 @@ params = [
   { name = "model", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "mcp_client", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
+
+[[resources.verbs]]
+id = "ensure-personal-assistant"
+kind = "undoable"
 
 [[resources.verbs]]
 id = "set-agent-spend-limit"

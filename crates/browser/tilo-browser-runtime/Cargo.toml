@@ -98,7 +98,7 @@ serde_json.workspace = true
 # What the page says of itself, as its live layer hands it back (src/presence_value.rs).
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 # Another device's window pictures, as its track brings them (src/window_pictures.rs).
-tilo-live = { version = "0.1.0", path = "../../collab/tilo-live" }
+tilo-live = { version = "0.1.0", path = "../../collab/tilo-live", features = ["live_session"] }
 postcard = { workspace = true, features = ["use-std"] }
 # The device list's keys as text, as the page's own module writes them.
 hex.workspace = true

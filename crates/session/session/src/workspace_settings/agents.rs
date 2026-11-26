@@ -690,6 +690,32 @@ impl Agents {
         })
     }
 
+    /// Resolve the signed-in person's assistant, creating it through its native action on first use.
+    #[cfg(target_os = "linux")]
+    pub(super) fn ensure_personal(
+        &self,
+        workspace: &Workspace,
+        person: &UserId,
+    ) -> Result<(String, String), String> {
+        let unavailable = || t("workspace-settings-agents-unavailable");
+        let record = self
+            .record(Some(workspace), person)
+            .ok_or_else(unavailable)?;
+        let find = || -> Result<_, String> {
+            let state = record.try_get().ok_or_else(unavailable)?;
+            Ok(state
+                .personal_assistant(person)
+                .map(|agent| (agent.id.0.clone(), agent.name.clone())))
+        };
+        if let Some(agent) = find()? {
+            return Ok(agent);
+        }
+        record
+            .invoke(&Record::ENSURE_PERSONAL_ASSISTANT.with(()))
+            .map_err(|error| error.to_string())?;
+        find()?.ok_or_else(unavailable)
+    }
+
     /// Make an agent called `name` as the workspace lets the person, and answer its id and the
     /// name the record keeps for it, so the caller can list it and admit it.
     ///

@@ -178,6 +178,18 @@ pub trait AppPages: Send + Sync {
         address: PageAddress,
     ) -> Pending<Result<OpenedPage, PageRefusal>>;
 
+    /// Open over the connection that proved `certificate`. A built-in Settings
+    /// page can ask the host for this person's model settings on that connection.
+    fn open_certified(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        _certificate: &tilo_user_identity::DeviceCert,
+        address: PageAddress,
+    ) -> Pending<Result<OpenedPage, PageRefusal>> {
+        self.open(workspace_id, caller, address)
+    }
+
     /// Act on `page` as its person did (the element's number, its semantic
     /// target and the action), or with no act, answer what changed on it
     /// since others wrote: the elements that changed, outermost first.

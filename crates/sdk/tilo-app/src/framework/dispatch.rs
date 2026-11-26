@@ -1436,6 +1436,17 @@ impl<R: Resource> Dispatcher<R> {
         super::reference::open_link(&self.core.opener, href)
     }
 
+    /// Open the app in this window's workspace, under the person's grants.
+    pub fn open_workspace_app(&self, app: &str) {
+        match super::reference::workspace() {
+            Ok(workspace) => self.core.opener.invoke(
+                tilo_actions::remote::application_open_target(&workspace, app),
+                tilo_actions::remote::InvokeArgument::None,
+            ),
+            Err(reason) => self.core.refuse(super::reference::OPEN, reason),
+        }
+    }
+
     /// Open `reference`, which `app` keeps in its `record` (`None`: the
     /// app's own record of the workspace), where it lives: its app opens at
     /// it, launched first when no window shows it. The open is an action

@@ -73,15 +73,9 @@ pub(crate) async fn serve_web(protocol: &ServerProtocol, session: tilo_net::webt
         return;
     };
     let workspaces = protocol.admin.get().cloned();
-    let person = crate::service::local_caller(&device.cert);
-    // A device of the person answers what their hosts ask them on the page;
-    // an agent's, or a stand-in's, is no device of theirs and answers
-    // nothing for them, as on a native session's sheet.
-    let answers = device.cert.capabilities.agent.is_none() && !device.cert.capabilities.stand_in;
     serve_pages(
         pages,
-        &person,
-        answers,
+        &device.cert,
         |workspace_id, app| readiness(workspaces.as_deref(), workspace_id, app),
         recv,
         send,
@@ -90,19 +84,16 @@ pub(crate) async fn serve_web(protocol: &ServerProtocol, session: tilo_net::webt
     link.close("the page closed");
 }
 
-/// Answer what a page asks on its stream until it closes: the person of
-/// `person` opens pages and acts on the one open, and an open page hears what
-/// others changed on it. `answers` says whether this device answers their
-/// questions on the page; `ready` says whether a workspace's documents are
-/// readable here ([`readiness`]).
+/// Answer page requests on the stream that proved `certificate`. An open
+/// page hears others' changes. The person's own device may also answer
+/// questions. `ready` checks whether the workspace documents are here.
 #[allow(
     clippy::too_many_lines,
     reason = "one page loop read top to bottom: its asks, its questions and what others changed"
 )]
 pub(crate) async fn serve_pages<R, W, F, Fut>(
     pages: &dyn AppPages,
-    person: &Caller,
-    answers: bool,
+    certificate: &tilo_user_identity::DeviceCert,
     ready: F,
     mut recv: R,
     mut send: W,
@@ -112,6 +103,9 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
     F: Fn(WorkspaceId, String) -> Fut + Sync,
     Fut: Future<Output = Result<bool, PageRefusal>> + Send,
 {
+    let person = crate::service::local_caller(certificate);
+    // Only the person's own device can answer its host's questions.
+    let answers = crate::workspace_access::person_device(certificate);
     // The stream is read on its own, so a page whose person does nothing
     // still hears what others changed.
     let (asked, mut asks) = tokio::sync::mpsc::channel(16);
@@ -139,10 +133,10 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                         if let Some((workspace_id, page)) = open.take() {
                             pages.close(workspace_id, page);
                         }
-                        let opened = open_page(pages, person, &ready, address, &mut send).await;
+                        let opened = open_page(pages, (&person, certificate), &ready, address, &mut send).await;
                         if let Ok((workspace_id, page, _)) = &opened {
                             open = Some((*workspace_id, *page));
-                            pages.opened(*workspace_id, *page, person);
+                            pages.opened(*workspace_id, *page, &person);
                             sheet = answers.then(|| pages.question_sheet(*workspace_id, *page));
                         }
                         match opened {
@@ -235,12 +229,12 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
     }
 }
 
-/// Open the page `address` names for `person`: its workspace, its number and
+/// Open the page `address` names for `device`: its workspace, its number and
 /// the page whole. A workspace whose keys are on their way is said to be
 /// loading first.
 async fn open_page<W, F, Fut>(
     pages: &dyn AppPages,
-    person: &Caller,
+    device: (&Caller, &tilo_user_identity::DeviceCert),
     ready: &F,
     address: PageAddress,
     send: &mut W,
@@ -255,9 +249,10 @@ where
         // The keys arrive on their own; the open below waits for them.
         let _ = write(send, &PageAnswer::Loading).await;
     }
+    let (person, certificate) = device;
     let caller = person.clone().in_workspace(workspace_id.to_string());
     let opened = pages
-        .open(workspace_id, &caller, address)
+        .open_certified(workspace_id, &caller, certificate, address)
         .await
         .unwrap_or_else(|| Err(PageRefusal::Unavailable("the page was dropped".to_owned())))?;
     let page = opened.page;
@@ -296,6 +291,12 @@ background:color-mix(in srgb,var(--tilo-ground,#000) 55%,transparent)}\
 .tilo-question-card{max-width:32rem;margin:1rem;padding:1.25rem 1.5rem;border-radius:var(--tilo-radius,12px);\
 background:var(--tilo-overlay,#1b1c20);color:var(--tilo-text,#f4f4f5);\
 box-shadow:0 1rem 3rem rgba(0,0,0,.4)}\
+.tilo-pair-dialog{box-sizing:border-box;max-width:min(32rem,94vw);max-height:90dvh;\
+padding:1.25rem;border-radius:var(--tilo-radius,12px);background:Canvas;color:CanvasText;\
+border:1px solid ButtonBorder}.tilo-pair-dialog img,.tilo-pair-dialog strong{display:block;margin:.75rem auto}\
+.tilo-pair-dialog input{box-sizing:border-box;width:100%;font:inherit;margin:.5rem 0 1rem}\
+.tilo-pair-dialog .tilo-question-actions{flex-wrap:wrap}\
+.tilo-pair-dialog::backdrop{background:rgb(0 0 0 / .45)}\
 .tilo-question-card h2{margin:0 0 .5rem;font-size:1.1rem;font-weight:600}\
 .tilo-question-heading{margin:0 0 .5rem;font-weight:500;opacity:.85}\
 .tilo-question-detail{margin:0 0 .75rem}\

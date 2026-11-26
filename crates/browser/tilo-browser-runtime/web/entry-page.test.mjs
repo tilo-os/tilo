@@ -48,7 +48,7 @@ const ENTRY_PARTS = ['arrival-refusal', 'arrival-refusal-heading', 'arrival-refu
 // that answers which.
 async function fixture({boot, remembered = [], own = false, search = '', session = {}, local = {}, member = null, entry = null, scope = null,
   pair = async () => { throw new Error('this fixture pairs no device'); }, identity = {userPublicKey: USER}, kept = null, join = null, entryParts = false,
-  profile = null, whose = 'go', runtime: answers = {}} = {}) {
+  profile = null, whose = 'go', runtime: answers = {}, firstScreen = null} = {}) {
   const values = new Map(Object.entries(local));
   let assigned = null;
   const stored = new Map(Object.entries(session));
@@ -147,6 +147,11 @@ async function fixture({boot, remembered = [], own = false, search = '', session
       {origin: ORIGIN, workspace: 'other', hostDevice: 'cd'.repeat(32), name: 'Other'}, ...remembered]));
   }
   let source = await readFile(new URL('./entry-page.mjs', import.meta.url), 'utf8');
+  if (firstScreen) {
+    globalThis.__entryPageFixture.firstScreen = firstScreen;
+    source = source.replace("import {firstScreen, openSignIn, setupDone} from './first-screen.mjs';",
+      "import {openSignIn, setupDone} from './first-screen.mjs';\nconst firstScreen = globalThis.__entryPageFixture.firstScreen;");
+  }
   source = source
     .replace("import {boot, grammar} from './entry.mjs';", 'const boot = globalThis.__entryPageFixture.boot, grammar = () => globalThis.__entryPageFixture.page.link;')
     .replace("import {loadRuntime} from './host.mjs';", 'const loadRuntime = async () => globalThis.__entryPageFixture.runtime;')
@@ -181,6 +186,100 @@ async function fixture({boot, remembered = [], own = false, search = '', session
 
 /** A workspace of the host other than its listed one (the Lounge), which a link names. */
 const STUDIO = '7d7cf1fb-7214-4cce-9b34-1b5fdf9c0d3c';
+test('New workspace waits for a name and reuses the signed create after a lost answer', async () => {
+  const asks = [];
+  const hosted = {user_public_key: Array(32).fill(170), device_public_key: Array(32).fill(0xcd),
+    capabilities: {can_own_workspaces: true}};
+  const {failure, at, session} = await fixture({search: '?new-workspace=1', member: {
+    host: {hostCert: hosted},
+    enterOwnWorkspace: async args => {
+      asks.push(args);
+      if (asks.length === 1) throw Object.assign(new Error('No answer'), {code: 'unanswered'});
+      return {workspace: STUDIO, name: args.name};
+    },
+  }, boot: async ({deps}, page) => {
+    await deps.onAdmitted(page.peer);
+    const here = {...page, url: 'https://web.example/w/current', workspace: 'current'};
+    const cancelled = deps.holdFirstScreen(here);
+    await tick();
+    const first = document.querySelector('[data-card="new-workspace"]');
+    assert.ok(first, 'the admitted device is asked before making a workspace');
+    const cancel = first.children.at(-1).children.find(button => button.textContent === 'Cancel');
+    cancel.listeners.get('click')();
+    assert.equal(await cancelled, false);
+    assert.equal(asks.length, 0);
+    assert.equal(chosenWorkspace(), null);
+    const pending = deps.holdFirstScreen(here);
+    await tick();
+    const form = document.querySelector('[data-card="new-workspace"]');
+    assert.ok(form, 'the admitted device has a name form');
+    assert.equal(asks.length, 0);
+    const [label, error] = form.children;
+    label.children[0].value = 'Studio';
+    const submit = () => form.listeners.get('submit')({preventDefault() {}});
+    await submit();
+    assert.equal(error.hidden, false, 'a lost reply leaves the form open for retry');
+    assert.equal(chosenWorkspace(), null);
+    await submit();
+    assert.equal(await pending, true);
+    return null;
+  }});
+  assert.ifError(failure);
+  assert.equal(asks.length, 2);
+  assert.equal(asks[0].name, 'Studio');
+  assert.match(asks[0].invocation, /^[a-f0-9-]{36}$/);
+  assert.equal(asks[0].invocation, asks[1].invocation);
+  assert.equal(at(), 'https://web.example/w/' + STUDIO);
+  assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, workspace: STUDIO});
+  assert.equal(enteredWorkspaces().find(kept => kept.workspace === STUDIO)?.name, 'Studio');
+  assert.deepEqual(JSON.parse(session.get('tilo-page-workspace')), {workspace: STUDIO, name: 'Studio'});
+});
+
+test('a browser on a host that offers no personal workspaces cannot start a workspace from an entry link', async () => {
+  let calls = 0;
+  const {failure} = await fixture({search: '?new-workspace=1', member: {enterOwnWorkspace: async () => ++calls},
+    boot: async ({deps}, page) => {
+      await deps.onAdmitted(page.peer);
+      assert.equal(await deps.holdFirstScreen({...page, workspace: 'current'}), false);
+      assert.equal(document.querySelector('[data-card="new-workspace"]'), null);
+      return null;
+    }});
+  assert.ifError(failure);
+  assert.equal(calls, 0);
+});
+
+test('the first screen mints its agent ticket for the personal workspace and resumes that ticket', async () => {
+  let make;
+  let resume;
+  const firstScreen = {reveal() {}, whenDone() {}, offerSetup(maker, resumer) { make = maker; resume = resumer; }};
+  const {failure} = await fixture({firstScreen,
+    member: {enterOwnWorkspace: async () => ({workspace: STUDIO, name: 'My studio', origin: ORIGIN})},
+    boot: async ({deps}, page) => {
+      await deps.onAdmitted(page.peer);
+      assert.equal(await deps.holdFirstScreen(page), true);
+      return null;
+    }});
+  assert.equal(failure, null);
+  const before = globalThis.fetch;
+  const requests = [];
+  try {
+    globalThis.location.origin = 'https://web.example';
+    globalThis.fetch = async (url, {method, body}) => {
+      requests.push([url, method, JSON.parse(body)]);
+      return Response.json(requests.length === 1 ? {id: 'follow-id', ticket: 'login-ticket'} : {steps: ['approved']});
+    };
+    const made = await make();
+    assert.equal(made.code, 'login-ticket');
+    assert.deepEqual((await resume(made.saved).follow()).steps, ['approved']);
+    assert.deepEqual(requests, [
+      [ORIGIN + '/peer/v1/ticket', 'POST', {user: USER, workspace: STUDIO, name: 'My studio', site: 'https://web.example'}],
+      [ORIGIN + '/peer/v1/ticket/asked', 'POST', {id: 'follow-id'}],
+    ]);
+  } finally {
+    globalThis.fetch = before;
+  }
+});
+
 /** The way-in rules for a link to such a workspace, by a browser with no account there
  * (tilo-session-client's `way_in`, tested there): come back as the person, take the
  * workspace's own entry where it lets anyone in, or sign in first. */

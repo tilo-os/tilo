@@ -102,7 +102,7 @@
 # from E2E_WORK/signin/startup.json.
 #
 # Needs what stack.sh needs, node, a headless Chromium (CHROME or
-# Playwright's), and uv (or python3 with httpx) for the Python SDK. With
+# Playwright's), and uv or a Python with the SDK's dependencies installed. With
 # TILO_SH_VM_HOST=1 the stack also runs its VM host, from the images
 # TILO_SH_IMAGE_VM_HOST and TILO_SH_HOSTED_GUEST name: that needs /dev/kvm,
 # root, podman and a loop device, and the guest image must carry the headless

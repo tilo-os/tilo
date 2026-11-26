@@ -182,8 +182,14 @@ mod hosted_mail_account_migrate;
 #[path = "workspace_actions/hosted_mail_turn.rs"]
 mod hosted_mail_turn;
 #[cfg(test)]
+#[path = "workspace_actions/hosted_page_stream.rs"]
+mod hosted_page_stream;
+#[cfg(test)]
 #[path = "workspace_actions/hosted_secret_use.rs"]
 mod hosted_secret_use;
+#[cfg(test)]
+#[path = "workspace_actions/hosted_settings_first_use.rs"]
+mod hosted_settings_first_use;
 #[cfg(test)]
 #[path = "workspace_actions/hosted_settings_from_page.rs"]
 mod hosted_settings_from_page;

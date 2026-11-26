@@ -19,14 +19,7 @@ pub(crate) fn view(
         Read::Here(None) => return crate::no_assistant(cx, hands),
         Read::NotHere => return crate::agents_not_here(),
     };
-    let state = ListRow::new(
-        "assistant-state",
-        trf(
-            "assistant-is-on",
-            &[("name", assistant.name.clone().into())],
-        ),
-    )
-    .icon(Icon::Bot);
+    let state = ListRow::new("assistant-state", assistant.name.clone()).icon(Icon::Bot);
     let model = Property::new(
         tr("assistant-model"),
         assistant
@@ -34,15 +27,12 @@ pub(crate) fn view(
             .clone()
             .unwrap_or_else(|| tr("assistant-model-from-settings")),
     );
-    // The model is chosen in Settings: the row's action is the window's own effect that
-    // opens it, so a press, the palette and an agent run the same thing.
-    let model = match cx
-        .actions()
-        .effect(&crate::AssistantEffect::OpenModelSettings)
-    {
-        Some(open) => model.action_binding(Icon::Settings, tr("assistant-model-change"), open),
-        None => model,
-    };
+    let settings = cx.actions().bind_effect_invocation(
+        Button::new("assistant-model-change", "assistant-model-change")
+            .with_icon(Icon::Settings)
+            .opening_workspace_item(ui::apps::SETTINGS, &crate::model_settings()),
+        &crate::AssistantEffect::OpenModelSettings,
+    );
     let spent = ui::format::money(assistant.spent_micros);
     let spent = Property::new(
         tr("assistant-spent-today"),
@@ -57,12 +47,11 @@ pub(crate) fn view(
             None => trf("assistant-spent-no-limit", &[("spent", spent.into())]),
         },
     );
-    let not_here = || tr("assistant-not-here");
-    let learned = Property::new(
-        tr("assistant-learned"),
-        match hands.reads.learned() {
-            Read::NotHere => not_here(),
-            Read::Here(learned) => match learned.split_first() {
+    let learned = match hands.reads.learned() {
+        Read::NotHere => Property::new(tr("assistant-learned"), tr("assistant-learned-in-chat")),
+        Read::Here(learned) => Property::new(
+            tr("assistant-learned"),
+            match learned.split_first() {
                 None => tr("assistant-learned-none"),
                 Some((first, [])) => first.clone(),
                 Some((first, rest)) => trf(
@@ -73,20 +62,19 @@ pub(crate) fn view(
                     ],
                 ),
             },
-        },
-    );
+        ),
+    };
+    let nav = hands.nav.clone();
+    let review = Button::new("assistant-review-proposals", "assistant-review-proposals")
+        .with_icon(Icon::ListChecks)
+        .on_view(move || nav.show(&crate::Place::Proposals));
     page(vec![
         Box::new(state),
+        hands.chat_button(&assistant.id, &assistant.name),
+        Box::new(review),
+        Box::new(settings),
         Box::new(
-            PropertyList::new(vec![
-                model,
-                spent,
-                Property::new(tr("assistant-connections"), not_here()),
-                Property::new(tr("assistant-logins"), not_here()),
-                Property::new(tr("assistant-important"), not_here()),
-                learned,
-            ])
-            .with_id("assistant-supervision-facts"),
+            PropertyList::new(vec![model, spent, learned]).with_id("assistant-supervision-facts"),
         ),
     ])
 }

@@ -8,7 +8,8 @@ use ui::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "assistant.effects")]
 pub enum AssistantEffect {
-    #[effect(view)]
+    // Chat opens in another app and answers with the caller's grants.
+    #[effect(kind = "read", job)]
     ViewMainChat,
     #[effect(view)]
     ViewSubAgent {
@@ -23,6 +24,6 @@ pub enum AssistantEffect {
         #[param("The job, in the person's own words")]
         job: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", job)]
     OpenModelSettings,
 }

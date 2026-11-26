@@ -51,6 +51,7 @@ use tilo_actions::remote::{
     SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, application_provider, application_provider_resource,
     formats, identity_admin, mcp_server, pending, person_accounts, person_models, person_telling,
     person_vault, provider_workspace, server_account, session_actions, workspace_activity as wire,
+    workspace_initiative,
 };
 
 use tilo_lock::MutexRecover as _;
@@ -223,13 +224,14 @@ pub const PERSON_PROVIDERS: [&str; 2] = [mcp_server::PROVIDER, identity_admin::P
 /// a server of the person's keeps in their own workspace. The server stores and
 /// serves all of it, so a page manages it with none of the person's other
 /// devices online.
-pub const WORKSPACE_SERVER_PROVIDERS: [&str; 6] = [
+pub const WORKSPACE_SERVER_PROVIDERS: [&str; 7] = [
     person_accounts::PROVIDER,
     person_models::PROVIDER,
     person_vault::PROVIDER,
     person_telling::PROVIDER,
     server_account::PROVIDER,
     formats::PROVIDER,
+    workspace_initiative::PROVIDER,
 ];
 
 /// The session handed to the windows a desktop hosts in process, for the workspace `workspace` . It
@@ -487,6 +489,16 @@ impl DesktopSession {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if !(caller.acting().is_person() && caller.acting().app().is_none()) {
+            return Pending::ready(Err(ActionCallError::UnknownAction));
+        }
+        // The Assistant's approval controls are direct decisions by the person
+        // in this workspace, using only the proposals resource.
+        if request.target.provider == workspace_initiative::PROVIDER
+            && (caller.workspace() != Some(self.workspace.as_str())
+                || request.on_behalf_of.is_some()
+                || request.target.address.resource != workspace_initiative::PROPOSALS
+                || !workspace_initiative::is_review_action(&request.target.address.action))
+        {
             return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         let Some(server) = self.workspace_api.lock_recover().clone() else {

@@ -7,6 +7,17 @@ import {readdirSync, readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {sleep} from '../../../../tools/web/chrome.mjs';
 import {SHELL, stepLimit} from './waits.mjs';
+// The command printed for the person to give their agent. A ticket ends before
+// the comma introducing the next instruction; older hosts offer a short code.
+export function agentCommand(prompt) {
+  const match = prompt?.match(/\b(?:tilo|sh -s) (login|device add) (tilo1[0-9a-f]+|[2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})(?=[,\s]|$)/);
+  if (!match) return null;
+  const [, kind, text] = match;
+  const ticket = text.startsWith('tilo1') ? text : null;
+  if (kind === 'device add' && !ticket) return null;
+  return {kind, text, ticket, code: ticket ? null : text, site: prompt.match(/--site ([^,\s]+)/)?.[1] ?? null};
+}
+
 // Keys as the desktop's search reads them (its own scripts drive it this
 // way): the chord, the query, Enter.
 //

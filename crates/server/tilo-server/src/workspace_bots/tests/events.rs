@@ -400,6 +400,92 @@ async fn a_viewer_reads_the_workspaces_events_and_changes_none() {
     assert_eq!(theirs.listed().await, vec![made], "nothing of it changed");
 }
 
+/// Older servers recorded the personal schedule's id alongside the events. The
+/// actual event still records the person it was created for.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_saved_personal_schedule_is_only_offered_to_its_creator_after_restart() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = bot_server(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    let editor = member(&workspaces, &cert, &workspace, 62, Role::Editor).await;
+    let by_editor = as_person(&editor, &workspace);
+    let first = Theirs::on(&workspaces, &workspace, &cert);
+    let personal = first.set_up().await.id;
+    let shared = first.set_up().await.id;
+    drop(first);
+
+    // The old workspace control could be turned on again by a second member.
+    // Even then it is the original person's assistant that runs the event.
+    let root = workspaces.workspace_root(&workspace);
+    let saved = root.join("events").join(&personal).join("event.json");
+    let mut description: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&saved).unwrap()).unwrap();
+    description.as_object_mut().unwrap().remove("personal");
+    std::fs::write(&saved, serde_json::to_vec(&description).unwrap()).unwrap();
+    let old = root.join("initiative.json");
+    std::fs::write(
+        &old,
+        serde_json::to_vec(
+            &json!({"event": personal, "person": hex::encode(editor.user_public_key)}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    for _ in 0..2 {
+        let restarted = Theirs::on(&workspaces, &workspace, &cert);
+        assert_eq!(restarted.listed().await.len(), 2);
+        let others = listed(&restarted.events, &workspace, &editor, &by_editor).await;
+        assert_eq!(
+            others
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            [shared.as_str()]
+        );
+        for (action, arguments) in [
+            (
+                workspace_events::CHANGE,
+                json!({"event":personal,"guidance":"changed"}),
+            ),
+            (workspace_events::PAUSE, json!({"event":personal})),
+            (workspace_events::RESUME, json!({"event":personal})),
+            (workspace_events::REMOVE, json!({"event":personal})),
+        ] {
+            let result = take_on(
+                &restarted.events,
+                &workspace,
+                &editor,
+                &by_editor,
+                action,
+                arguments,
+            )
+            .await;
+            assert!(
+                matches!(result, Err(ActionCallError::Refused { ref reason })
+                if reason == "the workspace keeps no such event"),
+                "{action}: {result:?}"
+            );
+        }
+        let paused = event(
+            restarted
+                .take(
+                    &restarted.me(),
+                    workspace_events::PAUSE,
+                    json!({"event":personal}),
+                )
+                .await,
+        );
+        assert!(!paused.on);
+        // On subsequent starts the event carries its own scope.
+        if old.exists() {
+            std::fs::remove_file(&old).unwrap();
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bot_and_a_non_member_set_nothing_up_and_reach_no_event() {
     let scratch = tempfile::tempdir().unwrap();

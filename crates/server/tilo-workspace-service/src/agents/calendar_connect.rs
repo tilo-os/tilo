@@ -24,7 +24,6 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tilo_actions::policy::MemberId;
 use tilo_actions::remote::person_vault::ItemRef;
@@ -37,6 +36,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::certify::{AgentAsk, PendingConfirmation};
 use tilo_workspace_agent::Agent;
 
+use super::ask_chat::{AskCallers, asked_in};
 use super::turn_provider::{Ending, Rows};
 use super::{Reply, Turn, TurnProvider, WorkspaceId};
 use crate::workspaces::Workspaces;
@@ -78,34 +78,6 @@ pub(super) const UNANSWERED: &str = "they were not asked, or did not answer in t
 
 /// The most of the calendars' names a question's outcome and an agent's news carry, in bytes.
 const MOST_NAMES_BYTES: usize = 600;
-
-/// Where a turn's question is put, and for which turn: kept with the ask, so the server finds
-/// its way back after a restart.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-struct AskedIn {
-    /// The conversation the turn is in, by its address in the workspace.
-    conversation: String,
-    /// The ask that caused the turn.
-    cause: String,
-    /// The agent session the turn's changes are grouped by.
-    session: String,
-}
-
-/// Where and for which turn `caller` asks, as an ask keeps it.
-pub(super) fn asked_in(caller: &Caller) -> Value {
-    let turn = caller.turn();
-    let kept = AskedIn {
-        conversation: turn
-            .map(|turn| turn.conversation.clone())
-            .unwrap_or_default(),
-        cause: turn.map(|turn| turn.message.clone()).unwrap_or_default(),
-        session: caller
-            .agent_session()
-            .map(|session| session.id)
-            .unwrap_or_default(),
-    };
-    serde_json::to_value(kept).unwrap_or(Value::Null)
-}
 
 /// Whoever carries out a workspace's agents: what reads the answers to the questions this
 /// server put itself, and carries them out.
@@ -451,19 +423,9 @@ impl Carrier {
         let workspace = ask.in_workspace();
         let workspace_id = WorkspaceId::parse(workspace)?;
         let agent = self.agents(workspace).await.ok()?.remove(ask.by_agent())?;
-        let mut person = [0; 32];
-        hex::decode_to_slice(ask.of_person(), &mut person).ok()?;
-        self.workspaces.person_device(workspace_id, person).await?;
-        let asked_in: AskedIn = serde_json::from_value(ask.put_in().clone()).ok()?;
-        let turn = self
-            .agent_caller(workspace_id, &agent, person)
-            .await
-            .ok()?
-            .in_agent_session(asked_in.session)
-            .on_roster_turn(tilo_action_policy::turn::Turn::new(
-                asked_in.conversation,
-                asked_in.cause,
-            ));
+        let AskCallers { turn, .. } = self
+            .ask_callers(workspace_id, &agent, ask.of_person(), ask.put_in())
+            .await?;
         Some(Asker {
             workspace_id,
             agent,

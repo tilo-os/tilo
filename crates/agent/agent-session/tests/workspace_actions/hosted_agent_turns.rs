@@ -705,6 +705,90 @@ pub(super) fn saying(conversation: &Id, text: &str) -> serde_json::Value {
     serde_json::json!({"channel": conversation.as_str(), "text": text})
 }
 
+/// A certified device sends and reads the first message in its agent's DM through Chat's
+/// hosted actions. A retry of the signed invocation gets the original receipt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_certified_device_sends_once_to_its_agents_dm_and_reads_it() {
+    let mut hosted = super::hosted_secret_use::Hosted::start().await;
+    let person = hosted.person();
+    let channel = chat::Chat::direct_id([MemberId::person(&person), MemberId::agent(SCOUT)]);
+    let provider = "record:so.tilo.chat:";
+    let messages = ui::resource::chain_resource_id(&chat::parts::chain());
+    let id = "3d2c98df-46d5-4426-94d5-d8e1a7cb11f0";
+    let words = "What is on my list?";
+    let args = |value: serde_json::Value| InvokeArgument::Json(value.as_object().unwrap().clone());
+    let post = request(
+        provider,
+        ActionAddress::new(&messages, "post"),
+        args(serde_json::json!({ "channel": channel, "text": words, "id": id })),
+    );
+    let receipt = hosted.page.invoke_settled(post.clone()).await;
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Completed { .. }),
+        "{receipt:?}"
+    );
+    assert_eq!(hosted.page.invoke_settled(post).await, receipt);
+
+    let listed = hosted
+        .page
+        .catalogue(CatalogueQuery {
+            provider: Some(provider.into()),
+            resource_name: Some("chat.messages".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("the device lists Chat's messages");
+    let read_address = listed
+        .rows
+        .iter()
+        .filter_map(|row| row.action.as_ref())
+        .find(|action| action.resource_kind == "chat.messages" && action.address.action == "read")
+        .expect("Chat publishes a read on its messages")
+        .address
+        .clone();
+    assert_eq!(read_address, ActionAddress::new(&messages, "read"));
+    let exact = hosted
+        .page
+        .catalogue(CatalogueQuery {
+            provider: Some(provider.into()),
+            target: Some(read_address.clone()),
+            ..Default::default()
+        })
+        .await
+        .expect("the device resolves the published address");
+    let (read_provider, target) = exact
+        .rows
+        .into_iter()
+        .filter_map(|row| Some((row.provider, row.action?.address)))
+        .find(|(_, target)| target == &read_address)
+        .expect("the published read resolves to a callable target");
+    assert_eq!(read_provider, provider);
+    let read = hosted
+        .page
+        .invoke_on(
+            &read_provider,
+            target,
+            args(serde_json::json!({
+                "where": { "channel": channel },
+                "fields": ["channel", "author", "text"],
+                "pageSize": 10
+            })),
+        )
+        .await
+        .expect("the device reads its conversation")
+        .value
+        .unwrap();
+    let rows = read["messages"].as_array().expect("the DM's rows");
+    assert_eq!(rows.len(), 1, "the device reads one copy: {read}");
+    assert_eq!(rows[0]["id"], id);
+    assert_eq!(rows[0]["value"]["channel"], channel.as_str());
+    assert_eq!(
+        rows[0]["value"]["author"],
+        serde_json::json!({ "person": person })
+    );
+    assert_eq!(rows[0]["value"]["text"], words);
+}
+
 /// The person writes `text` to the agent in their conversation with it, through the server's action
 /// service, as their page does. The message's id.
 pub(super) async fn write_to_agent(

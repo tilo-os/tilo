@@ -132,7 +132,8 @@ impl SettingsApp {
         self.storage = cx.storage().clone();
         // Its areas hand the session what is the session's: an email account's password.
         self.session = cx.session();
-        self.devices = cx.mode().is_live() && !cfg!(test) && cfg!(feature = "tilo-os");
+        self.devices =
+            cx.mode().is_live() && !cx.is_attached() && !cfg!(test) && cfg!(feature = "tilo-os");
         if self.devices {
             self.radios = crate::radios::Radios::of_device();
         }

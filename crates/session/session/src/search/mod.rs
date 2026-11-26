@@ -317,7 +317,7 @@ pub struct SessionSearch {
     /// that hands an agent what was typed sends to. `None` where this host sends nothing at all
     /// (the page), which offers no such row.
     #[cfg(target_os = "linux")]
-    agents: RefCell<Option<Vec<crate::agents::Kept>>>,
+    agents: RefCell<Option<std::collections::BTreeMap<String, String>>>,
     /// Every agent each workspace's record lists, whoever keeps it: whom a message can go to.
     listed_agents: RefCell<Vec<ListedAgent>>,
     /// Every person each workspace's governance lists, by the name it knows them by: who can be
@@ -561,8 +561,8 @@ impl SessionSearch {
     /// The agent each workspace keeps for the person here, as the pass read them: whom the row
     /// that hands an agent what was typed sends to, and a new one where a workspace keeps none.
     #[cfg(target_os = "linux")]
-    pub(crate) fn set_kept_agents(&self, agents: &[crate::agents::Kept]) {
-        *self.agents.borrow_mut() = Some(agents.to_vec());
+    pub(crate) fn set_kept_agents(&self, agents: std::collections::BTreeMap<String, String>) {
+        *self.agents.borrow_mut() = Some(agents);
     }
 
     /// Record every agent each workspace's record lists, whoever keeps it: what a box that sends
@@ -1559,13 +1559,9 @@ fn feed(search: &SessionSearch, workspace: &str, scope: &Scope) -> SearchHostFee
     if !matches!(scope, Scope::InApp(_))
         && let Some(agents) = search.agents.borrow().as_ref()
     {
-        let kept = agents
-            .iter()
-            .find(|agent| agent.workspace == workspace)
-            .map(|agent| (agent.id.clone(), agent.name.clone()));
         sources.push(Held::new(crate::search_agent::AskAgent::new(
             workspace,
-            crate::agents::agent_recipient(kept),
+            agents.get(workspace).map(String::as_str),
         )));
     }
     // The apps of the reading the sources were just built from, so one search never mixes two.

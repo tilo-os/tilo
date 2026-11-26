@@ -529,10 +529,16 @@ impl ChatApp {
         } else {
             String::new()
         };
-        let (name, topic, direct) = self.channel(&self.active_channel).map_or_else(
-            || (String::new(), String::new(), false),
-            |channel| (channel.name.clone(), channel.topic.clone(), channel.direct),
-        );
+        let (name, topic, direct) = if let Some(channel) = self.channel(&self.active_channel) {
+            (channel.name.clone(), channel.topic.clone(), channel.direct)
+        } else if let Some(peer) = self
+            .active_direct_members()
+            .and_then(|members| self.conversation_peer(&members))
+        {
+            (self.display_name(&peer), String::new(), true)
+        } else {
+            (String::new(), String::new(), false)
+        };
         HeaderIdentityText {
             name,
             kind: direct.then(|| crate::i18n::t("chat-person-chat-private")),

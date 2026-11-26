@@ -105,6 +105,9 @@ pub enum ChatEffect {
     /// Open the conversation with an agent: where search's agent hit goes.
     #[effect(view, returns, presence)]
     OpenAgent { agent: String },
+    /// Set up the caller's personal assistant and open its direct conversation.
+    #[effect(job, idempotent, returns, kind = "undoable")]
+    SetUpPersonalAssistant,
     /// Open the conversation with a certified person public key: it changes
     /// only whose view is showing what.
     #[effect(view, audience = "agents", presence, on = crate::rows::DirectConversation)]

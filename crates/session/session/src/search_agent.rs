@@ -23,10 +23,10 @@ pub(crate) struct AskAgent {
 }
 
 impl AskAgent {
-    pub(crate) fn new(workspace: &str, to: Recipient) -> Self {
+    pub(crate) fn new(workspace: &str, name: Option<&str>) -> Self {
         Self {
             workspace: workspace.to_owned(),
-            to,
+            to: crate::agents::agent_recipient(name),
         }
     }
 }
@@ -88,10 +88,9 @@ impl Source for AskAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::floating_surface::RecipientKind;
 
-    fn row(to: Recipient, typed: &str) -> Hit {
-        let source = AskAgent::new("workspace", to);
+    fn row(name: Option<&str>, typed: &str) -> Hit {
+        let source = AskAgent::new("workspace", name);
         let mut rows = source.query(typed);
         assert_eq!(rows.len(), 1, "{typed:?} is one row");
         rows.remove(0)
@@ -105,8 +104,7 @@ mod tests {
         // workspace the search was opened in: the agent the person keeps there, or the new one the
         // send makes where they keep none.
         {
-            let kept = Recipient::found(RecipientKind::Agent, "tide", "Tide");
-            let hit = row(kept.clone(), "book a table for two");
+            let hit = row(Some("Tide"), "book a table for two");
             assert_eq!(hit.title, "Send to Tide: book a table for two");
             assert_eq!(hit.kind, ask_agent::kind());
             assert!(ask_agent::is_row(&hit), "the session's own row");
@@ -124,23 +122,26 @@ mod tests {
             assert_eq!(target.address.action.as_str(), send_to::SEND);
             assert_eq!(target.arguments["text"], "book a table for two");
             assert_eq!(target.arguments["workspace"], "workspace");
-            assert_eq!(target.arguments["to"], serde_json::json!([kept]));
+            assert_eq!(
+                target.arguments["to"],
+                serde_json::json!([{"kind": "assistant", "name": "Tide"}])
+            );
 
-            let fresh = row(Recipient::new_agent("Assistant"), "what is left?");
+            let fresh = row(None, "what is left?");
             assert_eq!(fresh.title, "Send to Assistant: what is left?");
             let Target::Invoke(target) = &fresh.target else {
                 panic!("the row runs the send");
             };
             assert_eq!(
                 target.arguments["to"],
-                serde_json::json!([{"kind": "new-agent", "name": "Assistant"}])
+                serde_json::json!([{"kind": "assistant", "name": "Assistant"}])
             );
         }
 
         phase an_empty_query_offers_nothing;
         // Nothing typed is no request to hand over.
         {
-            let source = AskAgent::new("workspace", Recipient::new_agent("Assistant"));
+            let source = AskAgent::new("workspace", None);
             for typed in ["", "   "] {
                 assert!(source.query(typed).is_empty(), "{typed:?} sends nothing");
             }

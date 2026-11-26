@@ -680,6 +680,14 @@ impl Replica {
         (self.view.composition(), self.view.theme())
     }
 
+    /// Show the page at an item named by another app's resource reference.
+    ///
+    /// # Errors
+    /// The app has no registered view of the item.
+    pub fn show_page_item(&mut self, item: &str) -> Result<(), String> {
+        self.view.show_page_item(item)
+    }
+
     /// What its member did on the view's page ([`AttachedView::act_on_page`]).
     ///
     /// # Errors
@@ -1621,13 +1629,20 @@ impl Replica {
                     || (self.offers_reads() && descriptor.contract.kind == policy::ActionKind::Read)
                     || (self.runs_effects && offered_to_agents(descriptor))
             }
-            // The read of what the app keeps for its whole workspace moves no window: the
-            // server's own person, who has no window of it there either, is offered it too.
             tilo_actions::OperationKind::View => {
-                (self.runs_views || self.kept_for_workspace(descriptor))
-                    && offered_to_agents(descriptor)
+                self.runs_view(descriptor) && offered_to_agents(descriptor)
             }
         }
+    }
+
+    /// A read of a resource, including a chain and its items, answers from the record even
+    /// when the host's own person has no window. Other views follow the replica's usual scope.
+    fn runs_view(&self, descriptor: &ActionDescriptor) -> bool {
+        self.runs_views
+            || self.kept_for_workspace(descriptor)
+            || (self.runs_effects
+                && descriptor.contract.kind == policy::ActionKind::Read
+                && descriptor.contract.reads_resource())
     }
 
     /// Whether `descriptor` is of what the app keeps for its whole workspace beside this
@@ -1664,8 +1679,7 @@ impl Replica {
         };
         if descriptor.kind == tilo_actions::OperationKind::Document
             || (descriptor.kind == tilo_actions::OperationKind::View
-                && !self.runs_views
-                && !self.kept_for_workspace(&descriptor))
+                && !self.runs_view(&descriptor))
         {
             return Ok(false);
         }

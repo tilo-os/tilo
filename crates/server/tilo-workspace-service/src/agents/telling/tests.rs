@@ -578,13 +578,16 @@ fn a_judgement_is_counted_on_an_agent_its_person_keeps_and_on_nobody_elses() {
     connected.mcp_client = Some("Claude Code".to_owned());
     let mut assistant = agent("assistant", ADA, 3);
     assistant.spend_limit_micros = Some(50);
-    let agents = [
-        retired,
-        connected,
-        assistant,
-        agent("researcher", ADA, 4),
-        agent("bos-assistant", BO, 0),
-    ];
+    let agents = WorkspaceAgents {
+        agents: vec![
+            retired,
+            connected,
+            assistant,
+            agent("researcher", ADA, 4),
+            agent("bos-assistant", BO, 0),
+        ]
+        .into(),
+    };
     let on = |person: &[u8; 32], told_by: Option<&str>| {
         counted_on(&agents, person, told_by).map(|agent| agent.id.0.clone())
     };

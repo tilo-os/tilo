@@ -65,7 +65,7 @@ use tilo_workspace_agent::{Agent, WorkspaceAgents};
 use tracing::Instrument as _;
 
 use crate::workspaces::Workspaces;
-use crate::workspaces::person_model::{ModelRefusal, PersonModel, Spender};
+use crate::workspaces::person_model::{Interaction, ModelRefusal, PersonModel, Spender};
 use events::{Authority, WorkspaceEvents};
 use initiative::Initiative;
 use tilo_actions::remote::workspace_events;
@@ -81,6 +81,7 @@ pub mod telling;
 
 mod across;
 mod answers;
+mod ask_chat;
 mod asking;
 mod asks;
 mod calendar_connect;
@@ -689,6 +690,8 @@ pub struct Turn {
     pub conversation: String,
     /// The ask's own id there.
     pub cause: String,
+    /// The software that authored a caused Chat message, as the resource recorded it.
+    pub program: Option<String>,
     /// What the person asked, in words.
     pub request: String,
     /// Earlier messages kept in the conversation, before this request.
@@ -963,9 +966,7 @@ impl ServerAgents {
         if agent.sub.is_none() {
             return agent_caller(&self.roster, workspace, agent, person).await;
         }
-        let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let roster = self
-            .read::<WorkspaceAgents>(&workspace.to_string(), AGENTS_OWNER, &record)
+        let roster = roster(&self.workspaces, &workspace.to_string())
             .await?
             .ok_or("the workspace keeps no list of its agents")?;
         // A line whose head is gone ends at the sub-agent itself, which holds no approval:
@@ -1427,6 +1428,15 @@ impl ServerAgents {
                     person: summons.person.clone(),
                     conversation: summons.address(),
                     cause: summons.message.to_string(),
+                    program: message
+                        .cause
+                        .as_ref()
+                        .filter(|cause| {
+                            !cause.by_person()
+                                && cause.person.person_id() == Some(summons.person.as_str())
+                        })
+                        .and_then(|_| message.author.agent_id())
+                        .map(str::to_owned),
                     request: told.request,
                     history: told.history,
                     asked: chat::summons::asked_words(message),
@@ -1449,6 +1459,7 @@ impl ServerAgents {
                     person: summons.person.clone(),
                     conversation: summons.address(),
                     cause: summons.message.to_string(),
+                    program: None,
                     request: String::new(),
                     history: Vec::new(),
                     asked: String::new(),
@@ -1528,6 +1539,7 @@ impl ServerAgents {
                 person: ask.person.person_id().unwrap_or_default().to_owned(),
                 conversation: tasks_model::issue_resource(&ask.issue),
                 cause: ask.cause.clone(),
+                program: None,
                 request,
                 history: Vec::new(),
                 asked: issue.title.clone(),
@@ -1546,11 +1558,7 @@ impl ServerAgents {
 
     /// The agents of `workspace` its host runs, by id.
     async fn agents(&self, workspace: &str) -> Result<BTreeMap<String, Agent>, String> {
-        let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let Some(agents) = self
-            .read::<WorkspaceAgents>(workspace, AGENTS_OWNER, &record)
-            .await?
-        else {
+        let Some(agents) = roster(&self.workspaces, workspace).await? else {
             return Ok(BTreeMap::new());
         };
         // An agent is the workspace's: it works here for whichever member asks it, whoever
@@ -1978,39 +1986,21 @@ impl ServerAgents {
         day: &str,
         stop: Arc<AtomicBool>,
     ) -> Result<Model, String> {
-        let theirs = {
-            // Every call is counted on the agent's day as it is answered, so turns of
-            // one agent going at once cannot each spend the day's whole limit.
-            let named_model = turn.agent.model.as_deref().or_else(|| {
-                turn.agent.sub.as_ref().and_then(|sub| {
-                    crate::workspaces::person_model::Interaction::from_id(&sub.kind)
-                        .is_none()
-                        .then_some(sub.kind.as_str())
-                })
-            });
-            let theirs = self
-                .workspaces
-                .workspace_model(workspace_id, sub_agents::kind_of(&turn.agent))
-                // The model the agent itself names answers where the workspace linked it on
-                // this server: a sub-agent's is its skill's, or the one its starter named.
-                .naming(named_model)
-                .spending_as(Spender {
-                    workspace: workspace.to_owned(),
-                    agent: sub_agents::payer(turn).id.0.clone(),
-                    name: sub_agents::payer(turn).name.clone(),
-                    day: day.to_owned(),
-                    limit_micros: sub_agents::payer(turn).spend_limit_micros,
-                });
-            // A turn a look of its person's look-round started counts on the
-            // look-round's own day as well, and stops where that day's limit is reached.
-            let look_round = self.initiative.as_ref().and_then(|initiative| {
-                initiative.day_of_turn(&workspace_id.to_string(), &turn.person, &turn.cause, day)
-            });
-            match look_round {
-                Some(look_round) => theirs.spending_as(look_round),
-                None => theirs,
-            }
-        };
+        let named_model = turn.agent.model.as_deref().or_else(|| {
+            turn.agent.sub.as_ref().and_then(|sub| {
+                Interaction::from_id(&sub.kind)
+                    .is_none()
+                    .then_some(sub.kind.as_str())
+            })
+        });
+        let theirs = self
+            .budgeted_model(
+                (workspace, workspace_id),
+                turn,
+                day,
+                sub_agents::kind_of(&turn.agent),
+            )?
+            .naming(named_model);
         let asked = theirs.clone();
         let linked = tokio::task::spawn_blocking(move || asked.linked())
             .await
@@ -2030,6 +2020,34 @@ impl ServerAgents {
             }
             Err(refused) => Err(refused.words(None)),
         }
+    }
+
+    /// Every call on behalf of this turn, including a separate conversation
+    /// summary, spends the agent's day and the personal look's day when applicable.
+    fn budgeted_model(
+        &self,
+        (workspace, workspace_id): (&str, WorkspaceId),
+        turn: &Turn,
+        day: &str,
+        kind: Interaction,
+    ) -> Result<PersonModel, String> {
+        let payer = sub_agents::payer(turn);
+        let model = self
+            .workspaces
+            .workspace_model(workspace_id, kind)
+            .spending_as(Spender {
+                workspace: workspace.to_owned(),
+                agent: payer.id.0.clone(),
+                name: payer.name.clone(),
+                day: day.to_owned(),
+                limit_micros: payer.spend_limit_micros,
+            });
+        if let (Some(initiative), Some(program)) = (&self.initiative, &turn.program)
+            && let Some(budget) = initiative.day_of_turn(workspace, &turn.person, program, day)?
+        {
+            return Ok(model.spending_as(budget));
+        }
+        Ok(model)
     }
 
     /// Count `cost` against `agent`'s day ([`count_spend`]).
@@ -2683,7 +2701,15 @@ async fn invoke_at(
     target: RemoteActionTarget,
     argument: InvokeArgument,
 ) -> Result<Value, String> {
-    let request = invocation_of(target, argument);
+    invoke_request(provider, caller, invocation_of(target, argument)).await
+}
+
+/// Wait for the receipt of a native action, preserving the sender's invocation id on retries.
+async fn invoke_request(
+    provider: &WorkspaceActionProvider,
+    caller: &Caller,
+    request: InvokeRequest,
+) -> Result<Value, String> {
     let (provider, caller) = (provider.clone(), caller.clone());
     tokio::task::spawn_blocking(move || {
         let invocation = request.invocation;
@@ -3060,6 +3086,17 @@ fn view_tool(turn: &Turn) -> Option<ToolDefinition> {
             "additionalProperties": false,
         }),
     })
+}
+
+/// The workspace's agent roster as its resource reads it, including older stored versions.
+async fn roster(
+    workspaces: &Workspaces,
+    workspace: &str,
+) -> Result<Option<WorkspaceAgents>, String> {
+    let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+    workspaces
+        .read_resource::<WorkspaceAgents>(workspace, (AGENTS_OWNER, &record))
+        .await
 }
 
 /// The record `doc` holds, read as this build's `R` once it is brought up to

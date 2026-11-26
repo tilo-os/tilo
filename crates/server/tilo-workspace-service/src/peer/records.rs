@@ -63,14 +63,10 @@ impl RecordRead {
         if cluster_id.as_str() != access.workspace() {
             return false;
         }
-        let named =
-            readers
-                .as_deref()
-                .is_none_or(|readers| match collab_types::Readers::parse(readers) {
-                    Some(collab_types::Readers::People(people)) => people.contains(&self.reader),
-                    Some(collab_types::Readers::EveryMember) => true,
-                    None => false,
-                });
+        let named = readers.as_deref().is_none_or(|named| {
+            collab_types::Readers::parse(named)
+                .is_some_and(|readers| readers.contains(&self.reader))
+        });
         if !named {
             return false;
         }

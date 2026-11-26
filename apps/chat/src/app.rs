@@ -1329,6 +1329,9 @@ impl ChatApp {
     /// What the composer says it is for, in the conversation `channel`: a
     /// channel's name, or the person a direct conversation is with.
     pub(crate) fn conversation_placeholder(&self, channel: &str) -> String {
+        if self.can_ask_personal_assistant_in(channel) {
+            return crate::i18n::t("chat-assistant-composer-placeholder");
+        }
         match self.channel(channel) {
             Some(row) if row.direct => crate::i18n::t("chat-person-chat-placeholder"),
             Some(row) => crate::i18n::t_args(
@@ -1701,6 +1704,7 @@ impl Collaborative for ChatApp {
 impl Widget for ChatApp {
     fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
         cx.children();
+        cx.flow("display:flex;flex-direction:column;min-width:0;flex:1;");
         let theme = cx.theme().clone();
         let style = theme.text(ui::tokens::TextRole::Body);
         let mut shown = String::new();
@@ -1718,12 +1722,18 @@ impl Widget for ChatApp {
             shown.push_str(&message.text);
         }
         if !shown.is_empty() {
-            cx.text(ui::composition::TextLook::new(
-                shown,
-                &style,
-                Some(theme.tokens.colors.text_primary),
-            ));
+            cx.words(
+                "messages",
+                "p",
+                self.rect,
+                ui::composition::TextLook::new(
+                    shown,
+                    &style,
+                    Some(theme.tokens.colors.text_primary),
+                ),
+            );
         }
+        self.compose_message_field(cx);
     }
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
@@ -2477,10 +2487,18 @@ impl Widget for ChatApp {
             self.reload(state);
             return true;
         }
-        let hit = self
-            .semantic_hits()
+        // The browser can act before the first native paint has measured the
+        // hit regions. Resolve the two composer targets from what is open.
+        let composer = [Hit::FocusMain, Hit::Send]
             .into_iter()
-            .find_map(|(_, hit, ..)| (hit.semantic_id() == target).then_some(hit));
+            .find(|hit| hit.semantic_id() == target);
+        let hit = match composer {
+            Some(hit) => self.shows_main_composer().then_some(hit),
+            None => self
+                .semantic_hits()
+                .into_iter()
+                .find_map(|(_, hit, ..)| (hit.semantic_id() == target).then_some(hit)),
+        };
         let Some(hit) = hit else {
             return false;
         };
@@ -2504,6 +2522,9 @@ impl Widget for ChatApp {
                     .message_rows(&self.held_messages(), &self.active_channel)
                     .len()
             });
+        if matches!(hit, Hit::Send) {
+            self.focus = Focus::Main;
+        }
         self.on_hit(hit, state);
         messages_before.is_none_or(|before| {
             crate::projection::read(state)
@@ -2960,6 +2981,7 @@ mod live_draft_presence_tests;
 pub(crate) mod menus;
 pub(crate) mod message_bar;
 mod own_delete;
+mod page;
 mod people;
 mod question;
 #[cfg(feature = "samples")]

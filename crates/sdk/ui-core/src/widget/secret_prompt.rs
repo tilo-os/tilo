@@ -2444,15 +2444,18 @@ impl Widget for SecretPrompt {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         use crate::composition::{Control, ControlOption, InputKind, TextLook};
         cx.element("dialog");
+        cx.attr("open", "");
         let theme = cx.theme().clone();
         let colors = &theme.tokens.colors;
         let style = theme.text(crate::tokens::TextRole::Body);
-        for field in &self.fields {
-            // A secret's characters never reach the page: it shows as many
-            // dots as the field holds, and what the person types reaches the
-            // widget as keys do.
+        for (index, field) in self.fields.iter().enumerate() {
+            // The browser masks its own editable value. The composition carries only dots.
             cx.control(Control::Entry {
                 input: InputKind::Search,
+                target: Some(crate::composition::keyed_target(
+                    "secret-prompt",
+                    &[FIELD_KEY.saturating_add(u64::try_from(index).unwrap_or(0))],
+                )),
                 text: "•".repeat(field.input.value().chars().count()),
                 placeholder: field.label.clone(),
                 min: None,

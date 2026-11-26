@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license.workspace = true
-description = "A person's assistant in one window: its main chat, its sub-agents, its tasks and scheduled work, and what it runs on"
+description = "Manage a personal workspace assistant and its sub-agents, and open their conversations in Chat"
 
 # The renamed self dev-dependency only turns on `samples` for tests.
 [package.metadata.cargo-machete]

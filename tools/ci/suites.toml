@@ -293,7 +293,7 @@ suites = [
 name = "lounge-waits"
 # The page drivers' waits end on what the shell answers rather than on frames drawn; the
 # test drives them against a stand-in shell, so it needs no image and no browser.
-inputs = ["os/containers/tilo-lounge/integration/"]
+inputs = ["os/containers/tilo-lounge/integration/", "crates/browser/tilo-browser-runtime/web/first-screen.mjs"]
 suites = ["os/containers/tilo-lounge/integration/waits.test.mjs"]
 
 [[group]]
@@ -303,12 +303,13 @@ suites = ["tools/ci/test_native_store_autoclear.py"]
 
 [[group]]
 name = "os-workflows"
-inputs = ["os/", ".forgejo/workflows/", "tools/ci/publish/", "tools/release/tilo-sh.sh", "tools/release/tilo_sh_receipts.py"]
+inputs = ["os/", ".forgejo/workflows/", "tools/ci/publish/", "tools/release/tilo-sh.sh", "tools/release/tilo_sh_preflight.py", "tools/release/tilo_sh_receipts.py"]
 suites = [
   "os/tests/test_ci_fast_images.py",
   "os/containers/tilo-server/test-contract.sh",
   "os/containers/tilo-lounge/test-entrypoint.sh",
   "os/containers/tilo-sh/test-native-env.sh",
+  "tools/release/test_tilo_sh_preflight.py",
   "tools/release/test_tilo_sh_receipts.py",
   "os/tests/rpm_snapshot_invariants.sh",
   "os/tests/test_rpm_snapshot_fingerprint.py",

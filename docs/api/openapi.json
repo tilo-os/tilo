@@ -2269,6 +2269,12 @@
         ],
         "description": ""
       },
+      "assistant.window.view-main-chat.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
       "tilo.workspace.agent.create-agent.Arguments": {
         "type": "object",
         "properties": {
@@ -2299,6 +2305,12 @@
         "required": [
           "name"
         ],
+        "description": ""
+      },
+      "tilo.workspace.agent.ensure-personal-assistant.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
         "description": ""
       },
       "tilo.workspace.agent.set-agent-spend-limit.Arguments": {
@@ -34778,9 +34790,21 @@
     },
     {
       "app": "so.tilo.assistant",
+      "resource": "assistant.window",
+      "action": "view-main-chat",
+      "arguments": "#/components/schemas/assistant.window.view-main-chat.Arguments"
+    },
+    {
+      "app": "so.tilo.assistant",
       "resource": "tilo.workspace.agent",
       "action": "create-agent",
       "arguments": "#/components/schemas/tilo.workspace.agent.create-agent.Arguments"
+    },
+    {
+      "app": "so.tilo.assistant",
+      "resource": "tilo.workspace.agent",
+      "action": "ensure-personal-assistant",
+      "arguments": "#/components/schemas/tilo.workspace.agent.ensure-personal-assistant.Arguments"
     },
     {
       "app": "so.tilo.assistant",

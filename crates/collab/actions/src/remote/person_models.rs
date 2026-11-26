@@ -89,6 +89,26 @@ pub const WAIT_SIGN_IN: &str = "wait-sign-in";
 /// Stop waiting for a sign-in begun with [`BEGIN_SIGN_IN`] ([`WaitSignIn`]).
 pub const CANCEL_SIGN_IN: &str = "cancel-sign-in";
 
+/// The model operations exposed by the Settings form.
+#[must_use]
+pub fn is_settings_action(action: &str) -> bool {
+    matches!(
+        action,
+        LIST | ADD_PRESET
+            | ADD_PROVIDER
+            | SET_KEY
+            | REMOVE_KEY
+            | REMOVE_PROVIDER
+            | REFRESH_MODELS
+            | ADD_MODEL
+            | SET_DEFAULT
+            | SET_ASSIGNMENTS
+            | BEGIN_SIGN_IN
+            | WAIT_SIGN_IN
+            | CANCEL_SIGN_IN
+    )
+}
+
 /// The target of action `action` of [`RESOURCE`].
 #[must_use]
 pub fn target(action: &str) -> RemoteActionTarget {

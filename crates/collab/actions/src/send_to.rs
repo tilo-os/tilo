@@ -24,6 +24,8 @@ pub enum RecipientKind {
     /// when it opens the box there: the search never finds it, and it never
     /// sits beside another recipient.
     Feedback,
+    /// The signed-in person's personal assistant, resolved by the shell when sending.
+    Assistant,
 }
 
 impl RecipientKind {
@@ -32,7 +34,7 @@ impl RecipientKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::NewAgent => "New agent",
-            Self::Agent => "Agent",
+            Self::Assistant | Self::Agent => "Agent",
             Self::Person => "Person",
             Self::Conversation => "Conversation",
             Self::Feedback => "Feedback",
@@ -45,8 +47,8 @@ impl RecipientKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Recipient {
     pub kind: RecipientKind,
-    /// The agent's id, the person's root identity or the conversation's id; empty for
-    /// [`RecipientKind::NewAgent`], which the shell makes.
+    /// The agent's id, the person's root identity or the conversation's id; empty for the
+    /// personal assistant and for a new agent, which the shell resolves.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub id: String,
     /// The name the chip shows: the agent's or the person's, the conversation's, or the name the new

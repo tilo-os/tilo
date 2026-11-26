@@ -12,8 +12,9 @@
 //!
 //! The events are the workspace's, kept in its store beside its mail and its
 //! models ([`Workspaces::workspace_root`]): every member whose role reaches
-//! them sees and changes the same events, and who set one up is kept as its
-//! author, not its owner ([`EventView::by`]). A server that starts again
+//! them sees and changes the workspace's events, with authorship recorded
+//! in [`EventView::by`]. A personal assistant's look-round is visible only
+//! to the person it runs for and their authorized agent. A server that starts again
 //! runs every event it kept, and a moment that passed while it was down
 //! fires once.
 //!
@@ -182,6 +183,15 @@ struct Stored {
     /// The member whose assistant its instruction starts, by their root, hex:
     /// the one who set it up.
     person: String,
+    /// The person's look-round. Earlier event files did not record their scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    personal: Option<bool>,
+}
+
+impl Stored {
+    fn visible_to(&self, person: &[u8; 32]) -> bool {
+        self.personal != Some(true) || self.person.eq_ignore_ascii_case(&hex::encode(person))
+    }
 }
 
 /// Who the policy answered for, and where.
@@ -306,9 +316,27 @@ impl WorkspaceEvents {
             let Some(workspace) = workspace_of(&hexed) else {
                 continue;
             };
+            let old_look = old_look_round(&at);
+            if let Err(error) = &old_look {
+                tracing::warn!(%workspace, %error, "events of unknown scope are private until the look-round can be read");
+            }
             for (id, dir) in directories(&at.join(FOLDER)) {
-                let started =
-                    read_stored(&dir).and_then(|stored| self.run(&workspace, stored, &dir));
+                let started = read_stored(&dir).and_then(|mut stored| {
+                    if stored.definition.id != id {
+                        return Err("the event's id differs from its directory".into());
+                    }
+                    if stored.personal.is_none() {
+                        match &old_look {
+                            Ok(Some(event)) if *event == id => {
+                                stored.personal = Some(true);
+                                write_stored(&dir, &stored)?;
+                            }
+                            Err(_) => stored.personal = Some(true),
+                            _ => {}
+                        }
+                    }
+                    self.run(&workspace, stored, &dir)
+                });
                 match started {
                     Ok(event) => kept.push((workspace.clone(), id, event)),
                     Err(error) => {
@@ -335,9 +363,7 @@ impl WorkspaceEvents {
     fn begin(&self, workspace: &str, stored: Stored) -> Result<Running, String> {
         let dir = self.dir(workspace, &stored.definition.id);
         std::fs::create_dir_all(&dir).map_err(|error| format!("{}: {error}", dir.display()))?;
-        let bytes = serde_json::to_vec_pretty(&stored).map_err(|error| error.to_string())?;
-        tilo_files::native::atomic::write(&dir.join(DESCRIPTION), &bytes)
-            .map_err(|error| error.to_string())?;
+        write_stored(&dir, &stored)?;
         self.run(workspace, stored, &dir)
     }
 
@@ -355,17 +381,21 @@ impl WorkspaceEvents {
         Ok(Running { stored, kept, task })
     }
 
-    /// Whether an event of `workspace` this server keeps has the id `event`.
-    /// For the server's own code, which carries out turns with no caller to
-    /// weigh: an action is answered as the workspace's policy decides it
-    /// instead.
+    /// Whether this host runs `event` for `person` in `workspace`. The teller
+    /// recognizes a reminder by the original author of its scheduling event.
     #[must_use]
-    pub fn keeps(&self, workspace: &str, event: &str) -> bool {
+    pub fn set_up_by(&self, workspace: &str, event: &str, person: &[u8; 32]) -> bool {
         self.inner
             .running
             .lock_recover()
             .get(workspace)
-            .is_some_and(|theirs| theirs.contains_key(event))
+            .and_then(|events| events.get(event))
+            .is_some_and(|event| {
+                event
+                    .stored
+                    .person
+                    .eq_ignore_ascii_case(&hex::encode(person))
+            })
     }
 
     /// Answer `message` for `workspace_id`: the actions' rows, or one
@@ -454,6 +484,7 @@ impl WorkspaceEvents {
                 workspace_id,
                 caller,
                 authority,
+                Store::EVENTS,
                 workspace_events::LIST,
                 ActionKind::Read,
             )
@@ -485,6 +516,7 @@ impl WorkspaceEvents {
             workspace_id,
             caller,
             authority,
+            Store::EVENTS,
             workspace_events::LIST,
             ActionKind::Read,
         )
@@ -499,7 +531,7 @@ impl WorkspaceEvents {
         })
     }
 
-    /// Who `caller` asks for and as what, as the workspace's policy decides
+    /// Who `caller` asks for in `store`, as the workspace's policy decides
     /// it: the member themselves on a device the handshake verified (an
     /// agent's change first put to their person where the policy asks), or a
     /// turn this server carries out for them. A bot, an app, and an agent no
@@ -516,6 +548,7 @@ impl WorkspaceEvents {
         workspace_id: WorkspaceId,
         caller: &Caller,
         authority: &Authority,
+        store: Store,
         action: &str,
         effect: ActionKind,
     ) -> Result<Theirs, ActionCallError> {
@@ -532,7 +565,7 @@ impl WorkspaceEvents {
                 let reach = workspaces
                     .reaching_allowed(
                         (Some(workspace_id), caller, Some(certificate.as_ref())),
-                        Store::EVENTS,
+                        store,
                         action,
                         effect,
                     )
@@ -553,7 +586,7 @@ impl WorkspaceEvents {
                     .copied()
                     .ok_or(ActionCallError::UnknownAction)?;
                 if !workspaces
-                    .person_reaches(workspace_id, &person, Store::EVENTS, action, effect)
+                    .person_reaches(workspace_id, &person, store, action, effect)
                     .await
                 {
                     return Err(ActionCallError::NotPermitted);
@@ -605,18 +638,25 @@ impl WorkspaceEvents {
     ) -> Result<Value, ActionCallError> {
         let action = request.target.address.action.as_str();
         let theirs = self
-            .reach(workspace_id, caller, authority, action, effect_of(action))
+            .reach(
+                workspace_id,
+                caller,
+                authority,
+                Store::EVENTS,
+                action,
+                effect_of(action),
+            )
             .await?;
         let mut running = self.inner.running.lock_recover();
         let kept = running.entry(theirs.workspace.clone()).or_default();
         match action {
-            workspace_events::LIST => said(&listed(kept)),
+            workspace_events::LIST => said(&listed(kept, &theirs.person)),
             workspace_events::SET_UP => {
                 let wanted: SetUp = argument(
                     request,
                     "an event to set up names itself, what starts it and what to do then",
                 )?;
-                said(&self.set_up(&theirs, kept, wanted)?)
+                said(&self.set_up(&theirs, kept, wanted, None)?)
             }
             workspace_events::CHANGE => {
                 let changes: Change = argument(request, "a change names the event it changes")?;
@@ -624,7 +664,7 @@ impl WorkspaceEvents {
             }
             action @ (workspace_events::PAUSE | workspace_events::RESUME) => {
                 let named: Named = argument(request, "an event is named by its id")?;
-                let event = kept.get(&named.event).ok_or_else(no_such_event)?;
+                let event = visible_event(kept, &named.event, &theirs.person)?;
                 event
                     .kept
                     .pause(action == workspace_events::PAUSE)
@@ -634,15 +674,42 @@ impl WorkspaceEvents {
             workspace_events::REMOVE => {
                 let named: Named = argument(request, "an event is named by its id")?;
                 // Dropped, its runner stops; then what it kept goes.
-                drop(kept.remove(&named.event).ok_or_else(no_such_event)?);
+                visible_event(kept, &named.event, &theirs.person)?;
+                drop(kept.remove(&named.event));
                 let dir = self.dir(&theirs.workspace, &named.event);
                 if let Err(error) = std::fs::remove_dir_all(&dir) {
                     tracing::warn!(event = %named.event, %error, "a removed event's directory stays");
                 }
-                said(&listed(kept))
+                said(&listed(kept, &theirs.person))
             }
             _ => Err(ActionCallError::UnknownAction),
         }
+    }
+
+    /// Set up the person's own scheduled look once, applying the ordinary event
+    /// policy to the actual caller. Only the initiative service supplies its id.
+    pub(super) async fn set_up_look_round(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        authority: &Authority,
+        id: &str,
+        wanted: SetUp,
+    ) -> Result<EventView, ActionCallError> {
+        let action = workspace_events::SET_UP;
+        let theirs = self
+            .reach(
+                workspace_id,
+                caller,
+                authority,
+                Store::EVENTS,
+                action,
+                effect_of(action),
+            )
+            .await?;
+        let mut all = self.inner.running.lock_recover();
+        let kept = all.entry(theirs.workspace.clone()).or_default();
+        self.set_up(&theirs, kept, wanted, Some(id))
     }
 
     fn set_up(
@@ -650,14 +717,34 @@ impl WorkspaceEvents {
         theirs: &Theirs,
         kept: &mut BTreeMap<String, Running>,
         asked: SetUp,
+        personal_id: Option<&str>,
     ) -> Result<EventView, ActionCallError> {
+        let id = if let Some(id) = personal_id {
+            let id = uuid::Uuid::parse_str(id)
+                .map_err(|_| no_such_event())?
+                .to_string();
+            if let Some(event) = kept.get(&id) {
+                return (event.stored.personal == Some(true)
+                    && event.stored.visible_to(&theirs.person))
+                .then(|| view(event))
+                .ok_or_else(no_such_event);
+            }
+            if self.dir(&theirs.workspace, &id).exists() {
+                return Err(unavailable(
+                    "the saved look-round could not be resumed".into(),
+                ));
+            }
+            id
+        } else {
+            uuid::Uuid::new_v4().to_string()
+        };
         if kept.len() >= MAX_EVENTS {
             return Err(refused(format!(
                 "a workspace keeps at most {MAX_EVENTS} events"
             )));
         }
         let definition = Definition {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: id.clone(),
             name: asked.name,
             when: asked.when,
             only_if: asked.only_if,
@@ -669,11 +756,11 @@ impl WorkspaceEvents {
         .checked()
         .map_err(refused)?;
         watched_address(&definition).map_err(refused)?;
-        let id = definition.id.clone();
         let stored = Stored {
             definition,
             by: theirs.by.clone(),
             person: hex::encode(theirs.person),
+            personal: Some(personal_id.is_some()),
         };
         let event = self.begin(&theirs.workspace, stored).map_err(unavailable)?;
         let note = NoteChange {
@@ -701,7 +788,7 @@ impl WorkspaceEvents {
         kept: &mut BTreeMap<String, Running>,
         asked: Change,
     ) -> Result<EventView, ActionCallError> {
-        let current = kept.get(&asked.event).ok_or_else(no_such_event)?;
+        let current = visible_event(kept, &asked.event, &theirs.person)?;
         let mut definition = current.stored.definition.clone();
         if let Some(name) = asked.name {
             definition.name = name;
@@ -822,6 +909,42 @@ fn read_stored(dir: &Path) -> Result<Stored, String> {
     serde_json::from_slice(&bytes).map_err(|error| error.to_string())
 }
 
+fn write_stored(dir: &Path, stored: &Stored) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(stored).map_err(|error| error.to_string())?;
+    let path = dir.join(DESCRIPTION);
+    if stored.personal == Some(true) {
+        tilo_files::native::atomic::write_private(&path, &bytes)
+    } else {
+        tilo_files::native::atomic::write(&path, &bytes)
+    }
+    .map_err(|error| error.to_string())
+}
+
+/// Who actually set up a saved event, used to assign older look-round data.
+pub(super) fn stored_person(workspace_root: &Path, id: &str) -> Option<[u8; 32]> {
+    let id = uuid::Uuid::parse_str(id).ok()?.to_string();
+    let stored = read_stored(&workspace_root.join(FOLDER).join(&id)).ok()?;
+    (stored.definition.id == id).then_some(())?;
+    let mut person = [0; 32];
+    hex::decode_to_slice(&stored.person, &mut person).ok()?;
+    Some(person)
+}
+
+/// Earlier releases recorded the id of the active look-round beside the events.
+pub(super) fn old_look_round(workspace_root: &Path) -> Result<Option<String>, String> {
+    #[derive(Deserialize)]
+    struct LookRound {
+        event: Option<String>,
+    }
+    match std::fs::read(workspace_root.join("initiative.json")) {
+        Ok(bytes) => serde_json::from_slice::<LookRound>(&bytes)
+            .map(|look| look.event)
+            .map_err(|error| error.to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 /// The directories in `at`, by name; none where `at` is no directory.
 fn directories(at: &Path) -> Vec<(String, PathBuf)> {
     let Ok(entries) = std::fs::read_dir(at) else {
@@ -837,10 +960,25 @@ fn directories(at: &Path) -> Vec<(String, PathBuf)> {
 }
 
 /// `theirs`, in the order they were set up.
-fn listed(theirs: &BTreeMap<String, Running>) -> Events {
-    let mut events: Vec<EventView> = theirs.values().map(view).collect();
+fn listed(theirs: &BTreeMap<String, Running>, person: &[u8; 32]) -> Events {
+    let mut events: Vec<EventView> = theirs
+        .values()
+        .filter(|event| event.stored.visible_to(person))
+        .map(view)
+        .collect();
     events.sort_by(|a, b| (a.set_up_at_ms, &a.id).cmp(&(b.set_up_at_ms, &b.id)));
     Events { events }
+}
+
+fn visible_event<'a>(
+    events: &'a BTreeMap<String, Running>,
+    id: &str,
+    person: &[u8; 32],
+) -> Result<&'a Running, ActionCallError> {
+    events
+        .get(id)
+        .filter(|event| event.stored.visible_to(person))
+        .ok_or_else(no_such_event)
 }
 
 /// Why the address `definition` has this server look at on the web is not

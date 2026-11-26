@@ -694,6 +694,11 @@ fn workspace_in_front(fed: &Feeding<'_>) -> Option<Workspace> {
 }
 
 impl Feeding<'_> {
+    pub(crate) fn personal_assistant(&self, workspace: &str) -> Result<(String, String), String> {
+        let workspace = self.workspace(Some(workspace))?;
+        self.tabs.agents.ensure_personal(&workspace, self.person)
+    }
+
     /// Make an agent called `name` in the workspace `workspace_id` names (the
     /// one in front when it names none), kept by the person: the record is
     /// the agent's admission, and Chat's grants decide who may make one.

@@ -406,6 +406,7 @@ impl Widget for DatePicker {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         use crate::composition::{Control, InputKind};
         cx.control(Control::Entry {
+            target: None,
             input: InputKind::Date,
             text: self.selected.to_string(),
             placeholder: String::new(),

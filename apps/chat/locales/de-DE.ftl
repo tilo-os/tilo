@@ -6,6 +6,7 @@ chat-person-chat-private = Private Unterhaltung
 # Die Verfasserin oder der Mitglied einer Nachricht, dessen Profilkarte sich öffnet.
 chat-person-card = { $name }, Profil
 chat-person-chat-placeholder = Private Nachricht schreiben
+chat-assistant-composer-placeholder = Nachricht an deinen Assistenten
 chat-person-chat-empty = Schreib eine Nachricht, bevor du sie sendest.
 
 # Kennzeichnung in der `@`-Auswahl für Software statt einer Person, damit auf
@@ -132,6 +133,11 @@ chat-agent-failed = Konnte nicht abgeschlossen werden
 chat-agent-answered = { $model }, { $provider }, { $cost }
 # Das Modell, auf dem ein Gespräch mit einem Agenten läuft, bevor der Host eines nennt, und die
 # Wahl, die wieder der Vorgabe folgt.
+chat-assistant-setup = Persönlichen Assistenten einrichten
+chat-open-assistant = Assistenten öffnen
+chat-review-proposals = Vorschläge prüfen
+chat-agent-model-settings = Modellanbieter verbinden
+chat-assistant-needs-person = Melde dich mit deinem Konto an, um deinen Assistenten einzurichten.
 chat-agent-model = Modell
 chat-agent-model-default = Dem Standardmodell folgen
 # Was die Antworten dieses Gesprächs bisher gekostet haben ($cost), die zweite Zeile des
@@ -345,6 +351,7 @@ chat-message-pinned-marker = Angeheftet
 chat-message-sending = Wird gesendet…
 chat-empty-title = Noch keine Nachrichten
 chat-empty-title-read-only = Hier ist noch nichts gesagt
+chat-assistant-look-round = Bitte deinen Assistenten, jetzt im Arbeitsbereich nach neuer Arbeit zu schauen. Er kann dir auch deine geplanten Prüfungen zeigen, sie ein- oder ausschalten, ihren Zeitplan ändern oder ihr tägliches Ausgabenlimit senken.
 chat-jump-latest-message = Zur neuesten Nachricht springen
 chat-right-flap = Menschen oder Thread zeigen
 chat-typing-one = { $name } schreibt …

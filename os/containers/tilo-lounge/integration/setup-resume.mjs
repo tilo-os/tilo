@@ -37,6 +37,7 @@ import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {stepLimit, shellMetrics, machine, keepRecoveryWords} from './waits.mjs';
 import {clock} from './timing.mjs';
+import {agentCommand} from './shell.mjs';
 
 const [site, server, tiloBin, out] = process.argv.slice(2);
 if (!site || !server || !tiloBin || !out) {
@@ -256,8 +257,7 @@ const copy = async (tab, id) => {
   }
   return null;
 };
-const codeOf = prompt => prompt?.match(/(?:tilo|sh -s) login (tilo1[0-9a-f]+)/)?.[1]
-  ?? prompt?.match(/(?:tilo|sh -s) device add (\S+)/)?.[1] ?? null;
+const codeOf = prompt => agentCommand(prompt)?.text ?? null;
 const steps = tab => tab.evaluate(`document.getElementById('first-screen-steps')?.innerText ?? ''`).catch(() => '');
 
 // The agent's computer, as agent-setup.mjs makes it: its own home, where the

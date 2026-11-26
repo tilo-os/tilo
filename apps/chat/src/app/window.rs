@@ -73,7 +73,7 @@ impl ChatWindow {
 
 impl Widget for ChatWindow {
     fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
+        self.chat.borrow().html(cx);
     }
 
     ui::provides!(

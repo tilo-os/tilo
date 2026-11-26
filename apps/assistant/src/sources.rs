@@ -48,17 +48,10 @@ impl Assistant {
     }
 }
 
-/// The workspace's assistant among its `agents`: the agent no MCP client connects as, working
-/// here, the one made first. A workspace that has none has none.
-pub(crate) fn assistant(agents: &WorkspaceAgents, day: &str) -> Option<Assistant> {
+/// The keeper's assistant, using the same identity as the host that answers its DM.
+fn assistant(agents: &WorkspaceAgents, keeper: &str, day: &str) -> Option<Assistant> {
     agents
-        .made_by_people()
-        .filter(|agent| agent.mcp_client.is_none())
-        .min_by(|a, b| {
-            a.created_at
-                .cmp(&b.created_at)
-                .then_with(|| a.id.0.cmp(&b.id.0))
-        })
+        .personal_assistant(keeper)
         .map(|agent| Assistant::of(agent, day))
 }
 
@@ -68,10 +61,10 @@ pub(crate) enum Progress {
     Working,
     /// It waits for the person.
     NeedsYou,
-    /// It finished, `when` in words ("yesterday").
-    Done {
-        when: String,
-    },
+    /// It finished.
+    Done,
+    Failed,
+    Stopped,
 }
 
 /// A sub-agent the main agent started.
@@ -176,6 +169,7 @@ pub(crate) struct Staged {
 #[derive(Clone)]
 pub(crate) struct Reads {
     staged: Option<Rc<Staged>>,
+    keeper: Option<String>,
     /// Opens the workspace's document of its agents. It is asked each time the agents are
     /// read: a document still on its way when the window opened is read once it is here, by
     /// every part of the view and every effect.
@@ -186,6 +180,7 @@ impl Reads {
     pub(crate) fn of(cx: &ViewCx<Window>) -> Self {
         Self {
             staged: cx.fixture::<Staged>(),
+            keeper: cx.me().and_then(|me| me.person_id()).map(str::to_owned),
             agents: cx.resource_opener(workspace_agent::OWNER),
         }
     }
@@ -194,18 +189,19 @@ impl Reads {
     pub(crate) fn agents(&self) -> Option<WorkspaceResource<WorkspaceAgents>> {
         self.agents
             .open(&ui::resource::workspace::document_id(workspace_agent::KIND))
+            .filter(|record| record.may_read())
     }
 
-    /// The workspace's assistant; `Here(None)` when it has none.
+    /// The keeper's assistant, or `Here(None)` when they have none.
     pub(crate) fn assistant(&self) -> Read<Option<Assistant>> {
         if let Some(staged) = &self.staged {
             return Read::Here(staged.assistant.clone());
         }
-        let Some(agents) = self.agents() else {
+        let (Some(agents), Some(keeper)) = (self.agents(), self.keeper.as_deref()) else {
             return Read::NotHere;
         };
         let day = ui::clock::today().to_string();
-        Read::Here(assistant(&agents.get(), &day))
+        Read::Here(assistant(&agents.get(), keeper, &day))
     }
 
     /// The sub-agents the main agent started, read from the workspace's agents document.
@@ -213,30 +209,24 @@ impl Reads {
         if let Some(staged) = &self.staged {
             return Read::Here(staged.sub_agents.clone());
         }
-        let Some(agents) = self.agents() else {
+        let (Some(agents), Some(keeper)) = (self.agents(), self.keeper.as_deref()) else {
             return Read::NotHere;
         };
         let state = agents.get();
-        let day = ui::clock::today().to_string();
-        let Some(main) = assistant(&state, &day) else {
+        let Some(main) = state.personal_assistant(keeper) else {
             return Read::Here(Vec::new());
         };
         let listed = state
-            .agents
-            .iter()
+            .team_of(main)
+            .into_iter()
             .filter_map(|agent| {
                 let sub = agent.sub.as_ref()?;
-                if sub.started_by != main.id {
-                    return None;
-                }
                 let progress = match sub.stands {
                     workspace_agent::Stands::Working => Progress::Working,
                     workspace_agent::Stands::NeedsPerson => Progress::NeedsYou,
-                    workspace_agent::Stands::Done
-                    | workspace_agent::Stands::Failed
-                    | workspace_agent::Stands::Stopped => Progress::Done {
-                        when: sub.line.clone(),
-                    },
+                    workspace_agent::Stands::Done => Progress::Done,
+                    workspace_agent::Stands::Failed => Progress::Failed,
+                    workspace_agent::Stands::Stopped => Progress::Stopped,
                 };
                 Some(SubAgent {
                     id: agent.id.0.clone(),
@@ -249,13 +239,13 @@ impl Reads {
         Read::Here(listed)
     }
 
-    /// The assistant's tasks. Tasks publishes no read of one agent's issues yet.
+    /// Tasks owns the workspace's issue list. Captures supply the example rows they show.
     pub(crate) fn tasks(&self) -> Read<Vec<Task>> {
         self.staged(|staged| staged.tasks.clone())
     }
 
-    /// What the assistant does at a time. The host publishes no read of a person's
-    /// Shortcuts yet.
+    /// A capture's scheduled work. In a live window the assistant manages the person's
+    /// events through the workspace host.
     pub(crate) fn scheduled(&self) -> Read<Vec<Scheduled>> {
         self.staged(|staged| staged.scheduled.clone())
     }
@@ -265,7 +255,8 @@ impl Reads {
         self.staged(|staged| staged.events.clone())
     }
 
-    /// What the assistant learned about its person. Nothing keeps it yet.
+    /// A capture's learned facts. The person's direct conversation can recall, correct
+    /// and forget the real facts under the person's own grants.
     pub(crate) fn learned(&self) -> Read<Vec<String>> {
         self.staged(|staged| staged.learned.clone())
     }
@@ -306,29 +297,40 @@ mod tests {
     }
 
     #[test]
-    fn the_assistant_is_the_workspaces_first_agent_no_client_connects_as() {
+    fn the_assistant_is_the_persons_first_active_agent_no_client_connects_as() {
         let mine = ME.repeat(32);
         let other = "bb".repeat(32);
         let mut client = agent("claude-code", &mine, 1);
         client.mcp_client = Some("Claude Code".to_owned());
         let mut retired = agent("old", &mine, 2);
         retired.state = AgentState::Retired;
-        // Made by another member: it is the workspace's all the same.
-        let mut paid = agent("assistant", &other, 5);
+        let mut paid = agent("assistant", &mine, 5);
         paid.spend_limit_micros = Some(10_000_000);
         paid.spent = Some(workspace_agent::Spent {
             day: "2026-11-17".to_owned(),
             cost_micros: 3_120_000,
         });
-        let record = agents(vec![client, retired, agent("later", &mine, 9), paid]);
-        let found = assistant(&record, "2026-11-17").expect("the workspace has one");
+        let record = agents(vec![
+            client,
+            retired,
+            agent("theirs", &other, 1),
+            agent("later", &mine, 9),
+            paid,
+        ]);
+        let found = assistant(&record, &mine, "2026-11-17").expect("the workspace has one");
         assert_eq!(found.id, "assistant");
         assert_eq!(found.spent_micros, 3_120_000);
         assert_eq!(found.limit_micros, Some(10_000_000));
         // Another day starts at nothing spent.
-        let next = assistant(&record, "2026-11-18").expect("the workspace has one");
+        let next = assistant(&record, &mine, "2026-11-18").expect("the workspace has one");
         assert_eq!(next.spent_micros, 0);
-        // A workspace with no agent of its own has none.
-        assert_eq!(assistant(&agents(Vec::new()), "2026-11-17"), None);
+        // Another person sees their own agent, or no agent.
+        assert_eq!(
+            assistant(&record, &other, "2026-11-17")
+                .expect("their assistant")
+                .id,
+            "theirs"
+        );
+        assert_eq!(assistant(&record, &"cc".repeat(32), "2026-11-17"), None);
     }
 }

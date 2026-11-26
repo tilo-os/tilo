@@ -45,12 +45,15 @@ pub(crate) enum SendToAction {
     /// Send to
     ///
     /// Sends the words and what they carry to whom it names, as a person's send-to box does: the
-    /// conversation with them opens or continues in Chat, carrying the items. A recipient is a new
-    /// agent, an agent, a person or a conversation, by its id, or by its name alone to be found.
+    /// conversation with them opens or continues in Chat, carrying the items. Use `assistant` for
+    /// the signed-in person's assistant. Other recipients can name an agent, person or conversation,
+    /// or request a new agent.
     #[effect(kind = "outside")]
     #[effect(job)]
     Send {
-        #[param("Who it goes to: kind new-agent, agent, person or conversation, by id or name")]
+        #[param(
+            "Who it goes to: kind assistant, new-agent, agent, person or conversation, by id or name"
+        )]
         to: Vec<Recipient>,
         #[param("What it carries besides its words")]
         attached: Option<Vec<tilo_reference::Attached>>,
@@ -457,7 +460,7 @@ impl Shared {
         }
         let (workspace, target) = match addressed(self.feedback.as_ref(), workspace, to)? {
             Addressed::Message { workspace, to } => {
-                let resolved = self.recipients_of(&workspace, &to, &agent_name(attached))?;
+                let resolved = self.recipients_of(by, &workspace, &to, &agent_name(attached))?;
                 // Only a person's box opens the conversation where it stood.
                 let by_person = by.is_none_or(|by| by.acting.is_person());
                 let target = send_target(
@@ -535,14 +538,26 @@ impl Shared {
     /// A new agent could not be made or admitted, or nobody is left to go to.
     fn recipients_of(
         &self,
+        by: Option<&tilo_actions::ActionInvoker>,
         workspace: &str,
         to: &[Recipient],
         asked: &str,
     ) -> Result<Vec<Recipient>, String> {
+        if by.is_some_and(|by| by.acting.direct_person() != Some(self.person.as_str()))
+            && to
+                .iter()
+                .any(|recipient| recipient.kind == RecipientKind::Assistant)
+        {
+            return Err("only the signed-in person can address their personal assistant".into());
+        }
         let feed = self.workspace_settings_feed();
         let mut resolved: Vec<Recipient> = Vec::with_capacity(to.len());
         for recipient in to {
             match recipient.kind {
+                RecipientKind::Assistant => {
+                    let (id, name) = feed.personal_assistant(workspace)?;
+                    resolved.push(Recipient::found(RecipientKind::Agent, id, name));
+                }
                 RecipientKind::NewAgent => {
                     // A new agent takes the workspace's default model and the colour its identity
                     // gives it.

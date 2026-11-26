@@ -225,15 +225,9 @@ impl TurnTeam {
 
     /// The workspace's list of its agents, as the workspace keeps it now.
     async fn list(&self) -> Result<WorkspaceAgents, String> {
-        let document = collab_types::workspace_document_id(KIND);
-        let bytes = self
-            .workspaces
-            .resource_document(&self.workspace, tilo_workspace_agent::OWNER, &document)
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or("the workspace keeps no agents")?;
-        let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-        crate::agents::opened::<WorkspaceAgents>(&mut doc)
+        super::roster(&self.workspaces, &self.workspace)
+            .await?
+            .ok_or_else(|| "the workspace keeps no agents".to_owned())
     }
 
     /// Apply `invoke` on the list as `caller`'s turn acts: its agent, for the person who asked,

@@ -3,11 +3,74 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {ack2, blake3Block, hello, parseExact, serverNonce} from './page.mjs';
+import {ack2, authenticatedPage, blake3Block, hello, pagePerson, parseExact, sameSecretEntry, serverNonce, workspaceItemPath} from './page.mjs';
 
 const golden = JSON.parse(readFileSync(new URL('./handshake.json', import.meta.url), 'utf8'));
 const bytes = text => Uint8Array.from(text.match(/../g) ?? [], pair => parseInt(pair, 16));
 const hex = data => Array.from(data, b => b.toString(16).padStart(2, '0')).join('');
+
+test('a workspace resource opens in the addressed app on the same workspace', () => {
+  const item = 'workspace/agents/child 1';
+  const path = workspaceItemPath('team-1', 'so.tilo.chat', item);
+  assert.equal(path, '/w/team-1/chat/workspace%2Fagents%2Fchild%201');
+  assert.equal(decodeURIComponent(new URL(path, 'https://tilo.sh').pathname.split('/')[4]), item);
+  assert.equal(workspaceItemPath('team-1', 'so.tilo.assistant'), '/w/team-1/assistant');
+  assert.equal(workspaceItemPath('team-1', 'so.tilo.chat', '..'), null);
+});
+
+test('only the same password field may keep local typing when a patch arrives', () => {
+  const field = (type, target, label) => ({type, dataset: {t: target}, getAttribute: () => label});
+  const key = field('password', 'tilo.key-action:secret-prompt:100', 'Provider key');
+  assert.ok(sameSecretEntry(key, {...key}));
+  assert.ok(!sameSecretEntry(key, {...key, type: 'text'}));
+  assert.ok(!sameSecretEntry(key, field('password', 'tilo.key-action:secret-prompt:101', 'Provider key')));
+  assert.ok(!sameSecretEntry(key, field('password', key.dataset.t, 'Account password')));
+});
+
+test('reconnecting cannot send an old password field to the newly signed device', async () => {
+  const page = {
+    field: null,
+    set innerHTML(body) { this.field = {body, id: 12}; },
+    replaceChildren() { this.field = null; },
+    contains(field) { return Boolean(field) && field === this.field; },
+  };
+  const first = [];
+  const second = [];
+  const connection = sent => ({send: async ask => { sent.push(ask); }});
+  const view = authenticatedPage(page);
+  const act = {act: {id: 12, target: 'password', action: {value: 'test-only'}}};
+  const open = {open: {workspace: 'team', app: 'settings'}};
+  view.connect(connection(first));
+  view.show('Password');
+  const previous = page.field;
+  await view.send(act, previous);
+  view.connect(null);
+  assert.equal(page.field, null);
+  assert.equal(view.owns(previous), false);
+  view.connect(connection(second));
+  await view.send(open);
+  await view.send(act, previous);
+  await view.send(act);
+  assert.deepEqual(second, [open]);
+  view.show('Password');
+  assert.equal(page.field.id, previous.id);
+  await view.send(act, previous);
+  assert.deepEqual(second, [open]);
+  const current = {act: {id: 12, target: 'password', action: {value: 'new-test-only'}}};
+  await view.send(current, page.field);
+  assert.deepEqual(second, [open, current]);
+  assert.deepEqual(first, [act]);
+});
+
+test('only a personal page device may start pairing', () => {
+  const person = {user_public_key: [0xab], capabilities: {}};
+  assert.equal(pagePerson(person), 'ab');
+  for (const capabilities of [{agent: 'all'}, {stand_in: true}, {workspace_service: true}]) {
+    assert.equal(pagePerson({...person, capabilities}), null);
+  }
+  assert.equal(pagePerson({...person, issuer: {...person, capabilities: {workspace_service: true}}}), null);
+  assert.equal(pagePerson({...person, issuer: {...person, capabilities: {stand_in: true}}}), 'ab');
+});
 
 test('a hello carries the certificate exactly as it was issued', () => {
   for (const {certified, hello: expected} of golden.cases) {

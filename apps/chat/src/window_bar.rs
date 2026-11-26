@@ -217,15 +217,7 @@ impl ChatApp {
     /// What leads the conversation's name in the bar: the face of the one person or agent a
     /// direct conversation is with, else the channel's icon.
     pub(crate) fn location_lead(&self) -> (Option<String>, Option<LocationAvatar>) {
-        let channel = self.channel(&self.active_channel);
-        // A direct conversation not listed yet (no message in it) is named by its id.
-        let members = match channel {
-            Some(channel) => channel.direct.then(|| channel.members.clone()),
-            None => crate::chat::Chat::direct_members(&ui::tilo_resource::Id::from_raw(
-                self.active_channel.clone(),
-            )),
-        };
-        if let Some(members) = members {
+        if let Some(members) = self.active_direct_members() {
             let Some(other) = self.conversation_peer(&members) else {
                 return (Some("users".to_owned()), None);
             };
@@ -244,7 +236,7 @@ impl ChatApp {
             };
             return (None, Some(avatar));
         }
-        let icon = match channel {
+        let icon = match self.channel(&self.active_channel) {
             Some(channel) if channel.kind == ChannelKind::Voice => "volume-2",
             Some(_) => "hash",
             None => return (None, None),
@@ -291,10 +283,7 @@ impl ChatApp {
     /// The agent the conversation in view is with: one direct conversation
     /// with exactly one agent.
     pub(crate) fn conversation_agent(&self) -> Option<String> {
-        let members = match self.channel(&self.active_channel) {
-            Some(channel) => channel.direct.then(|| channel.members.clone()),
-            None => crate::chat::Chat::direct_members(&Id::from_raw(self.active_channel.clone())),
-        }?;
+        let members = self.active_direct_members()?;
         self.conversation_peer(&members)
             .filter(ui::tilo_resource::MemberId::is_agent)
             .map(|peer| peer.id().to_owned())
@@ -373,6 +362,13 @@ impl ChatApp {
                     Hit::AgentModel(None),
                 ));
             }
+        }
+        if !self.models.has_choices() {
+            items.push(self.bar_entries.entry(
+                "settings",
+                crate::i18n::t("chat-agent-model-settings"),
+                Hit::OpenModelSettings,
+            ));
         }
         let enabled = !items.is_empty();
         let action = ToolbarAction::new("chat-agent-model", "sparkles", label)
@@ -521,6 +517,33 @@ mod tests {
             .expect("the conversation with the agent opens");
         window.settle();
         window
+    }
+
+    #[test]
+    fn an_agent_dm_with_no_configured_models_offers_provider_settings() {
+        let mut window = window_with_agent();
+        let mut chat = window.chat();
+        chat.models = crate::model_choice::ModelChoices::answered(ModelProviders {
+            providers: Vec::new(),
+            default_provider: None,
+            assignments: Vec::new(),
+        });
+        let picker = chat
+            .window_bar_actions()
+            .into_iter()
+            .find(|action| action.id == "chat-agent-model")
+            .unwrap();
+        let settings = picker
+            .items
+            .iter()
+            .find(|item| item.name == "Connect a model provider")
+            .expect("provider setup");
+        assert_eq!(
+            chat.bar_entries.pressed(&ToolbarEvent::Action {
+                id: settings.id.clone()
+            }),
+            Some(Hit::OpenModelSettings)
+        );
     }
 
     /// The model an agent conversation answers on, as the window bar offers it:

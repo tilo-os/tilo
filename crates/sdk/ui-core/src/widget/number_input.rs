@@ -784,6 +784,7 @@ impl Widget for NumberInput {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         use crate::composition::{Control, InputKind};
         cx.control(Control::Entry {
+            target: None,
             input: InputKind::Number,
             text: self.format_value(),
             placeholder: String::new(),

@@ -50,14 +50,14 @@ test('without streaming compilation or the preload, the page leaves the runtime 
   assert.equal(runCompile({href: null}).context.__tiloStartModule, undefined);
 });
 
-/** `host.mjs` with its wasm bindings and the splitter's loader replaced by
- * the fakes on `globalThis.__startupFixture`, everything else real. */
+/** Exercise the page host with the WASM bindings the entry bundle ships.
+ * Record any request for an additional module, including a failed request. */
 async function loadHost() {
   let source = read('host.mjs').replaceAll('import.meta.url', JSON.stringify(new URL('./host.mjs', web).href));
   source = source
     .replace("import init,* as runtime from './pkg/tilo_browser_runtime.js';",
       'const init=(...args)=>globalThis.__startupFixture.init(...args);const runtime={};')
-    .replaceAll("import('./pkg/__wasm_split.js')", 'globalThis.__startupFixture.split()')
+    .replaceAll('import(', 'globalThis.__startupFixture.importModule(')
     .replace(/from '(\.\/[^']+)'/g, (_all, path) => `from '${new URL(path, web).href}'`);
   return import(`data:text/javascript;base64,${Buffer.from(`${source}\n// ${Math.random()}`).toString('base64')}`);
 }
@@ -69,12 +69,8 @@ function fixture({startModule} = {}) {
   const steps = [];
   let release;
   const ready = new Promise(resolve => { release = resolve; });
-  const split = {
-    prefetch: name => { steps.push(`prefetch ${name}`); return Promise.resolve(true); },
-    load: async name => { steps.push(`load ${name}`); },
-  };
   globalThis.__startupFixture = {
-    split: async () => split,
+    importModule: async path => { steps.push(`import ${path}`); throw new Error(`Missing module: ${path}`); },
     init: async options => { steps.push(`init ${options?.module_or_path ? 'compiled' : 'fetch'}`); await ready; steps.push('ready'); },
   };
   if (startModule === undefined) delete globalThis.__tiloStartModule;
@@ -82,17 +78,15 @@ function fixture({startModule} = {}) {
   return {steps, release: () => release()};
 }
 
-test('the peer’s code is fetched and compiled while the start module still compiles, and init takes the page’s compile', async () => {
+test('the peer uses the precompiled entry module without requesting another module', async () => {
   const {steps, release} = fixture({startModule: Promise.resolve({compiled: true})});
   const host = await loadHost();
-  await settle();
-  // Before the runtime is ready: the peer's module is already asked for.
-  assert.deepEqual([...steps].sort(), ['init compiled', 'prefetch peer']);
-  release();
   const runtime = host.loadRuntime();
   await settle();
-  assert.deepEqual(steps.slice(2), ['ready', 'load peer']);
+  assert.deepEqual(steps, ['init compiled']);
+  release();
   await runtime;
+  assert.deepEqual(steps, ['init compiled', 'ready']);
   delete globalThis.__tiloStartModule;
 });
 
@@ -102,7 +96,7 @@ test('a page whose early compile failed has init fetch the module itself', async
   const {steps, release} = fixture({startModule: failed});
   await loadHost();
   await settle();
-  assert.deepEqual([...steps].sort(), ['init fetch', 'prefetch peer']);
+  assert.deepEqual(steps, ['init fetch']);
   release();
 });
 

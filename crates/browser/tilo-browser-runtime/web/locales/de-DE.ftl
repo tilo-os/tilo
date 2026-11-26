@@ -172,3 +172,8 @@ recovery-words-body = Diese 24 Wörter sind der einzige Weg zurück in Tilo, wen
 recovery-words-copy = Kopieren
 recovery-words-copied = Kopiert
 recovery-words-confirm = Ich habe sie aufgeschrieben
+
+workspace-create-name = Name des neuen Arbeitsbereichs
+workspace-create-submit = Erstellen
+workspace-create-cancel = Abbrechen
+workspace-create-retry = Der Host hat noch nicht geantwortet. Drücke erneut auf Erstellen, um denselben Arbeitsbereich zu öffnen.

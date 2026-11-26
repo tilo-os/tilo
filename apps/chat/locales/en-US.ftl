@@ -6,6 +6,7 @@ chat-person-chat-private = Private conversation
 # A message's author or a member, opening their profile card.
 chat-person-card = { $name }, profile
 chat-person-chat-placeholder = Write a private message
+chat-assistant-composer-placeholder = Message your assistant
 chat-person-chat-empty = Write a message before sending.
 chat-send-empty = Write a message, or attach something to send.
 chat-send-needs-recipient = Choose who the message goes to.
@@ -134,6 +135,11 @@ chat-agent-failed = Could not finish
 chat-agent-answered = { $model }, { $provider }, { $cost }
 # The model a conversation with an agent answers on, before the server says which one, and the choice
 # that follows the workspace's default again.
+chat-assistant-setup = Set up personal assistant
+chat-open-assistant = Open Assistant
+chat-review-proposals = Review proposals
+chat-agent-model-settings = Connect a model provider
+chat-assistant-needs-person = Sign in as yourself to set up your assistant.
 chat-agent-model = Model
 chat-agent-model-default = Follow the default model
 # What this conversation's answers have cost so far ($cost), the model switcher's second line.
@@ -347,6 +353,7 @@ chat-message-pinned-marker = Pinned
 chat-message-sending = Sending…
 chat-empty-title = No messages yet
 chat-empty-title-read-only = Nothing has been said here yet
+chat-assistant-look-round = Ask your assistant to check this workspace now. You can also ask it to show your scheduled checks, turn them on or off, change their timing, or lower their daily spending limit.
 chat-jump-latest-message = Jump to latest message
 chat-right-flap = Show people or thread
 chat-typing-one = { $name } is typing…

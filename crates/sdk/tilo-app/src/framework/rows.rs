@@ -16,6 +16,18 @@ use ui_core::widget::ActionEmitter;
 
 pub(crate) use tilo_resource::share::{outside_document, resolved_outside_document};
 
+/// Publish the standard item view and `open` action on a live row whose id the app shows
+/// through [`super::ViewCx::on_open`]. A reference can then open it just like a document item.
+#[must_use]
+pub fn openable_row<R: tilo_resource::words::RowType>(
+    id: impl Into<String>,
+    label: impl Into<String>,
+) -> LiveRow {
+    let mut resource = LiveRow::typed::<R>(id, label).into_resource();
+    super::root::offer_item(&mut resource);
+    LiveRow::declared(resource)
+}
+
 /// An application the shell lists, as the type its rows are items of: the
 /// kind every app's application rows share.
 pub struct Application;

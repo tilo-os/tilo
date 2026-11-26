@@ -327,6 +327,58 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
 }
 
 #[tokio::test]
+async fn a_page_finds_actions_on_members_of_its_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, id, _) = governed(workspaces).await;
+    let member = admit(workspaces, &workspace, &owner, 1).await;
+    let as_member = caller(&member);
+    let outsider = caller(&guest_device().1);
+
+    let found = workspaces
+        .page_actions(id, &as_member, "set your name")
+        .await;
+    let mut rename = request(&workspace, NAME, json!({"name": "Ada"}));
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].target().as_ref(), Some(&rename.target));
+    assert_eq!(
+        found[0].parent_resource,
+        workspace_governance_child(&workspace, None)
+    );
+    rename.target = found[0].target().unwrap();
+    workspaces
+        .page_invoke(id, &as_member, &rename)
+        .await
+        .unwrap();
+    assert!(
+        workspaces
+            .members(&workspace)
+            .await
+            .unwrap()
+            .iter()
+            .any(|person| {
+                person["name"] == "Ada"
+                    && person["member"]["person"] == hex::encode(member.user_public_key)
+            })
+    );
+
+    assert!(
+        workspaces
+            .page_actions(id, &outsider, "set your name")
+            .await
+            .is_empty()
+    );
+    assert!(workspaces.page_may_invite(id, &caller(&owner)).await);
+    assert!(!workspaces.page_may_invite(id, &as_member).await);
+    assert!(!workspaces.page_may_invite(id, &outsider).await);
+    grant(workspaces, &workspace, &owner, &member, governance::INVITE).await;
+    assert!(workspaces.page_may_invite(id, &as_member).await);
+    server.shutdown().await;
+}
+
+#[tokio::test]
 async fn an_invitation_lasts_the_seconds_the_desktop_asked() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();

@@ -30,6 +30,50 @@ use tilo_user_identity::DeviceCert;
 
 use super::{WorkspaceId, Workspaces};
 
+/// Whose grants apply to what a host reads for a person.
+#[derive(Clone, Copy)]
+pub(crate) enum ReadFor<'a> {
+    Person,
+    Caller(&'a Caller),
+    #[cfg(feature = "agents")]
+    Assistant(&'a str, &'a [tilo_action_policy::Rule]),
+}
+
+impl<'a> From<Option<&'a Caller>> for ReadFor<'a> {
+    fn from(caller: Option<&'a Caller>) -> Self {
+        caller.map_or(Self::Person, Self::Caller)
+    }
+}
+
+/// Apply the current workspace grants for a person or an assistant acting for them.
+pub(super) fn reading_as(
+    policy: tilo_action_policy::WorkspacePolicy,
+    (person, reader): (&[u8; 32], ReadFor<'_>),
+) -> Option<tilo_action_policy::MemberAccess> {
+    let person = hex::encode(person);
+    policy.active_role(&person)?;
+    let access = tilo_action_policy::MemberAccess::person(policy, person.as_str());
+    match reader {
+        ReadFor::Person => Some(access),
+        ReadFor::Caller(caller) => Some(
+            access
+                .as_acting(caller.acting().clone())?
+                .granted(caller.granted(&[])),
+        ),
+        #[cfg(feature = "agents")]
+        ReadFor::Assistant(agent, rules) => Some(
+            access
+                .as_acting(tilo_action_policy::Acting::handed_agent(
+                    agent,
+                    person.as_str(),
+                ))?
+                .granted(tilo_action_policy::roles::agent_bound(
+                    agent, &person, rules,
+                )),
+        ),
+    }
+}
+
 /// How long the person has to answer a question about a use.
 const QUESTION_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
 
@@ -78,11 +122,15 @@ impl Store {
         app: tilo_app_id::apps::SHORTCUTS,
         kind: tilo_actions::remote::workspace_events::KIND,
     };
-    /// What the workspace's assistant finds to do on its own: its
-    /// look-round and proposals, in Assistant.
+    /// The assistant's look-round in this workspace.
     pub const INITIATIVE: Self = Self {
         app: tilo_app_id::apps::ASSISTANT,
         kind: tilo_actions::remote::workspace_initiative::LOOK_ROUND_KIND,
+    };
+    /// The assistant's proposals and the person's decisions about them.
+    pub const PROPOSALS: Self = Self {
+        app: tilo_app_id::apps::ASSISTANT,
+        kind: tilo_actions::remote::workspace_initiative::PROPOSALS_KIND,
     };
 
     /// The node `action` of this store stands at in `workspace`.
@@ -303,16 +351,29 @@ impl Workspaces {
         action: &str,
         effect: ActionKind,
     ) -> bool {
+        self.person_store_answer(workspace, (person, None), store, action, effect)
+            .await
+            != Answer::Deny
+    }
+
+    /// The person's current decision, including an unanswered request for consent.
+    /// Unattended reads must have an explicit allowance.
+    pub(crate) async fn person_store_answer<'a>(
+        &self,
+        workspace: WorkspaceId,
+        (person, reader): (&[u8; 32], impl Into<ReadFor<'a>>),
+        store: Store,
+        action: &str,
+        effect: ActionKind,
+    ) -> Answer {
         let Some(policy) = self.policy_of(&workspace.to_string()).await else {
-            return false;
+            return Answer::Deny;
         };
-        let person = hex::encode(person);
-        if policy.active_role(&person).is_none() {
-            return false;
-        }
-        let node = store.node(&policy.workspace, action);
-        let access = tilo_action_policy::MemberAccess::person(policy, person.as_str());
-        access.answer(&node, effect, &Context::at_time(tilo_clock::wall())) != Answer::Deny
+        let Some(access) = reading_as(policy, (person, reader.into())) else {
+            return Answer::Deny;
+        };
+        let node = store.node(access.workspace(), action);
+        access.answer(&node, effect, &Context::at_time(tilo_clock::wall()))
     }
 
     /// Whether the agent `turn` carries out may do `effect` with `action` of

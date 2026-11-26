@@ -43,7 +43,7 @@ const INSTANCE: u64 = 1;
 const VIEWPORT: (u32, u32) = (1280, 720);
 
 /// Device name the view's storage is kept under.
-const DEVICE: &str = "attached-view";
+pub(super) const DEVICE: &str = "attached-view";
 
 /// The actions the view applied, as its transport replicates them.
 #[derive(Clone, Default)]

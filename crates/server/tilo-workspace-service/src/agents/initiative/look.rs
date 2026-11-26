@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use tilo_actions::remote::workspace_initiative::Found;
 use tilo_automation::dispatch::DocumentEvent;
 
-use crate::workspaces::Workspaces;
+use crate::workspaces::{ReadFor, Workspaces};
 
 /// The app that keeps the workspace's tasks.
 const TASKS: &str = "so.tilo.tasks";
@@ -124,26 +124,45 @@ fn who(event: &DocumentEvent) -> &'static str {
 /// The workspace is not governed here.
 pub(super) async fn gather(
     workspaces: &Workspaces,
-    workspace: &str,
-    person: &[u8; 32],
-    own: &Own,
+    owner: &super::Owner,
+    caller: Option<&tilo_actions::remote::Caller>,
+    event: &str,
     seen: &Seen,
     now_ms: i64,
 ) -> Result<Gathered, String> {
+    let workspace = owner.workspace.as_str();
+    let person = hex::encode(owner.person);
+    let assistant = super::assistant_of(workspaces, workspace, &owner.person).await?;
+    let bound = assistant.as_ref().and_then(|agent| agent.bound_rules());
+    let reader = match (caller, assistant.as_ref()) {
+        (Some(caller), _) => ReadFor::Caller(caller),
+        (None, Some(agent)) => {
+            ReadFor::Assistant(&agent.id.0, bound.as_deref().unwrap_or_default())
+        }
+        (None, None) => ReadFor::Person,
+    };
+    let reader = (&owner.person, reader);
+    let own = Own {
+        thread: assistant
+            .as_ref()
+            .map(|agent| super::thread(&person, &agent.id.0).to_string()),
+        person,
+        assistant: assistant.as_ref().map(|agent| agent.id.0.clone()),
+        event: event.to_owned(),
+    };
     let routes = workspaces
-        .workspace_document_routes(workspace)
-        .await
-        .map_err(|error| error.to_string())?;
+        .workspace_document_reads(workspace, reader)
+        .await?;
     let mut next = Seen {
         looked: true,
-        documents: seen.documents.clone(),
+        documents: BTreeMap::new(),
         mail_seq: seen.mail_seq,
         due: BTreeSet::new(),
     };
     let mut found = Found::default();
     let (mut changed, mut due) = (Vec::new(), Vec::new());
     let against = Against {
-        own,
+        own: &own,
         assistant: own
             .assistant
             .as_deref()
@@ -155,14 +174,14 @@ pub(super) async fn gather(
     // turn cost and where agents say how they stand: bookkeeping about the
     // assistant and its helpers, written after every turn, and never news.
     let roster = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-    for (app, document) in routes {
-        if app == tilo_workspace_agent::OWNER && document == roster {
+    for ((app, document), allowed) in &routes {
+        if !allowed {
             continue;
         }
-        let Ok(Some(bytes)) = workspaces
-            .resource_document(workspace, &app, &document)
-            .await
-        else {
+        if app == tilo_workspace_agent::OWNER && document == &roster {
+            continue;
+        }
+        let Ok(Some(bytes)) = workspaces.resource_document(workspace, app, document).await else {
             continue;
         };
         let Ok(mut doc) = AutoCommit::load(&bytes) else {
@@ -178,7 +197,7 @@ pub(super) async fn gather(
             None => None,
         };
         if let Some(since) = since.filter(|since| *since != heads.as_slice())
-            && let Some(named) = changes_in(workspace, (&app, &document), &mut doc, since, own)
+            && let Some(named) = changes_in(workspace, (app, document), &mut doc, since, &own)
         {
             found.changed = found.changed.saturating_add(1);
             if changed.len() < MAX_NAMED {
@@ -187,7 +206,7 @@ pub(super) async fn gather(
         }
         next.documents.insert(key, heads);
         let tasks_part = app == TASKS
-            && collab_types::document::DocumentId::parse(&document)
+            && collab_types::document::DocumentId::parse(document)
                 .and_then(|id| id.chain_part())
                 .is_some_and(|(chain, _)| chain == tasks::issue_list::chain());
         if tasks_part
@@ -204,22 +223,31 @@ pub(super) async fn gather(
     }
     // The first look starts at the newest arrival: mail from before it is
     // where the inbox stands.
-    let arrivals = match collab_types::WorkspaceId::parse(workspace) {
-        Some(id) => {
-            workspaces
-                .mail_arrivals_for(id, person, seen.mail_seq)
-                .await
-                .arrivals
-        }
-        None => Vec::new(),
-    };
-    next.mail_seq = arrivals
-        .iter()
-        .map(|arrival| arrival.seq)
-        .max()
-        .unwrap_or(seen.mail_seq);
+    let id =
+        collab_types::WorkspaceId::parse(workspace).ok_or("the workspace has no valid identity")?;
+    let arrived = workspaces.mail_arrivals_as(id, reader, seen.mail_seq).await;
+    next.mail_seq = arrived.newest;
     if seen.looked {
-        found.came_in = u64::try_from(arrivals.len()).unwrap_or(u64::MAX);
+        found.came_in = u64::try_from(arrived.arrivals.len()).unwrap_or(u64::MAX);
+    }
+    let current_assistant = super::assistant_of(workspaces, workspace, &owner.person).await?;
+    if current_assistant
+        .as_ref()
+        .map(|agent| (&agent.id, &agent.bound))
+        != assistant.as_ref().map(|agent| (&agent.id, &agent.bound))
+    {
+        return Err("the assistant's access changed during the look".into());
+    }
+    // Reads and decoding ran outside governance's lock. Discard this look if a
+    // previously readable route was withdrawn before handing over its metadata.
+    let current = workspaces
+        .workspace_document_reads(workspace, reader)
+        .await?;
+    if routes
+        .iter()
+        .any(|(route, allowed)| *allowed && current.get(route) != Some(&true))
+    {
+        return Err("record access changed during the look; take a new look".into());
     }
     let findings = json!({
         "cameIn": { "mail": found.came_in },

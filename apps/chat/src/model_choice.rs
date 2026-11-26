@@ -14,6 +14,15 @@ use tilo_actions::remote::InvokeArgument;
 use tilo_actions::remote::person_models::{self, ModelProviders, ProviderView};
 use ui::{Arrival, InvocationCall, RemoteActions};
 
+/// The same Settings section opens from the model picker and an empty agent conversation.
+pub(crate) fn settings_reference() -> ui::tilo_reference::ResourceRef {
+    ui::tilo_reference::ResourceRef::whole(
+        "settings.section",
+        "settings.section:agent_models",
+        crate::i18n::t("chat-agent-model-settings"),
+    )
+}
+
 /// One model a person may choose for an agent: the value an agent's model
 /// names (provider/model), the words a person reads for the model, and the
 /// provider that offers it as its own fact.
@@ -96,6 +105,15 @@ impl ModelChoices {
                 .flat_map(provider_choices)
                 .collect(),
         )
+    }
+
+    /// Whether the host supplied a configured model that can be chosen.
+    pub(crate) fn has_choices(&self) -> bool {
+        self.kept.borrow().as_ref().is_some_and(|kept| {
+            kept.providers
+                .iter()
+                .any(|provider| provider.configured && !provider.models.is_empty())
+        })
     }
 
     /// The choice `named` names, as provider/model or by the model's own name;

@@ -62,6 +62,7 @@ impl ChatApp {
             // cannot answer.
             ChatEffect::OpenDirectConversation { .. }
             | ChatEffect::OpenAgent { .. }
+            | ChatEffect::SetUpPersonalAssistant
             | ChatEffect::SendDirectMessage { .. }
             | ChatEffect::Send { .. } => {
                 return Err("a direct conversation answers where the chat is held".into());

@@ -2,6 +2,7 @@
 
 tilo-workspace-agent = Agents
 tilo-workspace-agent-create-agent = Create agent
+tilo-workspace-agent-ensure-personal-assistant = Set up my assistant
 tilo-workspace-agent-set-agent-spend-limit = Set daily spend limit
 tilo-workspace-agent-record-agent-spend = Record spend
 tilo-workspace-agent-rename-agent = Rename agent
@@ -27,3 +28,5 @@ chat-learned-forget = Forget a fact
 
 tilo-create-agent = Added the agent “{ $item }”
 assistant-create-agent = Added the agent “{ $item }”
+tilo-ensure-personal-assistant = Set up their assistant
+assistant-ensure-personal-assistant = Set up their assistant

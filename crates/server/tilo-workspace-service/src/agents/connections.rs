@@ -33,7 +33,7 @@ use tilo_actions::remote::{
     Caller, CatalogueProvider, CatalogueQuery, InvokeRequest, RemoteActionTarget,
 };
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
-use tilo_workspace_agent::{Agent, WorkspaceAgents};
+use tilo_workspace_agent::Agent;
 
 use super::asks::{Answered, Asker, Carried, Carries, ServerAsk};
 use super::turn_provider::{Ending, Rows};
@@ -247,15 +247,11 @@ struct Answers {
 impl Answers {
     /// The agent that asked `ask`, as the workspace's list of its agents holds it now.
     async fn asker(&self, ask: &KeptAsk) -> Option<Agent> {
-        let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let kept = self
-            .workspaces
-            .read_resource::<WorkspaceAgents>(&ask.workspace, (tilo_workspace_agent::OWNER, &list))
+        let kept = super::roster(&self.workspaces, &ask.workspace)
             .await
             .ok()??;
-        kept.agents
-            .iter()
-            .find(|agent| agent.id.0 == ask.agent && agent.is_active())
+        kept.get(&tilo_resource::Id::from(ask.agent.as_str()))
+            .filter(|agent| agent.is_active())
             .cloned()
     }
 

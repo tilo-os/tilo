@@ -1375,10 +1375,13 @@ find_tilo() {
 # The Python SDK as this checkout has it: uv with its lock where uv is, else
 # the sources on the path beside a system httpx (the t check's image).
 sdk_python() {
-  if command -v uv >/dev/null; then
-    uv run --quiet --project "$repo/sdk/python" python "$@"
+  local -x PYTHONPATH=$repo/sdk/python/src${PYTHONPATH:+:$PYTHONPATH}
+  if [[ -n ${TILO_SH_SDK_PYTHON:-} ]]; then
+    "$TILO_SH_SDK_PYTHON" "$@"
+  elif command -v uv >/dev/null; then
+    uv run --quiet --frozen --project "$repo/sdk/python" python "$@"
   else
-    PYTHONPATH=$repo/sdk/python/src${PYTHONPATH:+:$PYTHONPATH} python3 "$@"
+    python3 "$@"
   fi
 }
 

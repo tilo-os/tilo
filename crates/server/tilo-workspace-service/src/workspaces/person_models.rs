@@ -89,13 +89,14 @@ impl Workspaces {
     /// the action's answer for one of those, and nothing for any other action.
     async fn sign_in_invoke(
         &self,
-        action: &str,
-        person: [u8; 32],
-        here: &str,
+        device: (collab_types::WorkspaceId, &Caller, &DeviceCert),
+        consented: bool,
         reach: &Reach,
         request: &InvokeRequest,
     ) -> Option<Result<Value, ActionCallError>> {
-        match action {
+        let (workspace, caller, certificate) = device;
+        let owner = (workspace, certificate.user_public_key);
+        match request.target.address.action.as_str() {
             person_models::BEGIN_SIGN_IN => {
                 // Named nothing, a sign-in is to the plan.
                 let beginning: BeginSignIn =
@@ -109,7 +110,16 @@ impl Workspaces {
                     };
                 Some(answer(
                     &self
-                        .begin_openai_sign_in((person, here), beginning, reach.clone())
+                        .begin_openai_sign_in(
+                            openai::SignInDevice {
+                                workspace,
+                                caller: caller.clone(),
+                                certificate: certificate.clone(),
+                                consented,
+                            },
+                            beginning,
+                            reach.clone(),
+                        )
                         .await,
                 ))
             }
@@ -118,18 +128,45 @@ impl Workspaces {
                     Ok(waiting) => waiting,
                     Err(error) => return Some(Err(error)),
                 };
-                Some(answer(&self.wait_openai_sign_in(person, &waiting).await))
+                Some(answer(&self.wait_openai_sign_in(owner, &waiting).await))
             }
             person_models::CANCEL_SIGN_IN => {
                 let cancelling: WaitSignIn = match argument(request, "a sign-in to stop") {
                     Ok(cancelling) => cancelling,
                     Err(error) => return Some(Err(error)),
                 };
-                self.cancel_openai_sign_in(person, &cancelling);
+                self.cancel_openai_sign_in(owner, &cancelling);
                 Some(answer(&Ok(())))
             }
             _ => None,
         }
+    }
+
+    /// Run a built-in Settings form's provider action through the same store
+    /// and policy as the person's device. The page session supplies the
+    /// certificate it authenticated, independently of the worker's request.
+    ///
+    /// # Errors
+    /// The session is not the person's own, its workspace no longer grants
+    /// the action, or the request is outside the Settings form's vocabulary.
+    pub async fn page_model_setting(
+        &self,
+        workspace: collab_types::WorkspaceId,
+        caller: &Caller,
+        certificate: &DeviceCert,
+        request: &InvokeRequest,
+    ) -> Result<Value, ActionCallError> {
+        Self::asking_person(caller, Some(certificate), Some(workspace))?;
+        let action = request.target.address.action.as_str();
+        if !crate::workspace_access::person_device(certificate)
+            || request.target != person_models::target(action)
+            || request.on_behalf_of.is_some()
+            || !person_models::is_settings_action(action)
+        {
+            return Err(ActionCallError::NotPermitted);
+        }
+        self.person_models_invoke(Some(workspace), caller, Some(certificate), request)
+            .await
     }
 
     /// Answer a [`person_models::PROVIDER`] request.
@@ -149,12 +186,16 @@ impl Workspaces {
             _ => tilo_action_policy::ActionKind::Undoable,
         };
         let reach = self
-            .reaching_allowed(
+            .reaching(
                 (workspace_id, caller, certificate),
                 Store::MODELS,
                 action,
                 effect,
             )
+            .await?;
+        let consented = reach.answer == tilo_action_policy::Answer::Ask;
+        let reach = self
+            .allowed(reach, caller, Store::MODELS, action, effect)
             .await?;
         if action == person_models::ASK {
             let asked: ModelRequest = argument(request, "a model request")?;
@@ -164,13 +205,14 @@ impl Workspaces {
         }
         let here = reach.workspace.to_string();
         let root = self.workspace_root(&here);
-        let person = reach.person;
+        let workspace = reach.workspace;
         let by = reach.by();
         let keys = ProviderKeys::of(self.vault_at(&here), &by);
         let reach = self.model_reach();
-        if let Some(answered) = self
-            .sign_in_invoke(action, person, &here, &reach, request)
-            .await
+        if let Some(certificate) = certificate
+            && let Some(answered) = self
+                .sign_in_invoke((workspace, caller, certificate), consented, &reach, request)
+                .await
         {
             return answered;
         }

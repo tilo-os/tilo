@@ -20,6 +20,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+struct WorkspacePage {
+    app: String,
+    item: Option<String>,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent interaction/lifecycle flag (hover, press, focus, enabled, cache-dirty), not a combinatorial state machine"
@@ -27,6 +32,8 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 pub struct Button {
     id: String,
     label: String,
+    /// The workspace app this button opens and, when specified, its addressed item.
+    open_page: Option<Box<WorkspacePage>>,
     /// A fact told at the face's trailing edge, after the label (`Self::with_detail`): the time a
     /// choice stands for, the amount a row holds. The label then stands at the leading edge, so
     /// the face reads as a row the choice offers rather than a word centred in a button.
@@ -142,6 +149,27 @@ fn theme_key(theme: &Theme) -> ThemeKey {
 }
 
 impl Button {
+    /// Name the destination of a button that opens another app's workspace item.
+    /// A hosted page follows it in the browser. A window runs its normal open action.
+    #[must_use]
+    pub fn opening_workspace_item(mut self, app: &str, item: &tilo_reference::ResourceRef) -> Self {
+        self.open_page = Some(Box::new(WorkspacePage {
+            app: app.to_owned(),
+            item: Some(item.id.clone()),
+        }));
+        self
+    }
+
+    /// Name the landing page of a button which opens another workspace app.
+    #[must_use]
+    pub fn opening_workspace_app(mut self, app: &str) -> Self {
+        self.open_page = Some(Box::new(WorkspacePage {
+            app: app.to_owned(),
+            item: None,
+        }));
+        self
+    }
+
     /// Box this widget in the SDK so thin apps reuse its shared implementation.
     /// This keeps the widget's vtable instantiation out of the app.
     #[must_use]
@@ -187,6 +215,7 @@ impl Button {
             primary_on_hover: false,
             toggled: None,
             opens_menu: false,
+            open_page: None,
             shows_choice: false,
             shortcut: None,
             measured_width: None,
@@ -2213,6 +2242,12 @@ impl Button {
 impl Widget for Button {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("button");
+        if let Some(page) = self.open_page.as_deref() {
+            cx.attr("data-open-app", page.app.clone());
+            if let Some(item) = &page.item {
+                cx.attr("data-open-item", item.clone());
+            }
+        }
         match self.composed_face(cx.theme()) {
             Some(face) => cx.face(face),
             None => cx.picture(),

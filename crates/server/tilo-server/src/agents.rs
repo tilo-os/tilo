@@ -638,6 +638,19 @@ impl crate::app_serving::AppPages for ActionPages {
         self.actions.open_page(workspace_id, caller, address)
     }
 
+    fn open_certified(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        certificate: &DeviceCert,
+        address: tilo_server_protocol::page::PageAddress,
+    ) -> Pending<
+        Result<tilo_server_protocol::page::OpenedPage, tilo_server_protocol::page::PageRefusal>,
+    > {
+        self.actions
+            .open_page_with_device(workspace_id, caller, Some(certificate), address)
+    }
+
     fn act(
         &self,
         workspace_id: WorkspaceId,
@@ -1038,6 +1051,10 @@ struct ServerRecordsLink {
     /// requests answer from.
     runtime: tokio::runtime::Handle,
     workspaces: Option<crate::workspaces::Workspaces>,
+    /// The installed service holds this actions link itself to file tasks.
+    initiative: std::sync::Weak<
+        std::sync::OnceLock<tilo_workspace_service::agents::initiative::Initiative>,
+    >,
     browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
     web_entry: Option<String>,
     feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
@@ -1443,7 +1460,6 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
                 self.host_device
                     .runtime
                     .block_on(workspaces.page_actions(workspace, caller, needle))
-                    .rows
             });
         rows.extend(self.page_rows(workspace, caller, needle));
         rows
@@ -1465,6 +1481,50 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         self.host_device
             .runtime
             .block_on(workspaces.page_invoke(workspace, caller, request))
+    }
+
+    fn page_form_action(
+        &self,
+        workspace: WorkspaceId,
+        caller: &Caller,
+        certificate: &DeviceCert,
+        app: &str,
+        request: tilo_actions::remote::InvokeRequest,
+    ) -> Pending<Result<serde_json::Value, ActionCallError>> {
+        let (caller, certificate) = (caller.clone(), certificate.clone());
+        let (done, answer) = tilo_actions::remote::pending();
+        match app {
+            tilo_app_id::apps::SETTINGS => {
+                let Some(workspaces) = self.workspaces.clone() else {
+                    return Pending::ready(Err(ActionCallError::NotReady));
+                };
+                self.host_device.runtime.spawn(async move {
+                    done.complete(
+                        workspaces
+                            .page_model_setting(workspace, &caller, &certificate, &request)
+                            .await,
+                    );
+                });
+            }
+            tilo_app_id::apps::ASSISTANT => {
+                let Some(initiative) = self
+                    .initiative
+                    .upgrade()
+                    .and_then(|slot| slot.get().cloned())
+                else {
+                    return Pending::ready(Err(ActionCallError::NotReady));
+                };
+                self.host_device.runtime.spawn(async move {
+                    done.complete(
+                        initiative
+                            .page_proposal(workspace, &caller, &certificate, &request)
+                            .await,
+                    );
+                });
+            }
+            _ => return Pending::ready(Err(ActionCallError::NotPermitted)),
+        }
+        answer
     }
 
     fn ready_invite_link(
@@ -1766,6 +1826,19 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         tilo_workspace_service::workspaces::package_surface(&package, app).ok()
     }
 
+    fn personal_workspace_host(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Option<tilo_actions::remote::ResourceViewLocator> {
+        if !self.workspaces.as_ref()?.keeps_workspaces_for_people() {
+            return None;
+        }
+        self.view_locator(
+            &workspace.to_string(),
+            tilo_actions::policy::agent_answers::ACCOUNT_APP,
+        )
+    }
+
     fn view_locator(
         &self,
         workspace: &str,
@@ -1931,13 +2004,14 @@ impl WorkspaceActionsServer {
 
 /// Give `workspaces` the records `server` holds, joined as its own device.
 fn attach_resources(
-    actions: &WorkspaceActions,
+    action_server: &WorkspaceActionsServer,
     server: &Server,
     server_cert: &DeviceCert,
     web_entry: Option<String>,
     (feedback_reviewer, shell, browsers): Lent,
     sessions: Option<tilo_agent_session::AgentSessions>,
 ) -> Result<(), ServerError> {
+    let actions = &action_server.actions;
     if let Some(sessions) = &sessions {
         actions.attach_agent_sessions(sessions.clone());
     }
@@ -1982,6 +2056,7 @@ fn attach_resources(
             shell,
             user_public_key: server.own_user_public_key(),
             workspaces: server.workspaces().cloned(),
+            initiative: Arc::downgrade(&action_server.initiative),
             browser_origin: Arc::clone(&server.browser_origin),
             web_entry,
             feedback_reviewer,
@@ -2069,7 +2144,7 @@ async fn start_app_server(
         .certification
         .set(server.web_context().certification.clone());
     attach_resources(
-        &action_server.actions,
+        &action_server,
         &server,
         &server_cert,
         web_entry,

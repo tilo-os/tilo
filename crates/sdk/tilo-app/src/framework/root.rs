@@ -767,6 +767,11 @@ impl ResourceRoot {
         }
     }
 
+    /// Open a workspace page's addressed item through this app's registered view.
+    pub(crate) fn show_item(&self, anchor: &str) -> Result<(), String> {
+        self.stages.open(anchor)
+    }
+
     /// Apply a permission change made while the app runs: dispatchers stop
     /// (or resume) submitting, bound state and surfaces see the new value.
     fn refresh_access(&self) {

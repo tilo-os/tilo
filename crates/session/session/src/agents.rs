@@ -9,7 +9,7 @@
 //! join at once: the member it added is listed for the broker there
 //! ([`crate::Shared::mcp_member`]) before anyone is told to join as it, and a pass that cannot
 //! read the record keeps that listing.
-//! The agents the person here keeps ([`Kept`]) are whom what they type is handed to. Their turns
+//! The personal assistant in each workspace receives what the person types. Its turns
 //! are worked by the workspace's agent engine, which this device's workspace service runs.
 
 use std::cell::RefCell;
@@ -27,17 +27,6 @@ use ui::resource::workspace::WorkspaceResources;
 
 /// How this session names a record it opened, where the record's history is told.
 const SESSION_APP: (&str, &str) = ("tilo-session", "Workspace settings");
-
-/// An agent the person sitting here keeps.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Kept {
-    /// The workspace whose record names it.
-    pub workspace: String,
-    /// Its id, which its actor works as (`agent:<id>`).
-    pub id: String,
-    /// Its name, as people read it.
-    pub name: String,
-}
 
 pub(crate) use crate::search::ListedAgent as Listed;
 
@@ -145,7 +134,7 @@ impl Agents {
         &self,
         person: &str,
         workspaces: &[(String, WorkspacePolicy)],
-    ) -> (Vec<Kept>, Vec<Listed>) {
+    ) -> (BTreeMap<String, String>, Vec<Listed>) {
         let day = ui::clock::today().to_string();
         // Who keeps each agent, as the broker reads them, started from what it read last: a
         // workspace whose record cannot be read this pass keeps its listing, so a read that
@@ -165,7 +154,7 @@ impl Agents {
             .map(|held| held.clone())
             .unwrap_or_default();
         spend.retain(|(workspace, _), _| workspaces.iter().any(|(held, _)| held == workspace));
-        let mut kept = Vec::new();
+        let mut kept = BTreeMap::new();
         let mut every = Vec::new();
         for (workspace, policy) in workspaces {
             let record = match self.record(workspace, policy, person) {
@@ -183,6 +172,9 @@ impl Agents {
             };
             spend.retain(|(held, _), _| held != workspace);
             let mut named = Vec::new();
+            if let Some(agent) = state.personal_assistant(person) {
+                kept.insert(workspace.clone(), agent.name.clone());
+            }
             // Every agent the workspace's list names, retired ones too: a retired agent takes
             // no work, but what it said before it retired is still read by its name.
             for agent in state
@@ -212,14 +204,6 @@ impl Agents {
                         spent_micros: agent.spent_on(&day),
                     },
                 );
-                // An MCP agent connects on its own: what the person types goes to the others.
-                if agent.mcp_client.is_none() && agent.keeper == person {
-                    kept.push(Kept {
-                        workspace: workspace.clone(),
-                        id: agent.id.0.clone(),
-                        name: agent.name.clone(),
-                    });
-                }
             }
             listed.insert(workspace.clone(), named);
         }
@@ -261,25 +245,6 @@ impl Agents {
                 tracing::warn!(%error, %workspace, %agent, "an agent's spend is not counted");
             }
         }
-    }
-
-    /// The workspace's own agent in `workspace`, as `(id, name)`, read as `person`: the one no MCP
-    /// client connects as that the record lists first, by its own order — the agent the canvas
-    /// asks (shell.md §8.1). `None` where the workspace has none.
-    pub(crate) fn assistant(
-        &self,
-        workspace: &str,
-        policy: &WorkspacePolicy,
-        person: &str,
-    ) -> Option<(String, String)> {
-        let Held::Open(record) = self.record(workspace, policy, person) else {
-            return None;
-        };
-        let state = record.get();
-        state
-            .made_by_people()
-            .find(|agent| agent.mcp_client.is_none())
-            .map(|agent| (agent.id.0.clone(), agent.name.clone()))
     }
 
     /// The workspace's agents record, opened here where it is not, at the grants the pass read: a
@@ -350,7 +315,7 @@ impl crate::Shared {
         self.agents
             .charge(&workspaces, &self.person, &self.agent_sessions.take_spent());
         let (kept, listed) = self.agents.feed(&self.person, &workspaces);
-        self.search.set_kept_agents(&kept);
+        self.search.set_kept_agents(kept);
         self.search.set_listed_agents(&listed);
         self.conversations.feed(
             &self.person,
@@ -437,15 +402,14 @@ impl crate::Shared {
     }
 }
 
-/// Who a request typed in a workspace goes to: the agent the person keeps there, and a new one —
-/// named as the workspace names its agent — where they keep none. Text typed on the canvas that
-/// asks and search's row that hands an agent a request both send to it (shell.md §8.1).
-pub(crate) fn agent_recipient(kept: Option<(String, String)>) -> ui::floating_surface::Recipient {
+/// An implicit ask. Resolve its recipient when sending, against the signed-in person's roster.
+pub(crate) fn agent_recipient(name: Option<&str>) -> ui::floating_surface::Recipient {
     use ui::floating_surface::{Recipient, RecipientKind};
-    match kept {
-        Some((id, name)) => Recipient::found(RecipientKind::Agent, id, name),
-        None => Recipient::new_agent(crate::i18n::t("session-agent-name")),
-    }
+    Recipient::found(
+        RecipientKind::Assistant,
+        "",
+        name.map_or_else(|| crate::i18n::t("session-agent-name"), str::to_owned),
+    )
 }
 
 #[cfg(test)]

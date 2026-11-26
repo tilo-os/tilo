@@ -27,6 +27,7 @@ import {chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'no
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
+import {agentCommand} from './shell.mjs';
 import {stepLimit, shellMetrics, machine, browserMemory, reloaded, keepRecoveryWords} from './waits.mjs';
 
 const [site, server, tiloBin, out] = process.argv.slice(2);
@@ -273,18 +274,6 @@ const copied = async (tab, what, before) => {
   }
   await fail(`${what} never reached the clipboard`);
 };
-// What a prompt names: the ticket this tab's host served (`tilo1…`), and, from a host still
-// handing out login codes, the short code it names instead.
-const commandOf = prompt => {
-  const login = prompt.match(/(?:tilo|sh -s) login (\S+)/);
-  const add = prompt.match(/(?:tilo|sh -s) device add (\S+)/);
-  const text = login?.[1] ?? add?.[1];
-  if (!text) return null;
-  return {text, kind: add ? 'device add' : 'login',
-    ticket: /^tilo1[0-9a-f]+$/.test(text) ? text : null,
-    code: /^[2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4}$/.test(text) ? text : null,
-    site: prompt.match(/--site (\S+?)(?:,|\s|$)/)?.[1] ?? null};
-};
 // The steps the tab shows, as it shows them: each line the list ever held,
 // kept in the page the moment the list changes. Read by polling, a step the
 // page drew and replaced (or the screen left with) between two reads was
@@ -350,7 +339,7 @@ const prompt = await copied(first, 'the setup prompt', beforeSetup);
 if (prompt !== shown) await fail(`the click copied something else than the prompt shown: ${prompt} / ${shown}`);
 report.prompt = prompt;
 mark('the page copied its setup prompt');
-const setup = commandOf(prompt);
+const setup = agentCommand(prompt);
 if (!setup) await fail(`the prompt names no tilo login ticket: ${prompt}`);
 if (!/^Set up Tilo for me: run curl -fsSL \S+ \| sh -s login tilo1[0-9a-f]+, then do what it tells you\.$/.test(prompt)) {
   await fail(`the prompt is not the one-line setup naming the ticket: ${prompt}`);
@@ -436,7 +425,7 @@ report.person = signedUp;
 // A second agent on the same computer (another window of the same agent, say) starts
 // its own `tilo mcp` while the first stays connected: both are the one device
 // `tilo login` made, and neither cuts the other off. It does what the login's
-// words tell it to, and the person's tab shows the note it writes.
+// words tell it to, and the person's tab shows the issue it creates.
 const otherAgent = spawn(tiloBin, ['mcp'], {env, stdio: ['pipe', 'pipe', 'pipe']});
 const secondAnswers = new Map();
 let secondOut = '';
@@ -467,10 +456,10 @@ const call = async (name, args) => {
 };
 await ask('initialize', {protocolVersion: '2025-06-18', capabilities: {}, clientInfo: {name: 'check-second', version: '1'}});
 otherAgent.stdin.write(`${JSON.stringify({jsonrpc: '2.0', method: 'notifications/initialized'})}\n`);
-const noteTitle = 'Hello from the second agent';
+const taskTitle = `Hello from the second agent ${Date.now()}`;
 await call('tilo_do', {path: 'tasks#open'});
-await call('tilo_do', {path: 'tasks#create', args: {title: noteTitle}});
-// The first agent still acts after the second did: it lists the notes, the
+await call('tilo_do', {path: 'tasks#create', args: {title: taskTitle}});
+// The first agent still acts after the second did: it lists the issues, the
 // second agent's among them.
 const firstAnswer = new Promise(resolve => {
   let seen = '';
@@ -479,28 +468,23 @@ const firstAnswer = new Promise(resolve => {
 mcp.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: 3, method: 'tools/call', params: {name: 'tilo_ls', arguments: {path: 'tasks/tasks.issues'}}})}\n`);
 const firstSaid = await Promise.race([firstAnswer, sleep(stepLimit(4)).then(() => 'no answer')]);
 report.firstAfterSecond = firstSaid.slice(-600);
-if (!firstSaid.includes(noteTitle)) await fail(`the first agent no longer reads the workspace after the second acted: ${firstSaid.slice(-600)}`);
-// The window the second agent's open put on the workspace's shared desktop
-// reaches the person's page as a window of Notes, and its content shows the
-// note it wrote. On a failure, what the page holds: its text, and the address it is at, which
-// tells a page that never opened from one showing nothing.
+if (!firstSaid.includes(taskTitle)) await fail(`the first agent no longer reads the workspace after the second acted: ${firstSaid.slice(-600)}`);
 const windowsHeld = `JSON.stringify({
   page: document.getElementById('tilo-page')?.innerText?.slice(0, 600) ?? null,
   at: location.pathname,
 })`;
-// The page the server renders shows one app at a time: the note the second
-// agent wrote is read where Notes lists it, at the app's own address.
+// The list at the server-rendered Tasks page shows each issue in a keyed row.
 const pageWorkspace = await first.evaluate(`document.getElementById('tilo-page') ? (location.pathname.split('/')[2] ?? '') : ''`).catch(() => '');
-await first.navigate(`${site}/w/${pageWorkspace}/notes`);
-const opened = await first.waitFor(`[...document.querySelectorAll('#tilo-page [data-a=activate][data-t^="note-"]')]
-  .some(row => (row.innerText || '').includes(${JSON.stringify(noteTitle)}))`, {timeout: stepLimit(4)}).then(() => 'shown').catch(() => '');
-if (!opened) await fail(`the person's tab showing the note the second agent opened never happened: ${await briefly(first, windowsHeld, '(the page did not answer)')}; the second agent was answered: ${JSON.stringify(report.secondAgent ?? []).slice(0, 1500)}`);
-const windowText = `(document.getElementById('tilo-page')?.innerText ?? '')`;
-report.noteWindow = await first.evaluate(`(${windowText}).replace(/\s+/g, ' ').slice(0, 2000)`)
-  .catch(() => '(the tab did not answer)');
-await until(first, `(${windowText}).includes(${JSON.stringify(noteTitle)})`, 'the person\'s tab showing the second agent\'s note', stepLimit(3));
+const tasksUrl = `${site}/w/${pageWorkspace}/tasks`;
+const issueShown = `[...document.querySelectorAll('#tilo-page [data-t^="key:"]')]
+  .some(row => row.innerText.includes(${JSON.stringify(taskTitle)}))`;
+await first.navigate(tasksUrl);
+if (!await first.waitFor(issueShown, {timeout: stepLimit(4)}).catch(() => false)) {
+  await fail(`the person's Tasks page never showed the issue the second agent created: ${await briefly(first, windowsHeld, '(the page did not answer)')}; the second agent was answered: ${JSON.stringify(report.secondAgent ?? []).slice(0, 1500)}`);
+}
+report.taskPage = await first.evaluate(`document.getElementById('tilo-page').innerText.slice(0, 2000)`);
 otherAgent.stdin.end();
-mark('a second agent on the computer wrote a note the tab shows, the first still connected');
+mark('a second agent on the computer created an issue the tab shows, the first still connected');
 
 // Loaded again while the agent's MCP server is still connected, the tab is the
 // same person in the same workspace, titled after it, with the agent still
@@ -531,14 +515,12 @@ if (!signedUp.workspace || after.workspace !== signedUp.workspace) {
 if (/lounge/i.test(after.title) || after.title !== signedUp.title) {
   await fail(`after a reload the tab is titled "${after.title}", not "${signedUp.title}"`);
 }
-// The reloaded tab opens its layout from the copy its profile kept of the workspace's, and shows
-// that workspace with the Notes window still on it.
-await first.navigate(`${site}/w/${pageWorkspace}/notes`);
-const reopened = await first.waitFor(`[...document.querySelectorAll('#tilo-page [data-a=activate][data-t^="note-"]')]
-  .some(row => (row.innerText || '').includes(${JSON.stringify(noteTitle)}))`, {timeout: stepLimit(4)})
-  .then(() => 'shown').catch(() => '');
-if (!reopened) await fail(`after a reload the note the second agent wrote is gone: ${await briefly(first, windowsHeld, '(the page did not answer)')}; the tab says: ${(await pageText(first)).slice(0, 600)}`);
-mark('the reloaded tab still shows the note the second agent wrote');
+// As the same person again, the tab still sees the same issue in its workspace.
+await first.navigate(tasksUrl);
+if (!await first.waitFor(issueShown, {timeout: stepLimit(4)}).catch(() => false)) {
+  await fail(`after a reload the second agent's issue is gone: ${await briefly(first, windowsHeld, '(the page did not answer)')}; the tab says: ${(await pageText(first)).slice(0, 600)}`);
+}
+mark('the reloaded tab still shows the issue the second agent created');
 
 // 2. Back on a browser that keeps nothing: signed in through the agent.
 const second = await visit('returning');
@@ -549,7 +531,7 @@ await click(second, 'first-screen-agent-sign-in');
 await until(second, `document.documentElement.dataset.firstScreen === 'waiting'`, 'the first screen answering the click on Sign in with your agent');
 const again = await copied(second, 'the sign-in prompt', beforeSignIn);
 report.signInPrompt = again;
-const signIn = commandOf(again);
+const signIn = agentCommand(again);
 if (!signIn) await fail(`the sign-in prompt names no ticket or code: ${again}`);
 const approved = await tilo(signIn.kind === 'device add'
   ? ['device', 'add', signIn.ticket]

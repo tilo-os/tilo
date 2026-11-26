@@ -17,6 +17,7 @@ pub(crate) enum Hit {
     /// Choose the model the agent whose conversation is in view answers with;
     /// `None` follows the workspace's default again.
     AgentModel(Option<String>),
+    OpenModelSettings,
     Channel(Id),
     /// Make a channel in a category.
     AddChannel {

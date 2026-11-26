@@ -128,6 +128,10 @@ pub(crate) fn view(
         #[cfg(feature = "tilo-os")]
         crate::categories::Category::ExternalAccounts => accounts::view(cx, app),
         #[cfg(feature = "tilo-os")]
+        crate::categories::Category::AgentModels if cx.is_attached() => {
+            Some(provider_settings_ui::person_models::everything(cx))
+        }
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::AgentModels => agent_models::view(cx, app),
         #[cfg(not(feature = "tilo-os"))]
         crate::categories::Category::ExternalAccounts => person_settings::accounts_view(cx, app),

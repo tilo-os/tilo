@@ -1,13 +1,14 @@
 //! The panel beside the conversation: the assistant's tasks by where they stand, the work it
 //! does at a time and the events it reacts to. A task is an issue in Tasks, never a
-//! sub-agent; scheduled work and events are Shortcuts the host runs.
+//! sub-agent. The workspace host runs the events the person sets up with their assistant.
 
 use ui::icons::Icon;
 use ui::prelude::*;
+use ui::tilo_reference::ResourceRef;
 use ui::widget::{ListRow, Section, SectionHeader, Segment, ViewTabs};
 
-use crate::sources::{Read, Reads, Stage, Task};
-use crate::{Hands, Nav, Window, page, tr};
+use crate::sources::{Read, Stage, Task};
+use crate::{AssistantEffect, Hands, Nav, Window, page, tr};
 
 /// What the panel shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,9 +32,9 @@ impl Tab {
 }
 
 pub(crate) fn view(cx: &ViewCx<Window>, nav: &Nav, hands: &Hands) -> Element {
-    let reads = hands.reads.clone();
+    let hands = hands.clone();
     let shown = nav.tab.clone();
-    cx.switch(&nav.tab, move |_cx, tab| {
+    cx.switch(&nav.tab, move |cx, tab| {
         let tabs = ViewTabs::from_state(
             Tab::ALL
                 .into_iter()
@@ -45,22 +46,40 @@ pub(crate) fn view(cx: &ViewCx<Window>, nav: &Nav, hands: &Hands) -> Element {
         .with_accessible_name(tr("assistant-panel-views"));
         let mut parts: Vec<Element> = vec![Box::new(tabs)];
         parts.extend(match tab {
-            Tab::Active => active(&reads),
-            Tab::Scheduled => progress_work(&reads),
-            Tab::Resolved => resolved(&reads),
+            Tab::Active | Tab::Resolved => match hands.reads.tasks() {
+                Read::NotHere => open_tasks(&hands),
+                Read::Here(tasks) if *tab == Tab::Active => active(&tasks),
+                Read::Here(tasks) => resolved(&tasks),
+            },
+            Tab::Scheduled => progress_work(cx, &hands),
         });
         page(parts)
     })
 }
 
+/// Open the tracker itself through Tasks' published resource, in this workspace.
+fn open_tasks(hands: &Hands) -> Vec<Element> {
+    let dispatcher = hands.dispatcher.clone();
+    let tracker = ResourceRef::whole("tasks.tracker", "tasks.tracker", tr("assistant-tasks"));
+    vec![
+        Box::new(Text::new(&tr("assistant-work-in-tasks"))),
+        Box::new(
+            Button::new("assistant-open-tasks", "assistant-open-tasks")
+                .opening_workspace_app(ui::apps::TASKS)
+                .with_icon(Icon::ListChecks)
+                .on_view(move || dispatcher.open_reference(ui::apps::TASKS, None, &tracker)),
+        ),
+    ]
+}
+
 /// The one sentence a part of the panel says in place of its rows: `key`, named `key` for
 /// whoever drives the window.
-fn sentence(key: &str, icon: Option<Icon>) -> Vec<Element> {
-    let state = EmptyState::new(tr(key)).with_id(key);
-    vec![Box::new(match icon {
-        Some(icon) => state.with_icon(icon),
-        None => state,
-    })]
+fn empty_tasks(key: &str) -> Vec<Element> {
+    vec![Box::new(
+        EmptyState::new(tr(key))
+            .with_id(key)
+            .with_icon(Icon::ListChecks),
+    )]
 }
 
 fn rows(tasks: &[Task], stage: Stage, icon: Icon) -> Vec<Element> {
@@ -79,11 +98,7 @@ fn rows(tasks: &[Task], stage: Stage, icon: Icon) -> Vec<Element> {
 }
 
 /// The tasks that want the person, are being worked on or come next, by where they stand.
-fn active(reads: &Reads) -> Vec<Element> {
-    let tasks = match reads.tasks() {
-        Read::Here(tasks) => tasks,
-        Read::NotHere => return sentence("assistant-tasks-not-here", None),
-    };
+fn active(tasks: &[Task]) -> Vec<Element> {
     let mut parts: Vec<Element> = Vec::new();
     for (stage, title, icon) in [
         (
@@ -103,7 +118,7 @@ fn active(reads: &Reads) -> Vec<Element> {
         ),
         (Stage::UpNext, "assistant-up-next", Icon::Clock),
     ] {
-        let rows = rows(&tasks, stage, icon);
+        let rows = rows(tasks, stage, icon);
         if !rows.is_empty() {
             let count = rows.len();
             parts.push(Box::new(
@@ -112,30 +127,51 @@ fn active(reads: &Reads) -> Vec<Element> {
         }
     }
     if parts.is_empty() {
-        return sentence("assistant-tasks-none-active", Some(Icon::ListChecks));
+        return empty_tasks("assistant-tasks-none-active");
     }
     parts
 }
 
 /// The tasks that are done with.
-fn resolved(reads: &Reads) -> Vec<Element> {
-    match reads.tasks() {
-        Read::NotHere => sentence("assistant-tasks-not-here", None),
-        Read::Here(tasks) => {
-            let rows = rows(&tasks, Stage::Resolved, Icon::CircleCheck);
-            if rows.is_empty() {
-                sentence("assistant-tasks-none-resolved", Some(Icon::ListChecks))
-            } else {
-                vec![Box::new(Section::new(rows))]
-            }
-        }
+fn resolved(tasks: &[Task]) -> Vec<Element> {
+    let rows = rows(tasks, Stage::Resolved, Icon::CircleCheck);
+    if rows.is_empty() {
+        empty_tasks("assistant-tasks-none-resolved")
+    } else {
+        vec![Box::new(Section::new(rows))]
     }
 }
 
 /// What the assistant does at a time, and what it does when something happens.
-fn progress_work(reads: &Reads) -> Vec<Element> {
+fn progress_work(cx: &ViewCx<Window>, hands: &Hands) -> Vec<Element> {
+    let reads = &hands.reads;
     let (Read::Here(scheduled), Read::Here(events)) = (reads.scheduled(), reads.events()) else {
-        return sentence("assistant-scheduled-not-here", None);
+        return match reads.assistant() {
+            Read::Here(Some(assistant)) => {
+                let conversation = crate::agent_reference(&assistant.id, &assistant.name);
+                let open = cx.actions().bind_effect_invocation(
+                    Button::new("assistant-manage-events", "assistant-open-in-chat")
+                        .with_icon(Icon::MessageCircle)
+                        .opening_workspace_item(ui::apps::CHAT, &conversation),
+                    &AssistantEffect::ViewMainChat,
+                );
+                vec![
+                    Box::new(Text::new(&tr("assistant-events-in-chat"))),
+                    Box::new(open),
+                ]
+            }
+            Read::Here(None) => {
+                let open = cx.actions().bind_effect_invocation(
+                    Button::new("assistant-manage-events", "assistant-overview"),
+                    &AssistantEffect::ViewSupervision,
+                );
+                vec![
+                    Box::new(Text::new(&tr("assistant-events-need-assistant"))),
+                    Box::new(open),
+                ]
+            }
+            Read::NotHere => vec![crate::agents_not_here()],
+        };
     };
     let state = |on: bool| {
         tr(if on {

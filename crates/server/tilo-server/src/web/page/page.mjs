@@ -300,11 +300,14 @@ async function session(config, device) {
 // The site's own modules are served above the page's address (`<entry>w/<workspace>`), under the
 // version directory `version.json` names: the person's root lives there (`identity.mjs`), which
 // is what approves a browser waiting to be signed in. A page pressed before it is in waits on it.
+function siteBase() {
+  const at = location.pathname.indexOf('/w/');
+  return new URL(at < 0 ? '/' : location.pathname.slice(0, at + 1), location.href);
+}
 let identityLoading = null;
 function identityModule() {
   identityLoading ??= (async () => {
-    const at = location.pathname.indexOf('/w/');
-    const base = new URL(at < 0 ? '/' : location.pathname.slice(0, at + 1), location.href);
+    const base = siteBase();
     const response = await fetch(new URL('version.json', base), {cache: 'no-store'});
     if (!response.ok) throw new Error(`the site answered ${response.status}`);
     const {version} = await response.json();
@@ -317,6 +320,53 @@ function identityModule() {
 }
 
 // ---- The page ----
+
+/** The workspace address of another app or one of its resources. */
+export function workspaceItemPath(workspace, appId, item) {
+  const app = appId.split('.').at(-1);
+  if (!/^[a-zA-Z0-9-]+$/.test(app) || item === '.' || item === '..') return null;
+  const path = `/w/${encodeURIComponent(workspace)}/${app}`;
+  return item ? `${path}/${encodeURIComponent(item)}` : path;
+}
+
+/** Whether a replacement input still represents the password field being edited. */
+export function sameSecretEntry(old, fresh) {
+  return old.type === 'password' && fresh?.type === 'password' && Boolean(old.dataset.t) &&
+    old.dataset.t === fresh.dataset.t && old.getAttribute('aria-label') === fresh.getAttribute('aria-label');
+}
+
+/** The mounted controls belong to the signed connection that showed them. */
+export function authenticatedPage(page) {
+  let link = null;
+  let shown = false;
+  return {
+    connect(next) {
+      link = null;
+      shown = false;
+      page.replaceChildren();
+      link = next;
+    },
+    show(body) {
+      if (!link) return;
+      page.innerHTML = body;
+      shown = true;
+    },
+    get shown() { return shown; },
+    owns(element) { return shown && page.contains(element); },
+    send(ask, element) {
+      if (!link || (!ask.open && (!shown || (element && !page.contains(element))))) return null;
+      return link.send(ask);
+    },
+  };
+}
+
+/** The same person-device and issuer rules that the host applies to paired devices. */
+export function pagePerson(cert) {
+  const personal = caps => caps.agent == null && !caps.stand_in && !caps.workspace_service;
+  const issuer = cert.issuer;
+  return personal(cert.capabilities) && (!issuer || issuer.capabilities.stand_in ||
+    (!issuer.issuer && personal(issuer.capabilities))) ? hex(cert.user_public_key) : null;
+}
 
 function start() {
   const config = JSON.parse(document.getElementById('tilo-page-config').textContent);
@@ -336,13 +386,18 @@ function start() {
       document.documentElement.dataset.workspace = workspaceName;
     }
   } catch { /* none kept */ }
-  let link = null;
+  const view = authenticatedPage(page);
+  let signedInPerson = null;
+  let deviceSession = null;
   let composing = false;
   let unanswered = 0;
   let lastSelection = '';
   // Whether the page answers a Back or Forward of the browser's rather than
   // the person.
   let restoring = true;
+  // A resource link can open a row with a different local target, including a
+  // new conversation. Keep its reloadable address until the selection changes.
+  let addressedSelection = null;
   // The app's name, which a page with something open title-cases with what is open.
   let appTitle = config.address.app;
   const settled = new Map();
@@ -367,13 +422,14 @@ function start() {
   let working = null;
   let asked = 0;
   let heard = 0;
-  const ask = (value, tries = 0) => {
-    if (!link) return;
+  const ask = (value, tries = 0, replay = true, element) => {
+    const sending = view.send(value, element);
+    if (!sending) return;
     unanswered++;
     page.dataset.asks = String(++asked);
     working ??= setTimeout(() => { page.dataset.working = ''; }, 300);
-    sent.push({value, tries});
-    link.send(value).catch(() => {
+    sent.push({value: replay ? value : null, tries});
+    sending.catch(() => {
       page.dataset.asksLost = String(Number(page.dataset.asksLost ?? 0) + 1);
     });
   };
@@ -398,7 +454,6 @@ function start() {
     redone.push(act);
   };
   const reopened = asked => {
-    if (!link) return;
     // Why the page is shown again, for whoever looks into it.
     if (asked) page.dataset.reopened = 'asked again';
     // A page asked for again is asked for at most twice: one that keeps
@@ -423,12 +478,15 @@ function start() {
   const numberOf = element => Number(element.closest('[data-p]')?.dataset.p);
 
   const act = (element, action) => {
+    if (!view.owns(element)) return;
     const id = numberOf(element);
     if (!Number.isFinite(id)) return;
-    ask({act: {id, target: element.dataset.t ?? null, action}});
+    // A replacement view may have a different prompt at the same element number.
+    ask({act: {id, target: element.dataset.t ?? null, action}}, 0, !secretEntry(element), element);
   };
 
   const editing = element => element?.matches?.('input,textarea,[contenteditable]') ?? false;
+  const secretEntry = element => element?.matches?.('input[type=password]') ?? false;
   const valueOf = element => (element.matches('input,textarea') ? element.value : element.innerText.replace(/\n$/, ''));
   const keyOf = element => element.dataset.p ? `[data-p="${element.dataset.p}"]`
     : element.dataset.block ? `[data-block="${CSS.escape(element.dataset.block)}"]` : null;
@@ -447,6 +505,13 @@ function start() {
   // the same element, so its caret, its composition and its undo stay.
   const morph = (old, fresh, active) => {
     if (old === active) {
+      // Only the live browser input holds its characters. A patch of the same
+      // field keeps its value and caret; a different field starts empty.
+      if (secretEntry(old)) {
+        if (sameSecretEntry(old, fresh)) sameAttributes(old, fresh);
+        else old.replaceWith(fresh);
+        return;
+      }
       sameAttributes(old, fresh);
       settled.set(old, fresh.matches('input,textarea') ? fresh.value : fresh.textContent);
       return;
@@ -455,6 +520,15 @@ function start() {
     const key = keep && keyOf(keep);
     const kept = key && [...fresh.children].find(child => child.matches(key));
     if (!kept) {
+      // A prompt's layout may change around its input while the person types.
+      const field = secretEntry(active) && keyOf(active) && fresh.querySelector(keyOf(active));
+      if (field && sameSecretEntry(active, field)) {
+        sameAttributes(active, field);
+        field.replaceWith(active);
+        old.replaceWith(fresh);
+        active.focus({preventScroll: true});
+        return;
+      }
       old.replaceWith(fresh);
       return;
     }
@@ -504,7 +578,7 @@ function start() {
   // The thing the view has open (the selected note) is the page's address:
   // what the person opened is a step Back returns from; what Back, Forward or
   // the first load showed only names where the page now is.
-  const follow = () => {
+  const follow = (opened = false) => {
     const selected = page.querySelector('[data-a=activate][data-t][aria-selected=true]');
     const target = selected?.dataset.t;
     // What the person has open names the tab and the step history keeps, as a
@@ -512,7 +586,9 @@ function start() {
     const name = selected && (selected.getAttribute('aria-label') || selected.innerText.split('\n')[0].trim());
     const title = name ? `${name} — ${appTitle}` : appTitle;
     if (title !== document.title) document.title = title;
-    const url = target ? `${base}/${encodeURIComponent(target)}` : location.pathname;
+    if (opened) addressedSelection = addressOf().show ? target : null;
+    if (target !== addressedSelection) addressedSelection = null;
+    const url = target && !addressedSelection ? `${base}/${encodeURIComponent(target)}` : location.pathname;
     if (url !== location.pathname) {
       if (restoring) history.replaceState(history.state, '', url);
       else history.pushState({tilo: true}, '', url);
@@ -537,6 +613,7 @@ function start() {
   // they pressed is lost.
   const typingHeld = () => {
     const active = document.activeElement;
+    if (secretEntry(active)) return null;
     const key = active && page.contains(active) && editing(active) && keyOf(active);
     if (!key) return null;
     return {key, value: valueOf(active), start: active.selectionStart, end: active.selectionEnd};
@@ -561,7 +638,7 @@ function start() {
     document.title = config.address.app === '' && workspaceName ? workspaceName : title;
     style.textContent = css;
     delete page.dataset.state;
-    page.innerHTML = body;
+    view.show(body);
     // Where a question the host asks this person stands over the app: the
     // sheet is patched in here, and empty until one comes.
     if (!page.querySelector(`[data-p="${QUESTION_PATCH}"]`)) {
@@ -578,7 +655,7 @@ function start() {
     // so what the person wrote lands on the document they are looking at.
     const kept = held && page.querySelector(held.key);
     if (kept && (kept.dataset.a === 'value' || kept.dataset.a === 'edit')) act(kept, {value: held.value});
-    follow();
+    follow(true);
     // The page says it arrived, as the entry it came from did: what a tool
     // waits for is the same marker on either.
     document.documentElement.dataset.arrival = 'done';
@@ -588,7 +665,10 @@ function start() {
   const answered = answer => {
     if (answer === 'loading') { say('loading'); return; }
     page.dataset.answers = String(++heard);
-    if (answer.changed) { restoring = true; patch(answer.changed); return; }
+    if (answer.changed) {
+      if (view.shown) { restoring = true; patch(answer.changed); }
+      return;
+    }
     unanswered = Math.max(0, unanswered - 1);
     const asked = sent.shift();
     caughtUp();
@@ -609,7 +689,7 @@ function start() {
       const again = redone;
       redone = [];
       for (const act of again) ask({act});
-    } else if (answer.patched) patch(answer.patched);
+    } else if (answer.patched && view.shown) patch(answer.patched);
     else if (answer.refused) {
       say('refused', 'This page is not available here.');
       // Why, for whoever looks into it: the reason is the server's word.
@@ -643,11 +723,37 @@ function start() {
 
   // What the person does.
   page.addEventListener('click', event => {
-    // A press that sets another device up hands the tab to the site's own
-    // setup screen: it needs the person's identity, which the site's page
-    // holds, not this one. The screen is the entry's and shows when this
-    // browser's setup asks for it (`first-screen.mjs`'s `SETUP`), so the
-    // press says the person is starting it now, and goes where it is served.
+    if (!view.owns(event.target)) return;
+    const pair = event.target.closest('[data-pair-device]');
+    if (pair && page.contains(pair)) {
+      event.preventDefault();
+      if (!signedInPerson) return;
+      page.querySelector('[data-pair-error]')?.remove();
+      pair.disabled = true;
+      const person = signedInPerson;
+      const signal = deviceSession?.signal;
+      void (async () => {
+        try {
+          const id = await identityModule();
+          await id.pairWorkspaceDevice({origin: peer, workspace: config.address.workspace,
+            person, signal, base: siteBase().href});
+        } catch (error) {
+          if (signal.aborted || !view.owns(pair)) return;
+          let message = page.querySelector('[data-pair-error]');
+          if (!message) {
+            message = document.createElement('p');
+            message.dataset.pairError = '';
+            message.setAttribute('role', 'alert');
+            pair.after(message);
+          }
+          message.textContent = error.message || 'Could not open device pairing. Try again.';
+        } finally {
+          pair.disabled = false;
+        }
+      })();
+      return;
+    }
+    // Connecting an agent or computer starts setup on the site's entry.
     const setup = event.target.closest('[data-setup]');
     if (setup && page.contains(setup)) {
       event.preventDefault();
@@ -659,6 +765,12 @@ function start() {
     }
     const element = event.target.closest('[data-a]');
     if (!element || !page.contains(element)) return;
+    if (element.dataset.openApp && !element.disabled) {
+      event.preventDefault();
+      const path = workspaceItemPath(config.address.workspace, element.dataset.openApp, element.dataset.openItem);
+      if (path) location.assign(path);
+      return;
+    }
     const action = element.dataset.a;
     if (action === 'activate') {
       event.preventDefault();
@@ -735,8 +847,8 @@ function start() {
   // page, which holds the person's root, is where it happens. The page lists what waits for its
   // person (`identity.mjs`'s `signInsWaiting`, the host's `devices#pending` list) and asks about
   // one: the device's name and what certifying it makes it. The root signs, the host answers the
-  // tab's request, and the tab is signed in. A request the host does not mark as a sign-in is a
-  // device pairing, which is the person's own Tilo's to ask about, not this page's.
+  // tab's request, and the tab is signed in. Separate device pairing requests are shown only
+  // for invitations this person explicitly opened in this workspace session.
   let signInAsked = null;
   let personHeld = null;
   let personAbsent = false;
@@ -835,26 +947,42 @@ function start() {
     for (const device of found) {
       const opened = await session(config, device).catch(() => null);
       if (!opened) continue;
-      link = opened;
+      view.connect(opened);
+      signedInPerson = pagePerson(device.cert);
+      deviceSession = new AbortController();
       ask({open: addressOf()});
       let answer;
-      while ((answer = await link.next().catch(() => null))) {
-        if (answer.refused === 'not_member' && !page.querySelector('[data-p]')) break;
+      while ((answer = await opened.next().catch(() => null))) {
+        if (answer.refused === 'not_member' && !view.shown) break;
         answered(answer);
       }
-      link.close();
-      link = null;
+      const reconnect = view.shown;
+      view.connect(null);
+      opened.close();
+      deviceSession.abort();
+      deviceSession = null;
+      signedInPerson = null;
+      settled.clear();
+      composing = false;
+      lastSelection = '';
+      restoring = true;
+      addressedSelection = null;
+      redrawing = false;
+      document.title = workspaceName || config.address.app;
+      style.textContent = '';
+      delete document.documentElement.dataset.arrival;
       unanswered = 0;
       sent.length = 0;
       redone.length = 0;
       caughtUp();
-      if (page.querySelector('[data-p]')) {
+      if (reconnect) {
         // The session ended under an open page: open it again.
+        say('opening');
         setTimeout(connect, 1000);
         return;
       }
     }
-    if (!page.querySelector('[data-p]')) say('refused', 'This page is not available to you.');
+    say('refused', 'This page is not available to you.');
   };
   say('opening');
   connect();

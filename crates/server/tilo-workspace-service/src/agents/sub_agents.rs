@@ -362,6 +362,7 @@ impl Team {
                     person: agent.keeper.clone(),
                     conversation: chat::summons::conversation_address(said_in),
                     cause: id.to_string(),
+                    program: None,
                     request: told.request,
                     history: told.history,
                     asked: chat::summons::asked_words(message),
@@ -498,10 +499,7 @@ impl ServerAgents {
         workspace: &str,
         worked: &BTreeMap<String, Agent>,
     ) -> Result<Team, String> {
-        let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let roster = self
-            .read::<WorkspaceAgents>(workspace, tilo_workspace_agent::OWNER, &document)
-            .await?;
+        let roster = super::roster(&self.workspaces, workspace).await?;
         Ok(Team::of(roster, worked))
     }
 
@@ -607,8 +605,7 @@ impl ServerAgents {
 
     /// Whether `workspace`'s list of its agents holds the agent `id`.
     async fn holds(&self, workspace: &str, id: &str) -> bool {
-        let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        self.read::<WorkspaceAgents>(workspace, tilo_workspace_agent::OWNER, &document)
+        super::roster(&self.workspaces, workspace)
             .await
             .ok()
             .flatten()
@@ -625,11 +622,7 @@ impl ServerAgents {
         workspace: &str,
         delivery: &Delivery,
     ) -> Result<Option<tilo_action_policy::turn::Turn>, String> {
-        let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let Some(roster) = self
-            .read::<WorkspaceAgents>(workspace, tilo_workspace_agent::OWNER, &document)
-            .await?
-        else {
+        let Some(roster) = super::roster(&self.workspaces, workspace).await? else {
             return Ok(None);
         };
         Ok(lead_turn(&roster, delivery))

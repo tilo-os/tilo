@@ -30,6 +30,15 @@ pub enum Readers {
 }
 
 impl Readers {
+    /// Whether this reader set includes the person's root.
+    #[must_use]
+    pub fn contains(&self, person: &[u8; 32]) -> bool {
+        match self {
+            Self::EveryMember => true,
+            Self::People(people) => people.contains(person),
+        }
+    }
+
     /// The set `text` names, when it is written canonically: [`EVERY_MEMBER`], or one person or
     /// more, sorted, each once. Any other spelling names no set, so one set has one text and
     /// so one group and one key.

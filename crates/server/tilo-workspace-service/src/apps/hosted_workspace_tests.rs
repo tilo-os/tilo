@@ -86,7 +86,7 @@ impl tilo_actions::remote::ActionProvider for RecordingHost {
 /// The one workspace another device hosts, and its host.
 struct HostedElsewhere {
     workspace: String,
-    provider: Arc<RecordingHost>,
+    provider: Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
 }
 
 impl crate::apps::services::HostedWorkspaces for HostedElsewhere {
@@ -94,10 +94,7 @@ impl crate::apps::services::HostedWorkspaces for HostedElsewhere {
         &self,
         workspace: &str,
     ) -> Option<Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>> {
-        (workspace == self.workspace).then(|| {
-            Arc::clone(&self.provider)
-                as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>
-        })
+        (workspace == self.workspace).then(|| Arc::clone(&self.provider))
     }
 }
 
@@ -116,7 +113,7 @@ async fn a_hosted_workspaces_record_action_runs_on_its_host() {
             let services = ProcessServices {
                 hosted_workspaces: Some(Arc::new(HostedElsewhere {
                     workspace,
-                    provider: Arc::clone(&provider),
+                    provider: provider.clone(),
                 })),
                 ..membership.services()
             };

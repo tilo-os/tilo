@@ -27,7 +27,7 @@ use tilo_resource::Resource as _;
 use tilo_server_protocol::WorkspaceId;
 
 use super::{CHAT, Reply, ServerAgents, Turn, invoke_named, later};
-use crate::workspaces::person_model::{Interaction, ModelRefusal, Spender};
+use crate::workspaces::person_model::{Interaction, ModelRefusal};
 
 /// The chat action that keeps a conversation's summary.
 const KEEP_SUMMARY: &str = "keep-summary";
@@ -171,23 +171,24 @@ impl ServerAgents {
     ) -> Option<(String, u64)> {
         let (instructions, input) = fold.asks();
         let tokens = fold.output_tokens();
-        let theirs = tilo_failure::ignored!(
+        let keeper = tilo_failure::ignored!(
             "an agent kept by nobody's person pays for no summary",
             tilo_action_policy::PersonId::parse(&turn.agent.keeper).ok()
         )
-        .and_then(|keeper| keeper.root())
-        .map(|_| {
-            self.workspaces
-                .workspace_model(workspace_id, Interaction::OneShot)
-                .spending_as(Spender {
-                    workspace: workspace.to_owned(),
-                    agent: super::sub_agents::payer(turn).id.0.clone(),
-                    name: super::sub_agents::payer(turn).name.clone(),
-                    day: day.to_owned(),
-                    limit_micros: super::sub_agents::payer(turn).spend_limit_micros,
-                })
-        });
-        if let Some(theirs) = theirs {
+        .and_then(|keeper| keeper.root());
+        if keeper.is_some() {
+            let theirs = match self.budgeted_model(
+                (workspace, workspace_id),
+                turn,
+                day,
+                Interaction::OneShot,
+            ) {
+                Ok(theirs) => theirs,
+                Err(error) => {
+                    tracing::warn!(%workspace, agent = %turn.agent.id.0, %error, "the conversation summary's budget could not be read");
+                    return None;
+                }
+            };
             let asked = (instructions.clone(), input.clone());
             // As a turn's own model is chosen: what the keeper linked decides alone, and only
             // one who chose nothing for a short answer is asked as the turn was.

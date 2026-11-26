@@ -27,6 +27,9 @@ use tilo_workspace_service::agents::{
     workspace_resource,
 };
 
+#[path = "hosted_initiative_page.rs"]
+mod page;
+
 /// One `action` of `resource` as `caller` takes it, through what the app action server and an
 /// agent's turn both answer with.
 async fn take_of(
@@ -36,8 +39,25 @@ async fn take_of(
     (resource, action): (&str, &str),
     arguments: serde_json::Value,
 ) -> Result<serde_json::Value, ActionCallError> {
+    take_with_id(
+        initiative,
+        workspace,
+        caller,
+        (resource, action),
+        (InvocationId::new(), arguments),
+    )
+    .await
+}
+
+async fn take_with_id(
+    initiative: &Initiative,
+    workspace: &str,
+    caller: &Caller,
+    (resource, action): (&str, &str),
+    (invocation, arguments): (InvocationId, serde_json::Value),
+) -> Result<serde_json::Value, ActionCallError> {
     let request = InvokeRequest {
-        invocation: InvocationId::new(),
+        invocation,
         target: workspace_initiative::target(resource, action),
         argument: InvokeArgument::Json(arguments.as_object().cloned().unwrap_or_default()),
         context: None,
@@ -97,6 +117,162 @@ async fn look_round(
 /// The proposal `answer` describes.
 fn proposal(answer: Result<serde_json::Value, ActionCallError>) -> Proposal {
     serde_json::from_value(answer.expect("the action is taken")).expect("a proposal is answered")
+}
+
+/// A page, a native device and a turn address the same proposal policy. Revoking
+/// read permission on that kind leaves the other Assistant resource accessible.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn proposal_review_checks_the_proposal_grant_on_every_request() {
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+    use tilo_actions::remote::{CatalogueQuery, workspace_events};
+
+    let (owner, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&owner, "host", DeviceCapabilities::member());
+    let (member, _) = tilo_user_identity::UserIdentity::generate("Bo", 1);
+    let device = enrol(&member, "Bo's browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let hosted = start(&owner, &host, state.path()).await;
+    let workspaces = hosted.workspaces().unwrap();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    super::resource_support::admit_with(
+        workspaces,
+        workspaces.governor(),
+        &workspace,
+        &device,
+        tilo_peer_state::join::Role::Editor,
+        "Bo",
+    )
+    .await;
+    let mut browser = Browser::open_workspace(&hosted, &device, &host, &workspace).await;
+    let id = browser.workspace;
+    let caller =
+        tilo_workspace_service::service::local_caller(&device.cert).in_workspace(&workspace);
+    let initiative = hosted.roster.initiative.as_ref().unwrap();
+    let deny_read = |label, app, kind| {
+        Grant::new(
+            label,
+            Grantee::person(hex::encode(device.cert.user_public_key)),
+            TreePath::workspace(workspace.as_str())
+                .app(app)
+                .kind(kind)
+                .rest()
+                .action("list"),
+            KindSet::READ,
+            Answer::Deny,
+            Grantee::person(hex::encode(host.cert.user_public_key)),
+        )
+    };
+    let list = || {
+        request(
+            workspace_initiative::PROVIDER,
+            ActionAddress::new(workspace_initiative::PROPOSALS, workspace_initiative::LIST),
+            InvokeArgument::None,
+        )
+    };
+    workspaces
+        .put_workspace_grants(
+            &workspace,
+            workspaces.governor(),
+            [0xfb; 32],
+            vec![deny_read(
+                "no-events-list",
+                ui::apps::SHORTCUTS,
+                workspace_events::KIND,
+            )],
+        )
+        .await
+        .unwrap();
+    assert!(
+        initiative
+            .page_proposal(id, &caller, &device.cert, &list())
+            .await
+            .is_ok()
+    );
+    assert!(matches!(
+        browser.invoke_settled(list()).await.status,
+        ReceiptStatus::Completed { .. }
+    ));
+    assert!(
+        take(
+            initiative,
+            &workspace,
+            &caller,
+            workspace_initiative::LIST,
+            serde_json::json!({})
+        )
+        .await
+        .is_ok()
+    );
+
+    let delegated = caller.clone().delegated_to("not-the-person");
+    assert!(matches!(
+        initiative
+            .page_proposal(id, &delegated, &device.cert, &list())
+            .await,
+        Err(ActionCallError::NotPermitted)
+    ));
+    assert!(
+        initiative
+            .page_proposal(id, &caller, &host.cert, &list())
+            .await
+            .is_err()
+    );
+
+    workspaces
+        .put_workspace_grants(
+            &workspace,
+            workspaces.governor(),
+            [0xfc; 32],
+            vec![deny_read(
+                "no-proposals-list",
+                ui::apps::ASSISTANT,
+                workspace_initiative::PROPOSALS_KIND,
+            )],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        initiative
+            .page_proposal(id, &caller, &device.cert, &list())
+            .await,
+        Err(ActionCallError::NotPermitted)
+    );
+    assert!(matches!(
+        browser.invoke_settled(list()).await.status,
+        ReceiptStatus::Rejected {
+            error: ActionCallError::NotPermitted
+        }
+    ));
+    assert_eq!(
+        take(
+            initiative,
+            &workspace,
+            &caller,
+            workspace_initiative::LIST,
+            serde_json::json!({})
+        )
+        .await,
+        Err(ActionCallError::NotPermitted)
+    );
+    let query = CatalogueQuery {
+        provider: Some(workspace_initiative::PROVIDER.into()),
+        ..Default::default()
+    };
+    for authority in [Authority::of(&device.cert), Authority::Turn] {
+        let catalogue = initiative.catalogue(id, &caller, &authority, &query).await;
+        assert!(
+            catalogue
+                .rows
+                .iter()
+                .any(|row| row.resource.id == workspace_initiative::LOOK_ROUND)
+        );
+        assert!(
+            !catalogue
+                .rows
+                .iter()
+                .any(|row| row.resource.id == workspace_initiative::PROPOSALS)
+        );
+    }
 }
 
 /// What was proposed, as `caller` reads it.
@@ -217,7 +393,14 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
         );
 
     // It proposes a piece of work: a task of its own that nobody gave it, so nothing starts.
-    let first = proposal(tidy(&initiative, &workspace, &theirs, "Tidy the meeting notes").await);
+    let send = || tidy(&initiative, &workspace, &theirs, "Tidy the meeting notes");
+    let (one, two) = tokio::join!(send(), send());
+    let first = proposal(one);
+    assert_eq!(
+        first,
+        proposal(two),
+        "both devices receive the same proposal and task"
+    );
     assert_eq!(first.state, State::Proposed);
     let task = first.task.clone().expect("it stands as a task");
     let part = tracker(&workspaces, &workspace, &issues).await;
@@ -225,6 +408,13 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
     assert_eq!(filed.len(), 1, "one task is filed");
     let (first_issue, issue) = (filed[0].0.clone(), filed[0].1);
     assert_eq!(issue.title, "Tidy the meeting notes");
+    assert_eq!(
+        issue
+            .origin
+            .as_ref()
+            .and_then(|origin| origin.reference.as_deref()),
+        Some(first.id.as_str())
+    );
     assert_eq!(task.number, Some(issue.number));
     assert_eq!(
         issue.assignee.as_ref().map(|assignee| assignee.0.as_str()),
@@ -246,7 +436,7 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
             &workspace,
             &me,
             workspace_initiative::ACCEPT,
-            serde_json::json!({"proposal": first.id}),
+            serde_json::json!({"proposal": first.id, "always":true}),
         )
         .await,
     );
@@ -265,8 +455,60 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
         "the nod starts the work: {owed:?}"
     );
 
+    // Tasks runs an already authorized kind on the person's behalf using the agent's
+    // existing delegation. Replaying its proposal queues one issue turn.
+    let invocation = InvocationId::new();
+    let submit = || {
+        take_with_id(
+            &initiative,
+            &workspace,
+            &theirs,
+            (
+                workspace_initiative::PROPOSALS,
+                workspace_initiative::PROPOSE,
+            ),
+            (
+                invocation,
+                serde_json::json!({"kind":"tidy-notes","title":"Tidy the next review","why":"Three notes need a title."}),
+            ),
+        )
+    };
+    let (one, two) = tokio::join!(submit(), submit());
+    let automatic = proposal(one);
+    assert_eq!(automatic, proposal(two));
+    assert_eq!(automatic.state, State::Started);
+    let address = automatic.task.unwrap().issue;
+    let part = tracker(&workspaces, &workspace, &issues).await;
+    let (queued_id, given) = part
+        .issues
+        .iter()
+        .find(|(id, _)| tasks_model::issue_resource(id) == address)
+        .unwrap();
+    assert_eq!(
+        given.assigned_by.as_ref().and_then(MemberId::person_id),
+        Some(person.as_str())
+    );
+    let queue = agents.turns(&workspace).await.unwrap();
+    assert_eq!(
+        queue
+            .iter()
+            .filter(|turn| turn.person == person
+                && matches!(&turn.ask, Ask::Issue { issue, .. } if issue == queued_id.as_str()))
+            .count(),
+        1
+    );
+    take(
+        &initiative,
+        &workspace,
+        &me,
+        workspace_initiative::ASK_FIRST,
+        serde_json::json!({"kind":"tidy-notes"}),
+    )
+    .await
+    .unwrap();
+
     // A second one their person cancels in the tracker itself. Read from the tracker, it is
-    // turned down, and its kind counts once.
+    // turned down. The shared status carries no private preference.
     let second = proposal(tidy(&initiative, &workspace, &theirs, "Tidy the drafts").await);
     let second_task = second.task.clone().expect("it stands as a task");
     let part = tracker(&workspaces, &workspace, &issues).await;
@@ -299,6 +541,10 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
         .find(|proposal| proposal.id == second.id)
         .expect("the second proposal is listed");
     assert_eq!(cancelled.state, State::Declined);
+    assert!(
+        listed.kinds.is_empty(),
+        "shared tracker edits cannot mute a kind"
+    );
 
     // A third their person turns down where it was proposed: its task is cancelled in the
     // tracker.
@@ -321,6 +567,122 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
         .find(|(_, issue)| issue.title == "Tidy the old plans")
         .expect("the third task is kept");
     assert!(dropped.1.status.closed(), "{:?}", dropped.1.status);
+    // Each independent proposal receives the issue it made, even with the same title and assignee.
+    let proposal_file = workspaces
+        .workspace_root(&workspace)
+        .join("initiative")
+        .join(&person)
+        .join("initiative.json");
+    let before = std::fs::read(&proposal_file).unwrap();
+    let reports = |kind| serde_json::json!({"kind":kind, "title":"Prepare the report", "why":kind});
+    let proposing = (
+        workspace_initiative::PROPOSALS,
+        workspace_initiative::PROPOSE,
+    );
+    let submit = |kind, invocation| {
+        take_with_id(
+            &initiative,
+            &workspace,
+            &theirs,
+            proposing,
+            (invocation, reports(kind)),
+        )
+    };
+    let invoices_ticket = InvocationId::new();
+    let (invoices, quotes) = tokio::join!(
+        submit("invoices", invoices_ticket),
+        submit("quotes", InvocationId::new())
+    );
+    let (invoices, quotes) = (proposal(invoices), proposal(quotes));
+    let invoices_task = invoices.task.clone();
+    assert_ne!(invoices.task, quotes.task);
+    let part = tracker(&workspaces, &workspace, &issues).await;
+    for proposal in [invoices, quotes] {
+        let task = proposal.task.unwrap();
+        let (id, issue) = part
+            .issues
+            .iter()
+            .find(|(_, issue)| Some(issue.number) == task.number)
+            .unwrap();
+        assert_eq!(tasks_model::issue_resource(id), task.issue);
+        assert_eq!(issue.body.text(), proposal.why);
+    }
+
+    // Lose the Assistant's last write while the native Tasks document survives, and restart
+    // the host with no invocation cache. The same proposal recovers the original issue.
+    let count = part.issues.len();
+    drop((page, initiative, _events, agents, actions, workspaces));
+    server.agents.shutdown();
+    drop((server.web, server.roster));
+    server.server.shutdown().await;
+    std::fs::write(proposal_file, before).unwrap();
+    let server = crate::harness::hosted::start(
+        &root,
+        &server_device,
+        state.path(),
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
+    )
+    .await;
+    let restarted = server.roster.initiative.as_ref().unwrap();
+    let recovered = proposal(
+        take_with_id(
+            restarted,
+            &workspace,
+            &theirs,
+            proposing,
+            (invoices_ticket, reports("invoices")),
+        )
+        .await,
+    );
+    assert_eq!(recovered.task, invoices_task);
+    assert_eq!(
+        tracker(server.workspaces().unwrap(), &workspace, &issues)
+            .await
+            .issues
+            .len(),
+        count
+    );
+
+    // The person still reads their proposals when their own agent loses that permission.
+    let agent_deny = tilo_action_policy::Grant::new(
+        "no-proposals-for-scout",
+        tilo_action_policy::Grantee::agent(SCOUT),
+        tilo_action_policy::TreePath::workspace(workspace.as_str())
+            .app(ui::apps::ASSISTANT)
+            .kind(workspace_initiative::PROPOSALS_KIND)
+            .rest()
+            .action(workspace_initiative::LIST),
+        tilo_action_policy::KindSet::READ,
+        tilo_action_policy::Answer::Deny,
+        tilo_action_policy::Grantee::person(person),
+    );
+    let workspaces = server.workspaces().unwrap();
+    workspaces
+        .put_workspace_grants(
+            &workspace,
+            workspaces.governor(),
+            [0xfd; 32],
+            vec![agent_deny],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        take(
+            restarted,
+            &workspace,
+            &theirs,
+            workspace_initiative::LIST,
+            serde_json::json!({})
+        )
+        .await,
+        Err(ActionCallError::NotPermitted)
+    );
+    assert!(
+        !proposed(restarted, &workspace, &me)
+            .await
+            .proposals
+            .is_empty()
+    );
 }
 
 /// The whole way, as it goes with no device of the person on: the server answers a turn of the
@@ -619,6 +981,27 @@ async fn files(actions: &WorkspaceActions, workspace: &str, person: &Caller, tit
 /// says what the one before it cost.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_limit() {
+    spends_the_look_rounds_day(LookTurn::Immediate).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_queued_look_still_spends_its_own_day_after_history_rolls_over_and_the_host_restarts() {
+    spends_the_look_rounds_day(LookTurn::Restarted).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_completed_look_cannot_summarise_a_long_chat_past_its_daily_limit() {
+    spends_the_look_rounds_day(LookTurn::WithSummary).await;
+}
+
+#[derive(Eq, PartialEq)]
+enum LookTurn {
+    Immediate,
+    Restarted,
+    WithSummary,
+}
+
+async fn spends_the_look_rounds_day(turn: LookTurn) {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let server_device = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
@@ -638,9 +1021,15 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
     let person = hex::encode(keeper);
     furnished(&page, &workspaces, &workspace, &person).await;
 
-    // The person's own provider. The first call of a turn costs the look-round's whole day.
+    // A completed turn in a long Chat also owes a separate one-shot model call.
+    // Other turns try a second call through the same model they started with.
+    let first = if turn == LookTurn::WithSummary {
+        Reply::text("One task is new: call the bank.")
+    } else {
+        Reply::tool_call("call-1", "tilo_ls", serde_json::json!({}))
+    };
     let theirs = ScriptedProvider::answering([
-        Reply::tool_call("call-1", "tilo_ls", serde_json::json!({})).costing(2_000),
+        first.costing(2_000),
         Reply::text("One task is new: call the bank.").costing(300),
     ]);
     workspaces.answer_models_with(theirs.clone());
@@ -673,6 +1062,38 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
         .to_owned(),
         handed: Mutex::default(),
     });
+    if turn == LookTurn::WithSummary {
+        // The assistant's previous updates give this Chat enough history to summarise.
+        // An unanswered human request would correctly take priority over the look.
+        let route = DocumentRoute {
+            app_id: CHAT.into(),
+            cluster_id: workspace.clone(),
+            document: String::new(),
+        };
+        let provider =
+            WorkspaceActionProvider::new(actions.clone(), WorkspaceId::parse(&workspace).unwrap());
+        let scout = me.clone().delegated_to(SCOUT);
+        let channel = Id::from_raw(&hands.conversation);
+        let record = ui::resource::chain_resource_id(&chat::parts::chain());
+        for index in 0..9 {
+            let note = format!(
+                "Update {index}: {}",
+                "The crossing went as planned and nothing needs doing. ".repeat(22)
+            );
+            invoke_named(
+                &provider,
+                &scout,
+                &route,
+                &record,
+                "post",
+                saying(&channel, &note).as_object().unwrap().clone(),
+            )
+            .await
+            .unwrap();
+        }
+        // The caused ask follows the earlier updates on Chat's own message clock.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+    }
     let (initiative, events) = Initiative::start_with(
         workspaces.clone(),
         hands.clone(),
@@ -711,6 +1132,44 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
         "what the look found is handed over"
     );
 
+    let (initiative, events, steps) = if turn == LookTurn::Restarted {
+        // While the ask waits in Chat, quiet looks evict it from the display. Reopening
+        // the host drops its in-memory handoffs. Only the durable Chat ask identifies it.
+        for _ in 0..workspace_initiative::MAX_LOOKS {
+            fires(&steps, &person, &workspace, &event).await.unwrap();
+        }
+        let recent = look_round(
+            &initiative,
+            &workspace,
+            &me,
+            workspace_initiative::READ,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(recent.looks.len(), workspace_initiative::MAX_LOOKS);
+        assert!(
+            recent
+                .looks
+                .iter()
+                .all(|look| look.ended == LookEnded::Quiet)
+        );
+        drop(steps);
+        drop(events);
+        drop(initiative);
+        let (reopened, events) = Initiative::start_with(
+            workspaces.clone(),
+            hands.clone(),
+            std::sync::Arc::new(tilo_server::workspace_bots::installed::EventRunner),
+        );
+        let steps = (reopened.before())(hands.clone());
+        (reopened, events, steps)
+    } else {
+        // A quiet check lands before the queued answer. Its receipt still belongs to the
+        // earlier check, even though no provider spending had happened when this one ran.
+        fires(&steps, &person, &workspace, &event).await.unwrap();
+        (initiative, events, steps)
+    };
+
     // The server owes the assistant the turn the look started and carries it out with the
     // workspace's own model, whose first call spends the look-round's day: it is asked nothing more.
     let unasked = Arc::new(Mutex::new(Vec::new()));
@@ -723,6 +1182,13 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     assert_eq!(turns[0].person, person, "it works for the look's person");
+    assert_eq!(turns[0].program.as_deref(), Some(event.as_str()));
+    if turn == LookTurn::WithSummary {
+        assert!(
+            turns[0].fold.is_some(),
+            "this turn owes a conversation summary"
+        );
+    }
     tokio::time::timeout(
         Duration::from_secs(60),
         agents.answer(&workspace, &turns[0]),
@@ -775,10 +1241,17 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
         .iter()
         .map(|look| (look.ended, look.cost_micros))
         .collect();
+    if turn == LookTurn::Restarted {
+        assert_eq!(looks.len(), workspace_initiative::MAX_LOOKS);
+        assert_eq!(looks[0], (LookEnded::OverLimit, 0));
+        assert!(looks[1..].iter().all(|look| *look == (LookEnded::Quiet, 0)));
+        return;
+    }
     assert_eq!(
         looks,
         [
             (LookEnded::OverLimit, 0),
+            (LookEnded::Quiet, 0),
             (LookEnded::Told, 2_000),
             (LookEnded::Quiet, 0),
         ],

@@ -57,15 +57,6 @@ fn asked_by(bytes: &[u8], message: &Id, person: &str) -> Result<Option<Asked>, S
     }))
 }
 
-/// Whether `author`, who wrote the message that asked, is an event this
-/// server keeps in `workspace`.
-fn their_event(events: Option<&WorkspaceEvents>, workspace: &str, author: Option<&str>) -> bool {
-    let (Some(events), Some(author)) = (events, author) else {
-        return false;
-    };
-    events.keeps(workspace, author)
-}
-
 /// Tell the person `turn` was for how it ended as `outcome`, where a cause
 /// started it. `person` is that person, in `workspace`, and `events` what
 /// this server carries out for its people.
@@ -115,7 +106,10 @@ pub(crate) async fn turn_ended(
         }
     };
     // What it is, is its cause's to say only for an event its person keeps.
-    let kind = if their_event(events, workspace, author.as_deref()) {
+    let kind = if events
+        .zip(author.as_deref())
+        .is_some_and(|(events, author)| events.set_up_by(workspace, author, person))
+    {
         Kind::of_cause(Some(&cause))
     } else {
         Kind::News

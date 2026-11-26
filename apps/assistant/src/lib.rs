@@ -1,35 +1,25 @@
-//! Assistant: one window onto a person's assistant.
-//!
-//! The assistant is not a private app record. It is the agent the person keeps in the
-//! workspace (an item of the workspace's `tilo.workspace.agent` resource), its thread is the
-//! Chat conversation between the two, its work is issues in Tasks and its progress work is
-//! Shortcuts the host runs. The window shows those resources and changes them only through
-//! the actions their keepers publish: the main chat and the sub-agents on the left, the
-//! conversation in the middle, drawn by Chat itself, tasks and scheduled work beside it, and
-//! a supervision of what it runs on.
+//! Manage a person's workspace assistant and its sub-agents. Conversations open in Chat,
+//! where the keeper and the agent share an ordinary direct conversation.
 
 pub use ui::apps::ASSISTANT as APP_ID;
 pub const APP_TITLE: &str = "Assistant";
 
-mod conversation;
 mod effects;
 pub mod locales;
 mod panel;
+mod proposals;
 #[cfg(feature = "samples")]
 mod sample;
 mod sidebar;
 mod sources;
 mod supervision;
 
-use std::rc::Rc;
-
 use ui::floating_surface::{Recipient, RecipientKind};
 use ui::framework::Call;
 use ui::icons::Icon;
 use ui::prelude::*;
 use ui::tilo_reference::ResourceRef;
-use ui::tilo_resource::NonBlank;
-use ui::tilo_workspace_agent::{self as workspace_agent, WorkspaceAgents, workspace_agents};
+use ui::tilo_workspace_agent::{self as workspace_agent, WorkspaceAgents};
 use ui::widget::ButtonRole;
 
 pub use assistant_model::Window;
@@ -46,39 +36,41 @@ const CHAT_SEND: &str = "send";
 const SETTINGS_PAGE: &str = "settings.section";
 const SETTINGS_MODELS: &str = "settings.section:agent_models";
 
+/// A named place that a workspace reference opens in the Assistant window.
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "assistant.section", label = "Assistant section")]
+struct AssistantSection;
+
 /// What the window shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Place {
-    MainChat,
+    Overview,
+    Proposals,
     /// The sub-agent of this id.
     SubAgent(String),
-    Supervision,
 }
 
 impl Place {
-    const MAIN_CHAT: &'static str = "main-chat";
-    const SUPERVISION: &'static str = "supervision";
+    const OVERVIEW: &'static str = "overview";
+    const PROPOSALS: &'static str = "assistant.section:proposals";
     const SUB_AGENT: &'static str = "sub-agent:";
 
     /// The place's name among the sidebar's.
     pub(crate) fn key(&self) -> String {
         match self {
-            Self::MainChat => Self::MAIN_CHAT.to_owned(),
+            Self::Overview => Self::OVERVIEW.to_owned(),
+            Self::Proposals => Self::PROPOSALS.to_owned(),
             Self::SubAgent(id) => format!("{}{id}", Self::SUB_AGENT),
-            Self::Supervision => Self::SUPERVISION.to_owned(),
         }
     }
 
-    /// The place `key` names; the main chat for any other.
     fn of(key: Option<&str>) -> Self {
-        match key {
-            Some(Self::SUPERVISION) => Self::Supervision,
-            Some(key) => key
-                .strip_prefix(Self::SUB_AGENT)
-                .filter(|id| !id.is_empty())
-                .map_or(Self::MainChat, |id| Self::SubAgent(id.to_owned())),
-            None => Self::MainChat,
+        if key == Some(Self::PROPOSALS) {
+            return Self::Proposals;
         }
+        key.and_then(|key| key.strip_prefix(Self::SUB_AGENT))
+            .filter(|id| !id.is_empty())
+            .map_or(Self::Overview, |id| Self::SubAgent(id.to_owned()))
     }
 }
 
@@ -126,8 +118,6 @@ pub(crate) struct Hands {
     nav: Nav,
     /// The person the window is for: the name they go by here, and who they are.
     pub(crate) person: Option<(String, String)>,
-    /// The embed the place in view asks the shell for.
-    pub(crate) wanted: conversation::Wanted,
 }
 
 /// The name the window's own person goes by at its foot: theirs once the workspace or this
@@ -148,36 +138,25 @@ impl Hands {
             reads: Reads::of(cx),
             nav: nav.clone(),
             person: cx.me().map(|me| (own_name(cx, me), me.id().to_owned())),
-            wanted: Rc::default(),
         }
     }
 
-    /// Make the workspace's assistant: an agent of the workspace's own document of agents,
-    /// through that resource's own `create-agent`, and set to run on the workspace's host: an
-    /// assistant answers while every member's device is off, so no device runs it, wherever it
-    /// was made. Its model is the workspace's choice.
-    ///
-    /// # Errors
-    /// The workspace's agents are not held here, or the workspace's grants refuse.
-    pub(crate) fn create_assistant(&self) -> Result<(), String> {
-        let unreadable = || tr("assistant-agents-not-here");
-        let agents = self.reads.agents().ok_or_else(unreadable)?;
-        let name = NonBlank::parse(&tr("assistant-name")).ok_or_else(unreadable)?;
-        let id = agents.get().free_id(name.as_str());
-        agents
-            .invoke(
-                &WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
-                    name,
-                    id: Some(id),
-                    model: None,
-                    mcp_client: None,
-                }),
-            )
-            .map_err(|error| error.to_string())?;
-        self.nav
-            .changed
-            .update(|changed| *changed = changed.wrapping_add(1));
-        Ok(())
+    /// Ensure the caller has a personal assistant. The agents resource binds the keeper
+    /// to the requesting person and applies their grants.
+    pub(crate) fn create_assistant(&self, refused: &LocalState<String>) {
+        let Some(agents) = self.reads.agents() else {
+            refused.set(tr("assistant-agents-not-here"));
+            return;
+        };
+        let changed = self.nav.changed.clone();
+        let refused = refused.clone();
+        agents.invoke_then(
+            &WorkspaceAgents::ENSURE_PERSONAL_ASSISTANT.with(()),
+            move |setup| match setup {
+                Ok(()) => changed.update(|revision| *revision = revision.wrapping_add(1)),
+                Err(why) => refused.set(why.to_string()),
+            },
+        );
     }
 
     /// Start a sub-agent for `job`, as the window's own effect does: the palette, an agent
@@ -191,19 +170,16 @@ impl Hands {
     /// person, through Chat's own `send`. The main agent picks the role and the model.
     ///
     /// # Errors
-    /// There is no job, or no assistant to hand it to.
-    fn job_for_main_agent(&self, job: &str) -> Result<Call, String> {
+    /// The job is empty.
+    fn job_for_main_agent(assistant: &Assistant, job: &str) -> Result<Call, String> {
         let job = job.trim();
         if job.is_empty() {
             return Err(tr("assistant-job-empty"));
         }
-        let Read::Here(Some(assistant)) = self.reads.assistant() else {
-            return Err(tr("assistant-none"));
-        };
         let to = [Recipient::found(
             RecipientKind::Agent,
-            assistant.id,
-            assistant.name,
+            assistant.id.clone(),
+            assistant.name.clone(),
         )];
         let chat = ResourceRef::whole(ui::apps::CHAT, CHAT_WORKSPACE, "Chat");
         Ok(
@@ -219,28 +195,57 @@ impl Hands {
         )
     }
 
-    /// Open Chat on the conversation with `assistant`, as a window of the person's own.
-    pub(crate) fn open_in_chat(&self, assistant: &Assistant) {
-        self.dispatcher.open_reference(
-            ui::apps::CHAT,
-            None,
-            &ResourceRef::whole(
-                workspace_agent::KIND,
-                conversation::agent_resource(&assistant.id),
-                assistant.name.clone(),
-            ),
-        );
+    fn assistant(&self) -> Result<Assistant, String> {
+        match self.reads.assistant() {
+            Read::Here(Some(assistant)) => Ok(assistant),
+            Read::Here(None) => Err(tr("assistant-none")),
+            Read::NotHere => Err(tr("assistant-agents-not-here")),
+        }
     }
 
-    /// Open Settings at Agent models, where the person's model providers and the model each
-    /// kind of work runs on are chosen.
-    fn open_settings(&self) {
-        self.dispatcher.open_reference(
-            ui::apps::SETTINGS,
-            None,
-            &ResourceRef::whole(SETTINGS_PAGE, SETTINGS_MODELS, "Settings"),
-        );
+    fn chat_button(&self, id: &str, name: &str) -> Element {
+        let conversation = agent_reference(id, name);
+        let dispatcher = self.dispatcher.clone();
+        Box::new(
+            Button::new("assistant-open-in-chat", "assistant-open-in-chat")
+                .opening_workspace_item(ui::apps::CHAT, &conversation)
+                .with_icon(Icon::MessageCircle)
+                .role(ButtonRole::Primary)
+                .on_view(move || dispatcher.open_reference(ui::apps::CHAT, None, &conversation)),
+        )
     }
+}
+
+fn model_settings() -> ResourceRef {
+    ResourceRef::whole(SETTINGS_PAGE, SETTINGS_MODELS, tr("assistant-model-change"))
+}
+
+/// Chat accepts the workspace agent's item as the address of the caller's DM, even
+/// before it contains a first message.
+fn agent_reference(id: &str, name: &str) -> ResourceRef {
+    let at = ui::tilo_resource::items::item_resource_id::<WorkspaceAgents>("agents", &Id::from(id));
+    ResourceRef::whole(workspace_agent::KIND, at, name)
+}
+
+fn open_main_chat(assistant: &Assistant, cx: &mut EffectCx<Window>) -> Effected {
+    open_workspace_item(
+        ui::apps::CHAT,
+        &agent_reference(&assistant.id, &assistant.name),
+        cx,
+    )
+}
+
+fn open_workspace_item(app: &str, item: &ResourceRef, cx: &mut EffectCx<Window>) -> Effected {
+    let open = Call::on(
+        app,
+        None,
+        item,
+        ui::tilo_actions::remote::APPLICATION_OPEN_ACTION,
+    );
+    cx.call(&open, |(), opened, _| {
+        opened?;
+        Ok(Effected::done())
+    })
 }
 
 pub(crate) fn tr(key: &str) -> String {
@@ -280,6 +285,7 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
     const TITLE_KEY: &'static str = "assistant-app-title";
+    const WORKSPACE_RESOURCE: bool = true;
 
     fn resources(resources: &mut ui::framework::Resources<'_>) {
         // The workspace's agents are owned by Assistant: every app of the
@@ -308,7 +314,7 @@ impl ResourceApp for App {
 
     fn view(cx: &mut ViewCx<Window>) -> Element {
         let nav = Nav {
-            place: cx.local(Some(Place::MainChat.key())),
+            place: cx.local(Some(Place::Overview.key())),
             pane: cx.local(ui::widget::NavPane::Content),
             panel: cx.local(true),
             tab: cx.local(panel::Tab::Active),
@@ -322,12 +328,23 @@ impl ResourceApp for App {
             cx.on_stage(move |scenario| sample::stage(scenario, &stage));
         }
         let hands = Hands::of(cx, &nav);
+        let opened = nav.clone();
+        cx.on_open(move |anchor| {
+            if anchor == Place::PROPOSALS {
+                opened.show(&Place::Proposals);
+                Ok(())
+            } else {
+                Err(ui::tilo_resource::Refusal::new(tr(
+                    "assistant-section-missing",
+                )))
+            }
+        });
         {
             let (nav, hands) = (nav.clone(), hands.clone());
             cx.effects(move |effect: AssistantEffect, cx| answer(effect, &nav, &hands, cx));
         }
         let changed = nav.changed.clone();
-        cx.switch(&changed, move |cx, _| {
+        let content = cx.switch(&changed, move |cx, _| {
             let (nav, hands) = (nav.clone(), hands.clone());
             let place = nav.place.clone();
             cx.switch(&place, move |cx, _| {
@@ -335,7 +352,18 @@ impl ResourceApp for App {
                 let asking = nav.asking.clone();
                 cx.switch(&asking, move |cx, _| window(cx, &nav, &hands))
             })
-        })
+        });
+        let proposals = ui::framework::openable_row::<AssistantSection>(
+            Place::PROPOSALS,
+            tr("assistant-review-proposals"),
+        );
+        let listed = proposals.clone();
+        cx.publishing(
+            ui::framework::Publishes::new()
+                .live_rows(move || vec![listed.clone()])
+                .live_row(move |id| (id == proposals.id()).then(|| proposals.clone())),
+            content,
+        )
     }
 }
 
@@ -347,7 +375,7 @@ fn answer(
     cx: &mut EffectCx<Window>,
 ) -> ui::framework::EffectAnswer {
     match effect {
-        AssistantEffect::ViewMainChat => nav.show(&Place::MainChat),
+        AssistantEffect::ViewMainChat => return Ok(open_main_chat(&hands.assistant()?, cx)),
         AssistantEffect::ViewSubAgent { agent } => {
             let listed = matches!(
                 hands.reads.sub_agents(),
@@ -358,19 +386,27 @@ fn answer(
             }
             nav.show(&Place::SubAgent(agent));
         }
-        AssistantEffect::ViewSupervision => nav.show(&Place::Supervision),
+        AssistantEffect::ViewSupervision => nav.show(&Place::Overview),
         AssistantEffect::StartSubAgent { job } => {
-            let send = hands.job_for_main_agent(&job)?;
+            let assistant = hands.assistant()?;
+            let send = Hands::job_for_main_agent(&assistant, &job)?;
             let nav = nav.clone();
-            // The job is handed over once Chat took the message: the main chat is where it
-            // stands.
-            return Ok(cx.call(&send, move |(), sent, _cx| {
+            return Ok(cx.call(&send, move |(), sent, cx| {
                 sent?;
-                nav.show(&Place::MainChat);
-                Ok(Effected::done())
+                if nav.job.get() == job {
+                    nav.job.set(String::new());
+                }
+                nav.show(&Place::Overview);
+                Ok(open_main_chat(&assistant, cx))
             }));
         }
-        AssistantEffect::OpenModelSettings => hands.open_settings(),
+        AssistantEffect::OpenModelSettings => {
+            return Ok(open_workspace_item(
+                ui::apps::SETTINGS,
+                &model_settings(),
+                cx,
+            ));
+        }
     }
     Ok(Effected::done())
 }
@@ -381,26 +417,6 @@ fn window(cx: &ViewCx<Window>, nav: &Nav, hands: &Hands) -> Element {
     let assistant = hands.reads.assistant();
     let has_assistant = matches!(&assistant, Read::Here(Some(_)));
     let place = nav.place();
-    // Supervision is of the assistant itself, so it stands beside the window's name: the
-    // places under it are the conversations.
-    let supervision: Element = {
-        let nav = nav.clone();
-        Box::new(
-            Button::icon_only(
-                "assistant-supervision",
-                Icon::Gauge,
-                &tr("assistant-supervision"),
-            )
-            .toggled(place == Place::Supervision)
-            .on_view(move || {
-                if nav.place() == Place::Supervision {
-                    nav.show(&Place::MainChat);
-                } else {
-                    nav.show(&Place::Supervision);
-                }
-            }),
-        )
-    };
     let shell = NavShell::new()
         .content_kind(ContentKind::Page)
         .with_id("assistant.shell")
@@ -408,7 +424,7 @@ fn window(cx: &ViewCx<Window>, nav: &Nav, hands: &Hands) -> Element {
         .with_pane_state(&nav.pane)
         .with_inspector_state(&nav.panel)
         .sidebar(sidebar::view(nav, hands))
-        .sidebar_header(tr("assistant-title"), vec![supervision])
+        .sidebar_header(tr("assistant-title"), Vec::new())
         .inspector(panel::view(cx, nav, hands))
         .inspector_header(tr("assistant-tasks"), Vec::new());
     let shell = if nav.asking.get() && has_assistant {
@@ -431,32 +447,19 @@ fn window(cx: &ViewCx<Window>, nav: &Nav, hands: &Hands) -> Element {
             )]
         };
         match &place {
-            Place::MainChat => shell
-                .content(main_chat(cx, hands, &assistant))
-                .content_header(tr("assistant-main-chat"), start(nav)),
+            Place::Overview => shell
+                .content(supervision::view(cx, hands, &assistant))
+                .content_header(tr("assistant-overview"), start(nav)),
+            Place::Proposals => shell
+                .content(proposals::view(cx))
+                .content_header(tr("assistant-review-proposals"), Vec::new()),
             Place::SubAgent(id) => {
                 let (job, content) = sub_agent(hands, id);
                 shell.content(content).content_header(job, start(nav))
             }
-            Place::Supervision => shell
-                .content(supervision::view(cx, hands, &assistant))
-                .content_header(tr("assistant-supervision"), Vec::new()),
         }
     };
-    Box::new(conversation::Embedding::around(
-        Box::new(shell),
-        Rc::clone(&hands.wanted),
-    ))
-}
-
-/// The main chat: Chat's own view of the conversation with the assistant, or what stands in
-/// its place while the person has none.
-fn main_chat(cx: &ViewCx<Window>, hands: &Hands, assistant: &Read<Option<Assistant>>) -> Element {
-    match assistant {
-        Read::Here(Some(assistant)) => conversation::view(cx, hands, assistant),
-        Read::Here(None) => no_assistant(cx, hands),
-        Read::NotHere => agents_not_here(),
-    }
+    Box::new(shell)
 }
 
 /// What stands where the assistant would while the workspace's agents cannot be read.
@@ -487,15 +490,13 @@ pub(crate) fn no_assistant(cx: &ViewCx<Window>, hands: &Hands) -> Element {
                 .with_action(tr("assistant-create"))
                 .with_action_id("assistant-create")
                 .on_effect(move || {
-                    if let Err(why) = hands.create_assistant() {
-                        said.set(why);
-                    }
+                    hands.create_assistant(&said);
                 }),
         )
     })
 }
 
-/// A sub-agent's place: its job as the header reads it, and its conversation.
+/// A sub-agent's job and role, with a link to its direct conversation.
 fn sub_agent(hands: &Hands, id: &str) -> (String, Element) {
     let listed = match hands.reads.sub_agents() {
         Read::Here(listed) => listed.into_iter().find(|sub| sub.id == id),
@@ -505,7 +506,7 @@ fn sub_agent(hands: &Hands, id: &str) -> (String, Element) {
         // Under its job, what it is and the one rule of a sub-agent: the main agent reads it,
         // it never reads the main chat.
         Some(sub) => (
-            sub.job,
+            sub.job.clone(),
             page(vec![
                 Box::new(
                     Column::new()
@@ -523,11 +524,7 @@ fn sub_agent(hands: &Hands, id: &str) -> (String, Element) {
                                 .dimmed(),
                         )),
                 ),
-                Box::new(
-                    EmptyState::new(tr("assistant-sub-agent-conversation-not-here"))
-                        .with_icon(Icon::MessageCircle)
-                        .with_id("assistant-sub-agent-conversation"),
-                ),
+                hands.chat_button(&sub.id, &sub.job),
             ]),
         ),
         None => (
@@ -568,9 +565,10 @@ fn job_prompt(
                     said.set(tr("assistant-job-empty"));
                     return;
                 }
-                hands.start_sub_agent(job);
-                nav.job.set(String::new());
-                nav.show(&Place::MainChat);
+                if nav.asking.get() {
+                    nav.show(&Place::Overview);
+                    hands.start_sub_agent(job);
+                }
             })
     };
     let cancel = {

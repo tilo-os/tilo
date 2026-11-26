@@ -46,6 +46,7 @@ use tilo_resource::Resource as _;
 use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::Agent;
 
+use super::ask_chat::{self, AskCallers, AskedIn};
 use super::{
     Ask, CHAT, ServerAgents as Agents, Turn, WRITE_WAIT, WorkspaceActionProvider, invoke_named,
     later,
@@ -133,19 +134,6 @@ pub struct ServerAsk {
     pub kept: Value,
     pub always: Option<Asked>,
     pub named: Words,
-}
-
-/// Where a turn's question was put, and for which turn: kept with the ask,
-/// so the server finds its way back after a restart.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-struct AskedIn {
-    /// The conversation the turn is in, by its address in the workspace;
-    /// empty when no turn asked.
-    conversation: String,
-    /// The ask that caused the turn.
-    cause: String,
-    /// The agent session the turn's changes are grouped by.
-    session: String,
 }
 
 /// The invocation an [`ACTION`] ask keeps.
@@ -279,32 +267,15 @@ async fn post(
     text: &str,
     kept: &KeptAsk,
 ) -> Result<(), String> {
-    let mut answers = vec![json!({"id": chat::question::ALLOW})];
-    if kept.always.is_some() {
-        answers.push(json!({"id": chat::question::ALWAYS}));
-    }
-    answers.push(json!({"id": chat::question::DENY}));
-    let mut arguments = Map::new();
-    arguments.insert("channel".into(), json!(conversation_id));
-    arguments.insert("text".into(), json!(text));
-    arguments.insert("kind".into(), json!(chat::question::ACTION));
-    arguments.insert("answers".into(), Value::Array(answers));
-    arguments.insert("detail".into(), detail_of(kept));
-    let route = DocumentRoute {
-        app_id: CHAT.to_owned(),
-        cluster_id: kept.workspace.clone(),
-        document: String::new(),
-    };
-    invoke_named(
-        holder,
-        asker,
-        &route,
-        &collab_types::document::chain_resource_id(&chat::parts::chain()),
-        "ask",
-        arguments,
+    ask_chat::post(
+        (holder, asker),
+        &kept.workspace,
+        conversation_id,
+        text,
+        detail_of(kept),
+        kept.always.is_some(),
     )
     .await
-    .map(drop)
 }
 
 /// Keep what `asking` asked for and put the question to its person in the
@@ -328,14 +299,6 @@ async fn put(
         .map(|summary| summary.name)
         .unwrap_or_default();
     let conversation_id = conversation_id_of(&turn.conversation, &hex::encode(person), &agent);
-    let asked_in = AskedIn {
-        conversation: turn.conversation,
-        cause: turn.message,
-        session: caller
-            .agent_session()
-            .map(|session| session.id)
-            .unwrap_or_default(),
-    };
     let action = KeptAction {
         request: asked.request,
         draft: asked.draft,
@@ -351,7 +314,7 @@ async fn put(
             place,
             ..asked.words
         },
-        asked_in: serde_json::to_value(&asked_in).map_err(|error| error.to_string())?,
+        asked_in: serde_json::to_value(AskedIn::of(caller)).map_err(|error| error.to_string())?,
     };
     // Asked the same again while its person has not answered: the one
     // question stands.
@@ -384,70 +347,27 @@ struct Found {
     conversation_id: String,
     /// The words it says now.
     says: String,
-    /// Whether it was ever edited. An agent may edit a message it wrote, and
-    /// an edited question is not the one its person was asked.
-    edited: bool,
-    /// Whether it is the only question that carries its ask. An agent may ask
-    /// questions of its own, and one put beside the server's is not it.
-    alone: bool,
+    /// Whether the answer belongs to the sole, unedited question the server posted.
+    answered_as_asked: bool,
 }
 
-/// How many questions in `parts` carry one ask: those `agent` wrote for
-/// `person` that show `shown`, what this server kept for it.
-fn carrying(
-    parts: &[(String, chat::parts::ChatMessages)],
-    (agent, person): (&MemberId, &MemberId),
-    shown: &Value,
-) -> usize {
-    parts
-        .iter()
-        .flat_map(|(_, part)| part.messages.iter())
-        .filter(|(_, message)| {
-            message.author == *agent
-                && message.question.as_ref().is_some_and(|question| {
-                    question.kind.0 == chat::question::ACTION
-                        && question.person == *person
-                        && question.kept().as_ref() == Some(shown)
-                })
-        })
-        .count()
-}
-
-/// The question this server put about `ask`, in `parts`: the one its agent
-/// wrote for that person that shows exactly what this server kept.
+/// The question this server put about `ask`, in `parts`.
 fn question_of<'a>(
     parts: &'a [(String, chat::parts::ChatMessages)],
     ask: &KeptAsk,
 ) -> Option<(Found, &'a chat::question::Question)> {
-    let (agent, person) = (
-        MemberId::agent(ask.agent.clone()),
-        MemberId::person(ask.person.clone()),
-    );
-    let shown = detail_of(ask);
-    let alone = carrying(parts, (&agent, &person), &shown) == 1;
-    parts.iter().find_map(|(document, part)| {
-        part.messages.iter().find_map(|(id, message)| {
-            let question = message.question.as_ref()?;
-            (question.kind.0 == chat::question::ACTION
-                && message.author == agent
-                && question.person == person
-                && question.kept().as_ref() == Some(&shown))
-            .then(|| {
-                (
-                    Found {
-                        ask: ask.clone(),
-                        document: document.clone(),
-                        message: id.to_string(),
-                        conversation_id: message.channel.to_string(),
-                        says: message.text.clone(),
-                        edited: message.edited || !message.history.is_empty(),
-                        alone,
-                    },
-                    question,
-                )
-            })
-        })
-    })
+    let posted = ask_chat::posted(parts, &ask.agent, &ask.person, &detail_of(ask))?;
+    Some((
+        Found {
+            ask: ask.clone(),
+            document: posted.document.to_owned(),
+            message: posted.id.to_string(),
+            conversation_id: posted.message.channel.to_string(),
+            says: posted.message.text.clone(),
+            answered_as_asked: posted.answered_as_asked,
+        },
+        posted.question,
+    ))
 }
 
 /// The questions in `part`, the part `document` of `workspace`'s chat, that
@@ -714,7 +634,7 @@ impl Agents {
         let Some(workspace_id) = WorkspaceId::parse(workspace) else {
             return;
         };
-        let parts = self.question_parts(workspace).await;
+        let parts = self.chat_parts(workspace).await;
         let agents = self.agents(workspace).await.unwrap_or_default();
         for ask in open {
             if ask.started && !ask.interrupted {
@@ -805,7 +725,7 @@ impl Agents {
         let author = MemberId::agent(&turn.agent.id.0);
         let theirs = MemberId::person(&turn.person);
         let holder = WorkspaceActionProvider::new(self.actions.clone(), workspace_id);
-        for (document, part) in self.question_parts(workspace).await {
+        for (document, part) in self.chat_parts(workspace).await {
             for (id, put) in part.messages.iter() {
                 let waits = put
                     .question
@@ -843,60 +763,6 @@ impl Agents {
         }
     }
 
-    /// Every part of the chat's messages `workspace` holds, by its document.
-    async fn question_parts(&self, workspace: &str) -> Vec<(String, chat::parts::ChatMessages)> {
-        let routes = self
-            .workspaces
-            .document_routes(workspace)
-            .await
-            .unwrap_or_default();
-        let mut parts = Vec::new();
-        for (app, document) in routes {
-            if app != CHAT
-                || collab_types::document::DocumentId::parse(&document)
-                    .is_none_or(|part| chat::parts::part_index(&part).is_none())
-            {
-                continue;
-            }
-            if let Ok(Some(part)) = self
-                .read::<chat::parts::ChatMessages>(workspace, CHAT, &document)
-                .await
-            {
-                parts.push((document, part));
-            }
-        }
-        parts
-    }
-
-    /// The agent that asked `ask`, working for its person now: as the turn
-    /// that asked, which is what its invocation goes as, and outside any
-    /// turn, which is how it says what came of the answer once that turn
-    /// has ended. `None` when the workspace admits the person on no device,
-    /// or the agent has no approved key here any more.
-    async fn asker_of(
-        &self,
-        workspace_id: WorkspaceId,
-        ask: &KeptAsk,
-        agent: &Agent,
-    ) -> Option<([u8; 32], Caller, Caller)> {
-        let mut person = [0; 32];
-        hex::decode_to_slice(&ask.person, &mut person).ok()?;
-        self.workspaces.person_device(workspace_id, person).await?;
-        let asked_in: AskedIn = serde_json::from_value(ask.asked_in.clone()).ok()?;
-        let outside = self
-            .agent_caller(workspace_id, agent, person)
-            .await
-            .ok()?
-            .in_agent_session(asked_in.session);
-        let turn = outside
-            .clone()
-            .on_roster_turn(tilo_action_policy::turn::Turn::new(
-                asked_in.conversation,
-                asked_in.cause,
-            ));
-        Some((person, turn, outside))
-    }
-
     /// Say on the question `found` names what came of its answer.
     async fn settle_ask(
         &self,
@@ -906,7 +772,7 @@ impl Agents {
         (outcome, told): (&str, Option<String>),
     ) -> Result<(), String> {
         let holder = WorkspaceActionProvider::new(self.actions.clone(), workspace_id);
-        super::vault_uses::settle(
+        ask_chat::settle(
             (&holder, asker),
             workspace,
             (found.document.as_str(), found.message.as_str()),
@@ -926,7 +792,13 @@ impl Agents {
         found: &Found,
         answer: Answered,
     ) {
-        let Some((person, turn, outside)) = self.asker_of(workspace_id, &found.ask, agent).await
+        let Some(AskCallers {
+            person,
+            turn,
+            outside,
+        }) = self
+            .ask_callers(workspace_id, agent, &found.ask.person, &found.ask.asked_in)
+            .await
         else {
             // Its person is admitted here on no device any more.
             self.workspaces.forget_ask(&found.ask);
@@ -946,8 +818,7 @@ impl Agents {
         let carrier = self.carriers.lock_recover().get(&claimed.carrier).cloned();
         let asked_with = carrier.and_then(|carrier| carrier.asked_with(&claimed));
         let changed = answer != Answered::No
-            && (found.edited
-                || !found.alone
+            && (!found.answered_as_asked
                 || asked_with.is_some_and(|words| words.trim() != found.says.trim()));
         let answer = if changed { Answered::No } else { answer };
         if answer != Answered::No
@@ -1079,7 +950,10 @@ impl Agents {
             return;
         };
         let workspace = found.ask.workspace.clone();
-        let Some((_, _, outside)) = self.asker_of(workspace_id, &found.ask, agent).await else {
+        let Some(AskCallers { outside, .. }) = self
+            .ask_callers(workspace_id, agent, &found.ask.person, &found.ask.asked_in)
+            .await
+        else {
             return;
         };
         let told = (chat::question::FAILED, Some(INTERRUPTED.to_owned()));

@@ -187,6 +187,52 @@ fn an_agent_another_device_makes_is_in_the_sessions_copy() {
 }
 
 #[test]
+fn an_implicit_ask_creates_one_personal_assistant_and_returns_to_its_dm() {
+    let ada = Person::new("Ada");
+    let site = Site::start(&ada, "Studio");
+    let laptop = laptop_with_chat(&ada, &site);
+    let to = json!({"kind": "assistant", "name": "Assistant"});
+
+    let messages = ["First personal request", "Follow-up personal request"];
+    for message in messages {
+        let sent = send(&laptop, &to, message);
+        assert_eq!(sent["update"]["state"], "succeeded", "{sent}");
+    }
+    let agents = tilo_test_env::wait_for(
+        Awaited(&laptop, "holds the assistant roster".into()),
+        || {
+            let agents = held_agents(&laptop);
+            (!agents.is_empty()).then_some(agents)
+        },
+    );
+    assert_eq!(agents.len(), 1, "both requests use the same assistant");
+    let (id, _) = &agents[0];
+    let dm = chat::chat::Chat::direct_id([
+        tilo_actions::MemberId::person(hex::encode(ada.public)),
+        tilo_actions::MemberId::agent(id.clone()),
+    ]);
+    tilo_test_env::wait_until(
+        Awaited(&laptop, "holds both requests in the assistant DM".into()),
+        || {
+            let answer = laptop.ask(&json!({
+                "op": "resource_read",
+                "app": "so.tilo.chat",
+                "records": [chat::parts::part(0).to_string()],
+                "wait_ms": 0,
+            }));
+            let entries = &answer["answer"]["records"][0]["value"]["messages"];
+            entries.as_object().is_some_and(|entries| {
+                messages.iter().all(|text| {
+                    entries.values().any(|entry| {
+                        entry["v"]["channel"] == dm.as_str() && entry["v"]["text"] == *text
+                    })
+                })
+            })
+        },
+    );
+}
+
+#[test]
 fn a_box_finds_one_agent_of_many_by_name() {
     let ada = Person::new("Ada");
     let site = Site::start(&ada, "Studio");

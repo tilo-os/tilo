@@ -25,7 +25,10 @@ image's entrypoint and the manifest's args: its command in the manifest is produ
 for the certificate and the public names, which a machine with no network never sees. Init
 containers and the other containers of our images run as the manifest says.
 
-usage: tilo_sh_preflight.py --infra DIR --work DIR [--base REV] [--state DIR] [--no-base]
+For an unpublished release image, --archive PIN FILE uses a local single-image OCI archive
+whose manifest digest matches PIN in the release tree. The live step still uses its own pins.
+
+usage: tilo_sh_preflight.py --infra DIR --work DIR [--base REV] [--state DIR] [--no-base] [--archive PIN FILE]...
 """
 
 from __future__ import annotations
@@ -40,9 +43,8 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tarfile
 import time
-
-import yaml
 
 APPS = ("apps/tilo-sh-relay", "apps/tilo-api", "apps/tilo-web")
 # The ConfigMap the relay mounts from the VM hosts' app (plans.json).
@@ -85,6 +87,8 @@ def podman(*args: str, check: bool = True, capture: bool = True) -> str:
 
 def render(tree: Path) -> dict[str, list[dict]]:
     """Every Deployment and ConfigMap the apps make, by kind."""
+    import yaml
+
     docs: dict[str, list[dict]] = {"Deployment": [], "ConfigMap": []}
     for app in APPS + SHARED:
         out = run("kubectl", "kustomize", str(tree / app), capture_output=True).stdout
@@ -113,6 +117,8 @@ class Secrets:
         self.infra = infra
 
     def path(self, name: str) -> Path:
+        import yaml
+
         source = SECRET_FILES.get(name)
         if source is None:
             die(f"a pod mounts the Secret {name}, which this script knows no sops file of")
@@ -131,27 +137,79 @@ class Secrets:
         return (self.path(name) / key).read_text()
 
 
-def image_names(image: str) -> set[str]:
+def archive_config(path: Path, digest: str) -> str:
+    """Read the pinned manifest from a single-image OCI archive; return its immutable config ID."""
+    with tarfile.open(path) as archive:
+        def metadata(name: str) -> bytes:
+            entry = archive.getmember(name)
+            if not entry.isfile() or entry.size > 4 * 1024 * 1024:
+                raise ValueError(f"invalid image metadata: {name}")
+            return archive.extractfile(entry).read()
+
+        manifests = json.loads(metadata("index.json"))["manifests"]
+        if len(manifests) != 1 or manifests[0]["digest"] != digest:
+            raise ValueError(f"index does not name exactly {digest}")
+        manifest = metadata("blobs/" + digest.replace(":", "/"))
+        if "sha256:" + hashlib.sha256(manifest).hexdigest() != digest:
+            raise ValueError(f"manifest differs from {digest}")
+        config = json.loads(manifest)["config"]["digest"]
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", config):
+            raise ValueError("invalid image config digest")
+        return config.removeprefix("sha256:")
+
+
+def deployment_containers(deployment: dict) -> list[dict]:
+    spec = deployment["spec"]["template"]["spec"]
+    return spec.get("initContainers", []) + spec["containers"]
+
+
+def load_archives(archives, docs: dict[str, list[dict]]) -> dict[str, str]:
+    """Resolve only the supplied release pins to local Podman image IDs."""
+    local = {}
+    pins = {container["image"] for deployment in docs["Deployment"] for container in deployment_containers(deployment)}
+    names = set()
+    for pin, name in archives:
+        match = re.fullmatch(re.escape(OURS) + r"(lounge|web-entry|api)@(sha256:[0-9a-f]{64})", pin)
+        if not match or pin not in pins:
+            die(f"--archive must name a pinned Lounge, web-entry or API image in the release manifests: {pin}")
+        if match[1] in names:
+            die(f"more than one archive supplied for {match[1]}")
+        names.add(match[1])
+        path = Path(name).resolve()
+        try:
+            config = archive_config(path, match[2])
+        except (OSError, tarfile.TarError, KeyError, TypeError, ValueError) as error:
+            die(f"{path}: {error}")
+        loaded = podman("pull", "-q", f"oci-archive:{path}").removeprefix("sha256:")
+        if loaded != config:
+            die(f"{path}: Podman imported {loaded}, expected config {config} for {pin}")
+        local[pin] = config
+    return local
+
+
+def image_names(image: str, local: dict[str, str]) -> set[str]:
     """Every run of TILO_* names any file of IMAGE holds. A program's string literals sit back to
     back, so one run can hold several names: a name is read when it is part of one."""
-    podman("pull", "-q", image)
+    if image in local:
+        image = local[image]
+    else:
+        podman("pull", "-q", image)
     script = ('mnt=$(podman image mount "$1") && trap \'podman image unmount "$1" >/dev/null\' EXIT && '
               'grep -rhoasE "TILO_[A-Z0-9_]+" "$mnt/usr" "$mnt/srv" "$mnt/etc" 2>/dev/null | sort -u')
     out = run("podman", "unshare", "sh", "-c", script, "sh", image, capture_output=True, check=False).stdout
     return set(out.split())
 
 
-def unread_settings(docs: dict[str, list[dict]]) -> list[str]:
+def unread_settings(docs: dict[str, list[dict]], local: dict[str, str]) -> list[str]:
     problems = []
     names_of: dict[str, set[str]] = {}
     for deployment in docs["Deployment"]:
-        spec = deployment["spec"]["template"]["spec"]
-        for container in spec.get("initContainers", []) + spec["containers"]:
+        for container in deployment_containers(deployment):
             image = container["image"]
             if not image.startswith(OURS):
                 continue
             if image not in names_of:
-                names_of[image] = image_names(image)
+                names_of[image] = image_names(image, local)
             for env in container.get("env", []):
                 name = env["name"]
                 if name.startswith("TILO_") and not any(name in run_ for run_ in names_of[image]):
@@ -163,13 +221,15 @@ def unread_settings(docs: dict[str, list[dict]]) -> list[str]:
 class Pod:
     """One Deployment's pod as a podman pod with no network, its volumes under WORK."""
 
-    def __init__(self, deployment: dict, configmaps: dict[str, dict], secrets_: Secrets, work: Path, step: str):
+    def __init__(self, deployment: dict, configmaps: dict[str, dict], secrets_: Secrets, work: Path, step: str,
+                 local: dict[str, str]):
         self.name = deployment["metadata"]["name"]
         self.spec = deployment["spec"]["template"]["spec"]
         self.configmaps = configmaps
         self.secrets = secrets_
         self.work = work
         self.step = step
+        self.local = local
         self.pod = f"preflight-{step}-{self.name}"
         self.logs = work / "logs"
         self.logs.mkdir(parents=True, exist_ok=True)
@@ -232,7 +292,11 @@ class Pod:
             out += ["--volume", f"{host}:{mount['mountPath']}:{mode},z"]
         if not serving and container.get("command"):
             out += ["--entrypoint", json.dumps([str(c) for c in container["command"]])]
-        out.append(container["image"])
+        image = container["image"]
+        if image in self.local:
+            out += ["--pull=never", self.local[image]]
+        else:
+            out.append(image)
         out += [str(a) for a in container.get("args", [])]
         return out
 
@@ -399,9 +463,10 @@ def host_info(pod: Pod) -> dict:
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
-def step(name: str, docs: dict[str, list[dict]], secrets_: Secrets, work: Path, real_state: bool) -> None:
+def step(name: str, docs: dict[str, list[dict]], secrets_: Secrets, work: Path, real_state: bool,
+         local: dict[str, str]) -> None:
     configmaps = {c["metadata"]["name"]: c for c in docs["ConfigMap"]}
-    pods = [Pod(d, configmaps, secrets_, work, name) for d in docs["Deployment"]
+    pods = [Pod(d, configmaps, secrets_, work, name, local) for d in docs["Deployment"]
             if any(c["image"].startswith(OURS) for c in d["spec"]["template"]["spec"]["containers"])
             and d["metadata"]["name"].startswith(("tilo-sh-relay", "tilo-api", "tilo-web"))]
     try:
@@ -444,6 +509,8 @@ def main() -> None:
     parser.add_argument("--base", default="HEAD", help="the tilo/infra revision production runs (HEAD)")
     parser.add_argument("--state", type=Path, help="a copy of the relay's state volume to start on")
     parser.add_argument("--no-base", action="store_true", help="with --state: start the release on it directly")
+    parser.add_argument("--archive", nargs=2, action="append", default=[], metavar=("PIN", "FILE"),
+                        help="read the release manifest's exact image@sha256:digest from a local OCI archive (repeatable)")
     a = parser.parse_args()
     infra, work = a.infra.resolve(), a.work.resolve()
     shutil.rmtree(work, ignore_errors=True)
@@ -451,7 +518,8 @@ def main() -> None:
     secrets_ = Secrets(infra, work)
 
     release = render(infra)
-    problems = unread_settings(release)
+    local = load_archives(a.archive, release)
+    problems = unread_settings(release, local)
     if problems:
         die("the release's manifests set what its images do not read:\n  " + "\n  ".join(problems))
     say("every TILO_* setting the manifests give is one its image reads")
@@ -462,12 +530,12 @@ def main() -> None:
         shutil.copytree(a.state, volume, symlinks=True)
     if not a.no_base:
         base = render(tree_at(infra, a.base, work / "base-tree"))
-        step("live", base, secrets_, work, bool(a.state))
+        step("live", base, secrets_, work, bool(a.state), {})
     (keys, workspaces) = identity(work / "volumes")
     written = documents(work / "volumes")
     if not a.no_base and not written:
         die("the live build left no workspace documents on the volume: the upgrade would read nothing it wrote")
-    step("release", release, secrets_, work, bool(a.state))
+    step("release", release, secrets_, work, bool(a.state), local)
     (keys_after, workspaces_after) = identity(work / "volumes")
     # The device key is the Lounge's address: the web entry dials it and the VM hosts take work
     # from it. The Lounge's workspace and what it holds are the people's: a release that starts

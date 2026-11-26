@@ -135,6 +135,8 @@ mod account_logins_tests;
 // What a workspace keeps on the host beside its records, and who reaches it.
 #[cfg(not(target_arch = "wasm32"))]
 mod workspace_stores;
+#[cfg(feature = "agents")]
+pub(crate) use workspace_stores::ReadFor;
 #[cfg(not(target_arch = "wasm32"))]
 pub use workspace_stores::{Reach, Store};
 // A secret used by reference by a turn this server carries out itself.
@@ -170,11 +172,11 @@ pub use crate::documents::device_keys::{
 };
 #[cfg(all(any(test, feature = "test-support"), feature = "agents"))]
 pub use sealed_documents::fixtures as sealed_fixtures;
+#[cfg(test)]
+mod copy_now_tests;
 mod desktop_document;
 #[cfg(test)]
 mod governed_grants_tests;
-#[cfg(test)]
-mod copy_now_tests;
 #[cfg(test)]
 mod naming_tests;
 pub mod person_workspace;
@@ -1872,15 +1874,49 @@ impl Workspaces {
         &self,
         workspace: &str,
     ) -> Result<Vec<(String, String)>, CollaborationError> {
-        let state = self.workspace(workspace).await?;
-        let governed = state.lock().await;
-        let mut routes = governed.peer().plaintext_routes();
-        if governed.seals() {
-            routes.extend(governed.peer().sealed_routes());
-        }
+        let mut routes = self.document_routes(workspace).await?;
         routes.retain(|(app, record)| !tilo_action_policy::roles::is_private_record(app, record));
-        drop(governed);
         Ok(routes)
+    }
+
+    /// Current record reads for a person working through this host without a device.
+    /// The signed workspace policy and a record's named readers both have to allow it.
+    #[cfg(feature = "agents")]
+    pub(crate) async fn workspace_document_reads(
+        &self,
+        workspace: &str,
+        reader: (&[u8; 32], ReadFor<'_>),
+    ) -> Result<std::collections::BTreeMap<(String, String), bool>, String> {
+        let routes = self
+            .workspace_document_routes(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let governed = state.lock().await;
+        let policy = governed.peer().governance().governed_policy()?;
+        let access = workspace_stores::reading_as(policy, reader)
+            .ok_or("this caller cannot read for that person in the workspace")?;
+        let now = tilo_clock::wall();
+        Ok(routes
+            .into_iter()
+            .map(|(app, record)| {
+                let node = collab_types::document_node(workspace, &app, &record);
+                let named = !neighbour_wire::KeyScope::has_named_readers(&record)
+                    || governed
+                        .resources
+                        .known_readers(&record)
+                        .is_some_and(|named| {
+                            collab_types::Readers::parse(&named)
+                                .is_some_and(|readers| readers.contains(reader.0))
+                        });
+                let allowed =
+                    named && access.allows(&node, tilo_action_policy::ActionKind::Read, now);
+                ((app, record), allowed)
+            })
+            .collect())
     }
 
     /// The state of `workspace` as this host holds it now: what a channel

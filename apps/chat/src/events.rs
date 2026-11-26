@@ -855,6 +855,16 @@ impl ChatApp {
                 self.activate_model_control(&command);
             }
             Hit::AgentModel(model) => self.choose_agent_model(model),
+            Hit::OpenModelSettings => {
+                if let Some(dispatch) = &self.dispatch {
+                    dispatch.open_reference(
+                        ui::apps::SETTINGS,
+                        None,
+                        &crate::model_choice::settings_reference(),
+                    );
+                }
+            }
+
             Hit::Send | Hit::RetrySend => self.send_focused(doc),
             Hit::ThreadSend => {
                 // The thread's box sends its own draft, to the message it

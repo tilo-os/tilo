@@ -988,6 +988,7 @@ impl Widget for Autocomplete {
         use crate::composition::{Control, ControlOption, InputKind};
         let text = self.input.value().to_owned();
         cx.control(Control::Entry {
+            target: None,
             input: InputKind::Search,
             text,
             placeholder: self.input.placeholder().to_owned(),

@@ -9,6 +9,21 @@ use super::{AttachedView, lay_out};
 const PAGE_FRAMES: usize = 8;
 
 impl AttachedView {
+    /// Show the item in a workspace page link, as a native window opened on that item does.
+    ///
+    /// # Errors
+    /// The mounted app has no item opener or its view refuses the item.
+    pub fn show_page_item(&mut self, item: &str) -> Result<(), String> {
+        let root = self
+            .frame
+            .get_mut()
+            .widget_mut::<super::super::root::ResourceRoot>()
+            .ok_or("the page holds no resource view")?;
+        root.show_item(item)?;
+        self.settle_acted();
+        Ok(())
+    }
+
     /// The view as a page shows it: its composition, laid out with everything
     /// that reached it since its last frame, and with the frames that take up
     /// (a store that opened once the workspace answered, a note an action

@@ -14,6 +14,7 @@ chat-effects-toggle-category = Kategorie ein- oder ausklappen
 chat-effects-reveal-message = Beitrag anzeigen
 chat-effects-reveal-message-range = Beiträge anzeigen
 chat-effects-show-view = Ansicht anzeigen
+chat-effects-set-up-personal-assistant = Persönlichen Assistenten einrichten
 chat-effects-open-agent = Unterhaltung mit Agent öffnen
 chat-effects-open-direct-conversation = Direkte Unterhaltung öffnen
 chat-effects-send-direct-message = Direktnachricht senden

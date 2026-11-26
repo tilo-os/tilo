@@ -99,6 +99,9 @@ impl ChatApp {
     /// The line under an empty channel's title: its topic, else, for
     /// someone who may write, an invitation to say the first thing.
     pub(crate) fn empty_channel_message(&self) -> Option<String> {
+        if self.can_ask_personal_assistant_in(&self.active_channel) {
+            return Some(crate::i18n::t("chat-assistant-look-round"));
+        }
         let channel = self.channel(&self.active_channel)?;
         if channel.direct {
             return None;

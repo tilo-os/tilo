@@ -904,6 +904,7 @@ impl Widget for ColorPicker {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         use crate::composition::{Control, ControlOption, InputKind};
         cx.control(Control::Entry {
+            target: None,
             input: InputKind::Colour,
             text: self.hex_string(),
             placeholder: String::new(),

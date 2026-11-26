@@ -166,7 +166,7 @@ async fn answer(stream: &mut tokio::io::DuplexStream) -> PageAnswer {
 #[tokio::test]
 async fn a_page_opens_acts_and_lets_go_when_its_browser_leaves() {
     let pages = Echo::default();
-    let person = Caller::authenticated([1; 32], [2; 32]);
+    let certificate = cert(1, "Browser", DeviceCapabilities::member());
     let (mut browser, served) = tokio::io::duplex(1 << 16);
     let (recv, send) = tokio::io::split(served);
     let address = PageAddress {
@@ -174,7 +174,7 @@ async fn a_page_opens_acts_and_lets_go_when_its_browser_leaves() {
         app: "notes".into(),
         show: Some("notes:page:a".into()),
     };
-    let serving = serve_pages(&pages, &person, true, |_, _| async { Ok(true) }, recv, send);
+    let serving = serve_pages(&pages, &certificate, |_, _| async { Ok(true) }, recv, send);
     let browsing = async {
         ask(&mut browser, &PageAsk::Open(address)).await;
         // Its keys were on their way: it is told so, then shown.
@@ -271,11 +271,11 @@ impl AppPages for Asking {
 #[tokio::test]
 async fn a_questions_answer_on_the_sheet_runs_it_and_patches_the_sheet() {
     let pages = Asking::default();
-    let person = Caller::authenticated([1; 32], [2; 32]);
+    let certificate = cert(1, "Browser", DeviceCapabilities::member());
     let (mut browser, served) = tokio::io::duplex(1 << 16);
     let (recv, send) = tokio::io::split(served);
     let target = tilo_server_protocol::page::question_target([7; 32], "allow-once");
-    let serving = serve_pages(&pages, &person, true, |_, _| async { Ok(true) }, recv, send);
+    let serving = serve_pages(&pages, &certificate, |_, _| async { Ok(true) }, recv, send);
     let browsing = async {
         ask(
             &mut browser,
@@ -312,9 +312,53 @@ async fn a_questions_answer_on_the_sheet_runs_it_and_patches_the_sheet() {
 }
 
 #[tokio::test]
+async fn a_workspace_service_cannot_read_or_answer_its_persons_sheet() {
+    let pages = Asking::default();
+    let certificate = cert(
+        1,
+        "Workspace service",
+        DeviceCapabilities::service_of(&DeviceCapabilities::member()),
+    );
+    let (mut browser, served) = tokio::io::duplex(1 << 16);
+    let (recv, send) = tokio::io::split(served);
+    let serving = serve_pages(&pages, &certificate, |_, _| async { Ok(false) }, recv, send);
+    let browsing = async {
+        ask(
+            &mut browser,
+            &PageAsk::Open(PageAddress {
+                workspace: WORKSPACE.into(),
+                app: "notes".into(),
+                show: None,
+            }),
+        )
+        .await;
+        let PageAnswer::Shown { body, .. } = answer(&mut browser).await else {
+            panic!("the service opens the ordinary page");
+        };
+        assert!(!body.contains("data-question-method"));
+        ask(
+            &mut browser,
+            &PageAsk::Act {
+                id: tilo_server_protocol::page::QUESTION_PATCH_ID,
+                target: Some(tilo_server_protocol::page::question_target(
+                    [7; 32],
+                    "allow-once",
+                )),
+                action: PageAction::Activate,
+            },
+        )
+        .await;
+        assert!(matches!(answer(&mut browser).await, PageAnswer::Refused(_)));
+        drop(browser);
+    };
+    tokio::join!(serving, browsing);
+    assert!(pages.asked.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn a_workspace_only_stored_here_is_refused_and_opens_nothing() {
     let pages = Echo::default();
-    let person = Caller::authenticated([1; 32], [2; 32]);
+    let certificate = cert(1, "Browser", DeviceCapabilities::member());
     let (mut browser, served) = tokio::io::duplex(1 << 16);
     let (recv, send) = tokio::io::split(served);
     let address = PageAddress {
@@ -324,8 +368,7 @@ async fn a_workspace_only_stored_here_is_refused_and_opens_nothing() {
     };
     let serving = serve_pages(
         &pages,
-        &person,
-        true,
+        &certificate,
         |_, _| async { Err(PageRefusal::StoredCopy) },
         recv,
         send,

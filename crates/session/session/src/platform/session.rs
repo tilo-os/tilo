@@ -495,16 +495,11 @@ impl Session {
         // box's message does, and Chat opens it.
         let ask: layout::Ask = {
             let handle = handle.clone();
-            let person = options.person.clone();
-            let agents = Rc::clone(&agents);
             let sends = sends.clone();
             Rc::new(move |text: &str| {
-                let (workspace, policy) = handle.read(|tree| {
-                    tree.active_workspace()
-                        .map(|held| (held.id().to_string(), held.policy.clone()))
-                })?;
-                let to =
-                    crate::agents::agent_recipient(agents.assistant(&workspace, &policy, &person));
+                let workspace =
+                    handle.read(|tree| tree.active_workspace().map(|w| w.id().to_string()))?;
+                let to = crate::agents::agent_recipient(None);
                 let arguments = serde_json::json!({
                     "to": [to],
                     "text": text,

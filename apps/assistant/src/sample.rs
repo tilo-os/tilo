@@ -71,9 +71,7 @@ fn sub_agents() -> Vec<SubAgent> {
             "data-room",
             "Data room: open requests",
             "Researcher",
-            Progress::Done {
-                when: "yesterday".to_owned(),
-            },
+            Progress::Done,
         ),
     ]
 }
@@ -201,7 +199,6 @@ pub(crate) fn stage(scenario: Option<&str>, nav: &Nav) {
         }
         Some("scheduled") => nav.tab.set(Tab::Scheduled),
         Some("resolved") => nav.tab.set(Tab::Resolved),
-        Some("supervision") => nav.show(&Place::Supervision),
         _ => {}
     }
 }

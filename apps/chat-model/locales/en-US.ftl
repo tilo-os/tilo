@@ -14,6 +14,7 @@ chat-effects-toggle-category = Fold category
 chat-effects-reveal-message = Reveal message
 chat-effects-reveal-message-range = Reveal messages
 chat-effects-show-view = Show view
+chat-effects-set-up-personal-assistant = Set up personal assistant
 chat-effects-open-agent = Open agent conversation
 chat-effects-open-direct-conversation = Open direct conversation
 chat-effects-send-direct-message = Send direct message

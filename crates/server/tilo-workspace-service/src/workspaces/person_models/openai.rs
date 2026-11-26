@@ -24,14 +24,18 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use super::super::WorkspaceId;
+use super::super::workspace_stores::Store;
 use agent_provider_config::presets::{CHATGPT_ENDPOINT, Preset};
 use agent_provider_config::{ProviderConfig, ProviderProfile, SignInIssuer, transform};
 use serde::{Deserialize, Serialize};
+use tilo_actions::remote::Caller;
 use tilo_actions::remote::person_models::{
     AccountUse, BeginSignIn, ProviderView, SignInStarted, SignInState, WaitSignIn,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_net::proxy::host::guarded_client;
+use tilo_user_identity::DeviceCert;
 use zeroize::Zeroizing;
 
 use super::super::Workspaces;
@@ -183,9 +187,37 @@ impl Drop for Tokens {
     }
 }
 
-/// One sign-in a person began and has not finished.
+/// The certified caller that started a sign-in. Re-read its workspace permission
+/// after external I/O before keeping the resulting credential or changing defaults.
+pub(super) struct SignInDevice {
+    pub(super) workspace: WorkspaceId,
+    pub(super) caller: Caller,
+    pub(super) certificate: DeviceCert,
+    /// An agent already obtained the person's consent for this invocation.
+    pub(super) consented: bool,
+}
+
+impl SignInDevice {
+    async fn still_allowed(&self, workspaces: &Workspaces) -> Result<(), String> {
+        let reach = workspaces
+            .reaching(
+                (Some(self.workspace), &self.caller, Some(&self.certificate)),
+                Store::MODELS,
+                tilo_actions::remote::person_models::BEGIN_SIGN_IN,
+                tilo_action_policy::ActionKind::Undoable,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        if reach.answer == tilo_action_policy::Answer::Ask && !self.consented {
+            return Err("The workspace now requires approval. Begin signing in again.".to_owned());
+        }
+        Ok(())
+    }
+}
+
+/// One sign-in a person began in a workspace and has not finished.
 struct Pending {
-    person: [u8; 32],
+    owner: (WorkspaceId, [u8; 32]),
     state: tokio::sync::watch::Receiver<SignInState>,
     task: tokio::task::AbortHandle,
 }
@@ -232,12 +264,12 @@ impl Workspaces {
     /// Begin `person`'s sign-in for `workspace` ([`BEGIN_SIGN_IN`]): ask
     /// `OpenAI` for a code, then wait for the person on a task of its own,
     /// and keep the grant in the workspace's vault. A person signs in once
-    /// at a time: one begun before is let go.
+    /// per workspace at a time: one begun before is let go.
     ///
     /// [`BEGIN_SIGN_IN`]: tilo_actions::remote::person_models::BEGIN_SIGN_IN
     pub(super) async fn begin_openai_sign_in(
         &self,
-        (person, workspace): ([u8; 32], &str),
+        initiator: SignInDevice,
         beginning: BeginSignIn,
         reach: Reach,
     ) -> Result<SignInStarted, String> {
@@ -259,10 +291,10 @@ impl Workspaces {
         let state = tell.subscribe();
         let workspaces = self.clone();
         let device = code.clone();
-        let workspace = workspace.to_owned();
+        let owner = (initiator.workspace, initiator.certificate.user_public_key);
         let task = tokio::spawn(async move {
             let outcome = workspaces
-                .signed_in(&workspace, &openai, &device, beginning.using, &reach)
+                .signed_in(&initiator, &openai, &device, beginning.using, &reach)
                 .await;
             let state = match outcome {
                 Ok(provider) => {
@@ -282,20 +314,13 @@ impl Workspaces {
         {
             let mut pending = self.inner.models.sign_ins.pending.lock_recover();
             pending.retain(|_, other| {
-                let theirs = other.person == person;
+                let theirs = other.owner == owner;
                 if theirs {
                     other.task.abort();
                 }
                 !theirs
             });
-            pending.insert(
-                id,
-                Pending {
-                    person,
-                    state,
-                    task,
-                },
-            );
+            pending.insert(id, Pending { owner, state, task });
         }
         Ok(started)
     }
@@ -307,7 +332,7 @@ impl Workspaces {
     /// [`WAIT_SIGN_IN`]: tilo_actions::remote::person_models::WAIT_SIGN_IN
     pub(super) async fn wait_openai_sign_in(
         &self,
-        person: [u8; 32],
+        owner: (WorkspaceId, [u8; 32]),
         waiting: &WaitSignIn,
     ) -> Result<SignInState, String> {
         let mut state = self
@@ -317,7 +342,7 @@ impl Workspaces {
             .pending
             .lock_recover()
             .get(&waiting.sign_in)
-            .filter(|pending| pending.person == person)
+            .filter(|pending| pending.owner == owner)
             .map(|pending| pending.state.clone())
             .ok_or_else(|| "That sign-in has ended. Begin it again.".to_owned())?;
         if *state.borrow_and_update() == SignInState::Waiting {
@@ -338,11 +363,15 @@ impl Workspaces {
     /// Let go of `person`'s sign-in ([`CANCEL_SIGN_IN`]).
     ///
     /// [`CANCEL_SIGN_IN`]: tilo_actions::remote::person_models::CANCEL_SIGN_IN
-    pub(super) fn cancel_openai_sign_in(&self, person: [u8; 32], cancelling: &WaitSignIn) {
+    pub(super) fn cancel_openai_sign_in(
+        &self,
+        owner: (WorkspaceId, [u8; 32]),
+        cancelling: &WaitSignIn,
+    ) {
         let mut pending = self.inner.models.sign_ins.pending.lock_recover();
         if pending
             .get(&cancelling.sign_in)
-            .is_some_and(|pending| pending.person == person)
+            .is_some_and(|pending| pending.owner == owner)
             && let Some(pending) = pending.remove(&cancelling.sign_in)
         {
             pending.task.abort();
@@ -353,15 +382,16 @@ impl Workspaces {
     /// keep the provider it answers on: what one sign-in does from its code on.
     async fn signed_in(
         &self,
-        workspace: &str,
+        initiator: &SignInDevice,
         openai: &OpenAiSignIn,
         code: &UserCode,
         using: AccountUse,
         reach: &Reach,
     ) -> Result<ProviderView, String> {
-        let root = &self.workspace_root(workspace);
+        let workspace = initiator.workspace.to_string();
+        let root = &self.workspace_root(&workspace);
         // The person signs in themselves: the use of what is kept is theirs.
-        let keys = ProviderKeys::of(self.vault_at(workspace), "");
+        let keys = ProviderKeys::of(self.vault_at(&workspace), "");
         let granted = tokio::time::timeout(SIGN_IN_LIFETIME, entered(openai, code, reach))
             .await
             .map_err(|_| "The code expired before it was entered. Begin again.".to_owned())??;
@@ -387,27 +417,47 @@ impl Workspaces {
             return Err("OpenAI granted no access to the account.".to_owned());
         };
         let id_token = tokens.id_token.clone().unwrap_or_default();
-        match using {
+        let (credential, listing_key) = match using {
             AccountUse::Subscription => {
                 let grant = Grant {
                     access_token,
                     refresh_token,
                     id_token,
                 };
-                let mut profile = kept_provider(root, openai, using)?;
-                keys.put(&mut profile, &grant.sealed()).await?;
-                save_named_key(root, &profile)?;
-                listed_and_chosen(root, profile, &grant.access(), reach).await
+                (grant.sealed(), grant.access())
             }
             AccountUse::ApiUsage => {
                 drop((access_token, refresh_token));
                 let key = api_key(openai, &id_token, reach).await?;
-                let mut profile = kept_provider(root, openai, using)?;
-                keys.put(&mut profile, &key).await?;
-                save_named_key(root, &profile)?;
-                listed_and_chosen(root, profile, &key, reach).await
+                (key.clone(), key)
             }
+        };
+        initiator.still_allowed(self).await?;
+        let offered = account_provider(&provider_config(root), openai, using);
+        let listed = listing(&offered, Some(&listing_key), reach)
+            .await
+            .unwrap_or_default();
+        // The account may have taken minutes to approve. Complete all provider I/O
+        // before the final permission check and any workspace write.
+        initiator.still_allowed(self).await?;
+        let mut config = provider_config(root);
+        let mut profile = account_provider(&config, openai, using);
+        if profile.id != offered.id || profile.endpoint != offered.endpoint {
+            return Err("The provider changed during sign-in. Begin again.".to_owned());
         }
+        if let Some(kept) = config
+            .profiles
+            .iter_mut()
+            .find(|kept| kept.id == profile.id)
+        {
+            kept.enabled = true;
+        } else {
+            config.profiles.push(profile.clone());
+        }
+        save_provider_config(root, &config)?;
+        keys.put(&mut profile, &credential).await?;
+        save_named_key(root, &profile)?;
+        keep_listed_and_chosen(root, &profile, listed)
     }
 }
 
@@ -601,12 +651,11 @@ async fn api_key(
 
 /// The provider an account `using` answers as: the one kept already, or a new
 /// one. A plan's provider signs in; API usage is `OpenAI`'s API with a key.
-fn kept_provider(
-    root: &Path,
+fn account_provider(
+    config: &ProviderConfig,
     openai: &OpenAiSignIn,
     using: AccountUse,
-) -> Result<ProviderProfile, String> {
-    let mut config = provider_config(root);
+) -> ProviderProfile {
     let is_it = |profile: &ProviderProfile| match using {
         AccountUse::Subscription => profile.sign_in_issuer() == Some(SignInIssuer::ChatGpt),
         AccountUse::ApiUsage => {
@@ -614,11 +663,8 @@ fn kept_provider(
                 && profile.endpoint.trim_end_matches('/') == openai.api.trim_end_matches('/')
         }
     };
-    if let Some(kept) = config.profiles.iter_mut().find(|profile| is_it(profile)) {
-        kept.enabled = true;
-        let kept = kept.clone();
-        save_provider_config(root, &config)?;
-        return Ok(kept);
+    if let Some(kept) = config.profiles.iter().find(|profile| is_it(profile)) {
+        return kept.clone();
     }
     let mut profile = match using {
         AccountUse::Subscription => {
@@ -633,23 +679,17 @@ fn kept_provider(
         }
     };
     profile.enabled = true;
-    config.profiles.push(profile.clone());
-    save_provider_config(root, &config)?;
-    Ok(profile)
+    profile
 }
 
-/// List `profile`'s models with `key`, keep them, and where no default
+/// Keep the models the provider listed, and where no default
 /// answers yet, make the first the default: a person who just signed in can use
 /// it at once.
-async fn listed_and_chosen(
+fn keep_listed_and_chosen(
     root: &Path,
-    profile: ProviderProfile,
-    key: &str,
-    reach: &Reach,
+    profile: &ProviderProfile,
+    listed: Vec<agent_provider_config::ModelDescriptor>,
 ) -> Result<ProviderView, String> {
-    let listed = listing(&profile, Some(key), reach)
-        .await
-        .unwrap_or_default();
     let mut config = provider_config(root);
     let none_chosen = !default_answers(&config);
     let kept = config

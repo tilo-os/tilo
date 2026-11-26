@@ -179,3 +179,8 @@ recovery-words-body = These 24 words are the only way back into Tilo if you lose
 recovery-words-copy = Copy
 recovery-words-copied = Copied
 recovery-words-confirm = I’ve written them down
+
+workspace-create-name = Name of the new workspace
+workspace-create-submit = Create
+workspace-create-cancel = Cancel
+workspace-create-retry = The host has not answered yet. Press Create again to open the same workspace.

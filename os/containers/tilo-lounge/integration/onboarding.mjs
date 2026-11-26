@@ -45,7 +45,7 @@ import {join} from 'node:path';
 import {FIRST_SCREEN_SEEN, launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {stepLimit, shellMetrics, machine, browserMemory, confirmRecoveryWords} from './waits.mjs';
-import {mailLink, poll, pressText, waitForMail, waitingCard} from './shell.mjs';
+import {agentCommand, mailLink, poll, pressText, waitForMail, waitingCard} from './shell.mjs';
 
 const [site, server, work, tiloBin, stack] = process.argv.slice(2);
 if (!site || !server || !work || !tiloBin || !stack) {
@@ -254,7 +254,7 @@ const pageSearch = async (tab, query, title) => {
   await type(tab, query);
   const row = `[...document.querySelectorAll('#tilo-page .tilo-search-row')]
     .find(row => (row.innerText || '').includes(${JSON.stringify(title)})) ?? null`;
-  const rows = JSON.parse(await until(tab, `(() => {
+  const rows = JSON.parse(await until(tab, String.raw`(() => {
     const rows = [...document.querySelectorAll('#tilo-page .tilo-search-row')].map(row => (row.innerText || '').replace(/\s+/g, ' ').trim());
     return rows.some(text => text.includes(${JSON.stringify(title)})) ? JSON.stringify(rows) : '';
   })()`, `the search offering "${title}"`, stepLimit(4)));
@@ -275,7 +275,7 @@ const search = (tab, query, title) => pageSearch(tab, query, title);
 /** A real pointer press on the control the page draws named `name`, once it
  * is drawn. */
 const pressName = async (tab, name, timeout = stepLimit(3)) => {
-  const shown = await poll(tab, `(() => {
+  const shown = await poll(tab, String.raw`(() => {
     const page = document.getElementById('tilo-page');
     const found = [];
     for (const el of page?.querySelectorAll('[aria-label], button, a') ?? []) {
@@ -394,16 +394,6 @@ const copied = async (tab, before) => {
     await sleep(200);
   }
   await fail('the prompt never reached the clipboard');
-};
-const commandOf = prompt => {
-  const login = prompt.match(/(?:tilo|sh -s) login (\S+)/);
-  const add = prompt.match(/(?:tilo|sh -s) device add (\S+)/);
-  const text = login?.[1] ?? add?.[1];
-  if (!text) return null;
-  return {text, kind: add ? 'device add' : 'login',
-    ticket: /^tilo1[0-9a-f]+$/.test(text) ? text : null,
-    code: /^[2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4}$/.test(text) ? text : null,
-    site: prompt.match(/--site (\S+?)(?:,|\s|$)/)?.[1] ?? null};
 };
 /** The page's own identity module: the one it holds its person in. */
 const identityModule = `await import(new URL('identity.mjs', new URL('.', (document.querySelector('link[rel="modulepreload"][href], script[type="module"][src]').href
@@ -661,7 +651,7 @@ try {
   await until(stranger.tab, `document.documentElement.dataset.firstScreen === 'waiting'`, 'the first screen answering the click', stepLimit(4));
   const prompt = await copied(stranger.tab, beforeCopy);
   report.prompt = prompt;
-  const setup = commandOf(prompt);
+  const setup = agentCommand(prompt);
   if (!setup) await fail(`the prompt names no tilo login ticket: ${prompt}`);
   const env = await agentEnv();
   const login = await tilo(env, setup.ticket ? ['login', setup.ticket] : ['login', setup.code, ...(setup.site ? ['--site', setup.site] : [])]);
@@ -730,11 +720,7 @@ try {
   await pressId(returning.tab, 'arrival-sign-in-agent');
   // The prompt a person copies, read from what the screen shows: the code it
   // names, once the screen is ready to be copied.
-  const signInShown = `(() => {
-    const text = (document.body?.innerText || '').replace(/\\s+/g, ' ');
-    const named = text.match(/(?:tilo|sh -s) login [2-9A-Z]{3}-[2-9A-Z]{4}(?: --site \\S+?)?(?:,|\\s|$)/);
-    return named ? named[0] : '';
-  })()`;
+  const signInShown = `document.querySelector('#first-screen[data-mode="sign-in"] #first-screen-prompt')?.innerText.trim()`;
   const signInPrompt = await poll(returning.tab, signInShown, stepLimit(6));
   if (!signInPrompt) {
     await dump(returning.tab, '5-sign-in-with-agent');
@@ -742,7 +728,7 @@ try {
   }
   report.signInPrompt = signInPrompt;
   await dump(returning.tab, '5-sign-in-with-agent');
-  const signIn = commandOf(signInPrompt);
+  const signIn = agentCommand(signInPrompt);
   if (!signIn) await fail(`the sign-in prompt names no ticket or code: ${signInPrompt}`);
   const claimed = await tilo(env, signIn.kind === 'device add'
     ? ['device', 'add', signIn.ticket]

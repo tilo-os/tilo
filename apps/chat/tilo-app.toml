@@ -108,6 +108,10 @@ operation = "view"
 asks = "agent"
 [[offers]]
 resource = "chat.workspace"
+action = "set-up-personal-assistant"
+label = "Set up personal assistant"
+[[offers]]
+resource = "chat.workspace"
 action = "attach-file"
 label = "Attach file"
 kind = "outside"

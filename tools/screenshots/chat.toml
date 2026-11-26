@@ -6,7 +6,7 @@ name = "team-conversation"
 title = "A team channel with a conversation"
 
 [[situation.steps]]
-invoke = { resource = "chat.workspace", action = "begin-chat", args = { name = "Lena Hoffmann", initials = "LH", color = 2 } }
+invoke = { resource = "chat.workspace", action = "begin-chat" }
 
 [[situation.steps]]
 invoke = { resource = "chat.workspace", action = "create-channel", args = { name = "design", topic = "Reviews, sketches and the release plan" } }
@@ -34,7 +34,7 @@ name = "channels-and-categories"
 title = "Channels sorted into categories"
 
 [[situation.steps]]
-invoke = { resource = "chat.workspace", action = "begin-chat", args = { name = "Lena Hoffmann", initials = "LH", color = 2 } }
+invoke = { resource = "chat.workspace", action = "begin-chat" }
 
 [[situation.steps]]
 invoke = { resource = "chat.workspace", action = "create-category", args = { name = "Projects" }, bind = "projects" }
@@ -57,3 +57,16 @@ invoke = { resource = "chat.workspace", action = "create-channel", args = { name
 [[situation]]
 name = "first-start"
 title = "Chat before you have introduced yourself"
+
+[[situation]]
+name = "personal-assistant-setup"
+title = "The personal assistant conversation before connecting a model provider"
+
+[[situation.steps]]
+invoke = { resource = "chat.workspace", action = "set-up-personal-assistant" }
+
+[[situation.steps]]
+expect = { target = "chat-connect-model-provider", role = "button", enabled = true }
+
+[[situation.steps]]
+expect = { target = "chat-review-proposals", role = "button", enabled = true }

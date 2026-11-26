@@ -77,6 +77,63 @@ fn only(state: &WorkspaceAgents) -> &Agent {
 }
 
 #[test]
+fn personal_setup_converges_and_preserves_an_existing_instruction() {
+    let mut first = as_person(ADA);
+    let mut other_device = first.fork().as_author(ADA);
+    let mut other_person = first.fork().as_author(GRACE);
+    let setup = || WorkspaceAgents::ENSURE_PERSONAL_ASSISTANT.with(());
+    for replica in [&mut first, &mut other_device, &mut other_person] {
+        replica.apply(setup()).unwrap();
+    }
+    first.sync_with(&mut other_device).unwrap();
+    first.sync_with(&mut other_person).unwrap();
+    let state = first.state().unwrap();
+    assert_eq!(state.agents.len(), 2);
+    let ada = state.personal_assistant(ADA).unwrap();
+    assert_eq!(ada.keeper, ADA);
+    assert_eq!(ada.told(), Some(super::ASSISTANT_INSTRUCTION));
+    let grace = state.personal_assistant(GRACE).unwrap();
+    assert_ne!(grace.id, ada.id);
+    assert_eq!(grace.keeper, GRACE);
+    assert_eq!(
+        state.read_document(None).unwrap()["personal_assistants"],
+        serde_json::json!({ADA: ada.id.0, GRACE: grace.id.0})
+    );
+    first
+        .apply(tell(&ada.id.0, Some("Keep this instruction")))
+        .unwrap();
+    first.apply(setup()).unwrap();
+    let state = first.state().unwrap();
+    assert_eq!(state.agents.len(), 2);
+    assert_eq!(
+        state.personal_assistant(ADA).unwrap().told(),
+        Some("Keep this instruction")
+    );
+}
+
+#[test]
+fn personal_setup_keeps_a_retired_agent_and_accepts_uppercase_person_keys() {
+    let keeper = "ab".repeat(32);
+    let mut list = as_person(&keeper.to_uppercase());
+    let setup = || WorkspaceAgents::ENSURE_PERSONAL_ASSISTANT.with(());
+    list.apply(setup()).unwrap();
+    let first = list
+        .state()
+        .unwrap()
+        .personal_assistant(&keeper)
+        .unwrap()
+        .id
+        .0
+        .clone();
+    list.apply(retire(&first)).unwrap();
+    let mut lower = list.fork().as_author(&keeper);
+    lower.apply(setup()).unwrap();
+    let state = lower.state().unwrap();
+    assert_ne!(state.personal_assistant(&keeper).unwrap().id.0, first);
+    assert_eq!(state.get(&id(&first)).unwrap().state, AgentState::Retired);
+}
+
+#[test]
 fn an_agent_is_made_with_a_name_who_made_it_and_when() {
     let mut record = as_person(ADA);
     record.set_now_ms(1_700_000_000_000);
@@ -725,6 +782,10 @@ fn whatever_acts_for_a_member_is_refused_what_a_member_does_only_in_person() {
     ];
     let verbs = || {
         [
+            (
+                "sets up a personal assistant",
+                WorkspaceAgents::ENSURE_PERSONAL_ASSISTANT.with(()),
+            ),
             ("names it", rename(&agent, "Mine now")),
             (
                 "tells it how to work",

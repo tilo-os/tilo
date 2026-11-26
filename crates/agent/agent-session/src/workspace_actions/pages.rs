@@ -7,13 +7,15 @@
 //! is.
 
 use std::fmt::Write as _;
+use tilo_user_identity::DeviceCert;
 
 use super::{
     ActionCallError, Caller, DocumentRoute, HashMap, Job, Needs, Worker, WorkspaceActions,
     WorkspaceId, bounded, catch_up, pending,
 };
 use tilo_actions::remote::{
-    CatalogueQuery, Completer, FOUND_FILE, InvokeRequest, Pending, RemoteActionTarget, Within,
+    CatalogueQuery, Completer, FOUND_FILE, InvocationReceipt, InvokeRequest, Pending, PendingPoll,
+    ReceiptStatus, RemoteActionTarget, Within,
 };
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_server_protocol::page::{
@@ -38,6 +40,7 @@ pub(super) enum PageJob {
     Open {
         workspace_id: WorkspaceId,
         caller: Box<Caller>,
+        certificate: Option<Box<DeviceCert>>,
         address: PageAddress,
         done: Completer<Result<OpenedPage, PageRefusal>>,
     },
@@ -82,6 +85,7 @@ pub(super) enum HeldPage {
         /// Boxed: who opened it is most of the page's size, and the front page holds none.
         who: Box<bounded::Bounded>,
         route: DocumentRoute,
+        form_calls: Option<FormCalls>,
     },
     /// The workspace's front page: the apps a member opens here. Nothing is
     /// acted on it and it never changes.
@@ -263,6 +267,62 @@ pub(super) struct Pages {
     next: u64,
 }
 
+/// Only the host holds the certificate proved by this page's session.
+pub(super) struct FormCalls {
+    form: crate::worker::proto::PageForm,
+    certificate: Option<Box<DeviceCert>>,
+    pending: Vec<(
+        InvocationId,
+        Pending<Result<serde_json::Value, ActionCallError>>,
+    )>,
+}
+
+impl FormCalls {
+    fn poll(
+        &mut self,
+        app: &crate::ConfinedReplica,
+        workspace: WorkspaceId,
+        caller: &Caller,
+        link: Option<&dyn super::WorkspaceDocumentsLink>,
+        mut activated: bool,
+    ) -> Result<(), crate::apps::AppError> {
+        let mut replies = Vec::new();
+        self.pending.retain_mut(|(invocation, answer)| {
+            let status = match answer.poll_ready() {
+                PendingPoll::Waiting => return true,
+                PendingPoll::Ready(Ok(value)) => ReceiptStatus::Completed {
+                    output: ActionOutput {
+                        value: Some(value),
+                        ..ActionOutput::default()
+                    },
+                },
+                PendingPoll::Ready(Err(error)) => ReceiptStatus::Rejected { error },
+                PendingPoll::Abandoned => ReceiptStatus::Rejected {
+                    error: ActionCallError::NotReady,
+                },
+            };
+            replies.push(InvocationReceipt {
+                invocation: *invocation,
+                status,
+            });
+            false
+        });
+        for request in app.page_form_calls(replies)? {
+            let invocation = request.invocation;
+            let answer = match (link, self.certificate.as_deref()) {
+                (Some(link), Some(certificate))
+                    if self.form.permits(&request.target, &mut activated) =>
+                {
+                    link.page_form_action(workspace, caller, certificate, app.app_id(), request)
+                }
+                _ => Pending::ready(Err(ActionCallError::NotPermitted)),
+            };
+            self.pending.push((invocation, answer));
+        }
+        Ok(())
+    }
+}
+
 impl Pages {
     /// Who the page `job` is about was opened by: what an act on it, which names the page alone,
     /// is rendered for.
@@ -308,10 +368,24 @@ impl WorkspaceActions {
         caller: &Caller,
         address: PageAddress,
     ) -> Pending<Result<OpenedPage, PageRefusal>> {
+        self.open_page_with_device(workspace_id, caller, None, address)
+    }
+
+    /// Open a page on the session that proved this device. Built-in forms use
+    /// that session to reach their own services as the person.
+    #[must_use]
+    pub fn open_page_with_device(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+        address: PageAddress,
+    ) -> Pending<Result<OpenedPage, PageRefusal>> {
         let (done, answer) = pending();
         let job = PageJob::Open {
             workspace_id,
             caller: Box::new(caller.clone()),
+            certificate: certificate.cloned().map(Box::new),
             address,
             done,
         };
@@ -360,9 +434,10 @@ impl Worker {
             PageJob::Open {
                 workspace_id,
                 caller,
+                certificate,
                 address,
                 done,
-            } => done.complete(self.open_page(workspace_id, &caller, &address)),
+            } => done.complete(self.open_page(workspace_id, &caller, certificate, &address)),
             PageJob::Act {
                 workspace_id,
                 page,
@@ -432,6 +507,7 @@ impl Worker {
         &mut self,
         workspace_id: WorkspaceId,
         caller: &Caller,
+        certificate: Option<Box<DeviceCert>>,
         address: &PageAddress,
     ) -> Result<OpenedPage, PageRefusal> {
         if !self.admits_member(workspace_id, caller) {
@@ -488,14 +564,32 @@ impl Worker {
         let key = self
             .bounded_replica(workspace_id, &who, &route, &state)
             .map_err(refused)?;
-        let shown = self
+        let replica = &self
             .bounded
             .get(&key)
             .ok_or_else(|| unavailable("the page's document did not open"))?
             .held
-            .app
+            .app;
+        let shown = replica
             .page_show(address.show.as_deref())
             .map_err(not_shown)?;
+        let mut form_calls =
+            crate::worker::proto::PageForm::for_app(replica.app_id()).map(|form| FormCalls {
+                certificate,
+                pending: Vec::new(),
+                form,
+            });
+        if let Some(calls) = &mut form_calls {
+            calls
+                .poll(
+                    replica,
+                    workspace_id,
+                    &who.caller,
+                    self.shared.link.get().map(AsRef::as_ref),
+                    false,
+                )
+                .map_err(not_shown)?;
+        }
         self.save_page(workspace_id, &key, (&who, &route, &state))?;
         self.pages.held.insert(
             page,
@@ -503,6 +597,7 @@ impl Worker {
                 workspace_id,
                 who: Box::new(who),
                 route,
+                form_calls,
             },
         );
         let (title, css, body) = shown;
@@ -553,7 +648,8 @@ impl Worker {
         let _ = write!(
             body,
             "<a class=\"tilo-home-search\" href=\"/w/{workspace_id}/{SEARCH_APP}\" \
-             aria-label=\"Search the workspace\">Search apps, actions and records</a>"
+             aria-label=\"Search the workspace\">Search apps, actions and records</a>\
+             <button type=\"button\" data-pair-device>Pair a new device</button>"
         );
         // Who is here is said only when the live session says someone is: a
         // page that claims "0 here" of a workspace someone is reading is
@@ -730,6 +826,27 @@ impl Worker {
         }
         if typed.is_empty() {
             return (rows, None);
+        }
+        if caller.acting().person_id().is_some()
+            && query
+                .split_whitespace()
+                .all(|word| "new create workspace".contains(word))
+            && let Some(locator) = self
+                .shared
+                .link
+                .get()
+                .and_then(|link| link.personal_workspace_host(workspace_id))
+            && let Some(href) = new_workspace_entry(workspace_id, &locator)
+        {
+            rows.push(SearchRow {
+                id: SEARCH_FIRST_ROW.saturating_add(u32::try_from(rows.len()).unwrap_or_default()),
+                label: "New workspace".to_owned(),
+                secondary: "Workspaces".to_owned(),
+                href: Some(href),
+                run: None,
+                copy: None,
+                app: false,
+            });
         }
         let mut notes: Vec<&str> = Vec::new();
         // What the workspace holds, by the words in it: the records the
@@ -1389,6 +1506,7 @@ impl Worker {
                 workspace_id,
                 who,
                 route,
+                ..
             }) => (
                 None,
                 Some((*workspace_id, bounded::Bounded::clone(who), route.clone())),
@@ -1456,10 +1574,33 @@ impl Worker {
         let Some(held) = self.bounded.get(&key) else {
             return Some(Err(unavailable("the page's document did not open")));
         };
-        let patches = match held.held.app.page_act(act) {
+        let replica = &held.held.app;
+        // Deliver completed calls before rendering. Drain fresh submissions
+        // before answering a click, even if the browser leaves immediately.
+        let mut poll_form = |activated| {
+            if let Some(HeldPage::App {
+                form_calls: Some(calls),
+                ..
+            }) = self.pages.held.get_mut(&page)
+            {
+                calls.poll(
+                    replica,
+                    workspace_id,
+                    &who.caller,
+                    self.shared.link.get().map(AsRef::as_ref),
+                    activated,
+                )?;
+            }
+            Ok(())
+        };
+        let activated = matches!(act, Some((_, _, PageAction::Activate)));
+        let patches = match poll_form(false).and_then(|()| replica.page_act(act)) {
             Ok(patches) => patches,
             Err(error) => return Some(Err(not_shown(error))),
         };
+        if acting && let Err(error) = poll_form(activated) {
+            return Some(Err(not_shown(error)));
+        }
         let acted = started.elapsed();
         if let Err(error) = self.save_page(workspace_id, &key, (&who, &route, &state)) {
             return Some(Err(error));
@@ -1577,6 +1718,28 @@ fn field_title(name: &str) -> String {
         .next()
         .map(|first| first.to_uppercase().chain(chars).collect())
         .unwrap_or_default()
+}
+
+/// The site's naming form. The link only re-enters this workspace on its host;
+/// the admitted browser's device creates and enters the named workspace.
+fn new_workspace_entry(
+    workspace: WorkspaceId,
+    locator: &tilo_actions::remote::ResourceViewLocator,
+) -> Option<String> {
+    use ui::tilo_reference::link::{HostOrigin, Link, LinkTarget, Mode, Scope, WebEntry};
+
+    let entry = WebEntry::new(locator.web_entry.as_deref()?).ok()?;
+    let link = Link {
+        mode: Mode::Desktop,
+        target: LinkTarget::new(Scope::Workspace {
+            host: HostOrigin::new(&locator.origin).ok()?,
+            id: workspace.as_uuid(),
+            slug: None,
+        }),
+        secrets: Default::default(),
+    };
+    let address = link.to_url(&entry).ok()?;
+    Some(address.replacen('#', "?new-workspace=1#", 1))
 }
 
 /// The fields the action `label` asks for, holding what was typed: a form
@@ -1773,7 +1936,8 @@ fn card_html(card: &Card) -> String {
                 "<section class=\"tilo-devices\" aria-label=\"Devices and access\">\
                  <h2>Devices and access</h2>\
                  <p>This workspace is on every device you sign in on, and your agent reaches \
-                 it from the computer you set up.</p>",
+                 it from the computer you set up.</p>\
+                 <button type=\"button\" data-pair-device>Pair a new device</button>",
             );
             let _ = write!(
                 out,

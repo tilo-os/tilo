@@ -85,6 +85,31 @@ fn widgets_render_as_their_own_elements() {
 }
 
 #[test]
+fn a_button_keeps_its_spoken_name_when_its_visible_caption_is_shorter() {
+    let mut page = window("Providers");
+    let button = &mut page.root.children[1];
+    button.semantics = Some(AccessNode::new(Role::Button).with_name("Link another provider"));
+    button.own = Some(Own::Face(Face {
+        icon: None,
+        label: Some(look("Link")),
+        detail: None,
+        trailing: None,
+        fill: None,
+        edge: None,
+        radius: 0.0,
+        pad: 0.0,
+        gap: 0.0,
+        spread: false,
+    }));
+    let html = Page::new().render(&page);
+    assert!(
+        html.contains("aria-label=\"Link another provider\""),
+        "{html}"
+    );
+    assert!(html.contains(">Link</span>"), "{html}");
+}
+
+#[test]
 fn a_change_patches_only_what_changed() {
     let mut page = Page::new();
     page.render(&window("Groceries"));

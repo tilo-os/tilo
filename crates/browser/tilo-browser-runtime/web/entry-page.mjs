@@ -39,7 +39,7 @@ import {hostUnreachable, refusalText, rejoinedName, retryUnreachable} from './se
 import {deviceRemoved} from './session-refusal.mjs';
 import {sameEntry} from './entered-workspaces.mjs';
 import {isInvitedServer, invitedOrigin, nameInvitedServer, siteNames, siteServer} from './site-host.mjs';
-import {chooseWorkspace, chosenDisplayName, chosenWorkspace, entryWorkspace, enteredWorkspaces, hostDeviceOf, hostToReconnect, joinViaHost, keepJoinedHost, keptMembership, listedWorkspaces, publicListings, ownDesktopOpen, pairViaHost, rememberEntered, settleFailedWorkspace, unmarkOwnPairing, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseWorkspace, chosenDisplayName, chosenWorkspace, entryWorkspace, enteredWorkspaces, freeName, hostDeviceOf, hostToReconnect, joinViaHost, keepJoinedHost, keptMembership, listedWorkspaces, publicListings, ownDesktopOpen, pairViaHost, rememberEntered, settleFailedWorkspace, unmarkOwnPairing, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {initial, shownName} from './person.mjs';
 import {hex} from './hex.mjs';
 
@@ -636,6 +636,16 @@ export async function startEntryPage({mode}) {
         };
         page.peer.onStatus(state);
         state(page.peer.getSnapshot());
+        return true;
+      }
+      if (!embed && !guestTicket && !enteredViaEntry && query.get('new-workspace') === '1' &&
+          page.peer === admitted && page.workspace === admitted?.workspace &&
+          admitted?.host?.hostCert?.capabilities?.can_own_workspaces) {
+        const own = await askNewWorkspace(admitted, messages);
+        if (!own) return false;
+        remembering(() => chooseWorkspace({origin: own.origin, workspace: own.id}));
+        rememberPageWorkspace({workspace: own.id, name: own.name});
+        location.assign(`${page.entry.base}w/${own.id}`);
         return true;
       }
       return holdFirstScreen(page);
@@ -1462,29 +1472,80 @@ async function setupPersonWorkspace() {
 
 /** This tab's peer, once it is in its workspace, or `null` after the wait. */
 async function setupPeer() {
-  return Promise.race([pageLetIn, new Promise(resolve => setTimeout(resolve, LET_IN_MS, null))]);
+  let timer;
+  const timeout = new Promise(resolve => { timer = setTimeout(resolve, LET_IN_MS, null); });
+  return Promise.race([pageLetIn, timeout]).finally(() => clearTimeout(timer));
 }
 
 /** The person's own workspace on the home host, or null, once asked for. */
 let ownWorkspaceAsked = null;
-/** The workspace switcher's choice of the person's own hosted workspace. */
 /**
  * The person's own workspace on the host of `peer`, with this page's device
  * in it (the shared device entry makes or finds it and redeems its
  * invitation), remembered among the workspaces this browser entered so the
- * switcher offers it and opening it reconnects. The ask names no workspace:
- * the host answers the person's own, made under an id of its choosing the
- * first time. Resolves to `{id, name, origin}`.
+ * switcher offers it and opening it reconnects. With no name the host answers
+ * the person's first workspace. A name and invocation create another, or
+ * re-enter the one this invocation created. Resolves to `{id, name, origin}`.
  */
-async function ensureOwnWorkspace(peer, store = globalThis.localStorage) {
+async function ensureOwnWorkspace(peer, options = {}) {
+  const store = globalThis.localStorage;
   const origin = new URL(peer.origin).origin;
-  const own = await peer.enterOwnWorkspace({
+  const own = await peer.enterOwnWorkspace({...options,
     entered: id => enteredWorkspaces(store).some(kept => kept.origin === origin && kept.workspace === id),
   });
   const name = own.name || null;
   const hostDevice = hostDeviceOf(peer.host?.hostCert);
   if (hostDevice) rememberEntered(await loadRuntime(), {origin, workspace: own.workspace, hostDevice, name}, store);
   return {id: own.workspace, name, origin};
+}
+
+/** The signed device asks its workspace host to make and enter another of its person's
+ * workspaces. An unanswered submission keeps its invocation for the next press. */
+function askNewWorkspace(peer, messages) {
+  const word = (key, fallback) => messages.get('workspace-create-' + key) ?? fallback;
+  return new Promise(resolve => {
+    const form = element('form', 'tilo-entry-card');
+    form.dataset.card = 'new-workspace';
+    const label = element('label', '', word('name', 'Name of the new workspace'));
+    const input = Object.assign(element('input'), {required: true, autocomplete: 'off', maxLength: 80});
+    label.append(input);
+    const error = element('p', 'tilo-entry-error');
+    error.setAttribute('role', 'alert');
+    error.hidden = true;
+    const actions = element('div', 'tilo-entry-actions');
+    const create = element('button', 'tilo-entry-primary', word('submit', 'Create'));
+    create.type = 'submit';
+    const cancel = element('button', '', word('cancel', 'Cancel'));
+    cancel.type = 'button';
+    actions.append(create, cancel);
+    const asked = new Map();
+    const done = value => { form.remove(); resolve(value); };
+    cancel.addEventListener('click', () => { if (!create.disabled) done(null); });
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const typed = input.value.trim();
+      if (!typed || create.disabled) return;
+      create.disabled = cancel.disabled = input.disabled = true;
+      error.hidden = true;
+      try {
+        if (!asked.has(typed)) {
+          const held = remembering(() => enteredWorkspaces().map(entry => entry.name)) ?? [];
+          asked.set(typed, {name: freeName(typed, held), invocation: crypto.randomUUID()});
+        }
+        done(await ensureOwnWorkspace(peer, asked.get(typed)));
+      } catch (refusal) {
+        error.textContent = refusal?.code === 'unanswered'
+          ? word('retry', 'The host has not answered yet. Press Create again to open the same workspace.')
+          : refusal?.message ?? String(refusal);
+        error.hidden = false;
+      } finally {
+        create.disabled = cancel.disabled = input.disabled = false;
+      }
+    });
+    form.append(label, error, actions);
+    document.body.append(form);
+    input.focus();
+  });
 }
 
 /** The routes a page reaches its host's tickets at, below the host's API prefix. */
@@ -1564,7 +1625,7 @@ function ticketCodes({origin, identity}) {
       }};
   };
   return {
-    async create(workspace, name) {
+    async create({workspace, name}) {
       const minted = await call(TICKET_MINT, {user: identity.userPublicKey, workspace, name: name ?? null,
         site: globalThis.location?.origin ?? null});
       return answerer(kept(minted.ticket, minted.id, 'login'));

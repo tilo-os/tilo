@@ -57,7 +57,6 @@ resource = "assistant.window"
 action = "view-main-chat"
 label = "Show the main chat"
 kind = "read"
-operation = "view"
 [[offers]]
 resource = "assistant.window"
 action = "view-sub-agent"

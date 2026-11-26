@@ -20,6 +20,7 @@ use crate::model::{Channel, ChannelKind};
 
 const DIRECT_MESSAGES: &str = "direct-messages";
 const CHANNELS: &str = "channels";
+const SET_UP_ASSISTANT: &str = "set-up-personal-assistant";
 const ADD_CHANNEL: &str = "add-channel";
 
 /// The sidebar id of channel `id`.
@@ -58,11 +59,12 @@ fn place(id: &str) -> Option<Place> {
 }
 
 /// The shell's sidebar: the list `places` shows.
-pub(crate) fn sidebar(places: &NavFeed) -> Element {
+pub(crate) fn sidebar(places: &NavFeed, setup: Option<tilo_actions::ActionBinding<()>>) -> Element {
     Box::new(
         NavList::new(Vec::new())
             .with_id("chat.channels")
             .with_accessible_name(crate::i18n::t("chat-channels-title"))
+            .selection_actions(setup.map(|binding| (SET_UP_ASSISTANT.to_owned(), binding)))
             .fed_by(places)
             .fed_menus(places)
             .fed_renames(places),
@@ -131,13 +133,12 @@ impl ChatApp {
     }
 
     /// The direct conversations this person has, each once, by the name they
-    /// go by: those holding messages, the one open now, and those with their own agents. Everyone else in
-    /// the workspace is reached from the people overlay (or their card), not
-    /// listed here: a workspace full of visitors must not push its channels
-    /// out of sight.
+    /// go by: those holding messages, the one open now and their own assistant.
+    /// Other people and agents are reachable from search or their cards.
     fn direct_message_items(&self) -> Vec<NavItem> {
-        self.direct_contacts()
-            .into_iter()
+        let contacts = self.direct_contacts();
+        let mut items: Vec<NavItem> = contacts
+            .iter()
             .map(|conversation| {
                 let unread = conversation.unread;
                 let with = self.conversation_peer(&conversation.members);
@@ -154,13 +155,52 @@ impl ChatApp {
                 }
                 item
             })
-            .chain(self.agents_unlisted().into_iter().map(|(id, name, agent)| {
-                NavItem::new(channel_place(id.as_str()), &name)
-                    .icon(Icon::Users)
-                    .person(agent.clone(), Some(self.identity_colour(&agent)), false)
-                    .person_face(&name, None)
-            }))
-            .collect()
+            .collect();
+        let Some(keeper) = self.me.id.person_id().filter(|id| !id.is_empty()) else {
+            return items;
+        };
+        let roster = self
+            .agents_record()
+            .filter(|record| record.may_read())
+            .map(|record| record.get());
+        let personal = roster
+            .as_ref()
+            .and_then(|agents| agents.personal_assistant(keeper));
+        let personal_id = personal.map(|agent| agent.id.0.as_str());
+        let active = self.conversation_agent();
+        // The open DM is identified by its members even before a message exists or
+        // the workspace grants Chat access to the roster.
+        for agent in personal_id.into_iter().chain(active.as_deref()) {
+            let peer = MemberId::agent(agent.to_owned());
+            let id = crate::chat::Chat::direct_id([self.me.id.clone(), peer.clone()]);
+            if Some(agent) != personal_id && id.as_str() != self.active_channel {
+                continue;
+            }
+            let place = channel_place(id.as_str());
+            if !items.iter().any(|item| item.id == place) {
+                let name = roster
+                    .as_ref()
+                    .and_then(|agents| agents.agents.find(&ui::tilo_resource::Id::from(agent)))
+                    .map_or_else(
+                        || self.user_name(&peer),
+                        |agent| agent.name.trim().to_owned(),
+                    );
+                items.push(
+                    NavItem::new(place, &name)
+                        .icon(Icon::Users)
+                        .person(peer.clone(), Some(self.identity_colour(&peer)), false)
+                        .person_face(&name, None),
+                );
+            }
+        }
+        if roster.is_some() && personal.is_none() {
+            items.push(
+                NavItem::new(SET_UP_ASSISTANT, crate::i18n::t("chat-assistant-setup"))
+                    .chosen_by_press()
+                    .icon(Icon::Bot),
+            );
+        }
+        items
     }
 
     /// The one other member of a conversation with `members` (their keys), when it has

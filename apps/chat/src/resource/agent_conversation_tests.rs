@@ -172,6 +172,16 @@ fn a_persons_own_agent_is_listed_before_its_first_message() {
             }),
         )
         .expect("the agent is made");
+    agents
+        .invoke(
+            &WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                name: NonBlank::parse("Shared researcher").expect("a name"),
+                id: Some("shared-researcher".to_owned()),
+                model: None,
+                mcp_client: None,
+            }),
+        )
+        .expect("another workspace agent");
     window.settle();
     let listed = |window: &mut TestApp<ChatShell>| -> Vec<(String, String)> {
         window
@@ -210,4 +220,128 @@ fn a_persons_own_agent_is_listed_before_its_first_message() {
     window.settle();
     assert_eq!(window.chat().active_channel, with.as_str());
     assert_eq!(listed(&mut window), [("Assistant".to_owned(), place)]);
+    assert_eq!(
+        window.chat().empty_channel_message(),
+        Some(crate::i18n::t("chat-assistant-look-round")),
+        "the personal DM explains how to ask for scheduled workspace checks"
+    );
+    assert_eq!(
+        window.chat().conversation_placeholder(with.as_str()),
+        crate::i18n::t("chat-assistant-composer-placeholder")
+    );
+
+    // Other agents remain addressable when a person explicitly chooses one.
+    window
+        .call_on(
+            "chat.workspace",
+            "open-agent",
+            serde_json::json!({"agent": "shared-researcher"}),
+        )
+        .expect("open the chosen agent");
+    window.settle();
+    assert_eq!(
+        window.chat().conversation_agent().as_deref(),
+        Some("shared-researcher")
+    );
+    let chosen = crate::sidebar::channel_place(&window.chat().active_channel);
+    assert!(
+        listed(&mut window).contains(&("Shared researcher".to_owned(), chosen)),
+        "the newly opened agent DM has a named sidebar row before its first message"
+    );
+    assert_eq!(window.chat().empty_channel_message(), None);
+    let chat = window.chat();
+    assert_eq!(
+        chat.conversation_placeholder(&chat.active_channel),
+        crate::i18n::t("chat-person-chat-placeholder")
+    );
+}
+
+#[test]
+fn setting_up_from_chat_opens_the_same_personal_dm_on_every_request() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut window = TestApp::<ChatShell>::in_workspace(WORKSPACE).expect("Chat");
+    window.harness().resize((420, 800)).unwrap();
+    window.settle();
+    let agents = window
+        .shared_workspace::<WorkspaceAgents>(workspace_agent::OWNER)
+        .unwrap();
+    assert!(agents.get().agents.is_empty());
+    let setup = window
+        .chat()
+        .sidebar_sections()
+        .into_iter()
+        .flat_map(|section| section.items)
+        .find(|item| item.id == "set-up-personal-assistant")
+        .expect("a first-use entry in Chat");
+    assert!(
+        setup.chosen_by_press,
+        "browsing the sidebar never provisions an assistant"
+    );
+    window.with_widget::<ui::widget::NavShell, _>(|shell| {
+        shell.show(ui::widget::NavPane::Sidebar);
+        shell.snap();
+    });
+    window.settle();
+    for attempt in 0..2 {
+        if attempt == 0 {
+            let row = window
+                .harness()
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| node.label() == Some("Set up personal assistant"))
+                .and_then(|(_, node)| node.bounds())
+                .expect("the setup control is visible");
+            window
+                .harness()
+                .click_at(f64::midpoint(row.x0, row.x1), f64::midpoint(row.y0, row.y1));
+        } else {
+            window
+                .call_on_finished(
+                    "chat.workspace",
+                    "set-up-personal-assistant",
+                    serde_json::json!({}),
+                )
+                .expect("retry through the published action");
+        }
+        window.settle();
+        let state = agents.get();
+        let person = window.chat().me.id.clone();
+        let assistant = state.personal_assistant(person.id()).expect("my assistant");
+        assert_eq!(
+            window.chat().conversation_agent().as_deref(),
+            Some(assistant.id.0.as_str())
+        );
+        assert_eq!(window.chat().window_name(), assistant.name);
+        assert_eq!(
+            window.with_widget::<ui::widget::NavShell, _>(|shell| shell.front_pane()),
+            Some(ui::widget::NavPane::Content),
+            "setup reveals the conversation when the sidebar fills the window"
+        );
+        assert_eq!(state.agents.len(), 1);
+    }
+}
+
+#[test]
+fn a_denied_setup_leaves_the_viewer_in_their_original_conversation() {
+    let mut window = TestApp::<ChatShell>::with_role(ui::Role::Viewer).expect("Chat");
+    window.frame();
+    let before = window.chat().active_channel.clone();
+    assert!(
+        window
+            .call_on_finished(
+                "chat.workspace",
+                "set-up-personal-assistant",
+                serde_json::json!({})
+            )
+            .is_err()
+    );
+    assert_eq!(window.chat().active_channel, before);
+    assert!(
+        window
+            .shared_workspace::<WorkspaceAgents>(workspace_agent::OWNER)
+            .unwrap()
+            .get()
+            .agents
+            .is_empty()
+    );
 }

@@ -1,22 +1,12 @@
-//! What a workspace's assistant finds to do on its own: the look-round, and
-//! what it puts in front of the workspace's members.
+//! Each workspace member can ask their personal assistant to check incoming mail,
+//! changed documents and due tasks. Automatic checks run as a native workspace
+//! event ([`super::workspace_events`]) owned by that person. A scheduled check
+//! starts a model turn only when it finds news and has budget left.
 //!
-//! An assistant that only answers waits to be asked. One that works on its
-//! own looks round on a rhythm (what came in, what changed where the
-//! workspace's people work, what became due) and, where it finds work it
-//! could do, proposes it. Two things bound that: the look-round is one of
-//! the workspace's own events ([`super::workspace_events`]), with a switch,
-//! a rhythm and a day's limit of its own, and a look that finds nothing new
-//! asks no model and writes nothing; and what it proposes waits for a
-//! member's nod, unless they said always to that kind of work.
-//!
-//! It learns from what is turned down: a kind of work declined twice is
-//! not proposed again until a member says so.
-//!
-//! These are the workspace's, as its events are: every member whose role
-//! reaches them reads the same look-round and proposals, and a member's
-//! assistant works with them on that member's behalf. What widens what the
-//! assistant may do alone ([`ACCEPT`], a higher limit) is a person's alone.
+//! Each member has their own schedule, daily limit and proposals. A proposal
+//! waits for the person's consent unless they have already authorized that kind
+//! of task. Two separate declines suppress future proposals of the same kind
+//! until the person allows them again. Raising the limit also needs their consent.
 
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +31,8 @@ pub const TURN_OFF: &str = "turn-off";
 /// Change its rhythm or its day's limit ([`Settings`]), answering a
 /// [`LookRound`].
 pub const CHANGE: &str = "change";
+/// Take a look today, returning the updated [`LookRound`] without enabling a schedule.
+pub const LOOK_NOW: &str = "look-now";
 
 /// The resource the proposals' actions are of.
 pub const PROPOSALS: &str = "proposals";
@@ -56,6 +48,16 @@ pub const PROPOSE: &str = "propose";
 pub const ACCEPT: &str = "accept";
 /// Turn a proposal down ([`Decline`]), answering the [`Proposal`].
 pub const DECLINE: &str = "decline";
+/// Require a fresh decision for future tasks of this kind ([`OfKind`]).
+pub const ASK_FIRST: &str = "ask-first";
+/// Allow the assistant to propose a previously suppressed kind again ([`OfKind`]).
+pub const PROPOSE_AGAIN: &str = "propose-again";
+
+/// The actions exposed to a person reviewing the proposals in Assistant.
+#[must_use]
+pub fn is_review_action(action: &str) -> bool {
+    matches!(action, LIST | ACCEPT | DECLINE | ASK_FIRST | PROPOSE_AGAIN)
+}
 
 /// How often it looks round when nobody said: every half hour.
 pub const DEFAULT_WHEN: &str = "every 1800 seconds";
@@ -69,6 +71,8 @@ pub const MAX_LOOKS: usize = 20;
 /// The most proposals that wait for a person at once. A further one is
 /// refused until some are decided.
 pub const MAX_WAITING: usize = 20;
+/// How many separate proposals of a kind a person declines before future ones are suppressed.
+pub const QUIET_AFTER: u32 = 2;
 /// The longest a kind's word may be, in bytes.
 pub const MAX_KIND_BYTES: usize = 64;
 /// The longest a proposal's title may be, in characters.
@@ -161,7 +165,7 @@ pub struct Look {
     /// Why it failed, in words for its person.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
-    /// What the turn it started has cost, in millionths of the currency.
+    /// Cost reported by Chat on the completed answers to this check, in millionths of the currency.
     pub cost_micros: u64,
 }
 
@@ -213,6 +217,16 @@ pub struct Propose {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Accept {
     pub proposal: String,
+    /// Start future tasks of this kind on the person's standing instruction.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub always: bool,
+}
+
+/// A proposal kind named by its normalized word.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OfKind {
+    pub kind: String,
 }
 
 /// A proposal turned down.
@@ -231,7 +245,7 @@ pub struct Decline {
 pub enum State {
     /// It waits for its person's nod.
     Proposed,
-    /// Retired: kept so previously saved proposals still deserialize.
+    /// Its person entrusted tasks of this kind to the assistant.
     Started,
     Accepted,
     Declined,
@@ -284,11 +298,23 @@ pub struct Proposal {
     pub set_up: Option<String>,
 }
 
-/// What a person's assistant proposed, newest first.
+/// What the person currently wants for one kind of proposal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Kind {
+    pub kind: String,
+    pub declined: u32,
+    pub quiet: bool,
+    pub always: bool,
+}
+
+/// What a person's assistant proposed, newest first, and their preferences.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Proposals {
     pub proposals: Vec<Proposal>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kinds: Vec<Kind>,
 }
 
 /// `kind` as it is kept: trimmed, lower case, what is neither a letter nor

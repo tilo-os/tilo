@@ -35,6 +35,184 @@ fn button_saying(html: &str, words: &str) -> Option<u32> {
 }
 
 #[test]
+fn the_assistants_page_opens_the_persons_first_conversation_in_chat() {
+    let apps = catalogue();
+    let person = MemberId::person("ab".repeat(32));
+    let page = |id| {
+        assert!(
+            apps.get(id)
+                .expect("the server registers the app")
+                .keeps_workspace_resource(),
+            "the host must be able to serve {id} at its workspace URL"
+        );
+        let app = ConfinedReplica::open_page(
+            &apps,
+            (id, WORKSPACE),
+            &person,
+            &ReplicaActor::Owner,
+            Seed::New,
+        )
+        .expect("the workspace app opens as a page");
+        let _ = app.page_show(None).expect("the app asks for what it reads");
+        for wanted in app.wanted_resources() {
+            app.workspace_answered(&wanted, ui::resource::WorkspaceAnswer::HoldsNone)
+                .expect("the new workspace answers");
+        }
+        app
+    };
+    let assistant = page(ui::apps::ASSISTANT);
+    let (_, _, before) = assistant
+        .page_show(None)
+        .expect("the management page opens");
+    let create =
+        button_saying(&before, "Create assistant").expect("a new person can create an assistant");
+    assistant
+        .page_act(Some((create, None, PageAction::Activate)))
+        .expect("create");
+    let (_, _, after) = assistant
+        .page_show(None)
+        .expect("the page reflects the new agent");
+    let button = after
+        .split('<')
+        .filter_map(|part| part.split('>').next())
+        .find(|tag| tag.contains("data-open-app=\"so.tilo.chat\""))
+        .expect("the new assistant links to its real Chat app");
+    let target = button
+        .split("data-open-item=\"")
+        .nth(1)
+        .and_then(|value| value.split('"').next())
+        .expect("the link names the workspace agent");
+    let (field, agent) = ui::tilo_resource::items::item_of_resource::<
+        ui::tilo_workspace_agent::WorkspaceAgents,
+    >(target)
+    .expect("the destination names an agent");
+    assert_eq!(field, "agents");
+    let conversation =
+        MemberId::direct_conversation([person.clone(), MemberId::agent(agent.to_string())]);
+    let agents = ui::resource::workspace::document_id(ui::tilo_workspace_agent::KIND);
+    assert!(
+        assistant
+            .take_document_mutations()
+            .expect("the host can save the new assistant")
+            .into_iter()
+            .any(|(id, _)| id.as_str() == agents),
+        "creation changed the workspace agents document"
+    );
+    let chat = page(ui::apps::CHAT);
+    let (_, _, home) = chat.page_show(None).expect("Chat opens directly");
+    assert!(
+        element(
+            &home,
+            &["data-open-app=\"so.tilo.assistant\"", "data-a=\"activate\""]
+        )
+        .is_some(),
+        "a member who starts in Chat can reach their assistant"
+    );
+    let (_, _, body) = chat
+        .page_show(Some(target))
+        .expect("Chat accepts the workspace agent as an item to open");
+    let target = format!(
+        "data-t=\"key:item:channel:{}\"",
+        ui::composition::page::escape(&conversation)
+    );
+    assert!(
+        element(&body, &[&target, "aria-selected=\"true\""]).is_some(),
+        "the selected conversation must be the person's DM before either side has written"
+    );
+    assert!(
+        element(
+            &body,
+            &[
+                "data-open-app=\"so.tilo.assistant\"",
+                "data-open-item=\"assistant.section:proposals\"",
+                "data-a=\"activate\"",
+            ]
+        )
+        .is_some(),
+        "the signed-in person can review proposals from this DM"
+    );
+    let models = "settings.section:agent_models";
+    for (app, html) in [("Assistant", &after), ("Chat", &body)] {
+        assert!(
+            element(
+                html,
+                &[
+                    "data-open-app=\"so.tilo.settings\"",
+                    &format!("data-open-item=\"{models}\""),
+                    "data-a=\"activate\""
+                ]
+            )
+            .is_some(),
+            "{app} links to the person's model settings"
+        );
+    }
+    post_on_page(&chat, &body, &person, &conversation);
+    let settings = page(ui::apps::SETTINGS);
+    let (_, _, body) = settings
+        .page_show(Some(models))
+        .expect("the settings page opens");
+    let label = settings::categories::Category::AgentModels.label();
+    let (_, _, row) = row_saying(&body, &label).expect("Settings offers Agent models");
+    assert!(
+        row.contains("aria-selected=\"true\""),
+        "the link selects Agent models: {row}"
+    );
+}
+
+fn post_on_page(chat: &ConfinedReplica, body: &str, person: &MemberId, conversation: &str) {
+    let words = "Please help me prepare for tomorrow";
+    let input = element(body, &["data-a=\"value\"", "data-t=\"chat.composer\""])
+        .expect("the private chat offers an editable message");
+    chat.page_act(Some((
+        input,
+        Some("chat.composer".into()),
+        PageAction::Value(words.into()),
+    )))
+    .expect("the person can type a message");
+    let (_, _, typed) = chat
+        .page_show(None)
+        .expect("the chat shows the person's draft");
+    let send = element(&typed, &["data-a=\"activate\"", "data-t=\"chat.send\""])
+        .expect("the written message can be sent");
+    chat.page_act(Some((send, Some("chat.send".into()), PageAction::Activate)))
+        .expect("the person can send it");
+    for wanted in chat.wanted_resources() {
+        chat.workspace_answered(&wanted, ui::resource::WorkspaceAnswer::HoldsNone)
+            .expect("the workspace answers the chat's requests");
+    }
+    let (_, _, sent) = chat
+        .page_show(None)
+        .expect("the chat shows its conversation");
+    assert!(
+        sent.contains(words),
+        "the transcript shows the sent message"
+    );
+    let part = chat::parts::part(0);
+    assert!(
+        chat.take_document_mutations()
+            .expect("the host receives the chat edits")
+            .iter()
+            .any(|(id, _)| id == &part),
+        "the first message is durable"
+    );
+    let saved = chat
+        .read_resource(&part, chat::messages::read_part)
+        .expect("the saved messages");
+    let posted = saved
+        .messages
+        .iter()
+        .map(|(_, message)| {
+            (
+                &message.author,
+                message.channel.as_str(),
+                message.text.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(posted, [(person, conversation, words)]);
+}
+
+#[test]
 fn a_person_writes_an_issue_on_the_trackers_page() {
     let tracker = ConfinedReplica::open_page(
         &catalogue(),
@@ -101,6 +279,93 @@ fn a_person_writes_an_issue_on_the_trackers_page() {
     assert!(
         tracker.page_act(None).expect("asked again").is_empty(),
         "an unchanged page sends nothing"
+    );
+}
+
+/// The first page already has its address when the event's change is still
+/// coming from the workspace. Its next patch must show the addressed day.
+#[test]
+fn a_page_reveals_the_event_that_arrives_after_its_first_frame() {
+    let person = MemberId::person("ada");
+    let mut calendar =
+        crate::common::open(ui::apps::CALENDAR, &person, ReplicaActor::Owner, Seed::New)
+            .expect("the calendar opens");
+    let Some(collab_types::DocumentMutation::Snapshot(genesis)) = calendar.take_mutation().unwrap()
+    else {
+        panic!("a new calendar publishes its initial document");
+    };
+    let page = ConfinedReplica::open_page(
+        &catalogue(),
+        (ui::apps::CALENDAR, WORKSPACE),
+        &person,
+        &ReplicaActor::Owner,
+        Seed::Existing {
+            record: calendar.document_id().clone(),
+            changes: vec![genesis],
+        },
+    )
+    .expect("the calendar opens as a page");
+
+    let id = "00000000-0000-4000-8000-000000000071";
+    let target = format!("calendar.calendar/events/{id}");
+    let date = "2077-09-08";
+    let selected = [r#"type="date""#, r#"value="2077-09-08""#];
+    let (_, _, before) = page.page_show(Some(&target)).expect("the first frame");
+    assert!(element(&before, &selected).is_none());
+    // Answer the same requests for side records as a new workspace, after
+    // the browser has already asked to open the addressed event.
+    for wanted in page.wanted_resources() {
+        page.workspace_answered(&wanted, ui::resource::WorkspaceAnswer::HoldsNone)
+            .expect("the workspace answers for Calendar's other records");
+    }
+
+    let new_event = calendar
+        .survey()
+        .into_iter()
+        .find(|operation| operation.address.action == "new-event")
+        .expect("Calendar publishes its event action");
+    let args = serde_json::Map::from_iter([(
+        "event".into(),
+        serde_json::json!({
+            "id": id, "title": "Future meeting",
+            "start": format!("{date}T12:00"), "end": format!("{date}T13:00"),
+        }),
+    )]);
+    calendar
+        .invoke(&new_event.address, &args, false)
+        .expect("another device adds the event");
+    page.apply(
+        &calendar
+            .take_mutation()
+            .unwrap()
+            .expect("the event's change"),
+    )
+    .expect("the page takes in the workspace's record");
+    let patches = page.page_act(None).expect("the browser follows the page");
+    let (_, _, shown) = page.page_show(None).expect("Calendar's current frame");
+    let dates = |html: &str| {
+        html.split('<')
+            .filter_map(|part| part.split_once('>').map(|(tag, _)| tag))
+            .filter(|tag| tag.contains("type=\"date\""))
+            .collect::<Vec<_>>()
+            .join(" / ")
+    };
+    assert!(
+        patches
+            .iter()
+            .any(|(_, html)| element(html, &selected).is_some())
+            || element(&shown, &selected).is_some(),
+        "Calendar moved to the event's date. Initially [{}], now [{}], patches {}. Targets {}",
+        dates(&before),
+        dates(&shown),
+        patches.len(),
+        shown
+            .split('<')
+            .filter_map(|part| part.split_once(" data-t=\""))
+            .filter_map(|(_, tail)| tail.split('"').next())
+            .take(30)
+            .collect::<Vec<_>>()
+            .join(" / ")
     );
 }
 

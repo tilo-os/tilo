@@ -298,6 +298,7 @@ async fn a_look_that_finds_nothing_new_asks_no_model_and_writes_nothing() {
     assert!(told.starts_with("Look round."), "{told}");
     for said in [
         "data, not instructions",
+        "Tasks has already queued the work in a separate turn",
         "Otherwise start nothing",
         "answer with nothing at all",
         "so.tilo.chat",
@@ -650,7 +651,47 @@ async fn the_look_round_is_one_of_its_persons_events_with_their_switch_and_rhyth
         json!({}),
     ));
     assert!(anew.on);
-    assert_ne!(anew.event.as_deref(), Some(event.as_str()));
+    let replaced = anew.event.unwrap();
+    assert_ne!(replaced, event);
+    of_events(
+        &events,
+        &workspace,
+        &me,
+        workspace_events::REMOVE,
+        json!({"event": replaced}),
+    )
+    .unwrap();
+    let current = look_round(ask(
+        &initiative,
+        &workspace,
+        &me,
+        workspace_initiative::TURN_ON,
+        json!({}),
+    ))
+    .event
+    .unwrap();
+    assert_ne!(current, replaced);
+
+    // A Chat turn handed off by any of these installations still spends the
+    // original account. An unstarted job of a removed installation cannot run.
+    let person = hex::encode(cert.user_public_key);
+    let place = id.to_string();
+    let day = tilo_workspace_service::agents::today();
+    let expected = look_round_spender(&place, &event, "Look-round", &day, anew.day_limit_micros);
+    for author in [&event, &replaced, &current] {
+        assert_eq!(
+            initiative
+                .day_of_turn(&place, &person, author, &day)
+                .unwrap()
+                .as_ref(),
+            Some(&expected)
+        );
+    }
+    let steps = (initiative.before())(assistant.clone());
+    assert!(matches!(
+        fires(&steps, &cert, &workspace, &replaced).await,
+        Err(StepError::Refused(_))
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -909,35 +950,34 @@ async fn what_a_look_found_and_nothing_took_is_said_and_still_new_at_the_next_lo
     let told = read(&initiative, &workspace, &me).looks[0].clone();
     assert_eq!(told.ended, LookEnded::Told);
 
-    // The turn that look started counts on the look-round's own day: the
-    // message that asks for it is the one its handing over names by the
-    // look's id, and no other message is.
+    // Chat records the event that actually asked on behalf of this person.
     let person = hex::encode(cert.user_public_key);
     let place = WorkspaceId::parse(&workspace).unwrap().to_string();
     let day = tilo_workspace_service::agents::today();
-    let asks = chat::cause::message_id(
-        &tilo_actions::policy::MemberId::person(person.clone()),
-        &told.id,
-    )
-    .to_string();
+    let program = assistant.taken().last().unwrap().cause.installation.clone();
     assert_eq!(
-        initiative.day_of_turn(&place, &person, &asks, &day),
+        initiative
+            .day_of_turn(&place, &person, &program, &day)
+            .unwrap(),
         Some(look_round_spender(
             &place,
             &event,
             "Look-round",
             &day,
-            workspace_initiative::DEFAULT_DAY_LIMIT_MICROS,
+            workspace_initiative::DEFAULT_DAY_LIMIT_MICROS
         ))
     );
     assert_eq!(
-        initiative.day_of_turn(&place, &person, "another-message", &day),
+        initiative
+            .day_of_turn(&place, &person, "another-program", &day)
+            .unwrap(),
         None
     );
     assert_eq!(
-        initiative.day_of_turn(&place, "../somebody", &asks, &day),
-        None,
-        "what is no person's root names nobody here"
+        initiative
+            .day_of_turn(&place, "../somebody", &program, &day)
+            .unwrap(),
+        None
     );
 }
 
@@ -1041,6 +1081,28 @@ async fn a_kind_its_person_turned_down_twice_is_not_proposed_a_third_time() {
     assert_eq!(declined.state, State::Declined);
     assert!(declined.decided_at_ms.is_some());
 
+    let second = proposal(compare(&initiative, "Compare them again"));
+    proposal(turned_down(&me, &second.id, Value::Null));
+    // A retried decline does not count the same proposal twice.
+    proposal(turned_down(&me, &second.id, Value::Null));
+    let listed = proposed(&initiative, &workspace, &me);
+    assert_eq!(listed.kinds.len(), 1);
+    assert_eq!(listed.kinds[0].declined, 2);
+    assert!(listed.kinds[0].quiet);
+    assert!(refused_for(
+        &compare(&initiative, "Third comparison"),
+        "turned down"
+    ));
+    let named = json!({"kind": "Compare price pages"});
+    let denied = on_proposals(
+        &initiative,
+        &workspace,
+        &theirs,
+        workspace_initiative::PROPOSE_AGAIN,
+        named.clone(),
+    );
+    assert!(refused_for(&denied, "only the person"));
+
     // Another proposal stays waiting, and persists across restart.
     let other = proposal(on_proposals(
         &initiative,
@@ -1056,7 +1118,36 @@ async fn a_kind_its_person_turned_down_twice_is_not_proposed_a_third_time() {
     assert_eq!(other.state, State::Proposed);
     drop((initiative, events));
     let (initiative, _events) = started(&workspaces, &assistant);
-    assert_eq!(proposed(&initiative, &workspace, &me).proposals.len(), 2);
+    assert_eq!(proposed(&initiative, &workspace, &me).proposals.len(), 3);
+    assert!(refused_for(
+        &compare(&initiative, "Third comparison"),
+        "turned down"
+    ));
+    let reset = on_proposals(
+        &initiative,
+        &workspace,
+        &me,
+        workspace_initiative::PROPOSE_AGAIN,
+        named,
+    )
+    .unwrap();
+    assert!(
+        serde_json::from_value::<Proposals>(reset)
+            .unwrap()
+            .kinds
+            .is_empty()
+    );
+    let third = proposal(compare(&initiative, "Third comparison"));
+    assert_eq!(third.state, State::Proposed);
+    let withdrawn = proposal(on_proposals(
+        &initiative,
+        &workspace,
+        &theirs,
+        workspace_initiative::DECLINE,
+        json!({"proposal": third.id}),
+    ));
+    assert_eq!(withdrawn.state, State::Declined);
+    assert!(proposed(&initiative, &workspace, &me).kinds.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1139,13 +1230,21 @@ async fn only_its_person_gives_the_nod_and_always_lets_a_kind_start_alone() {
         "{to_person}"
     );
 
-    // Their person nods, and work that has begun is not turned down afterwards.
-    let accepted = proposal(take(
-        &me,
-        workspace_initiative::ACCEPT,
-        json!({"proposal": march.id}),
-    ));
+    for action in [
+        workspace_initiative::ASK_FIRST,
+        workspace_initiative::PROPOSE_AGAIN,
+    ] {
+        assert!(to_person.contains(action) && !to_agent.contains(action));
+    }
+    let standing = json!({"proposal": march.id, "always": true});
+    let accepted = proposal(take(&me, workspace_initiative::ACCEPT, standing.clone()));
     assert_eq!(accepted.state, State::Accepted);
+    assert!(
+        proposed(&initiative, &workspace, &me)
+            .kinds
+            .iter()
+            .any(|kind| kind.kind == "file-receipts" && kind.always)
+    );
     let late = take(
         &me,
         workspace_initiative::DECLINE,
@@ -1153,11 +1252,32 @@ async fn only_its_person_gives_the_nod_and_always_lets_a_kind_start_alone() {
     );
     assert!(refused_for(&late, "begun already"), "{late:?}");
 
-    // A further proposal of the same kind still waits for its person's nod.
     assert_eq!(
         proposal(file("File April's receipts")).state,
-        State::Proposed
+        State::Proposed,
+        "this service has no tracker in which to queue the work"
     );
+    let event = proposal(take(
+        &theirs,
+        workspace_initiative::PROPOSE,
+        json!({
+            "kind":"file-receipts","title":"File monthly","why":"Receipts recur",
+            "event":{"name":"File receipts","when":"every day at 18:00", "instruction":"File today's receipts."}
+        }),
+    ));
+    assert_eq!(
+        event.state,
+        State::Proposed,
+        "scheduled work requires its own approval"
+    );
+    let kind = json!({"kind": "file-receipts"});
+    let denied = take(&theirs, workspace_initiative::ASK_FIRST, kind.clone());
+    assert!(refused_for(&denied, "only the person"));
+    take(&me, workspace_initiative::ASK_FIRST, kind).unwrap();
+    // Replaying the original acceptance after it was withdrawn cannot re-grant permission.
+    let replay = take(&me, workspace_initiative::ACCEPT, standing);
+    assert!(refused_for(&replay, "only a waiting proposal"));
+    assert_eq!(proposal(file("File May's receipts")).state, State::Proposed);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1242,7 +1362,7 @@ async fn a_proposed_event_is_set_up_only_once_its_person_accepted_it_from_what_t
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn another_member_reads_and_stops_the_workspaces_look_round() {
+async fn each_member_governs_their_own_look_round_and_proposals() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let server = bot_server(scratch.path(), &key, &cert).await;
@@ -1263,8 +1383,13 @@ async fn another_member_reads_and_stops_the_workspaces_look_round() {
     assert!(on.on);
     assert_eq!(their_events(&events, &workspace, &me).len(), 1);
 
-    // Another member of the workspace reads the same look-round and stops it:
-    // it is the workspace's, and its event is paused with it.
+    let first = proposal(on_proposals(
+        &initiative,
+        &workspace,
+        &theirs,
+        workspace_initiative::PROPOSE,
+        json!({"kind": "review", "title": "Review my day", "why": "A deadline is close."}),
+    ));
     let editor = member(
         &workspaces,
         &cert,
@@ -1274,9 +1399,35 @@ async fn another_member_reads_and_stops_the_workspaces_look_round() {
     )
     .await;
     let by_editor = as_person(&editor, &workspace);
-    let same = read(&initiative, &workspace, &by_editor);
-    assert_eq!(same.event, on.event);
-    assert_eq!(same.when, on.when);
+    let event = on.event.as_deref().expect("the user's event exists");
+    assert!(events.set_up_by(&workspace, event, &cert.user_public_key));
+    assert!(!events.set_up_by(&workspace, event, &editor.user_public_key));
+    let empty = read(&initiative, &workspace, &by_editor);
+    assert_eq!(empty.event, None);
+    assert!(!empty.on);
+    assert!(
+        proposed(&initiative, &workspace, &by_editor)
+            .proposals
+            .is_empty()
+    );
+    for action in [workspace_initiative::ACCEPT, workspace_initiative::DECLINE] {
+        assert!(turned_away(&on_proposals(
+            &initiative,
+            &workspace,
+            &by_editor,
+            action,
+            json!({"proposal": first.id})
+        )));
+    }
+    let other = look_round(ask(
+        &initiative,
+        &workspace,
+        &by_editor,
+        workspace_initiative::TURN_ON,
+        json!({"dayLimitMicros": 75_000}),
+    ));
+    assert_ne!(other.event, on.event);
+    assert_eq!(other.day_limit_micros, 75_000);
     let off = look_round(ask(
         &initiative,
         &workspace,
@@ -1285,12 +1436,638 @@ async fn another_member_reads_and_stops_the_workspaces_look_round() {
         json!({}),
     ));
     assert!(!off.on);
-    assert!(
-        !read(&initiative, &workspace, &me).on,
-        "it is the workspace's look-round"
+    let mine = read(&initiative, &workspace, &me);
+    assert!(mine.on);
+    assert_eq!(mine.event, on.event);
+    assert_eq!(
+        mine.day_limit_micros,
+        workspace_initiative::DEFAULT_DAY_LIMIT_MICROS
     );
+    assert_eq!(proposed(&initiative, &workspace, &me).proposals, [first]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_new_service_recovers_only_the_owners_recorded_schedule_and_proposals() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = bot_server(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    let editor = member(
+        &workspaces,
+        &cert,
+        &workspace,
+        63,
+        tilo_server_protocol::workspaces::Role::Editor,
+    )
+    .await;
+    let me = as_person(&cert, &workspace);
+    let other = as_person(&editor, &workspace);
+    let assistant = Assistant::answering(vec![]);
+    let (initiative, events) = started(&workspaces, &assistant);
+    let original = look_round(ask(
+        &initiative,
+        &workspace,
+        &me,
+        workspace_initiative::TURN_ON,
+        json!({"dayLimitMicros": 8181}),
+    ));
+    let proposal = proposal(on_proposals(
+        &initiative,
+        &workspace,
+        &as_their_agent(&cert, &workspace),
+        workspace_initiative::PROPOSE,
+        json!({"kind": "read", "title": "Read my report", "why": "The report arrived."}),
+    ));
+    drop((initiative, events));
+
+    // Restore the workspace-wide format used by the preceding release. The
+    // native event's stored author independently identifies the real owner.
+    let root = workspaces.workspace_root(&workspace);
+    let person = hex::encode(cert.user_public_key);
+    let private = root
+        .join("initiative")
+        .join(&person)
+        .join("initiative.json");
+    let mut old: Value = serde_json::from_slice(&std::fs::read(&private).unwrap()).unwrap();
+    old["person"] = json!(person);
+    old.as_object_mut().unwrap().remove("spendingEvent");
+    let shared = root.join("initiative.json");
+    std::fs::write(&shared, serde_json::to_vec(&old).unwrap()).unwrap();
+    std::fs::remove_file(&private).unwrap();
+
+    let (initiative, events) = started(&workspaces, &assistant);
     assert!(
-        !their_events(&events, &workspace, &me)[0].on,
-        "its event is paused with it"
+        proposed(&initiative, &workspace, &other)
+            .proposals
+            .is_empty()
     );
+    let restored = read(&initiative, &workspace, &me);
+    assert_eq!(restored.event, original.event);
+    assert_eq!(restored.day_limit_micros, 8181);
+    assert_eq!(proposed(&initiative, &workspace, &me).proposals, [proposal]);
+    drop((initiative, events));
+
+    // A second person could resume the event and overwrite the old person
+    // field. Its author still owns its schedule; nobody inherits an ambiguous book.
+    old["person"] = json!(hex::encode(editor.user_public_key));
+    std::fs::write(&shared, serde_json::to_vec(&old).unwrap()).unwrap();
+    let (initiative, _) = started(&workspaces, &assistant);
+    assert_eq!(read(&initiative, &workspace, &me).event, original.event);
+    assert_eq!(read(&initiative, &workspace, &other).event, None);
+    for caller in [&me, &other] {
+        assert!(
+            proposed(&initiative, &workspace, caller)
+                .proposals
+                .is_empty()
+        );
+    }
+
+    // An old look already handed to Chat survives removal of its event. The
+    // original owner can no longer be verified, so nobody runs it unbudgeted.
+    drop(initiative);
+    let removed = uuid::Uuid::new_v4().to_string();
+    old["event"] = json!(removed);
+    std::fs::write(&shared, serde_json::to_vec(&old).unwrap()).unwrap();
+    let (initiative, _) = started(&workspaces, &assistant);
+    let day = tilo_workspace_service::agents::today();
+    let place = WorkspaceId::parse(&workspace).unwrap().to_string();
+    let unrelated = uuid::Uuid::new_v4().to_string();
+    for person in [person, hex::encode(editor.user_public_key)] {
+        assert!(
+            initiative
+                .day_of_turn(&place, &person, &removed, &day)
+                .is_err()
+        );
+        assert_eq!(
+            initiative
+                .day_of_turn(&place, &person, &unrelated, &day)
+                .unwrap(),
+            None
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_person_and_their_private_chat_can_look_now_without_enabling_a_schedule() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = test_host(scratch.path(), &key, &cert).await;
+    let (workspace, _) = chat_workspace(server.workspaces(), &cert).await;
+    let person = hex::encode(cert.user_public_key);
+    keeps_an_assistant(server.workspaces(), &workspace, &cert, &person).await;
+    let assistant = Assistant::answering(vec![]);
+    let (initiative, events) = started(server.workspaces(), &assistant);
+    let me = as_person(&cert, &workspace);
+    let op = workspace_initiative::LOOK_NOW;
+    let target = workspace_initiative::target(workspace_initiative::LOOK_ROUND, op);
+    let request = asking(target, json!({}));
+    // Losing the receipt and sending the very same signed invocation starts only one turn.
+    let send = || {
+        answered(initiative.serve(
+            WorkspaceId::parse(&workspace).unwrap(),
+            &me,
+            Authority::Turn,
+            request.clone(),
+        ))
+    };
+    let first = look_round(send());
+    assert!(!first.on && first.event.is_none() && first.next_at_ms.is_none());
+    assert_eq!(first.looks[0].ended, LookEnded::Told);
+    assert_eq!(look_round(send()), first);
+    let handed = assistant.taken();
+    assert_eq!(handed.len(), 1);
+    assert!(
+        handed[0]
+            .instruction
+            .contains("propose concrete tasks for today")
+    );
+    assert!(their_events(&events, &workspace, &me).is_empty());
+
+    // A group conversation or a different agent cannot ask what belongs to this person's
+    // assistant. The real agent in the person's direct Chat receives the look in this turn.
+    let place = |agent, conversation| {
+        as_person(&cert, &workspace).delegated_to(agent).on_turn(
+            tilo_actions::policy::turn::Turn::new(conversation, "a-message"),
+            Vec::new(),
+        )
+    };
+    let direct = chat::Chat::direct_id([
+        tilo_actions::policy::MemberId::person(person),
+        tilo_actions::policy::MemberId::agent("assistant"),
+    ]);
+    let address = chat::summons::conversation_address(&direct);
+    for unauthorized in [
+        place("assistant", "elsewhere"),
+        place("another", &address),
+        as_another(&workspace),
+    ] {
+        assert!(turned_away(&ask(
+            &initiative,
+            &workspace,
+            &unauthorized,
+            op,
+            json!({})
+        )));
+    }
+    let current = look_round(ask(
+        &initiative,
+        &workspace,
+        &place("assistant", &address),
+        op,
+        json!({}),
+    ));
+    assert_eq!(current.looks.len(), 1);
+    assert_eq!(
+        read(&initiative, &workspace, &me).looks,
+        first.looks,
+        "the delegated look leaves the person’s cursor and history intact"
+    );
+    assert_eq!(
+        assistant.taken().len(),
+        1,
+        "the assistant keeps its current turn"
+    );
+    assert!(matches!(
+        ask(&initiative, &workspace, &me, op, json!({"as": "another"})),
+        Err(ActionCallError::InvalidRequest { .. })
+    ));
+
+    // The same budget applies with the trigger off, regardless of how the check is invoked.
+    look_round(ask(
+        &initiative,
+        &workspace,
+        &me,
+        workspace_initiative::CHANGE,
+        json!({"dayLimitMicros": 0}),
+    ));
+    let refused = ask(&initiative, &workspace, &me, op, json!({}));
+    assert!(
+        matches!(refused, Err(ActionCallError::Refused { ref reason }) if reason.contains("day limit")),
+        "{refused:?}"
+    );
+    assert_eq!(
+        read(&initiative, &workspace, &me).looks[0].ended,
+        LookEnded::OverLimit
+    );
+    assert_eq!(assistant.taken().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_concurrent_agent_change_never_raises_the_owners_reduced_limit() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = bot_server(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    let assistant = Assistant::answering(vec![]);
+    let (initiative, _events) = started(&workspaces, &assistant);
+    let person = as_person(&cert, &workspace);
+    let agent = as_their_agent(&cert, &workspace);
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let change = |caller: Caller, limit: u64| {
+        let (initiative, workspace, barrier) =
+            (initiative.clone(), workspace.clone(), Arc::clone(&barrier));
+        tokio::task::spawn_blocking(move || {
+            barrier.wait();
+            ask(
+                &initiative,
+                &workspace,
+                &caller,
+                workspace_initiative::CHANGE,
+                json!({"dayLimitMicros": limit}),
+            )
+        })
+    };
+    let (person_answer, agent_answer) = tokio::join!(change(person.clone(), 0), change(agent, 100));
+    assert_eq!(look_round(person_answer.unwrap()).day_limit_micros, 0);
+    let agent_answer = agent_answer.unwrap();
+    assert!(agent_answer.is_ok() || refused_for(&agent_answer, "only the person"));
+    assert_eq!(read(&initiative, &workspace, &person).day_limit_micros, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_immediate_and_a_scheduled_look_cannot_advance_the_same_cursor_together() {
+    use std::sync::Mutex;
+    use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+
+    struct Held {
+        entered: SyncSender<()>,
+        release: Mutex<Receiver<()>>,
+    }
+    impl Steps for Held {
+        fn instruct(&self, _: Instruction) -> Result<String, StepError> {
+            self.entered.send(()).unwrap();
+            self.release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap();
+            Ok(String::new())
+        }
+        fn judge(&self, _: Judgement) -> Result<Value, StepError> {
+            panic!("the look does not judge anything")
+        }
+    }
+
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = bot_server(scratch.path(), &key, &cert).await;
+    let (workspace, _) = chat_workspace(server.workspaces(), &cert).await;
+    let (entered, entering) = sync_channel(1);
+    let (release, releasing) = sync_channel(1);
+    let holds: Arc<dyn Steps> = Arc::new(Held {
+        entered,
+        release: Mutex::new(releasing),
+    });
+    let (initiative, _events) = Initiative::start_with(
+        server.workspaces().clone(),
+        holds.clone(),
+        Arc::new(crate::workspace_bots::installed::EventRunner),
+    );
+    let me = as_person(&cert, &workspace);
+    let event = look_round(ask(
+        &initiative,
+        &workspace,
+        &me,
+        workspace_initiative::TURN_ON,
+        json!({}),
+    ))
+    .event
+    .unwrap();
+    let pending = initiative.serve(
+        WorkspaceId::parse(&workspace).unwrap(),
+        &me,
+        Authority::Turn,
+        asking(
+            workspace_initiative::target(
+                workspace_initiative::LOOK_ROUND,
+                workspace_initiative::LOOK_NOW,
+            ),
+            json!({}),
+        ),
+    );
+    tokio::task::spawn_blocking(move || entering.recv_timeout(Duration::from_secs(10)))
+        .await
+        .unwrap()
+        .unwrap();
+    let scheduled = (initiative.before())(holds);
+    let arrival = fires(&scheduled, &cert, &workspace, &event).await;
+    assert!(
+        matches!(arrival, Err(StepError::Unavailable(why)) if why.contains("already in progress"))
+    );
+    release.send(()).unwrap();
+    assert_eq!(look_round(answered(pending)).looks.len(), 1);
+    assert_eq!(
+        fires(&scheduled, &cert, &workspace, &event).await,
+        Ok(String::new())
+    );
+    assert_eq!(
+        read(&initiative, &workspace, &me).looks[0].ended,
+        LookEnded::Quiet
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_partly_saved_look_round_waits_for_its_owners_limit() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = bot_server(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    let assistant = Assistant::answering(vec![]);
+    let (initiative, events) = started(&workspaces, &assistant);
+    let me = as_person(&cert, &workspace);
+    let turn_on = |initiative: &Initiative| {
+        look_round(ask(
+            initiative,
+            &workspace,
+            &me,
+            workspace_initiative::TURN_ON,
+            json!({"dayLimitMicros": 0}),
+        ))
+    };
+    let event = turn_on(&initiative).event.unwrap();
+    drop((initiative, events));
+
+    // A stopped host left the scheduler's write on disk. The person's record,
+    // which holds the limit, had not been published when the machine stopped.
+    let root = workspaces.workspace_root(&workspace);
+    std::fs::remove_file(
+        root.join("initiative")
+            .join(hex::encode(cert.user_public_key))
+            .join("initiative.json"),
+    )
+    .unwrap();
+    let (initiative, events) = started(&workspaces, &assistant);
+    let steps = (initiative.before())(assistant.clone());
+    assert!(matches!(
+        fires(&steps, &cert, &workspace, &event).await,
+        Err(StepError::Unavailable(_))
+    ));
+    assert!(assistant.taken().is_empty());
+    let retried = turn_on(&initiative);
+    assert_eq!(retried.event.as_deref(), Some(event.as_str()));
+    assert_eq!(retried.day_limit_micros, 0);
+    assert_eq!(their_events(&events, &workspace, &me).len(), 1);
+}
+
+/// Two native Tasks creates on the same chain part, each due and assigned to
+/// the editor, as its owner posts them through the app.
+fn due_task_changes(
+    workspace: &str,
+    owner: &DeviceCert,
+    editor: &DeviceCert,
+) -> (collab_types::document::DocumentId, [DocumentMutation; 2]) {
+    use collab_types::document::{DocumentId, chain_resource_id};
+    let chain = DocumentId::derived("issues", &DocumentId::workspace_default());
+    let part = chain.part(0);
+    let mut page = Replica::open(
+        &AppCatalogue::native(),
+        tilo_app_id::apps::TASKS,
+        workspace,
+        &MemberId::person(hex::encode(owner.user_public_key)),
+        ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
+    let creates = ["First due task", "Newly restricted task"].map(|title| {
+        page.invoke(
+            &tilo_actions::api::ActionAddress::new(chain_resource_id(&chain), "create"),
+            json!({
+                "title": title, "due_ms": 1,
+                "assignee": hex::encode(editor.user_public_key)
+            })
+            .as_object()
+            .unwrap(),
+            false,
+        )
+        .unwrap();
+        page.take_document_mutations()
+            .unwrap()
+            .into_iter()
+            .find(|(id, _)| id == &part)
+            .expect("Tasks wrote its issue part")
+            .1
+    });
+    (part, creates)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_persons_next_look_honours_the_revoked_read_of_a_tasks_record() {
+    use tilo_action_policy::{Grant, Grantee};
+    use tilo_app_id::apps::TASKS;
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = bot_server(scratch.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, _) = chat_workspace(workspaces, &owner).await;
+    let editor = member(
+        workspaces,
+        &owner,
+        &workspace,
+        74,
+        tilo_server_protocol::workspaces::Role::Editor,
+    )
+    .await;
+    let editor_as_person = as_person(&editor, &workspace);
+    let assistant = Assistant::answering(vec![]);
+    let (initiative, _events) = started(workspaces, &assistant);
+    let check = || {
+        look_round(ask(
+            &initiative,
+            &workspace,
+            &editor_as_person,
+            workspace_initiative::LOOK_NOW,
+            json!({}),
+        ))
+    };
+    let scheduled = look_round(ask(
+        &initiative,
+        &workspace,
+        &as_person(&owner, &workspace),
+        workspace_initiative::TURN_ON,
+        json!({}),
+    ))
+    .event
+    .unwrap();
+    let steps = (initiative.before())(assistant.clone());
+    let owner_looks = async || {
+        fires(&steps, &owner, &workspace, &scheduled).await.unwrap();
+    };
+    owner_looks().await;
+    check();
+
+    let (part, [first, second]) = due_task_changes(&workspace, &owner, &editor);
+    let write = async |change: &DocumentMutation| {
+        workspaces
+            .author_workspace_document(&workspace, &owner, (TASKS, part.as_str()), |doc| {
+                tilo_automerge::ApplyIncoming::load_incoming(doc, change.data())
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            })
+            .await
+            .unwrap();
+    };
+    write(&first).await;
+    let editor_may_read = async || {
+        workspaces
+            .state(&workspace)
+            .await
+            .unwrap()
+            .check_document_read(
+                editor.device_public_key,
+                TASKS,
+                part.as_str(),
+                tilo_clock::wall(),
+            )
+            .is_ok()
+    };
+    assert!(editor_may_read().await);
+    let before = check();
+    assert_eq!(before.looks[0].found.due, 1);
+    assert_eq!(before.looks[0].found.open, 1);
+    assert!(
+        assistant
+            .taken()
+            .last()
+            .unwrap()
+            .instruction
+            .contains("First due task")
+    );
+    owner_looks().await;
+
+    let governing_record = collab_types::document_access_target(TASKS, part.as_str()).unwrap();
+    let deny = Grant::new(
+        "editor-cannot-read-issues",
+        Grantee::person(hex::encode(editor.user_public_key)),
+        collab_types::document_node(&workspace, TASKS, governing_record),
+        KindSet::READ,
+        Answer::Deny,
+        Grantee::person(hex::encode(owner.user_public_key)),
+    );
+    workspaces
+        .put_workspace_grants(&workspace, &owner, [73; 32], vec![deny])
+        .await
+        .unwrap();
+    assert!(!editor_may_read().await);
+    check();
+    write(&second).await;
+    let after = check();
+    assert_eq!(
+        (after.looks[0].found.due, after.looks[0].found.open),
+        (0, 0)
+    );
+    assert_eq!(after.looks[0].found.changed, 0);
+    let restricted = assistant.taken().pop().unwrap();
+    assert_eq!(restricted.person, hex::encode(editor.user_public_key));
+    assert!(!restricted.instruction.contains(part.as_str()));
+    assert!(!restricted.instruction.contains("Newly restricted task"));
+
+    owner_looks().await;
+    let visible = assistant.taken().pop().unwrap();
+    assert_eq!(visible.person, hex::encode(owner.user_public_key));
+    assert!(visible.instruction.contains(part.as_str()));
+    assert!(visible.instruction.contains("Newly restricted task"));
+}
+
+async fn set_reader_bound(
+    workspaces: &Workspaces,
+    workspace: &str,
+    cert: &DeviceCert,
+    rules: &[tilo_action_policy::Rule],
+) {
+    use tilo_workspace_agent::{Bound, WorkspaceAgents, workspace_agents};
+    let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+    let bound = rules.iter().map(Bound::of).collect();
+    workspaces
+        .author_workspace_document(
+            workspace,
+            cert,
+            (tilo_workspace_agent::OWNER, &list),
+            |doc| {
+                let mut roster =
+                    tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+                        .as_author(&hex::encode(cert.user_public_key))
+                        .in_app(tilo_workspace_agent::OWNER, "Assistant");
+                roster
+                    .apply(
+                        WorkspaceAgents::SET_AGENT_BOUND.with(workspace_agents::SetAgentBound {
+                            agent: tilo_resource::Id::from_raw("assistant"),
+                            bound,
+                        }),
+                    )
+                    .map_err(|error| error.to_string())?;
+                std::mem::swap(doc, roster.doc_mut());
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_private_chat_turn_sees_only_its_granted_records_without_advancing_the_persons_cursor() {
+    use tilo_app_id::apps::TASKS;
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = bot_server(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
+    let (workspace, _) = chat_workspace(workspaces, &cert).await;
+    let person = hex::encode(cert.user_public_key);
+    keeps_an_assistant(workspaces, &workspace, &cert, &person).await;
+    let assistant = Assistant::answering(vec![]);
+    let (initiative, _events) = started(workspaces, &assistant);
+    let me = as_person(&cert, &workspace);
+    let manual = |by: &Caller| {
+        look_round(ask(
+            &initiative,
+            &workspace,
+            by,
+            workspace_initiative::LOOK_NOW,
+            json!({}),
+        ))
+    };
+    let baseline = manual(&me);
+    assert!(!baseline.looks.is_empty());
+    let delegated = as_their_agent(&cert, &workspace);
+    assert!(read(&initiative, &workspace, &delegated).looks.is_empty());
+    let (part, [change, _]) = due_task_changes(&workspace, &cert, &cert);
+    workspaces
+        .author_workspace_document(&workspace, &cert, (TASKS, part.as_str()), |doc| {
+            tilo_automerge::ApplyIncoming::load_incoming(doc, change.data())
+                .map(drop)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .unwrap();
+    let direct = chat::Chat::direct_id([MemberId::person(person), MemberId::agent("assistant")]);
+    let by_agent = |bound| {
+        me.clone().delegated_to("assistant").on_turn(
+            tilo_actions::policy::turn::Turn::new(
+                chat::summons::conversation_address(&direct),
+                "reading",
+            ),
+            bound,
+        )
+    };
+    let denied = tilo_action_policy::Rule::new(
+        collab_types::document_node(&workspace, TASKS, part.as_str()),
+        KindSet::READ,
+        Answer::Deny,
+    );
+    set_reader_bound(workspaces, &workspace, &cert, std::slice::from_ref(&denied)).await;
+    let narrow = manual(&by_agent(vec![denied]));
+    assert_eq!(narrow.looks[0].found.due, 0);
+    assert_eq!(narrow.looks[0].found.open, 0);
+    assert_eq!(read(&initiative, &workspace, &me).looks, baseline.looks);
+    let requested = manual(&me);
+    assert_eq!(requested.looks[0].found.due, 0);
+    assert_eq!(requested.looks[0].found.open, 0);
+    set_reader_bound(workspaces, &workspace, &cert, &[]).await;
+    let broad = manual(&by_agent(Vec::new()));
+    assert_eq!(broad.looks[0].found.due, 1);
+    assert_eq!(broad.looks[0].found.open, 1);
+    assert_eq!(read(&initiative, &workspace, &me).looks, requested.looks);
+    assert_eq!(manual(&me).looks[0].found.due, 1);
 }

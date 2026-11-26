@@ -21,6 +21,14 @@ use crate::messages::chat_messages;
 use crate::parts::ChatMessages;
 
 impl ChatApp {
+    /// A direct conversation names its members even before they have sent its first message.
+    pub(crate) fn active_direct_members(&self) -> Option<Vec<MemberId>> {
+        match self.channel(&self.active_channel) {
+            Some(channel) => channel.direct.then(|| channel.members.clone()),
+            None => Chat::direct_members(&Id::from_raw(self.active_channel.clone())),
+        }
+    }
+
     /// The person `key` (their root key) names here, and the one conversation
     /// with them. A window the workspace has not told its members yet says so,
     /// and so does a key the workspace's member list does not hold: two
@@ -42,6 +50,47 @@ impl ChatApp {
             return Err(crate::i18n::t("chat-person-unknown"));
         }
         Ok(member)
+    }
+
+    /// Provision the caller's assistant on explicit request and reveal the actual agent
+    /// only after its resource accepts the change.
+    pub(crate) fn set_up_personal_assistant(
+        &self,
+        cx: &mut ui::framework::EffectCx<Chat>,
+    ) -> ui::framework::EffectAnswer {
+        use ui::tilo_workspace_agent::WorkspaceAgents;
+        let keeper = cx
+            .person()
+            .filter(|keeper| !keeper.is_empty() && self.me.id.person_id() == Some(keeper.as_str()))
+            .ok_or_else(|| crate::i18n::t("chat-assistant-needs-person"))?;
+        let agents = self
+            .agents_record()
+            .ok_or_else(|| crate::i18n::t("chat-direct-unavailable"))?;
+        let mut open = self.opener();
+        let reply = cx.reply();
+        let updated = agents.clone();
+        agents.invoke_then(
+            &WorkspaceAgents::ENSURE_PERSONAL_ASSISTANT.with(()),
+            move |applied| {
+                let opened = applied.map_err(|why| why.to_string()).and_then(|()| {
+                    let state = updated.get();
+                    let assistant = state
+                        .personal_assistant(&keeper)
+                        .ok_or_else(|| crate::i18n::t("chat-direct-unavailable"))?;
+                    let at = ui::tilo_resource::items::item_resource_id::<WorkspaceAgents>(
+                        "agents",
+                        &Id::from_raw(assistant.id.0.clone()),
+                    );
+                    open(&at);
+                    Ok(tilo_actions::ActionOutput {
+                        value: Some(serde_json::json!({"agent": assistant.id.0})),
+                        resources: Vec::new(),
+                    })
+                });
+                reply.finish(opened);
+            },
+        );
+        Ok(Effected::Pending)
     }
 
     /// Show the conversation with `agent`, as search's agent hit does: a
@@ -66,6 +115,9 @@ impl ChatApp {
         self.composer_main
             .set_placeholder(&self.conversation_placeholder(&channel));
         self.messages = chat.message_rows(&self.held_messages(), &channel);
+        if let Some(bar) = &self.bar {
+            bar.put_drawer_away();
+        }
         // Opened to write in: the keyboard goes to its composer, away from a thread or an edit.
         self.set_composer_focus();
         // The conversation in view is read by the pass that follows, as a
@@ -200,7 +252,10 @@ impl ChatApp {
                 // nameless here is one the workspace never listed. A report's
                 // destination is the session's to address, as a conversation
                 // in the workspace that keeps it.
-                RecipientKind::NewAgent | RecipientKind::Conversation | RecipientKind::Feedback => {
+                RecipientKind::Assistant
+                | RecipientKind::NewAgent
+                | RecipientKind::Conversation
+                | RecipientKind::Feedback => {
                     return Err(crate::i18n::t("chat-send-needs-recipient"));
                 }
             }
@@ -273,32 +328,35 @@ impl ChatApp {
             .collect()
     }
 
-    /// The conversations with the workspace's agents that hold nothing yet, by the agent's name
-    /// and who it is: an agent of the workspace is someone each member talks to from the start,
-    /// so it is listed before its first message, where a conversation with anyone else is listed
-    /// once it holds one.
-    pub(crate) fn agents_unlisted(&self) -> Vec<(Id, String, MemberId)> {
-        if self.me.id.person_id().is_none() {
-            return Vec::new();
+    /// Whether this person can write to their own assistant in this conversation.
+    pub(crate) fn can_ask_personal_assistant_in(&self, channel: &str) -> bool {
+        if !channel.starts_with(crate::chat::DIRECT_CONVERSATION_PREFIX) || !self.can_participate()
+        {
+            return false;
         }
-        let Some(agents) = self.agents.as_ref().and_then(|opener| {
-            opener.open(&ui::resource::workspace::document_id(
-                ui::tilo_workspace_agent::KIND,
-            ))
-        }) else {
-            return Vec::new();
+        let Some(keeper) = self.me.id.person_id() else {
+            return false;
         };
-        let listed = self.direct_contacts();
+        let Some(agents) = self.agents_record().filter(|record| record.may_read()) else {
+            return false;
+        };
         agents
             .get()
-            .made_by_people()
-            .filter_map(|agent| {
-                let member = MemberId::agent(agent.id.0.clone());
-                let id = Chat::direct_id([self.me.id.clone(), member.clone()]);
-                (!listed.iter().any(|held| held.id == id.as_str()))
-                    .then(|| (id, agent.name.trim().to_owned(), member))
+            .personal_assistant(keeper)
+            .is_some_and(|assistant| {
+                let peer = MemberId::agent(assistant.id.0.clone());
+                Chat::direct_id([self.me.id.clone(), peer]).as_str() == channel
             })
-            .collect()
+    }
+
+    pub(crate) fn agents_record(
+        &self,
+    ) -> Option<ui::prelude::WorkspaceResource<ui::tilo_workspace_agent::WorkspaceAgents>> {
+        self.agents
+            .as_ref()?
+            .open(&ui::resource::workspace::document_id(
+                ui::tilo_workspace_agent::KIND,
+            ))
     }
 
     /// The rows this app offers for its conversations with the workspace's

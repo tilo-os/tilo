@@ -334,13 +334,31 @@ impl WorkspaceAgents {
 }
 
 impl WorkspaceAgents {
-    /// What the record holds: each agent's name, who made it and its model. It answers through [`fields`](tilo_resource::read::fields), so a
-    /// caller with no window open reads it like any app's record.
+    /// The roster and the default agent ID for each keeper. The defaults are derived from
+    /// the same records as the rest of the read, so clients need no separate selection policy.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
     ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
+        let mut read = tilo_resource::read::fields(self, item)?;
+        let mut personal = std::collections::BTreeMap::new();
+        for agent in self.personal_candidates() {
+            let selected = personal.entry(person_key(&agent.keeper)).or_insert(agent);
+            if personal_order(agent) < personal_order(selected) {
+                *selected = agent;
+            }
+        }
+        read["personal_assistants"] = personal
+            .into_iter()
+            .map(|(keeper, agent)| {
+                (
+                    keeper.into_owned(),
+                    serde_json::Value::from(agent.id.0.as_str()),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>()
+            .into();
+        Ok(read)
     }
 }
 
@@ -407,6 +425,22 @@ impl WorkspaceAgents {
             sub_at_once: None,
         });
         Ok(())
+    }
+
+    /// Find the invoking person's assistant or create it with its initial instruction. A retry
+    /// never changes an existing agent, including one whose instruction the person edited.
+    #[action(did = "set up their assistant")]
+    pub fn ensure_personal_assistant(&mut self, cx: &mut ActionCx) -> Result<(), Refusal> {
+        in_person(cx)?;
+        let keeper = author(cx)?;
+        if self.personal_assistant(&keeper).is_some() {
+            return Ok(());
+        }
+        let id = self.available_id(format!("assistant-{}", person_key(&keeper)));
+        let name =
+            NonBlank::parse("Assistant").ok_or_else(|| Refusal::new("missing assistant name"))?;
+        self.create_agent(cx, name, Some(id.clone()), None, None)?;
+        self.set_agent_instruction(cx, Id::from_raw(id), Some(ASSISTANT_INSTRUCTION.to_owned()))
     }
 
     /// Set the most an agent may spend in a day. Zero stops it working until it is raised;
@@ -750,6 +784,20 @@ impl WorkspaceAgents {
         self.active().filter(|agent| !agent.is_sub())
     }
 
+    /// The default agent for this person. An explicitly addressed agent can be shared.
+    #[must_use]
+    pub fn personal_assistant(&self, keeper: &str) -> Option<&Agent> {
+        let keeper = person_key(keeper);
+        self.personal_candidates()
+            .filter(|agent| person_key(&agent.keeper) == keeper)
+            .min_by_key(|agent| personal_order(agent))
+    }
+
+    fn personal_candidates(&self) -> impl Iterator<Item = &Agent> {
+        self.made_by_people()
+            .filter(|agent| agent.mcp_client.is_none())
+    }
+
     /// An id for a new agent called `name` that no agent here holds: its name in
     /// lowercase letters, digits and dashes, with `2`, `3`, … appended where taken. Its
     /// actor reads `agent:<id>`, so the id is made once and kept.
@@ -774,6 +822,10 @@ impl WorkspaceAgents {
         if stem.is_empty() {
             "agent".clone_into(&mut stem);
         }
+        self.available_id(stem)
+    }
+
+    fn available_id(&self, stem: String) -> String {
         let taken = |id: &str| self.agents.iter().any(|agent| agent.id.0 == id);
         if !taken(&stem) {
             return stem;
@@ -810,6 +862,23 @@ impl fmt::Display for AgentState {
             Self::Active => "active",
             Self::Retired => "retired",
         })
+    }
+}
+
+/// Each device resolves simultaneous creations in the same order.
+fn personal_order(agent: &Agent) -> (i64, &str) {
+    (agent.created_at, agent.id.0.as_str())
+}
+
+/// Older records can spell a root public key with uppercase hexadecimal digits.
+fn person_key(id: &str) -> std::borrow::Cow<'_, str> {
+    if id.len() == 64
+        && id.bytes().any(|b| b.is_ascii_uppercase())
+        && id.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        id.to_ascii_lowercase().into()
+    } else {
+        id.into()
     }
 }
 

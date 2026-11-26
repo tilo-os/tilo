@@ -700,6 +700,47 @@ impl ConfinedReplica {
         }
     }
 
+    /// Collect the operations the built-in form requested,
+    /// after delivering the host's answers. The page supplies no actor or provider.
+    pub(crate) fn page_form_calls(
+        &self,
+        replies: Vec<tilo_actions::remote::InvocationReceipt>,
+    ) -> Result<Vec<tilo_actions::remote::InvokeRequest>, AppError> {
+        use tilo_actions::remote::InvokeRequest;
+
+        let form = super::proto::PageForm::for_app(&self.app_id)
+            .filter(|_| self.mode == Mode::Page)
+            .ok_or_else(|| worker_error("this slot holds no host-backed form"))?;
+        let receipts =
+            serde_json::to_string(&replies).map_err(|_| worker_error("invalid form receipts"))?;
+        match self.call(&mut self.lock(), &Request::PageFormCalls { receipts })? {
+            Reply::PageFormCalls(calls) => calls
+                .into_iter()
+                .map(|call| {
+                    let argument = serde_json::from_str(&call.argument)
+                        .map_err(|_| worker_error("invalid form argument"))?;
+                    let target = form
+                        .target(&call.action)
+                        .ok_or_else(|| worker_error("unrecognized form action"))?;
+                    Ok(InvokeRequest {
+                        invocation: call.invocation,
+                        target,
+                        argument,
+                        confirmation: None,
+                        context: None,
+                        on_behalf_of: None,
+                        revision: None,
+                        signed: None,
+                        appearance: None,
+                        wait_ms: None,
+                    })
+                })
+                .collect(),
+            Reply::Failed(reason) => Err(worker_error(reason)),
+            _ => Err(worker_error("the worker answered out of turn")),
+        }
+    }
+
     /// Take the record's store to come from its workspace's hosts:
     /// [`crate::Replica::ask_workspace_for_missing`].
     ///

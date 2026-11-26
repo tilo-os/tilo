@@ -5,8 +5,8 @@
 //! outputs and schemas) travel as JSON text inside the frame, since postcard
 //! cannot decode a self-describing value.
 //!
-//! Nothing here can carry a key: no variant holds a signing key, a
-//! certificate's secret half or a session. The worker receives app ids,
+//! The worker receives no signing key, private certificate material or session.
+//! It receives app ids,
 //! record ids, the member's public name, Automerge bytes and the read
 //! policy a caller already holds, and returns descriptors, outputs and
 //! unsigned Automerge bytes the supervisor admits before it signs them.
@@ -19,6 +19,7 @@
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::api::ApiError;
+use tilo_actions::remote::{RemoteActionTarget, person_models, workspace_initiative as initiative};
 pub use tilo_server_protocol::page::PageAction;
 use wire_frame::Framing;
 
@@ -35,7 +36,46 @@ pub(crate) const CONTENT_BATCH_BYTES: usize = 32 * 1024 * 1024;
 
 /// Bumped whenever a message changes shape. A supervisor and a worker are the
 /// same executable, so a mismatch means a stale binary on disk.
-pub(crate) const PROTOCOL_VERSION: u32 = 16;
+pub(crate) const PROTOCOL_VERSION: u32 = 17;
+
+/// Built-in page forms which use the authenticated person's host services.
+/// The supervisor chooses this from the registered app, independently of the worker.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageForm {
+    Settings,
+    Assistant,
+}
+
+impl PageForm {
+    pub(crate) fn for_app(app: &str) -> Option<Self> {
+        match app {
+            ui::apps::SETTINGS => Some(Self::Settings),
+            ui::apps::ASSISTANT => Some(Self::Assistant),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn target(self, action: &str) -> Option<RemoteActionTarget> {
+        match self {
+            Self::Settings if person_models::is_settings_action(action) => {
+                Some(person_models::target(action))
+            }
+            Self::Assistant if initiative::is_review_action(action) => {
+                Some(initiative::target(initiative::PROPOSALS, action))
+            }
+            _ => None,
+        }
+    }
+
+    /// A person decides one proposal or standing rule per press. Rendering or
+    /// polling the Assistant page may only read the current proposals.
+    pub(crate) fn permits(self, target: &RemoteActionTarget, activated: &mut bool) -> bool {
+        self.target(&target.address.action).as_ref() == Some(target)
+            && (self != Self::Assistant
+                || target.address.action == initiative::LIST
+                || std::mem::take(activated))
+    }
+}
 
 /// What a worker is started to do, and what each of its slots does. The
 /// process's mode decides what it prepares before it confines itself (a
@@ -255,6 +295,8 @@ pub(crate) enum Request {
     /// request that takes long, for the tests of how one is borne.
     #[cfg(test)]
     Stall { millis: u64 },
+    /// Deliver the host's JSON receipts and collect the form's next requests.
+    PageFormCalls { receipts: String },
 }
 
 /// What a person does on a page, as the view's semantic action it stands for.
@@ -319,6 +361,7 @@ impl Request {
             Self::PagePatch => "page-patch",
             #[cfg(test)]
             Self::Stall { .. } => "stall",
+            Self::PageFormCalls { .. } => "page-form-calls",
         }
     }
 }
@@ -387,6 +430,26 @@ pub(crate) enum Reply {
     },
     /// The page's elements that changed, each by its number and new HTML.
     Patches(Vec<(u32, String)>),
+    /// Unsigned form operations. The supervisor reconstructs their exact targets.
+    PageFormCalls(Vec<PageFormCall>),
+}
+
+/// A built-in form submission. The authenticated caller and the provider are
+/// determined by the host. Arguments may contain a credential the person just entered.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct PageFormCall {
+    pub(crate) invocation: tilo_actions::InvocationId,
+    pub(crate) action: String,
+    /// JSON `InvokeArgument`, since postcard cannot decode JSON values.
+    pub(crate) argument: String,
+}
+
+impl std::fmt::Debug for PageFormCall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PageFormCall")
+            .field("invocation", &self.invocation)
+            .finish_non_exhaustive()
+    }
 }
 
 /// One record held beside the held one that changed, as the worker hands it
@@ -491,6 +554,36 @@ impl WireApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_hosted_form_exposes_only_its_declared_actions() {
+        use tilo_actions::remote::{person_models, workspace_initiative as initiative};
+
+        let assistant = PageForm::for_app("so.tilo.assistant").unwrap();
+        let settings = PageForm::for_app("so.tilo.settings").unwrap();
+        assert!(PageForm::for_app("so.tilo.chat").is_none());
+        assert_eq!(
+            assistant.target("list"),
+            Some(initiative::target("proposals", "list"))
+        );
+        assert_eq!(settings.target("list"), Some(person_models::target("list")));
+        assert!(assistant.target("set-key").is_none());
+        assert!(assistant.target("propose").is_none());
+        assert!(assistant.target("turn-on").is_none());
+        assert!(settings.target("accept").is_none());
+
+        let mut activated = false;
+        assert!(assistant.permits(&initiative::target("proposals", "list"), &mut activated));
+        for action in ["accept", "decline", "ask-first", "propose-again"] {
+            let decision = initiative::target("proposals", action);
+            assert!(!assistant.permits(&decision, &mut activated));
+            activated = true;
+            assert!(!assistant.permits(&initiative::target("look-round", action), &mut activated));
+            assert!(!assistant.permits(&person_models::target("list"), &mut activated));
+            assert!(assistant.permits(&decision, &mut activated));
+            assert!(!assistant.permits(&decision, &mut activated));
+        }
+    }
 
     #[test]
     fn api_errors_survive_the_boundary() {

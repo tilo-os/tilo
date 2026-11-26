@@ -41,6 +41,60 @@ fn submitted(prompt: &mut SecretPrompt) -> SecretAnswer {
     }
 }
 
+#[test]
+fn a_page_edits_each_secret_field_without_echoing_its_value() {
+    let mut host = crate::headless::FrameHarness::for_root(
+        crate::State::new(),
+        SecretPrompt::new(SecretKind::UsernameAndSecret),
+        (600, 440),
+        Theme::dark(),
+    );
+    let composition = host.composition();
+    let mut page = crate::composition::page::Page::new();
+    let html = page.render(&composition);
+    let fields: Vec<_> = html
+        .split('<')
+        .filter(|tag| tag.starts_with("input ") && tag.contains("type=\"password\""))
+        .map(|tag| {
+            let attr = |name: &str| {
+                tag.split_once(name)?
+                    .1
+                    .split_once('"')
+                    .map(|(value, _)| value)
+            };
+            let id = attr("data-p=\"").expect("numbered input").parse().unwrap();
+            let path = page
+                .path(id)
+                .expect("the page mapped the input to its widget");
+            let widget = path.split_once('#').map_or(path, |(widget, _)| widget);
+            (widget, attr("data-t=\"").expect("field target"))
+        })
+        .collect();
+    assert_eq!(fields.len(), 2);
+    assert_ne!(fields[0].1, fields[1].1);
+    for ((widget, target), value) in fields.into_iter().zip(["test-user", "test-key"]) {
+        host.perform_semantic_named(
+            widget,
+            Some(target),
+            &crate::a11y::Action::SetValue(value.into()),
+        )
+        .expect("the rendered field accepts its own input");
+    }
+    let live = host.root::<SecretPrompt>();
+    assert_eq!(
+        live.field(FieldRole::Username).expect("username").value(),
+        "test-user"
+    );
+    assert_eq!(
+        live.field(FieldRole::Secret).expect("secret").value(),
+        "test-key"
+    );
+    let shown = page.render(&host.composition());
+    assert!(!shown.contains("test-key"));
+    assert!(!shown.contains("test-user"));
+    assert!(shown.contains("open=\"\""));
+}
+
 tilo_test_env::scenario! {
     /// Focus, Enter, Escape, Tab and the pointer in a prompt.
     /// Each phase was a test of its own and builds its own fixture.

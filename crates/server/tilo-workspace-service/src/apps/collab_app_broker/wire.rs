@@ -30,6 +30,7 @@ use super::*;
 
 mod join;
 mod presence;
+mod proposal_review;
 pub(super) use presence::PresenceSession;
 use presence::presence_event;
 
@@ -941,6 +942,9 @@ impl JoinedChannel {
         let request = RemoteActionFrame::decode(frame)
             .map_err(|error| BrokerError::failed(error.to_string()))?;
         let route = self.route();
+        if current.agent_id.is_none() && proposal_review::addresses(&request.message) {
+            return self.review_proposal(&route, &current, request.message);
+        }
         let person = current.caller(&route.cluster_id);
         // An app's request continuing an invocation someone asked of it (an
         // edit its effect submits, another app's action its effect calls) is

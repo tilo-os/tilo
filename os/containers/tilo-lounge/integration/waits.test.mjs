@@ -1,6 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {reloaded} from './waits.mjs';
+import {agentCommand} from './shell.mjs';
+import {setupPrompt, signInPrompt} from '../../../../crates/browser/tilo-browser-runtime/web/first-screen.mjs';
+
+test('the page drivers run the ticket displayed in the setup and sign-in prompts', () => {
+  const ticket = `tilo1${'ab'.repeat(80)}`;
+  assert.deepEqual(agentCommand(setupPrompt(ticket)),
+    {kind: 'login', text: ticket, ticket, code: null, site: null});
+  assert.deepEqual(agentCommand(signInPrompt(ticket)),
+    {kind: 'device add', text: ticket, ticket, code: null, site: null});
+  assert.equal(agentCommand(signInPrompt(ticket + 'x')), null);
+  assert.deepEqual(agentCommand('tilo login D9B-X4GK --site https://node.example, then follow the instructions.'),
+    {kind: 'login', text: 'D9B-X4GK', ticket: null, code: 'D9B-X4GK', site: 'https://node.example'});
+});
 
 /** A tab reloading in `turns` reads: the document it loads answers as arrived
  * once its page is drawn (`data-arrival`, a page element), never by its own

@@ -44,6 +44,9 @@ impl PersonModels {
         if self.kept.is_none() {
             return vec![self.waiting_section(bind)];
         }
+        if let Some(signing_in) = self.signing_in_section(bind) {
+            return vec![signing_in];
+        }
         let typing = self
             .key
             .provider
@@ -55,11 +58,8 @@ impl PersonModels {
                 rows(vec![block(self.key_field(provider))]),
             )];
         }
-        if let Some(provider) = self.providers().iter().find(|provider| provider.configured) {
-            return vec![self.choose_model_section(bind, provider)];
-        }
-        if let Some(signing_in) = self.signing_in_section(bind) {
-            return vec![signing_in];
+        if self.providers().iter().any(|provider| provider.configured) {
+            return vec![self.choose_model_section(bind), self.add_section(bind)];
         }
         let mut items = Vec::new();
         for provider in self.providers() {
@@ -88,13 +88,16 @@ impl PersonModels {
         self.error.as_ref().map(|reason| block(caption(reason)))
     }
 
-    fn choose_model_section<B: ModelBindings>(
-        &self,
-        bind: &B,
-        provider: &ProviderView,
-    ) -> SettingsSection {
-        let mut items = self.provider_rows(bind, provider);
-        if !self.asking_models(&provider.id) && !provider.models.is_empty() {
+    fn choose_model_section<B: ModelBindings>(&self, bind: &B) -> SettingsSection {
+        let mut items = Vec::new();
+        let mut offered = Vec::new();
+        for provider in self.providers() {
+            items.extend(self.provider_rows(bind, provider));
+            if provider.configured && !self.asking_models(&provider.id) {
+                offered.extend(Self::offered_by(provider));
+            }
+        }
+        if !offered.is_empty() {
             let label = t("models-choose-model");
             items.push(field_row(
                 &label,
@@ -104,7 +107,7 @@ impl PersonModels {
                     &label,
                     String::new(),
                     ModelChoice(None),
-                    Self::offered_by(provider).collect(),
+                    offered,
                     Some(&t("models-choose-placeholder")),
                 ),
             ));

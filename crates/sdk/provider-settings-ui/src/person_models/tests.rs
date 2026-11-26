@@ -412,6 +412,47 @@ fn the_first_minute_links_a_provider_takes_its_key_and_picks_a_model() {
     assert!(!models.busy());
 }
 
+#[test]
+fn a_provider_with_no_models_does_not_hide_the_other_ways_to_get_started() {
+    en();
+    let (provider, kept) = provider();
+    kept.lock_recover().providers.providers = vec![
+        ProviderView {
+            id: "first".into(),
+            name: "First provider".into(),
+            configured: true,
+            ..ProviderView::default()
+        },
+        ProviderView {
+            id: "second".into(),
+            name: "Second provider".into(),
+            configured: true,
+            models: vec![OfferedModel {
+                id: "ready".into(),
+                label: "Ready model".into(),
+            }],
+            ..ProviderView::default()
+        },
+    ];
+    let api: Arc<dyn ActionProvider + Send + Sync> = provider;
+    let _served = ui::RemoteActions::enter(api, Caller::local_person("owner"));
+    let mut app = TestApp::<crate::ProviderSettingsApp>::for_person("owner").unwrap();
+    app.settle();
+    let options = app
+        .with_widget::<ui::widget::Dropdown, _>(|chooser| chooser.options().to_vec())
+        .expect("the second provider has a model to choose");
+    assert_eq!(options, ["Ready model from Second provider"]);
+    app.harness().click_named("models.link.anthropic").unwrap();
+    app.settle();
+    assert!(
+        app.harness()
+            .inspection_json()
+            .unwrap()
+            .contains("sent to Anthropic")
+    );
+    assert_eq!(kept.lock_recover().providers.providers.len(), 3);
+}
+
 /// A key the provider turns away is asked for again, in the same field,
 /// with what the provider said about it.
 #[test]

@@ -113,6 +113,9 @@ pub enum Control {
     /// A typed entry: a number with its steppers, a date, a time, a colour or a search field.
     Entry {
         input: InputKind,
+        /// The field within a widget with several separately editable inputs.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
         /// What the field shows.
         text: String,
         placeholder: String,

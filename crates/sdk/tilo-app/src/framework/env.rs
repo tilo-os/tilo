@@ -482,6 +482,13 @@ impl<R: Resource> ResourceEnv<R> {
         self.storage.device()
     }
 
+    /// Whether a host is presenting a replica of the record through an attached view.
+    /// Such a view has access to workspace services, while device settings belong to
+    /// a window running on the person's own device.
+    pub fn is_attached(&self) -> bool {
+        self.device() == Some(super::attached::DEVICE)
+    }
+
     /// Read the result of the view action at `target` with `argument`,
     /// through the session's action API as the person using the app, and
     /// keep it current ([`Query`](super::Query)): a live action's answer

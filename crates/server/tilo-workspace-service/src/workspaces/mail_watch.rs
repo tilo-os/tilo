@@ -209,16 +209,31 @@ impl Workspaces {
         person: &[u8; 32],
         after: u64,
     ) -> MailArrivals {
+        self.mail_arrivals_as(
+            workspace,
+            (person, super::workspace_stores::ReadFor::Person),
+            after,
+        )
+        .await
+    }
+
+    pub(crate) async fn mail_arrivals_as(
+        &self,
+        workspace: collab_types::WorkspaceId,
+        reader: (&[u8; 32], super::workspace_stores::ReadFor<'_>),
+        after: u64,
+    ) -> MailArrivals {
         let mut arrived = self.arrivals_kept(&workspace.to_string(), after);
-        if !self
-            .person_reaches(
+        if self
+            .person_store_answer(
                 workspace,
-                person,
+                reader,
                 super::workspace_stores::Store::MAIL,
                 tilo_actions::remote::person_accounts::ARRIVED,
                 tilo_action_policy::ActionKind::Read,
             )
             .await
+            != tilo_action_policy::Answer::Allow
         {
             arrived.arrivals.clear();
         }

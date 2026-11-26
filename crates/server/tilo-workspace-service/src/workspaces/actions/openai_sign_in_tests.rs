@@ -76,22 +76,42 @@ async fn signs_in(
     fake: &FakeProviders,
     using: Value,
 ) -> SignInState {
-    let started = ask_own(
-        actions,
-        workspace_id,
-        person,
-        person_models::BEGIN_SIGN_IN,
-        using,
-    )
-    .await
-    .expect("the sign-in begins");
-    let started: SignInStarted = serde_json::from_value(started).unwrap();
+    let started = begin_sign_in(actions, workspace_id, person, using).await;
     assert_eq!(started.page, format!("{}/codex/device", fake.issuer_url()));
     assert!(
         fake.approve(&started.code),
         "the fake showed {}",
         started.code
     );
+    wait_for_sign_in(actions, workspace_id, person, &started).await
+}
+
+async fn begin_sign_in(
+    actions: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    person: &DeviceCert,
+    using: Value,
+) -> SignInStarted {
+    serde_json::from_value(
+        ask_own(
+            actions,
+            workspace_id,
+            person,
+            person_models::BEGIN_SIGN_IN,
+            using,
+        )
+        .await
+        .expect("the sign-in begins"),
+    )
+    .unwrap()
+}
+
+async fn wait_for_sign_in(
+    actions: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    person: &DeviceCert,
+    started: &SignInStarted,
+) -> SignInState {
     for _ in 0..10 {
         let state = ask_own(
             actions,
@@ -339,6 +359,90 @@ async fn signing_in_for_api_usage_keeps_an_issued_key() {
     assert_eq!(provider.endpoint, fake.openai_api_url());
     let answered = answer(&actions, workspace_id, &ada, "Hello").await.unwrap();
     assert!(answered.starts_with("[OpenAI"), "{answered}");
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_provider_sign_in_cannot_persist_after_the_workspace_revokes_its_action() {
+    use crate::workspaces::workspace_stores::Store;
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet};
+
+    let fake = FakeProviders::start().await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    workspaces.call_private_model_addresses(true);
+    workspaces.sign_in_to_openai_at(at_fake(&fake));
+    let (workspace, id, actions) = governed(workspaces).await;
+    let person = admit(workspaces, &workspace, &owner, 1).await;
+    let started = begin_sign_in(&actions, id, &person, json!({})).await;
+    let deny = Grant::new(
+        "deny-provider-sign-in",
+        Grantee::person(hex::encode(person.user_public_key)),
+        Store::MODELS.node(&workspace, person_models::BEGIN_SIGN_IN),
+        KindSet::UNDOABLE,
+        Answer::Deny,
+        Grantee::person(hex::encode(owner.user_public_key)),
+    );
+    workspaces
+        .put_workspace_grants(&workspace, &owner, [3; 32], vec![deny])
+        .await
+        .unwrap();
+    assert!(fake.approve(&started.code));
+    assert!(matches!(
+        wait_for_sign_in(&actions, id, &person, &started).await,
+        SignInState::Failed { .. }
+    ));
+    let providers = ask_own(&actions, id, &owner, person_models::LIST, json!({}))
+        .await
+        .unwrap();
+    assert_eq!(providers["providers"], json!([]));
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn one_persons_provider_sign_ins_in_two_workspaces_are_independent() {
+    let fake = FakeProviders::start().await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    workspaces.call_private_model_addresses(true);
+    workspaces.sign_in_to_openai_at(at_fake(&fake));
+    let (_, first, actions) = governed(workspaces).await;
+    let (_, second, _) = governed(workspaces).await;
+    let a = begin_sign_in(&actions, first, &owner, json!({})).await;
+    let b = begin_sign_in(&actions, second, &owner, json!({})).await;
+    let other_attempt = json!({"signIn": a.sign_in});
+    let wrong = settled_own(
+        &actions,
+        second,
+        &owner,
+        person_models::WAIT_SIGN_IN,
+        other_attempt.clone(),
+    )
+    .await;
+    assert!(
+        matches!(wrong, Err(ActionCallError::Refused { .. })),
+        "{wrong:?}"
+    );
+    ask_own(
+        &actions,
+        second,
+        &owner,
+        person_models::CANCEL_SIGN_IN,
+        other_attempt,
+    )
+    .await
+    .unwrap();
+    for (workspace, started) in [(first, a), (second, b)] {
+        assert!(fake.approve(&started.code));
+        assert!(matches!(
+            wait_for_sign_in(&actions, workspace, &owner, &started).await,
+            SignInState::Done { .. }
+        ));
+    }
     server.shutdown().await;
 }
 

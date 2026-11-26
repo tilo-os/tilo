@@ -45,7 +45,7 @@ use tilo_agent_session::bot::kept::Note;
 use tilo_agent_session::workspace_actions::WorkspaceActions;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
-use tilo_workspace_agent::{Agent, WorkspaceAgents};
+use tilo_workspace_agent::Agent;
 
 use crate::agents::{WorkspaceActionProvider, invoke_named};
 
@@ -108,9 +108,7 @@ pub fn steps_starting_turns(
     })
 }
 
-/// The assistant `person` keeps in `workspace`: of the active agents they
-/// keep there that no MCP client connects as, the one made first. None
-/// where they keep no such agent.
+/// The personal assistant that `person` keeps in `workspace`, when active.
 ///
 /// # Errors
 /// The workspace's record of its agents could not be read.
@@ -119,32 +117,10 @@ pub async fn assistant_of(
     workspace: &str,
     person: &[u8; 32],
 ) -> Result<Option<Agent>, String> {
-    let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-    let Some(bytes) = workspaces
-        .resource_document(workspace, tilo_workspace_agent::OWNER, &record)
-        .await
-        .map_err(|error| error.to_string())?
-    else {
-        return Ok(None);
-    };
-    let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-    let agents = super::opened::<WorkspaceAgents>(&mut doc)?;
-    Ok(agents
-        .agents
-        .iter()
-        .filter(|agent| {
-            agent.is_active()
-                && agent.mcp_client.is_none()
-                && tilo_failure::ignored!(
-                    "a keeper that is no person's id is not this person",
-                    tilo_action_policy::PersonId::parse(&agent.keeper).ok()
-                )
-                .and_then(|keeper| keeper.root())
-                .as_ref()
-                    == Some(person)
-        })
-        .min_by_key(|agent| agent.created_at)
-        .cloned())
+    let keeper = tilo_action_policy::PersonId::from_root(*person);
+    Ok(super::roster(workspaces, workspace)
+        .await?
+        .and_then(|agents| agents.personal_assistant(keeper.as_str()).cloned()))
 }
 
 /// The server's own answers: a person's model for a judgement, and a turn of

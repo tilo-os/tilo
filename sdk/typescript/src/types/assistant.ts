@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.assistant@1cab97d1a1d68b48";
+export const SURFACE = "so.tilo.assistant@5caa27ee491e8bfe";
 
 export interface Agent {
   id: string;
@@ -112,6 +112,10 @@ export interface CreateAgentArgs {
   id?: string;
   model?: string;
   mcp_client?: string;
+}
+
+/** The arguments of `ensure-personal-assistant`. */
+export interface EnsurePersonalAssistantArgs {
 }
 
 /** The arguments of `set-agent-spend-limit`. */
@@ -204,11 +208,12 @@ export interface SetSubAgentLimitsArgs {
 
 /** Assistant window — `assistant.window`. */
 export interface Window extends tilo.Resource {
+  viewMainChat(): Promise<void>;
 }
 
 /** The actions `Window` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const WINDOW_ACTIONS = [] as const;
+export const WINDOW_ACTIONS = ["viewMainChat"] as const;
 
 /** The `assistant.window` kind at `path`. */
 export function assistantWindow(ws: tilo.Workspace, path: string): Window {
@@ -226,6 +231,9 @@ export interface WorkspaceAgent extends tilo.Resource {
   }): Promise<void>;
   /** Runs `create-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   createAgentMany(items: CreateAgentArgs[]): Promise<tilo.ActionAnswer[]>;
+  ensurePersonalAssistant(): Promise<void>;
+  /** Runs `ensure-personal-assistant` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  ensurePersonalAssistantMany(items: EnsurePersonalAssistantArgs[]): Promise<tilo.ActionAnswer[]>;
   setAgentSpendLimit(args: {
     agent: string;
     limit_micros?: number;
@@ -318,7 +326,7 @@ export interface WorkspaceAgent extends tilo.Resource {
 
 /** The actions `WorkspaceAgent` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const WORKSPACEAGENT_ACTIONS = ["createAgent", "createAgentMany", "setAgentSpendLimit", "setAgentSpendLimitMany", "recordAgentSpend", "recordAgentSpendMany", "renameAgent", "renameAgentMany", "setAgentModel", "setAgentModelMany", "setAgentInstruction", "setAgentInstructionMany", "setAgentBound", "setAgentBoundMany", "retireAgent", "retireAgentMany", "startSubAgent", "startSubAgentMany", "noteSubAgent", "noteSubAgentMany", "stopSubAgent", "stopSubAgentMany", "subAgentStands", "subAgentStandsMany", "subAgentProduced", "subAgentProducedMany", "setSubAgentLimits", "setSubAgentLimitsMany"] as const;
+export const WORKSPACEAGENT_ACTIONS = ["createAgent", "createAgentMany", "ensurePersonalAssistant", "ensurePersonalAssistantMany", "setAgentSpendLimit", "setAgentSpendLimitMany", "recordAgentSpend", "recordAgentSpendMany", "renameAgent", "renameAgentMany", "setAgentModel", "setAgentModelMany", "setAgentInstruction", "setAgentInstructionMany", "setAgentBound", "setAgentBoundMany", "retireAgent", "retireAgentMany", "startSubAgent", "startSubAgentMany", "noteSubAgent", "noteSubAgentMany", "stopSubAgent", "stopSubAgentMany", "subAgentStands", "subAgentStandsMany", "subAgentProduced", "subAgentProducedMany", "setSubAgentLimits", "setSubAgentLimitsMany"] as const;
 
 /** The `tilo.workspace.agent` kind at `path`. */
 export function workspaceAgent(ws: tilo.Workspace, path: string): WorkspaceAgent {

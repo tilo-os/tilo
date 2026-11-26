@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 37
+version = 38
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -68,6 +68,7 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "Actor::app" = "tuple(AppId)"
 "Actor::automation" = "tuple(AutomationId)"
 "Actor::member" = "tuple(MemberId)"
+"Actor::visitor" = "tuple(String)"
 "AdoptedQuery" = "struct"
 "AdoptedQuery.options" = "FindOptions optional"
 "AdoptedQuery.query" = "String"
@@ -505,6 +506,7 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "Recipient.name" = "String"
 "RecipientKind" = "enum external"
 "RecipientKind::agent" = "unit"
+"RecipientKind::assistant" = "unit"
 "RecipientKind::conversation" = "unit"
 "RecipientKind::feedback" = "unit"
 "RecipientKind::new-agent" = "unit"

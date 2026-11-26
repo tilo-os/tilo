@@ -638,6 +638,7 @@ impl Page {
             }
             Control::Entry {
                 input: kind,
+                target: field_target,
                 text,
                 placeholder,
                 min,
@@ -666,7 +667,9 @@ impl Page {
                 if !placeholder.is_empty() {
                     input.attr("placeholder", placeholder);
                 }
-                if let Some(name) = name {
+                if *secret {
+                    input.attr("aria-label", placeholder);
+                } else if let Some(name) = name {
                     input.attr("aria-label", name);
                 }
                 for (attr, value) in [("min", min), ("max", max), ("step", step)] {
@@ -674,11 +677,18 @@ impl Page {
                         input.attr(attr, &value.to_string());
                     }
                 }
-                input.attr("value", text);
+                if !*secret {
+                    input.attr("value", text);
+                }
                 if disabled {
                     input.flag("disabled");
                 }
-                act(&mut input, "value", target, None);
+                act(
+                    &mut input,
+                    "value",
+                    field_target.as_deref().or(target),
+                    None,
+                );
                 let mut box_ = Element::new("span");
                 box_.attr("class", "tilo-entry");
                 if *steppers {
@@ -1005,7 +1015,8 @@ fn semantics_attrs(element: &mut Element, node: &Composed, access: &AccessNode) 
     let visible_text = matches!(
         node.own,
         Some(Own::Text(_) | Own::Field { .. } | Own::Blocks { .. })
-    ) || matches!(&node.own, Some(Own::Face(face)) if face.label.is_some());
+    ) || matches!(&node.own, Some(Own::Face(face))
+        if face.label.as_ref().is_some_and(|label| Some(&label.text) == access.name.as_ref()));
     if let Some(name) = &access.name
         && (!visible_text || matches!(node.own, Some(Own::Field { .. })))
     {

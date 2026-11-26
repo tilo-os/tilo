@@ -340,38 +340,19 @@ fn keeper_of(agent: &Agent) -> Option<[u8; 32]> {
     .and_then(|keeper| keeper.root())
 }
 
-/// The agents `workspace` keeps, or none where its record does not read.
-async fn agents_of(workspaces: &Workspaces, workspace: &str) -> Option<Vec<Agent>> {
-    let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-    let bytes = workspaces
-        .resource_document(workspace, tilo_workspace_agent::OWNER, &record)
-        .await
-        .ok()??;
-    let mut doc = automerge::AutoCommit::load(&bytes).ok()?;
-    let agents = crate::agents::opened::<WorkspaceAgents>(&mut doc).ok()?;
-    Some(agents.agents.iter().cloned().collect())
-}
-
 /// The agent among `agents` whose day a judgement for `person` is counted
 /// on: the agent `told_by` that told the thing, where that person keeps it
-/// and it still works; else the assistant they keep, which is the first
-/// made of their working agents that no MCP client connects as. None where
-/// they keep no such agent: somebody else's agent is never theirs.
+/// and it still works. Otherwise their personal assistant bears the cost.
 fn counted_on<'a>(
-    agents: &'a [Agent],
+    agents: &'a WorkspaceAgents,
     person: &[u8; 32],
     told_by: Option<&str>,
 ) -> Option<&'a Agent> {
-    let kept = |agent: &&Agent| agent.is_active() && keeper_of(agent) == Some(*person);
+    let keeper = tilo_action_policy::PersonId::from_root(*person);
     told_by
-        .and_then(|id| agents.iter().filter(kept).find(|agent| agent.id.0 == id))
-        .or_else(|| {
-            agents
-                .iter()
-                .filter(kept)
-                .filter(|agent| agent.mcp_client.is_none())
-                .min_by_key(|agent| agent.created_at)
-        })
+        .and_then(|id| agents.get(&tilo_resource::Id::from(id)))
+        .filter(|agent| agent.is_active() && keeper_of(agent) == Some(*person))
+        .or_else(|| agents.personal_assistant(keeper.as_str()))
 }
 
 impl Spenders for Assistants {
@@ -383,7 +364,7 @@ impl Spenders for Assistants {
     ) -> Pin<Box<dyn Future<Output = Option<Spender>> + Send + 'a>> {
         Box::pin(async move {
             let workspaces = self.workspaces.upgrade()?;
-            let agents = agents_of(&workspaces, workspace).await?;
+            let agents = super::roster(&workspaces, workspace).await.ok()??;
             let assistant = counted_on(&agents, person, agent)?;
             Some(Spender {
                 workspace: workspace.to_owned(),

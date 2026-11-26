@@ -438,8 +438,8 @@ host's clock while your app is closed. It checks arriving mail, changed workspac
 and open or due tasks. A scheduled check asks the model only when something is new and
 there is budget left. Proposed tasks appear in the workspace's shared Tasks tracker, where
 the tracker controls who can read them. In your assistant conversation you can change the
-schedule, lower the daily limit or pause the checks. Your device's notification settings control which resulting
-notifications interrupt you.
+schedule, lower the daily limit or pause the checks. Your device's notification settings
+control which resulting notifications interrupt you.
 
 **One interface.** The views read and call `AssistantSource` (`Sources/AssistantCore`) and
 nothing else: a conversation as a live stream of pieces (a message, a one-line report, a
