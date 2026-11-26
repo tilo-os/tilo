@@ -1236,6 +1236,41 @@ pub async fn admit(
     enter(workspaces, server, endpoint, None).await
 }
 
+/// Where `endpoint` reached the computer `device` (its key): the addresses it knows of it, as a
+/// computer that just logged in through it was reached. A server a ticket of the person's just
+/// certified is entered among their servers there: it enrolls its own address only once it holds
+/// the Servers workspace, which a device that has it hands it at the address entered for it, and
+/// a key alone is dialled only where a directory names it, which no machine off the public one
+/// (a stack on one computer, a closed network) has.
+///
+/// # Errors
+/// `device` is not an endpoint's key.
+pub async fn reached(
+    endpoint: &iroh::Endpoint,
+    device: &[u8; 32],
+) -> Result<iroh_base::EndpointAddr, String> {
+    let id = iroh_base::EndpointId::from_bytes(device)
+        .map_err(|error| format!("the server's device key: {error}"))?;
+    let known = endpoint.remote_info(id).await;
+    Ok(iroh_base::EndpointAddr::from_parts(
+        id,
+        known.into_iter().flat_map(|info| {
+            info.into_addrs()
+                .map(iroh::endpoint::TransportAddrInfo::into_addr)
+        }),
+    ))
+}
+
+/// Take the person's server `server`, which a server ticket of theirs just certified here, in
+/// among their servers where this device reached it as it logged in ([`reached`]).
+///
+/// # Errors
+/// As [`admit`].
+pub async fn admit_reached(workspaces: &Workspaces, server: &DeviceCert) -> Result<(), String> {
+    let endpoint = reached(&workspaces.inner.host.endpoint, &server.device_public_key).await?;
+    admit(workspaces, server, &endpoint).await
+}
+
 /// Enter the device `cert` among the person's servers at `endpoint`, and at `relay`
 /// when it names where its packet relay is reached; an entry that says so already
 /// writes no history.

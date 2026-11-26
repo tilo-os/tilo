@@ -1410,18 +1410,27 @@ async fn a_logged_in_issuers_server_ticket_leaves_the_entry_on_the_host() {
     .expect("the issuer certifies the server");
 
     let device = servers::device_id(&desk_key.verifying_key().to_bytes());
-    tilo_test_env::within("the entry reaches the host", async {
+    let entry = tilo_test_env::within("the entry reaches the host", async {
         loop {
             let listed = servers::read(&host.hosted)
                 .await
                 .expect("the person's servers read");
-            if listed.servers.get(&device).is_some() {
-                return;
+            if let Some(entry) = listed.servers.get(&device) {
+                return entry.clone();
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
     })
     .await;
+    // Its devices dial it where the issuer reached it as it logged in: its key alone reaches
+    // nothing where no directory names it, and the server enrolls its own address only once it
+    // is handed the Servers workspace at that one.
+    let dialled: iroh::EndpointAddr =
+        serde_json::from_str(&entry.endpoint).expect("the entry names an address");
+    assert!(
+        !dialled.addrs.is_empty(),
+        "the server is entered at an address it is reached at, not by its key alone: {dialled:?}"
+    );
     entered.close();
     let _ = router.shutdown().await;
     host.server.shutdown().await;

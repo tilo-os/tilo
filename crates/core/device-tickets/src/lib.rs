@@ -130,15 +130,7 @@ pub async fn admit_in(
         Role::Plan(plan) => {
             servers::admit_planned(&workspaces, plan, &cert.device_public_key).await
         }
-        Role::Server => {
-            // Dialled by its key alone until the server fills its endpoint when it first starts.
-            let endpoint = iroh_base::EndpointAddr::from_parts(
-                iroh_base::EndpointId::from_bytes(&cert.device_public_key)
-                    .map_err(|error| format!("the server's device key: {error}"))?,
-                Vec::new(),
-            );
-            servers::admit(&workspaces, cert, &endpoint).await
-        }
+        Role::Server => servers::admit_reached(&workspaces, cert).await,
     }
 }
 
