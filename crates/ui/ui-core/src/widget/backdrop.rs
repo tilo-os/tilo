@@ -183,17 +183,18 @@ fn paint_trusted(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme
     );
 }
 
-/// The scrim over `rect`: a dim that keeps what lies beneath legible, deeper under high contrast.
+/// The scrim over `rect`: a dim that keeps what lies beneath legible. It is the theme's scrim,
+/// dark in every theme, at the strength the theme dims modals with, so it always lowers the
+/// desktop rather than painting the lightest neutral over a dark one.
 fn paint_scrim(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
-    let depth = if theme.name.eq_ignore_ascii_case("high contrast") {
-        0.72
-    } else {
-        0.48
-    };
+    let colors = &theme.tokens.colors;
     scene.fill(
         Fill::NonZero,
         transform,
-        theme.tokens.colors.neutral[9].with_alpha_factor(depth),
+        colors
+            .surfaces
+            .scrim
+            .with_alpha_factor(colors.surfaces.scrim_strength),
         None,
         &rect,
     );

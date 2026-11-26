@@ -158,25 +158,42 @@ fn a_light_ground_stays_light_and_its_ramp_is_dithered() {
 /// desktop it covers and leaves it legible, and nothing outside its box.
 #[test]
 fn setup_stands_on_its_own_ground_and_its_tour_veils_only_what_it_covers() {
-    let theme = Theme::dark();
     let rect = Rect::new(40.0, 40.0, 200.0, 160.0);
     let red = Color::from_rgb8(220, 40, 40);
-    let seen = rendered_over(&theme, rect, Ground::Trusted, red);
-    let (r, g, b, _) = tilo_ui_base::offscreen::OffscreenRenderer::sample(&seen, 240, 120, 120);
-    assert!(
-        r < 120,
-        "what lies beneath never shows through: saw {r},{g},{b}"
-    );
+    // A light theme and a dark one: the trusted ground stays opaque over what an app drew, and
+    // the tour veils the desktop it covers either way, never lightening it.
+    for theme in [Theme::light(), Theme::dark()] {
+        let seen = rendered_over(&theme, rect, Ground::Trusted, red);
+        let (r, g, b, _) = sample(&seen, 120, 120);
+        assert!(
+            r.abs_diff(g) < 16 && g.abs_diff(b) < 16,
+            "in {} what lies beneath never shows through: saw {r},{g},{b}",
+            theme.name
+        );
 
-    let seen = rendered_over(&theme, rect, Ground::Scrim, red);
-    let (r, g, b, _) = tilo_ui_base::offscreen::OffscreenRenderer::sample(&seen, 240, 120, 120);
-    assert!(
-        (r, g, b) != (220, 40, 40) && r > g + 40,
-        "the desktop beneath is veiled and still legible: saw {r},{g},{b}"
-    );
-    let (r, g, b, _) = tilo_ui_base::offscreen::OffscreenRenderer::sample(&seen, 240, 10, 10);
-    assert!(
-        r > 200 && g < 60 && b < 60,
-        "outside its box the desktop is untouched: saw {r},{g},{b}"
-    );
+        let seen = rendered_over(&theme, rect, Ground::Scrim, red);
+        let (r, g, b, _) = sample(&seen, 120, 120);
+        let (outside, outside_g, outside_b, _) = sample(&seen, 10, 10);
+        assert!(
+            u32::from(r) + u32::from(g) + u32::from(b)
+                < u32::from(outside) + u32::from(outside_g) + u32::from(outside_b),
+            "in {} the tour darkens the desktop it covers: saw {r},{g},{b} against {outside},{outside_g},{outside_b}",
+            theme.name
+        );
+        assert!(
+            r > g + 40,
+            "in {} the veiled desktop is still legible: saw {r},{g},{b}",
+            theme.name
+        );
+        assert!(
+            outside > 200 && outside_g < 60 && outside_b < 60,
+            "in {} outside its box the desktop is untouched: saw {outside},{outside_g},{outside_b}",
+            theme.name
+        );
+    }
+}
+
+/// The pixel at `(x, y)` of a 240-pixel-wide render.
+fn sample(seen: &[u8], x: u32, y: u32) -> (u8, u8, u8, u8) {
+    tilo_ui_base::offscreen::OffscreenRenderer::sample(seen, 240, x, y)
 }
