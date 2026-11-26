@@ -109,11 +109,24 @@ pub struct OpenOptions<'a> {
     pub workspace: Option<&'a str>,
     /// The app's record of the session whose shell the workspace's host runs.
     pub record: Option<&'a str>,
-    /// The supervisor connection the launcher handed this process, when it did.
+    /// The supervisor connection the launcher handed this process, when it did. Only a Unix
+    /// system runs the supervisor.
+    #[cfg(unix)]
     pub service: Option<&'a tilo_process::local_socket::ServiceSocket>,
     /// Raised when the workspace's host is asked for the session's shell, which may wait for
     /// the person to allow it on another device.
     pub waiting: Option<&'a std::sync::atomic::AtomicBool>,
+}
+
+impl OpenOptions<'_> {
+    /// Whether the launcher handed this process a supervisor connection.
+    pub(crate) fn has_service(&self) -> bool {
+        #[cfg(unix)]
+        let handed = self.service.is_some();
+        #[cfg(not(unix))]
+        let handed = false;
+        handed
+    }
 }
 
 /// Which way the terminal reaches a target, decided by a capability probe.
@@ -175,13 +188,19 @@ pub fn environments_available(service_available: bool) -> bool {
 }
 
 /// Whether this process could build the user and mount namespace a self-hosted guest needs:
-/// false under a seccomp filter, without unprivileged user namespaces, or without `bwrap`.
+/// false under a seccomp filter, without unprivileged user namespaces, or without `bwrap`, and
+/// on every system but a Unix one, which has none of them.
 fn can_build_namespace() -> bool {
-    !tilo_process::confinement::seccomp_filtered()
+    #[cfg(unix)]
+    let can = !tilo_process::confinement::seccomp_filtered()
         && tilo_process::confinement::unprivileged_userns_enabled()
-        && bwrap_present()
+        && bwrap_present();
+    #[cfg(not(unix))]
+    let can = false;
+    can
 }
 
+#[cfg(unix)]
 fn bwrap_present() -> bool {
     std::env::var_os("PATH")
         .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("bwrap").exists()))
@@ -265,12 +284,17 @@ pub fn open_with(
 ) -> Result<Session, OpenError> {
     let program = options.program.unwrap_or_default();
     match route {
+        #[cfg(unix)]
         ConfineRoute::Service => {
             let socket = options.service.ok_or_else(|| {
                 OpenError::NoRuntime("the required ush supervisor is not running".into())
             })?;
             open_on_socket(socket, target, requested_by, options)
         }
+        #[cfg(not(unix))]
+        ConfineRoute::Service => Err(OpenError::NoRuntime(
+            "the ush supervisor runs only on Linux and macOS".into(),
+        )),
         ConfineRoute::SelfHosted(bin) => open_self_hosted(bin, program),
         ConfineRoute::Host => open_host(program, requested_by),
         ConfineRoute::Unavailable(reason) => Err(OpenError::Unavailable(reason.clone())),
@@ -320,6 +344,7 @@ pub fn open_host(program: &[String], requested_by: Requester) -> Result<Session,
 /// # Errors
 ///
 /// Why the session could not open; see [`OpenError`].
+#[cfg(unix)]
 pub fn open_on_socket(
     stream: &tilo_process::local_socket::ServiceSocket,
     target: &SessionTarget,
@@ -329,6 +354,7 @@ pub fn open_on_socket(
     open_supervisor_session(stream, target, requested_by, options)
 }
 
+#[cfg(unix)]
 fn open_supervisor_session(
     stream: &tilo_process::local_socket::ServiceSocket,
     target: &SessionTarget,
@@ -494,6 +520,7 @@ pub(crate) fn with_workspace(request: &mut serde_json::Value, workspace: Option<
     }
 }
 
+#[cfg(unix)]
 /// The supervisor's answer to `open-session`, field for field (`ServeResponse::Session` in
 /// `crates/runtime/ush/src/supervisor.rs`). Unknown fields are refused, so every field the
 /// supervisor sends is named here; `a_session_reply_keeps_its_wire_form` pins the form.
@@ -516,6 +543,7 @@ struct UshSessionReply {
     protocol: u16,
 }
 
+#[cfg(unix)]
 impl UshSessionReply {
     /// Whether the session declaration is well formed and matches what was asked.
     fn is_valid(
@@ -540,6 +568,7 @@ impl UshSessionReply {
     }
 }
 
+#[cfg(unix)]
 /// What follows the supervisor's line saying the workspace's host is asked for the session, when
 /// `payload` starts with it: empty when nothing arrived after it yet.
 fn after_waiting(payload: &[u8]) -> Option<&[u8]> {
@@ -574,10 +603,12 @@ pub fn refusal(payload: &[u8]) -> OpenError {
 
 /// A [`MasterPty`] over a descriptor someone else opened. Resizing is a real `TIOCSWINSZ`: the
 /// grid reflows on every window change.
+#[cfg(unix)]
 struct FdMaster {
     master: tilo_process::pty::Master,
 }
 
+#[cfg(unix)]
 impl MasterPty for FdMaster {
     fn get_size(&self) -> Result<PtySize, anyhow::Error> {
         let size = self.master.get_size()?;
@@ -640,14 +671,17 @@ impl MasterPty for NullMaster {
         Ok(Box::new(std::io::empty()))
     }
 
+    #[cfg(unix)]
     fn process_group_leader(&self) -> Option<i32> {
         None
     }
 
+    #[cfg(unix)]
     fn as_raw_fd(&self) -> Option<i32> {
         None
     }
 
+    #[cfg(unix)]
     fn tty_name(&self) -> Option<PathBuf> {
         None
     }

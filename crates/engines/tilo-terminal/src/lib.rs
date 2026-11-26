@@ -58,12 +58,13 @@ pub use graphics::{
     KittyImage, StreamEvent, TerminalImagePlacement, parse_kitty, placement_is_sound,
 };
 pub use model::{Item, ItemKind};
+#[cfg(unix)]
+pub use provider::open_on_socket;
 #[cfg(not(target_arch = "wasm32"))]
 pub use provider::{
     ConfineRoute, NullMaster, OpenError, OpenOptions, Requester, decide_route,
     environments_available, exec_script, launch_command_from_context, launch_command_from_env,
-    open_host, open_on_socket, open_self_hosted, open_with, refusal, route, ush_binary,
-    ush_request,
+    open_host, open_self_hosted, open_with, refusal, route, ush_binary, ush_request,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use screen::{Line, Screen};

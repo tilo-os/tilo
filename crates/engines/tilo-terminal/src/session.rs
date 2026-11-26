@@ -246,7 +246,7 @@ impl Session {
         let program = options
             .program
             .map_or_else(crate::provider::launch_command_from_env, <[String]>::to_vec);
-        let chosen = route(target, options.service.is_some());
+        let chosen = route(target, options.has_service());
         let resolved = OpenOptions {
             program: Some(&program),
             ..*options
@@ -543,14 +543,17 @@ impl MasterPty for RemoteMaster {
         Ok(Box::new(std::io::empty()))
     }
 
+    #[cfg(unix)]
     fn process_group_leader(&self) -> Option<i32> {
         None
     }
 
+    #[cfg(unix)]
     fn as_raw_fd(&self) -> Option<i32> {
         None
     }
 
+    #[cfg(unix)]
     fn tty_name(&self) -> Option<std::path::PathBuf> {
         None
     }
