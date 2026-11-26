@@ -30,7 +30,7 @@ use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::direct::{Answered, DirectSync, Kept};
 use tilo_peer_state::join::{
     JoinBootstrap, JoinChallengeRequest, JoinCompleteRequest, JoinProof, JoinTransportRequest,
-    JoinTransportResponse, Role, TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1, TransportHint,
+    JoinTransportResponse, TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1, TransportHint,
 };
 use tilo_peer_state::join_transport::WorkspaceJoinClient;
 use tilo_peer_state::owner::WriteRefusal;
@@ -962,6 +962,10 @@ impl Workspaces {
         let mut enrolled = 1;
         // Whether this device is taken into the workspace now, never having held it before.
         let mut taken_in = false;
+        // Whether the workspace is the joining person's own, handed to them as its owner. The
+        // answer names no owner's authority (its role is the strongest member role instead), so
+        // the governance taken in is what says whose the workspace is.
+        let mut theirs = false;
         if let Some(held) = held {
             let mut hosted = held.lock().await;
             // A disk copied from the machine that serves this workspace kept the workspace as
@@ -1040,6 +1044,7 @@ impl Workspaces {
                 hint: hint.clone(),
                 continuity: enrolled,
             });
+            theirs = hosted.peer().owner() == device.cert.user_public_key;
             hosted.persist()?;
             if let Err(error) = keep_member(&hosted.path, hint) {
                 tracing::warn!(%name, %error, "a member copy's device address was not kept");
@@ -1063,8 +1068,14 @@ impl Workspaces {
         // or a workspace their session entered without their asking — is not listed. The record
         // is written where their own workspace is hosted; a site that made a workspace writes
         // nothing of theirs.
+        // Their list names what they asked to be in and what is theirs: a join their own device
+        // redeemed an invitation for (`asked`), or a workspace a site made for them and handed
+        // to them as its owner. Any other join — one another person's agent or API made for them,
+        // or a workspace their session entered without their asking — is not listed. The record
+        // is written where their own workspace is hosted; a site that made a workspace writes
+        // nothing of theirs.
         if taken_in
-            && (asked || bootstrap.role == Role::Owner)
+            && (asked || theirs)
             && let Ok(summary) = self.summary(&name).await
         {
             self.list_for(

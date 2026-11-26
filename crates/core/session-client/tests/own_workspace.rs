@@ -128,13 +128,18 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         "Firefox on Linux",
     );
 
-    // A host that keeps no workspaces of people's own says so in a code the page reads, not in
-    // words it would have to match.
+    // A host that keeps no workspaces of people's own says so, naming the reason in the typed
+    // refusal its page shows: a host operation it does not let this device carry out is refused
+    // with why, not answered as an action the host never had.
     let none = device
         .enter_own_workspace("en-US", None, "Bob", |_| false, None)
         .await
         .unwrap_err();
-    assert_eq!(none.code, "unknown_action", "{none:?}");
+    assert_eq!(none.code, "refused", "{none:?}");
+    assert_eq!(
+        none.message, "this host keeps no workspaces of people's own",
+        "{none:?}"
+    );
     assert_eq!(none.refusal, None);
 
     assert!(
