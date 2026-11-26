@@ -4,7 +4,8 @@
 //
 // usage: node mail-sink.mjs OUT_DIR PORT
 // Prints {"url": "http://127.0.0.1:<port>"} once it listens.
-import {mkdirSync, readdirSync, writeFileSync} from 'node:fs';
+import {randomUUID} from 'node:crypto';
+import {mkdirSync, readdirSync, renameSync, rmSync, writeFileSync} from 'node:fs';
 import {createServer} from 'node:http';
 import {join} from 'node:path';
 
@@ -15,7 +16,8 @@ if (!out || !port) {
 }
 mkdirSync(out, {recursive: true});
 // Numbered after what an earlier run kept there, so a restart overwrites none.
-let taken = readdirSync(out).filter(name => /^\d+\.json$/.test(name)).length;
+let taken = readdirSync(out).reduce((highest, name) =>
+  /^\d+\.json$/.test(name) ? Math.max(highest, Number.parseInt(name, 10)) : highest, 0);
 
 const server = createServer((request, response) => {
   if (request.method !== 'POST' || request.url !== '/emails') {
@@ -35,14 +37,22 @@ const server = createServer((request, response) => {
       return;
     }
     taken += 1;
-    writeFileSync(join(out, `${String(taken).padStart(3, '0')}.json`), JSON.stringify({
-      idempotencyKey: request.headers['idempotency-key'] ?? null,
-      ...mail,
-    }, null, 2));
+    // The browser reads every .json as soon as its name appears.
+    const pending = join(out, `.mail-${randomUUID()}.pending`);
+    const delivered = join(out, `${String(taken).padStart(3, '0')}.json`);
+    try {
+      writeFileSync(pending, JSON.stringify({
+        idempotencyKey: request.headers['idempotency-key'] ?? null,
+        ...mail,
+      }, null, 2), {flag: 'wx', mode: 0o600});
+      renameSync(pending, delivered);
+    } finally {
+      rmSync(pending, {force: true});
+    }
     response.writeHead(200, {'content-type': 'application/json'});
     response.end(JSON.stringify({id: `sink-${taken}`}));
   });
 });
 server.listen(Number(port), '127.0.0.1', () => {
-  console.log(JSON.stringify({url: `http://127.0.0.1:${port}`}));
+  console.log(JSON.stringify({url: `http://127.0.0.1:${server.address().port}`}));
 });

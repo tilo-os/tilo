@@ -1,14 +1,54 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdir, mkdtemp, rm, stat} from 'node:fs/promises';
+import {spawn} from 'node:child_process';
+import {once} from 'node:events';
+import {mkdir, mkdtemp, rm, stat, writeFile} from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {createServer as createSocketServer} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {runInNewContext} from 'node:vm';
 import {observeSetupLogin, reloaded} from './waits.mjs';
-import {agentCommand, computerEnv, hostedTiloPath, runSetupPrompt} from './shell.mjs';
+import {agentCommand, computerEnv, hostedTiloPath, mailsOf, runSetupPrompt} from './shell.mjs';
 import {HOSTED_CLI_VERSION, setupPrompt, signInPrompt} from '../../../../crates/browser/tilo-browser-runtime/web/first-screen.mjs';
+
+test('the local mail sink publishes complete messages through interrupted and concurrent delivery', {timeout: 15_000}, async t => {
+  const spool = await mkdtemp(join(tmpdir(), 'tilo-mail-spool-'));
+  const program = fileURLToPath(new URL('./mail-sink.mjs', import.meta.url));
+  const running = [];
+  t.after(async () => {
+    for (const {child, ended} of running) { child.kill(); await ended; }
+    await rm(spool, {recursive: true, force: true});
+  });
+  const start = async limited => {
+    const args = [process.execPath, program, spool, '0'];
+    // A short file limit interrupts a real write to the sink's spool.
+    const child = limited
+      ? spawn('sh', ['-c', 'ulimit -c 0; ulimit -f 16; exec "$@"', 'mail-test', ...args], {stdio: ['ignore', 'pipe', 'ignore']})
+      : spawn(args[0], args.slice(1), {stdio: ['ignore', 'pipe', 'ignore']});
+    const ended = once(child, 'exit');
+    running.push({child, ended});
+    const [line] = await once(child.stdout, 'data');
+    const url = JSON.parse(line).url + '/emails';
+    return {ended, post: subject => fetch(url, {method: 'POST', body: JSON.stringify({subject})})};
+  };
+  const interrupted = await start(true);
+  await assert.rejects(interrupted.post('x'.repeat(128 * 1024)));
+  await interrupted.ended;
+  assert.deepEqual(mailsOf(spool), [], 'an interrupted message was never delivered');
+
+  // A retained delivery must survive even when older files were cleared.
+  await writeFile(join(spool, '003.json'), JSON.stringify({subject: 'Earlier'}));
+  const ready = await start(false);
+  const subjects = ['First', 'Second', 'Third', 'Fourth'];
+  await Promise.all(subjects.map(async subject => {
+    const response = await ready.post(subject);
+    assert.equal(response.status, 200);
+    assert.ok(mailsOf(spool).some(mail => mail.subject === subject));
+  }));
+  assert.deepEqual(mailsOf(spool).map(mail => mail.subject).sort(), ['Earlier', ...subjects].sort());
+});
 
 test('setup observation outlives a delayed login and navigation, and only confirms real rows', async () => {
   for (const outcome of ['complete', 'missing tools', 'login failed']) {
