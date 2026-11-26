@@ -28,13 +28,11 @@ impl VirtualRows {
         if self.fit_rows || near.end <= mounted.start || near.start >= mounted.end {
             return near;
         }
-        let overscan = self.viewport.overscan();
-        let ahead = overscan + self.viewport.viewport();
-        if near.start < mounted.start {
-            self.viewport.range_around(ahead, overscan)
-        } else {
-            self.viewport.range_around(overscan, ahead)
-        }
+        // A scroll that carries on mounts a view ahead of where it goes, and keeps a view of what
+        // it just left behind it: a wheel turned back stands on rows already mounted, which the
+        // app built and published, so it asks the app for nothing until it leaves them too.
+        let reach = self.viewport.overscan() + self.viewport.viewport();
+        self.viewport.range_around(reach, reach)
     }
 
     /// Whether the rows mounted hold every row `near` asks for. A list out of view (a list as tall

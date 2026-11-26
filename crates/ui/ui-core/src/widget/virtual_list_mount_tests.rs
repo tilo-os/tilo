@@ -135,12 +135,18 @@ tilo_test_env::scenario! {
 
         list.set_scroll_offset(400.0);
         let _ = lay_out(&mut list, 300.0);
-        assert_eq!(list.mounted_range, 18..43);
+        assert_eq!(list.mounted_range, 8..43);
         assert_eq!(
             list.mounted.first().map(|row| row.key.clone()),
-            Some(ListKey::new(18u64)),
-            "rows behind let go"
+            Some(ListKey::new(8u64)),
+            "rows more than a view behind let go"
         );
+
+        // A wheel turned back by a notch stands on the rows a view behind: nothing new mounts.
+        let mounted = keys(&list);
+        list.set_scroll_offset(340.0);
+        let _ = lay_out(&mut list, 300.0);
+        assert_eq!(keys(&list), mounted, "a scroll turned back mounts nothing");
 
         list.set_scroll_offset(2_000.0);
         let _ = lay_out(&mut list, 300.0);
@@ -153,7 +159,7 @@ tilo_test_env::scenario! {
 
         list.set_scroll_offset(1_980.0);
         let _ = lay_out(&mut list, 300.0);
-        assert_eq!(list.mounted_range, 87..112);
+        assert_eq!(list.mounted_range, 87..122);
     }
 
     phase hundred_million_row_lists_mount_and_request_only_the_window;
