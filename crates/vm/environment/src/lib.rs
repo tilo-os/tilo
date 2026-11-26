@@ -690,10 +690,7 @@ impl Environment {
     }
 
     pub fn write_resource(&self, doc: &mut tilo_resource::Doc) -> Result<(), ModelError> {
-        tilo_resource::Fields::write_fields(self, doc, &automerge::ROOT)?;
-        // A fresh record is at today's version: without the stamp it would read
-        // as the first one and wait for a migration it never needs.
-        tilo_resource::evolution::write_version(doc, <Self as tilo_resource::Resource>::VERSION)
+        tilo_resource::Fields::write_fields(self, doc, &automerge::ROOT)
     }
 
     pub fn new(name: &str, release: &str, arch: &str, image: &PackageId) -> Self {
@@ -1021,7 +1018,7 @@ mod tests {
     }
 
     fn replica() -> Replica<Environment, AppNamed> {
-        let mut doc = tilo_resource::Doc::new();
+        let mut doc = tilo_resource::founding::new_record::<Environment>("work").unwrap();
         Environment::new("Work", "2026.10", "x86_64", &image(1))
             .write_resource(&mut doc)
             .unwrap();
@@ -1110,7 +1107,7 @@ mod tests {
             .unwrap();
         assert_eq!(r.state().unwrap().workspace, "", "no action names one");
 
-        let mut doc = tilo_resource::Doc::new();
+        let mut doc = tilo_resource::founding::new_record::<Environment>("work").unwrap();
         Environment {
             workspace: "w1".into(),
             ..Environment::new("Work", "2026.10", "x86_64", &image(1))

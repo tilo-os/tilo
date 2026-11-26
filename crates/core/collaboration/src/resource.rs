@@ -173,7 +173,7 @@ fn scope_primary(doc: &mut AutoCommit, workspace: &str) -> bool {
 }
 
 /// The record types a store founds records by: for each kind, the containers its records keep
-/// their items in ([`collab_types::document::founding::of_kind`]), read from the type an app
+/// their items in ([`tilo_resource::founding::of_kind`]), read from the type an app
 /// holds of it. What any holder of the type derives alike, so every device founds a record of the
 /// kind the same: never what surfaces this process happens to have been named. Clones share it.
 #[derive(Clone, Default)]
@@ -189,7 +189,7 @@ impl RecordTypes {
         self.0.borrow_mut().insert(
             surface.kind.clone(),
             (
-                collab_types::document::founding::of_kind(surface),
+                tilo_resource::founding::of_kind(surface),
                 surface.version,
             ),
         );
@@ -217,7 +217,7 @@ impl RecordTypes {
     }
 
     /// The containers records of `kind` found with and the storage version their chain of steps
-    /// reaches ([`collab_types::document::founding::chain`]), once its type was declared here.
+    /// reaches ([`tilo_resource::founding::chain`]), once its type was declared here.
     #[must_use]
     pub fn chain(&self, kind: &str) -> Option<(Vec<(String, ObjType)>, u32)> {
         self.0.borrow().get(kind).cloned()
@@ -226,7 +226,7 @@ impl RecordTypes {
 
 /// Make `doc` an app's record as it is created: its derived founding, the containers its kind
 /// keeps its items in (`founding`, as the record's type declares them,
-/// [`collab_types::document::founding`]), which every member creating the same record makes alike
+/// [`tilo_resource::founding`]), which every member creating the same record makes alike
 /// and the store derives for the record its route names, then what the app's `initialize` writes,
 /// as the edit of `by`, who creates the record. Nothing of who the record is goes in: the
 /// workspace's store keeps that.
@@ -271,7 +271,7 @@ pub fn content_genesis(
     // whose type is not declared founds with no container and steps to no version.
     let (containers, version) = founding.unwrap_or_default();
     let chain =
-        collab_types::document::founding::chain(kind, checkout.id.route(), version, containers)
+        tilo_resource::founding::chain(kind, checkout.id.route(), version, containers)
             .map_err(|error| ResourceOpenError::Initialization(error.to_string()))?;
     ApplyIncoming::apply_incoming(&mut made, chain)
         .map_err(|error| ResourceOpenError::Initialization(error.to_string()))?;
@@ -306,7 +306,7 @@ pub fn content_genesis(
                     Some((Value::Object(held), into)) if held == ty => into,
                     _ => made.put_object(ROOT, key.as_str(), ty).map_err(failed)?,
                 };
-                collab_types::document::split::copy_across(&first, &from, &mut made, &into)
+                tilo_resource::founding::split::copy_across(&first, &from, &mut made, &into)
                     .map_err(failed)?;
             }
         }
@@ -398,7 +398,7 @@ pub fn genesis(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::document::split::{element_id, merge_split_containers};
+    use tilo_resource::founding::split::{element_id, merge_split_containers};
 
     const WORKSPACE: &str = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
     const KIND: &str = "files.tree";
@@ -519,7 +519,7 @@ mod tests {
                 .map(|change| change.raw_bytes().to_vec())
                 .collect::<Vec<_>>()
         };
-        let derived = collab_types::document::founding::chain(
+        let derived = tilo_resource::founding::chain(
             LIST,
             "",
             1,
@@ -819,7 +819,7 @@ mod tests {
             |_| Ok(()),
         )
         .expect("the record is founded");
-        let derived = collab_types::document::founding::migrate(
+        let derived = tilo_resource::founding::migrate(
             LIST,
             "",
             1,

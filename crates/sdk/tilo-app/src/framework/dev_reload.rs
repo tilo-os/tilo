@@ -1,7 +1,7 @@
 //! The symbols a `thin` app library exports so `tilolang dev` can run new
 //! code inside the windows the process already has.
 
-use tilo_resource::{Doc, Reader, Resource};
+use tilo_resource::{Doc, Reader};
 use ui_core::permissions::{LivePermissions, Role};
 use ui_core::widget::AppWidget;
 
@@ -23,11 +23,9 @@ pub fn linked_ui() -> *const () {
 /// its edits with this code, which the running code may not read.
 pub fn publish_root<A: ResourceApp>() -> i32 {
     let mut reader = None;
-    on_new_doc(&mut |doc| {
-        reader = <A::Resource as Resource>::initialize(doc)
-            .ok()
-            .and_then(|()| Reader::<A::Resource>::read(doc).ok());
-    });
+    if let Ok(doc) = tilo_resource::founding::new_record::<A::Resource>("") {
+        on_doc(doc, &mut |doc| reader = Reader::<A::Resource>::read(doc).ok());
+    }
     let Some(reader) = reader else {
         return 0;
     };
@@ -52,11 +50,11 @@ pub fn publish_root<A: ResourceApp>() -> i32 {
     1
 }
 
-/// `apply` to a new document, dropped here: not generic, so a document's
-/// teardown is compiled once rather than in every app.
+/// `apply` to `doc`, dropped here: not generic, so a document's teardown is
+/// compiled once rather than in every app.
 #[inline(never)]
-fn on_new_doc(apply: &mut dyn FnMut(&mut Doc)) {
-    apply(&mut Doc::new());
+fn on_doc(doc: Doc, apply: &mut dyn FnMut(&Doc)) {
+    apply(&doc);
 }
 
 /// Copy one window's state back to the host.

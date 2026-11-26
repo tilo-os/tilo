@@ -85,6 +85,11 @@ impl<R: Resource> Default for Replica<R> {
 /// model is exercised on. It cannot apply an action until [`Replica::in_app`] names the app
 /// whose record it is; a system write has no other way to reach the action API.
 impl<R: Resource> Replica<R, NoApp> {
+    /// The id of the record a new replica holds ([`Self::new`]), which its founding and version
+    /// steps are derived from: bring a document of one up under it
+    /// ([`crate::founding::bring_up_resource`]) to stand on the same chain.
+    pub const ID: &str = "record";
+
     /// A new resource, initialized as a new record would be.
     ///
     /// # Panics
@@ -96,8 +101,7 @@ impl<R: Resource> Replica<R, NoApp> {
         reason = "a test harness surfaces initializer bugs loudly"
     )]
     pub fn new() -> Replica<R, NoApp> {
-        let mut doc = Doc::new();
-        R::initialize(&mut doc).expect("resource initializer");
+        let mut doc = crate::founding::new_record::<R>(Self::ID).expect("resource initializer");
         // What a brand-new record starts with names itself as its genesis.
         doc.commit_with(
             automerge::transaction::CommitOptions::default()

@@ -1241,7 +1241,7 @@ fn open_root<A: ResourceApp>(
         context,
         tilo_resource::evolution::needs_migrate::<A::Resource>,
         &mut |doc| {
-            collab_types::document::founding::bring_up_resource::<A::Resource>(&id, doc)
+            tilo_resource::founding::bring_up_resource::<A::Resource>(&id, doc)
                 .map_err(|error| error.to_string())
         },
     )?;

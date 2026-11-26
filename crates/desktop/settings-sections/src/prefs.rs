@@ -2871,16 +2871,7 @@ mod power_storage_tests {
         doc.commit();
         let mut old = doc.fork();
         assert!(
-            evolution::rewrite(
-                (
-                    <PowerPrefs as ui::tilo_resource::Resource>::KIND,
-                    "record",
-                    <PowerPrefs as ui::tilo_resource::Resource>::VERSION
-                ),
-                evolution::stored_version(&old),
-                &|doc, from| <PowerPrefs as ui::tilo_resource::Resource>::migrate(doc, from),
-                &mut old,
-            )
+            ui::tilo_resource::founding::bring_up_resource::<PowerPrefs>("record", &mut old)
             .unwrap()
         );
         let power = evolution::read_checked::<PowerPrefs>(&old).unwrap();

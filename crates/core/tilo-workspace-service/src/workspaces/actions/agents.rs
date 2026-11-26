@@ -496,7 +496,7 @@ pub(in crate::workspaces) fn read_resource_bytes<R: tilo_resource::Resource>(
     bytes: &[u8],
 ) -> Result<R::State, String> {
     let mut doc = automerge::AutoCommit::load(bytes).map_err(|error| error.to_string())?;
-    collab_types::document::founding::bring_up_resource::<R>(id, &mut doc)
+    tilo_resource::founding::bring_up_resource::<R>(id, &mut doc)
         .map_err(|error| format!("bring the resource up to version {}: {error}", R::VERSION))?;
     R::read(&doc).map_err(|error| error.to_string())
 }

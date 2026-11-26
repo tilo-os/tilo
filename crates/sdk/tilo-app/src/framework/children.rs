@@ -256,8 +256,7 @@ pub(crate) struct ChildrenState<C: ChildResource> {
 
 impl<C: ChildResource> ChildrenState<C> {
     pub(crate) fn open(workspace: WorkspaceResources, parent: Parent<C>) -> Option<Self> {
-        let mut doc = ui_core::automerge::AutoCommit::new();
-        C::initialize(&mut doc)
+        let doc = tilo_resource::founding::new_record::<C>("")
             .map_err(|error| tracing::warn!(kind = C::KIND, %error, "child has no genesis"))
             .ok()?;
         let empty = Reader::<C>::read(&doc)
@@ -459,7 +458,7 @@ impl<C: ChildResource> ChildrenState<C> {
                 return Err("migrated once the store takes writes".into());
             }
             self.workspace.store.migrate(&record, |doc| {
-                collab_types::document::founding::bring_up_resource::<C>(record.route(), doc)
+                tilo_resource::founding::bring_up_resource::<C>(record.route(), doc)
                     .map_err(|error| error.to_string())
             })?;
         }

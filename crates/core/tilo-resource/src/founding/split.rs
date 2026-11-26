@@ -1,5 +1,5 @@
 //! Bringing together a record whose root containers its devices each made of their own: what a
-//! record founded before every holder derived its founding ([`super::founding::structure`]) needs
+//! record founded before every holder derived its founding ([`super::structure`]) needs
 //! once, and what a merge of such records leaves to do.
 
 use std::collections::BTreeMap;
@@ -61,7 +61,7 @@ pub fn merge_split_containers(
     named.sort();
     let mut on: Vec<String> = heads.iter().map(ToString::to_string).collect();
     on.sort();
-    let actor = tilo_resource::genesis::actor(
+    let actor = crate::genesis::actor(
         id,
         kind,
         &format!("merge {} on {}", named.join(","), on.join(",")),
@@ -88,12 +88,12 @@ pub fn merge_split_containers(
                     let mut held: BTreeMap<String, usize> = BTreeMap::new();
                     for at in 0..merging.length(shown) {
                         let count = held
-                            .entry(fingerprint(&merging, shown, at.into()))
+                            .entry(fingerprint(&merging, shown, at.into())?)
                             .or_default();
                         *count = count.saturating_add(1);
                     }
                     for at in 0..merging.length(stray) {
-                        let print = fingerprint(&merging, stray, at.into());
+                        let print = fingerprint(&merging, stray, at.into())?;
                         match held.get_mut(&print) {
                             Some(count) if *count > 0 => *count = count.saturating_sub(1),
                             _ => {
@@ -178,37 +178,35 @@ enum Place<'a> {
 
 /// What the value at `prop` of `obj` holds, the same wherever it is held: what tells one list
 /// element from another when two copies of a list are brought together.
-fn fingerprint(doc: &AutoCommit, obj: &automerge::ObjId, prop: automerge::Prop) -> String {
-    match doc.get(obj, prop) {
-        Ok(Some((Value::Scalar(value), _))) => format!("{:?}", value.as_ref()),
-        Ok(Some((Value::Object(ObjType::Text), id))) => {
-            format!("text:{:?}", doc.text(&id).unwrap_or_default())
-        }
-        Ok(Some((Value::Object(ObjType::List), id))) => {
-            let items: Vec<String> = (0..doc.length(&id))
+fn fingerprint(
+    doc: &AutoCommit,
+    obj: &automerge::ObjId,
+    prop: automerge::Prop,
+) -> Result<String, automerge::AutomergeError> {
+    Ok(match doc.get(obj, prop)? {
+        Some((Value::Scalar(value), _)) => format!("{:?}", value.as_ref()),
+        Some((Value::Object(ObjType::Text), id)) => format!("text:{:?}", doc.text(&id)?),
+        Some((Value::Object(ObjType::List), id)) => {
+            let items = (0..doc.length(&id))
                 .map(|at| fingerprint(doc, &id, at.into()))
-                .collect();
+                .collect::<Result<Vec<String>, _>>()?;
             format!("list:{items:?}")
         }
-        Ok(Some((Value::Object(_), id))) => {
-            if let Ok(Some((Value::Scalar(named), _))) = doc.get(&id, "id") {
-                return format!("id:{:?}", named.as_ref());
+        Some((Value::Object(_), id)) => {
+            if let Some((Value::Scalar(named), _)) = doc.get(&id, "id")? {
+                return Ok(format!("id:{:?}", named.as_ref()));
             }
-            let entries: Vec<(String, String)> = doc
+            let entries = doc
                 .keys(&id)
                 .map(|key| {
-                    let print = fingerprint(doc, &id, key.as_str().into());
-                    (key, print)
+                    let print = fingerprint(doc, &id, key.as_str().into())?;
+                    Ok((key, print))
                 })
-                .collect();
+                .collect::<Result<Vec<(String, String)>, automerge::AutomergeError>>()?;
             format!("map:{entries:?}")
         }
-        Ok(None) => String::new(),
-        Err(error) => {
-            tracing::warn!(%error, "a value of the record could not be fingerprinted");
-            String::new()
-        }
-    }
+        None => String::new(),
+    })
 }
 
 /// Copy the value at `prop` of `from` to `place` in `to`, whole: a container is made anew with

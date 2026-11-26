@@ -549,9 +549,10 @@ fn normalise(path: &Path) -> PathBuf {
 pub mod derived;
 pub mod fields;
 mod file_identity;
-pub mod founding;
+/// A record's derived founding and version chain, as every holder makes them
+/// ([`tilo_resource::founding`]), for the crates that reach records through this one.
+pub use tilo_resource::founding;
 pub mod identity;
-pub mod split;
 pub use file_identity::DOCUMENT_ID_XATTR;
 
 /// FNV-1a, 64-bit: a fixed algorithm, unlike a library's default hasher, so

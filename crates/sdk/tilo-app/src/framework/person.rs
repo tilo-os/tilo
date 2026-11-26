@@ -849,7 +849,7 @@ impl PersonState {
         let id = record.checkout().id.route().to_owned();
         if older
             && let Err(error) = record.edit(false, |doc| {
-                collab_types::document::founding::bring_up_resource::<P>(&id, doc)
+                tilo_resource::founding::bring_up_resource::<P>(&id, doc)
                     .map_err(|error| error.to_string())
             })
         {

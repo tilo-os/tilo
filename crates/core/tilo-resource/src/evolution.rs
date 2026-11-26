@@ -54,17 +54,6 @@ pub fn write_version(doc: &mut Doc, version: u32) -> Result<(), ModelError> {
     write_version_at(doc, &ROOT, version)
 }
 
-/// The version a new document of a resource at `version` starts at, written by its initializer
-/// only when nothing wrote one: a record founded with its chain of steps has its version from the
-/// chain alone, one writer of it on every device. A document made without a record's id has no
-/// chain, and its initializer writes it ([`write_version`]).
-pub fn write_initial_version(doc: &mut Doc, version: u32) -> Result<(), ModelError> {
-    if doc.get(ROOT, VERSION_KEY)?.is_some() {
-        return Ok(());
-    }
-    write_version(doc, version)
-}
-
 /// [`write_version`] of the document whose root is `at`.
 pub fn write_version_at(doc: &mut Doc, at: &ObjId, version: u32) -> Result<(), ModelError> {
     if version > 1 || doc.get(at, VERSION_KEY)?.is_some() {
@@ -77,7 +66,7 @@ pub fn write_version_at(doc: &mut Doc, at: &ObjId, version: u32) -> Result<(), M
 /// alike, under an actor derived from the record and the version alone, at time zero, writing the
 /// version key and nothing else. `before` holds exactly the link it follows, the record's founding
 /// for the first version and the step to the version before otherwise, so the chain a record
-/// stands on is one every holder derives (`collab_types::document::founding::chain`), however
+/// stands on is one every holder derives ([`crate::founding::chain`]), however
 /// its content went on meanwhile.
 ///
 /// # Errors
@@ -142,7 +131,7 @@ fn check_version_at(version: u32, doc: &Doc) -> Result<(), ModelError> {
 }
 
 /// Whether `doc` is older than `R`: its chain of steps stops short of `R`'s version, so it is
-/// brought up (`collab_types::document::founding::bring_up`) before it is read.
+/// brought up ([`crate::founding::bring_up`]) before it is read.
 #[must_use]
 pub fn needs_migrate<R: Resource>(doc: &Doc) -> bool {
     stored_version(doc) < R::VERSION

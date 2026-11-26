@@ -1610,7 +1610,7 @@ mod tests {
 
     /// The founding every holder derives of the note `record`: its `items` list.
     fn derived(record: &str) -> automerge::Change {
-        collab_types::document::founding::structure(
+        tilo_resource::founding::structure(
             NOTE,
             record,
             &[("items".to_owned(), automerge::ObjType::List)],
@@ -1667,7 +1667,7 @@ mod tests {
             let mut tag = automerge::AutoCommit::new()
                 .with_actor(automerge::ActorId::from(writer.as_bytes()));
             tag.apply_incoming([
-                collab_types::document::founding::structure(TAG, "errands", &[]).unwrap(),
+                tilo_resource::founding::structure(TAG, "errands", &[]).unwrap(),
             ])
             .unwrap();
             tag

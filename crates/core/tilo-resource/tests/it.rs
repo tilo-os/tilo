@@ -57,15 +57,8 @@ pub mod upsert;
 #[path = "verbs.rs"]
 pub mod verbs;
 
-/// The app's rewrite of `doc`, a record of `R`, to `R`'s version ([`tilo_resource::evolution::rewrite`]):
-/// what bringing a record up does after its derived steps, which the founding's crate writes.
-pub fn rewrite<R: tilo_resource::Resource>(doc: &mut tilo_resource::Doc) -> bool {
-    let from = tilo_resource::evolution::stored_version(doc);
-    tilo_resource::evolution::rewrite(
-        (R::KIND, "record", R::VERSION),
-        from,
-        &|doc: &mut tilo_resource::Doc, from: u32| R::migrate(doc, from),
-        doc,
-    )
-    .unwrap()
+/// `doc`, a record of `R`, brought up to `R`'s version as every holder brings it up
+/// ([`tilo_resource::founding::bring_up_resource`]).
+pub fn bring_up<R: tilo_resource::Resource>(doc: &mut tilo_resource::Doc) -> bool {
+    tilo_resource::founding::bring_up_resource::<R>(tilo_resource::Replica::<R>::ID, doc).unwrap()
 }

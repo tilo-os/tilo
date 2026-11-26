@@ -249,7 +249,7 @@ tilo_test_env::scenario! {
             evolution::read_checked::<Rules>(&doc).is_err(),
             "unmigrated"
         );
-        assert!(crate::rewrite::<Rules>(&mut doc));
+        assert!(crate::bring_up::<Rules>(&mut doc));
         let rules = evolution::read_checked::<Rules>(&doc).unwrap();
         assert_eq!(
             rules.matcher,
@@ -378,7 +378,7 @@ tilo_test_env::scenario! {
             "unmigrated"
         );
 
-        assert!(crate::rewrite::<Rules>(&mut doc));
+        assert!(crate::bring_up::<Rules>(&mut doc));
         assert_eq!(evolution::stored_version(&doc), 3);
         assert_eq!(read(&doc), held, "the value is what it was");
         let rules = evolution::read_checked::<Rules>(&doc).unwrap();

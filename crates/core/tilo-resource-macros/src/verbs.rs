@@ -2473,8 +2473,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
 
             fn initialize(doc: &mut #krate::Doc) -> ::core::result::Result<(), #krate::ModelError> {
                 let initial: Self = #initial;
-                <Self as #krate::Fields>::write_fields(&initial, doc, &#krate::__private::ROOT)?;
-                #krate::evolution::write_initial_version(doc, <Self as #krate::Resource>::VERSION)
+                <Self as #krate::Fields>::write_fields(&initial, doc, &#krate::__private::ROOT)
             }
 
             fn declarations() -> ::std::vec::Vec<#krate::ActionDecl<Self>> {

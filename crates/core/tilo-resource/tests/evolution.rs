@@ -76,8 +76,8 @@ tilo_test_env::scenario! {
         assert_eq!((unreadable.stored, unreadable.expected), (1, 2));
         assert!(Contact::read(&doc).is_err());
 
-        assert!(crate::rewrite::<Contact>(&mut doc));
-        assert!(!crate::rewrite::<Contact>(&mut doc), "once");
+        assert!(crate::bring_up::<Contact>(&mut doc));
+        assert!(!crate::bring_up::<Contact>(&mut doc), "once");
         let contact = evolution::read_checked::<Contact>(&doc).unwrap();
         assert_eq!(
             (contact.given.as_str(), contact.family.as_str()),
@@ -105,7 +105,7 @@ tilo_test_env::scenario! {
     {
         let mut doc = old_document();
         let before = doc.get_heads();
-        assert!(crate::rewrite::<Contact>(&mut doc));
+        assert!(crate::bring_up::<Contact>(&mut doc));
         let snapshot = doc.fork_at(&before).unwrap();
         assert_eq!(evolution::stored_version(&snapshot), 1);
         assert_eq!(ContactV1::read(&snapshot).unwrap().name, "Ada Lovelace");
@@ -118,8 +118,8 @@ tilo_test_env::scenario! {
     {
         let mut left = old_document();
         let mut right = left.fork();
-        crate::rewrite::<Contact>(&mut left);
-        crate::rewrite::<Contact>(&mut right);
+        crate::bring_up::<Contact>(&mut left);
+        crate::bring_up::<Contact>(&mut right);
         assert_eq!(left.get_heads(), right.get_heads());
         tilo_automerge::ApplyIncoming::merge_incoming(&mut left, &mut right).unwrap();
         assert_eq!(left.get_heads().len(), 1);

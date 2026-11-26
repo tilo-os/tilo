@@ -13,6 +13,8 @@ use automerge::{AutoCommit, ObjType, ROOT};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_actions::surface::{FieldType, Surface};
 
+pub mod split;
+
 /// The containers at the root of `surface`'s record that its top-level fields keep their items
 /// in, by field name: a collection, map or set in a map, a list in a list, a record of its own
 /// in a map: what [`structure`] makes.
@@ -63,7 +65,7 @@ pub fn structure(
     id: &str,
     containers: &[(String, ObjType)],
 ) -> Result<automerge::Change, automerge::AutomergeError> {
-    let mut doc = AutoCommit::new().with_actor(tilo_resource::genesis::actor(id, kind, ""));
+    let mut doc = AutoCommit::new().with_actor(crate::genesis::actor(id, kind, ""));
     for (field, container) in containers {
         doc.put_object(ROOT, field.as_str(), *container)?;
     }
@@ -82,7 +84,7 @@ pub fn structure(
 }
 
 /// The derived founding of the record `id` of `kind` ([`structure`]) followed by the steps that
-/// bring it to each version up to `version` ([`tilo_resource::evolution::step`]): the chain every
+/// bring it to each version up to `version` ([`crate::evolution::step`]): the chain every
 /// holder of a record at `version` stands on. Each step follows the one before it, the first the
 /// founding, so two holders that wrote their own changes meanwhile still make it byte for byte
 /// alike.
@@ -100,7 +102,7 @@ pub fn chain(
     doc.apply_incoming([founding.clone()])?;
     let mut chain = vec![founding];
     for version in 1..=version {
-        let step = tilo_resource::evolution::step(kind, id, version, &doc)?;
+        let step = crate::evolution::step(kind, id, version, &doc)?;
         doc.apply_incoming([step.clone()])?;
         chain.push(step);
     }
@@ -128,9 +130,9 @@ pub fn migrate(
 /// Bring the record `id` of `kind`, the app `app`'s, to `version`, in the one way every holder
 /// does: a record made before its founding was derived (two devices' own root containers) takes
 /// the founding and has what its devices made apart brought together
-/// ([`super::split::merge_split_containers`]); then the chain of steps up to `version`
+/// ([`split::merge_split_containers`]); then the chain of steps up to `version`
 /// ([`chain`]) is written where it is not yet, and last the app's own `rewrite` of its content
-/// from the version the record stood at ([`tilo_resource::evolution::rewrite`]). Whether this
+/// from the version the record stood at ([`crate::evolution::rewrite`]). Whether this
 /// changed anything.
 ///
 /// # Errors
@@ -140,10 +142,10 @@ pub fn bring_up(
     (kind, id, app): (&str, &str, &str),
     version: u32,
     containers: &[(String, ObjType)],
-    rewrite: &dyn Fn(&mut AutoCommit, u32) -> Result<(), tilo_resource::ModelError>,
+    rewrite: &dyn Fn(&mut AutoCommit, u32) -> Result<(), crate::ModelError>,
     doc: &mut AutoCommit,
-) -> Result<bool, tilo_resource::ModelError> {
-    let from = tilo_resource::evolution::stored_version(doc);
+) -> Result<bool, crate::ModelError> {
+    let from = crate::evolution::stored_version(doc);
     let mut changed = found((kind, id, app), containers, doc)?;
     let chain = chain(kind, id, version, containers)?;
     let missing: Vec<automerge::Change> = chain
@@ -152,15 +154,15 @@ pub fn bring_up(
         .collect();
     changed |= !missing.is_empty();
     doc.apply_incoming(missing)?;
-    if from < version || tilo_resource::evolution::stored_version(doc) < version {
-        changed |= tilo_resource::evolution::rewrite((kind, id, version), from, rewrite, doc)?;
+    if from < version || crate::evolution::stored_version(doc) < version {
+        changed |= crate::evolution::rewrite((kind, id, version), from, rewrite, doc)?;
     }
     Ok(changed)
 }
 
 /// Give the record `id` of `kind`, the app `app`'s, its derived founding when it was made without
 /// one (two devices' own root containers, before every holder derived it), and bring together
-/// what its devices made apart ([`super::split::merge_split_containers`]): once, the first part
+/// what its devices made apart ([`split::merge_split_containers`]): once, the first part
 /// of [`bring_up`], and all a store that reads no type's version does on opening a record.
 /// Whether this changed anything.
 ///
@@ -176,7 +178,7 @@ pub fn found(
         return Ok(false);
     }
     doc.apply_incoming([founding])?;
-    super::split::merge_split_containers(doc, kind, id, containers, app)?;
+    split::merge_split_containers(doc, kind, id, containers, app)?;
     Ok(true)
 }
 
@@ -185,17 +187,31 @@ pub fn found(
 ///
 /// # Errors
 /// As [`bring_up`].
-pub fn bring_up_resource<R: tilo_resource::Resource>(
+pub fn bring_up_resource<R: crate::Resource>(
     id: &str,
     doc: &mut AutoCommit,
-) -> Result<bool, tilo_resource::ModelError> {
+) -> Result<bool, crate::ModelError> {
     bring_up(
         (R::KIND, id, R::APP_ID),
         R::VERSION,
-        &of_kind(&tilo_resource::surface::surface_of::<R>()),
+        &of_kind(&crate::surface::surface_of::<R>()),
         &|doc: &mut AutoCommit, from: u32| R::migrate(doc, from),
         doc,
     )
+}
+
+/// A new record `id` of `R`: its derived founding and the steps to `R`'s version ([`chain`]),
+/// then `R`'s first values, left uncommitted for the caller to commit under its own message.
+/// Its version comes from the chain alone, as every holder of the record derives it.
+///
+/// # Errors
+/// When the chain cannot be made, or `R`'s initializer fails.
+pub fn new_record<R: crate::Resource>(id: &str) -> Result<AutoCommit, crate::ModelError> {
+    let mut doc = AutoCommit::new();
+    let containers = of_kind(&crate::surface::surface_of::<R>());
+    doc.apply_incoming(chain(R::KIND, id, R::VERSION, &containers)?)?;
+    R::initialize(&mut doc)?;
+    Ok(doc)
 }
 
 #[cfg(test)]
@@ -207,7 +223,7 @@ mod tests {
     use automerge::transaction::Transactable as _;
     use automerge::{AutoCommit, ObjType, ROOT, ReadDoc as _};
     use tilo_automerge::ApplyIncoming as _;
-    use tilo_resource::evolution::{VERSION_KEY, stored_version};
+    use crate::evolution::{VERSION_KEY, stored_version};
 
     const KIND: &str = "test.founding.chain";
     const ID: &str = "groceries";
@@ -230,7 +246,7 @@ mod tests {
     }
 
     /// A type whose versions change nothing but the version itself.
-    fn unchanged() -> impl Fn(&mut AutoCommit, u32) -> Result<(), tilo_resource::ModelError> {
+    fn unchanged() -> impl Fn(&mut AutoCommit, u32) -> Result<(), crate::ModelError> {
         |_, _| Ok(())
     }
 
@@ -300,7 +316,7 @@ mod tests {
         there.commit();
         let retype = |doc: &mut AutoCommit, from: u32| {
             assert_eq!(from, 1);
-            tilo_resource::evolution::retype_json::<BTreeMap<String, String>>(doc, &ROOT, "tags")
+            crate::evolution::retype_json::<BTreeMap<String, String>>(doc, &ROOT, "tags")
                 .map(drop)
         };
         super::bring_up((KIND, ID, APP), 2, &containers(), &retype, &mut here).unwrap();

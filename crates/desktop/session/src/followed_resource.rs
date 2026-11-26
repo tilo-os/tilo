@@ -532,10 +532,9 @@ fn state_of<P: Resource>(copy: &Reading) -> Rc<P::State> {
             Err(error) => tracing::warn!(%error, kind = P::KIND, "a resource does not read"),
         }
     }
-    let mut doc = automerge::AutoCommit::new();
-    let initialized = P::initialize(&mut doc).map_err(|error| error.to_string());
-    initialized
-        .and_then(|()| tilo_resource::Reader::<P>::read(&doc).map_err(|error| error.to_string()))
+    tilo_resource::founding::new_record::<P>("")
+        .and_then(|doc| tilo_resource::Reader::<P>::read(&doc))
+        .map_err(|error| error.to_string())
         .map_or_else(
             |error| panic!("{}'s first state does not read: {error}", P::KIND),
             |reader| Rc::clone(reader.state()),

@@ -291,7 +291,7 @@ impl Records {
             return Ok(None);
         };
         let record = self.document_id(key)?;
-        if collab_types::document::founding::bring_up_resource::<Environment>(
+        if tilo_resource::founding::bring_up_resource::<Environment>(
             &record,
             &mut held.doc,
         )
@@ -394,9 +394,9 @@ impl Records {
     fn founded(&self, key: &str) -> Result<Doc, RecordError> {
         let model = |e: &dyn std::fmt::Display| RecordError::Model(e.to_string());
         let record = self.document_id(key)?;
-        let containers = collab_types::document::founding::of_kind(&Environment::surface());
+        let containers = tilo_resource::founding::of_kind(&Environment::surface());
         let mut doc = Doc::new();
-        let founding = collab_types::document::founding::chain(
+        let founding = tilo_resource::founding::chain(
             Environment::KIND,
             &record,
             Environment::VERSION,

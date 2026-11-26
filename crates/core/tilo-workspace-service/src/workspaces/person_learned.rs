@@ -466,7 +466,7 @@ fn opened(workspace: &str, bytes: Option<Vec<u8>>) -> Result<Replica<Learned>, S
         return Ok(Replica::new());
     };
     let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-    collab_types::document::founding::bring_up_resource::<Learned>(workspace, &mut doc)
+    tilo_resource::founding::bring_up_resource::<Learned>(workspace, &mut doc)
         .map_err(|error| error.to_string())?;
     Ok(Replica::from_doc(doc))
 }

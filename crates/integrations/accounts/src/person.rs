@@ -661,16 +661,7 @@ mod tests {
         doc.commit();
         let mut old = doc.fork();
         assert!(
-            evolution::rewrite(
-                (
-                    <AccountList as tilo_resource::Resource>::KIND,
-                    "record",
-                    <AccountList as tilo_resource::Resource>::VERSION
-                ),
-                evolution::stored_version(&old),
-                &|doc, from| <AccountList as tilo_resource::Resource>::migrate(doc, from),
-                &mut old,
-            )
+            tilo_resource::founding::bring_up_resource::<AccountList>("record", &mut old)
             .unwrap()
         );
         let accounts = evolution::read_checked::<AccountList>(&old).unwrap();
@@ -727,16 +718,7 @@ mod tests {
         doc.commit();
         let mut old = doc.fork();
         assert!(
-            evolution::rewrite(
-                (
-                    <AccountList as tilo_resource::Resource>::KIND,
-                    "record",
-                    <AccountList as tilo_resource::Resource>::VERSION
-                ),
-                evolution::stored_version(&old),
-                &|doc, from| <AccountList as tilo_resource::Resource>::migrate(doc, from),
-                &mut old,
-            )
+            tilo_resource::founding::bring_up_resource::<AccountList>("record", &mut old)
             .unwrap()
         );
         assert_eq!(evolution::stored_version(&old), 4);

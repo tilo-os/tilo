@@ -581,7 +581,7 @@ impl ResourceSet {
 
     /// Bring together the root containers of `doc`, the record `want` names, that devices made
     /// each of their own before its founding was the same everywhere
-    /// ([`collab_types::document::founding::found`]), by the type this store founds its kind by.
+    /// ([`tilo_resource::founding::found`]), by the type this store founds its kind by.
     fn merge_split(
         &self,
         doc: &mut AutoCommit,
@@ -592,7 +592,7 @@ impl ResourceSet {
             // that declares the kind, so every holder derives the same bytes.
             let app = collab_types::app_surface::app_of_kind(want.kind.as_str())
                 .unwrap_or_else(|| self.app_id.to_string());
-            collab_types::document::founding::found(
+            tilo_resource::founding::found(
                 (want.kind.as_str(), want.id.route(), &app),
                 &founding,
                 doc,
@@ -1846,7 +1846,7 @@ impl ResourceStore {
     /// before it makes one ([`content_genesis`]).
     ///
     /// A record of the kind open here already is brought together as one opened from now on is
-    /// ([`collab_types::document::founding::found`]).
+    /// ([`tilo_resource::founding::found`]).
     pub fn declare_type(
         &self,
         kind: &str,
@@ -1873,7 +1873,7 @@ impl ResourceStore {
                 continue;
             }
             if let Some(doc) = parked.doc.as_mut() {
-                match collab_types::document::founding::found(
+                match tilo_resource::founding::found(
                     (kind, id.route(), &app),
                     &founding,
                     doc,

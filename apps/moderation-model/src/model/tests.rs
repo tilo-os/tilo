@@ -214,16 +214,7 @@ fn a_decision_kept_as_json_strings_migrates_to_lists() {
         "unmigrated"
     );
     assert!(
-        evolution::rewrite(
-            (
-                <Moderation as tilo_resource::Resource>::KIND,
-                "record",
-                <Moderation as tilo_resource::Resource>::VERSION
-            ),
-            evolution::stored_version(&doc),
-            &|doc, from| <Moderation as tilo_resource::Resource>::migrate(doc, from),
-            &mut doc,
-        )
+        tilo_resource::founding::bring_up_resource::<Moderation>("record", &mut doc)
         .unwrap()
     );
     let moderation = evolution::read_checked::<Moderation>(&doc).unwrap();

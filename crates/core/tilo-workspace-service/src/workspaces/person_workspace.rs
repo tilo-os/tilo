@@ -97,10 +97,19 @@ pub async fn may_found(workspaces: &Workspaces, person: &[u8; 32]) -> Result<(),
 /// The first change of the resource `R` in `workspace`: made at time zero
 /// under an actor derived from the resource's identity alone
 /// ([`tilo_resource::genesis::actor`]), so every device makes the same change.
+/// A person workspace's own record is named by its app and name, not founded
+/// as a record with an id, so it stands on no chain of version steps and keeps
+/// its first storage version: a type of a later one does not build here.
 ///
 /// # Errors
 /// The resource's initializer fails, which is a bug in it.
 pub fn genesis<R: Resource>(workspace: &str) -> Result<automerge::AutoCommit, String> {
+    const {
+        assert!(
+            R::VERSION == 1,
+            "a person workspace's own record keeps its first storage version"
+        );
+    }
     let mut doc = automerge::AutoCommit::new().with_actor(tilo_resource::genesis::actor(
         "",
         R::KIND,

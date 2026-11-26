@@ -666,7 +666,7 @@ impl<P: Resource> WorkspaceResource<P> {
             opened,
             P::KIND,
             tilo_resource::evolution::needs_migrate::<P>,
-            collab_types::document::founding::bring_up_resource::<P>,
+            tilo_resource::founding::bring_up_resource::<P>,
         )?;
         let reader = record
             .read(tilo_resource::Reader::<P>::read)
@@ -1001,8 +1001,7 @@ fn offered<P: Resource>(shared: &Rc<Shared<P>>, id: String) -> Held<P> {
 /// The verb `action` invokes, as its record publishes it and history names
 /// it (what a grant on one verb covers); `None` for a field edit.
 pub(crate) fn verb_of<P: Resource>(action: &P::Action) -> Option<String> {
-    let mut doc = ui_core::automerge::AutoCommit::new();
-    P::initialize(&mut doc).ok()?;
+    let doc = tilo_resource::founding::new_record::<P>("").ok()?;
     match action.describe(&doc)?.what {
         tilo_actions::Did::Verb(call) => Some(call.action.action),
         _ => None,

@@ -269,7 +269,7 @@ tilo_test_env::scenario! {
         assert_eq!(tilo_resource::evolution::stored_version(&merged), 1);
         // Who the record is is the store's: the document holds the one founding its route
         // derives, and the steps after it, which both members made alike.
-        let chain = collab_types::document::founding::chain(
+        let chain = tilo_resource::founding::chain(
             "notebook",
             checkout.id.route(),
             1,
