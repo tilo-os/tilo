@@ -1795,7 +1795,8 @@ fn running_with_no_view(
 ) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let route = RouteSpec::app(app, uuid::Uuid::new_v4());
-    let broker = Broker::new(route.clone());
+    // The broker answers the connection's reads as its person, as the session's does.
+    let broker = Broker::on(&Rc::default(), route.clone(), person);
     let (sent, inbox, workspace) = (broker.sent(), broker.inbox(), broker.workspace());
     let mut manager = CollaborationManager::with_peer_transport(broker);
     assert!(manager.send(CollabRequest::Hello {
@@ -2627,7 +2628,8 @@ fn notes_made(host: &TilolangProcess) -> Vec<(String, String)> {
 fn a_window_opened_with_a_markdown_file_imports_it_into_notes() {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let route = RouteSpec::app(NOTES, uuid::Uuid::new_v4());
-    let broker = Broker::new(route.clone());
+    // The broker answers the connection's reads as its person, as the session's does.
+    let broker = Broker::on(&Rc::default(), route.clone(), "ada");
     let sent = broker.sent();
     let mut manager = CollaborationManager::with_peer_transport(broker);
     assert!(manager.send(CollabRequest::Hello {
@@ -2856,7 +2858,8 @@ fn listing(app: Option<&str>) -> runtime_interface::tools::ToolReply {
 /// by `stub`: the host, its window, and the stub.
 fn opening_with(stub: &ToolsStub, bytes: &[u8], name: &str) -> (TilolangProcess, Window) {
     let route = RouteSpec::app(OPENER, uuid::Uuid::new_v4());
-    let broker = Broker::new(route.clone());
+    // The broker answers the connection's reads as its person, as the session's does.
+    let broker = Broker::on(&Rc::default(), route.clone(), "ada");
     let sent = broker.sent();
     let mut manager = CollaborationManager::with_peer_transport(broker);
     assert!(manager.send(CollabRequest::Hello {
