@@ -4,7 +4,6 @@
 use crate::categories::Category;
 use crate::effects::AreaVocabulary as _;
 
-#[cfg(not(feature = "tilo-os"))]
 use crate::panes::person_settings;
 #[cfg(feature = "tilo-os")]
 use crate::panes::{
@@ -92,7 +91,14 @@ pub(crate) const AREAS: &[(u16, crate::area::MakeArea)] = &[
     }),
     #[cfg(feature = "tilo-os")]
     (140, |context, _| {
-        Box::new(agent_models::AgentModelsArea::new(context))
+        if context.attached {
+            Box::new(person_settings::ProvidersArea::new(
+                context,
+                ui::RemoteActions::current(),
+            ))
+        } else {
+            Box::new(agent_models::AgentModelsArea::new(context))
+        }
     }),
     #[cfg(feature = "tilo-os")]
     (150, |context, _| {
@@ -200,7 +206,6 @@ pub(crate) const FAMILIES: &[(u16, &crate::effects::EffectFamily)] = &[
     (290, person_settings::PersonSettingsEffect::FAMILY),
     #[cfg(not(feature = "tilo-os"))]
     (265, region::zone::ZoneEffect::FAMILY),
-    #[cfg(not(feature = "tilo-os"))]
     (
         295,
         <provider_settings_ui::person_models::PersonModelsEffect as crate::effects::AreaVocabulary>::FAMILY,

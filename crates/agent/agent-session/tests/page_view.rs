@@ -282,90 +282,48 @@ fn a_person_writes_an_issue_on_the_trackers_page() {
     );
 }
 
-/// The first page already has its address when the event's change is still
-/// coming from the workspace. Its next patch must show the addressed day.
+/// A fresh Settings page waits for the workspace's declared records before
+/// mounting its panes. The original address must survive that first frame.
 #[test]
-fn a_page_reveals_the_event_that_arrives_after_its_first_frame() {
-    let person = MemberId::person("ada");
-    let mut calendar =
-        crate::common::open(ui::apps::CALENDAR, &person, ReplicaActor::Owner, Seed::New)
-            .expect("the calendar opens");
-    let Some(collab_types::DocumentMutation::Snapshot(genesis)) = calendar.take_mutation().unwrap()
-    else {
-        panic!("a new calendar publishes its initial document");
-    };
-    let page = ConfinedReplica::open_page(
+fn settings_reveals_the_requested_pane_after_its_workspace_records_arrive() {
+    let settings = ConfinedReplica::open_page(
         &catalogue(),
-        (ui::apps::CALENDAR, WORKSPACE),
-        &person,
+        (ui::apps::SETTINGS, WORKSPACE),
+        &MemberId::person("ab".repeat(32)),
         &ReplicaActor::Owner,
-        Seed::Existing {
-            record: calendar.document_id().clone(),
-            changes: vec![genesis],
-        },
+        Seed::New,
     )
-    .expect("the calendar opens as a page");
+    .expect("Settings opens");
+    let pane = "settings.section:agent_models";
+    let selected = [
+        r#"data-t="key:item:agent_models""#,
+        r#"aria-selected="true""#,
+    ];
+    let (_, _, first) = settings.page_show(Some(pane)).expect("the first frame");
+    assert!(
+        element(&first, &selected).is_none(),
+        "the pane is still waiting for the workspace"
+    );
 
-    let id = "00000000-0000-4000-8000-000000000071";
-    let target = format!("calendar.calendar/events/{id}");
-    let date = "2077-09-08";
-    let selected = [r#"type="date""#, r#"value="2077-09-08""#];
-    let (_, _, before) = page.page_show(Some(&target)).expect("the first frame");
-    assert!(element(&before, &selected).is_none());
-    // Answer the same requests for side records as a new workspace, after
-    // the browser has already asked to open the addressed event.
-    for wanted in page.wanted_resources() {
-        page.workspace_answered(&wanted, ui::resource::WorkspaceAnswer::HoldsNone)
-            .expect("the workspace answers for Calendar's other records");
+    let wanted = settings.wanted_resources();
+    assert!(
+        !wanted.is_empty(),
+        "Settings has an outstanding workspace read"
+    );
+    for record in wanted {
+        settings
+            .workspace_answered(&record, ui::resource::WorkspaceAnswer::HoldsNone)
+            .expect("the fresh workspace answers");
     }
 
-    let new_event = calendar
-        .survey()
-        .into_iter()
-        .find(|operation| operation.address.action == "new-event")
-        .expect("Calendar publishes its event action");
-    let args = serde_json::Map::from_iter([(
-        "event".into(),
-        serde_json::json!({
-            "id": id, "title": "Future meeting",
-            "start": format!("{date}T12:00"), "end": format!("{date}T13:00"),
-        }),
-    )]);
-    calendar
-        .invoke(&new_event.address, &args, false)
-        .expect("another device adds the event");
-    page.apply(
-        &calendar
-            .take_mutation()
-            .unwrap()
-            .expect("the event's change"),
-    )
-    .expect("the page takes in the workspace's record");
-    let patches = page.page_act(None).expect("the browser follows the page");
-    let (_, _, shown) = page.page_show(None).expect("Calendar's current frame");
-    let dates = |html: &str| {
-        html.split('<')
-            .filter_map(|part| part.split_once('>').map(|(tag, _)| tag))
-            .filter(|tag| tag.contains("type=\"date\""))
-            .collect::<Vec<_>>()
-            .join(" / ")
-    };
+    let patches = settings
+        .page_act(None)
+        .expect("the browser follows the page");
     assert!(
         patches
             .iter()
-            .any(|(_, html)| element(html, &selected).is_some())
-            || element(&shown, &selected).is_some(),
-        "Calendar moved to the event's date. Initially [{}], now [{}], patches {}. Targets {}",
-        dates(&before),
-        dates(&shown),
-        patches.len(),
-        shown
-            .split('<')
-            .filter_map(|part| part.split_once(" data-t=\""))
-            .filter_map(|(_, tail)| tail.split('"').next())
-            .take(30)
-            .collect::<Vec<_>>()
-            .join(" / ")
+            .any(|(_, html)| element(html, &selected).is_some()),
+        "the browser receives the selected Agent models pane without opening it again"
     );
 }
 

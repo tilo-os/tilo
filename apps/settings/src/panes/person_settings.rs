@@ -11,12 +11,12 @@
 //! says where they are instead of offering a control that cannot work here.
 //! The device build of Settings carries that part of the same category.
 //!
-//! A device's own build compiles this module only for its tests: the panes
-//! there are the device's, which reach the hardware and the vault directly.
+//! A hosted window uses this provider pane even when its binary can also
+//! run the device panes. Mail on the device has its own accounts pane.
 
 #![cfg_attr(
     feature = "tilo-os",
-    allow(dead_code, reason = "a device's build carries this only for its tests")
+    allow(dead_code, reason = "the device uses its own mail accounts pane")
 )]
 
 use std::cell::{OnceCell, RefCell};

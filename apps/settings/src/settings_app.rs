@@ -16,6 +16,7 @@ pub struct SettingsApp {
     storage: ui::storage::AppStorage,
     scene: Option<Rc<crate::scenarios::CaptureScene>>,
     devices: bool,
+    attached: bool,
     /// The radios this device has; never read when it reaches no device.
     radios: crate::radios::Radios,
     pages: crate::pages::PanePages,
@@ -73,6 +74,7 @@ impl SettingsApp {
             ),
             scene: None,
             devices: false,
+            attached: false,
             radios: crate::radios::Radios::unread(),
             pages: crate::pages::PanePages::new(),
             secrets: crate::secrets::SecretAsks::new(),
@@ -132,8 +134,9 @@ impl SettingsApp {
         self.storage = cx.storage().clone();
         // Its areas hand the session what is the session's: an email account's password.
         self.session = cx.session();
+        self.attached = cx.is_attached();
         self.devices =
-            cx.mode().is_live() && !cx.is_attached() && !cfg!(test) && cfg!(feature = "tilo-os");
+            cx.mode().is_live() && !self.attached && !cfg!(test) && cfg!(feature = "tilo-os");
         if self.devices {
             self.radios = crate::radios::Radios::of_device();
         }
@@ -161,6 +164,7 @@ impl SettingsApp {
             storage: self.storage.clone(),
             scene: self.scene.clone(),
             devices: self.devices,
+            attached: self.attached,
             radios: self.radios.clone(),
             pages: self.pages.clone(),
             secrets: self.secrets.clone(),

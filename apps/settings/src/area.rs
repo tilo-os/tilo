@@ -156,6 +156,8 @@ pub struct AreaContext {
     /// own tests drive the stand-ins too, so they never touch the machine
     /// running them.
     pub devices: bool,
+    /// Whether this view is rendered for an attached workspace page.
+    pub attached: bool,
     /// The radios this device has; never read when it reaches no device.
     pub radios: crate::radios::Radios,
     pub pages: crate::pages::PanePages,
@@ -189,6 +191,7 @@ impl AreaContext {
             ),
             scene: None,
             devices: false,
+            attached: false,
             radios: crate::radios::Radios::unread(),
             pages: crate::pages::PanePages::new(),
             secrets: crate::secrets::SecretAsks::new(),

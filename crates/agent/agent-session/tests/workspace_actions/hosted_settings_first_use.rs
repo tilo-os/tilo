@@ -89,25 +89,36 @@ async fn a_signed_person_chooses_the_first_model_on_hosted_settings() {
         .await
         .unwrap();
     page.ask(&other).await;
-    let (name, address, add) = page
+    let mut form = [None, None, None];
+    let actions = page
         .until("Settings opens the provider form", |html| {
-            Some((
+            let controls = [
                 control(
                     html,
                     &["aria-label=\"Name\"", "data-a=\"value\""],
                     Some(PROVIDER),
-                )?,
+                ),
                 control(
                     html,
                     &["aria-label=\"Address\"", "data-a=\"value\""],
                     Some(&endpoint),
-                )?,
-                button(html, "Link provider")?,
-            ))
+                ),
+                button(html, "Link provider"),
+            ];
+            // The browser keeps earlier controls when a patch replaces another element.
+            for (held, current) in form.iter_mut().zip(controls) {
+                if current.is_some() {
+                    *held = current;
+                }
+            }
+            let [Some(name), Some(address), Some(link)] = &form else {
+                return None;
+            };
+            Some([name.clone(), address.clone(), link.clone()])
         })
         .await
         .unwrap();
-    for act in [name, address, add] {
+    for act in actions {
         page.ask(&act).await;
     }
     let (key, submit) = page
