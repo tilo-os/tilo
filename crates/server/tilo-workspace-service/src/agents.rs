@@ -2581,13 +2581,18 @@ pub async fn workspace_agent(
         return Vec::new();
     }
     let workspace = workspace.to_string();
-    if let Some(bound) = workspaces.kept_bound(&workspace, agent).await {
+    let computer = caller
+        .user_public_key()
+        .zip(caller.agent_name())
+        .filter(|(key, name)| tilo_actions::remote::device_agent_id(key, name) == agent)
+        .map(|(_, name)| name);
+    if let Some(bound) = workspaces
+        .bound_for_registration(&workspace, agent, computer.map(|_| agent))
+        .await
+    {
         return bound;
     }
-    let (Some(user), Some(name)) = (caller.user_public_key(), caller.agent_name()) else {
-        return Vec::new();
-    };
-    if tilo_actions::remote::device_agent_id(user, name) == agent
+    if let Some(name) = computer
         && let Err(error) = list_agent(workspaces, &workspace, (agent, name), person).await
     {
         tracing::warn!(%workspace, %agent, %error, "a computer's agent is not listed in the workspace's agents");

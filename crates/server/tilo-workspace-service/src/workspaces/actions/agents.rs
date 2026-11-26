@@ -165,7 +165,17 @@ impl Workspaces {
     pub async fn read_resource<R: tilo_resource::Resource>(
         &self,
         workspace: &str,
+        route: (&str, &str),
+    ) -> Result<Option<R::State>, String> {
+        self.read_for_registration::<R>(workspace, route, None)
+            .await
+    }
+
+    async fn read_for_registration<R: tilo_resource::Resource>(
+        &self,
+        workspace: &str,
         (app, document): (&str, &str),
+        computer: Option<&str>,
     ) -> Result<Option<R::State>, String> {
         let Some(bytes) = self
             .resource_document(workspace, app, document)
@@ -179,9 +189,12 @@ impl Workspaces {
             && collab_types::workspace_document(app, document)
                 .is_some_and(|known| known.kind == tilo_workspace_agent::KIND)
         {
-            let mut roster = crate::agents::agent_record::open(self, workspace, &bytes).await?;
+            let mut roster =
+                crate::agents::agent_record::open(self, workspace, &bytes, computer).await?;
             return crate::agents::opened::<R>(&mut roster).map(Some);
         }
+        #[cfg(not(all(feature = "agents", not(target_arch = "wasm32"))))]
+        let _ = computer;
         read_resource_bytes::<R>(&bytes).map(Some)
     }
 
@@ -191,9 +204,22 @@ impl Workspaces {
     /// nothing: what it may do is never more than the list says. `None` while
     /// the list does not name it.
     pub async fn kept_bound(&self, workspace: &str, agent: &str) -> Option<Vec<Rule>> {
+        self.bound_for_registration(workspace, agent, None).await
+    }
+
+    pub(crate) async fn bound_for_registration(
+        &self,
+        workspace: &str,
+        agent: &str,
+        computer: Option<&str>,
+    ) -> Option<Vec<Rule>> {
         let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let kept = match self
-            .read_resource::<WorkspaceAgents>(workspace, (tilo_workspace_agent::OWNER, &list))
+            .read_for_registration::<WorkspaceAgents>(
+                workspace,
+                (tilo_workspace_agent::OWNER, &list),
+                computer,
+            )
             .await
         {
             Ok(agents) => agents?
