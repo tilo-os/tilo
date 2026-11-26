@@ -19,7 +19,11 @@ pub struct SunburstChartProps {
     pub parts: Vec<ChartPart>,
     /// What it shows, over it and as assistive technology announces it.
     pub title: Option<String>,
-    /// What the whole is, read at its centre ("128 hours").
+    /// What it says while it has nothing to show, and why: "No request has been answered yet".
+    /// Without it the chart says only that it has nothing to show.
+    pub empty: Option<String>,
+    /// What the whole is, read at its centre ("128 hours"); without it the centre reads the sum
+    /// of the parts, so the hole always says how large the whole is.
     pub total: Option<String>,
 }
 
@@ -52,12 +56,67 @@ impl Described for SunburstChart {
     /// Changed parts change the rings where they stand: the widget stays, with what the person is
     /// inspecting.
     fn set_props(&mut self, props: SunburstChartProps) -> bool {
-        self.set_root(root(&props.parts));
+        let rings = root(&props.parts);
+        let whole = rings.effective_value();
+        self.set_root(rings);
         let marks = &mut self.marks;
         marks.frame.title = props.title.unwrap_or_default();
-        marks.center_title = props.total.unwrap_or_default();
+        marks.frame.empty = props.empty.unwrap_or_default();
+        marks.center_title = props.total.unwrap_or_else(|| {
+            if whole > 0.0 {
+                super::format_compact(whole)
+            } else {
+                String::new()
+            }
+        });
         marks.center_subtitle = String::new();
         self.mark_dirty();
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn part(id: &str, parent: &str, value: f64) -> ChartPart {
+        ChartPart {
+            id: id.to_owned(),
+            parent: parent.to_owned(),
+            label: id.to_owned(),
+            value,
+        }
+    }
+
+    /// A sunburst whose app names no total still says how large the whole is at its centre: the
+    /// sum of its parts, nested ones counted once. One that names a total reads that, and one
+    /// with nothing in it leaves the hole empty.
+    #[test]
+    fn the_centre_reads_the_whole_when_no_total_is_given() {
+        let parts = vec![
+            part("integration", "platform", 22.0),
+            part("migration", "platform", 14.0),
+            part("platform", "", 0.0),
+            part("interviews", "", 7.0),
+        ];
+        let chart = SunburstChart::from_props(
+            "",
+            SunburstChartProps {
+                parts: parts.clone(),
+                ..SunburstChartProps::default()
+            },
+        );
+        assert_eq!(chart.marks.center_title, "43");
+        let named = SunburstChart::from_props(
+            "",
+            SunburstChartProps {
+                parts,
+                total: Some("43 hours".to_owned()),
+                ..SunburstChartProps::default()
+            },
+        );
+        assert_eq!(named.marks.center_title, "43 hours");
+        let empty = SunburstChart::from_props("", SunburstChartProps::default());
+        assert_eq!(empty.marks.center_title, "");
     }
 }

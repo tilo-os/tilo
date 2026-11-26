@@ -84,6 +84,9 @@ pub struct ChartProps {
     pub series: Vec<ChartLine>,
     /// What it shows, at its head and as assistive technology announces it.
     pub title: Option<String>,
+    /// What it says while it has nothing to show, and why: "No request has been answered yet".
+    /// Without it the chart says only that it has nothing to show.
+    pub empty: Option<String>,
     /// The top of its scale, which may be more than the readings reach; the highest reading
     /// unless said.
     pub max: Option<f64>,
@@ -139,6 +142,7 @@ impl Described for Chart {
         marks.max = props.max.map(|max| max as f32);
         marks.area = props.area;
         marks.frame.title = props.title.unwrap_or_default();
+        marks.frame.empty = props.empty.unwrap_or_default();
         marks.axis_hi = props.top_label.unwrap_or_default();
         marks.axis_lo = props.bottom_label.unwrap_or_default();
         marks.labels = props.labels;

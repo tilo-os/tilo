@@ -180,6 +180,9 @@ pub struct CartesianPlotProps {
     pub points: Vec<PlotPoints>,
     /// What it shows, at its head and as assistive technology announces it.
     pub title: Option<String>,
+    /// What it says while it has nothing to show, and why: "No request has been answered yet".
+    /// Without it the chart says only that it has nothing to show.
+    pub empty: Option<String>,
     /// What the x axis measures, under it ("Minute", "Distance").
     pub x_title: Option<String>,
     /// What the y axis measures, beside it ("Milliseconds").
@@ -218,6 +221,7 @@ impl CartesianPlot {
     fn wear(&mut self, props: CartesianPlotProps) {
         let marks = &mut self.marks;
         marks.frame.title = props.title.unwrap_or_default();
+        marks.frame.empty = props.empty.unwrap_or_default();
         marks.style.show_legend = props.points.iter().any(|line| !line.label.is_empty());
         marks.style.x_axis.title = props.x_title.unwrap_or_default();
         marks.style.y_axis.title = props.y_title.unwrap_or_default();

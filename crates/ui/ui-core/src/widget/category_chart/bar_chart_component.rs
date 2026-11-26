@@ -86,6 +86,9 @@ pub struct BarChartProps {
     pub categories: Vec<String>,
     /// What it shows, at its head and as assistive technology announces it.
     pub title: Option<String>,
+    /// What it says while it has nothing to show, and why: "No request has been answered yet".
+    /// Without it the chart says only that it has nothing to show.
+    pub empty: Option<String>,
     /// How several measured things share a category: `grouped` beside each other unless said,
     /// `stacked` on each other, `share` stacked as parts of the category's whole, or `waterfall`
     /// for the first measured thing's rises and falls, each standing on the one before.
@@ -148,6 +151,7 @@ impl Described for CategoryChart {
         self.set_data(categories, series);
         let marks = &mut self.marks;
         marks.frame.title = props.title.unwrap_or_default();
+        marks.frame.empty = props.empty.unwrap_or_default();
         marks.style.layout = props.layout.unwrap_or(CategoryLayout::Grouped);
         marks.style.show_values = props.readings;
         marks.style.unit = props.unit.unwrap_or_default();

@@ -43,7 +43,12 @@ view pies() {
             )
         }
         part("Pie chart, empty", "Nothing to divide yet: the chart says so.") {
-            ui.PieChart([], title: .some("Hours by team"), ring: true)
+            ui.PieChart(
+                [],
+                title: .some("Hours by team"),
+                ring: true,
+                empty: .some("No team has logged hours this week."),
+            )
         }
     }
 }

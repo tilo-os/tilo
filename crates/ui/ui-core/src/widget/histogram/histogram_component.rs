@@ -47,6 +47,9 @@ pub struct HistogramProps {
     pub scale: Option<HistogramScale>,
     /// What it shows, at its head and as assistive technology announces it.
     pub title: Option<String>,
+    /// What it says while it has nothing to show, and why: "No request has been answered yet".
+    /// Without it the chart says only that it has nothing to show.
+    pub empty: Option<String>,
 }
 
 /// The plot `props` are drawn as.
@@ -61,7 +64,9 @@ fn plot(props: &HistogramProps) -> CartesianPlot {
     if let Some(bins) = props.bins {
         histogram = histogram.bins(usize::try_from(bins.max(1)).unwrap_or(usize::MAX));
     }
-    histogram.build()
+    histogram
+        .build()
+        .with_empty(props.empty.clone().unwrap_or_default())
 }
 
 /// The histogram as the toolkit's one chart shell, holding the plot its builder made.
@@ -97,5 +102,30 @@ impl Described for HistogramChart {
     fn set_props(&mut self, props: HistogramProps) -> bool {
         self.plot = plot(&props);
         true
+    }
+}
+
+#[cfg(test)]
+mod empty_tests {
+    use super::*;
+    use crate::widget::PlotMarks;
+
+    /// A histogram with no observations says why it is empty, in the app's words, where its bars
+    /// would stand; one whose app gives no reason says the shared note.
+    #[test]
+    fn an_empty_histogram_says_why_in_the_apps_words() {
+        let told = HistogramChart::from_props(
+            "",
+            HistogramProps {
+                empty: Some("No machine in the fleet has reported a request yet.".to_owned()),
+                ..HistogramProps::default()
+            },
+        );
+        assert_eq!(
+            told.plot.marks.frame().empty,
+            "No machine in the fleet has reported a request yet."
+        );
+        let untold = HistogramChart::from_props("", HistogramProps::default());
+        assert_eq!(untold.plot.marks.frame().empty, "");
     }
 }

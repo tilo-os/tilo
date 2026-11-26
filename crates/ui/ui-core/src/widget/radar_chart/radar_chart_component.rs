@@ -133,6 +133,9 @@ pub struct RadarChartProps {
     pub series: Vec<RadarSeriesProps>,
     /// What it shows, at its head and as assistive technology announces it.
     pub title: Option<String>,
+    /// What it says while it has nothing to show, and why: "No request has been answered yet".
+    /// Without it the chart says only that it has nothing to show.
+    pub empty: Option<String>,
 }
 
 /// The axes `props` names, in order.
@@ -184,6 +187,7 @@ impl Described for RadarChart {
         self.set_series(plotted(&props.series));
         let marks = &mut self.marks;
         marks.frame.title = props.title.unwrap_or_default();
+        marks.frame.empty = props.empty.unwrap_or_default();
         marks.style.legend.visible = props.series.iter().any(|series| !series.label.is_empty());
         self.mark_dirty();
         true

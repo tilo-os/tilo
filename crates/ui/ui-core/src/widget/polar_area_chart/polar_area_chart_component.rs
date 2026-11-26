@@ -72,6 +72,9 @@ pub struct PolarAreaChartProps {
     pub areas: Vec<PolarAreaValue>,
     /// What it shows, at its head and as assistive technology announces it.
     pub title: Option<String>,
+    /// What it says while it has nothing to show, and why: "No request has been answered yet".
+    /// Without it the chart says only that it has nothing to show.
+    pub empty: Option<String>,
 }
 
 /// The sectors `props` draws, in the order each takes around the circle.
@@ -105,6 +108,7 @@ impl Described for PolarAreaChart {
     fn set_props(&mut self, props: PolarAreaChartProps) -> bool {
         self.set_data(plotted(&props));
         self.marks.frame.title = props.title.unwrap_or_default();
+        self.marks.frame.empty = props.empty.unwrap_or_default();
         self.mark_dirty();
         true
     }

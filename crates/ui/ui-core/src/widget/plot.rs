@@ -22,6 +22,8 @@ use crate::widget::{ModelPath, Widget};
 pub struct PlotFrame<H> {
     pub(crate) rect: Rect,
     pub(crate) title: String,
+    /// What it says while it has nothing to show, and why; empty for the shared note.
+    pub(crate) empty: String,
     /// A fixed height; `None` takes the height the parent gives, measuring
     /// [`PlotMarks::natural_height`] when it gives none.
     pub(crate) height: Option<f32>,
@@ -37,6 +39,7 @@ impl<H> PlotFrame<H> {
         Self {
             rect: Rect::ZERO,
             title: String::new(),
+            empty: String::new(),
             height: None,
             min_height,
             inspection: ChartInspection::default(),
@@ -47,6 +50,7 @@ impl<H> PlotFrame<H> {
         Self {
             rect: Rect::ZERO,
             title: String::new(),
+            empty: String::new(),
             height: Some(height),
             min_height,
             inspection: ChartInspection::default(),
@@ -324,7 +328,11 @@ fn paint_nothing_to_show<H>(
         frame.rect.x1,
         frame.rect.y1.max(frame.rect.y0 + below),
     );
-    let message = crate::i18n::widget_format("widget-chart-nothing", &[]);
+    let message = if frame.empty.is_empty() {
+        crate::i18n::widget_format("widget-chart-nothing", &[])
+    } else {
+        frame.empty.clone()
+    };
     let style = theme.text(crate::tokens::TextRole::Body);
     let width = crate::num::f32_of_f64(room.width().max(0.0));
     let (w, h) = tr.measure_style(&message, Some(width), &style);
@@ -377,6 +385,12 @@ impl<M: PlotMarks> Plot<M> {
     #[must_use]
     pub fn titled(mut self, title: impl Into<String>) -> Self {
         self.marks.frame_mut().title = title.into();
+        self
+    }
+    /// What it says while it has nothing to show, and why; without it, the shared note.
+    #[must_use]
+    pub fn with_empty(mut self, note: impl Into<String>) -> Self {
+        self.marks.frame_mut().empty = note.into();
         self
     }
     #[must_use]

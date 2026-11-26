@@ -19,6 +19,9 @@ pub struct TreemapProps {
     pub parts: Vec<ChartPart>,
     /// What it shows, over it and as assistive technology announces it.
     pub title: Option<String>,
+    /// What it says while it has nothing to show, and why: "No request has been answered yet".
+    /// Without it the chart says only that it has nothing to show.
+    pub empty: Option<String>,
 }
 
 /// The rectangles `parts` are drawn as: each first-level part, sized by everything under it.
@@ -49,6 +52,7 @@ impl Described for Treemap {
     fn set_props(&mut self, props: TreemapProps) -> bool {
         self.set_items(tiles(&props.parts));
         self.marks.frame.title = props.title.unwrap_or_default();
+        self.marks.frame.empty = props.empty.unwrap_or_default();
         self.mark_dirty();
         true
     }

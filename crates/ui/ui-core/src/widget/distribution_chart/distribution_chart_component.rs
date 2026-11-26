@@ -82,6 +82,9 @@ pub struct DistributionChartProps {
     pub samples: Vec<DistributionSamples>,
     /// What it shows, at its head and as assistive technology announces it.
     pub title: Option<String>,
+    /// What it says while it has nothing to show, and why: "No request has been answered yet".
+    /// Without it the chart says only that it has nothing to show.
+    pub empty: Option<String>,
     /// How each distribution is drawn: `box` for its quartiles, `violin` for its shape, `both` for
     /// the two together unless said.
     pub kind: Option<DistributionKind>,
@@ -126,6 +129,7 @@ impl Described for DistributionChart {
         self.set_series(plotted(&props));
         let marks = &mut self.marks;
         marks.frame.title = props.title.unwrap_or_default();
+        marks.frame.empty = props.empty.unwrap_or_default();
         marks.style.kind = props.kind.unwrap_or(DistributionKind::BoxAndViolin);
         self.mark_dirty();
         true

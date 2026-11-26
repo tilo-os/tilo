@@ -118,6 +118,9 @@ pub struct RangeChartProps {
     pub ranges: Vec<RangeSpan>,
     /// What it shows, at its head and as assistive technology announces it.
     pub title: Option<String>,
+    /// What it says while it has nothing to show, and why: "No request has been answered yet".
+    /// Without it the chart says only that it has nothing to show.
+    pub empty: Option<String>,
     /// What it shows: `timeline` spans unless said, a `plan` whose rows fill to their progress,
     /// `intervals` between numbers, or `milestones` at points.
     pub kind: Option<RangeKind>,
@@ -153,6 +156,7 @@ impl RangeChart {
         let kind = props.kind.unwrap_or_default();
         let marks = &mut self.marks;
         marks.frame.title = props.title.unwrap_or_default();
+        marks.frame.empty = props.empty.unwrap_or_default();
         marks.axis_title = props.axis.unwrap_or_default();
         marks.style = RangeStyle {
             show_progress: kind.shows_progress(),

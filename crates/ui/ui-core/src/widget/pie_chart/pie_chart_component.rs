@@ -69,6 +69,9 @@ pub struct PieChartProps {
     pub slices: Vec<PiePart>,
     /// What it shows, as assistive technology announces it.
     pub title: Option<String>,
+    /// What it says while it has nothing to show, and why: "No request has been answered yet".
+    /// Without it the chart says only that it has nothing to show.
+    pub empty: Option<String>,
     /// A ring rather than a full pie, with `total` read at its centre.
     pub ring: bool,
     /// What a ring reads at its centre: the whole, as it reads ("128 issues").
@@ -104,6 +107,7 @@ impl PieChart {
             0.0
         };
         self.marks.frame.title = props.title.unwrap_or_default();
+        self.marks.frame.empty = props.empty.unwrap_or_default();
         self.marks.unit = props.unit.unwrap_or_default();
         let total = props.total.filter(|_| props.ring).unwrap_or_default();
         self.set_center(total, String::new());

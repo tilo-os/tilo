@@ -22,6 +22,9 @@ pub struct SankeyChartProps {
     pub links: Vec<ChartLink>,
     /// What it shows, over it and as assistive technology announces it.
     pub title: Option<String>,
+    /// What it says while it has nothing to show, and why: "No request has been answered yet".
+    /// Without it the chart says only that it has nothing to show.
+    pub empty: Option<String>,
 }
 
 impl Described for SankeyChart {
@@ -38,6 +41,7 @@ impl Described for SankeyChart {
     fn set_props(&mut self, props: SankeyChartProps) -> bool {
         self.set_data(props.nodes, props.links);
         self.marks.frame.title = props.title.unwrap_or_default();
+        self.marks.frame.empty = props.empty.unwrap_or_default();
         self.mark_dirty();
         true
     }

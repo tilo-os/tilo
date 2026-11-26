@@ -92,6 +92,7 @@ view series_charts(g: Gallery) {
             ui.CartesianPlot(
                 [],
                 title: .some("Latency, before the first request"),
+                empty: .some("No request has been answered since midnight."),
                 x_title: .some("Minutes after midnight"),
                 y_title: .some("Milliseconds"),
             )
@@ -193,7 +194,11 @@ view series_charts(g: Gallery) {
                 scale: .density,
                 title: .some("The same samples, per millisecond"),
             )
-            ui.Histogram(nothing_measured, title: .some("Latency, once the fleet has reported"))
+            ui.Histogram(
+                nothing_measured,
+                title: .some("Latency, once the fleet has reported"),
+                empty: .some("No machine in the fleet has reported a request yet."),
+            )
         }
         part(
             "Candlestick chart",
@@ -261,7 +266,11 @@ view series_charts(g: Gallery) {
                 ],
                 title: .some("Share price each quarter"),
             )
-            ui.CandlestickChart([], title: .some("Prices, before the market opens"))
+            ui.CandlestickChart(
+                [],
+                title: .some("Prices, before the market opens"),
+                empty: .some("The market opens at nine; prices show from the first trade."),
+            )
         }
         part(
             "Range chart",
@@ -320,7 +329,11 @@ view series_charts(g: Gallery) {
                 kind: .milestones,
                 axis: .some("Day of the sprint"),
             )
-            ui.RangeChart([], title: .some("What takes the week, once it is planned"))
+            ui.RangeChart(
+                [],
+                title: .some("What takes the week, once it is planned"),
+                empty: .some("Nothing is planned for this week yet."),
+            )
         }
         part(
             "Waterfall bars",
@@ -345,6 +358,7 @@ view series_charts(g: Gallery) {
                 [],
                 categories: no_categories,
                 title: .some("Storage, before the first import"),
+                empty: .some("Nothing has been imported yet."),
                 layout: .waterfall,
                 unit: .some("GB"),
             )

@@ -102,6 +102,9 @@ pub struct CandlestickChartProps {
     pub candles: Vec<CandleObservation>,
     /// What it shows, at its head and as assistive technology announces it.
     pub title: Option<String>,
+    /// What it says while it has nothing to show, and why: "No request has been answered yet".
+    /// Without it the chart says only that it has nothing to show.
+    pub empty: Option<String>,
     /// The traded volume under the prices; off unless said.
     pub volume: bool,
 }
@@ -134,6 +137,7 @@ impl CandlestickChart {
     /// Everything of `props` but its periods.
     fn wear(&mut self, props: CandlestickChartProps) {
         self.marks.frame.title = props.title.unwrap_or_default();
+        self.marks.frame.empty = props.empty.unwrap_or_default();
         self.marks.style.show_volume = props.volume;
         self.mark_dirty();
     }
