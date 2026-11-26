@@ -1,0 +1,171 @@
+From 840604b47b8854b6e087588a51bf6bfed6c87223 Mon Sep 17 00:00:00 2001
+From: qwolff <quinten@tilo.so>
+Date: Wed, 25 Nov 2026 21:18:27 +0000
+Subject: [PATCH] ntdll: Describe a file on a local disk as Windows does.
+
+A file on a local disk volume reports FILE_DEVICE_DISK on Windows; Wine
+reported FILE_DEVICE_DISK_FILE_SYSTEM for every regular file. Files on
+ext2/3/4, xfs and btrfs, and on an overlay whose upper directory is on
+one of those and that honours fsync, now report FILE_DEVICE_DISK. tmpfs,
+network and FUSE file systems keep their answer, and GetDriveType still
+calls the drive fixed.
+
+Renaming with FILE_RENAME_POSIX_SEMANTICS may replace a target that is
+open, as on Windows, when every opener shares delete access and no
+delete is pending on it: rename(2) gives the target's name to the
+source while the open target keeps its data. With that and the POSIX
+delete disposition already in place, the NTFS volumes Wine describes
+report FILE_SUPPORTS_POSIX_UNLINK_RENAME.
+---
+ dlls/kernelbase/volume.c |  1 +
+ dlls/ntdll/unix/file.c   | 52 ++++++++++++++++++++++++++++++++++++++--
+ include/winnt.h          |  2 ++
+ server/fd.c              | 20 +++++++++++++---
+ 4 files changed, 70 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/kernelbase/volume.c b/dlls/kernelbase/volume.c
+index edfd777..efcb7ef 100644
+--- a/dlls/kernelbase/volume.c
++++ b/dlls/kernelbase/volume.c
+@@ -581,6 +581,7 @@ UINT WINAPI DECLSPEC_HOTPATCH GetDriveTypeW( LPCWSTR root )
+         case FILE_DEVICE_CD_ROM_FILE_SYSTEM:  ret = DRIVE_CDROM; break;
+         case FILE_DEVICE_VIRTUAL_DISK:        ret = DRIVE_RAMDISK; break;
+         case FILE_DEVICE_NETWORK_FILE_SYSTEM: ret = DRIVE_REMOTE; break;
++        case FILE_DEVICE_DISK:
+         case FILE_DEVICE_DISK_FILE_SYSTEM:
+             if (info.Characteristics & FILE_REMOTE_DEVICE) ret = DRIVE_REMOTE;
+             else if (info.Characteristics & FILE_REMOVABLE_MEDIA) ret = DRIVE_REMOVABLE;
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index 8b87cc8..4db6e4f 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -5126,7 +5126,8 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+             else
+                 flags = info->Flags;
+ 
+-            if (flags & ~(FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_IGNORE_READONLY_ATTRIBUTE))
++            if (flags & ~(FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS |
++                          FILE_RENAME_IGNORE_READONLY_ATTRIBUTE))
+                 FIXME( "unsupported flags: %#x\n", flags );
+ 
+             name_str.Buffer = info->FileName;
+@@ -6928,6 +6929,44 @@ static inline BOOL is_device_placeholder( int fd )
+     return !memcmp( buffer, wine_placeholder, sizeof(wine_placeholder) - 1 );
+ }
+ 
++#if defined(linux) && defined(HAVE_FSTATFS)
++/* ext2/3/4, xfs and btrfs: file systems that keep their data on a local block device */
++static BOOL is_disk_fs_type( long type )
++{
++    return type == 0xef53 || type == 0x58465342 || type == 0x9123683e;
++}
++
++/* An overlay is on a local disk when its upper directory is on one and it keeps what it is
++ * asked to flush: a volatile overlay ignores fsync, which no disk does. */
++static BOOL is_overlay_on_disk( dev_t dev )
++{
++    FILE *f = fopen( "/proc/self/mountinfo", "r" );
++    char *line = NULL, *opts, *upper;
++    size_t size = 0;
++    BOOL ret = FALSE;
++
++    if (!f) return FALSE;
++    while (getline( &line, &size, f ) != -1)
++    {
++        unsigned int maj, min;
++        struct statfs stfs;
++
++        if (sscanf( line, "%*u %*u %u:%u", &maj, &min ) != 2 || makedev( maj, min ) != dev) continue;
++        if (!(opts = strstr( line, " - overlay " ))) break;
++        if (strstr( opts, "volatile" ) || !(upper = strstr( opts, "upperdir=" ))) break;
++        upper += strlen( "upperdir=" );
++        upper[strcspn( upper, ", \n" )] = 0;
++        /* mountinfo escapes some characters in octal: such a path is not read here */
++        if (strchr( upper, '\\' )) break;
++        ret = !statfs( upper, &stfs ) && is_disk_fs_type( stfs.f_type );
++        break;
++    }
++    free( line );
++    fclose( f );
++    return ret;
++}
++#endif
++
+ NTSTATUS get_device_info( int fd, FILE_FS_DEVICE_INFORMATION *info )
+ {
+     struct stat st;
+@@ -7025,6 +7064,15 @@ NTSTATUS get_device_info( int fd, FILE_FS_DEVICE_INFORMATION *info )
+         case 0x9fa0:      /* procfs */
+             info->DeviceType = FILE_DEVICE_VIRTUAL_DISK;
+             break;
++        case 0xef53:      /* ext2/3/4 */
++        case 0x58465342:  /* xfs */
++        case 0x9123683e:  /* btrfs */
++            /* Windows names the device of a file on a local disk volume */
++            info->DeviceType = FILE_DEVICE_DISK;
++            break;
++        case 0x794c7630:  /* overlay */
++            info->DeviceType = is_overlay_on_disk( st.st_dev ) ? FILE_DEVICE_DISK : FILE_DEVICE_DISK_FILE_SYSTEM;
++            break;
+         case 0x01021994:  /* tmpfs */
+         case 0x28cd3d45:  /* cramfs */
+             /* Don't map these to FILE_DEVICE_VIRTUAL_DISK by default. Virtual
+@@ -7252,7 +7300,7 @@ NTSTATUS WINAPI NtQueryVolumeInformationFile( HANDLE handle, IO_STATUS_BLOCK *io
+             break;
+         default:
+             info->FileSystemAttributes = FILE_CASE_PRESERVED_NAMES | FILE_PERSISTENT_ACLS |
+-                                         FILE_SUPPORTS_OPEN_BY_FILE_ID;
++                                         FILE_SUPPORTS_OPEN_BY_FILE_ID | FILE_SUPPORTS_POSIX_UNLINK_RENAME;
+             info->MaximumComponentNameLength = 255;
+             info->FileSystemNameLength = min( sizeof(ntfsW), length - offsetof( FILE_FS_ATTRIBUTE_INFORMATION, FileSystemName ) );
+             memcpy(info->FileSystemName, ntfsW, info->FileSystemNameLength);
+diff --git a/include/winnt.h b/include/winnt.h
+index f270727..10a2f9a 100644
+--- a/include/winnt.h
++++ b/include/winnt.h
+@@ -5797,6 +5797,8 @@ typedef struct _QUOTA_LIMITS_EX {
+ #define FILE_SUPPORTS_SPARSE_FILES      0x00000040
+ #define FILE_SUPPORTS_REPARSE_POINTS    0x00000080
+ #define FILE_SUPPORTS_REMOTE_STORAGE    0x00000100
++#define FILE_RETURNS_CLEANUP_RESULT_INFO  0x00000200
++#define FILE_SUPPORTS_POSIX_UNLINK_RENAME 0x00000400
+ #define FILE_VOLUME_IS_COMPRESSED       0x00008000
+ #define FILE_SUPPORTS_OBJECT_IDS        0x00010000
+ #define FILE_SUPPORTS_ENCRYPTION        0x00020000
+diff --git a/server/fd.c b/server/fd.c
+index 7cb48a2..3540919 100644
+--- a/server/fd.c
++++ b/server/fd.c
+@@ -2801,12 +2801,26 @@ static void set_fd_name( struct fd *fd, struct fd *root, const char *nameptr, da
+             goto failed;
+         }
+ 
+-        /* can't replace an opened file */
++        /* can't replace an opened file, but with POSIX semantics one whose every opener
++         * shares delete access and has no delete pending: its name goes, its data stays */
+         if ((inode = get_inode( st.st_dev, st.st_ino, -1 )))
+         {
+-            int is_empty = list_empty( &inode->open );
++            int refused = !list_empty( &inode->open );
++            struct fd *open_fd;
++
++            if (refused && (flags & FILE_RENAME_POSIX_SEMANTICS) && list_empty( &inode->closed ))
++            {
++                refused = 0;
++                LIST_FOR_EACH_ENTRY( open_fd, &inode->open, struct fd, inode_entry )
++                {
++                    if (!(open_fd->sharing & FILE_SHARE_DELETE) ||
++                        (open_fd->options & FILE_DELETE_ON_CLOSE) ||
++                        (open_fd->closed->disp_flags & FILE_DISPOSITION_DELETE))
++                        refused = 1;
++                }
++            }
+             release_object( inode );
+-            if (!is_empty)
++            if (refused)
+             {
+                 set_error( STATUS_ACCESS_DENIED );
+                 goto failed;
+-- 
+2.56.0
+
