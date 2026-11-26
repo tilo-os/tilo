@@ -50,11 +50,6 @@ name = "it"
 path = "tests/it.rs"
 required-features = ["model"]
 
-[[bin]]
-name = "tilo-doc-text"
-path = "src/bin/tilo-doc-text.rs"
-required-features = ["model"]
-
 [lints]
 workspace = true
 
