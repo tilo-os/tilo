@@ -141,6 +141,8 @@ tilo-endpoint-reachability = { path = "../endpoint-reachability" }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 # The broker's local socket: a Unix socket, or a named pipe on Windows.
 tilo-socket = { path = "../../platform/tilo-socket", features = ["tokio"] }
+# The journal of the calls a host admits, whose evidence it signs as this device.
+tilo-invocation-journal = { path = "../invocation-journal" }
 # A host's device runs the runtime its own tasks drive.
 tokio = { workspace = true, features = ["full"] }
 # The certificates a test's mail server presents, which `trust_mail_servers` trusts.
