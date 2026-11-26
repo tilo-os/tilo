@@ -607,7 +607,6 @@ step-searching = Sucht nach { $what }
 presence-writing-here = { $name } schreibt hier
 presence-selecting-here = { $name } markiert hier
 
-
 # Befehlspalette: Tastenhinweise, Ergebniszahl und leere Zustände.
 palette-name = Befehlspalette
 palette-argument-name = Aktionsbestätigung
@@ -723,7 +722,6 @@ display-placement-empty = Keine Bildschirme zum Anordnen
 display-placement-item = Bildschirm { $number }: { $name }
 display-placement-item-primary = Bildschirm { $number }: { $name }, Hauptbildschirm
 display-placement-item-position = { $width } × { $height } bei { $x }, { $y }
-
 
 app-activate-window = Dieses Fenster anzeigen
 app-activate-window-description = Das Fenster dieser App in den Vordergrund holen.
@@ -1163,15 +1161,6 @@ jobs-items = { $count } Elemente
 jobs-steps-one = { $count } Schritt
 jobs-steps = { $count } Schritte
 
-# Needs you: what wants a person.
-attention-blocking = Jetzt
-attention-waiting = Wartet
-attention-noted = Gut zu wissen
-attention-none = Nichts braucht dich
-attention-because = { $about }, { $because }
-attention-defer = Für später beiseitelegen
-attention-deferred = { $count } beiseitegelegt
-attention-pill = { $count } warten
 action-document-replaced = Diese Aktion wurde nicht ausgeführt, weil ihr Dokument erneut geöffnet oder ersetzt wurde. Versuche es im aktuellen Dokument erneut.
 action-own-route-not-open = Diese Aktion wurde nicht ausgeführt, weil dieses Fenster noch nicht fertig mit seinem Arbeitsbereich verbunden ist. Versuche es gleich noch einmal.
 

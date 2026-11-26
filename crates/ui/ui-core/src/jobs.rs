@@ -10,9 +10,7 @@
 //!
 //! One row per job ([`surface`]): its title, what it is doing now, a bar determinate when the
 //! total is known, a **Stop** where it can be stopped, a **Show me** that goes to the thing
-//! being worked on. A finished job keeps its row until it is read; a failed one states why and
-//! stands in [`crate::attention`] as well, since a failure is something a person has to decide
-//! about ([`crate::attention::publish`]).
+//! being worked on. A finished job keeps its row until it is read; a failed one states why.
 //!
 //! ```ignore
 //! let job = ui::jobs::start(
@@ -40,11 +38,9 @@ mod surface;
 #[cfg(test)]
 mod tests;
 
-/// Who a job belongs to, as the surfaces name it: the same owner an attention row carries.
-pub use crate::attention::Owner;
 pub use record::{
-    Job, JobId, Outcome, Progress, Running, Spec, Subject, Summary, Unit, clear, dismiss, finished,
-    is_active, revision, rows, running, show, start, stop, summary,
+    Job, JobId, Outcome, Owner, Progress, Running, Spec, Subject, Summary, Unit, clear, dismiss,
+    finished, is_active, revision, rows, running, show, start, stop, summary,
 };
 pub use surface::{Band, Press, Presses, apply, band, pane};
 

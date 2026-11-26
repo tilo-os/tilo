@@ -1929,64 +1929,8 @@ An app keeps a `jobs::Presses` beside the widget and answers what was pressed
 in its update (`ui::jobs::apply`): **Stop** calls the worker's way out,
 **Read** takes the row away, **Show me** gets the subject and navigates.
 
-**A failure is not just a row.** `Running::failed` raises an attention item
-with the reason and a **Show me** action, and reading the job's row takes that
-item back (`attention::dismissed(Target::Job)`). A failure nobody can decide
-about is a log entry, not a failure.
-
 **What an app never does.** Draw its own progress bar beside a long
 operation, refuse every other action "while one is in progress" (jobs are
 concurrent by construction), or time out a job's notice. Reachable from
 anywhere: `ui::jobs::CHORD` (Ctrl+Shift+J) and `ui::jobs::open` ask for the
 surface; a host resolves the request with `take_opening`.
-
-## 11. Attention and the log: one raised hand, one record
-
-Everything the system says about itself goes to exactly one of two places,
-and `ui::attention::publish` is the one call that decides:
-
-* **it needs a person** → an item in the waiting stack (`Notice::needs`, with
-  the `Action` it waits on);
-* **it does not** → the log (`Notice::did`), append-only, attributed,
-  never on a timer.
-
-There is no third place. In particular there is no toast: a notice that
-expires is a claim that something matters now and will not matter in four
-seconds, and the timer teaches people to stop reading.
-
-**An item.** `Item::new(owner, title, action)`: an owner with a face (icon
-*and* name — never the icon alone), what happened, what it is about, why,
-since when, how urgent, and **one** action. The action is not optional in the
-type, because a row a person cannot act on is not a row.
-
-**Three states, deliberately distinct.** Unseen counts on the bar
-(`attention::unseen`, `attention::pill`), seen stops counting and keeps the
-row, deferred puts it out of the way and **stays counted** (`attention::deferred`,
-and the stack says "4 put aside" under itself). Nothing expires: an item
-leaves when it is acted on or when the app that raised it takes it back
-(`dismissed`).
-
-**Order.** By what it costs to leave (Blocking, then Waiting, then Noted), and
-within that by age — the first row is the one that costs most to ignore.
-Groups get a `SectionHeader` naming the urgency, never a colour alone.
-
-**Keys.** `Presses::key`: Up and Down move the choice, Home and End go to the
-ends, Enter acts on the chosen row, Escape puts it aside. The chosen row is
-selected (the lift, §9.3). Acting reports the verb once
-(`attention::apply` → `Acted`), and the app performs it.
-
-**The surface.** `ui::attention::Stack` — the waiting stack as a widget, kept
-by the app that shows it. Reachable from anywhere: `ui::attention::CHORD`
-(Ctrl+Shift+A) and `ui::attention::open`, which a host resolves.
-
-**The log.** `ui::attention::entries` — every outcome that needed nobody,
-with the app that did it, when, and what it was about. Activity's History
-lists it beside the workspace's changes, found by the same find
-(`entry.matches`), and nothing about it steals the focus: it is read when
-someone looks. `MAX_ENTRIES` is a bound on memory, never a lifetime.
-
-**What an app never does.** Its own notice with its own severity vocabulary
-and its own lifetime; a badge count collected and never drawn; a failure that
-vanishes; a success that interrupts. `tools/policy/check_no_transient_cards.py`
-keeps the notification card the shell's; this section keeps the outcomes the
-system's.

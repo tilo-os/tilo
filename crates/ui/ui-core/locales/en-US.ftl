@@ -605,7 +605,6 @@ step-searching = Searching for { $what }
 presence-writing-here = { $name } is writing here
 presence-selecting-here = { $name } is selecting here
 
-
 # Command palette chrome: footer key hints, result count and empty states.
 palette-name = Command palette
 palette-argument-name = Action confirmation
@@ -724,7 +723,6 @@ display-placement-item = Display { $number }: { $name }
 display-placement-item-primary = Display { $number }: { $name }, main display
 display-placement-item-position = { $width } × { $height } at { $x }, { $y }
 
-
 app-activate-window = Show this window
 app-activate-window-description = Bring this app's window to the front.
 
@@ -784,7 +782,6 @@ search-field-placeholder = Search
 search-field-name = Search
 search-field-filter-name = Filter
 presentation-window-title = Audience presentation
-
 
 author-bot-chip = Bot
 author-via-chip = via { $service }
@@ -1199,16 +1196,6 @@ jobs-items = { $count } items
 jobs-steps-one = { $count } step
 jobs-steps = { $count } steps
 
-# Needs you: what wants a person.
-attention-blocking = Now
-attention-waiting = Waiting
-attention-noted = Worth knowing
-attention-none = Nothing needs you
-# $about is what it is about, $because is why it is waiting.
-attention-because = { $about }, { $because }
-attention-defer = Put aside for now
-attention-deferred = { $count } put aside
-attention-pill = { $count } waiting
 action-document-replaced = This action did not run because its document was reopened or replaced. Try again in the current document.
 action-own-route-not-open = This action was not carried out because this window has not finished connecting to its workspace. Try again in a moment.
 

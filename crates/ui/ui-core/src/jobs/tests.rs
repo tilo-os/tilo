@@ -1,8 +1,8 @@
 //! The job registry: what it holds, what it says, and what survives.
 
+use super::Owner;
 use super::record::{Outcome, Progress, Spec, Subject, Unit};
 use super::{dismiss, finished, rows, running, start, stop, summary};
-use crate::attention::{self, Action, Notice, Owner, Urgency};
 
 fn owner() -> Owner {
     Owner::new("so.tilo.test", "Test").with_icon(crate::icons::Icon::Download)
@@ -126,109 +126,20 @@ tilo_test_env::scenario! {
     }
 }
 
-tilo_test_env::scenario! {
-    fn a_failure_waits_for_a_person_and_an_outcome_is_only_recorded;
+#[test]
+fn a_failure_says_why_and_stays_until_it_is_read() {
+    let _serial = crate::jobs::test_lock();
+    crate::jobs::clear();
+    let job = began("Installing LibreOffice");
+    job.failed("480 MB needed, 210 MB free");
+    let row = &rows()[0];
+    assert_eq!(
+        row.outcome_line().as_deref(),
+        Some("Couldn’t finish: 480 MB needed, 210 MB free"),
+        "{:?}",
+        row.outcome_line()
+    );
 
-    phase a_failure_says_why_and_waits_for_a_person;
-    // A failure states why, stays in the list, and waits in Needs you: a failed job is something a person
-    // has to decide about.
-    {
-        let _serial = crate::jobs::test_lock();
-        crate::jobs::clear();
-        attention::clear();
-        let job = began("Installing LibreOffice");
-        job.failed("480 MB needed, 210 MB free");
-        let row = &rows()[0];
-        assert_eq!(
-            row.outcome_line().as_deref(),
-            Some("Couldn’t finish: 480 MB needed, 210 MB free"),
-            "{:?}",
-            row.outcome_line()
-        );
-        let waiting = attention::items();
-        assert_eq!(waiting.len(), 1, "{waiting:?}");
-        assert_eq!(waiting[0].title(), "Installing LibreOffice");
-        assert_eq!(
-            waiting[0].because_line(),
-            Some("480 MB needed, 210 MB free")
-        );
-        assert_eq!(waiting[0].action().verb, attention::SHOW_JOB);
-        assert_eq!(waiting[0].urgency(), Urgency::Waiting);
-
-        dismiss(job.id());
-        assert!(rows().is_empty());
-        assert!(attention::items().is_empty());
-    }
-
-    phase the_same_failure_twice_is_one_waiting_row;
-    {
-        let _serial = crate::jobs::test_lock();
-        crate::jobs::clear();
-        attention::clear();
-        for reason in ["no disk", "no disk, again"] {
-            let job = began("Installing LibreOffice");
-            job.failed(reason);
-        }
-        let waiting = attention::items();
-        assert_eq!(waiting.len(), 1);
-        assert_eq!(waiting[0].because_line(), Some("no disk, again"));
-        assert_eq!(attention::unseen(), 1);
-        for row in &finished() {
-            dismiss(row.id());
-        }
-    }
-
-    phase acting_on_a_failure_reports_the_verb_once;
-    {
-        let _serial = crate::jobs::test_lock();
-        crate::jobs::clear();
-        attention::clear();
-        let job = began("Printing report");
-        job.failed("The printer stopped answering");
-        let item = &attention::items()[0];
-        let acted = attention::take(item.id()).expect("an item to act on");
-        assert_eq!(acted.action.verb, attention::SHOW_JOB);
-        assert_eq!(acted.owner.name, "Test");
-        assert_eq!(attention::take(item.id()), None, "acted on once");
-        assert!(attention::items().is_empty());
-    }
-
-    phase an_outcome_that_needs_nobody_is_recorded_not_shown;
-    // A recorded outcome is not attention: it is written to the log, does not count on the bar, and
-    // does not expire.
-    {
-        let _serial = crate::jobs::test_lock();
-        crate::jobs::clear();
-        attention::clear();
-        attention::clear_log();
-        let recorded =
-            attention::publish(Notice::did(owner(), "Moved 3 files to Trash").about("Trash"));
-        assert!(matches!(recorded, attention::Published::Recorded(_)));
-        assert!(attention::items().is_empty());
-        assert_eq!(attention::unseen(), 0);
-        let entries = attention::entries();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].what(), "Moved 3 files to Trash");
-        assert_eq!(entries[0].owner().name, "Test");
-        assert!(entries[0].matches("trash"), "the record is searchable");
-        assert!(attention::search_log("files").len() == 1);
-        assert!(attention::search_log("nothing at all").is_empty());
-    }
-
-    phase a_row_always_names_the_app_that_asks;
-    // An owner's name is always there: a row says who is asking, not only its icon.
-    {
-        let _serial = crate::jobs::test_lock();
-        crate::jobs::clear();
-        attention::clear();
-        let _ = attention::publish(Notice::needs(
-            owner(),
-            "Couldn’t reach the printer",
-            Action::new("print.retry", "Print again"),
-        ));
-        let item = &attention::items()[0];
-        assert_eq!(item.owner().name, "Test");
-        assert_eq!(item.action().label, "Print again");
-        assert_eq!(item.state(), attention::State::Unseen);
-    }
+    dismiss(job.id());
+    assert!(rows().is_empty());
 }

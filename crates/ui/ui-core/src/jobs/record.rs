@@ -5,7 +5,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use crate::attention::Owner;
+use crate::icons::Icon;
 use crate::lock::MutexRecover as _;
 use crate::time::{Instant, now};
 use crate::wake::WakeHandle;
@@ -13,6 +13,38 @@ use crate::wake::WakeHandle;
 /// How many rows the registry keeps: running jobs always, and the finished ones nobody has read yet,
 /// oldest dropped first. A row leaves when it is read, never on a timer.
 const MAX_ROWS: usize = 64;
+
+/// An app whose own identity a job does not carry: one the toolkit started for itself.
+pub const UNKNOWN_APP: &str = "so.tilo.system";
+
+/// Who a job belongs to: an app's identity, as its row names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Owner {
+    /// The app's id (`so.tilo.store`).
+    pub app: String,
+    /// The app's name as the bar shows it ("Store").
+    pub name: String,
+    pub icon: Icon,
+}
+
+impl Owner {
+    /// `app`'s owner, with the icon of an app the caller does not know.
+    #[must_use]
+    pub fn new(app: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            app: app.into(),
+            name: name.into(),
+            icon: Icon::Info,
+        }
+    }
+
+    /// The same owner, with the icon its app uses.
+    #[must_use]
+    pub fn with_icon(mut self, icon: Icon) -> Self {
+        self.icon = icon;
+        self
+    }
+}
 
 /// A job's identity, unique for the life of the process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -25,7 +57,7 @@ impl JobId {
         self.0
     }
 
-    /// The id a [`crate::attention::Target::Job`] carries back to it.
+    /// The id whose [`JobId::number`] is `number`.
     #[must_use]
     pub const fn from_number(number: u64) -> Self {
         Self(number)
@@ -521,29 +553,6 @@ fn finish(id: JobId, outcome: Outcome) {
         registry.trim();
         registry.wakes()
     };
-    // A failure is something a person has to decide about, so it waits in
-    // Needs you as well as staying in the list. Nothing is raised while the
-    // registry is locked.
-    if let Outcome::Failed(reason) = outcome {
-        let subject = registry()
-            .job(id)
-            .map(|entry| (entry.job.subject.clone(), entry.job.title.clone()));
-        if let Some((subject, title)) = subject {
-            crate::attention::publish(
-                crate::attention::Notice::needs(
-                    subject.owner.clone(),
-                    title,
-                    crate::attention::Action::new(
-                        crate::attention::SHOW_JOB,
-                        crate::i18n::widget_format("jobs-show-me", &[]),
-                    ),
-                )
-                .about(subject.label)
-                .because(reason)
-                .subject(crate::attention::Target::Job(id.number())),
-            );
-        }
-    }
     for wake in wakes {
         wake.wake();
     }
@@ -559,12 +568,10 @@ pub fn start(spec: Spec) -> Running {
         let id = JobId(registry.next_job);
         registry.next_job = registry.next_job.wrapping_add(1);
         let title = spec.title.clone();
-        let subject = spec.subject.clone().unwrap_or_else(|| {
-            Subject::new(
-                Owner::new(crate::attention::UNKNOWN_APP, title.clone()),
-                title.clone(),
-            )
-        });
+        let subject = spec
+            .subject
+            .clone()
+            .unwrap_or_else(|| Subject::new(Owner::new(UNKNOWN_APP, title.clone()), title.clone()));
         registry.entries.push(Entry {
             job: Job {
                 id,
@@ -683,7 +690,7 @@ pub fn show(id: JobId) -> Option<Subject> {
     registry().job(id).map(|entry| entry.job.subject.clone())
 }
 
-/// Read a finished job's row: it leaves the surface, and so does the attention item a failure raised.
+/// Read a finished job's row: it leaves the surface.
 pub fn dismiss(id: JobId) {
     let wakes = {
         let mut registry = registry();
@@ -698,7 +705,6 @@ pub fn dismiss(id: JobId) {
         registry.changed();
         registry.wakes()
     };
-    crate::attention::dismissed(crate::attention::Target::Job(id.number()));
     for wake in wakes {
         wake.wake();
     }
@@ -723,11 +729,9 @@ pub(crate) fn unwatch(id: u64) {
     registry.watchers.retain(|(watcher, _)| *watcher != id);
 }
 
-/// Take every job and attention item away: a test's clean slate, and what a session reset does.
+/// Take every job away: a test's clean slate, and what a session reset does.
 pub fn clear() {
     let mut registry = registry();
     registry.entries.clear();
     registry.changed();
-    drop(registry);
-    crate::attention::clear();
 }
