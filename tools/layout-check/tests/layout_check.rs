@@ -598,6 +598,82 @@ fn a_phone_layout_shows_what_a_tapped_row_opens() {
     }
 }
 
+/// A run reports several sizes from one pass: the frames it read at each, and each size's shots in
+/// its own directory. The layouts the report counts are the same as a run of either size alone, so
+/// a second size costs its frames and shots, never a second laying out of every window.
+#[test]
+fn a_run_reports_every_size_from_one_pass() {
+    use tilo_test_env::SpawnUnderEnvLock as _;
+
+    /// The layouts a report's last line counts: `0 findings (0 not allowed) in 1234 layouts, ...`.
+    fn layouts(report: &str) -> usize {
+        report
+            .lines()
+            .find_map(|line| {
+                let counted = line.split_once(" in ")?.1;
+                let count = counted.split_whitespace().next()?.parse().ok()?;
+                line.contains(" layouts,").then_some(count)
+            })
+            .expect("the report counts its layouts")
+    }
+
+    let shots = manifest().join("../../target/layout-two-sizes");
+    let _ = std::fs::remove_dir_all(&shots);
+    let phone = shots.join("390x844");
+    let laptop = shots.join("1280x800");
+    let run = |args: Vec<std::ffi::OsString>| {
+        let output = Command::new(env!("CARGO_BIN_EXE_tilo-layout-check"))
+            .arg(manifest().join("tests/layout_check/detail"))
+            .args(args)
+            .output_locked()
+            .expect("the check runs");
+        // Laid out, whether or not the fixture states a finding at these sizes.
+        assert!(
+            matches!(output.status.code(), Some(0 | 1)),
+            "the fixture is laid out: {}",
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .last()
+                .unwrap_or_default()
+        );
+        (
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    let words = |list: &[&str]| -> Vec<std::ffi::OsString> {
+        list.iter().map(std::ffi::OsString::from).collect()
+    };
+    let (one, _) = run(words(&["--dump", "390x844"]));
+    let mut sizes = words(&["--dump", "390x844", "--shots"]);
+    sizes.push(phone.clone().into());
+    sizes.extend(words(&["--dump", "1280x800", "--shots"]));
+    sizes.push(laptop.clone().into());
+    let (both, doc) = run(sizes);
+    assert_eq!(
+        layouts(&both),
+        layouts(&one),
+        "both sizes come from one pass over the apps"
+    );
+    let headers: Vec<&str> = doc.lines().filter(|line| line.starts_with("== ")).collect();
+    for size in ["390×844 @1x text 1", "1280×800 @1x text 1"] {
+        assert!(
+            headers
+                .iter()
+                .any(|header| header.contains(&format!("at {size} — the frame"))),
+            "the run reports the frames it read at {size}:\n{}",
+            headers.join("\n")
+        );
+    }
+    for (size, dir) in [("390x844", &phone), ("1280x800", &laptop)] {
+        let shot = std::fs::read_dir(dir)
+            .expect("the size's shots' directory")
+            .filter_map(std::result::Result::ok)
+            .any(|entry| entry.path().extension().is_some_and(|ext| ext == "png"));
+        assert!(shot, "the window is shot at {size}, in {dir:?}");
+    }
+}
+
 /// A row's box is a control of its own, named for what it does to the item (`Mark Order boxes
 /// done`): a run presses it by those words, as a person or an agent does, and the row it
 /// belongs to stands where it stood, drawn checked, for the shot.
@@ -745,7 +821,7 @@ fn an_allow_list_is_one_finding_a_line_past_its_comments_and_blank_lines() {
 fn a_run_the_command_cannot_read_is_refused_with_what_is_wrong_with_it() {
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    let rows: [(&[&str], &str); 9] = [
+    let rows: [(&[&str], &str); 11] = [
         (
             &["--dump", "390"],
             "--dump 390: a window size such as 390x844",
@@ -770,6 +846,14 @@ fn a_run_the_command_cannot_read_is_refused_with_what_is_wrong_with_it() {
         (&["--dump"], "--dump needs a value"),
         (&["--dump", "390x844", "--press"], "--press needs a value"),
         (&["--no-such-flag"], "unknown option --no-such-flag"),
+        (
+            &["--dump", "390x844", "--dump-findings", "390x844"],
+            "--dump-findings 390x844: a size the run already reports",
+        ),
+        (
+            &["--dump", "390x844", "--shots", "here", "--shots", "there"],
+            "give one per --dump or --dump-findings",
+        ),
     ];
     for (args, said) in rows {
         let output = Command::new(env!("CARGO_BIN_EXE_tilo-layout-check"))

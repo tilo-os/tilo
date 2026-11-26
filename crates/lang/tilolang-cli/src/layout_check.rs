@@ -105,16 +105,19 @@ pub struct Options {
     pub dirs: Vec<PathBuf>,
     pub search: Vec<PathBuf>,
     pub allow: Option<PathBuf>,
-    /// Print the toolkit's inspection of the frames the check reads at this window size to
-    /// stderr: each widget's box, clip and semantics, as the check reads them.
-    pub dump: Option<Dump>,
-    /// Write the window at the `dump` size, at display and text scale 1, as each stage leaves it,
-    /// in the light and the dark theme, to PNGs in this directory.
-    pub shots: Option<PathBuf>,
+    /// Print the toolkit's inspection of the frames the check reads at these window sizes to
+    /// stderr: each widget's box, clip and semantics, as the check reads them. A run asks for
+    /// several sizes when it is one check's single pass over the apps: it lays every window out
+    /// once and reports each size's frames.
+    pub dumps: Vec<Dump>,
+    /// Write the window at the `dumps` sizes, at display and text scale 1, as each stage leaves
+    /// it, in the light and the dark theme, to PNGs in these directories: the directory at the
+    /// same position as its size in `dumps`.
+    pub shots: Vec<PathBuf>,
     /// Take the shots as a maximized window stands at rest: its bar hidden over the window's top
     /// edge until the person reaches for it, the app's frame filling the window.
     pub bar_at_rest: bool,
-    /// Take the shots in a window this tall at the `dump` size's width, so the lower part of a
+    /// Take the shots in a window this tall at the reported size's width, so the lower part of a
     /// long page shows; the check still reads the window at its own size.
     pub shot_height: Option<u32>,
     /// The themes `shots` are taken in: a shipped theme by name
@@ -156,8 +159,8 @@ impl Default for Options {
             dirs: Vec::new(),
             search: Vec::new(),
             allow: None,
-            dump: None,
-            shots: None,
+            dumps: Vec::new(),
+            shots: Vec::new(),
             bar_at_rest: false,
             shot_height: None,
             themes: Vec::new(),
@@ -1207,8 +1210,8 @@ impl Worker<'_> {
             short: &app.short,
             meta: &app.meta,
             sources: &app.sources,
-            dump: self.options.dump,
-            shots: self.options.shots.as_deref(),
+            dumps: &self.options.dumps,
+            shots: &self.options.shots,
             bar_at_rest: self.options.bar_at_rest,
             shot_height: self.options.shot_height,
             themes: &self.options.themes,
@@ -1547,8 +1550,10 @@ struct AppCheck<'a> {
     short: &'a str,
     meta: &'a tilolang::PackageMeta,
     sources: &'a source::SourceMap,
-    dump: Option<Dump>,
-    shots: Option<&'a Path>,
+    dumps: &'a [Dump],
+    /// The directory the shots at each `dumps` size go to, by position: a size with no directory
+    /// takes none.
+    shots: &'a [PathBuf],
     /// Take the shots with the window's bar at rest ([`Options::bar_at_rest`]).
     bar_at_rest: bool,
     /// The height the shots are taken at ([`Options::shot_height`]).
@@ -2087,11 +2092,24 @@ impl AppCheck<'_> {
             .unwrap_or_else(|| target.ty.clone())
     }
 
+    /// The directory the shots at `viewport` are written to, when the run asks for them: the
+    /// dumps and their shot directories stand in the same order.
+    fn shots_at(&self, viewport: (u32, u32)) -> Option<&Path> {
+        let at = self.dumps.iter().position(|dump| dump.size() == viewport)?;
+        self.shots.get(at).map(PathBuf::as_path)
+    }
+
+    /// Whether any dump size asks for the frame at `viewport`, as `found` says a finding was read
+    /// from it.
+    fn prints(&self, viewport: (u32, u32), found: bool) -> bool {
+        self.dumps.iter().any(|dump| dump.prints(viewport, found))
+    }
+
     /// Lay `staged` out at every layout and gather what is wrong, as staged by `label`.
     fn read(&mut self, staged: &mut stage::Staged, label: &str) -> Result<(), String> {
-        // The keys reach the window at the size it is read at, where a shot shows them; a check
-        // taken without a dump size reads them at its first layout.
-        let read_at = self.dump.map(Dump::size).or_else(|| {
+        // The keys reach the window at the first size the run reports, where a shot shows them; a
+        // check taken without a dump size reads them at its first layout.
+        let read_at = self.dumps.first().map(|dump| dump.size()).or_else(|| {
             layouts()
                 .first()
                 .map(|layout| (layout.size.width, layout.size.height))
@@ -2111,8 +2129,7 @@ impl AppCheck<'_> {
             {
                 // What the person sees before they touch it, where the run takes shots: a press
                 // leaves the window as it opened something, and both are what a person reads.
-                if let Some(dir) = self.shots
-                    && self.dump.is_some_and(|dump| dump.size() == viewport)
+                if let Some(dir) = self.shots_at(viewport)
                     && (layout.display_scale - 1.0).abs() < f64::EPSILON
                     && (layout.text_scale - 1.0).abs() < f32::EPSILON
                 {
@@ -2181,12 +2198,11 @@ impl AppCheck<'_> {
         Ok(())
     }
 
-    /// Record the bar and the frame `audit` read: written to the dump when `dump` asks for this
-    /// frame (`found` says a finding was read from it), with a capture at plain scale whenever
-    /// shots were asked for at its size.
+    /// Record the bar and the frame `audit` read: written to the dump when a dump size asks for
+    /// this frame (`found` says a finding was read from it), with a capture at plain scale
+    /// whenever shots were asked for at its size.
     fn record_frame(
         &mut self,
-        dump: Dump,
         staged: &mut stage::Staged,
         layout: Layout,
         label: &str,
@@ -2195,7 +2211,7 @@ impl AppCheck<'_> {
         found: bool,
     ) -> Result<(), String> {
         let viewport = (layout.size.width, layout.size.height);
-        if dump.prints(viewport, found) {
+        if self.prints(viewport, found) {
             let json = serde_json::to_string_pretty(bar).map_err(|e| e.to_string())?;
             let _ = writeln!(
                 self.dumped,
@@ -2209,8 +2225,7 @@ impl AppCheck<'_> {
                 self.meta.app
             );
         }
-        if let Some(dir) = self.shots
-            && dump.size() == viewport
+        if let Some(dir) = self.shots_at(viewport)
             && (layout.display_scale - 1.0).abs() < f64::EPSILON
             && (layout.text_scale - 1.0).abs() < f32::EPSILON
         {
@@ -2236,9 +2251,9 @@ impl AppCheck<'_> {
         // navigation, its one "…" and its controls.
         let bar = staged.harness_mut().window_bar_layout();
         let problems = self.problems(staged, layout, &inspection, &bar);
-        if let Some(dump) = self.dump {
+        if !self.dumps.is_empty() {
             let found = !problems.is_empty();
-            self.record_frame(dump, staged, layout, label, &bar, &inspection, found)?;
+            self.record_frame(staged, layout, label, &bar, &inspection, found)?;
         }
         self.gather_all(problems, layout, label);
         self.work.add(staged.take_work());

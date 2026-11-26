@@ -416,24 +416,27 @@ machine for the run, so it is a t check and never runs on a workstation:
 
 ```bash
 t test layout-check                    # every standard size, every app
-t test layout-check/390x844            # one size, one run
 ```
 
-The sizes are 320x568 and 390x844 (a phone's) and 1280x800 (a laptop's). What the run finds is
+One job lays every view out once; the sizes are 320x568 and 390x844 (a phone's) and 1280x800 (a
+laptop's), and each keeps its own frames and shots. What the run finds is
 the check's verdict: a finding the allow-list
 (`tools/layout-check/tests/layout_check/allowed`) does not name fails it, as does an
 allow-list line whose finding no longer shows or a view no scenario reaches. The job's log
-(`t log layout-check/390x844`) lists every finding with its app, view, node and source line.
+(`t log layout-check`) lists every finding with its app, view, node and source line.
 
 A run takes inputs, which are part of its key and show in its result
-(`layout-check/390x844 [app=apps/tl/chat]`): `app` lays out one package of `apps/tl` instead of
-every one, `press` presses a control by the words it carries before each window is read, and
-`dump=true` prints every frame the size lays out rather than only the frames a finding came from.
+(`layout-check [app=apps/tl/chat]`): `app` lays out one package of `apps/tl` instead of
+every one, `size` reports and shoots one size instead of all three, `press` presses a control by
+the words it carries before each window is read, and `dump=true` prints every frame laid out
+rather than only the frames a finding came from. Iterating on one app, name it: a run over every
+app takes the machine and the job's `used` figures say what it cost.
 
 ```bash
-t test layout-check/390x844 --input app=apps/tl/tasks
-t test layout-check/390x844 --input app=apps/tl/tasks --input press="Mark Buy oat milk and eggs done"
-t test layout-check/390x844 --input app=apps/tl/tasks \
+t test layout-check --input app=apps/tl/tasks --input size=390x844
+t test layout-check --input app=apps/tl/tasks --input size=390x844 \
+    --input press="Mark Buy oat milk and eggs done"
+t test layout-check --input app=apps/tl/tasks --input size=390x844 \
     --input press="Mark Buy oat milk and eggs done" --input dump=true
 ```
 
@@ -442,25 +445,25 @@ allow-list lines or views it never laid out: strict's whole-tree verdict is the 
 app and no press. A key or a staged view state has no input yet: use the CLI's `--key` and `--state` flags over the
 apps you are looking at.
 
-Each size's run keeps its outputs, which `t outputs` fetches:
+A run keeps its outputs, which `t outputs` fetches:
 
 ```bash
-t outputs layout-check/390x844 --to ~/layout-shots
+t outputs layout-check --to ~/layout-shots
 ```
 
-That writes `~/layout-shots/target/layout-check/390x844/`, which holds `report.txt` (the report the
+That writes `~/layout-shots/target/layout-check/`, which holds `report.txt` (the report the
 job's log prints: every finding with its app, view, node and source line, the allow-list lines
 that no longer show and the views no layout reached, then the counts), `dump.txt` (the toolkit's
-inspection of the layouts at that size a finding was read from: each widget's box, clip and
-semantics; `dump=true` writes every frame instead) and one PNG per window per theme
-(`<app>-<view>-<theme>.png`, light and dark; about nine hundred for the tl apps), as each scenario
-leaves the window. `t outputs` starts the run for this state if none ran, so the shot is always of
-the code as it stands here; a run with inputs is fetched by its id, which `t test --detach`
-prints:
+inspection of the layouts a finding was read from at each size: each widget's box, clip and
+semantics; `dump=true` writes every frame instead) and one directory per size holding one PNG per
+window per theme (`<app>-<view>-<theme>.png`, light and dark; about nine hundred for the tl apps),
+as each scenario leaves the window. `t outputs` starts the run for this state if none ran, so the
+shot is always of the code as it stands here; a run with inputs is fetched by its id, which
+`t test --detach` prints:
 
 ```bash
-t test layout-check/390x844 --input app=apps/tl/tasks --detach
-t outputs layout-check/390x844 --run <run> --to ~/layout-shots
+t test layout-check --input app=apps/tl/tasks --input size=390x844 --detach
+t outputs layout-check --run <run> --to ~/layout-shots
 ```
 
 ## Screenshots of every app

@@ -10,7 +10,7 @@ use super::{Dump, Options, check, render};
 
 /// What the layout check takes and does, as `--help` prints it.
 pub const USAGE: &str = "\
-  tilo-layout-check [DIR]... [--search DIR]... [--allow FILE] [--strict] [--json] [--root NAME] [--state NAME=VALUE]... [--key KEY]... [--hover X,Y]... [--press LABEL]... [--dump|--dump-findings WxH [--shots DIR [--theme NAME]... [--bar-at-rest] [--shot-height H]]] [--locale TAG]
+  tilo-layout-check [DIR]... [--search DIR]... [--allow FILE] [--strict] [--json] [--root NAME] [--state NAME=VALUE]... [--key KEY]... [--hover X,Y]... [--press LABEL]... [--dump|--dump-findings WxH [--shots DIR] {--theme NAME}... [--bar-at-rest] [--shot-height H]]... [--locale TAG]
       lay out every view of each app headlessly, staged from each of its scenarios, at window
       sizes from 320x568 to 3440x1440, display scales 1 and 2 and text scales 1 and 1.5, and
       report overflow, clipped text, overlapping siblings, hit targets below the minimum and
@@ -22,7 +22,10 @@ pub const USAGE: &str = "\
       semantics of every widget) to stderr, for a run narrowed to the views it reads;
       --dump-findings prints only the layouts a finding was read from, which is what a check over
       every app asks for, and --shots writes the window at that size (display
-      and text scale 1) as each stage leaves it, light and dark, to PNGs in DIR. --theme takes
+      and text scale 1) as each stage leaves it, light and dark, to PNGs in DIR. Both may be
+      given once per size, and every window is still laid out once: --shots then takes one
+      directory per size, in the order the sizes are given, and the presses, the keys and the
+      pointer rest reach the window at the first size given. --theme takes
       them in that shipped theme (default, glass, block, ...) instead of the stock pair, light and
       dark each. --bar-at-rest takes them as a maximized window stands at rest, its bar hidden
       until the person reaches for the top edge, instead of under the bar. --shot-height takes
@@ -45,56 +48,7 @@ pub const USAGE: &str = "\
 /// is reached by no scenario), 2 when the check could not run.
 #[must_use]
 pub fn run(args: &[String]) -> ExitCode {
-    let mut options = Options::default();
-    let mut json = false;
-    let mut strict = false;
-    let mut iter = args.iter();
-    let parsed: Result<(), String> = (|| {
-        while let Some(arg) = iter.next() {
-            match arg.as_str() {
-                "-h" | "--help" => return Err(String::new()),
-                "--search" | "--path" => options.search.push(value(&mut iter, arg)?.into()),
-                "--allow" => options.allow = Some(value(&mut iter, arg)?.into()),
-                "--json" => json = true,
-                "--strict" => strict = true,
-                "--shots" => options.shots = Some(value(&mut iter, arg)?.into()),
-                "--bar-at-rest" => options.bar_at_rest = true,
-                "--shot-height" => {
-                    let height = value(&mut iter, arg)?;
-                    options.shot_height = Some(height.parse().map_err(|_| {
-                        format!("--shot-height takes a height in logical pixels, not {height}")
-                    })?);
-                }
-                "--theme" => options.themes.push(value(&mut iter, arg)?),
-                "--root" => options.root = Some(value(&mut iter, arg)?),
-                "--state" => options.states.push(value(&mut iter, arg)?),
-                "--key" => options.keys.push(value(&mut iter, arg)?),
-                "--hover" => options.hovers.push(value(&mut iter, arg)?),
-                "--press" => options.presses.push(value(&mut iter, arg)?),
-                "--locale" => options.locale = value(&mut iter, arg)?,
-                "--dump" | "--dump-findings" => {
-                    let size = value(&mut iter, arg)?;
-                    let size = size
-                        .split_once('x')
-                        .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
-                        .ok_or_else(|| format!("{arg} {size}: a window size such as 390x844"))?;
-                    options.dump = Some(if arg == "--dump" {
-                        Dump::Every(size)
-                    } else {
-                        Dump::Findings(size)
-                    });
-                }
-                flag if flag.starts_with('-') => {
-                    return Err(format!(
-                        "unknown option {flag}; `tilo-layout-check --help` lists the options"
-                    ));
-                }
-                dir => options.dirs.push(dir.into()),
-            }
-        }
-        Ok(())
-    })();
-    match parsed {
+    let (mut options, json, strict) = match parse(args) {
         Err(error) if error.is_empty() => {
             print!("{USAGE}");
             return ExitCode::SUCCESS;
@@ -103,8 +57,8 @@ pub fn run(args: &[String]) -> ExitCode {
             eprintln!("tilo-layout-check: {error}");
             return ExitCode::from(2);
         }
-        Ok(()) => {}
-    }
+        Ok(parsed) => parsed,
+    };
     if options.dirs.is_empty() {
         options.dirs.push(PathBuf::from("."));
     }
@@ -133,6 +87,71 @@ pub fn run(args: &[String]) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// What `args` name: the options, whether the report is JSON, and whether the verdict is strict.
+/// The empty error is `--help`.
+fn parse(args: &[String]) -> Result<(Options, bool, bool), String> {
+    let mut options = Options::default();
+    let mut json = false;
+    let mut strict = false;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "-h" | "--help" => return Err(String::new()),
+            "--search" | "--path" => options.search.push(value(&mut iter, arg)?.into()),
+            "--allow" => options.allow = Some(value(&mut iter, arg)?.into()),
+            "--json" => json = true,
+            "--strict" => strict = true,
+            "--shots" => options.shots.push(value(&mut iter, arg)?.into()),
+            "--bar-at-rest" => options.bar_at_rest = true,
+            "--shot-height" => {
+                let height = value(&mut iter, arg)?;
+                options.shot_height = Some(height.parse().map_err(|_| {
+                    format!("--shot-height takes a height in logical pixels, not {height}")
+                })?);
+            }
+            "--theme" => options.themes.push(value(&mut iter, arg)?),
+            "--root" => options.root = Some(value(&mut iter, arg)?),
+            "--state" => options.states.push(value(&mut iter, arg)?),
+            "--key" => options.keys.push(value(&mut iter, arg)?),
+            "--hover" => options.hovers.push(value(&mut iter, arg)?),
+            "--press" => options.presses.push(value(&mut iter, arg)?),
+            "--locale" => options.locale = value(&mut iter, arg)?,
+            "--dump" | "--dump-findings" => {
+                let size = value(&mut iter, arg)?;
+                let size = size
+                    .split_once('x')
+                    .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+                    .ok_or_else(|| format!("{arg} {size}: a window size such as 390x844"))?;
+                if options.dumps.iter().any(|dump| dump.size() == size) {
+                    return Err(format!(
+                        "{arg} {}x{}: a size the run already reports",
+                        size.0, size.1
+                    ));
+                }
+                options.dumps.push(if arg == "--dump" {
+                    Dump::Every(size)
+                } else {
+                    Dump::Findings(size)
+                });
+            }
+            flag if flag.starts_with('-') => {
+                return Err(format!(
+                    "unknown option {flag}; `tilo-layout-check --help` lists the options"
+                ));
+            }
+            dir => options.dirs.push(dir.into()),
+        }
+    }
+    if !options.shots.is_empty() && options.shots.len() != options.dumps.len() {
+        return Err(format!(
+            "--shots given {} times for {} sizes: give one per --dump or --dump-findings, in the order the sizes are reported",
+            options.shots.len(),
+            options.dumps.len()
+        ));
+    }
+    Ok((options, json, strict))
 }
 
 fn value(args: &mut std::slice::Iter<'_, String>, flag: &str) -> Result<String, String> {
