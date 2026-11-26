@@ -187,7 +187,7 @@ impl TaskSession {
     /// (every tilolang app the session runs, each after the packages it uses), the native apps
     /// `native` (what they publish, from their surfaces: [`crate::catalogue::NativeSurface`])
     /// and the platform's own (the device's and the session's resources, Settings':
-    /// [`crate::platform`]), whose actions a program invokes where the session publishes
+    /// [`crate::platform_apps`]), whose actions a program invokes where the session publishes
     /// them. A program names and type-checks every app of them; a native one it names the document
     /// of, invokes and assigns fields of, and reads what it holds through the app
     /// ([`crate::native::NativeReads`]), which `api` carries too. A package that does not load

@@ -35,7 +35,7 @@ pub fn packages_of(name: &str) -> Rc<Packages> {
         .join("../../../apps/tl")
         .join(name);
     let search: Vec<PathBuf> = vec![dir.parent().expect("apps/tl").to_path_buf()];
-    let (built, platform) = tilolang_tilo::catalogue::compile(
+    let (built, platform) = tilolang_tilo::platform::compile(
         &dir,
         &search,
         &mut tilolang_tilo::tilolang::OsEntropy::default(),

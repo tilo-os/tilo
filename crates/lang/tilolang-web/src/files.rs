@@ -160,7 +160,7 @@ impl Tree {
     pub fn compile(&self, root: &str) -> Result<(Vec<BuiltPackage>, Vec<PackageMeta>), Failure> {
         let root = Path::new(root.trim_start_matches("./").trim_end_matches('/'));
         let published =
-            tilolang_tilo::catalogue::published_packages_with(self.natives.iter().cloned())
+            tilolang_tilo::platform::published_packages_with(self.natives.iter().cloned())
                 .map_err(Failure::read)?;
         let Some(first) = self.packages.iter().find(|(dir, ..)| dir == root) else {
             return Err(Failure::read(format!(

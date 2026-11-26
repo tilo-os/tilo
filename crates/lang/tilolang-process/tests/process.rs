@@ -1362,7 +1362,7 @@ fn shipped(dir: &std::path::Path) -> (String, Bundle) {
     // The platform's apps (the device, Settings) and the native apps beside the packages (the
     // session's `so.tilo.session`) are described from their surfaces, not built.
     let published =
-        tilolang_tilo::catalogue::published_packages(&tilolang::source::search_of(dir, &[]))
+        tilolang_tilo::platform::published_packages(&tilolang::source::search_of(dir, &[]))
             .expect("the published surfaces read");
     let built = tilolang::source::compile_package(
         dir,
@@ -3403,7 +3403,9 @@ impl Published {
         INSTALLED
             .get_or_init(|| {
                 let published = Arc::new(Published::default());
-                tilolang_tilo::platform::install(Box::new(TestSession(Arc::clone(&published))));
+                tilolang_tilo::platform_apps::install(Box::new(TestSession(Arc::clone(
+                    &published,
+                ))));
                 published
             })
             .clone()
@@ -3431,12 +3433,12 @@ impl Published {
 /// [`Published`] as the source the process reads the platform's roots through.
 struct TestSession(Arc<Published>);
 
-impl tilolang_tilo::platform::PublishedSource for TestSession {
+impl tilolang_tilo::platform_apps::PublishedSource for TestSession {
     fn follow(
         &self,
         resource: &str,
         wake: tilo_wake::WakeHandle,
-    ) -> Result<Box<dyn tilolang_tilo::platform::Reading>, String> {
+    ) -> Result<Box<dyn tilolang_tilo::platform_apps::Reading>, String> {
         self.0
             .wakes
             .lock()
@@ -3469,7 +3471,7 @@ struct Followed {
     resource: String,
 }
 
-impl tilolang_tilo::platform::Reading for Followed {
+impl tilolang_tilo::platform_apps::Reading for Followed {
     fn latest(&self) -> Option<Result<String, String>> {
         self.published
             .queued

@@ -143,7 +143,7 @@ fn pane() -> Pane {
     )
     .expect("a host");
     host.load_compiled(&compiled).expect("the package loads");
-    tilolang_tilo::platform::load(&host, &compiled.meta.uses);
+    tilolang_tilo::platform::load(host.runtime(), &compiled.meta.uses);
     host.runtime()
         .set_reading(&devices(), &devices_reading())
         .expect("the devices reading is set");

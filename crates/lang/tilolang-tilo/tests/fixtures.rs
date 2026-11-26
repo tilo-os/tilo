@@ -727,7 +727,7 @@ pub fn settings_packages() -> Result<Vec<tilolang::PackageMeta>, String> {
         .get_or_init(|| {
             let fleet = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl");
             let mut published =
-                tilolang_tilo::catalogue::published_packages(std::slice::from_ref(&fleet))?;
+                tilolang_tilo::platform::published_packages(std::slice::from_ref(&fleet))?;
             let settings = fleet.join("settings");
             let dirs = tilolang::source::dependency_order_with(
                 &settings,
@@ -1141,6 +1141,6 @@ pub fn settings_host() -> (Host, tilolang::Compiled) {
     )
     .expect("a host");
     host.load_compiled(&compiled).expect("the package loads");
-    tilolang_tilo::platform::load(&host, &compiled.meta.uses);
+    tilolang_tilo::platform::load(host.runtime(), &compiled.meta.uses);
     (host, compiled)
 }

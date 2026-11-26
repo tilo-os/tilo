@@ -53,7 +53,7 @@ fn built() -> &'static (Vec<tilolang::Compiled>, Vec<tilolang::PackageMeta>) {
     BUILT.get_or_init(|| {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
         let (built, published) =
-            tilolang_tilo::catalogue::compile(&dir, &[], &mut tilolang::SeededEntropy(0))
+            tilolang_tilo::platform::compile(&dir, &[], &mut tilolang::SeededEntropy(0))
                 .unwrap_or_else(|why| panic!("the shell and its scenarios compile: {why}"));
         (
             built.into_iter().map(|package| package.compiled).collect(),

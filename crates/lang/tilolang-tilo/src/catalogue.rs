@@ -439,58 +439,6 @@ fn part_roots(
         .collect()
 }
 
-/// The package in `dir` and the packages it uses, found in `search` (else among `dir`'s siblings),
-/// compiled in dependency order against what the platform and the native apps among them publish
-/// ([`published_packages`]); and that published metadata.
-///
-/// # Errors
-///
-/// The published packages cannot be read, or a package does not compile.
-pub fn compile(
-    dir: &Path,
-    search: &[PathBuf],
-    rng: &mut dyn tilolang::ids::Entropy,
-) -> Result<(Vec<tilolang::source::BuiltPackage>, Vec<PackageMeta>), tilolang::source::BuildError> {
-    compile_for(dir, search, &[], rng)
-}
-
-/// [`compile`], where the compile-as pairs say which id a package compiles as: a development
-/// build is the device's own app, which is not the id its sources declare.
-pub fn compile_for(
-    dir: &Path,
-    search: &[PathBuf],
-    compile_as: &[(String, String)],
-    rng: &mut dyn tilolang::ids::Entropy,
-) -> Result<(Vec<tilolang::source::BuiltPackage>, Vec<PackageMeta>), tilolang::source::BuildError> {
-    let published = published_packages(&tilolang::source::search_of(dir, search))
-        .map_err(tilolang::source::BuildError::Read)?;
-    let built = tilolang::source::compile_package_for(dir, search, &published, compile_as, rng)?;
-    Ok((built, published))
-}
-
-/// The packages a tilolang package may `use` that are no tilolang package directory: the
-/// platform's ([`crate::platform::platform_packages`]: each app in its one table, read from
-/// the committed surface beside it or beside the service that publishes its resources) and the
-/// native apps among `search` ([`native_apps`]). What `tilolang check`, `build`, `describe` and
-/// `layout-check` compile against; a native app the platform already provides is the platform's.
-pub fn published_packages(search: &[PathBuf]) -> Result<Vec<PackageMeta>, String> {
-    published_packages_with(native_apps(search)?)
-}
-
-/// As [`published_packages`], with native apps already read (a page holds their surfaces as
-/// text, not in directories).
-pub fn published_packages_with(
-    natives: impl IntoIterator<Item = PackageMeta>,
-) -> Result<Vec<PackageMeta>, String> {
-    let mut out = crate::platform::platform_packages()?;
-    for native in natives {
-        if !out.iter().any(|meta| meta.app == native.app) {
-            out.push(native);
-        }
-    }
-    Ok(out)
-}
-
 /// The native apps among `search`: each entry an app directory itself or a directory of them.
 /// Directories that are not native apps are passed over.
 pub fn native_apps(search: &[PathBuf]) -> Result<Vec<PackageMeta>, String> {

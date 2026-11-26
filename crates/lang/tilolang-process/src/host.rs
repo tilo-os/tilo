@@ -19,7 +19,7 @@ use runtime_portal::process_link::{Descriptor, FromProcess, Packet as _, ToProce
 use tilolang_process::TilolangProcess;
 use tilolang_process::stop::Stop;
 use tilolang_process::wait::{Wake, wait};
-use tilolang_tilo::platform::{PublishedSource, Reading};
+use tilolang_tilo::platform_apps::{PublishedSource, Reading};
 
 /// The API, for the panic hook to say why the host ends.
 static API: OnceLock<Arc<Descriptor>> = OnceLock::new();
@@ -146,7 +146,7 @@ fn run(api: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
     let stop = stop_watching();
     // The platform's published resources (the device, Settings, the workspace's activity) are
     // read from the session's services, which this process's connection reaches.
-    tilolang_tilo::platform::install(Box::new(Session));
+    tilolang_tilo::platform_apps::install(Box::new(Session));
     let mut host = TilolangProcess::new(wake.waker());
     let mut api = Some(api);
     // Why the API closed, when the session did not close it.

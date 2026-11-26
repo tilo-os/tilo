@@ -20,7 +20,8 @@ use tilolang::IdsLock;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::{EditOutcome, ResourceRef, Value, ViewInstance};
 use tilolang_tilo::host::Host;
-use tilolang_tilo::platform::{self, PublishedSource, Reading, Roots};
+use tilolang_tilo::platform;
+use tilolang_tilo::platform_apps::{self, PublishedSource, Reading, Roots};
 
 const SOURCE: &str = r#"app APP "Preferences"
 
@@ -164,7 +165,7 @@ fn service() -> Service {
     SERVICE
         .get_or_init(|| {
             let service = Service::default();
-            platform::install(Box::new(service.clone()));
+            platform_apps::install(Box::new(service.clone()));
             service
         })
         .clone()
@@ -194,10 +195,10 @@ impl Invoker for Setters {
         else {
             return Invoked::Failed("the app writes no field here".to_owned());
         };
-        if let Some(refusal) = platform::refuse_foreign_prefs(&target.id_string(), &self.app) {
+        if let Some(refusal) = platform_apps::refuse_foreign_prefs(&target.id_string(), &self.app) {
             return Invoked::Refused(refusal);
         }
-        let (verb, arguments) = platform::prefs_setter(field, value);
+        let (verb, arguments) = platform_apps::prefs_setter(field, value);
         match self
             .roots
             .borrow()

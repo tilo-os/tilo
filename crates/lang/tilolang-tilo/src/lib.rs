@@ -52,6 +52,7 @@ pub mod origin;
 pub mod page;
 pub mod personal;
 pub mod platform;
+pub mod platform_apps;
 pub mod publish;
 pub mod published;
 pub mod reading;

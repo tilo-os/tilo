@@ -509,7 +509,7 @@ fn install(package: &str) -> Result<(String, String), String> {
 /// `published`: only its metadata carries the package's templates, and it is read from the
 /// compiled shell itself, so it names the actions, types and templates the shell's own code calls.
 fn compile(dir: &Path) -> Result<Vec<tilolang_tilo::tilolang::source::BuiltPackage>, String> {
-    let mut published = tilolang_tilo::catalogue::published_packages(
+    let mut published = tilolang_tilo::platform::published_packages(
         &tilolang_tilo::tilolang::source::search_of(dir, &[]),
     )?;
     // The shell's compiled package replaces any description the catalogue found for it, and goes

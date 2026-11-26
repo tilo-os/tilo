@@ -65,7 +65,7 @@ mod presses;
 mod used;
 use presses::{PressLine, Presses};
 use tilolang_tilo::instance::PressCalls as _;
-use tilolang_tilo::platform::Roots;
+use tilolang_tilo::platform_apps::Roots;
 use used::{Used, used_apps};
 
 use crate::call::Calls;
@@ -4866,14 +4866,15 @@ impl Apis {
             };
             if let Some(target) = target {
                 if let Some(refusal) =
-                    tilolang_tilo::platform::refuse_foreign_prefs(&target.id_string(), &app)
+                    tilolang_tilo::platform_apps::refuse_foreign_prefs(&target.id_string(), &app)
                 {
                     return Some(Invoked::Refused(refusal));
                 }
                 if target.id_string() == own
                     && let Invocation::Edit { field, value, .. } = invocation
                 {
-                    let (verb, arguments) = tilolang_tilo::platform::prefs_setter(field, value);
+                    let (verb, arguments) =
+                        tilolang_tilo::platform_apps::prefs_setter(field, value);
                     return Some(
                         match self.platform.borrow().invoke(own, &verb, &arguments) {
                             Ok(()) => Invoked::Done(tilolang_tilo::runtime::Value::Unit),

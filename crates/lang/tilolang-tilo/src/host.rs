@@ -1767,7 +1767,7 @@ impl Host {
     /// or in a bundle — declares the same descriptions, through this one path. An app this host
     /// runs already keeps its package.
     fn describe_platform_apps(&self, meta: &Meta) {
-        crate::platform::load(self, &meta.uses);
+        crate::platform::load(self.runtime(), &meta.uses);
     }
 
     /// Load the package of an app this host does not run, trusted: its views draw resources of

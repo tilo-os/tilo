@@ -37,7 +37,7 @@ fn settings() -> Host {
     )
     .expect("a host");
     host.load_compiled(&compiled).expect("the package loads");
-    tilolang_tilo::platform::load(&host, &compiled.meta.uses);
+    tilolang_tilo::platform::load(host.runtime(), &compiled.meta.uses);
     host
 }
 
@@ -555,7 +555,7 @@ fn settings_with_files() -> Host {
         .unwrap_or_else(|diagnostics| panic!("the files package compiles: {diagnostics:#?}"));
     host.load_compiled(&compiled)
         .expect("the files package loads");
-    tilolang_tilo::platform::load(&host, &compiled.meta.uses);
+    tilolang_tilo::platform::load(host.runtime(), &compiled.meta.uses);
     host
 }
 

@@ -1741,6 +1741,6 @@ mod tests {
     /// `tilolang check`'s packages: what the apps' directories publish.
     fn checked() -> Vec<PackageMeta> {
         let chat = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tilolang-tilo/tests/native-chat");
-        tilolang_tilo::catalogue::published_packages(&[chat]).expect("the surfaces read")
+        tilolang_tilo::platform::published_packages(&[chat]).expect("the surfaces read")
     }
 }

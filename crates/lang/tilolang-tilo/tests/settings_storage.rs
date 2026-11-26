@@ -37,7 +37,7 @@ fn settings() -> (Host, tilolang::Compiled) {
         tilolang::compile_package_source(&source, &ids, &metas).expect("the package compiles");
     let host = Host::new(me(), || None).expect("a host");
     host.load_compiled(&compiled).expect("the package loads");
-    tilolang_tilo::platform::load(&host, &compiled.meta.uses);
+    tilolang_tilo::platform::load(host.runtime(), &compiled.meta.uses);
     (host, compiled)
 }
 

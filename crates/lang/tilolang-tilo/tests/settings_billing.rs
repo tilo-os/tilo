@@ -82,7 +82,7 @@ impl Installed {
         )
         .expect("a host");
         host.load_compiled(&compiled).expect("the package loads");
-        tilolang_tilo::platform::load(&host, &compiled.meta.uses);
+        tilolang_tilo::platform::load(host.runtime(), &compiled.meta.uses);
         host.runtime()
             .set_reading(&account(), reading)
             .expect("the account is read");

@@ -2354,7 +2354,7 @@ mod tests {
             let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
             // The packages the shell's scenarios reach (`use so.tilo.notes as notes`), each
             // compiled before the shell as `tilolang check` compiles it.
-            let published = tilolang_tilo::catalogue::published_packages(&[dir
+            let published = tilolang_tilo::platform::published_packages(&[dir
                 .parent()
                 .expect("apps/tl")
                 .to_path_buf()])

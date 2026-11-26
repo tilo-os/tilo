@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use tilo_app_package::pack::SigningIdentity;
 
-pub use tilolang_tilo::catalogue::{compile, compile_for};
+pub use tilolang_tilo::platform::{compile, compile_for};
 
 /// Run in a checkout, the tool compiles against the checkout's standard library, as it does
 /// against the packages beside the one it builds: an edit of it takes effect without rebuilding
@@ -36,7 +36,7 @@ pub fn load_checkout_stdlib() -> Result<(), String> {
 /// The package directories [`compile`] reads for `dir`: the ones to watch.
 pub fn package_dirs(dir: &Path, search: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
     let published =
-        tilolang_tilo::catalogue::published_packages(&tilolang::source::search_of(dir, search))?;
+        tilolang_tilo::platform::published_packages(&tilolang::source::search_of(dir, search))?;
     tilolang::source::dependency_order_with(dir, search, &tilolang::source::apps_of(&published))
 }
 

@@ -7,11 +7,11 @@ use tilolang_tilo::bundle::Bundle;
 
 /// The package in `dir` compiled with the packages it uses, as `tilolang build` bundles it: its
 /// imports resolve as `check` and `build` resolve them, against what the platform and the native
-/// apps beside it publish ([`tilolang_tilo::catalogue::published_packages`]) and then the
+/// apps beside it publish ([`tilolang_tilo::platform::published_packages`]) and then the
 /// packages it uses, which the bundle carries.
 fn bundle_of(dir: &std::path::Path) -> Bundle {
     let published =
-        tilolang_tilo::catalogue::published_packages(&tilolang::source::search_of(dir, &[]))
+        tilolang_tilo::platform::published_packages(&tilolang::source::search_of(dir, &[]))
             .unwrap();
     let built = tilolang::source::compile_package(
         dir,
@@ -331,7 +331,7 @@ fn an_install_leaves_out_the_files_only_a_scenario_names() {
     std::fs::write(package.join("app.tl"), SOUND_APP).unwrap();
     std::fs::write(package.join("media/shown.txt"), b"shown").unwrap();
     std::fs::write(package.join("media/only-scenario.txt"), b"demo").unwrap();
-    let published = tilolang_tilo::catalogue::published_packages(&[]).unwrap();
+    let published = tilolang_tilo::platform::published_packages(&[]).unwrap();
     let built = tilolang::source::compile_package(
         &package,
         &[],

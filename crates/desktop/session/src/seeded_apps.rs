@@ -139,7 +139,7 @@ fn seeded_app(person: &str, app: &InstalledApp) -> Result<ResourceService, Strin
         .chain(&bundle.meta.uses)
         .cloned()
         .collect();
-    tilolang_tilo::platform::load(&host, &uses);
+    tilolang_tilo::platform::load(host.runtime(), &uses);
     let package = host
         .load_bundle(&bundle)
         .map_err(|error| format!("{}: {error}", app.app_id))?;

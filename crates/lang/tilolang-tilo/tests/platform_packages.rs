@@ -35,7 +35,7 @@ fn every_platform_package_loads_and_the_session_is_one_package() {
         .map(|meta| meta.app)
         .collect();
     assert!(!apps.is_empty(), "the platform publishes packages");
-    let loaded = platform::load(&host, &apps);
+    let loaded = platform::load(host.runtime(), &apps);
     assert_eq!(
         loaded, apps,
         "every platform package loads: a package left out is one a view reading it cannot open"

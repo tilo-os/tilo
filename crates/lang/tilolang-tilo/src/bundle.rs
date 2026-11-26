@@ -144,7 +144,7 @@ pub fn of_build(built: &[tilolang::source::BuiltPackage]) -> Vec<Bundle> {
 ///
 /// A package does not compile (the message lists the errors by file).
 pub fn compiled(dir: &Path, search: &[PathBuf]) -> Result<Vec<Bundle>, String> {
-    let (built, _) = crate::catalogue::compile(dir, search, &mut tilolang::OsEntropy::default())
+    let (built, _) = crate::platform::compile(dir, search, &mut tilolang::OsEntropy::default())
         .map_err(|error| error.to_string())?;
     Ok(of_build(&built))
 }

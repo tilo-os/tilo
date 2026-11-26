@@ -411,7 +411,7 @@ fn tilolang_command(args: &[String]) -> ExitCode {
         // A package may `use` a native app or the platform's (the device, Settings): their
         // published types are found as `build` finds them.
         Some(_) | None => {
-            return tilolang::cli::main_with(args, tilolang_tilo::catalogue::published_packages);
+            return tilolang::cli::main_with(args, tilolang_tilo::platform::published_packages);
         }
     };
     match result {
