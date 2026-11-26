@@ -5,14 +5,15 @@
 //!
 //! | op | asks | answers |
 //! |---|---|---|
-//! | `ssh` | `{host, port, user, method, secret, key_path, expected, columns, rows}` | `{job, session}`: the grid's session, kept by the toolkit |
-//! | `vnc` | `{host, port, password}` | `{job}`: the newest frame at `tilo-live://<job>` |
+//! | `ssh` | `{host, port, user, method, secret_key, key_path, expected, columns, rows}` | `{job, session}`: the grid's session, kept by the toolkit |
+//! | `vnc` | `{host, port, password_key}` | `{job}`: the newest frame at `tilo-live://<job>` |
 //!
 //! Calls (`engine.call`):
 //!
 //! | op | asks | answers |
 //! |---|---|---|
 //! | `ssh-send` | `{job, text}` | `{}` once the remote shell took the text |
+//! | `keep-secret` | `{key, secret}` | `{}` once the workspace's vault keeps it under `key` |
 //!
 //! Jobs (`engine.start`, `engine.cancel`):
 //!
@@ -20,6 +21,11 @@
 //! |---|---|---|
 //! | `put` | `{job, local_path, remote_path}` | the bytes moved |
 //! | `fetch` | `{job, remote_path, local_path}` | the bytes moved |
+//!
+//! A password or key passphrase is kept once (`keep-secret`) in the store this process keeps the
+//! app's secrets in, which is the workspace's vault for the Remote app's own process, as the
+//! app's own item under the key the app names. A stream's ask names that key, and the secret is
+//! read from the vault into this process for the one session it signs in.
 //!
 //! What a stream says of itself is JSON a view decodes: `{"phase":"connecting"}`,
 //! `{"phase":"connected"}`, `{"phase":"need-trust","algorithm":…,"fingerprint":…}` after a first
@@ -34,10 +40,10 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use serde::Deserialize;
 use serde_json::json;
 use tilo_engine_loader::{Device, EngineApi, Frames, JobOp, JobSink, Needs};
+use tilo_remote::asked::{self, KeepAsk, SshAsk, VncAsk, ssh_word, vnc_word};
 use tilo_remote::{
-    HostKeyIdentity, HostKeyIssue, Moved, SshConfig, SshSession, SshStatus, Transfer,
-    TransferDirection, VncConfig, VncInput, VncSession, VncStatus, default_key_paths, keysym,
-    resolve_auth, vnc_wheel_clicks,
+    Moved, SshSession, SshStatus, Transfer, TransferDirection, VncInput, VncSession, VncStatus,
+    keysym, vnc_wheel_clicks,
 };
 use tilo_terminal::FarSide;
 use tilo_terminal::live::Live;
@@ -117,33 +123,20 @@ fn new_job(prefix: &str) -> String {
 
 // ------------------------------------------------------------------ asks
 
-#[derive(Deserialize)]
-struct SshAsk {
-    host: String,
-    port: u16,
-    #[serde(default)]
-    user: Option<String>,
-    /// `password` or `key`: how the saved connection signs in.
-    method: String,
-    /// The password or key passphrase this device saved, for this connection.
-    #[serde(default)]
-    secret: Option<String>,
-    /// The identity file a key sign-in uses; the usual `~/.ssh` ones when none is named.
-    #[serde(default)]
-    key_path: Option<String>,
-    /// The key this device trusted for the machine, when it trusted one.
-    #[serde(default)]
-    expected: Option<HostKeyIdentity>,
-    columns: u16,
-    rows: u16,
+/// The secret the app kept under `key`, read from the store this process keeps the app's
+/// secrets in: the workspace's vault, for the app's own process.
+fn kept(key: &str) -> Result<Option<String>, String> {
+    let secret = ui::storage::secrets(APP)
+        .get_blocking(key)
+        .map_err(|error| error.to_string())?;
+    Ok(secret.map(|secret| String::from_utf8_lossy(secret.expose()).into_owned()))
 }
 
-#[derive(Deserialize)]
-struct VncAsk {
-    host: String,
-    port: u16,
-    #[serde(default)]
-    password: Option<String>,
+/// Keep `secret` under `key` in the store this process keeps the app's secrets in.
+fn keep(ask: &KeepAsk) -> Result<(), String> {
+    ui::storage::secrets(APP)
+        .put_blocking(&ask.key, ask.secret.as_bytes(), Default::default())
+        .map_err(|error| format!("The workspace's vault did not keep the password: {error}"))
 }
 
 #[derive(Deserialize)]
@@ -168,8 +161,8 @@ struct TransferAsk {
 ///
 /// # Errors
 ///
-/// An op this engine runs no stream for, an ask that does not read, credentials this device does
-/// not hold, or a session that could not be kept.
+/// An op this engine runs no stream for, an ask that does not read, a saved password the vault
+/// did not hand over, or a session that could not be kept.
 fn stream(device: &Device, op: &str, input: &str, frames: &Frames) -> Result<String, String> {
     match op {
         "ssh" => ssh_stream(device, input, *frames),
@@ -180,14 +173,8 @@ fn stream(device: &Device, op: &str, input: &str, frames: &Frames) -> Result<Str
 
 fn ssh_stream(device: &Device, input: &str, frames: Frames) -> Result<String, String> {
     let ask: SshAsk = reads(input)?;
-    let prefer_key = ask.method == "key";
-    let keys = ask
-        .key_path
-        .as_ref()
-        .map_or_else(default_key_paths, |path| {
-            vec![std::path::PathBuf::from(path)]
-        });
-    let auth = resolve_auth(prefer_key, ask.secret, &keys).map_err(|error| error.to_string())?;
+    let (columns, rows) = (ask.columns.max(2), ask.rows.max(2));
+    let config = asked::ssh_config(ask, &kept)?;
     let _ = device;
     let job = new_job("ssh");
     let last = Arc::new(Mutex::new(String::new()));
@@ -198,18 +185,7 @@ fn ssh_stream(device: &Device, input: &str, frames: Frames) -> Result<String, St
         let word = ssh_word(&status);
         say(said_frames, &said_job, &said_last, word);
     });
-    let ssh = SshSession::start(
-        SshConfig {
-            host: ask.host,
-            port: ask.port,
-            user: ask.user.unwrap_or_else(tilo_remote::ssh::default_user),
-            auth,
-            cols: ask.columns.max(2),
-            rows: ask.rows.max(2),
-            expected: ask.expected,
-        },
-        said,
-    )?;
+    let ssh = SshSession::start(config, said)?;
     let output = ssh
         .take_output()
         .ok_or_else(|| "the SSH session gave no output".to_owned())?;
@@ -230,8 +206,8 @@ fn ssh_stream(device: &Device, input: &str, frames: Frames) -> Result<String, St
     let tool = Live::carrying(
         far,
         tilo_content::ContentStore::memory(),
-        ask.columns.max(2),
-        ask.rows.max(2),
+        columns,
+        rows,
         None,
     )
     .map_err(|error| format!("the SSH shell could not be shown: {error}"))?;
@@ -254,6 +230,7 @@ fn ssh_stream(device: &Device, input: &str, frames: Frames) -> Result<String, St
 
 fn vnc_stream(input: &str, frames: Frames) -> Result<String, String> {
     let ask: VncAsk = reads(input)?;
+    let config = asked::vnc_config(ask, &kept)?;
     let job = new_job("vnc");
     let last = Arc::new(Mutex::new(String::new()));
     let said_job = job.clone();
@@ -277,15 +254,7 @@ fn vnc_stream(input: &str, frames: Frames) -> Result<String, String> {
             &frame.data,
         );
     });
-    let desktop = VncSession::start(
-        VncConfig {
-            host: ask.host,
-            port: ask.port,
-            password: ask.password,
-        },
-        said,
-        saw,
-    )?;
+    let desktop = VncSession::start(config, said, saw)?;
     let desktop = Arc::new(desktop);
     key_input::provide(
         &job,
@@ -309,54 +278,9 @@ fn vnc_stream(input: &str, frames: Frames) -> Result<String, String> {
     Ok(json!({ "job": job }).to_string())
 }
 
-fn ssh_word(status: &SshStatus) -> String {
-    match status {
-        SshStatus::Connecting => json!({ "phase": "connecting" }).to_string(),
-        SshStatus::Connected => json!({ "phase": "connected" }).to_string(),
-        SshStatus::Closed => json!({ "phase": "closed" }).to_string(),
-        SshStatus::Failed {
-            why,
-            issue: Some(HostKeyIssue::FirstContact { observed }),
-        } => json!({
-            "phase": "need-trust",
-            "algorithm": observed.algorithm,
-            "fingerprint": observed.fingerprint,
-            "why": why,
-        })
-        .to_string(),
-        SshStatus::Failed {
-            why,
-            issue: Some(HostKeyIssue::Changed { expected, observed }),
-        } => json!({
-            "phase": "key-changed",
-            "expected": expected,
-            "observed": observed,
-            "why": why,
-        })
-        .to_string(),
-        SshStatus::Failed { why, issue: None } => {
-            json!({ "phase": "failed", "why": why }).to_string()
-        }
-    }
-}
-
-fn vnc_word(status: &VncStatus) -> String {
-    match status {
-        VncStatus::Connecting => json!({ "phase": "connecting" }).to_string(),
-        VncStatus::Connected { width, height } => json!({
-            "phase": "connected",
-            "width": width,
-            "height": height,
-        })
-        .to_string(),
-        VncStatus::Closed => json!({ "phase": "closed" }).to_string(),
-        VncStatus::Failed(why) => json!({ "phase": "failed", "why": why }).to_string(),
-    }
-}
-
 // ------------------------------------------------------------------ calls and jobs
 
-/// One `engine.call`: text sent into a connected SSH shell.
+/// One `engine.call`: text sent into a connected SSH shell, or a password kept for a connection.
 ///
 /// # Errors
 ///
@@ -375,6 +299,10 @@ fn call(_device: &Device, op: &str, input: &str) -> Result<String, String> {
                 return Err("text input requires a connected SSH terminal".to_owned());
             }
             ssh.send_input_ack(ask.text.into_bytes())?;
+            Ok(json!({}).to_string())
+        }
+        "keep-secret" => {
+            keep(&reads::<KeepAsk>(input)?)?;
             Ok(json!({}).to_string())
         }
         other => Err(format!("`{other}` is no op this device runs for {APP}")),

@@ -69790,7 +69790,7 @@
         "required": [
           "secret"
         ],
-        "description": "Keeps the password or the key's passphrase this device signs in to `c` with; an empty one\nforgets it. It never leaves this device."
+        "description": "Keeps the password or the key's passphrase `c` signs in with in the workspace's vault, as\nthis app's own item. Search never holds it, and no shared record carries it."
       },
       "tl.so.tilo.remote.Connection.mark_used.Arguments": {
         "type": "object",
@@ -70046,7 +70046,7 @@
         "required": [
           "c"
         ],
-        "description": "Deletes a saved connection for everyone it is shared with; the machine itself is not changed.\nWhat this device kept to sign in to it goes too."
+        "description": "Deletes a saved connection for everyone it is shared with; the machine itself is not changed.\nA password kept for it stays in the workspace's vault until it is forgotten in Passwords."
       },
       "tl.so.tilo.remote.Remote.save_form.Arguments": {
         "type": "object",
@@ -70140,7 +70140,7 @@
           "group",
           "secret"
         ],
-        "description": "Saves the form: adds the connection or changes the one it was opened over, and keeps the\npassword on this device. Answers whether it saved; a refusal leaves the form as it was."
+        "description": "Saves the form: adds the connection or changes the one it was opened over, and keeps the\npassword in the workspace's vault. Answers whether it saved; a refusal leaves the form as it was."
       },
       "tl.so.tilo.remote.Session.$create.Arguments": {
         "type": "object",
@@ -70234,51 +70234,6 @@
             "enum": [
               "online"
             ],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.remote.Secret.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.remote.Secret.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "connection",
-              "purpose",
-              "value"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.remote.Secret.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
             "type": "string"
           },
           "value": {
@@ -70481,7 +70436,8 @@
             "enum": [
               "host",
               "user",
-              "method"
+              "method",
+              "secret_key"
             ],
             "type": "string"
           },
@@ -70524,7 +70480,8 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "host"
+              "host",
+              "password_key"
             ],
             "type": "string"
           },
@@ -70538,6 +70495,50 @@
         "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.remote.VncAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.remote.KeepAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.remote.KeepAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "key",
+              "secret"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.remote.KeepAsk.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -124398,24 +124399,6 @@
     },
     {
       "app": "so.tilo.remote",
-      "resource": "tl.so.tilo.remote.Secret",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.remote.Secret.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.remote",
-      "resource": "tl.so.tilo.remote.Secret",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.remote.Secret.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.remote",
-      "resource": "tl.so.tilo.remote.Secret",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.remote.Secret.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.remote",
       "resource": "tl.so.tilo.remote.TrustedKey",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.remote.TrustedKey.$create.Arguments"
@@ -124521,6 +124504,24 @@
       "resource": "tl.so.tilo.remote.VncAsk",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.remote.VncAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.remote",
+      "resource": "tl.so.tilo.remote.KeepAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.remote.KeepAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.remote",
+      "resource": "tl.so.tilo.remote.KeepAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.remote.KeepAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.remote",
+      "resource": "tl.so.tilo.remote.KeepAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.remote.KeepAsk.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.remote",

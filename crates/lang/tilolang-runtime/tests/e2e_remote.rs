@@ -1,12 +1,14 @@
 //! Remote Desktop (`apps/tl/remote/app.tl`) end to end: the saved connections a workspace shares,
-//! the form's refusals, the passwords a device keeps of its own, and the sessions it opens. An SSH
+//! the form's refusals, the passwords kept in the workspace's vault, and the sessions it opens. An SSH
 //! session's terminal, and a VNC desktop's or a Tilo device's screen, as each stream says it moves,
 //! from connecting to closed. A machine's key is trusted only as it was shown.
 //!
 //! The device's engine is the test's. It answers the ops the Remote engine answers
 //! (`crates/engines/loadable/remote` over `crates/engines/tilo-remote`, whose own tests reach real
 //! SSH and VNC servers on loopback) and says what each stream says of itself, so the test drives
-//! every turn a session can take.
+//! every turn a session can take. Its vault is a map, and a stream's ask is read into the session it
+//! opens the way the engine reads it (`tilo_remote::asked`), so the test sees the password a session
+//! signs in with. `e2e_remote_servers` drives the same app against a real `sshd` and `Xvnc`.
 
 #[cfg(test)]
 mod cases {
@@ -36,9 +38,31 @@ mod cases {
         streams: Rc<RefCell<Vec<(String, String, Json)>>>,
         cancelled: Rc<RefCell<Vec<String>>>,
         push: Rc<RefCell<Option<Arc<dyn Push>>>>,
+        /// The workspace's vault: what `keep-secret` kept, by its key.
+        vault: Rc<RefCell<BTreeMap<String, String>>>,
     }
 
     impl Device {
+        /// The password the newest stream's session signs in with, read from the vault as the
+        /// engine reads it.
+        fn signs_in_with(&self) -> Option<String> {
+            let (_, op, input) = self.stream();
+            let vault = self.vault.borrow();
+            let kept = |key: &str| Ok(vault.get(key).cloned());
+            if op == "vnc" {
+                let ask = serde_json::from_value(input).expect("a VNC ask");
+                tilo_remote::asked::vnc_config(ask, &kept)
+                    .expect("the ask reads")
+                    .password
+            } else {
+                let ask: tilo_remote::asked::SshAsk =
+                    serde_json::from_value(input).expect("an SSH ask");
+                ask.secret_key
+                    .as_deref()
+                    .and_then(|key| vault.get(key).cloned())
+            }
+        }
+
         fn calls(&self, op: &str) -> Vec<Json> {
             self.calls
                 .borrow()
@@ -73,9 +97,15 @@ mod cases {
                 return Err(format!("`{app}` is not the Remote app"));
             }
             let input: Json = serde_json::from_str(input).expect("the app asks in JSON");
-            self.calls.borrow_mut().push((op.to_owned(), input));
+            self.calls.borrow_mut().push((op.to_owned(), input.clone()));
             match op {
                 "ssh-send" => Ok("{}".to_owned()),
+                "keep-secret" => {
+                    let ask: tilo_remote::asked::KeepAsk =
+                        serde_json::from_value(input).expect("a password to keep");
+                    self.vault.borrow_mut().insert(ask.key, ask.secret);
+                    Ok("{}".to_owned())
+                }
                 other => Err(format!("`{other}` is no op of the Remote engine")),
             }
         }
@@ -137,10 +167,16 @@ mod cases {
 
     impl Desk {
         fn new() -> Self {
+            let device = Device::default();
+            Self::over(device.clone(), device)
+        }
+
+        /// The app on a device whose engine is `engine`; `device` records what a test's own
+        /// engine was asked.
+        fn over(engine: impl EngineHost + 'static, device: Device) -> Self {
             let authority = TestAuthority::new();
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
-            let device = Device::default();
-            rt.set_engine(device.clone());
+            rt.set_engine(engine);
             rt.set_clock(|| "2026-11-26T09:30:00Z".to_owned());
             let app = App::compile(SOURCE, &[]);
             authority.trust(&app.load(&rt));
@@ -446,7 +482,7 @@ mod cases {
             assert_eq!(desk.field(&c, "last_used"), used, "the last use stays");
         }
 
-        phase a_password_is_kept_by_the_device_by_what_it_signs_in_with_and_never_by_the_connection;
+        phase a_password_is_kept_in_the_vault_by_what_it_signs_in_with_and_never_by_the_connection;
         {
             let desk = Desk::new();
             let r = Value::resource(&desk.root);
@@ -458,16 +494,17 @@ mod cases {
                 ("secret", Value::text("hunter2")),
             ]);
             assert!(matches!(saved, InvokeOutcome::Done(Value::Bool(true))), "{saved:?}");
-            let secrets = kept(&desk, "secrets");
-            assert_eq!(secrets.len(), 1);
-            assert_eq!(desk.field(&secrets[0], "purpose"), Value::text("ssh-password"));
-            assert_eq!(desk.field(&secrets[0], "value"), Value::text("hunter2"));
             let nas = desk.items(&desk.root, "connections").remove(0);
+            let vault: Vec<(String, String)> = desk.device.vault.borrow().clone().into_iter().collect();
+            assert_eq!(vault.len(), 1, "{vault:?}");
+            assert!(vault[0].0.ends_with(":password"), "kept by what it signs in with: {vault:?}");
+            assert_eq!(vault[0].1, "hunter2");
             let record = desk.rt.project(&Value::resource(&nas)).to_string();
             assert!(!record.contains("hunter2"), "the connection holds no password: {record}");
             desk.connect(&nas);
             let (_, _, input) = desk.device.stream();
-            assert_eq!(input["secret"], "hunter2", "the password signs in");
+            assert!(!input.to_string().contains("hunter2"), "no ask carries the password: {input}");
+            assert_eq!(desk.device.signs_in_with().as_deref(), Some("hunter2"), "the password signs in");
             // Signing in with a key now: the password is never handed over as its passphrase.
             desk.call("change_connection", &[
                 ("c", Value::resource(&nas)), ("name", Value::text("NAS")),
@@ -478,7 +515,7 @@ mod cases {
             desk.connect(&nas);
             let (_, _, input) = desk.device.stream();
             assert_eq!(input["method"], "key");
-            assert_eq!(input["secret"], Json::Null, "no passphrase was kept: {input}");
+            assert_eq!(desk.device.signs_in_with(), None, "no passphrase was kept: {input}");
             // A form with a bad port saves nothing and keeps nothing.
             let saved = desk.call("save_form", &[
                 ("r", r), ("editing", Value::none()), ("name", Value::text("Other")),
@@ -488,7 +525,7 @@ mod cases {
                 ("secret", Value::text("x")),
             ]);
             assert!(matches!(saved, InvokeOutcome::Done(Value::Bool(false))), "{saved:?}");
-            assert_eq!(kept(&desk, "secrets").len(), 1);
+            assert_eq!(desk.device.vault.borrow().len(), 1);
             assert_eq!(desk.items(&desk.root, "connections").len(), 1);
         }
 
@@ -600,7 +637,13 @@ mod cases {
             desk.connect(&c);
             let (job, op, input) = desk.device.stream();
             assert_eq!(op, "vnc");
-            assert_eq!(input, json!({"host": "kiosk.lan", "port": 5900, "password": "pw"}));
+            assert_eq!(input["host"], "kiosk.lan");
+            assert_eq!(input["port"], 5900);
+            assert!(
+                input["password_key"].as_str().is_some_and(|key| key.ends_with(":vnc")),
+                "the ask names the password, never carries it: {input}"
+            );
+            assert_eq!(desk.device.signs_in_with().as_deref(), Some("pw"));
             desk.device.say(&job, &json!({"phase": "connected", "width": 1024, "height": 768}));
             let mut screen = page(&desk, &c);
             let shown = of_kind(screen.tree(), "ui.Image");
@@ -651,7 +694,7 @@ mod cases {
             assert!(shows(&shown, "another Tilo device's screen"), "{}", dump(shown.tree()));
         }
 
-        phase deleting_a_connection_ends_its_session_and_forgets_what_the_device_kept;
+        phase deleting_a_connection_ends_its_session;
         {
             let desk = Desk::new();
             let c = desk.add(&[("name", Value::text("Kiosk")), ("host", Value::text("kiosk.lan")),
@@ -660,7 +703,6 @@ mod cases {
             desk.connect(&c);
             let (job, _, _) = desk.device.stream();
             desk.call("delete_connection", &[("r", Value::resource(&desk.root)), ("c", Value::resource(&c))]);
-            assert!(kept(&desk, "secrets").is_empty(), "the password goes with it");
             assert_eq!(*desk.device.cancelled.borrow(), vec![job]);
             assert!(desk.sessions().is_empty());
             assert!(desk.items(&desk.root, "connections").is_empty());
@@ -676,5 +718,439 @@ mod cases {
             let window = desk.window();
             assert_eq!(of_kind(window.tree(), "ui.ListRow").len(), 300);
         }
+    }
+
+    // ------------------------------------------------------------ real servers
+
+    /// A device whose engine opens real sessions, as the Remote engine does: an ask is read into
+    /// its session by `tilo_remote::asked`, with the password from the device's vault.
+    #[derive(Clone, Default)]
+    struct Real {
+        vault: Rc<RefCell<BTreeMap<String, String>>>,
+        ssh: Rc<RefCell<BTreeMap<String, tilo_remote::SshSession>>>,
+        vnc: Rc<RefCell<BTreeMap<String, tilo_remote::VncSession>>>,
+        /// What every stream last said of itself, by its job.
+        said: Arc<std::sync::Mutex<BTreeMap<String, Json>>>,
+        /// What an SSH shell printed, by its job.
+        printed: Arc<std::sync::Mutex<BTreeMap<String, String>>>,
+        /// The frames a VNC desktop drew, by its job.
+        frames: Arc<std::sync::Mutex<BTreeMap<String, usize>>>,
+        /// The identity a key sign-in uses: the engine's are in `~/.ssh`, this test's in its own
+        /// directory.
+        identity: Rc<RefCell<Option<std::path::PathBuf>>>,
+        streams: Rc<RefCell<usize>>,
+    }
+
+    impl Real {
+        fn said(&self, job: &str) -> Json {
+            self.said
+                .lock()
+                .unwrap()
+                .get(job)
+                .cloned()
+                .unwrap_or(Json::Null)
+        }
+    }
+
+    impl EngineHost for Real {
+        fn call(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
+            match op {
+                "keep-secret" => {
+                    let ask: tilo_remote::asked::KeepAsk =
+                        serde_json::from_str(input).map_err(|e| e.to_string())?;
+                    self.vault.borrow_mut().insert(ask.key, ask.secret);
+                    Ok("{}".to_owned())
+                }
+                "ssh-send" => {
+                    let ask: Json = serde_json::from_str(input).map_err(|e| e.to_string())?;
+                    let job = ask["job"].as_str().unwrap_or_default();
+                    let sessions = self.ssh.borrow();
+                    let session = sessions.get(job).ok_or("no such session")?;
+                    session.send_input_ack(
+                        ask["text"].as_str().unwrap_or_default().as_bytes().to_vec(),
+                    )?;
+                    Ok("{}".to_owned())
+                }
+                other => Err(format!("`{other}` is no op of the Remote engine")),
+            }
+        }
+
+        fn start(&self, _: &str, op: &str, _: &str, _: &JobHandlers) -> Result<String, String> {
+            Err(format!("`{op}` is no job of this test"))
+        }
+
+        fn stream(
+            &self,
+            _app: &str,
+            op: &str,
+            input: &str,
+            push: Arc<dyn Push>,
+        ) -> Result<String, String> {
+            let started = self.streams.borrow().saturating_add(1);
+            *self.streams.borrow_mut() = started;
+            let job = format!("{op}-{started}");
+            let vault = self.vault.borrow().clone();
+            let kept = move |key: &str| Ok(vault.get(key).cloned());
+            let said = Arc::clone(&self.said);
+            let tell = move |job: &str, word: String| {
+                said.lock()
+                    .unwrap()
+                    .insert(job.to_owned(), serde_json::from_str(&word).unwrap());
+                push.state(job, &word);
+            };
+            if op == "ssh" {
+                let mut ask: tilo_remote::asked::SshAsk =
+                    serde_json::from_str(input).map_err(|e| e.to_string())?;
+                ask.key_path = self
+                    .identity
+                    .borrow()
+                    .as_ref()
+                    .map(|path| path.display().to_string());
+                let config = tilo_remote::asked::ssh_config(ask, &kept)?;
+                let named = job.clone();
+                let session = tilo_remote::SshSession::start(
+                    config,
+                    Box::new(move |status| tell(&named, tilo_remote::asked::ssh_word(&status))),
+                )?;
+                let output = session.take_output().expect("the shell's output");
+                let printed = Arc::clone(&self.printed);
+                let named = job.clone();
+                std::thread::spawn(move || {
+                    while let Ok(bytes) = output.recv() {
+                        printed
+                            .lock()
+                            .unwrap()
+                            .entry(named.clone())
+                            .or_default()
+                            .push_str(&String::from_utf8_lossy(&bytes));
+                    }
+                });
+                self.ssh.borrow_mut().insert(job.clone(), session);
+                Ok(json!({ "job": job, "session": format!("term-{job}") }).to_string())
+            } else {
+                let ask: tilo_remote::asked::VncAsk =
+                    serde_json::from_str(input).map_err(|e| e.to_string())?;
+                let config = tilo_remote::asked::vnc_config(ask, &kept)?;
+                let (named, drawn) = (job.clone(), job.clone());
+                let frames = Arc::clone(&self.frames);
+                let session = tilo_remote::VncSession::start(
+                    config,
+                    Box::new(move |status| tell(&named, tilo_remote::asked::vnc_word(&status))),
+                    Box::new(move |_frame| {
+                        frames
+                            .lock()
+                            .unwrap()
+                            .entry(drawn.clone())
+                            .and_modify(|drawn| *drawn = drawn.saturating_add(1))
+                            .or_insert(1);
+                    }),
+                )?;
+                self.vnc.borrow_mut().insert(job.clone(), session);
+                Ok(json!({ "job": job }).to_string())
+            }
+        }
+
+        fn job(&self, _path: &str) -> Result<Option<Json>, String> {
+            Ok(None)
+        }
+
+        fn cancel(&self, job: &str) -> bool {
+            if let Some(session) = self.ssh.borrow_mut().remove(job) {
+                session.close();
+            }
+            self.vnc.borrow_mut().remove(job);
+            true
+        }
+    }
+
+    /// Waits for `done`, up to the time a server on loopback takes at worst.
+    fn until(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = tilo_test_env::hang_deadline();
+        while !done() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {what}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    fn run(program: &str, args: &[&str]) {
+        let status = std::process::Command::new(program)
+            .args(args)
+            .status()
+            .unwrap_or_else(|e| panic!("{program}: {e}"));
+        assert!(status.success(), "{program} {args:?}: {status}");
+    }
+
+    /// A server process this test started, stopped when the test ends.
+    struct Server(std::process::Child);
+
+    impl Drop for Server {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn listening(port: u16) -> bool {
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+    }
+
+    /// The form a person fills in for a new connection, saved.
+    fn save(
+        desk: &Desk,
+        name: &str,
+        kind: &str,
+        auth: &str,
+        port: u16,
+        user: &str,
+        secret: &str,
+    ) -> ResourceRef {
+        let saved = desk.call(
+            "save_form",
+            &[
+                ("r", Value::resource(&desk.root)),
+                ("editing", Value::none()),
+                ("name", Value::text(name)),
+                ("host", Value::text("127.0.0.1")),
+                ("port", Value::text(port.to_string())),
+                ("user", Value::text(user)),
+                ("kind", desk.case("ConnectionKind", kind)),
+                ("auth", desk.case("AuthMethod", auth)),
+                ("group", Value::text("")),
+                ("secret", Value::text(secret)),
+            ],
+        );
+        assert!(
+            matches!(saved, InvokeOutcome::Done(Value::Bool(true))),
+            "{saved:?}"
+        );
+        desk.items(&desk.root, "connections")
+            .into_iter()
+            .find(|c| desk.field(c, "name") == Value::text(name))
+            .expect("the saved connection")
+    }
+
+    /// A real `OpenSSH` `sshd` on loopback in `dir`, with a host key of its own, that takes only
+    /// the key `dir/id`, locked by the passphrase `correct horse`.
+    fn sshd(dir: &std::path::Path) -> (Server, u16) {
+        let at = |name: &str| dir.join(name).display().to_string();
+        // SSH: a host key, a passphrase-locked identity, and a server that takes only that key.
+        run(
+            "ssh-keygen",
+            &["-q", "-t", "ed25519", "-N", "", "-f", &at("host")],
+        );
+        run(
+            "ssh-keygen",
+            &[
+                "-q",
+                "-t",
+                "ed25519",
+                "-N",
+                "correct horse",
+                "-f",
+                &at("id"),
+            ],
+        );
+        std::fs::copy(at("id.pub"), at("authorized_keys")).unwrap();
+        let ssh_port = free_port();
+        std::fs::write(
+            at("sshd_config"),
+            format!(
+                "Port {ssh_port}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\n\
+             PubkeyAuthentication yes\nPasswordAuthentication no\nKbdInteractiveAuthentication no\n\
+             UsePAM no\nStrictModes no\nPermitRootLogin prohibit-password\nPidFile {}\n",
+                at("host"),
+                at("authorized_keys"),
+                at("sshd.pid"),
+            ),
+        )
+        .unwrap();
+        let sshd = Server(
+            std::process::Command::new("/usr/sbin/sshd")
+                .args(["-D", "-e", "-f", &at("sshd_config")])
+                .spawn()
+                .expect("OpenSSH's sshd"),
+        );
+        until("sshd to listen", || listening(ssh_port));
+        (sshd, ssh_port)
+    }
+
+    /// A person saves an SSH machine that signs in with a key locked by a passphrase kept in the
+    /// vault, trusts its key, and the real `OpenSSH` `sshd` runs the command they type.
+    #[test]
+    #[ignore = "starts a real sshd, which the remote-servers check installs"]
+    fn remote_reaches_a_real_sshd_with_the_passphrase_the_vault_keeps() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = Real::default();
+        let desk = Desk::over(real.clone(), Device::default());
+        let me = std::process::Command::new("id")
+            .arg("-un")
+            .output()
+            .unwrap();
+        let me = String::from_utf8(me.stdout).unwrap().trim().to_owned();
+
+        *real.identity.borrow_mut() = Some(dir.path().join("id"));
+        let (_sshd, ssh_port) = sshd(dir.path());
+
+        let c = save(
+            &desk,
+            "Lab",
+            "ssh",
+            "public_key",
+            ssh_port,
+            &me,
+            "correct horse",
+        );
+        assert!(
+            !desk
+                .rt
+                .project(&Value::resource(&c))
+                .to_string()
+                .contains("correct horse"),
+            "the shared connection never holds the passphrase"
+        );
+        desk.connect(&c);
+        until("the first contact", || {
+            real.said("ssh-1")["phase"] == "need-trust"
+        });
+        let shown = page(&desk, &c);
+        assert!(shows(&shown, "Trust key"), "{}", dump(shown.tree()));
+        let fingerprint = real.said("ssh-1")["fingerprint"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        desk.call(
+            "trust_host_key",
+            &[
+                ("c", Value::resource(&c)),
+                ("fingerprint", Value::text(&fingerprint)),
+            ],
+        );
+        desk.connect(&c);
+        until("the shell", || {
+            let said = real.said("ssh-2");
+            assert_ne!(said["phase"], "failed", "the shell did not open: {said}");
+            said["phase"] == "connected"
+        });
+        let terminal = page(&desk, &c);
+        assert_eq!(
+            of_kind(terminal.tree(), "ui.Terminal").len(),
+            1,
+            "{}",
+            dump(terminal.tree())
+        );
+        desk.call(
+            "send_text",
+            &[
+                ("c", Value::resource(&c)),
+                ("text", Value::text("echo tilo-$((6*7))\n")),
+            ],
+        );
+        until("the shell to run the command", || {
+            real.printed
+                .lock()
+                .unwrap()
+                .get("ssh-2")
+                .is_some_and(|out| out.contains("tilo-42"))
+        });
+        desk.call("disconnect", &[("c", Value::resource(&c))]);
+    }
+
+    /// A person saves a VNC desktop with its password kept in the vault: a wrong one is refused,
+    /// and with the right one the real `TigerVNC` `Xvnc` shows its screen.
+    #[test]
+    #[ignore = "starts a real Xvnc, which the remote-servers check installs"]
+    fn remote_reaches_a_real_xvnc_with_the_password_the_vault_keeps() {
+        let dir = tempfile::tempdir().unwrap();
+        let at = |name: &str| dir.path().join(name).display().to_string();
+        let real = Real::default();
+        let desk = Desk::over(real.clone(), Device::default());
+        // VNC: a desktop that asks for a password.
+        let display = (20..99)
+            .find(|n| !std::path::Path::new(&format!("/tmp/.X{n}-lock")).exists())
+            .expect("a free X display");
+        let vnc_port = free_port();
+        let made = std::process::Command::new("vncpasswd")
+            .arg("-f")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write as _;
+                child.stdin.take().unwrap().write_all(b"desk-pw\n")?;
+                child.wait_with_output()
+            })
+            .expect("TigerVNC's vncpasswd");
+        std::fs::write(at("vnc-passwd"), made.stdout).unwrap();
+        let _xvnc = Server(
+            std::process::Command::new("Xvnc")
+                .args([
+                    &format!(":{display}"),
+                    "-rfbport",
+                    &vnc_port.to_string(),
+                    "-localhost",
+                    "-SecurityTypes",
+                    "VncAuth",
+                    "-PasswordFile",
+                    &at("vnc-passwd"),
+                    "-geometry",
+                    "640x480",
+                    "-depth",
+                    "24",
+                    "-nolisten",
+                    "tcp",
+                ])
+                .spawn()
+                .expect("TigerVNC's Xvnc"),
+        );
+        until("Xvnc to listen", || listening(vnc_port));
+
+        let wrong = save(
+            &desk,
+            "Desk, wrong password",
+            "vnc",
+            "password",
+            vnc_port,
+            "",
+            "not-it",
+        );
+        desk.connect(&wrong);
+        until("the refusal", || real.said("vnc-1")["phase"] == "failed");
+        let refused = page(&desk, &wrong);
+        assert!(shows(&refused, "Try again"), "{}", dump(refused.tree()));
+
+        let desktop = save(&desk, "Desk", "vnc", "password", vnc_port, "", "desk-pw");
+        desk.connect(&desktop);
+        until("the desktop", || {
+            let said = real.said("vnc-2");
+            assert_ne!(said["phase"], "failed", "the desktop did not open: {said}");
+            said["phase"] == "connected"
+        });
+        assert_eq!(real.said("vnc-2")["width"], 640);
+        assert_eq!(real.said("vnc-2")["height"], 480);
+        until("its first frame", || {
+            real.frames
+                .lock()
+                .unwrap()
+                .get("vnc-2")
+                .is_some_and(|drawn| *drawn > 0)
+        });
+        let screen = page(&desk, &desktop);
+        let shown = of_kind(screen.tree(), "ui.Image");
+        assert_eq!(shown.len(), 1, "{}", dump(screen.tree()));
+        assert_eq!(
+            shown[0].props.get("src"),
+            Some(&Value::text("tilo-live://vnc-2"))
+        );
     }
 }

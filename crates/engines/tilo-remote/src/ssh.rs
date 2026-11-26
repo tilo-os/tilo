@@ -93,7 +93,7 @@ pub fn resolve_auth(
         })
     } else {
         let password = secret.ok_or_else(|| {
-            anyhow!("no SSH password saved on this device: edit the connection to enter it")
+            anyhow!("no SSH password is kept for this connection: edit the connection to enter it")
         })?;
         Ok(SshAuth::Password(password))
     }

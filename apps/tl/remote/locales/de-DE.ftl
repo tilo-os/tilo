@@ -86,20 +86,6 @@ d-hgy5dnvw = Online
 
 d-qav4zrbn-filter-online = Online
 
-d-5he4b25e = Geheimnis
-    .doc = Ein Passwort oder die Passphrase eines Schlüssels, mit der sich dieses Gerät bei einer Verbindung anmeldet.
-    .noun = { $count ->
-        [one] Geheimnis
-       *[other] Geheimnisse
-    }
-
-d-zfdaqp7c = Verbindung
-
-d-fb6ane5u = Zweck
-    .doc = `ssh-password`, `ssh-key-passphrase` oder `vnc-password`: womit es anmeldet.
-
-d-d6i33xnv = Wert
-
 d-m3ebnfat = Vertrauter Schlüssel
     .doc = Ein SSH-Schlüssel, dem dieses Gerät für eine Maschine vertraut, nachdem ihre Person ihn geprüft hat.
     .noun = { $count ->
@@ -127,8 +113,6 @@ d-mezjldxk = Hier
 d-mqn5woua = Sitzungen
 
 d-b32nsjwp = Gesehen
-
-d-zdbfp7w6 = Geheimnisse
 
 d-jbjh2xut = Vertraut
 
@@ -185,7 +169,8 @@ d-lutwl6ee = Benutzer
 d-iiovxv6t = Methode
     .doc = `password` oder `key`.
 
-d-u55jtdje = Geheimnis
+d-x4aolsn5 = Schlüssel des Geheimnisses
+    .doc = Der Schlüssel, unter dem das Passwort oder die Schlüssel-Passphrase im Tresor liegt.
 
 d-swuhzzts = Erwartet
 
@@ -211,7 +196,18 @@ d-jtksl5yz = Host
 
 d-ypo5oexy = Port
 
-d-q3gwteu3 = Passwort
+d-7re6rxst = Schlüssel des Passworts
+    .doc = Der Schlüssel, unter dem das Passwort des Servers im Tresor liegt.
+
+d-2ohmr6zf = Aufbewahrungsanfrage
+    .noun = { $count ->
+        [one] Aufbewahrungsanfrage
+       *[other] Aufbewahrungsanfragen
+    }
+
+d-z6sarmt3 = Schlüssel
+
+d-4zetse6n = Geheimnis
 
 d-kyykz7ye-filter-port = Port
 
@@ -322,8 +318,8 @@ d-llemdksm = Verbindung löschen
 
 d-llemdksm-c = C
 
-d-fpkhjqie = Das Passwort auf diesem Gerät behalten
-    .doc = Behält das Passwort oder die Schlüssel-Passphrase, mit denen sich dieses Gerät bei `c` anmeldet; ein leerer Wert vergisst beides.
+d-fpkhjqie = Das Passwort im Tresor aufbewahren
+    .doc = Bewahrt das Passwort oder die Schlüssel-Passphrase, mit denen sich `c` anmeldet, im Tresor des Arbeitsbereichs als eigenen Eintrag dieser App auf.
 
 d-fpkhjqie-secret = Geheimnis
 
@@ -390,7 +386,7 @@ d-ze4shwms = Schlüssel vergessen
     .w-this-device-no-longer-trusts-the = Dieses Gerät vertraut dem alten Schlüssel nicht mehr
 
 d-4flbj2vt = Formular speichern
-    .doc = Speichert das Formular: fügt die Verbindung hinzu oder ändert die, über die es geöffnet wurde, und behält das Passwort auf diesem Gerät.
+    .doc = Speichert das Formular: fügt die Verbindung hinzu oder ändert die, über die es geöffnet wurde, und bewahrt das Passwort im Tresor des Arbeitsbereichs auf.
 
 d-4flbj2vt-editing = Bearbeiten
 
@@ -495,7 +491,7 @@ d-bccnijkx = Fenster
     .w-sign-in-with = Anmelden mit
     .w-key-passphrase = Schlüssel-Passphrase
     .w-password = Passwort
-    .w-kept-on-this-device-only = Nur auf diesem Gerät gespeichert.
+    .w-kept-in-the-workspace-s-vault = Im Tresor des Arbeitsbereichs aufbewahrt.
     .w-optional = Optional
     .w-group = Gruppe
     .w-delete-connection = Verbindung löschen

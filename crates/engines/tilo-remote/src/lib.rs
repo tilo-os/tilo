@@ -9,7 +9,8 @@
 //! What arrives is handed to whoever asked: a session's output, its frames, how it stands and
 //! why it stopped. Nothing here records, draws or trusts on its own: the host key a connection
 //! expects comes from the app, which keeps the device's own trust; a password or passphrase is
-//! the app's to save and to hand over for one connection.
+//! kept in the store the device keeps the app's secrets in, and read from there for one connection
+//! ([`asked`]).
 
 #![cfg(not(target_arch = "wasm32"))]
 // This runs in the Remote app's own sandboxed process (it is loaded by the app's engine): a
@@ -24,6 +25,7 @@
     reason = "protocol arithmetic in the app's own process; see the note above"
 )]
 
+pub mod asked;
 pub mod input;
 pub mod rfb;
 pub mod ssh;

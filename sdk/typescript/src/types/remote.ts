@@ -22,9 +22,9 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.remote@84ce024c9aff232a";
+export const SURFACE = "so.tilo.remote@a6480bd78ec9e836";
 
-/** How a connection signs in. The secret itself is never here: a password or a key's passphrase is kept by the device that typed it. One of "password", "public_key", "device_identity". */
+/** How a connection signs in. The secret itself is never here: a password or a key's passphrase is kept in the workspace's vault. One of "password", "public_key", "device_identity". */
 export type AuthMethod = "password" | "public_key" | "device_identity";
 
 /** What a saved connection speaks. One of "ssh", "vnc", "rdp", "tilo". */
@@ -44,11 +44,6 @@ export interface ChangeConnectionArgs {
 /** The arguments of `pin`. */
 export interface PinArgs {
   pinned?: boolean;
-}
-
-/** The arguments of `keep_secret`. */
-export interface KeepSecretArgs {
-  secret: string;
 }
 
 /** The arguments of `mark_used`. */
@@ -130,12 +125,10 @@ export interface Connection extends tilo.Resource {
   }): Promise<void>;
   /** Runs `pin` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   pinMany(items: PinArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Keeps the password or the key's passphrase this device signs in to `c` with; an empty one forgets it. It never leaves this device. */
+  /** Keeps the password or the key's passphrase `c` signs in with in the workspace's vault, as this app's own item. Search never holds it, and no shared record carries it. */
   keep_secret(args: {
     secret: string;
   }): Promise<void>;
-  /** Runs `keep_secret` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  keep_secretMany(items: KeepSecretArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Notes that a session to `c` was opened now. */
   mark_used(): Promise<void>;
   /** Runs `mark_used` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -178,7 +171,7 @@ export interface Connection extends tilo.Resource {
 
 /** The actions `Connection` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CONNECTION_ACTIONS = ["change_connection", "change_connectionMany", "pin", "pinMany", "keep_secret", "keep_secretMany", "mark_used", "mark_usedMany", "connect", "disconnect", "disconnectMany", "send_text", "put_file", "fetch_file", "moved_file", "trust_host_key", "trust_host_keyMany", "forget_host_key", "forget_host_keyMany"] as const;
+export const CONNECTION_ACTIONS = ["change_connection", "change_connectionMany", "pin", "pinMany", "keep_secret", "mark_used", "mark_usedMany", "connect", "disconnect", "disconnectMany", "send_text", "put_file", "fetch_file", "moved_file", "trust_host_key", "trust_host_keyMany", "forget_host_key", "forget_host_keyMany"] as const;
 
 /** The `tl.so.tilo.remote.Connection` kind at `path`. */
 export function connection(ws: tilo.Workspace, path: string): Connection {
@@ -198,13 +191,13 @@ export interface Remote extends tilo.Resource {
     auth?: AuthMethod;
     group?: string;
   }): Promise<Connection>;
-  /** Deletes a saved connection for everyone it is shared with; the machine itself is not changed. What this device kept to sign in to it goes too. */
+  /** Deletes a saved connection for everyone it is shared with; the machine itself is not changed. A password kept for it stays in the workspace's vault until it is forgotten in Passwords. */
   delete_connection(args: {
     c: Connection;
   }): Promise<void>;
   /** Runs `delete_connection` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   delete_connectionMany(items: DeleteConnectionArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Saves the form: adds the connection or changes the one it was opened over, and keeps the password on this device. Answers whether it saved; a refusal leaves the form as it was. */
+  /** Saves the form: adds the connection or changes the one it was opened over, and keeps the password in the workspace's vault. Answers whether it saved; a refusal leaves the form as it was. */
   save_form(args: {
     name: string;
     host: string;
@@ -269,22 +262,6 @@ export function seen(ws: tilo.Workspace, path: string): Seen {
   return resourceProxy(ws, path, SURFACE, SEEN_ACTIONS) as unknown as Seen;
 }
 
-/** Secret — `tl.so.tilo.remote.Secret`. */
-export interface Secret extends tilo.Resource {
-  zfdaqp7c: string;  // connection
-  fb6ane5u: string;  // purpose
-  d6i33xnv: string;  // value
-}
-
-/** The actions `Secret` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const SECRET_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.remote.Secret` kind at `path`. */
-export function secret(ws: tilo.Workspace, path: string): Secret {
-  return resourceProxy(ws, path, SURFACE, SECRET_ACTIONS) as unknown as Secret;
-}
-
 /** TrustedKey — `tl.so.tilo.remote.TrustedKey`. */
 export interface TrustedKey extends tilo.Resource {
   rgmdf7xq: string;  // host
@@ -306,7 +283,6 @@ export function trustedKey(ws: tilo.Workspace, path: string): TrustedKey {
 export interface Here extends tilo.Resource {
   mqn5woua: Array<tilo.Entry<Session>>;  // sessions
   b32nsjwp: Array<tilo.Entry<Seen>>;  // seen
-  zdbfp7w6: Array<tilo.Entry<Secret>>;  // secrets
   jbjh2xut: Array<tilo.Entry<TrustedKey>>;  // trusted
 }
 
@@ -359,7 +335,7 @@ export interface SshAsk extends tilo.Resource {
   hey2mljd: number;  // port
   lutwl6ee: string;  // user
   iiovxv6t: string;  // method
-  u55jtdje: string | null;  // secret
+  x4aolsn5: string;  // secret_key
   swuhzzts: KeyId | null;  // expected
   i4deiyeq: number;  // columns
   wrbw55me: number;  // rows
@@ -378,7 +354,7 @@ export function sshAsk(ws: tilo.Workspace, path: string): SshAsk {
 export interface VncAsk extends tilo.Resource {
   jtksl5yz: string;  // host
   ypo5oexy: number;  // port
-  q3gwteu3: string | null;  // password
+  "7re6rxst": string;  // password_key
 }
 
 /** The actions `VncAsk` reaches before it is read: `ws` calls them without a
@@ -388,6 +364,21 @@ export const VNCASK_ACTIONS = [] as const;
 /** The `tl.so.tilo.remote.VncAsk` kind at `path`. */
 export function vncAsk(ws: tilo.Workspace, path: string): VncAsk {
   return resourceProxy(ws, path, SURFACE, VNCASK_ACTIONS) as unknown as VncAsk;
+}
+
+/** KeepAsk — `tl.so.tilo.remote.KeepAsk`. */
+export interface KeepAsk extends tilo.Resource {
+  z6sarmt3: string;  // key
+  "4zetse6n": string;  // secret
+}
+
+/** The actions `KeepAsk` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const KEEPASK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.remote.KeepAsk` kind at `path`. */
+export function keepAsk(ws: tilo.Workspace, path: string): KeepAsk {
+  return resourceProxy(ws, path, SURFACE, KEEPASK_ACTIONS) as unknown as KeepAsk;
 }
 
 /** Started — `tl.so.tilo.remote.Started`. */

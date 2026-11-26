@@ -27,20 +27,19 @@ __all__ = [
     "Remote",
     "Session",
     "Seen",
-    "Secret",
     "TrustedKey",
     "Here",
     "KeyId",
     "Said",
     "SshAsk",
     "VncAsk",
+    "KeepAsk",
     "Started",
     "SendAsk",
     "TransferAsk",
     "TiloRemote",
     "ChangeConnectionArgs",
     "PinArgs",
-    "KeepSecretArgs",
     "MarkUsedArgs",
     "DisconnectArgs",
     "TrustHostKeyArgs",
@@ -51,7 +50,7 @@ __all__ = [
 ]
 
 AuthMethod = Literal["password", "public_key", "device_identity"]
-"""How a connection signs in. The secret itself is never here: a password or a key's passphrase is kept by the device that typed it."""
+"""How a connection signs in. The secret itself is never here: a password or a key's passphrase is kept in the workspace's vault."""
 
 ConnectionKind = Literal["ssh", "vnc", "rdp", "tilo"]
 """What a saved connection speaks."""
@@ -71,11 +70,6 @@ PinArgs = TypedDict("PinArgs", {
     "pinned": NotRequired["bool | None"],
 })
 """The arguments of `pin`."""
-
-KeepSecretArgs = TypedDict("KeepSecretArgs", {
-    "secret": "str",
-})
-"""The arguments of `keep_secret`."""
 
 MarkUsedArgs = TypedDict("MarkUsedArgs", {
 })
@@ -109,7 +103,7 @@ ObserveArgs = TypedDict("ObserveArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.remote@84ce024c9aff232a"
+    __surface__ = "so.tilo.remote@a6480bd78ec9e836"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -170,7 +164,7 @@ class Notice(Resource):
 
 class Connection(Resource):
     """Connection — `tl.so.tilo.remote.Connection`."""
-    __surface__ = "so.tilo.remote@84ce024c9aff232a"
+    __surface__ = "so.tilo.remote@a6480bd78ec9e836"
     ssofhrgw: str  # name
     dyz6c4fy: str  # host
     @property
@@ -220,12 +214,8 @@ class Connection(Resource):
         return self.many("pin", items)
 
     def keep_secret(self, *, secret: str) -> None:
-        """Keeps the password or the key's passphrase this device signs in to `c` with; an empty one forgets it. It never leaves this device."""
+        """Keeps the password or the key's passphrase `c` signs in with in the workspace's vault, as this app's own item. Search never holds it, and no shared record carries it."""
         return self.action("keep_secret", secret=secret)
-
-    def keep_secret_many(self, items: list[KeepSecretArgs]) -> list[dict[str, Any]]:
-        """Runs `keep_secret` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("keep_secret", items)
 
     def mark_used(self) -> None:
         """Notes that a session to `c` was opened now."""
@@ -289,12 +279,12 @@ class Connection(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"change_connection", "change_connection_many", "pin", "pin_many", "keep_secret", "keep_secret_many", "mark_used", "mark_used_many", "connect", "disconnect", "disconnect_many", "send_text", "put_file", "fetch_file", "moved_file", "trust_host_key", "trust_host_key_many", "forget_host_key", "forget_host_key_many"})
+    __actions__ = frozenset({"change_connection", "change_connection_many", "pin", "pin_many", "keep_secret", "mark_used", "mark_used_many", "connect", "disconnect", "disconnect_many", "send_text", "put_file", "fetch_file", "moved_file", "trust_host_key", "trust_host_key_many", "forget_host_key", "forget_host_key_many"})
 
 
 class Remote(Resource):
     """Remote — `tl.so.tilo.remote.Remote`."""
-    __surface__ = "so.tilo.remote@84ce024c9aff232a"
+    __surface__ = "so.tilo.remote@a6480bd78ec9e836"
     yylg63a7: list[Entry[Connection]]  # connections
 
     def add_connection(self,
@@ -324,7 +314,7 @@ class Remote(Resource):
         return self.action("add_connection", **args)
 
     def delete_connection(self, *, c: Connection) -> None:
-        """Deletes a saved connection for everyone it is shared with; the machine itself is not changed. What this device kept to sign in to it goes too."""
+        """Deletes a saved connection for everyone it is shared with; the machine itself is not changed. A password kept for it stays in the workspace's vault until it is forgotten in Passwords."""
         return self.action("delete_connection", c=c)
 
     def delete_connection_many(self, items: list[DeleteConnectionArgs]) -> list[dict[str, Any]]:
@@ -343,7 +333,7 @@ class Remote(Resource):
         secret: str,
         editing: Connection | None = None,
     ) -> bool:
-        """Saves the form: adds the connection or changes the one it was opened over, and keeps the password on this device. Answers whether it saved; a refusal leaves the form as it was."""
+        """Saves the form: adds the connection or changes the one it was opened over, and keeps the password in the workspace's vault. Answers whether it saved; a refusal leaves the form as it was."""
         args: dict[str, Any] = {}
         if editing is not None:
             args["editing"] = editing
@@ -364,7 +354,7 @@ class Remote(Resource):
 
 class Session(Resource):
     """Session — `tl.so.tilo.remote.Session`."""
-    __surface__ = "so.tilo.remote@84ce024c9aff232a"
+    __surface__ = "so.tilo.remote@a6480bd78ec9e836"
     fpphznkb: str  # connection
     vvyt5lha: str  # name
     amv62hzp: ConnectionKind  # kind
@@ -402,22 +392,14 @@ class Session(Resource):
 
 class Seen(Resource):
     """Seen — `tl.so.tilo.remote.Seen`."""
-    __surface__ = "so.tilo.remote@84ce024c9aff232a"
+    __surface__ = "so.tilo.remote@a6480bd78ec9e836"
     rb2plwyy: str  # connection
     hgy5dnvw: bool  # online
 
 
-class Secret(Resource):
-    """Secret — `tl.so.tilo.remote.Secret`."""
-    __surface__ = "so.tilo.remote@84ce024c9aff232a"
-    zfdaqp7c: str  # connection
-    fb6ane5u: str  # purpose
-    d6i33xnv: str  # value
-
-
 class TrustedKey(Resource):
     """TrustedKey — `tl.so.tilo.remote.TrustedKey`."""
-    __surface__ = "so.tilo.remote@84ce024c9aff232a"
+    __surface__ = "so.tilo.remote@a6480bd78ec9e836"
     rgmdf7xq: str  # host
     cxui2vf5: int  # port
     bmf56c7k: str  # algorithm
@@ -426,16 +408,15 @@ class TrustedKey(Resource):
 
 class Here(Resource):
     """Here — `tl.so.tilo.remote.Here`."""
-    __surface__ = "so.tilo.remote@84ce024c9aff232a"
+    __surface__ = "so.tilo.remote@a6480bd78ec9e836"
     mqn5woua: list[Entry[Session]]  # sessions
     b32nsjwp: list[Entry[Seen]]  # seen
-    zdbfp7w6: list[Entry[Secret]]  # secrets
     jbjh2xut: list[Entry[TrustedKey]]  # trusted
 
 
 class KeyId(Resource):
     """KeyId — `tl.so.tilo.remote.KeyId`."""
-    __surface__ = "so.tilo.remote@84ce024c9aff232a"
+    __surface__ = "so.tilo.remote@a6480bd78ec9e836"
     x5gkgjv7: str  # algorithm
     @property
     def _5vpzlqkt(self) -> str:
@@ -449,7 +430,7 @@ class KeyId(Resource):
 
 class Said(Resource):
     """Said — `tl.so.tilo.remote.Said`."""
-    __surface__ = "so.tilo.remote@84ce024c9aff232a"
+    __surface__ = "so.tilo.remote@a6480bd78ec9e836"
     azv5q3lb: str  # phase
     app3bmk2: str  # why
     @property
@@ -467,12 +448,12 @@ class Said(Resource):
 
 class SshAsk(Resource):
     """SshAsk — `tl.so.tilo.remote.SshAsk`."""
-    __surface__ = "so.tilo.remote@84ce024c9aff232a"
+    __surface__ = "so.tilo.remote@a6480bd78ec9e836"
     qyt6kg5x: str  # host
     hey2mljd: int  # port
     lutwl6ee: str  # user
     iiovxv6t: str  # method
-    u55jtdje: str | None  # secret
+    x4aolsn5: str  # secret_key
     swuhzzts: KeyId | None  # expected
     i4deiyeq: int  # columns
     wrbw55me: int  # rows
@@ -480,22 +461,43 @@ class SshAsk(Resource):
 
 class VncAsk(Resource):
     """VncAsk — `tl.so.tilo.remote.VncAsk`."""
-    __surface__ = "so.tilo.remote@84ce024c9aff232a"
+    __surface__ = "so.tilo.remote@a6480bd78ec9e836"
     jtksl5yz: str  # host
     ypo5oexy: int  # port
-    q3gwteu3: str | None  # password
+    @property
+    def _7re6rxst(self) -> str:
+        """password_key (`7re6rxst` on the wire)."""
+        return self.fields["7re6rxst"]
+
+    @_7re6rxst.setter
+    def _7re6rxst(self, value: str) -> None:
+        self.edit("7re6rxst", value=value)
+
+
+class KeepAsk(Resource):
+    """KeepAsk — `tl.so.tilo.remote.KeepAsk`."""
+    __surface__ = "so.tilo.remote@a6480bd78ec9e836"
+    z6sarmt3: str  # key
+    @property
+    def _4zetse6n(self) -> str:
+        """secret (`4zetse6n` on the wire)."""
+        return self.fields["4zetse6n"]
+
+    @_4zetse6n.setter
+    def _4zetse6n(self, value: str) -> None:
+        self.edit("4zetse6n", value=value)
 
 
 class Started(Resource):
     """Started — `tl.so.tilo.remote.Started`."""
-    __surface__ = "so.tilo.remote@84ce024c9aff232a"
+    __surface__ = "so.tilo.remote@a6480bd78ec9e836"
     hk6v4nxp: str  # job
     k6qck3ko: str  # session
 
 
 class SendAsk(Resource):
     """SendAsk — `tl.so.tilo.remote.SendAsk`."""
-    __surface__ = "so.tilo.remote@84ce024c9aff232a"
+    __surface__ = "so.tilo.remote@a6480bd78ec9e836"
     jlt5sla7: str  # job
     @property
     def _5kuradb3(self) -> str:
@@ -509,7 +511,7 @@ class SendAsk(Resource):
 
 class TransferAsk(Resource):
     """TransferAsk — `tl.so.tilo.remote.TransferAsk`."""
-    __surface__ = "so.tilo.remote@84ce024c9aff232a"
+    __surface__ = "so.tilo.remote@a6480bd78ec9e836"
     @property
     def _376cxznk(self) -> str:
         """job (`376cxznk` on the wire)."""
@@ -531,5 +533,5 @@ class TransferAsk(Resource):
 
 class TiloRemote(Resource):
     """Remote Desktop — `tl.so.tilo.remote`."""
-    __surface__ = "so.tilo.remote@84ce024c9aff232a"
+    __surface__ = "so.tilo.remote@a6480bd78ec9e836"
 

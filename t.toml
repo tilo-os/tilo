@@ -1029,6 +1029,17 @@ on = ["idle", "stable", "dispatch"]
 heavy = true
 
 [[check]]
+name = "remote-servers"
+# Remote signs in to a real OpenSSH sshd and a real TigerVNC Xvnc, which the build image has
+# neither of; dnf installs them from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "dnf install -y --setopt=install_weak_deps=False openssh-server openssh-clients tigervnc-server-minimal >/dev/null\n# The VM's root has a locked password, and sshd without PAM refuses a locked account even a key\n# signs in to: unlock it, with no password that signs in.\nusermod -p '*' root\ncargo test --locked -p tilolang-runtime --test it -- --ignored e2e_remote::cases::remote_reaches_a_real_\n"
+requires = ["arch=x86_64"]
+# dnf writes /usr, which only a VM's image lets it.
+isolation = "vm"
+on = ["idle", "stable", "dispatch"]
+
+[[check]]
 name = "release-trust-expiry"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }

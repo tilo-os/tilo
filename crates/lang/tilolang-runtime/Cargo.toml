@@ -136,6 +136,9 @@ totp-engine = { path = "../../engines/totp-engine" }
 qrcode = { workspace = true }
 image = { workspace = true, features = ["png"] }
 tilo-content = { path = "../../core/content" }
+# Remote's asks, read into the sessions they open as its engine reads them; its real-server test
+# opens those sessions to a real `sshd` and `Xvnc`.
+tilo-remote = { path = "../../engines/tilo-remote" }
 tilo-wake = { path = "../../platform/tilo-wake" }
 
 [lints]

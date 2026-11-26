@@ -59,7 +59,7 @@
     },
     {
       "id": "ssh",
-      "said": "Save an SSH connection: the list says where it goes, the password stays on the device",
+      "said": "Save an SSH connection: the list says where it goes, the password is kept in the vault",
       "ops": {
         "tl": [
           {
@@ -93,7 +93,7 @@
             "type": "ada"
           },
           {
-            "wait_for": "Kept on this device only."
+            "wait_for": "Kept in the workspace's vault."
           },
           {
             "press_any": [

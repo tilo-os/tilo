@@ -4,6 +4,7 @@ app so.tilo.remote "Remote Desktop" (
     tagline: "Shows and controls another desktop",
     keywords: ["remote desktop", "rdp", "vnc", "ssh", "screen sharing", "remote access", "remote control", "remmina", "krdc", "remote desktop connection", "mstsc", "terminal", "fernzugriff", "fernwartung", "remotedesktop", "entfernter zugriff", "bildschirmfreigabe", "fernsteuerung", "verbinden"],
     splash_budget: 250,
+    web: ["*"],
 )
 
 use so.tilo.device as device
@@ -21,7 +22,7 @@ enum ConnectionKind {
 }
 
 /// How a connection signs in. The secret itself is never here: a password or a key's passphrase
-/// is kept by the device that typed it.
+/// is kept in the workspace's vault.
 enum AuthMethod {
     password
     public_key
@@ -30,7 +31,7 @@ enum AuthMethod {
 }
 
 /// One saved machine: where it is and how to reach it. Everyone the connections are shared with
-/// sees the same list; a password stays on the device it was typed on.
+/// sees the same list; a password is kept in the workspace's vault, never in the connection.
 type Connection (title: name, untitled: "Untitled connection") {
     name: Text
     /// The host name or address, or a Tilo device's exact endpoint id.
@@ -83,20 +84,6 @@ type Seen {
     online: Bool = false
 }
 
-/// A password or a key's passphrase this device signs in to a connection with. It stays out of
-/// the shared connection, so a connection is shared without its secret, and search never holds
-/// or finds it.
-type Secret {
-    connection: Text
-    /// `ssh-password`, `ssh-key-passphrase` or `vnc-password`: what it signs in with.
-    purpose: Text
-    value: Text
-
-    search {
-        conceal value
-    }
-}
-
 /// An SSH key this device trusted for one machine, after its person checked it.
 type TrustedKey {
     host: Text
@@ -105,12 +92,11 @@ type TrustedKey {
     fingerprint: Text
 }
 
-/// What this device keeps of its own: the sessions it opened, what it saw of each machine, the
-/// secrets it signs in with and the machines' keys it trusts.
+/// What this device keeps of its own: the sessions it opened, what it saw of each machine and the
+/// machines' keys it trusts.
 type Here {
     sessions: Collection<Session>
     seen: Collection<Seen>
-    secrets: Collection<Secret>
     trusted: Collection<TrustedKey>
 }
 
@@ -144,7 +130,8 @@ type SshAsk {
     user: Text
     /// `password` or `key`.
     method: Text
-    secret: Option<Text>
+    /// The key the password or the key's passphrase is kept under in the vault.
+    secret_key: Text
     expected: Option<KeyId>
     columns: Int
     rows: Int
@@ -153,7 +140,13 @@ type SshAsk {
 type VncAsk {
     host: Text
     port: Int
-    password: Option<Text>
+    /// The key the server's password is kept under in the vault.
+    password_key: Text
+}
+
+type KeepAsk {
+    key: Text
+    secret: Text
 }
 
 type Started {
@@ -206,11 +199,10 @@ fn port_fits(port: Int) -> Bool {
     port >= 1 and port <= 65535
 }
 
-/// The purpose a connection's secret is kept under on this device.
+/// What a connection's secret is for. It is short: with the connection's id it names the vault
+/// item, which takes a purpose of one short line.
 fn secret_purpose(kind: ConnectionKind, auth: AuthMethod) -> Text {
-    if kind == .vnc {
-        "vnc-password"
-    } else if auth == .public_key { "ssh-key-passphrase" } else { "ssh-password" }
+    if kind == .vnc { "vnc" } else if auth == .public_key { "passphrase" } else { "password" }
 }
 
 /// A Tilo device's id, cut to the part a person tells devices apart by.
@@ -402,7 +394,7 @@ action pin(c: Connection, pinned: Bool = not c.favorite) (
 }
 
 /// Deletes a saved connection for everyone it is shared with; the machine itself is not changed.
-/// What this device kept to sign in to it goes too.
+/// A password kept for it stays in the workspace's vault until it is forgotten in Passwords.
 destructive action delete_connection(r: Remote, c: Connection) (
     icon: .trash,
     label: "Delete connection",
@@ -411,35 +403,24 @@ destructive action delete_connection(r: Remote, c: Connection) (
     for s in here.sessions.filter(s -> s.connection == c.id) {
         close_session(s)
     }
-    for k in here.secrets.filter(k -> k.connection == c.id) {
-        here.secrets.remove(k)
-    }
     r.connections.remove(c)
 }
 
-/// The secret this device signs in to `c` with, the way `c` signs in now: a password typed for
-/// a password sign-in is never handed over as a key's passphrase.
-fn secret_of(c: Connection) -> Option<Text> {
-    let purpose = secret_purpose(c.kind, c.auth)
-    let kept = here.secrets.find(k -> k.connection == c.id and k.purpose == purpose)?.value ?? ""
-    if kept == "" { .none } else { .some(kept) }
+/// The key the secret `c` signs in with is kept under in the vault, the way `c` signs in now: a
+/// password typed for a password sign-in is never handed over as a key's passphrase.
+fn secret_key(c: Connection) -> Text {
+    "{c.id}:{secret_purpose(c.kind, c.auth)}"
 }
 
-/// Keeps the password or the key's passphrase this device signs in to `c` with; an empty one
-/// forgets it. It never leaves this device.
+/// Keeps the password or the key's passphrase `c` signs in with in the workspace's vault, as
+/// this app's own item. Search never holds it, and no shared record carries it.
 action keep_secret(c: Connection, secret: Text) (
     icon: .key,
-    label: "Keep the password on this device",
+    label: "Keep the password in the vault",
 ) {
-    let purpose = secret_purpose(c.kind, c.auth)
-    if let kept = here.secrets.find(k -> k.connection == c.id and k.purpose == purpose) {
-        if secret == "" {
-            here.secrets.remove(kept)
-        } else if kept.value != secret {
-            kept.value = secret
-        }
-    } else if secret != "" {
-        here.secrets.insert(Secret(connection: c.id, purpose: purpose, value: secret))
+    match engine.call("keep-secret", json.encode(KeepAsk(key: secret_key(c), secret: secret))) {
+        .ok(_) => {}
+        .err(why) => { notice(why, kind: .error) }
     }
 }
 
@@ -492,7 +473,7 @@ action connect(c: Connection) -> Session uses time (
                     port: c.port,
                     user: c.user,
                     method: if c.auth == .public_key { "key" } else { "password" },
-                    secret: secret_of(c),
+                    secret_key: secret_key(c),
                     expected: expected,
                     columns: 80,
                     rows: 24,
@@ -502,7 +483,7 @@ action connect(c: Connection) -> Session uses time (
     } else {
         engine.stream(
             "vnc",
-            json.encode(VncAsk(host: c.host, port: c.port, password: secret_of(c))),
+            json.encode(VncAsk(host: c.host, port: c.port, password_key: secret_key(c))),
         )
     }
     match started {
@@ -700,7 +681,7 @@ view window(r: Remote) {
     // The list, or the form that starts or changes a connection.
     state screen: Text = "list"
     state editing: Option<Connection> = .none
-    // The form's fields; a password typed here goes to this device's keeping on Save.
+    // The form's fields; a password typed here goes to the workspace's vault on Save.
     state name: Text = ""
     state host: Text = ""
     state port: Text = "22"
@@ -894,7 +875,7 @@ fn window_title(
 }
 
 /// Saves the form: adds the connection or changes the one it was opened over, and keeps the
-/// password on this device. Answers whether it saved; a refusal leaves the form as it was.
+/// password in the workspace's vault. Answers whether it saved; a refusal leaves the form as it was.
 action save_form(
     r: Remote,
     editing: Option<Connection>,
@@ -1211,7 +1192,7 @@ view connection_form(
                         }
                         field(
                             if auth == .public_key { "Key passphrase" } else { "Password" },
-                            help: "Kept on this device only.",
+                            help: "Kept in the workspace's vault.",
                         ) {
                             ui.TextInput(
                                 bind: secret,
