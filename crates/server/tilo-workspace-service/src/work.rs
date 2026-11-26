@@ -178,7 +178,21 @@ impl Turn {
         match self {
             Self::Invocation { id, .. } => format!("invocation/{}", id.0),
             Self::Linux { id, .. } => format!("linux/{}", id.0),
-            Self::Agent { agent, place, .. } => format!("turn/{agent}/{place}"),
+            Self::Agent { agent, place, .. } => {
+                let lease = format!("turn/{agent}/{place}");
+                if lease.len() <= tilo_peer_state::workspace_membership::MAX_LEASE_ID
+                    || lease.chars().any(char::is_control)
+                {
+                    return lease;
+                }
+                // A direct conversation spells out all its members. Keep existing lease names,
+                // and hash the two separate parts of a longer name. Neither may contain NUL.
+                let mut hash = blake3::Hasher::new_derive_key("Tilo agent turn lease v1");
+                hash.update(agent.as_bytes());
+                hash.update(&[0]);
+                hash.update(place.as_bytes());
+                format!("turn-hash/{}", hash.finalize().to_hex())
+            }
         }
     }
 }
@@ -565,5 +579,41 @@ pub trait HostJobs: Send + Sync {
     /// Stop the job running here for `invocation`, when it still runs.
     fn cancel(&self, invocation: InvocationId) {
         let _ = invocation;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Turn;
+    use tilo_peer_state::workspace_membership::MAX_LEASE_ID;
+
+    #[test]
+    fn agent_claims_keep_existing_names_and_identify_long_conversations_separately() {
+        let lease = |agent: &str, place: &str| {
+            Turn::Agent {
+                agent: agent.into(),
+                signer: agent.into(),
+                place: place.into(),
+                acts_for: [0; 32],
+                app: "so.tilo.chat".into(),
+                record: String::new(),
+            }
+            .lease()
+        };
+        let place = "p".repeat(MAX_LEASE_ID - "turn/scout/".len());
+        let existing = format!("turn/scout/{place}");
+        assert_eq!(existing.len(), 256);
+        assert_eq!(lease("scout", &place), existing);
+
+        let longer = format!("{place}x");
+        assert_eq!(format!("turn/scout/{longer}").len(), 257);
+        let first = lease("scout", &longer);
+        assert!(first.starts_with("turn-hash/") && first.len() <= MAX_LEASE_ID);
+        assert_eq!(first, lease("scout", &longer));
+        assert_ne!(first, lease("other", &longer));
+        assert_ne!(first, lease("scout", &format!("{place}y")));
+        assert_ne!(lease("a/b", &longer), lease("a", &format!("b/{longer}")));
+        let invalid = format!("{longer}\n");
+        assert_eq!(lease("scout", &invalid), format!("turn/scout/{invalid}"));
     }
 }

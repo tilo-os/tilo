@@ -377,8 +377,8 @@ impl MemberPlace {
     }
 }
 
-/// The longest lease id a member claims.
-const MAX_LEASE_ID: usize = 256;
+/// The longest lease id a member claims, in bytes.
+pub const MAX_LEASE_ID: usize = 256;
 
 /// A change to the workspace's own settings: its name, its saved grant sets and
 /// their assignment, its apps' sandbox capabilities and its saved shortcuts.
