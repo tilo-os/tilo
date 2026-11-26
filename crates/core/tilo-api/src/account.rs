@@ -1187,7 +1187,7 @@ impl Account {
                 "a key is asked for from the device that answers for the account",
                 "create the key with account/keys#mint, or make one in Tilo",
             ),
-            Op::MintKey => Self::here_mint(here, host, &key, grant, &server, args),
+            Op::MintKey => Self::here_mint(here, host, &key, grant, &server, args).await,
             Op::RevokeKey => self.here_revoke(host, &key, grant, &server, args).await,
             Op::Usage => failed(
                 "unavailable",
@@ -1276,7 +1276,7 @@ impl Account {
     }
 
     /// Mint a key reaching one workspace, for an agent to act there, from the key that asks.
-    fn here_mint(
+    async fn here_mint(
         here: &dyn crate::session::Here,
         host: &dyn crate::session::AccountHere,
         key: &GrantKey,
@@ -1343,7 +1343,7 @@ impl Account {
         // The workspace keeps the new key's certificate before anyone holds it, so its first
         // read is answered as that key's own.
         if let Some(key) = minted.key()
-            && let Err(error) = here.enter(workspace, &key)
+            && let Err(error) = here.enter(workspace, &key).await
         {
             tracing::warn!(%error, workspace, grant = %minted.id, "a minted key is not recorded in its workspace yet");
         }

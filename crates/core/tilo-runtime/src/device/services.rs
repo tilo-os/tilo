@@ -3683,11 +3683,11 @@ struct DeviceContent(tilo_workspace_service::workspaces::Workspaces);
 
 #[cfg(target_os = "linux")]
 impl super::processes::ContentOf for DeviceContent {
-    fn content(&self, workspace: &str) -> Option<String> {
+    fn content(&self, workspace: &str) -> futures_util::future::BoxFuture<'static, Option<String>> {
         let workspaces = self.0.clone();
         let workspace = workspace.to_owned();
-        let reader = workspaces.device_person();
-        super::workspaces::block_on_owned(async move {
+        Box::pin(async move {
+            let reader = workspaces.device_person();
             let reading = workspaces.content_reading(&workspace, reader).await;
             serde_json::to_string(&reading).ok()
         })
@@ -3721,10 +3721,7 @@ fn follow_content_changes(
                     // Writes were missed: every workspace is read again by `content_refresh_all`.
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         if let Some(processes) = processes.upgrade() {
-                            let _ = tokio::task::spawn_blocking(move || {
-                                processes.content_refresh_all();
-                            })
-                            .await;
+                            processes.content_refresh_all().await;
                         }
                         continue;
                     }
@@ -3734,10 +3731,7 @@ fn follow_content_changes(
                     Ok(workspace) => workspace,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         if let Some(processes) = processes.upgrade() {
-                            let _ = tokio::task::spawn_blocking(move || {
-                                processes.content_refresh_all();
-                            })
-                            .await;
+                            processes.content_refresh_all().await;
                         }
                         continue;
                     }
@@ -3747,8 +3741,7 @@ fn follow_content_changes(
             let Some(host) = processes.upgrade() else {
                 return;
             };
-            // The reading is read from the workspace's store, which waits: never on this thread.
-            let _ = tokio::task::spawn_blocking(move || host.content_changed(&workspace)).await;
+            host.content_changed(&workspace).await;
         }
     });
 }
@@ -4095,16 +4088,43 @@ impl Daemon {
     /// A run of the key `key` in `workspace`: its calls are the key's, carried beside its person,
     /// admitted by the certificate its person gave it and decided by what they may do there,
     /// narrowed by the key's scope ([`ServiceWorkspaces::admit_key`]).
+    ///
+    /// For a caller on a thread of its own: one on the app runtime's thread awaits
+    /// [`Self::admit_key`] and builds the run with [`Self::key_run`].
     fn provider_for_key(
         &self,
         workspace: &str,
         key: &tilo_api::grant_key::GrantKey,
     ) -> io::Result<RuntimeActionProvider> {
+        let admission = block_on_owned(self.admit_key(workspace, key))?;
+        self.key_run(workspace, admission)
+    }
+
+    /// Admit `key` in `workspace` ([`ServiceWorkspaces::admit_key`]), which waits on the
+    /// workspaces.
+    fn admit_key(
+        &self,
+        workspace: &str,
+        key: &tilo_api::grant_key::GrantKey,
+    ) -> impl std::future::Future<Output = io::Result<Arc<tilo_workspace_service::workspaces::SessionAdmission>>>
+    + Send
+    + 'static {
         let workspaces = Arc::clone(&self.workspaces);
         let (named, signing, cert) = (workspace.to_owned(), key.key().clone(), key.cert().clone());
-        let admission =
-            block_on_owned(async move { workspaces.admit_key(&named, &signing, &cert).await })
-                .map_err(io::Error::other)?;
+        async move {
+            workspaces
+                .admit_key(&named, &signing, &cert)
+                .await
+                .map_err(io::Error::other)
+        }
+    }
+
+    /// The run of a key the workspace admitted as `admission`.
+    fn key_run(
+        &self,
+        workspace: &str,
+        admission: Arc<tilo_workspace_service::workspaces::SessionAdmission>,
+    ) -> io::Result<RuntimeActionProvider> {
         let broker = self
             .broker
             .app_action_broker()
@@ -4225,8 +4245,12 @@ impl tilo_api::session::Here for DaemonHere {
         &self,
         workspace: &str,
         key: &tilo_api::grant_key::GrantKey,
-    ) -> Result<tilo_api::session::Reached, String> {
-        tilo_api::session::Here::enter(&*self.daemon()?, workspace, key)
+    ) -> tilo_api::session::Asked<'_, tilo_api::session::Reached> {
+        let (daemon, workspace, key) = (self.daemon(), workspace.to_owned(), key.clone());
+        Box::pin(async move {
+            let daemon = daemon?;
+            tilo_api::session::Here::enter(&*daemon, &workspace, &key).await
+        })
     }
 
     fn account(&self) -> tilo_api::session::FoundAccount<'_> {
@@ -4307,22 +4331,30 @@ impl tilo_api::session::Here for Daemon {
         &self,
         workspace: &str,
         key: &tilo_api::grant_key::GrantKey,
-    ) -> Result<tilo_api::session::Reached, String> {
-        if hex::encode(key.cert().user_public_key) != self.actor {
-            return Err("this key is not of this computer's person".to_owned());
-        }
-        let provider = self
-            .provider_for_key(workspace, key)
-            .map_err(|error| error.to_string())?;
-        let caller = provider
-            .admission_caller()
-            .ok_or_else(|| "the key's run was not admitted".to_owned())?;
-        let tasks = self.task_hosts(provider.clone(), caller.clone(), &self.actor);
-        Ok(tilo_api::session::Reached {
-            provider: Arc::new(provider),
-            person: self.actor.clone(),
-            caller: Some(caller),
-            tasks,
+    ) -> tilo_api::session::Asked<'_, tilo_api::session::Reached> {
+        let workspace = workspace.to_owned();
+        let mine = hex::encode(key.cert().user_public_key) == self.actor;
+        // Admitting the key waits on the workspaces: awaited, as the programs API this answers
+        // runs on the app runtime's thread.
+        let admitted = self.admit_key(&workspace, key);
+        Box::pin(async move {
+            if !mine {
+                return Err("this key is not of this computer's person".to_owned());
+            }
+            let admission = admitted.await.map_err(|error| error.to_string())?;
+            let provider = self
+                .key_run(&workspace, admission)
+                .map_err(|error| error.to_string())?;
+            let caller = provider
+                .admission_caller()
+                .ok_or_else(|| "the key's run was not admitted".to_owned())?;
+            let tasks = self.task_hosts(provider.clone(), caller.clone(), &self.actor);
+            Ok(tilo_api::session::Reached {
+                provider: Arc::new(provider),
+                person: self.actor.clone(),
+                caller: Some(caller),
+                tasks,
+            })
         })
     }
 

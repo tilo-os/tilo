@@ -501,6 +501,96 @@ impl DeviceAsked {
     }
 }
 
+impl DeviceAsked {
+    /// Send `waiting`'s call where it runs from now on, its run admitted, and read how it ends
+    /// there.
+    fn send_again(&self, waiting: Waiting, request: InvokeRequest) {
+        let Waiting {
+            run,
+            caller,
+            route,
+            read,
+            ..
+        } = waiting;
+        // A read is let through to the join that waits for it; nothing is sent.
+        if let Some(read) = read {
+            let invocation = request.invocation;
+            Standing::stand(
+                &self.standing,
+                &route.1,
+                InvocationState::new(
+                    invocation,
+                    InvocationUpdate::Succeeded {
+                        invocation,
+                        output: tilo_actions::ActionOutput::default(),
+                    },
+                ),
+            );
+            read.complete(Ok(()));
+            return;
+        }
+        // It runs where it is sent from now on, and is read there.
+        self.invocations.record(
+            &caller,
+            &route.1,
+            &request,
+            Some(run.workspace()),
+            route.clone(),
+        );
+        Standing::leave(&self.standing, request.invocation);
+        let (provider, acting) = route;
+        let (invocation, standing) = (request.invocation, Arc::downgrade(&self.standing));
+        let (invocations, me) = (Arc::clone(&self.invocations), self.me.clone());
+        provider.invoke(&acting, request).then(move |answered| {
+            // Refused at its admission (the grants no longer reach it): it ran nothing, and its
+            // caller reads why, here.
+            let error = match answered {
+                Some(
+                    Ok(InvocationReceipt {
+                        status: ReceiptStatus::Rejected { error },
+                        ..
+                    })
+                    | Err(error),
+                ) => error,
+                None => ActionCallError::Unavailable {
+                    reason: "the workspace stopped before it answered".into(),
+                },
+                Some(Ok(_)) => return,
+            };
+            let state = failed(invocation, &error);
+            let (Some(standing), Some(me)) = (standing.upgrade(), me.upgrade()) else {
+                return;
+            };
+            Standing::stand(&standing, &acting, state);
+            if let Some(recorded) = invocations.get(&caller, &invocation) {
+                invocations.record(
+                    &caller,
+                    &acting,
+                    &recorded.request,
+                    recorded.workspace.as_deref(),
+                    me.route(&acting),
+                );
+            }
+        });
+    }
+}
+
+/// How `invocation` ends when it was refused at its admission: `error` says why.
+fn failed(invocation: InvocationId, error: &ActionCallError) -> InvocationState {
+    InvocationState::new(
+        invocation,
+        InvocationUpdate::Failed {
+            invocation,
+            error: ActionFailure {
+                code: error.code().to_owned(),
+                message: error.to_string(),
+                details: None,
+                retryable: false,
+            },
+        },
+    )
+}
+
 /// Whether `a` and `b` are the same asker: the same person's, under the same key and agent.
 fn same_asker(a: &Caller, b: &Caller) -> bool {
     a.user_public_key() == b.user_public_key()
@@ -564,87 +654,28 @@ impl AskedDispatch for DeviceAsked {
         context: &Value,
     ) -> Result<(), ActionCallError> {
         let remembered = self.waiting.lock_recover().remove(&request.invocation);
-        let Waiting {
-            run,
-            caller,
-            route,
-            read,
-            ..
-        } = match remembered {
+        let waiting = match remembered {
             Some(waiting) => waiting,
+            // Admitting the run again waits on the workspaces: never on the app runtime's own
+            // thread, whose tasks would all stop behind that wait. Asked there, the run is
+            // admitted and sent from a thread of its own, and a refusal is how the call stands.
+            None if tilo_rt::app().is_runtime_thread() => {
+                let me = self.me.upgrade().ok_or_else(not_waiting)?;
+                let (restored, context) = (restored.clone(), context.clone());
+                tilo_rt::app().handle().spawn_blocking(move || {
+                    let invocation = request.invocation;
+                    match me.admitted_again(&restored, &request, &context) {
+                        Ok(waiting) => me.send_again(waiting, request),
+                        Err(error) => {
+                            Standing::stand(&me.standing, &restored, failed(invocation, &error));
+                        }
+                    }
+                });
+                return Ok(());
+            }
             None => self.admitted_again(restored, &request, context)?,
         };
-        // A read is let through to the join that waits for it; nothing is sent.
-        if let Some(read) = read {
-            let invocation = request.invocation;
-            Standing::stand(
-                &self.standing,
-                &route.1,
-                InvocationState::new(
-                    invocation,
-                    InvocationUpdate::Succeeded {
-                        invocation,
-                        output: tilo_actions::ActionOutput::default(),
-                    },
-                ),
-            );
-            read.complete(Ok(()));
-            return Ok(());
-        }
-        // It runs where it is sent from now on, and is read there.
-        self.invocations.record(
-            &caller,
-            &route.1,
-            &request,
-            Some(run.workspace()),
-            route.clone(),
-        );
-        Standing::leave(&self.standing, request.invocation);
-        let (provider, acting) = route;
-        let (invocation, standing) = (request.invocation, Arc::downgrade(&self.standing));
-        let (invocations, me) = (Arc::clone(&self.invocations), self.me.clone());
-        provider.invoke(&acting, request).then(move |answered| {
-            // Refused at its admission (the grants no longer reach it): it ran nothing, and its
-            // caller reads why, here.
-            let error = match answered {
-                Some(
-                    Ok(InvocationReceipt {
-                        status: ReceiptStatus::Rejected { error },
-                        ..
-                    })
-                    | Err(error),
-                ) => error,
-                None => ActionCallError::Unavailable {
-                    reason: "the workspace stopped before it answered".into(),
-                },
-                Some(Ok(_)) => return,
-            };
-            let state = InvocationState::new(
-                invocation,
-                InvocationUpdate::Failed {
-                    invocation,
-                    error: ActionFailure {
-                        code: error.code().to_owned(),
-                        message: error.to_string(),
-                        details: None,
-                        retryable: false,
-                    },
-                },
-            );
-            let (Some(standing), Some(me)) = (standing.upgrade(), me.upgrade()) else {
-                return;
-            };
-            Standing::stand(&standing, &acting, state);
-            if let Some(recorded) = invocations.get(&caller, &invocation) {
-                invocations.record(
-                    &caller,
-                    &acting,
-                    &recorded.request,
-                    recorded.workspace.as_deref(),
-                    me.route(&acting),
-                );
-            }
-        });
+        self.send_again(waiting, request);
         Ok(())
     }
 

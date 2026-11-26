@@ -280,8 +280,9 @@ type Opened = dyn Fn(&str) + Send + Sync;
 /// carries them (`tilolang_tilo::content::WorkspaceContent` JSON). The daemon hands it to each
 /// window's process, which serves it as `workspace.content`.
 pub(crate) trait ContentOf: Send + Sync {
-    /// The reading of `workspace` for this device's person, now.
-    fn content(&self, workspace: &str) -> Option<String>;
+    /// The reading of `workspace` for this device's person, now. It reads the workspace's store,
+    /// so it is awaited: a process starting never waits on it.
+    fn content(&self, workspace: &str) -> futures_util::future::BoxFuture<'static, Option<String>>;
 }
 
 /// The tilolang processes this device runs, by workspace, app and runtimes.
@@ -569,41 +570,34 @@ impl Processes {
         let _ = self.content_of.set(content);
     }
 
-    /// The workspace's content as this device's person reads it now, as an instance is handed it:
-    /// empty where no service reads one here.
+    /// The workspace's content as an instance is handed it: the reading its processes were last
+    /// told, or empty where none was read yet. Reading it waits on the workspace's store, which a
+    /// process starting never does: [`Self::content_changed`] tells the instance once it is read.
     fn content(&self, workspace: &str) -> String {
-        let content = self
-            .content_of
-            .get()
-            .and_then(|content| content.content(workspace))
-            .unwrap_or_default();
         self.contents
             .lock_recover()
-            .insert(workspace.to_owned(), content.clone());
-        content
+            .get(workspace)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The content of `workspace` moved — its owners set another limit, or a host refused content
-    /// or kept it once a limit was raised: say it on every process running a window of it, so the
-    /// views that read `workspace.content` show the refusal or its going. A reading that did not
-    /// move is said no second time.
+    /// or kept it once a limit was raised, or a process of it started before it was read: say it
+    /// on every process running a window of it, so the views that read `workspace.content` show
+    /// the refusal or its going. A reading that did not move is said no second time.
     #[cfg(target_os = "linux")]
-    pub(crate) fn content_changed(&self, workspace: &str) {
+    pub(crate) async fn content_changed(&self, workspace: &str) {
         let Some(content) = self.content_of.get() else {
             return;
         };
-        let reading = content.content(workspace).unwrap_or_default();
-        if self
-            .contents
-            .lock_recover()
-            .get(workspace)
-            .is_some_and(|said| said == &reading)
+        let reading = content.content(workspace).await.unwrap_or_default();
         {
-            return;
+            let mut contents = self.contents.lock_recover();
+            if contents.get(workspace).is_some_and(|said| said == &reading) {
+                return;
+            }
+            contents.insert(workspace.to_owned(), reading.clone());
         }
-        self.contents
-            .lock_recover()
-            .insert(workspace.to_owned(), reading.clone());
         for (key, process) in self.running().iter() {
             if key.workspace != workspace || key.alone.is_some() {
                 continue;
@@ -627,7 +621,7 @@ impl Processes {
     /// Read every workspace's content again: what a daemon told of writes it missed does, so no
     /// process keeps a reading that moved without it hearing.
     #[cfg(target_os = "linux")]
-    pub(crate) fn content_refresh_all(&self) {
+    pub(crate) async fn content_refresh_all(&self) {
         let mut workspaces: Vec<String> = {
             let running = self.running();
             running.keys().map(|key| key.workspace.clone()).collect()
@@ -635,7 +629,7 @@ impl Processes {
         workspaces.sort();
         workspaces.dedup();
         for workspace in workspaces {
-            self.content_changed(&workspace);
+            self.content_changed(&workspace).await;
         }
     }
 
@@ -946,6 +940,16 @@ impl Processes {
             tools: instance.tools,
         };
         let started = self.send(&key, &request, &fds, build)?;
+        // The workspace's content is read from its store, which waits: off this call, which may
+        // come on the app runtime's own thread. The instance is told it once it is read.
+        #[cfg(target_os = "linux")]
+        if self.content_of.get().is_some() {
+            let processes = Arc::clone(self);
+            let workspace = key.workspace.clone();
+            tilo_rt::app()
+                .handle()
+                .spawn(async move { processes.content_changed(&workspace).await });
+        }
         tracing::info!(
             target: tilo_startup_metrics::LAUNCH_LATENCY_TARGET,
             package_id = %instance.app,

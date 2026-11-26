@@ -686,8 +686,9 @@ async fn listed_by(
             &self,
             workspace: &str,
             _: &tilo_api::grant_key::GrantKey,
-        ) -> Result<tilo_api::session::Reached, String> {
-            Err(format!("the desk holds no {workspace}"))
+        ) -> tilo_api::session::Asked<'_, tilo_api::session::Reached> {
+            let refused = format!("the desk keeps no {workspace}");
+            Box::pin(async move { Err(refused) })
         }
         fn account(&self) -> tilo_api::session::FoundAccount<'_> {
             let account: Arc<dyn tilo_api::session::AccountServer> = self.0.clone();

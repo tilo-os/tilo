@@ -63,7 +63,10 @@ type StartHosts = Box<
 >;
 
 /// The programs of the sessions this daemon's dispatch admits.
-pub(crate) struct DaemonPrograms {
+pub(crate) struct DaemonPrograms(Arc<Sessions>);
+
+/// What runs those programs: the person's API, the task hosts, and the sessions open.
+struct Sessions {
     person_api: PersonApi,
     hosts: StartHosts,
     sessions: std::sync::Mutex<HashMap<Key, Session>>,
@@ -71,12 +74,15 @@ pub(crate) struct DaemonPrograms {
 
 impl DaemonPrograms {
     fn new(person_api: PersonApi, hosts: StartHosts) -> Self {
-        Self {
+        Self(Arc::new(Sessions {
             person_api,
             hosts,
             sessions: std::sync::Mutex::default(),
-        }
+        }))
     }
+}
+
+impl Sessions {
 
     /// The session `request` names, started when it has none, its calls going through what
     /// `request` brings now. Sessions whose connection ended go first, and their hosts with them.
@@ -161,10 +167,70 @@ impl DaemonPrograms {
     }
 }
 
-impl Programs for DaemonPrograms {
+impl Sessions {
+    /// Run `request`'s program in the session it names.
     fn run(&self, request: ProgramRequest<'_>) -> Result<Pending<Outcome>, String> {
         let api = self.session_of(&request)?;
         tilo_mcp::task_runs::run(api, request.program, request.go, request.this, request.stop)
+    }
+}
+
+impl Programs for DaemonPrograms {
+    fn run(&self, request: ProgramRequest<'_>) -> Result<Pending<Outcome>, String> {
+        let ProgramCaller::Person { person, session } = request.caller else {
+            return self.0.run(request);
+        };
+        if !tilo_rt::app().is_runtime_thread() {
+            return self.0.run(request);
+        }
+        // A person's session is started through the daemon's API for them, which admits them in
+        // the workspace and waits on the workspaces: never on the app runtime's own thread,
+        // whose tasks would all stop behind that wait. Asked there, the program runs from a
+        // thread of its own, and is answered when it ends.
+        let (person, session) = (person.to_owned(), session.map(str::to_owned));
+        let workspace = request.workspace.to_owned();
+        let ProgramRequest {
+            provider,
+            group,
+            program,
+            go,
+            this,
+            stop,
+            asked_in,
+            ..
+        } = request;
+        let sessions = Arc::clone(&self.0);
+        let (ended, answer) = tilo_actions::remote::pending();
+        tilo_rt::app().handle().spawn_blocking(move || {
+            let ran = sessions.run(ProgramRequest {
+                workspace: &workspace,
+                provider,
+                caller: ProgramCaller::Person {
+                    person: &person,
+                    session: session.as_deref(),
+                },
+                group,
+                program,
+                go,
+                this,
+                stop,
+                asked_in,
+            });
+            match ran {
+                Ok(running) => running.then(move |outcome| {
+                    if let Some(outcome) = outcome {
+                        ended.complete(outcome);
+                    }
+                }),
+                Err(reason) => ended.complete(Err(Box::new(tilo_actions::ActionFailure {
+                    code: "refused".to_owned(),
+                    message: reason,
+                    details: None,
+                    retryable: false,
+                }))),
+            }
+        });
+        Ok(answer)
     }
 }
 

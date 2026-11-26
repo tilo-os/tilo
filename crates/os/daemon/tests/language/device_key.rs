@@ -253,6 +253,26 @@ fn a_fresh_computer_signs_at_once_through_its_first_sign_in() {
         // once, as the same key.
         signs_at_once(b"the first thing signed after signing in");
         seals_at_once();
+        // The daemon goes on answering while those services come up and their first work runs
+        // (the apps a trigger starts, the content each window reads): none of it waits on the
+        // thread every daemon task runs on. A session that signs in meanwhile asks to found its
+        // person too, and is told at once that the computer has one.
+        let services_start = std::time::Instant::now();
+        while services_start.elapsed() < 3 * AT_ONCE {
+            let asked = std::time::Instant::now();
+            let refounded = place
+                .found(&tilo_api::daemon::Founding::default())
+                .expect("a second founding is answered");
+            assert!(refounded.is_none(), "the computer has its person already");
+            actions.ask("info", json!({})).expect("the daemon answers");
+            assert!(
+                asked.elapsed() < AT_ONCE,
+                "the daemon answered after {:?}, {:?} after its person was founded",
+                asked.elapsed(),
+                services_start.elapsed()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
         assert_eq!(
             DaemonSigner::of(actions.clone()).unwrap().public_key(),
             signer.public_key(),

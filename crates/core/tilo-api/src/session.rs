@@ -203,9 +203,12 @@ pub trait Here: Send + Sync {
     /// `workspace`'s actions as `key` reaches them here: its calls are the key's own, decided by
     /// what the workspace grants that key, never its person's.
     ///
+    /// Awaited: admitting the key waits on the workspaces, which are served on the runtime the
+    /// API's connections run on.
+    ///
     /// # Errors
     /// It holds no such workspace, the key's person is not in it, or it cannot serve it now.
-    fn enter(&self, workspace: &str, key: &crate::grant_key::GrantKey) -> Result<Reached, String>;
+    fn enter(&self, workspace: &str, key: &crate::grant_key::GrantKey) -> Asked<'_, Reached>;
 
     /// The person's account at their server, which makes, branches and deletes their
     /// workspaces and lists those this host does not keep. `None` for a desktop that reaches no
@@ -515,7 +518,10 @@ impl Session {
                 {
                     return Err(Refusal::NotFound);
                 }
-                let reached = here.enter(workspace, key).map_err(Refusal::Unavailable)?;
+                let reached = here
+                    .enter(workspace, key)
+                    .await
+                    .map_err(Refusal::Unavailable)?;
                 let provider =
                     Joined::provider(workspace, Some(reached.provider), self.account.clone());
                 let server = match reached.caller {

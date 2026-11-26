@@ -522,17 +522,20 @@ mod tests {
             &self,
             workspace: &str,
             _: &crate::grant_key::GrantKey,
-        ) -> Result<crate::session::Reached, String> {
+        ) -> crate::session::Asked<'_, crate::session::Reached> {
             if workspace != WORKSPACE {
-                return Err(format!("no workspace {workspace} here"));
+                let refused = format!("no workspace {workspace} here");
+                return Box::pin(async move { Err(refused) });
             }
             self.entered.lock().unwrap().push(workspace.to_owned());
             let provider: crate::session::Provider = std::sync::Arc::new(self.actions.clone());
-            Ok(crate::session::Reached {
-                provider,
-                person: "ada".into(),
-                caller: None,
-                tasks: None,
+            Box::pin(async move {
+                Ok(crate::session::Reached {
+                    provider,
+                    person: "ada".into(),
+                    caller: None,
+                    tasks: None,
+                })
             })
         }
     }
@@ -710,8 +713,9 @@ mod tests {
             &self,
             workspace: &str,
             _: &crate::grant_key::GrantKey,
-        ) -> Result<crate::session::Reached, String> {
-            Err(format!("{workspace} is not entered in this test"))
+        ) -> crate::session::Asked<'_, crate::session::Reached> {
+            let refused = format!("{workspace} is not entered in this test");
+            Box::pin(async move { Err(refused) })
         }
 
         fn account(&self) -> crate::session::FoundAccount<'_> {

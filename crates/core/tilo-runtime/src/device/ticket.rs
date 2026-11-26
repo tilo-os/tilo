@@ -1187,6 +1187,20 @@ impl Tickets {
             ISSUE | LOG_IN | PENDING | APPROVE | REPORTED | RENAME | REVOKE | UPDATE
         );
         if !waiting {
+            // Certifying a key and answering a sign-in read and write the person's workspace,
+            // which waits on the workspaces: never on the app runtime's own thread, whose tasks
+            // would all stop behind that wait. Asked there, they are answered from a thread of
+            // their own.
+            if matches!(action.as_str(), CERTIFY_KEY | ANSWER_SIGN_IN)
+                && tilo_rt::app().is_runtime_thread()
+            {
+                let (answered, answer) = tilo_actions::remote::pending();
+                let served = self.clone();
+                self.0.runtime.spawn_blocking(move || {
+                    answered.complete(served.answer_at_once(&action, &args, rooted, invocation));
+                });
+                return answer;
+            }
             return Pending::ready(self.answer_at_once(&action, &args, rooted, invocation));
         }
         let accepted = InvocationState::new(invocation, InvocationUpdate::Accepted { invocation });
