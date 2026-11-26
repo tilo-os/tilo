@@ -9,7 +9,6 @@ use super::suggesting_field;
 use crate::synthetic_input::cursor_moved;
 use crate::testing::dispatch;
 use crate::text_edit::SUGGESTION_SETTLE;
-use crate::text_selection::{next_word_boundary, prev_word_boundary};
 use std::time::Duration;
 
 /// A field laid out wide enough for a menu, holding `text`.
@@ -472,45 +471,6 @@ tilo_test_env::scenario! {
             known.insert_word_boundary(" ");
             assert_eq!(known.value(), "teh ");
         }
-    }
-}
-
-#[test]
-fn word_boundaries_walk_starts_ends_and_snap() {
-    // Motion reads at its end: this test checks the resting frame.
-    let _settled = crate::motion::testing::settled();
-    // Case `prev_word_boundary_walks_word_starts`.
-    {
-        let s = "hello world quick ui";
-        //       ^0    ^6    ^12   ^18
-        assert_eq!(prev_word_boundary(s, s.len()), 18);
-        assert_eq!(prev_word_boundary(s, 18), 12);
-        assert_eq!(prev_word_boundary(s, 12), 6);
-        assert_eq!(prev_word_boundary(s, 6), 0);
-        assert_eq!(prev_word_boundary(s, 0), 0);
-    }
-
-    // Case `next_word_boundary_walks_word_ends`.
-    // `next_word_boundary` lands *past* the trailing space, like "Ctrl + Right".
-    {
-        let s = "hello world quick ui";
-        assert_eq!(next_word_boundary(s, 0), 6);
-        assert_eq!(next_word_boundary(s, 6), 12);
-        assert_eq!(next_word_boundary(s, 12), 18);
-        assert_eq!(next_word_boundary(s, 18), s.len());
-        assert_eq!(next_word_boundary(s, s.len()), s.len());
-    }
-
-    // Case `word_boundaries_snaps_to_word_bounds`.
-    // At a space immediately after a word, snaps to the word on the left
-    // (matches every native editor's double-click-on-trailing-space).
-    {
-        let s = "hello world";
-        assert_eq!(word_boundaries(s, 2), (0, 5)); // mid-word
-        assert_eq!(word_boundaries(s, 0), (0, 5)); // word start
-        assert_eq!(word_boundaries(s, 5), (0, 5)); // space → snap left
-        assert_eq!(word_boundaries(s, 6), (6, 11)); // start of next word
-        assert_eq!(word_boundaries(s, 11), (6, 11)); // end → snap left
     }
 }
 

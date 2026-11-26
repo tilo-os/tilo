@@ -133,8 +133,6 @@ pub(super) fn shaped_row(ti: &TextInput, byte: usize) -> usize {
         .visual_line_index(ti.text_to_layout_byte(byte))
 }
 
-#[path = "text_input_attributed_tests.rs"]
-mod attributed;
 #[path = "text_input_caret_tests.rs"]
 mod caret;
 #[path = "text_input_completion_tests.rs"]

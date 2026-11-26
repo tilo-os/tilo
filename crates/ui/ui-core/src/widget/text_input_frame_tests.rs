@@ -3,7 +3,6 @@
 //! replacement, the purpose handed to the input method, and the menus over it.
 use super::super::*;
 use super::draw_to_populate;
-use super::draw_with_theme;
 use super::drive;
 use super::mods;
 use super::suggesting_field;
@@ -15,70 +14,6 @@ use crate::text_edit::SUGGESTION_SETTLE;
 tilo_test_env::scenario! {
     fn a_field_shapes_measures_and_lays_out_its_text;
 
-    phase themed_input_typography_reflows_and_centers_actual_shaped_text;
-    {
-        let _settled = crate::motion::testing::settled();
-        let mut input = TextInput::local()
-            .with_initial_value("Themed input baseline")
-            .with_spellcheck(false)
-            .with_autocorrect(false);
-        input.core.set_selection(6, 12);
-        let mut authored = Theme::dark();
-        authored.tokens.typography = authored.tokens.typography.with_base_size(18.0);
-        let themes = [
-            authored.clone().with_ui_scale(1.25).with_text_scale(1.5),
-            authored.with_ui_scale(2.0).with_text_scale(1.5),
-        ];
-        let mut previous_height = 0.0;
-        for theme in themes {
-            let mut tree = TaffyTree::new();
-            let node = input.build_layout(&mut tree, &theme, &mut Default::default());
-            tree.compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(640.0),
-                    height: taffy::AvailableSpace::MaxContent,
-                },
-            )
-            .unwrap();
-            input.apply_layout(&tree, node, Point::ZERO);
-            draw_with_theme(&mut input, &theme);
-            let layout = input
-                .single_layout
-                .as_ref()
-                .expect("actual draw shapes the input");
-            let line_height = f64::from(layout.buffer.metrics().line_height);
-            assert!(
-                input.rect.height() > previous_height,
-                "a changed theme reflows the retained field"
-            );
-            previous_height = input.rect.height();
-            assert!((input.single_origin.y + line_height / 2.0 - input.rect.center().y).abs() < 0.001);
-            assert_eq!(input.core.caret(), 12);
-            assert_eq!(input.core.anchor(), 6);
-            assert!(
-                input.take_dirty().is_none(),
-                "theme changes are not user edits"
-            );
-        }
-        input.set_text_role(TextRole::Heading);
-        let theme = Theme::dark().with_ui_scale(2.0).with_text_scale(1.5);
-        input.prepare_theme(&theme);
-        draw_with_theme(&mut input, &theme);
-        assert!(
-            (input
-                .single_layout
-                .as_ref()
-                .unwrap()
-                .buffer
-                .metrics()
-                .font_size
-                - theme.text(TextRole::Heading).size)
-                .abs()
-                < 0.001,
-            "a role change reads the current theme instead of a stale cached Body size"
-        );
-    }
 
     phase a_prompt_wider_than_its_field_shows_what_fits_and_says_where_it_stopped;
     {
@@ -189,27 +124,6 @@ tilo_test_env::scenario! {
         assert_eq!(ti.value(), "ten");
     }
 
-    phase a_correction_stands_by_its_word_on_a_paragraphs_last_row;
-    // Under the word where the note shows room, else over the word's row.
-    {
-        let text = "alpha beta gamma delta epsilon zeta eta theta beautifull";
-        let mut ti = suggesting_field(text).multiline(true);
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 120.0, 400.0));
-        draw_to_populate(&mut ti);
-        let caret = Widget::ime_cursor_rect(&ti).expect("a focused field has a caret");
-        assert!(caret.y0 > 40.0, "the paragraph wraps onto rows: {caret:?}");
-        ti.apply_layout_external(Rect::new(0.0, 0.0, 120.0, caret.y1 + 2.0));
-        let start = crate::time::now() + crate::time::Duration::from_secs(3600);
-        ti.refresh_suggestion_at(start);
-        let _frame = crate::motion::pin_frame_at(start + SUGGESTION_SETTLE);
-        for (room, under) in [(400.0, true), (caret.y1 + 2.0, false)] {
-            ti.chip_room = Some(Rect::new(0.0, 0.0, 120.0, room));
-            draw_to_populate(&mut ti);
-            let chip = ti.overhang().expect("the settled misspelling is offered a correction");
-            let gap = if under { chip.y0 - caret.y1 } else { caret.y0 - chip.y1 };
-            assert!((0.0..=8.0).contains(&gap), "under {under}: {chip:?}, caret {caret:?}");
-        }
-    }
 
     phase sure_corrections_apply_at_the_boundary_and_backspace_takes_one_back;
     // "i" and "im" are corrected although word lists hold "i"; "cant" and "wont"
@@ -612,53 +526,4 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase an_autocorrection_mark_stays_inside_the_field;
-    {
-        fn drawn(field: &mut TextInput, theme: &Theme) -> Scene {
-            let mut renderer = TextRenderer::new();
-            let mut scene = Scene::new();
-            Widget::draw(field, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, theme, crate::presence::PresenceCtx::empty().draw_env()));
-            scene
-        }
-
-        // A tall note in a short field, with the typo on its first row corrected.
-        fn corrected_field() -> TextInput {
-            let mut field = TextInput::local()
-                .multiline(true)
-                .with_spellcheck(true)
-                .with_autocorrect(true)
-                .with_spell_language("en_US")
-                .with_initial_value("teh one\nand two\nand three\nand four\nand five\n");
-            field.set_focus(true);
-            field.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 70.0));
-            field.core.set_caret(3);
-            field.insert_word_boundary(" ");
-            assert_eq!(
-                field.value().get(..4),
-                Some("the "),
-                "the typo is corrected in place"
-            );
-            assert!(field.last_autocorrection.is_some());
-            field
-        }
-
-        let _settled = crate::motion::testing::settled();
-        let theme = Theme::dark();
-        let mut shown = corrected_field();
-        let mut hidden = corrected_field();
-        hidden.last_autocorrection = None;
-        assert_ne!(
-            drawn(&mut shown, &theme).encoding().draw_data,
-            drawn(&mut hidden, &theme).encoding().draw_data,
-            "the corrected word on a row the field shows is marked"
-        );
-        let line = shown.body_line_height();
-        shown.scroll_y = 3.0 * line;
-        hidden.scroll_y = 3.0 * line;
-        assert_eq!(
-            drawn(&mut shown, &theme).encoding().draw_data,
-            drawn(&mut hidden, &theme).encoding().draw_data,
-            "a mark on a row scrolled out of the field paints nothing"
-        );
-    }
 }

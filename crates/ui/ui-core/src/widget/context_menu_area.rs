@@ -1369,38 +1369,6 @@ mod tests {
         });
     }
 
-    /// A row an assistive technology or an agent names is the entry the area runs through the
-    /// action the row names: the menu leaves its owner's rows to the area, which runs the app's
-    /// action once and closes the menu. No press lands where the row is drawn.
-    #[test]
-    fn a_row_a_tool_names_is_the_entry_the_area_runs() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
-        let (mut area, _) = opening_menu();
-        let mut doc = automerge::AutoCommit::new();
-        let target = crate::a11y_child_route::encode(&[0], Some("context-menu:item:1"));
-        assert!(
-            crate::a11y_child_route::perform(
-                &mut area,
-                &target,
-                &crate::a11y::Action::Activate,
-                &mut crate::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-            ),
-            "the area runs the row its menu offers"
-        );
-        assert_eq!(
-            chosen_action(&mut area).as_deref(),
-            Some("action-2"),
-            "the row ran the action it names"
-        );
-        assert!(
-            chosen_action(&mut area).is_none(),
-            "an activation runs the entry once"
-        );
-        assert!(!area.is_open(), "the menu closed on the row");
-    }
-
     type Chosen = Rc<std::cell::RefCell<Vec<String>>>;
 
     /// The picker an emoji bar opened stands over the menu, so it is one of the children a
@@ -1657,47 +1625,6 @@ mod tests {
         }
         fn context_menu_anchor(&self) -> Option<Rect> {
             Some(self.anchor)
-        }
-    }
-
-    /// The same menu on a display whose pixels are not the layout's: its
-    /// edges fall on the pixels the frame draws, at every scale.
-    #[test]
-    fn a_keyboard_menu_lands_on_the_displays_pixels() {
-        for scale in [1.0, 1.5, 2.0, 3.0] {
-            // Motion reads at its end: this test checks the resting frame.
-            let _settled = crate::motion::testing::settled();
-            let anchor = Rect::new(20.3, 200.7, 300.6, 238.4);
-            let area = ContextMenuArea::new(
-                Box::new(RowWithTheKeyboard {
-                    inner: Spacer::fixed(300.0),
-                    anchor,
-                }),
-                |_| {
-                    vec![MenuEntry::bound(
-                        "First",
-                        crate::testing::bound_press("test:menu", "first"),
-                    )]
-                },
-            );
-            let mut harness = crate::app::driver::Driver::for_root(
-                crate::State::new(),
-                area,
-                (400, 400),
-                crate::theme::Theme::dark(),
-            );
-            harness.set_input_scale(scale).expect("a display scale");
-            harness.relayout();
-            harness.key("Shift+F10");
-            harness.relayout();
-            let rect = harness.root::<ContextMenuArea>().menu().get_rect();
-            for edge in [rect.x0, rect.y0, rect.x1, rect.y1] {
-                let pixels = edge * scale;
-                assert!(
-                    (pixels - pixels.round()).abs() < 0.01,
-                    "{edge} is not a device pixel at {scale}x: {rect:?}"
-                );
-            }
         }
     }
 

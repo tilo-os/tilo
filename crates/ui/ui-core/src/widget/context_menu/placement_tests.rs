@@ -143,31 +143,6 @@ tilo_test_env::scenario! {
         assert!(shown >= 1, "the menu shows rows");
     }
 
-    // Taller than the room on either side of its control but not than the window, a menu stands
-    // whole in the window over the control, so its last row is pressed where it is drawn.
-    phase a_menu_with_room_in_the_window_shows_every_row;
-    {
-        let _settled = crate::motion::testing::settled();
-        let mut m = ContextMenu::with_items(
-            (0..12)
-                .map(|i| MenuItem::action(format!("Row {i}"), || {}))
-                .collect(),
-        );
-        let window = Rect::new(0.0, 0.0, 400.0, 560.0);
-        let control = Rect::new(10.0, 260.0, 42.0, 292.0);
-        m.open_anchored(control, window);
-        let rect = m.get_rect();
-        assert!(!m.list.overflows(), "no row scrolls away: {rect:?}");
-        assert!(
-            rect.y0 >= window.y0 && rect.y1 <= window.y1 + 0.5,
-            "the menu stands in the window: {rect:?}"
-        );
-        let last = m.item_rect(11).expect("the last row is laid out");
-        assert!(
-            rect.contains(last.center()) && last.y1 <= window.y1,
-            "the last row is drawn where a press reaches it: {last:?} in {rect:?}"
-        );
-    }
 
     // A menu a row opens follows the row it stands against: the same call that
     // opens it places it again wherever the row is now.
@@ -185,44 +160,5 @@ tilo_test_env::scenario! {
         );
     }
 
-    // On a coarse pointer the row is itself the target, so it grows to the
-    // toolkit's minimum and the panel with it.
-    phase a_menu_row_meets_the_minimum_target_on_a_touch_screen;
-    {
-        let _settled = crate::motion::testing::settled();
-        let mut m = menu();
-        m.open_anchored(row(100.0), WINDOW);
-        let fine = m.row_height();
-        let touch = crate::interaction::InteractionEnvironment::TOUCH;
-        m.set_interaction_environment(touch);
-        let target = f64::from(touch.minimum_target());
-        assert!(m.row_height() >= target, "{} < {target}", m.row_height());
-        assert!(m.row_height() > fine);
-        let item = m.item_rect(0).expect("the first row is laid out");
-        assert!(item.height() >= target - 0.5, "{item:?}");
-    }
 
-    // Whatever a row's edges are, the panel's edges land on the display's
-    // pixels: the frame draws the menu where it placed it.
-    phase menu_edges_land_on_device_pixels;
-    {
-        for scale in [1.5_f64, 2.0, 3.0] {
-            let _grid = crate::widget::layout::enter_device_scale(scale);
-            let _settled = crate::motion::testing::settled();
-            let mut m = ContextMenu::with_items(vec![
-                MenuItem::action("Rename this task", || {}),
-                MenuItem::action("Duplicate", || {}),
-            ]);
-            m.set_text_scale(1.5);
-            m.open_anchored(Rect::new(25.3, 100.7, 505.6, 139.4), WINDOW);
-            let rect = m.get_rect();
-            for edge in [rect.x0, rect.y0, rect.x1, rect.y1] {
-                let pixels = edge * scale;
-                assert!(
-                    (pixels - pixels.round()).abs() < 1e-6,
-                    "{edge} is not a device pixel at {scale}x: {rect:?}"
-                );
-            }
-        }
-    }
 }

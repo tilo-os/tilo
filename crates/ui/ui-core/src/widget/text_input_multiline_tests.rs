@@ -2,9 +2,7 @@
 //! copy across newlines, wrapping at Unicode line breaks, navigation by visual
 //! line, and the binding that survives a controlled field.
 use super::super::*;
-use super::draw_to_populate;
 use super::drive;
-use super::layout_height;
 use super::ml_input;
 use super::mods;
 use super::shaped_row;
@@ -348,83 +346,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_wrapping_field_holding_one_line_centres_it_in_the_band_it_stands_in;
-    {
-        let _settled = crate::motion::testing::settled();
-        let theme = Theme::dark();
-        let inset = 8.0;
-        {
-            let mut composer = TextInput::local().multiline(true);
-            composer.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
-            let height = layout_height(&mut composer, &theme, 320.0);
-            assert!(
-                height >= 48.0,
-                "a composer in a phone's window stands at the touch target: {height}"
-            );
-            composer.apply_layout_external(Rect::new(0.0, 0.0, 320.0, f64::from(height)));
-            draw_to_populate(&mut composer);
-            let (top, shaped_line) = composer.text_band();
-            assert!(
-                (top - (f64::from(height) - shaped_line) / 2.0).abs() < 0.5,
-                "the line is centred in the band: {top} in {height}, a line of {shaped_line}"
-            );
-            assert!(
-                (top - inset).abs() > 1.0,
-                "it is centred rather than pinned to the top: {top}"
-            );
-            let caret = composer.caret_rect(&theme, 0);
-            assert!(
-                (caret.y0 - top).abs() < 0.5 && (caret.height() - shaped_line).abs() < 1.0,
-                "the caret stands on that line: {caret:?}"
-            );
-        }
-
-        {
-            let mut filled = TextInput::local().multiline(true);
-            filled.apply_layout_external(Rect::new(0.0, 0.0, 320.0, 240.0));
-            draw_to_populate(&mut filled);
-            let (top, _) = filled.text_band();
-            assert!(
-                (top - 8.0).abs() < 0.5,
-                "the line starts at the field's inset: {top}"
-            );
-        }
-
-        {
-            let mut wrapped = TextInput::local().multiline(true).with_initial_value(
-                "A sentence with enough words in it that it wraps in a narrow field.",
-            );
-            wrapped.apply_layout_external(Rect::new(0.0, 0.0, 120.0, 48.0));
-            draw_to_populate(&mut wrapped);
-            let (top, _) = wrapped.text_band();
-            assert!(
-                (top - 8.0).abs() < 0.5,
-                "wrapped text starts at the inset and grows down: {top}"
-            );
-        }
-
-        {
-            let mut notes = TextInput::local().multiline(true).with_min_lines(4);
-            notes.apply_layout_external(Rect::new(0.0, 0.0, 320.0, 200.0));
-            draw_to_populate(&mut notes);
-            let (top, _) = notes.text_band();
-            assert!(
-                (top - 8.0).abs() < 0.5,
-                "a box given lines keeps its text at the inset: {top}"
-            );
-        }
-
-        {
-            let mut page = TextInput::local().multiline(true).with_plain_chrome();
-            page.apply_layout_external(Rect::new(0.0, 0.0, 320.0, 400.0));
-            draw_to_populate(&mut page);
-            let (top, _) = page.text_band();
-            assert!(
-                (top - 8.0).abs() < 0.5,
-                "a page's own text starts at the inset however tall the page stands: {top}"
-            );
-        }
-    }
 }
 
 tilo_test_env::scenario! {

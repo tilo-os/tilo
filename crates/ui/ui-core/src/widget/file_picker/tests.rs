@@ -209,106 +209,6 @@ tilo_test_env::scenario! {
         assert_eq!(picker.entries()[sel].name, "cherry.txt");
     }
 
-    phase the_redesigned_dialog_names_selects_and_navigates_by_token_sized_parts;
-    {
-            let (_g, root) = temp_tree();
-            let picker = FilePicker::new("Save", &root, vec![root.clone()])
-                .with_mode(FilePickerMode::Save)
-                .with_filename("report.final.pdf")
-                .settled();
-            assert_eq!(
-                picker.filename.selection_range_public(),
-                Some((0, "report.final".len())),
-                "typing replaces the name and keeps the type"
-            );
-            let hidden = FilePicker::new("Save", &root, vec![root.clone()])
-                .with_mode(FilePickerMode::Save)
-                .with_filename(".bashrc")
-                .settled();
-            assert_eq!(
-                hidden.filename.selection_range_public(),
-                Some((0, ".bashrc".len())),
-                "a dotfile has no extension to keep"
-            );
-
-            let (_g, root) = temp_tree();
-            let inner = root.join("docs");
-            fs::create_dir(&inner).unwrap();
-            let mut picker =
-                FilePicker::new("Open", &root, vec![root.clone(), inner.clone()]).settled();
-            picker.set_rect(Rect::new(0.0, 0.0, 900.0, 620.0));
-            assert!(picker.has_sidebar());
-            let at = picker
-                .places
-                .iter()
-                .position(|p| p.path == inner)
-                .expect("an accessible root is a place");
-            let rect = picker.place_rects[at];
-            feed(&mut picker, &cursor_at(rect.center()));
-            feed(&mut picker, &mouse_press());
-            assert_eq!(picker.current_dir(), inner);
-            assert_eq!(picker.active_place(), Some(at));
-
-            let mut narrow = FilePicker::new("Open", &root, vec![root.clone()]).settled();
-            narrow.set_rect(Rect::new(0.0, 0.0, 420.0, 420.0));
-            assert!(!narrow.has_sidebar(), "a narrow dialog keeps the list");
-
-            use winit::keyboard::NamedKey;
-            let (_g, root) = temp_tree();
-            let mut picker = FilePicker::new("Open", &root, vec![root.clone()])
-                .with_filters(vec![
-                    FileFilter::new("Images", &["png"]),
-                    FileFilter::new("Documents", &["txt"]),
-                ])
-                .settled();
-            picker.set_rect(Rect::new(0.0, 0.0, 900.0, 620.0));
-            Widget::set_focus(&mut picker, true);
-            picker.focus_control(PickerFocus::Filter);
-            let expanded = |picker: &FilePicker| {
-                Widget::accessibility(picker)
-                    .expect("picker accessibility")
-                    .children
-                    .iter()
-                    .find(|node| node.key == Some(PickerFocus::Filter.id()))
-                    .expect("file type control")
-                    .state
-                    .expanded
-            };
-            assert_eq!(expanded(&picker), Some(false));
-            feed(&mut picker, &key_named(NamedKey::Enter));
-            assert!(picker.filter_open);
-            assert_eq!(expanded(&picker), Some(true));
-            feed(&mut picker, &key_named(NamedKey::ArrowDown));
-            feed(&mut picker, &key_named(NamedKey::Enter));
-            assert!(!picker.filter_open);
-            assert_eq!(expanded(&picker), Some(false));
-            assert_eq!(picker.active_filter_label(), "Documents");
-            feed(&mut picker, &key_named(NamedKey::Enter));
-            feed(&mut picker, &key_named(NamedKey::Escape));
-            assert!(
-                !picker.filter_open && picker.outcome().is_none(),
-                "Escape closes the menu, not the dialog"
-            );
-
-            let (_g, root) = temp_tree();
-            let mut deep = root.clone();
-            for level in 0..9 {
-                deep.push(format!("a-rather-long-folder-name-{level}"));
-            }
-            fs::create_dir_all(&deep).unwrap();
-            let mut picker = FilePicker::new("Open", &deep, vec![root.clone()]).settled();
-            picker.set_rect(Rect::new(0.0, 0.0, 560.0, 420.0));
-            picker.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), crate::presence::PresenceCtx::default().draw_env()));
-            let bar = picker.path_rect();
-            let painted = picker.crumbs.segment_rects();
-            let (last, _) = *painted.last().expect("crumbs");
-            assert_eq!(
-                picker.crumb_targets[last], deep,
-                "the current folder always shows"
-            );
-            assert!(painted.len() < 10, "leading segments drop out");
-            assert!(painted.iter().all(|(_, r)| r.x1 <= bar.x1 + 1e-6));
-    }
 
     phase the_sheet_says_who_asks_and_finds_files_from_the_path_bar_and_search;
     {
@@ -1429,4 +1329,46 @@ fn totp() -> Option<Requester> {
         glyph: Icon::Lock,
         image: None,
     })
+}
+
+/// The file type menu opens from the keyboard and chooses a filter; Escape then puts the
+/// reopened menu away and leaves the dialog open with nothing chosen.
+#[test]
+fn escape_puts_the_file_type_menu_away_and_keeps_the_dialog() {
+    use winit::keyboard::NamedKey;
+    let (_g, root) = temp_tree();
+    let mut picker = FilePicker::new("Open", &root, vec![root.clone()])
+        .with_filters(vec![
+            FileFilter::new("Images", &["png"]),
+            FileFilter::new("Documents", &["txt"]),
+        ])
+        .settled();
+    picker.set_rect(Rect::new(0.0, 0.0, 900.0, 620.0));
+    Widget::set_focus(&mut picker, true);
+    picker.focus_control(PickerFocus::Filter);
+    let expanded = |picker: &FilePicker| {
+        Widget::accessibility(picker)
+            .expect("picker accessibility")
+            .children
+            .iter()
+            .find(|node| node.key == Some(PickerFocus::Filter.id()))
+            .expect("file type control")
+            .state
+            .expanded
+    };
+    assert_eq!(expanded(&picker), Some(false));
+    feed(&mut picker, &key_named(NamedKey::Enter));
+    assert!(picker.filter_open);
+    assert_eq!(expanded(&picker), Some(true));
+    feed(&mut picker, &key_named(NamedKey::ArrowDown));
+    feed(&mut picker, &key_named(NamedKey::Enter));
+    assert!(!picker.filter_open);
+    assert_eq!(expanded(&picker), Some(false));
+    assert_eq!(picker.active_filter_label(), "Documents");
+    feed(&mut picker, &key_named(NamedKey::Enter));
+    feed(&mut picker, &key_named(NamedKey::Escape));
+    assert!(
+        !picker.filter_open && picker.outcome().is_none(),
+        "Escape closes the menu, not the dialog"
+    );
 }

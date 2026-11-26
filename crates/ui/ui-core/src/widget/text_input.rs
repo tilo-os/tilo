@@ -2576,21 +2576,6 @@ impl TextInput {
         }
     }
 
-    /// The shaped code paragraph applies `Theme::text_scale` directly because it bypasses
-    /// [`TextRenderer`]; gutter labels go through it, which applies the scale itself. Convert the
-    /// paragraph style back to its unscaled form so a 200% line number is measured and painted
-    /// once, not twice.
-    #[cfg(test)]
-    fn gutter_number_style(style: &TextStyle, theme: &Theme) -> TextStyle {
-        let mut gutter = style.clone();
-        let scale = theme.text_scale;
-        if (scale - 1.0).abs() > f32::EPSILON {
-            gutter.size /= scale;
-            gutter.letter_spacing /= scale;
-        }
-        gutter
-    }
-
     pub fn suppress_caret_paint(&mut self, suppressed: bool) {
         self.caret_paint_suppressed = suppressed;
     }
