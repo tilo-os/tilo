@@ -1457,6 +1457,9 @@ impl Widget for Banner {
     }
 
     fn place_disclosing(&mut self, slot: Rect) {
+        // Placed by its container, the banner may never have been laid out itself: its
+        // buttons land on the grid of the pass that places it, not the 1 it started at.
+        self.device_scale = f64::from(super::layout::device_scale());
         self.band.place(slot);
         self.place_in_slot();
     }

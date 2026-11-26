@@ -1347,3 +1347,45 @@ fn a_banners_action_stands_on_the_display_pixels_at_one_and_a_half() {
         }
     }
 }
+
+/// A banner its container puts in a slot (on its way in, out of the layout) places its
+/// buttons on the device pixels of the pass that places it: at 1.5 a button's edges land
+/// on whole device pixels wherever on the grid the slot stands, rather than on whole
+/// logical pixels, which at 1.5 fall between two rows every other time.
+#[test]
+fn a_banner_put_in_its_slot_stands_its_action_on_the_display_pixels() {
+    let _scale = crate::widget::layout::enter_device_scale(1.5);
+    let on_grid = |edge: f64| ((edge * 1.5) - (edge * 1.5).round()).abs() < 1e-6;
+    for third in 0..3 {
+        let y = 80.0 + f64::from(third) * 2.0 / 3.0;
+        for width in [440.0, 900.0] {
+            let mut banner: Box<dyn Widget> = Box::new(
+                Banner::warning("Sync paused")
+                    .with_message("Files sync again when you are online.")
+                    .with_action(Button::new("sync.retry", "Retry")),
+            );
+            let mut tree = TaffyTree::new();
+            let mut nodes = HashMap::new();
+            let node = banner.build_layout(&mut tree, &Theme::light(), &mut nodes);
+            let mut text = crate::font_catalog::fixture_renderer();
+            Widget::size_before_solve(banner.as_mut(), &mut tree, node, &mut text);
+            banner.place_disclosing(Rect::new(24.0, y, 24.0 + width, y));
+            let mut pending: Vec<&dyn Widget> = vec![banner.as_ref()];
+            let mut placed = None;
+            while let Some(widget) = pending.pop() {
+                if widget.test_id() == Some("sync.retry") {
+                    placed = Some(widget.get_rect());
+                }
+                pending.extend(widget.children());
+            }
+            let placed = placed.expect("the action is in the tree");
+            assert!(!placed.is_zero_area(), "the action is placed: {placed:?}");
+            for edge in [placed.x0, placed.y0, placed.x1, placed.y1] {
+                assert!(
+                    on_grid(edge),
+                    "an edge of the action at {edge} (slot at {y}, width {width}) is off the display's pixels: {placed:?}"
+                );
+            }
+        }
+    }
+}
