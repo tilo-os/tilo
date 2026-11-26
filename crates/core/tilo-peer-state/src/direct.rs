@@ -902,6 +902,62 @@ impl Pairing {
     }
 }
 
+/// A round of a workspace's frames one device hands another, each with its author
+/// ([`StoreExport::next_round`]).
+pub type AuthoredFrames = Vec<([u8; 32], NeighbourMsg)>;
+
+/// What a device keeps of a workspace that another may read, a round at a time
+/// ([`DirectSync::export_for`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub struct StoreExport {
+    link: DirectSync,
+    reaches: Box<dyn Fn(&NeighbourMsg) -> bool + Send + Sync>,
+    /// The state still to go, in its order: its governance before the records it admits.
+    state: std::collections::VecDeque<([u8; 32], NeighbourMsg)>,
+    /// Where the store's frames were read up to.
+    cursors: Vec<Cursor>,
+    done: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl StoreExport {
+    /// The next round, each frame with its author: at most a round's worth of bytes
+    /// ([`Budget`]), and at least one frame however large. `None` once everything went.
+    ///
+    /// # Errors
+    ///
+    /// A frame the store keeps could not be read back.
+    pub fn next_round(&mut self) -> Result<Option<AuthoredFrames>, String> {
+        let mut frames = Vec::new();
+        let mut bytes = 0_u64;
+        while let Some((_, message)) = self.state.front() {
+            let size = postcard::to_allocvec(message).map_or(u64::MAX, |bytes| {
+                u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+            });
+            if !frames.is_empty() && bytes.saturating_add(size) > Budget::default().max_bytes {
+                return Ok(Some(frames));
+            }
+            bytes = bytes.saturating_add(size);
+            frames.extend(self.state.pop_front());
+        }
+        while !self.done {
+            let (kept, more) = self.link.replay(&self.cursors)?;
+            advance(&mut self.cursors, &kept);
+            self.done = !more || kept.is_empty();
+            let own = self.link.device();
+            frames.extend(
+                kept.into_iter()
+                    .filter(|message| (self.reaches)(message))
+                    .map(|message| (author_of(&message).unwrap_or(own), message)),
+            );
+            if !frames.is_empty() {
+                return Ok(Some(frames));
+            }
+        }
+        Ok((!frames.is_empty()).then_some(frames))
+    }
+}
+
 /// How many links are up between this device and another, by which end dialled them.
 ///
 /// Two devices that list each other both dial, so a pair can come to hold two links. The one the
@@ -2381,39 +2437,55 @@ impl DirectSync {
         Ok(standing(&store, workspace))
     }
 
-    /// How many frames of the workspace this device's store keeps that
-    /// `device` may read and, its own store standing at `cursors`, does not
-    /// keep: none once it keeps every one this device does, whatever more it
-    /// keeps of its own.
+    /// What this device keeps of the workspace that `device` may read, as a link answers a
+    /// device that asks from nothing: the state first, then every frame its store keeps, a round
+    /// of bytes at a time ([`StoreExport::next_round`]). What a device handing the workspace over
+    /// sends with the hand-over, over the connection it hands it on.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn export_for(&self, device: [u8; 32]) -> StoreExport {
+        let reaches = self.reach_of(device, LinkScope::default());
+        let state = self
+            .answer_state_request(false)
+            .into_iter()
+            .filter(|state| reaches(&state.message))
+            .map(|state| (state.from, state.message))
+            .collect();
+        StoreExport {
+            link: self.clone(),
+            reaches: Box::new(reaches),
+            state,
+            cursors: Vec::new(),
+            done: false,
+        }
+    }
+
+    /// Take in `frames`, a round of what another device keeping the workspace exported
+    /// ([`Self::export_for`]), as a link takes in what it fetched: admitted as history, and each
+    /// one kept in this device's store.
     ///
     /// # Errors
     ///
-    /// A frame this device keeps could not be read back.
+    /// This device keeps no store, or a frame was not kept.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn lacked_by(&self, device: [u8; 32], cursors: &[Cursor]) -> Result<usize, String> {
-        let Some(store) = &self.0.store else {
-            return Ok(0);
-        };
+    pub async fn take_frames(&self, frames: AuthoredFrames) -> Result<(), String> {
+        let store = self
+            .0
+            .store
+            .clone()
+            .ok_or_else(|| "this device keeps no store".to_owned())?;
         let workspace = self.workspace()?;
-        let reaches = self.reach_of(device, LinkScope::default());
-        let mut after = cursors.to_vec();
-        let mut lacked = 0_usize;
-        loop {
-            let replay = store
-                .replay(workspace, &after, Budget::default())
-                .map_err(|error| error.to_string())?;
-            lacked = lacked.saturating_add(
-                replay
-                    .frames
-                    .iter()
-                    .filter(|message| reaches(message))
-                    .count(),
-            );
-            advance(&mut after, &replay.frames);
-            if !replay.more || replay.frames.is_empty() {
-                return Ok(lacked);
-            }
+        let kept: Vec<Frame> = frames
+            .iter()
+            .filter_map(|(_, message)| Frame::of(message).ok())
+            .collect();
+        self.admit_history(frames).await;
+        for frame in &kept {
+            store
+                .retain(workspace, frame)
+                .map_err(|error| format!("a frame was not kept: {error}"))?;
         }
+        Ok(())
     }
 
     /// Sync `member` with `holder`, two devices of one workspace in one

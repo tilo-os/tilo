@@ -58,11 +58,10 @@ pub enum ServiceOperation {
     /// Stop serving a workspace for another host: the host's person's, or the
     /// owner's person's, which the handler checks.
     UnhostWorkspace,
-    /// Take in what the store of a device keeping a workspace kept here keeps
-    /// of it, as that device asks before it lets the workspace go: anyone's to
-    /// ask, and the handler checks the workspace names the caller among those
-    /// keeping it.
-    CatchUpWorkspace,
+    /// Take in the frames a device keeping a workspace kept here sends of it,
+    /// as it hands the workspace over or lets it go: anyone's to ask, and the
+    /// handler checks the workspace names the caller among those keeping it.
+    HostFrames,
     /// Read the revocations of the host's person this host enforces: the
     /// devices their root revoked, as the person's devices announced them.
     ListRevocations,
@@ -149,7 +148,7 @@ impl ServiceOperation {
             Self::ComputeControl => "compute.control",
             Self::HostWorkspace => "workspace.host",
             Self::UnhostWorkspace => "workspace.unhost",
-            Self::CatchUpWorkspace => "workspace.catch-up",
+            Self::HostFrames => "workspace.host.frames",
             Self::ListRevocations => "identity.revocations",
             Self::CreateOwnWorkspace => "workspace.create-own",
             Self::DeleteOwnWorkspace => "workspace.delete",
@@ -192,10 +191,7 @@ impl ServiceOperation {
     pub(crate) const fn decided_by_its_workspace(self) -> bool {
         matches!(
             self,
-            Self::EnterWorkspace
-                | Self::HostWorkspace
-                | Self::UnhostWorkspace
-                | Self::CatchUpWorkspace
+            Self::EnterWorkspace | Self::HostWorkspace | Self::UnhostWorkspace | Self::HostFrames
         )
     }
 
@@ -215,7 +211,7 @@ impl ServiceOperation {
                     | Self::EnterWorkspace
                     | Self::HostWorkspace
                     | Self::UnhostWorkspace
-                    | Self::CatchUpWorkspace
+                    | Self::HostFrames
             )
         {
             return false;
@@ -242,7 +238,7 @@ impl ServiceOperation {
             | Self::ComputeControl
             | Self::HostWorkspace
             | Self::UnhostWorkspace
-            | Self::CatchUpWorkspace
+            | Self::HostFrames
             | Self::PlanMachine
             | Self::ListMachines
             | Self::ShowMachine
@@ -275,7 +271,7 @@ mod tests {
         ServiceOperation::ComputeControl,
         ServiceOperation::HostWorkspace,
         ServiceOperation::UnhostWorkspace,
-        ServiceOperation::CatchUpWorkspace,
+        ServiceOperation::HostFrames,
         ServiceOperation::ListRevocations,
         ServiceOperation::CreateOwnWorkspace,
         ServiceOperation::DeleteOwnWorkspace,
@@ -319,7 +315,7 @@ mod tests {
                     | ServiceOperation::EnterWorkspace
                     | ServiceOperation::HostWorkspace
                     | ServiceOperation::UnhostWorkspace
-                    | ServiceOperation::CatchUpWorkspace
+                    | ServiceOperation::HostFrames
             );
             assert!(
                 operation.permits(&host, &device(host, DeviceCapabilities::member())),

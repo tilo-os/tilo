@@ -1156,9 +1156,12 @@ pub const LIST_REVOCATIONS: &str = "identity.revocations";
 /// signed address) and `bootstrap` (the workspace as a joining member gets it,
 /// the host's device admitted), each signed value postcard in hex. The
 /// hand-over carries the owner's change naming the host among the workspace's
-/// holders, and a hand-over without it is refused. Asked with `workspace`,
-/// `workspace_id` and `role` alone, it takes nothing in and answers the
-/// address the host signs for the workspace. Only a certified host serves
+/// holders, and a hand-over without it is refused. A key holder's hand-over
+/// carries `keys` too, the frames admitting it into the workspace's key group
+/// (postcard in hex), and is answered once the host opens what it holds with
+/// them. Asked with `workspace`, `workspace_id` and `role` alone, it takes
+/// nothing in and answers the address the host signs for the workspace, with
+/// the `access_request` a key holder asks the group's keys with. Only a certified host serves
 /// workspaces this way. Answers a [`WorkspaceHosted`].
 pub const HOST_WORKSPACE: &str = "workspace.host";
 /// Let `workspace` go, as its owners ask. Answers `{"stopped": bool}`. With
@@ -1168,21 +1171,15 @@ pub const HOST_WORKSPACE: &str = "workspace.host";
 /// did. What the owner's device that keeps no store of its own asks before it
 /// takes the host out.
 pub const UNHOST_WORKSPACE: &str = "workspace.unhost";
-/// Take in what the store of the asking device, one the workspace names among
-/// those keeping it, keeps of `workspace` and this host's store lacks, over the
-/// workspace's device link: what a device that hands a workspace over, or lets
-/// it go, waits for before it does. Argument `workspace`; the content the
-/// asking device keeps it pushes on the workspace's link, and waits for the
-/// host to keep. Answers a [`CaughtUpWorkspace`]: with `cursor_pages`,
-/// its cursors in pages, the first here and the rest from
-/// [`CATCH_UP_STANDING`].
-pub const CATCH_UP_WORKSPACE: &str = "workspace.catch-up";
-/// Where the answering host's store of `workspace` stands on the lineages
-/// after `after` (a lineage, postcard in hex), as the device keeping it that
-/// asked [`CATCH_UP_WORKSPACE`] reads the rest of its answer's cursors: a
-/// store keeps a lineage per record and author, more than one frame carries.
-/// Answers a [`StandingPage`].
-pub const CATCH_UP_STANDING: &str = "workspace.catch-up.standing";
+/// Take in a piece of a round of `workspace`'s frames from the asking device, one the
+/// workspace names among those keeping it or the one that handed it here, over the connection
+/// the hand-over itself went over: what a device handing a workspace over, or letting it go,
+/// sends before it does. Arguments `workspace`, `upload` (the round, named by the sender),
+/// `offset` (where in the round this piece starts), `bytes` (the piece, in hex) and `last`
+/// (whether the round ends with it): the round is postcard of `(author, frame)` pairs, and is
+/// taken in whole once its last piece is here. Answers `{"taken": bool}`, `true` once a round is
+/// kept in the answering host's store.
+pub const HOST_FRAMES: &str = "workspace.host.frames";
 /// The most devices a person's record keeps.
 pub const MAX_PERSONAL_DEVICES: usize = 1024;
 
@@ -1274,6 +1271,12 @@ pub struct WorkspaceHosted {
     /// answered. Empty when it signed none: listed already, or a server of another person.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub own_row: String,
+    /// Asked for its address ahead of a hand-over in which it keeps the workspace's keys, the
+    /// serving host's signed request for the keys of the workspace's own group, postcard in hex:
+    /// the handing device commits it into the group and hands the commit over with the workspace,
+    /// so the host opens what it holds as it takes it in. Empty otherwise.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub access_request: String,
 }
 
 /// A workspace of the person's a server keeps, as its [`HostedWorkspace`] answer names it.
@@ -1283,28 +1286,6 @@ pub struct KeptWorkspace {
     pub name: String,
     /// The serving host's signed address for it, postcard in hex.
     pub host_hint: String,
-}
-
-/// What [`CATCH_UP_WORKSPACE`] answers.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CaughtUpWorkspace {
-    /// Where the answering host's store of the workspace stands once it kept
-    /// what it took in: a cursor per author's line, postcard in hex.
-    pub cursors: String,
-    /// Whether the store stands on more lineages than `cursors` names: the
-    /// rest are read with [`CATCH_UP_STANDING`], after the last one named.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub more_cursors: bool,
-}
-
-/// What [`CATCH_UP_STANDING`] answers.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StandingPage {
-    /// Where the answering host's store stands on the lineages after the one
-    /// asked for, in lineage order: a cursor per lineage, postcard in hex.
-    pub cursors: String,
-    /// Whether it stands on more lineages after the last one named.
-    pub more: bool,
 }
 
 /// One workspace a server serves, as its host actions answer it.

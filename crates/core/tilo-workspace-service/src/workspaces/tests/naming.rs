@@ -38,6 +38,7 @@ async fn a_hand_over_without_the_change_naming_the_server_is_refused() {
         holder_hint,
         bootstrap,
         role: CopyRole::KeyHolder,
+        keys: Vec::new(),
     };
     let refused = server
         .workspaces()

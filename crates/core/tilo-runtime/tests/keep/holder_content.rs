@@ -343,10 +343,10 @@ const PER_WRITE: usize = 400;
 /// added takes the workspace all the same: it is not held to what the
 /// handing server keeps none of, so the hand-over finishes once the changes
 /// are across, and the content follows as the members that keep it push it. The
-/// server added says where its store stands two cursors at a time, in pages
-/// as it does for a workspace of many records and authors. Had the list or the
-/// cursors not arrived whole, the server would still lack what they leave
-/// out, and the hand-over would fail.
+/// handing server sends its frames four kilobytes at a time, in many pieces as
+/// it does for a workspace of many records. Had the list or the frames not
+/// arrived whole, the server would still lack what they leave out, and the
+/// hand-over would fail.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_workspace_whose_records_name_more_content_than_a_frame_lists_is_handed_over() {
     let alice = TestUser::fresh("Alice");
@@ -368,7 +368,7 @@ async fn a_workspace_whose_records_name_more_content_than_a_frame_lists_is_hande
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    b.workspaces().unwrap().answer_cursors_in_pages_of(2);
+    a.workspaces().unwrap().send_frames_in_pieces_of(4096);
     let workspace = a
         .workspaces()
         .expect("the server holds workspaces")
@@ -426,4 +426,198 @@ async fn a_workspace_whose_records_name_more_content_than_a_frame_lists_is_hande
             .contains(&hint),
         "the workspace names the server added among those keeping it"
     );
+}
+
+/// Write `text` into `workspace`'s note on `server`, sealed with the keys of the workspace's
+/// group as every new record of a workspace whose group a server takes part in is.
+async fn write_note(server: &Server, workspace: &str, text: &str) {
+    crate::keep::common::write_record(
+        server.workspaces().unwrap(),
+        workspace,
+        (PHOTOS, "note"),
+        |doc| {
+            doc.put(ROOT, "text", text)
+                .map(drop)
+                .map_err(|error| error.to_string())
+        },
+    )
+    .await
+    .unwrap();
+}
+
+/// What `workspace`'s note says as `server` reads it, opened with the workspace's keys there.
+fn reads_note(server: &Server, workspace: &str) -> Result<String, String> {
+    let bytes = server
+        .workspaces()
+        .unwrap()
+        .stored_record(workspace, PHOTOS, "note")?
+        .ok_or("the server reads no note")?;
+    let doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+    match doc.get(ROOT, "text").map_err(|error| error.to_string())? {
+        Some((automerge::Value::Scalar(text), _)) => text
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| "the note says no text".to_owned()),
+        _ => Err("the note says nothing".into()),
+    }
+}
+
+/// A server of the person's added to a workspace, by the line it serves as the person pastes it,
+/// opens every sealed write the workspace holds within a second of being asked: the handing server admits it into the workspace's keys and hands it them,
+/// and every frame it keeps, over the connection it hands the workspace over on. No keys are
+/// handed it beforehand: both servers run their own key service, as any server does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_added_opens_what_it_holds_once_it_is_added() {
+    let alice = TestUser::fresh("Alice");
+    let first = alice.enrol("first-server", DeviceCapabilities::member());
+    let second = alice.enrol("second-server", DeviceCapabilities::member());
+    let first_state = tempfile::tempdir().unwrap();
+    let second_state = tempfile::tempdir().unwrap();
+    let a = server(
+        &alice,
+        &first,
+        first_state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let b = server(
+        &alice,
+        &second,
+        second_state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let workspace = a
+        .workspaces()
+        .unwrap()
+        .create_workspace("Lounge", None)
+        .await
+        .unwrap();
+    write_note(&a, &workspace.workspace, "before the server was added").await;
+    assert_eq!(
+        reads_note(&a, &workspace.workspace).as_deref(),
+        Ok("before the server was added"),
+        "the note reads where it was written"
+    );
+
+    let line = serde_json::to_string(&tilo_server_protocol::web::PageHost {
+        server_cert: second.cert.clone(),
+        address: Some(tilo_server_protocol::web::PageHostAddress {
+            endpoint_addr: b.node_addr(),
+            relay_url: None,
+            web: None,
+        }),
+        origin: None,
+    })
+    .unwrap();
+    let asked = std::time::Instant::now();
+    a.workspaces()
+        .unwrap()
+        .add_server(&workspace.workspace, &line, CopyRole::KeyHolder)
+        .await
+        .expect("the server is added");
+    // Answered, the server holds the workspace's keys and every frame of it; its copy takes the
+    // sealed note in from there, all within the second.
+    let read = tokio::time::timeout(
+        Duration::from_secs(1).saturating_sub(asked.elapsed()),
+        async {
+            loop {
+                if let Ok(text) = reads_note(&b, &workspace.workspace) {
+                    break text;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        },
+    )
+    .await;
+    let took = asked.elapsed();
+    assert_eq!(
+        read.as_deref(),
+        Ok("before the server was added"),
+        "the server added opens what it holds within a second of being asked: {took:?}"
+    );
+
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
+/// A server added as a store keeps every frame of the workspace as soon as it is added, and opens
+/// none of them: it is handed no keys.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_added_as_a_store_keeps_what_it_cannot_open() {
+    let alice = TestUser::fresh("Alice");
+    let first = alice.enrol("first-server", DeviceCapabilities::member());
+    let second = alice.enrol("second-server", DeviceCapabilities::member());
+    let first_state = tempfile::tempdir().unwrap();
+    let second_state = tempfile::tempdir().unwrap();
+    let a = server(
+        &alice,
+        &first,
+        first_state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let b = server(
+        &alice,
+        &second,
+        second_state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let workspace = a
+        .workspaces()
+        .unwrap()
+        .create_workspace("Lounge", None)
+        .await
+        .unwrap();
+    write_note(&a, &workspace.workspace, "kept, never read").await;
+
+    a.workspaces()
+        .unwrap()
+        .attach_server(
+            &workspace.workspace,
+            second.device_pubkey(),
+            b.node_addr(),
+            CopyRole::Store,
+        )
+        .await
+        .expect("the store is added");
+    let standing = |server: &Server| {
+        server
+            .workspaces()
+            .unwrap()
+            .direct()
+            .link(workspace.workspace_id)
+            .expect("a link serves the workspace on each server")
+            .standing()
+            .expect("its store stands")
+    };
+    let at_b = standing(&b);
+    for line in standing(&a) {
+        assert!(
+            at_b.iter()
+                .any(|kept| kept.lineage == line.lineage && kept.after_seq >= line.after_seq),
+            "the store keeps every frame the server that added it keeps: {line:?} is not in {at_b:?}"
+        );
+    }
+    let opened = reads_note(&b, &workspace.workspace);
+    assert!(
+        opened.is_err(),
+        "the store opens nothing it keeps: {opened:?}"
+    );
+    let keys = b
+        .workspaces()
+        .unwrap()
+        .device_keys()
+        .expect("every server runs its key service");
+    let group = keys
+        .group_keys(&workspace.workspace, collab_types::EVERY_MEMBER, false)
+        .await;
+    assert!(
+        group.as_ref().is_none_or(Result::is_err),
+        "the store holds none of the workspace's keys"
+    );
+
+    a.shutdown().await;
+    b.shutdown().await;
 }

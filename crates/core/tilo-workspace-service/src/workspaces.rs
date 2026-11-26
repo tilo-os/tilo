@@ -1038,6 +1038,10 @@ type OwnReadings = std::sync::RwLock<
 /// How a hand-on of what this device keeps ended, once it did ([`Workspaces::hand_on_before_leaving`]).
 type HandOnEnded = tokio::sync::watch::Receiver<Option<Result<(), String>>>;
 
+/// The pieces of rounds of frames devices handing workspaces over sent so far, by the device and
+/// the workspace: the round they belong to, and its bytes.
+type FramesArriving = HashMap<([u8; 32], String), (String, Vec<u8>)>;
+
 struct WorkspacesInner {
     /// What a crate built on these workspaces keeps beside them while they live, one value of
     /// each type ([`Workspaces::kept`]).
@@ -1082,16 +1086,17 @@ struct WorkspacesInner {
     /// checked against the material each was admitted under
     /// ([`run_admission`]).
     executions: Arc<run_admission::ExecutionPins>,
-    /// Whether this service answers the catch-up a device keeping one of its
-    /// workspaces asks for as a build before the ask does: not at all
-    /// ([`Workspaces::speak_no_catch_up`]).
+    /// What devices handing a workspace over sent of a round of its frames so far
+    /// ([`Workspaces::take_frames_from`]), by the device and the upload it named.
+    frames_arriving: std::sync::Mutex<FramesArriving>,
+    /// Whether this service takes no handed frames in, as a build before the hand-over carried
+    /// them does not ([`Workspaces::take_no_frames`]).
     #[cfg(any(test, feature = "test-support"))]
-    speaks_no_catch_up: std::sync::atomic::AtomicBool,
-    /// How many cursors an answer of where this device's store stands
-    /// carries, when a test sets it ([`Workspaces::answer_cursors_in_pages_of`]);
-    /// `0` keeps the build's own.
+    takes_no_frames: std::sync::atomic::AtomicBool,
+    /// How many bytes one ask carrying a workspace's frames to another host holds, when a test
+    /// sets it ([`Workspaces::send_frames_in_pieces_of`]); `0` keeps the build's own.
     #[cfg(any(test, feature = "test-support"))]
-    cursors_per_answer: std::sync::atomic::AtomicUsize,
+    frame_piece_bytes: std::sync::atomic::AtomicUsize,
     /// Whether this server is about to restart and hands its work to the
     /// other holders: it takes and renews no lease ([`Workspaces::drain`]).
     draining: std::sync::atomic::AtomicBool,
@@ -1632,10 +1637,11 @@ impl Workspaces {
                 kept: std::sync::Mutex::default(),
                 revoked: std::sync::RwLock::default(),
                 live: std::sync::OnceLock::new(),
+                frames_arriving: std::sync::Mutex::default(),
                 #[cfg(any(test, feature = "test-support"))]
-                speaks_no_catch_up: std::sync::atomic::AtomicBool::new(false),
+                takes_no_frames: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(any(test, feature = "test-support"))]
-                cursors_per_answer: std::sync::atomic::AtomicUsize::new(0),
+                frame_piece_bytes: std::sync::atomic::AtomicUsize::new(0),
                 draining: std::sync::atomic::AtomicBool::new(false),
                 stopped: std::sync::atomic::AtomicBool::new(false),
                 stops: tokio::sync::watch::channel(false).0,

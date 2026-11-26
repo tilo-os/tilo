@@ -14,7 +14,6 @@ pub(crate) use super::fixtures::{
 };
 
 pub(crate) mod admission_cost;
-mod catch_up;
 mod declared_kinds;
 mod frames;
 #[cfg(feature = "agents")]

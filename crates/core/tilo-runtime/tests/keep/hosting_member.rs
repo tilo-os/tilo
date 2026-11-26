@@ -1048,7 +1048,7 @@ async fn a_server_that_does_not_take_the_changes_in_is_not_handed_the_workspace(
         .declare_owner(&home.workspace, alice.user_pk, None)
         .await
         .unwrap();
-    at_site.speak_no_catch_up();
+    at_site.take_no_frames();
 
     let refused = workspaces
         .attach_server(

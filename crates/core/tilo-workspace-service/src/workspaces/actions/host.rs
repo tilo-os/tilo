@@ -23,12 +23,11 @@ use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_peer_state::join::Role;
 use tilo_server_protocol::workspaces::BRANCH_OWN_WORKSPACE;
 use tilo_server_protocol::workspaces::{
-    ActionInvitation, AdminRefusal, CATCH_UP_STANDING, CATCH_UP_WORKSPACE, CREATE_OWN_WORKSPACE,
-    CREATE_WORKSPACE, CaughtUpWorkspace, CreatedWorkspace, DELETE_WORKSPACE, ENTER_WORKSPACE,
-    EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE,
-    LIST_REVOCATIONS, LIST_WORKSPACES, StandingPage, UNHOST_WORKSPACE, WEB_SERVE, WorkspaceHosted,
-    WorkspaceLabels, WorkspaceListing, administered_answer, administered_request, check_labels,
-    labelled,
+    ActionInvitation, AdminRefusal, CREATE_OWN_WORKSPACE, CREATE_WORKSPACE, CreatedWorkspace,
+    DELETE_WORKSPACE, ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_FRAMES,
+    HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, LIST_REVOCATIONS, LIST_WORKSPACES, UNHOST_WORKSPACE,
+    WEB_SERVE, WorkspaceHosted, WorkspaceLabels, WorkspaceListing, administered_answer,
+    administered_request, check_labels, labelled,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -62,7 +61,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`ServiceOperation`] it is.
-pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 22] = [
+pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 21] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
@@ -175,24 +174,13 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 22] = [
     ),
     (
         Verb {
-            id: CATCH_UP_WORKSPACE,
-            label: "Take in a workspace's changes from a device keeping it",
-            check: CATCH_UP_WORKSPACE,
+            id: HOST_FRAMES,
+            label: "Take in a workspace's frames from a device keeping it",
+            check: HOST_FRAMES,
             kind: roles::GOVERNANCE_KIND,
-            params: catch_up_params,
+            params: frames_params,
         },
-        ServiceOperation::CatchUpWorkspace,
-    ),
-    (
-        // The rest of what a catch-up answers.
-        Verb {
-            id: CATCH_UP_STANDING,
-            label: "Read where a workspace's store stands after a catch-up",
-            check: CATCH_UP_WORKSPACE,
-            kind: roles::GOVERNANCE_KIND,
-            params: catch_up_standing_params,
-        },
-        ServiceOperation::CatchUpWorkspace,
+        ServiceOperation::HostFrames,
     ),
     (
         Verb {
@@ -416,23 +404,26 @@ fn admit_machine_params() -> Vec<ActionParam> {
     ]
 }
 
-fn catch_up_params() -> Vec<ActionParam> {
+fn frames_params() -> Vec<ActionParam> {
     let mut params = workspace_params();
-    params.push(ActionParam::optional(
-        "cursor_pages",
-        ParamType::Boolean,
-        "Whether the answer's cursors come in pages, the rest read after it.",
-    ));
-    params
-}
-
-fn catch_up_standing_params() -> Vec<ActionParam> {
-    let mut params = workspace_params();
-    params.push(ActionParam::required(
-        "after",
-        ParamType::Text,
-        "The lineage the page starts after, postcard in hex.",
-    ));
+    params.extend([
+        ActionParam::required(
+            "upload",
+            ParamType::Text,
+            "The round of frames the piece belongs to, as its sender names it.",
+        ),
+        ActionParam::required(
+            "offset",
+            ParamType::Integer,
+            "Where in the round the piece starts, in bytes.",
+        ),
+        ActionParam::required("bytes", ParamType::Text, "The piece, in hex."),
+        ActionParam::optional(
+            "last",
+            ParamType::Boolean,
+            "Whether the round ends with this piece.",
+        ),
+    ]);
     params
 }
 
@@ -792,7 +783,7 @@ impl Workspaces {
                 self.blocking_invoke(operation, &args).await
             }
             operation if operation.decided_by_its_workspace() => {
-                Box::pin(self.serving_invoke(device, (verb.id, operation), &args, now)).await
+                Box::pin(self.serving_invoke(device, operation, &args, now)).await
             }
             operation if operation.of_machines() => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
@@ -1580,53 +1571,53 @@ impl Workspaces {
         Ok(Some(owner))
     }
 
-    /// A catch-up a device keeping a workspace asks for, already permitted
-    /// to `device`: the catch-up itself ([`CATCH_UP_WORKSPACE`]), or the rest
-    /// of where this host's store stands after it ([`CATCH_UP_STANDING`]).
-    async fn catch_up_invoke(
+    /// A piece of a round of a workspace's frames a device keeping it sends
+    /// ([`HOST_FRAMES`]), when `device` may send it.
+    async fn frames_invoke(
         &self,
         device: &DeviceCert,
-        action: &str,
         args: &Args,
+        now: u64,
     ) -> Result<Value, ActionCallError> {
-        let workspace = args.required_text("workspace")?;
-        if action == CATCH_UP_STANDING {
-            let after =
-                crate::workspaces::decode_hex(args.required_text("after")?).map_err(|error| {
-                    ActionCallError::invalid_request(format!("`after` is no lineage: {error}"))
-                })?;
-            let (cursors, more) = self
-                .standing_after(device, workspace, after)
-                .await
-                .map_err(ActionCallError::refused)?;
-            return answer(&StandingPage {
-                cursors: hex_postcard(&cursors)?,
-                more,
-            });
+        self.authorize(
+            device,
+            None,
+            WorkspaceOp::Host(ServiceOperation::HostFrames),
+            now,
+        )
+        .map_err(|error| ActionCallError::refused(error.to_string()))?;
+        #[cfg(any(test, feature = "test-support"))]
+        if self.takes_no_frames_now() {
+            return Err(ActionCallError::UnknownAction);
         }
-        let cursors = Box::pin(self.catch_up_from(device, workspace))
+        let workspace = args.required_text("workspace")?;
+        let upload = args.required_text("upload")?;
+        let offset = args
+            .integer("offset")?
+            .and_then(|offset| usize::try_from(offset).ok())
+            .ok_or_else(|| ActionCallError::invalid_request("`offset` is a count of bytes"))?;
+        let bytes = hex::decode(args.required_text("bytes")?).map_err(|error| {
+            ActionCallError::invalid_request(format!("`bytes` is no hex: {error}"))
+        })?;
+        let piece = crate::workspaces::hosts::FramePiece {
+            upload: upload.to_owned(),
+            offset,
+            bytes,
+            last: args.flag("last")?,
+        };
+        let taken = self
+            .take_frames_from(device, workspace, piece)
             .await
             .map_err(ActionCallError::refused)?;
-        // A store stands on a lineage per record and author: a device
-        // that reads the rest after is answered the first page.
-        let (cursors, more_cursors) = if args.flag("cursor_pages")? {
-            self.standing_page(cursors, None)
-        } else {
-            (cursors, false)
-        };
-        answer(&CaughtUpWorkspace {
-            cursors: hex_postcard(&cursors)?,
-            more_cursors,
-        })
+        Ok(serde_json::json!({ "taken": taken }))
     }
 
     /// The host operations that have one host of the person serve a workspace
-    /// another device hosts ([`super::super::holding`]), already permitted to `device`:
-    /// the action asked, and the operation it is.
+    /// another device hosts ([`super::super::holding`]), already permitted to `device`.
     async fn serving_invoke(
         &self,
         device: &DeviceCert,
-        (action, operation): (&str, ServiceOperation),
+        operation: ServiceOperation,
         args: &Args,
         now: u64,
     ) -> Result<Value, ActionCallError> {
@@ -1656,10 +1647,23 @@ impl Workspaces {
                     let hint = self
                         .host_address(workspace_id, role)
                         .map_err(|error| ActionCallError::refused(error.to_string()))?;
+                    // A host about to keep the workspace's keys asks for them with its address:
+                    // the handing device commits it into the group and hands the commit over
+                    // with the workspace.
+                    let access_request = match (role, self.device_keys()) {
+                        (tilo_peer_state::CopyRole::KeyHolder, Some(keys)) => {
+                            match keys.access_request(workspace_id).await {
+                                Some(request) => hex_postcard(&request)?,
+                                None => String::new(),
+                            }
+                        }
+                        _ => String::new(),
+                    };
                     return answer(&WorkspaceHosted {
                         host_hint: hex_postcard(&hint)?,
                         kept: Vec::new(),
                         own_row: String::new(),
+                        access_request,
                     });
                 };
                 let request = super::super::HostWorkspaceRequest {
@@ -1673,6 +1677,12 @@ impl Workspaces {
                         ActionCallError::invalid_request(format!("`bootstrap`: {error}"))
                     })?,
                     role,
+                    keys: match args.text("keys")? {
+                        Some(keys) => super::super::decode_hex(keys).map_err(|error| {
+                            ActionCallError::invalid_request(format!("`keys`: {error}"))
+                        })?,
+                        None => Vec::new(),
+                    },
                 };
                 Box::pin(self.kept_for(device, &request, now))
                     .await
@@ -1688,6 +1698,7 @@ impl Workspaces {
                     } else {
                         hex_postcard(&row)?
                     },
+                    access_request: String::new(),
                 })
             }
             ServiceOperation::UnhostWorkspace => {
@@ -1707,15 +1718,7 @@ impl Workspaces {
                     .map_err(ActionCallError::refused)?;
                 Ok(serde_json::json!({ "stopped": stopped }))
             }
-            ServiceOperation::CatchUpWorkspace => {
-                self.authorize(device, None, WorkspaceOp::Host(operation), now)
-                    .map_err(|error| ActionCallError::refused(error.to_string()))?;
-                #[cfg(any(test, feature = "test-support"))]
-                if self.speaks_no_catch_up_now() {
-                    return Err(ActionCallError::UnknownAction);
-                }
-                self.catch_up_invoke(device, action, args).await
-            }
+            ServiceOperation::HostFrames => self.frames_invoke(device, args, now).await,
             _ => Err(ActionCallError::UnknownAction),
         }
     }

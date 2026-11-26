@@ -86,7 +86,7 @@ async fn invoke(
 }
 
 /// What the host offers its person's devices, in the order it lists them.
-const HOST_OPERATIONS: [&str; 22] = [
+const HOST_OPERATIONS: [&str; 21] = [
     CREATE_WORKSPACE,
     tilo_server_protocol::workspaces::CREATE_OWN_WORKSPACE,
     DELETE_WORKSPACE,
@@ -98,8 +98,7 @@ const HOST_OPERATIONS: [&str; 22] = [
     ENTER_WORKSPACE,
     HOST_WORKSPACE,
     UNHOST_WORKSPACE,
-    tilo_server_protocol::workspaces::CATCH_UP_WORKSPACE,
-    tilo_server_protocol::workspaces::CATCH_UP_STANDING,
+    tilo_server_protocol::workspaces::HOST_FRAMES,
     super::PLAN_MACHINE,
     super::LIST_MACHINES,
     super::SHOW_MACHINE,

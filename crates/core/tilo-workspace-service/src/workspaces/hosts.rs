@@ -34,8 +34,8 @@ use tilo_peer_state::actions::RemoteDevice;
 use tilo_peer_state::join::{Role, TransportHint};
 use tilo_server_protocol::workspaces::WorkspaceHolder;
 use tilo_server_protocol::workspaces::{
-    CATCH_UP_STANDING, CATCH_UP_WORKSPACE, CaughtUpWorkspace, HOST_ACTIONS_PROVIDER,
-    HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, StandingPage, UNHOST_WORKSPACE, WorkspaceHosted,
+    HOST_ACTIONS_PROVIDER, HOST_FRAMES, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, UNHOST_WORKSPACE,
+    WorkspaceHosted,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -43,27 +43,29 @@ use super::{CollaborationError, HostedWorkspace, Workspaces};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_server_protocol::WorkspaceId;
 
-/// How many answers a catch-up takes at most: one follows each time what the device
-/// answering it lacks narrowed or its store moved, and a device that keeps writing while it
-/// answers moves its store without ever catching up, so the asking is bounded.
-const CATCH_UP_ANSWERS: u32 = 100;
+/// How many bytes of a round of a workspace's frames one ask carries to another host
+/// ([`HOST_FRAMES`]): in hex, well within
+/// [`tilo_actions::remote::MAX_REMOTE_ACTION_FRAME_BYTES`].
+const FRAME_PIECE_BYTES: usize = 384 * 1024;
+
+/// The most bytes a round of a workspace's frames another host sends grows to: a round's own
+/// budget, and one frame past it at the most.
+const ROUND_BYTES_AT_MOST: usize = 80 * 1024 * 1024;
 
 /// How long a device handing a workspace over waits for the server to keep the
 /// content it pushed ([`Workspaces::hand_content_to`]).
 pub(super) const CONTENT_SETTLES_WITHIN: Duration = Duration::from_secs(60);
 
-/// How long a catch-up waits to dial the device that asked it: one that reached
-/// this device over the workspace's link itself has its changes here already, and
-/// a device others cannot dial back is answered from what its link brought rather
-/// than left unanswered. A dial that works connects in a moment.
-#[cfg(not(target_arch = "wasm32"))]
-const CATCH_UP_DIAL: Duration = Duration::from_secs(10);
-
-/// How many cursors of where a store stands one answer carries: under a
-/// hundred and fifty bytes each in its frame, so an answer stays well within
-/// [`tilo_actions::remote::MAX_REMOTE_ACTION_FRAME_BYTES`] however many
-/// records and authors the workspace has ([`CATCH_UP_STANDING`]).
-const CURSORS_PER_ANSWER: usize = 512;
+/// A piece of a round of a workspace's frames a device keeping it sends ([`HOST_FRAMES`]).
+pub(crate) struct FramePiece {
+    /// The round, as its sender names it.
+    pub upload: String,
+    /// Where in the round the piece starts.
+    pub offset: usize,
+    pub bytes: Vec<u8>,
+    /// Whether the round ends with it.
+    pub last: bool,
+}
 
 /// How long a host's operation waits for another host to finish it.
 const HOST_ANSWERED: Duration = Duration::from_secs(120);
@@ -366,7 +368,7 @@ impl Workspaces {
     /// setting does. Asked again, the server is handed the workspace afresh, as
     /// `role`. Answers that address once the server says it keeps every change
     /// this device's store keeps of the workspace
-    /// ([`Self::caught_up_with_this`]): only then may this device go without the
+    /// ([`Self::push_store_to`]): only then may this device go without the
     /// workspace losing any of them. Before this answers, every other device the
     /// workspace names to keep it that can be reached takes in the change naming
     /// the new one, so whichever device goes next, the rest still reach one
@@ -483,10 +485,7 @@ impl Workspaces {
         // Named, the server may link to this device's: it takes in what this
         // device keeps over that link, which only a device the workspace
         // names may.
-        if let Err(error) = self
-            .caught_up_with_this(workspace, workspace_id, &reached)
-            .await
-        {
+        if let Err(error) = self.push_store_to(workspace, workspace_id, &reached).await {
             let said = self
                 .unnamed(
                     workspace,
@@ -603,8 +602,8 @@ impl Workspaces {
         workspace: &str,
         workspace_id: WorkspaceId,
         role: CopyRole,
-    ) -> Result<TransportHint, String> {
-        let hint = reached.address(workspace, workspace_id, role).await?;
+    ) -> Result<(TransportHint, Option<collab_types::MlsAccessRequestV1>), String> {
+        let (hint, request) = reached.address(workspace, workspace_id, role).await?;
         let address =
             WorkspaceDeviceHintV1::from_transport_hint(&hint).map_err(|error| error.to_string())?;
         if hint.host != reached.certificate
@@ -621,7 +620,7 @@ impl Workspaces {
             governance.author_keeping_device(&hint, key, now)
         })
         .await?;
-        Ok(hint)
+        Ok((hint, request))
     }
 
     /// Undo the naming this call made for `device`, unless `named_before`, and
@@ -670,8 +669,7 @@ impl Workspaces {
                 let address = WorkspaceDeviceHintV1::from_transport_hint(&hint)
                     .map_err(|error| error.to_string())?;
                 let reached = self.reach_host(device, address.endpoint_addr).await?;
-                self.caught_up_with_this(workspace, workspace_id, &reached)
-                    .await
+                self.push_store_to(workspace, workspace_id, &reached).await
             }
             .await;
             if let Err(error) = told {
@@ -680,20 +678,17 @@ impl Workspaces {
         }
     }
 
-    /// Ask `reached`, a server `workspace` names among those keeping it, to
-    /// take in what this device's store keeps of it ([`CATCH_UP_WORKSPACE`]),
-    /// and see in where its store stands then that it keeps every change of
-    /// this device's it may read; then push it the content this device keeps
-    /// of the workspace, and wait for it to say it keeps it all
-    /// ([`Self::hand_content_to`]). The server is asked again only after an
-    /// answer that narrowed what it lacks: an answer that did not is its last.
+    /// Send `reached`, a device `workspace` names among those keeping it, every frame this
+    /// device's store keeps of it that the device may read, over the connection the hand-over
+    /// itself goes over ([`HOST_FRAMES`]), a round at a time, each kept in its store before the
+    /// next goes; then push it the content this device keeps of the workspace, and wait for it to
+    /// say it keeps it all ([`Self::hand_content_to`]).
     ///
     /// # Errors
     ///
-    /// The server did not answer the ask (a build before it, or one that
-    /// could not reach this device), an answer left it lacking changes and did
-    /// not narrow them, or it did not keep the content in time.
-    async fn caught_up_with_this(
+    /// The device did not take a round in (a build before it, or one that refused it), or did
+    /// not keep the content in time.
+    async fn push_store_to(
         &self,
         workspace: &str,
         workspace_id: WorkspaceId,
@@ -704,140 +699,150 @@ impl Workspaces {
             // its changes in a store to hand over.
             return Ok(());
         };
-        self.caught_up_counting(workspace, &link, reached).await?;
-        self.hand_content_to(workspace, reached.certificate.device_public_key)
-            .await
-    }
-
-    /// Ask `reached` to take in what this device keeps of `workspace`, over
-    /// `link`, until it says it keeps it all, or answers that neither narrowed
-    /// what it lacks, nor fetched any, nor moved where its store stands
-    /// ([`Self::caught_up_with_this`]).
-    async fn caught_up_counting(
-        &self,
-        workspace: &str,
-        link: &tilo_peer_state::direct::DirectSync,
-        reached: &OtherHost,
-    ) -> Result<(), String> {
         let server = reached.certificate.device_public_key;
-        // What it lacked and held before the last answer. Its standing moves when it takes frames
-        // in even while this device keeps writing more, so a count that grew is progress too, and
-        // not an answer to give up on.
-        let mut before: Option<(usize, Vec<tilo_peer_state::store::Cursor>)> = None;
-        let mut answers: u32 = 0;
-        loop {
-            answers = answers.saturating_add(1);
-            let mut arguments = Map::new();
-            arguments.insert("workspace".into(), Value::String(workspace.to_owned()));
-            arguments.insert("cursor_pages".into(), Value::Bool(true));
-            let answer = reached
-                .ask(CATCH_UP_WORKSPACE, arguments)
-                .await
-                .map_err(|error| {
+        let mut export = link.export_for(server);
+        let piece_bytes = self.frame_piece_bytes();
+        let started = tilo_clock::unix_now_ns();
+        let mut rounds: u64 = 0;
+        while let Some(round) = export.next_round()? {
+            rounds = rounds.saturating_add(1);
+            let bytes = postcard::to_stdvec(&round).map_err(|error| error.to_string())?;
+            let upload = format!("{started}-{rounds}");
+            let mut taken = false;
+            for (index, piece) in bytes.chunks(piece_bytes).enumerate() {
+                let offset = index.saturating_mul(piece_bytes);
+                let mut arguments = Map::new();
+                arguments.insert("workspace".into(), Value::String(workspace.to_owned()));
+                arguments.insert("upload".into(), Value::String(upload.clone()));
+                arguments.insert("offset".into(), Value::from(offset));
+                arguments.insert("bytes".into(), Value::String(hex::encode(piece)));
+                arguments.insert(
+                    "last".into(),
+                    Value::Bool(offset.saturating_add(piece.len()) == bytes.len()),
+                );
+                let answer = reached.ask(HOST_FRAMES, arguments).await.map_err(|error| {
                     format!(
                         "the server {} did not take in the changes this device keeps: {error}",
                         hex::encode(server)
                     )
                 })?;
-            let caught_up: CaughtUpWorkspace =
-                serde_json::from_value(answer).map_err(|error| error.to_string())?;
-            let mut cursors: Vec<tilo_peer_state::store::Cursor> =
-                super::decode_hex(&caught_up.cursors)?;
-            if caught_up.more_cursors {
-                let rest = read_standing(reached, workspace, cursors.last()).await?;
-                cursors.extend(rest);
+                taken = answer.get("taken").and_then(Value::as_bool) == Some(true);
             }
-            cursors.sort_unstable();
-            cursors.dedup();
-            let lacked = link.lacked_by(server, &cursors)?;
-            if lacked == 0 {
-                return Ok(());
-            }
-            let narrowed = before
-                .as_ref()
-                .is_none_or(|(lacked_before, cursors_before)| {
-                    lacked < *lacked_before || cursors != *cursors_before
-                });
-            if !narrowed || answers >= CATCH_UP_ANSWERS {
+            if !taken {
                 return Err(format!(
-                    "the server {} still lacks {lacked} of the changes this device keeps \
-                     ({answers} answers)",
+                    "the server {} did not keep the changes this device sent it",
                     hex::encode(server)
                 ));
             }
-            before = Some((lacked, cursors));
         }
+        self.hand_content_to(workspace, server).await
     }
 
-    /// Take in what the store of `caller`, a device `workspace` names among
-    /// those keeping it, keeps of the workspace and this device's store lacks,
-    /// over the workspace's device link ([`DirectSync::take_store`]), as the
-    /// caller asks before it lets the workspace go. Answers where this
-    /// device's store stands then. The content the caller keeps it pushes
-    /// here itself ([`Self::hand_content_to`]).
-    ///
-    /// [`DirectSync::take_store`]: tilo_peer_state::direct::DirectSync::take_store
+    /// Take in `piece`, a piece of a round of `workspace`'s frames `caller`, a device the
+    /// workspace names among those keeping it or the one that handed it here, sends
+    /// ([`Self::push_store_to`]): kept aside until the round's last piece is here, then admitted
+    /// and kept in this device's store, as a link takes in what it fetched: its link's reader takes
+    /// the record writes into this device's copy from there, as it does every frame. A piece
+    /// of a round other than the one under way from the caller starts that round afresh. Answers
+    /// whether a round was kept.
     ///
     /// # Errors
     ///
-    /// The workspace is not kept here, the caller is not a device keeping it,
-    /// or its changes could not be taken in.
-    pub(crate) async fn catch_up_from(
+    /// The workspace is not kept here, the caller is not a device keeping it, the piece does not
+    /// follow the one before it, the round grew past [`ROUND_BYTES_AT_MOST`], or its frames do
+    /// not decode or were not kept.
+    pub(crate) async fn take_frames_from(
         &self,
         caller: &DeviceCert,
         workspace: &str,
-    ) -> Result<Vec<tilo_peer_state::store::Cursor>, String> {
+        piece: FramePiece,
+    ) -> Result<bool, String> {
         let workspace_id = WorkspaceId::parse(workspace)
             .ok_or_else(|| "a workspace is named by its id".to_owned())?;
-        let address = self.handing(caller, workspace).await?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let cursors = {
-            let taken = tokio::time::timeout(
-                CATCH_UP_DIAL,
-                self.take_store_of(
-                    workspace_id,
-                    address.endpoint_addr,
-                    address.device_certificate.device_public_key,
-                ),
-            )
-            .await;
-            match taken {
-                Ok(Ok(cursors)) => cursors,
-                Ok(Err(error)) => {
-                    tracing::debug!(%workspace, %error, "the caller's store was not taken by dialling back; what its link brought stands");
-                    self.standing_here(workspace_id)
-                }
-                Err(_) => {
-                    tracing::debug!(%workspace, "the caller could not be dialled back in time; what its link brought stands");
-                    self.standing_here(workspace_id)
-                }
+        self.handing(caller, workspace).await?;
+        let round = {
+            let key = (caller.device_public_key, workspace.to_owned());
+            let mut arriving = self.inner.frames_arriving.lock_recover();
+            let (upload, bytes) = arriving.entry(key.clone()).or_default();
+            if *upload != piece.upload {
+                upload.clone_from(&piece.upload);
+                bytes.clear();
             }
+            if piece.offset != bytes.len()
+                || bytes.len().saturating_add(piece.bytes.len()) > ROUND_BYTES_AT_MOST
+            {
+                arriving.remove(&key);
+                return Err(
+                    "a piece of the workspace's frames did not follow the one before it, or the \
+                     round grew too large"
+                        .into(),
+                );
+            }
+            bytes.extend_from_slice(&piece.bytes);
+            if !piece.last {
+                return Ok(false);
+            }
+            arriving
+                .remove(&key)
+                .map(|(_, bytes)| bytes)
+                .unwrap_or_default()
         };
-        // A page's service dials no one back: it answers where its link brought it.
-        #[cfg(target_arch = "wasm32")]
-        let cursors = self
-            .take_store_of(
-                workspace_id,
-                address.endpoint_addr,
-                address.device_certificate.device_public_key,
-            )
-            .await?;
-        Ok(cursors)
+        let frames: tilo_peer_state::direct::AuthoredFrames = postcard::from_bytes(&round)
+            .map_err(|error| format!("the workspace's frames do not decode: {error}"))?;
+        let link = self
+            .inner
+            .direct
+            .link(workspace_id)
+            .ok_or("no link serves the workspace on this device")?;
+        link.take_frames(frames).await?;
+        Ok(true)
     }
 
-    /// Where this device's store stands on `workspace_id`, as a catch-up answers:
-    /// what the workspace's link has brought in already. Read from the store
-    /// itself, which is the one its links keep: a host that holds the workspace
-    /// and serves no link of it yet answers where what it was handed brought it,
-    /// rather than refusing the catch-up that asks.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn standing_here(&self, workspace_id: WorkspaceId) -> Vec<tilo_peer_state::store::Cursor> {
+    /// How many bytes of a round of frames one ask carries ([`Self::push_store_to`]).
+    #[cfg_attr(
+        not(any(test, feature = "test-support")),
+        allow(
+            clippy::unused_self,
+            reason = "only a test build sends its frames in pieces of its own size"
+        )
+    )]
+    fn frame_piece_bytes(&self) -> usize {
+        #[cfg(any(test, feature = "test-support"))]
+        if let set @ 1.. = self
+            .inner
+            .frame_piece_bytes
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return set;
+        }
+        FRAME_PIECE_BYTES
+    }
+
+    /// Send a workspace's frames to another host `bytes` at a time from now on
+    /// ([`Self::push_store_to`]): what a test sends a store of a few records in many pieces with.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn send_frames_in_pieces_of(&self, bytes: usize) {
         self.inner
-            .store
-            .stands(workspace_id)
-            .into_iter()
-            .map(|(cursor, _)| cursor)
-            .collect()
+            .frame_piece_bytes
+            .store(bytes, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Take no frames a device keeping a workspace sends ([`HOST_FRAMES`]) from now on, as a build
+    /// before the hand-over carried them does not. What a test hands a workspace to such a build
+    /// with.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn take_no_frames(&self) {
+        self.inner
+            .takes_no_frames
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether this service takes no frames in ([`Self::take_no_frames`]).
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn takes_no_frames_now(&self) -> bool {
+        self.inner
+            .takes_no_frames
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// The address of `caller`, a device `workspace` names among those
@@ -883,78 +888,6 @@ impl Workspaces {
             .ok_or_else(|| "only a device keeping the workspace hands its changes over".to_owned())
     }
 
-    /// Where this device's store of `workspace` stands on the lineages after
-    /// `after`, as `caller`, a device keeping it, reads the rest of its
-    /// catch-up's answer ([`Self::standing_page`]).
-    ///
-    /// # Errors
-    ///
-    /// The workspace is not kept here, or the caller is not a device keeping
-    /// it.
-    pub(crate) async fn standing_after(
-        &self,
-        caller: &DeviceCert,
-        workspace: &str,
-        after: tilo_peer_state::store::Lineage,
-    ) -> Result<(Vec<tilo_peer_state::store::Cursor>, bool), String> {
-        let workspace_id = WorkspaceId::parse(workspace)
-            .ok_or_else(|| "a workspace is named by its id".to_owned())?;
-        self.handing(caller, workspace).await?;
-        let cursors = self
-            .inner
-            .store
-            .stands(workspace_id)
-            .into_iter()
-            .map(|(cursor, _)| cursor)
-            .collect();
-        Ok(self.standing_page(cursors, Some(after)))
-    }
-
-    /// The page of `cursors`, where this device's store stands, that one
-    /// answer carries: the cursors of the lineages after `after`, in lineage
-    /// order, at most [`CURSORS_PER_ANSWER`], and whether more follow them.
-    #[cfg_attr(
-        not(any(test, feature = "test-support")),
-        allow(
-            clippy::unused_self,
-            reason = "only a test build reads the store's own page size"
-        )
-    )]
-    pub(crate) fn standing_page(
-        &self,
-        mut cursors: Vec<tilo_peer_state::store::Cursor>,
-        after: Option<tilo_peer_state::store::Lineage>,
-    ) -> (Vec<tilo_peer_state::store::Cursor>, bool) {
-        #[cfg(any(test, feature = "test-support"))]
-        let per_answer = match self
-            .inner
-            .cursors_per_answer
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            0 => CURSORS_PER_ANSWER,
-            set => set,
-        };
-        #[cfg(not(any(test, feature = "test-support")))]
-        let per_answer = CURSORS_PER_ANSWER;
-        cursors.sort_unstable();
-        if let Some(after) = after {
-            cursors.retain(|cursor| cursor.lineage > after);
-        }
-        let more = cursors.len() > per_answer;
-        cursors.truncate(per_answer);
-        (cursors, more)
-    }
-
-    /// Answer where this device's store stands after a catch-up
-    /// ([`CATCH_UP_STANDING`]) at most `cursors` at a time from now on: what a
-    /// test reads a store of a few records in many pages with.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn answer_cursors_in_pages_of(&self, cursors: usize) {
-        self.inner
-            .cursors_per_answer
-            .store(cursors, std::sync::atomic::Ordering::Release);
-    }
-
     /// Take in what `device` at `addr`, one keeping `workspace`
     /// (`workspace_id`), keeps of it and this device's store lacks, over the
     /// workspace's device link, into this device's one store as a cold start
@@ -988,24 +921,6 @@ impl Workspaces {
         // its own history already, and what its copy needs of them follows
         // from there.
         Ok(cursors)
-    }
-
-    /// Answer the catch-up a device keeping a workspace asks for
-    /// ([`CATCH_UP_WORKSPACE`]) from now on as a build before the ask does:
-    /// not at all. What a test hands a workspace to such a build with.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn speak_no_catch_up(&self) {
-        self.inner
-            .speaks_no_catch_up
-            .store(true, std::sync::atomic::Ordering::Release);
-    }
-
-    /// Whether this service answers no catch-up ([`Self::speak_no_catch_up`]).
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn speaks_no_catch_up_now(&self) -> bool {
-        self.inner
-            .speaks_no_catch_up
-            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Have the holder `device` of `workspace` hold it as `role` from now on,
@@ -1093,9 +1008,23 @@ impl Workspaces {
         // The address the host signs for the workspace, asked ahead of the
         // hand-over: naming the host needs the address it signed, and the
         // hand-over carries the change naming it.
-        let named = self
+        let (named, request) = self
             .named_for_hand_over(reached, workspace, workspace_id, role)
             .await?;
+        // Named among the holders of its keys, the host is committed into the workspace's own
+        // group here, and the commit travels with the hand-over: it opens what it holds as it
+        // takes the workspace in, waiting on no other device to admit it.
+        let keys = match (role, request) {
+            (CopyRole::KeyHolder, Some(request)) => {
+                let device = self
+                    .device_keys()
+                    .ok_or("this device keeps no keys of the workspace to hand over")?;
+                device.admit(workspace_id, request).await.map_err(|error| {
+                    format!("the server was not admitted into the workspace's keys: {error}")
+                })?
+            }
+            _ => Vec::new(),
+        };
         let (holder_hint, bootstrap) = {
             let hosted = self
                 .workspace(workspace)
@@ -1127,6 +1056,9 @@ impl Workspaces {
             Value::String(hex_postcard(&holder_hint)?),
         );
         arguments.insert("bootstrap".into(), Value::String(hex_postcard(&bootstrap)?));
+        if !keys.is_empty() {
+            arguments.insert("keys".into(), Value::String(hex_postcard(&keys)?));
+        }
         arguments.insert(
             "role".into(),
             serde_json::to_value(role).map_err(|error| error.to_string())?,
@@ -1169,7 +1101,7 @@ impl Workspaces {
     /// change of the workspace that device's store keeps and its own lacks,
     /// so none of them goes with it. This device itself goes only once another
     /// device keeping the workspace says it keeps every change this one does
-    /// ([`Self::caught_up_with_this`]). What only that holder did passes on
+    /// ([`Self::push_store_to`]). What only that holder did passes on
     /// with its entry: the workspace's compacted base is made by the holder
     /// governance names for it
     /// ([`tilo_peer_state::PeerGovernance::base_maker`]), so with this one
@@ -1377,7 +1309,7 @@ impl Workspaces {
     }
 
     /// Have another device keeping `workspace` take in every change this
-    /// device's store keeps of it ([`Self::caught_up_with_this`]), as this
+    /// device's store keeps of it ([`Self::push_store_to`]), as this
     /// device does before it stops keeping the workspace itself: the first
     /// that says it keeps them all is enough.
     ///
@@ -1403,8 +1335,7 @@ impl Workspaces {
                 let reached = self
                     .reach_host(host_device(hint), address.endpoint_addr)
                     .await?;
-                self.caught_up_with_this(workspace, workspace_id, &reached)
-                    .await
+                self.push_store_to(workspace, workspace_id, &reached).await
             }
             .await;
             match caught_up {
@@ -1606,7 +1537,7 @@ impl Workspaces {
             .certificate()
             .await
             .map_err(|error| format!("the host did not say who it is: {error}"))?;
-        // Each operation is signed as this host, the holder its hand-overs and catch-ups name:
+        // Each operation is signed as this host, the holder its hand-overs name:
         // one device, one key.
         let (signer, signing) = host.endpoint_identity();
         Ok(OtherHost {
@@ -1632,13 +1563,14 @@ pub(super) struct OtherHost {
 
 impl OtherHost {
     /// The address this host signs for `workspace_id` as `role`, asked before
-    /// the workspace is handed over: it takes nothing in for it.
+    /// the workspace is handed over: it takes nothing in for it. A host about to keep the
+    /// workspace's keys answers its request for them with it.
     async fn address(
         &self,
         workspace: &str,
         workspace_id: WorkspaceId,
         role: CopyRole,
-    ) -> Result<TransportHint, String> {
+    ) -> Result<(TransportHint, Option<collab_types::MlsAccessRequestV1>), String> {
         let mut arguments = Map::new();
         arguments.insert("workspace".into(), Value::String(workspace.to_owned()));
         arguments.insert(
@@ -1652,7 +1584,12 @@ impl OtherHost {
         let answer = self.ask(HOST_WORKSPACE, arguments).await?;
         let hosted: WorkspaceHosted =
             serde_json::from_value(answer).map_err(|error| error.to_string())?;
-        super::decode_hex(&hosted.host_hint)
+        let request = if hosted.access_request.is_empty() {
+            None
+        } else {
+            Some(super::decode_hex(&hosted.access_request)?)
+        };
+        Ok((super::decode_hex(&hosted.host_hint)?, request))
     }
 
     /// Ask the host the host operation `action` with `arguments`, and answer
@@ -1713,50 +1650,6 @@ async fn hand_on(reached: &OtherHost, workspace: &str) -> Result<(), String> {
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-}
-
-/// Where `reached`'s store of `workspace` stands on the lineages after the
-/// one `last` names, read page by page ([`CATCH_UP_STANDING`]).
-///
-/// # Errors
-///
-/// The server did not answer a page, or answered one it cannot mean.
-async fn read_standing(
-    reached: &OtherHost,
-    workspace: &str,
-    last: Option<&tilo_peer_state::store::Cursor>,
-) -> Result<Vec<tilo_peer_state::store::Cursor>, String> {
-    let mut read = Vec::new();
-    let mut after = last.map(|cursor| cursor.lineage);
-    while let Some(lineage) = after {
-        let mut arguments = Map::new();
-        arguments.insert("workspace".into(), Value::String(workspace.to_owned()));
-        arguments.insert(
-            "after".into(),
-            Value::String(hex::encode(
-                postcard::to_stdvec(&lineage).map_err(|error| error.to_string())?,
-            )),
-        );
-        let answer = reached
-            .ask(CATCH_UP_STANDING, arguments)
-            .await
-            .map_err(|error| {
-                format!(
-                    "the server {} did not say where its store of the workspace stands: {error}",
-                    hex::encode(reached.certificate.device_public_key)
-                )
-            })?;
-        let page: StandingPage =
-            serde_json::from_value(answer).map_err(|error| error.to_string())?;
-        let cursors: Vec<tilo_peer_state::store::Cursor> = super::decode_hex(&page.cursors)?;
-        // Each page goes on after the last: one that does not is the end.
-        after = cursors
-            .last()
-            .map(|cursor| cursor.lineage)
-            .filter(|next| page.more && *next > lineage);
-        read.extend(cursors);
-    }
-    Ok(read)
 }
 
 /// The invocation of the host operation `action` with `arguments`.

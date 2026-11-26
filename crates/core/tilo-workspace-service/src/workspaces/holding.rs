@@ -48,6 +48,11 @@ use web_time::SystemTime;
 use super::links::{Link, Links};
 use super::{Held, HostedWorkspace, Workspaces, appended, peer_parts};
 
+/// How long a holder of a workspace's keys handed the workspace waits to open what it holds
+/// before it refuses the hand-over: the frames that admit it travel with it, so it is a bound on
+/// taking them in, never on waiting for another device to admit it.
+const KEYS_TAKEN_WITHIN: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// What a holder hands the device it asks to hold one of its workspaces.
 #[derive(Clone, Debug)]
 pub struct HostWorkspaceRequest {
@@ -64,6 +69,10 @@ pub struct HostWorkspaceRequest {
     /// How this device is to hold it: with its keys, or as a store of its
     /// ciphertext. The address it answers says so.
     pub role: CopyRole,
+    /// The frames of the workspace's own key group this device joins from: the handing device's
+    /// commit of the request this device answered with its address, its Welcome within. None for
+    /// a store, which keeps ciphertext alone.
+    pub keys: Vec<neighbour_wire::NeighbourMsg>,
 }
 
 impl HostWorkspaceRequest {
@@ -351,7 +360,7 @@ impl Workspaces {
         // holder that founded it elsewhere holds them. This device takes part in the group the
         // way a member copy does, asking its key holders to admit it; once they are here, the
         // sealed records it took in before open, and what this host retains is replayed.
-        let _keying = self.take_part_in_keys(&workspace, Held::Hosts);
+        let keying = self.take_part_in_keys(&workspace, Held::Hosts);
         tracing::info!(%workspace, workspace_id = %request.workspace_id, role = ?request.role, "holding a workspace another host handed over");
         let hint = self
             .transport_hint_as(&hosted, request.role)
@@ -376,6 +385,13 @@ impl Workspaces {
                     .any(|member| member.root() == Some(person) && !member.removed)
             });
         drop(hosted);
+        // A holder of the workspace's keys answers once it opens what it holds: the frames the
+        // hand-over carries admit it into the group, and the device that handed it over may go
+        // as soon as it is answered.
+        if holds_keys {
+            self.open_what_is_handed(&workspace, &request.keys).await?;
+        }
+        drop(keying);
         // The row goes back with the answer: the device that handed the workspace over takes it
         // in at once, rather than waiting for it over a link.
         let row = if theirs {
@@ -390,6 +406,47 @@ impl Workspaces {
             .kept_for_person_at_hand_over(&workspace, holds_keys)
             .await;
         Ok((hint, kept, row))
+    }
+
+    /// Take in `keys`, the frames of `workspace`'s own key group a hand-over carries, and wait
+    /// until this device holds the group's keys: what a holder of the keys answers its hand-over
+    /// after. A device whose key service hears its groups on its own sessions takes the frames
+    /// in from there.
+    ///
+    /// # Errors
+    ///
+    /// This device took part in no group of the workspace, or did not hold its keys in time.
+    async fn open_what_is_handed(
+        &self,
+        workspace: &str,
+        keys: &[neighbour_wire::NeighbourMsg],
+    ) -> Result<(), String> {
+        let Some(device) = self.device_keys() else {
+            return Ok(());
+        };
+        if !keys.is_empty()
+            && let Some(sink) = self
+                .inner
+                .host
+                .channels
+                .as_ref()
+                .and_then(|channels| channels.sink.as_ref())
+        {
+            sink.take(keys.to_vec());
+        }
+        match tokio::time::timeout(
+            KEYS_TAKEN_WITHIN,
+            super::sealed_documents::wait_for_group_keys(&device, workspace),
+        )
+        .await
+        {
+            Ok(true) => Ok(()),
+            Ok(false) => Err("this device takes part in no group of the workspace".into()),
+            Err(_) => Err(format!(
+                "this device did not hold the workspace's keys within {}s of being handed it",
+                KEYS_TAKEN_WITHIN.as_secs()
+            )),
+        }
     }
 
     /// The hand-over's governance, admitted: [`replica`] of the bootstrap
