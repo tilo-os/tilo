@@ -1055,10 +1055,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 "actions": actions_named(&own),
                 "kinds": kinds,
             });
-            if restarted {
-                if let Some(fields) = answer.as_object_mut() {
-                    fields.insert("restarted".into(), json!(true));
-                }
+            if restarted && let Some(fields) = answer.as_object_mut() {
+                fields.insert("restarted".into(), json!(true));
             }
             if let (Some(fields), Some(next)) = (answer.as_object_mut(), next) {
                 fields.insert("next_cursor".into(), json!(next));
