@@ -1919,7 +1919,7 @@ template view task_body(t: Task) {
     stack(gap: .group) {
         stack(gap: .related) {
             row(gap: .related, align: .start) {
-                button(check(t), icon_only: true)
+                ui.Checkbox(bind: t.done)
                 ui.TextInput(bind: t.title, placeholder: "What to do", title: true, fill: 1.0)
             }
             // What came before it in another tracker, and where it is read there: the number it
