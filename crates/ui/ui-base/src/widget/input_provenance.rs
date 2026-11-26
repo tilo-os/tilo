@@ -58,8 +58,8 @@ pub(crate) fn input() -> Input {
     INPUT.with(Cell::get)
 }
 
-#[cfg(test)]
-pub(crate) fn physical_text() -> bool {
+#[cfg(any(test, feature = "test-support"))]
+pub fn physical_text() -> bool {
     input() != Input::Discrete
 }
 

@@ -51,7 +51,7 @@ pub use clock::forget_frames_for_tests;
 pub use clock::laying_out_frame;
 pub use clock::own;
 pub use clock::pin_frame;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub use clock::pin_frame_at;
 pub use clock::{
     MotionSurface, frame_drawn, frame_laying_out, frame_now, frames_until, frames_wanted,

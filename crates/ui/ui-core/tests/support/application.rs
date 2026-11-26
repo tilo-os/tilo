@@ -623,7 +623,7 @@ impl Widget for ProbeRoot {
         dyn tilo_ui::view::capability::ViewState,
         dyn tilo_ui_base::widget::undo_points::UndoPoints,
         dyn tilo_ui::undo::CommittedActions,
-        dyn tilo_ui::host_operation::ResourceOperations
+        dyn tilo_ui_base::host_operation::ResourceOperations
     );
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -687,30 +687,30 @@ impl Widget for ProbeRoot {
     }
 }
 
-impl tilo_ui::host_operation::ResourceOperations for ProbeRoot {
+impl tilo_ui_base::host_operation::ResourceOperations for ProbeRoot {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["probe.view", "probe.effect", "probe.pending"]
     }
 
     fn start_operation(
         &mut self,
-        op: &tilo_ui::host_operation::ResourceOperation<'_>,
+        op: &tilo_ui_base::host_operation::ResourceOperation<'_>,
         _: &mut tilo_ui_base::widget::Edits<'_>,
         _: &ObjId,
-    ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
-        let tilo_ui::host_operation::OperationRequest { kind, type_id, .. } = op.request();
-        if !tilo_ui::host_operation::local_resource_operation_handlers(self).contains(&type_id) {
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String> {
+        let tilo_ui_base::host_operation::OperationRequest { kind, type_id, .. } = op.request();
+        if !tilo_ui_base::host_operation::local_resource_operation_handlers(self).contains(&type_id) {
             return Ok(None);
         }
         if type_id == "probe.pending" {
             self.operations.borrow_mut().push("pending".into());
             return Ok(Some(
-                tilo_ui::host_operation::ResourceOperationStart::Accepted,
+                tilo_ui_base::host_operation::ResourceOperationStart::Accepted,
             ));
         }
         self.operations.borrow_mut().push(format!("{kind:?}"));
         Ok(Some(
-            tilo_ui::host_operation::ResourceOperationStart::Completed(
+            tilo_ui_base::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             ),
         ))

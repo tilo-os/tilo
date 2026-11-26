@@ -483,7 +483,7 @@ use std::cell::{Cell, RefCell};
 use tilo_ui::application::{
     AppComponent, LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput,
 };
-use tilo_ui::host_operation::{poll_resource_operation, start_operation};
+use tilo_ui_base::host_operation::{poll_resource_operation, start_operation};
 use tilo_ui_base::local_state::LocalState;
 use tilo_ui::widget::{AppKind, AppWidget, Column, IconDescriptor, TileHost};
 type RefusedNode = (
@@ -542,7 +542,7 @@ impl Leaf {
 impl Widget for Leaf {
     tilo_ui_base::provides!(
         dyn tilo_ui_base::widget::resources::PublishesResources,
-        dyn tilo_ui::host_operation::ResourceOperations
+        dyn tilo_ui_base::host_operation::ResourceOperations
     );
 
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
@@ -657,17 +657,17 @@ impl Widget for Leaf {
     }
 }
 
-impl tilo_ui::host_operation::ResourceOperations for Leaf {
+impl tilo_ui_base::host_operation::ResourceOperations for Leaf {
     #[allow(
         clippy::panic_in_result_fn,
         reason = "callback probe asserts its actual canonical record before returning the toolkit result"
     )]
     fn start_operation(
         &mut self,
-        _op: &tilo_ui::host_operation::ResourceOperation<'_>,
+        _op: &tilo_ui_base::host_operation::ResourceOperation<'_>,
         doc: &mut tilo_ui_base::widget::Edits<'_>,
         _: &ObjId,
-    ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String> {
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some(self.record.as_str())
@@ -675,7 +675,7 @@ impl tilo_ui::host_operation::ResourceOperations for Leaf {
         self.capture("operation-start");
         self.operation_state = Some(LocalState::new(0));
         Ok(Some(
-            tilo_ui::host_operation::ResourceOperationStart::Accepted,
+            tilo_ui_base::host_operation::ResourceOperationStart::Accepted,
         ))
     }
 
@@ -765,7 +765,7 @@ impl Widget for Root {
         dyn tilo_ui::search::capability::SearchSource,
         dyn tilo_ui::resource::capability::ResourceScoped,
         dyn tilo_ui::view::capability::ViewState,
-        dyn tilo_ui::host_operation::ResourceOperations
+        dyn tilo_ui_base::host_operation::ResourceOperations
     );
 
     fn sync(&mut self, d: &AppModel, p: &ModelPath) {
@@ -855,22 +855,22 @@ impl Widget for Root {
     }
 }
 
-impl tilo_ui::host_operation::ResourceOperations for Root {
+impl tilo_ui_base::host_operation::ResourceOperations for Root {
     fn start_operation(
         &mut self,
-        op: &tilo_ui::host_operation::ResourceOperation<'_>,
+        op: &tilo_ui_base::host_operation::ResourceOperation<'_>,
         doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ObjId,
-    ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String> {
         if !LEGACY_MUTABLE.get() {
-            if let Some(started) = tilo_ui::host_operation::start_in_children(self, op, doc, path)?
+            if let Some(started) = tilo_ui_base::host_operation::start_in_children(self, op, doc, path)?
             {
                 return Ok(Some(started));
             }
             if let Some(accept) = LEGACY_START.get() {
                 LEGACY_START_CALLS.set(LEGACY_START_CALLS.get().saturating_add(1));
                 return Ok(accept.then(|| {
-                    tilo_ui::host_operation::ResourceOperationStart::Completed(
+                    tilo_ui_base::host_operation::ResourceOperationStart::Completed(
                         tilo_actions::ActionOutput::default(),
                     )
                 }));
@@ -885,7 +885,7 @@ impl tilo_ui::host_operation::ResourceOperations for Root {
         LEGACY_DOCUMENTS.with_borrow_mut(|seen| seen.push((marker, path == &ROOT)));
         crate::support::application::write_fixture_flag(doc, "legacy-follow-up");
         Ok(Some(
-            tilo_ui::host_operation::ResourceOperationStart::Completed(
+            tilo_ui_base::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             ),
         ))
@@ -1100,7 +1100,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                 Callback::Start => {
                     start_operation(
                         &mut tile,
-                        &tilo_ui::host_operation::ResourceOperation::local(
+                        &tilo_ui_base::host_operation::ResourceOperation::local(
                             invocation,
                             tilo_actions::OperationKind::Effect,
                             "probe",

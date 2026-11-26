@@ -708,8 +708,8 @@ where
     .unwrap()
 }
 
-#[cfg(test)]
-pub(crate) fn test_bool_action_binding() -> tilo_actions::ActionBinding<bool> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_bool_action_binding() -> tilo_actions::ActionBinding<bool> {
     use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
     test_action_binding(ActionSpec::typed_operation(
         "set",
@@ -722,8 +722,8 @@ pub(crate) fn test_bool_action_binding() -> tilo_actions::ActionBinding<bool> {
     ))
 }
 
-#[cfg(test)]
-pub(crate) fn test_string_action_binding() -> tilo_actions::ActionBinding<String> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_string_action_binding() -> tilo_actions::ActionBinding<String> {
     use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
     test_action_binding(ActionSpec::typed_operation(
         "set",

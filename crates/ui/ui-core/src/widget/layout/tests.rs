@@ -9,7 +9,7 @@ use taffy::Size;
 use taffy::TaffyTree;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::Theme;
-use tilo_ui_base::widget::layout::Widget;
+use tilo_ui_base::widget::Widget;
 
 struct AccessCount {
     built: std::rc::Rc<std::cell::Cell<usize>>,

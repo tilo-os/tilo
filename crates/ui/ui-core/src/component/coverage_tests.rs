@@ -9,7 +9,7 @@ use taffy::{NodeId, Style, TaffyTree};
 use tilo_component_scan as component_scan;
 use vello::kurbo::{Point, Rect};
 
-use tilo_ui_base::{component::tests::given, component::tests::given_with_views, component::tests::sample};
+use crate::component_tests::{given, given_with_views, sample};
 use tilo_ui_base::{component::Registry, component::Value};
 use crate::component_catalogue::TOOLKIT;
 use crate::headless::Driver;

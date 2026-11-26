@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
-use tilo_ui_base::widget::Element;
 
 use tilo_ui_base::component::*;
 use crate::component_catalogue::TOOLKIT;
 use crate::widget::ListRowProps;
+use tilo_ui_base::widget::Element;
 
 /// The toolkit's own described widgets, as a window that builds only them composes them.
 fn toolkit() -> Registry {

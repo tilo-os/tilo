@@ -563,8 +563,8 @@ pub(crate) fn finish_document(id: &str) -> ThemeDocument {
 }
 
 /// [`finish_document`] as the theme it builds.
-#[cfg(test)]
-pub(crate) fn finish_theme(id: &str) -> crate::theme::Theme {
+#[cfg(any(test, feature = "test-support"))]
+pub fn finish_theme(id: &str) -> crate::theme::Theme {
     crate::theme::Theme::from_document(&finish_document(id)).expect("a finish fixture is usable")
 }
 

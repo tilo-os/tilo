@@ -2,8 +2,8 @@ use tilo_ui_base::presence::draft::*;
 use tilo_ui_base::permissions::MemberId;
 use tilo_ui_base::{presence::PresenceCtx, presence::capability};
 use crate::time::Duration;
-use tilo_ui_base::presence::draft::COMPOSING_LINGER;
-use tilo_ui_base::presence::draft::PresenceKey;
+use tilo_ui_base::presence::COMPOSING_LINGER;
+use tilo_ui_base::presence::PresenceKey;
 use tilo_ui_base::collaboration::PresencePayload;
 
 fn channel() -> PresenceKey {

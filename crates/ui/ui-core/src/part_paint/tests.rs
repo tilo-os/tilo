@@ -1,7 +1,5 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tilo_ui_base::tokens::SurfaceRole;
-use tilo_ui_base::theme::Theme;
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, Shape, Size};
@@ -13,6 +11,8 @@ use tilo_ui_base::text_render::TextRenderer;
 use crate::time::Duration;
 use crate::widget::Button;
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::tokens::SurfaceRole;
+use tilo_ui_base::theme::Theme;
 
 /// A painter set that draws a button as a triangle pointing up, counts its calls, springs between
 /// states and leaves every other part alone.

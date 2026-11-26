@@ -151,10 +151,10 @@ fn finishes() -> [&'static str; 4] {
 /// The theme a finish fixture (`tests/fixtures/finishes`) builds.
 fn finish(name: &str) -> Theme {
     let json = match name {
-        "block" => include_str!("fixtures/finishes/block.json"),
-        "glass" => include_str!("fixtures/finishes/glass.json"),
-        "liquid-glass" => include_str!("fixtures/finishes/liquid-glass.json"),
-        "pixelated" => include_str!("fixtures/finishes/pixelated.json"),
+        "block" => include_str!("../../ui-base/tests/fixtures/finishes/block.json"),
+        "glass" => include_str!("../../ui-base/tests/fixtures/finishes/glass.json"),
+        "liquid-glass" => include_str!("../../ui-base/tests/fixtures/finishes/liquid-glass.json"),
+        "pixelated" => include_str!("../../ui-base/tests/fixtures/finishes/pixelated.json"),
         other => panic!("no finish fixture {other}"),
     };
     let document: ThemeDocument = serde_json::from_str(json).unwrap();

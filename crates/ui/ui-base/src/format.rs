@@ -1081,8 +1081,8 @@ pub fn arithmetic_operator(symbol: char) -> Option<char> {
 }
 
 /// This thread's window language, as a window shipping English and German speaks it.
-#[cfg(test)]
-pub(crate) fn speak_locale(locale: &str) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn speak_locale(locale: &str) {
     let mut catalogues = vec![("en-US", "")];
     if locale != "en-US" {
         catalogues.push((locale, ""));

@@ -1,11 +1,11 @@
 use tilo_ui_base::a11y_child_route::*;
 use std::cell::Cell;
 use std::rc::Rc;
-use vello::kurbo::Rect;
-use tilo_ui_base::widget::Widget;
 
 use crate::{widget::Button, widget::Embedded};
 use tilo_ui_base::widget::TaffyTreeExt;
+use vello::kurbo::Rect;
+use tilo_ui_base::widget::Widget;
 
 struct Painter {
     button: Embedded<Button>,

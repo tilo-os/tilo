@@ -81,7 +81,7 @@ pub fn pin_frame() -> PinnedFrame {
 
 /// [`pin_frame`] at `at`: a test steps a gesture through frames at the pace a display presents them,
 /// without sleeping.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn pin_frame_at(at: Instant) -> PinnedFrame {
     PinnedFrame(FRAME_AT.with(|cell| cell.replace(Some(at))))
 }

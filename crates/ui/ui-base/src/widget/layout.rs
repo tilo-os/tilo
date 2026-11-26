@@ -1471,14 +1471,14 @@ impl CompositionFocus {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub struct AnonymousFocusProbe {
     pub focused: bool,
     pub enabled: bool,
     pub state: String,
     builds: usize,
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl AnonymousFocusProbe {
     pub fn new(state: &str) -> Self {
         Self {
@@ -1489,7 +1489,7 @@ impl AnonymousFocusProbe {
         }
     }
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Widget for AnonymousFocusProbe {
     crate::provides!(dyn crate::widget::undo_points::UndoPoints);
 
@@ -1525,7 +1525,7 @@ impl Widget for AnonymousFocusProbe {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl crate::widget::undo_points::UndoPoints for AnonymousFocusProbe {
     fn get_state(&self) -> Option<String> {
         Some(self.state.clone())

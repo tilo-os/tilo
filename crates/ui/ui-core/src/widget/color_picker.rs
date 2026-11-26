@@ -1917,7 +1917,7 @@ mod tests {
                     if language == "de-DE" {
                         tilo_ui_base::i18n::I18nManager::add_resource(
                             language,
-                            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/locales/de-DE.ftl"))
+                            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui-base/locales/de-DE.ftl"))
                                 .to_owned(),
                         );
                     }

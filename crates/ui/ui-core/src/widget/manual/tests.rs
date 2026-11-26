@@ -7,17 +7,17 @@ use vello::kurbo::Affine;
 use taffy::AvailableSpace;
 use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
 use std::cell::Cell;
-use tilo_ui_base::widget::manual::Element;
+use tilo_ui_base::widget::Element;
 use std::collections::HashMap;
-use tilo_ui_base::widget::manual::LayoutInfo;
+use tilo_ui_base::widget::LayoutInfo;
 use vello::kurbo::Point;
 use std::rc::Rc;
 use vello::kurbo::Rect;
 use taffy::Size;
 use taffy::TaffyTree;
 use tilo_ui_base::Theme;
-use tilo_ui_base::widget::manual::Widget;
-use tilo_ui_base::widget::manual::WidgetLayoutError;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::widget::WidgetLayoutError;
 
 fn find<'a>(node: &'a InspectionNode, id: &str) -> &'a InspectionNode {
     fn search<'a>(node: &'a InspectionNode, id: &str) -> Option<&'a InspectionNode> {

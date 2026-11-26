@@ -456,7 +456,7 @@ fn component_publication_locus_checks_owner_record_and_lifetime_without_input() 
         .unwrap();
     assert!(matches!(
         invoked,
-        tilo_ui::host_operation::ResourceOperationStart::Completed(_)
+        tilo_ui_base::host_operation::ResourceOperationStart::Completed(_)
     ));
     frame.resize((320, 240)).unwrap();
     assert_eq!(
@@ -553,7 +553,7 @@ impl AppWidget for WithdrawableResource {
 impl Widget for WithdrawableResource {
     tilo_ui_base::provides!(
         dyn tilo_ui_base::widget::resources::PublishesResources,
-        dyn tilo_ui::host_operation::ResourceOperations
+        dyn tilo_ui_base::host_operation::ResourceOperations
     );
     fn name(&self) -> &'static str {
         "WithdrawableResource"
@@ -570,20 +570,20 @@ impl Widget for WithdrawableResource {
     }
 }
 
-impl tilo_ui::host_operation::ResourceOperations for WithdrawableResource {
+impl tilo_ui_base::host_operation::ResourceOperations for WithdrawableResource {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[tilo_ui::widget::resource_actions::OPERATION_TYPE]
     }
 
     fn start_operation(
         &mut self,
-        _: &tilo_ui::host_operation::ResourceOperation<'_>,
+        _: &tilo_ui_base::host_operation::ResourceOperation<'_>,
         _: &mut tilo_ui_base::widget::Edits<'_>,
         _: &automerge::ObjId,
-    ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(Some(
-            tilo_ui::host_operation::ResourceOperationStart::Completed(
+            tilo_ui_base::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             ),
         ))

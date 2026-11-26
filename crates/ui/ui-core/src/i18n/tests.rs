@@ -11,8 +11,8 @@ use unic_langid::LanguageIdentifier;
 #[test]
 fn every_toolkit_catalogue_parses_whole() {
     for (locale, text) in [
-        ("en-US", include_str!("../locales/en-US.ftl")),
-        ("de-DE", include_str!("../locales/de-DE.ftl")),
+        ("en-US", include_str!("../../../ui-base/locales/en-US.ftl")),
+        ("de-DE", include_str!("../../../ui-base/locales/de-DE.ftl")),
     ] {
         if let Err((_, errors)) = FluentResource::try_new(text.to_owned()) {
             panic!("the {locale} toolkit catalogue does not parse: {errors:?}");
@@ -329,7 +329,7 @@ tilo_test_env::scenario! {
                 .with_language_pack(LanguagePack {
                     id: "tilo-ui-pack-test",
                     locales: &["en-US", "de-DE"],
-                    source_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/locales"),
+                    source_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/../ui-base/locales"),
                 });
         let sources = PACKED.every_source();
         assert_eq!(sources.first().map(|(locale, _)| *locale), Some("en-US"));
@@ -339,7 +339,7 @@ tilo_test_env::scenario! {
             .expect("the German catalogue is read from the crate's locales");
         assert_eq!(
             german.1,
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/locales/de-DE.ftl"))
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui-base/locales/de-DE.ftl"))
                 .unwrap()
         );
         let missing = LanguagePack {
@@ -868,8 +868,8 @@ tilo_test_env::scenario! {
     // A toolkit key only English defines would show English on a German shell; every relative-time
     // message is translated with the same variables.
     {
-        const EN_FTL: &str = include_str!("../locales/en-US.ftl");
-        const DE_FTL: &str = include_str!("../locales/de-DE.ftl");
+        const EN_FTL: &str = include_str!("../../../ui-base/locales/en-US.ftl");
+        const DE_FTL: &str = include_str!("../../../ui-base/locales/de-DE.ftl");
         let en = make_bundle(&parse_locale_or_default("en-US"), EN_FTL).unwrap();
         let de = make_bundle(&parse_locale_or_default("de-DE"), DE_FTL).unwrap();
         for key in [
