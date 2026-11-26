@@ -132,7 +132,7 @@ impl Builder {
         let apps = Rc::new(Apps::with_launcher(
             environment,
             Some(wake.handle()),
-            launcher,
+            Some(launcher),
         ));
         let launch_record = Arc::new(Launches::default());
         let lists = Lists::fixed(AppLists::read());
@@ -220,14 +220,13 @@ impl Builder {
 }
 
 /// This computer's home, as a device that installed this tree's apps holds it: the identity its
-/// daemon keeps for the person and certifies this device with, and, when `installs`, the store of
-/// apps and the runtimes their windows run on, with the publisher its launcher trusts to run them.
-/// Answers the launcher that starts them, or `None` for a computer that installs nothing: the
-/// flows that run no app need neither, and start nothing.
+/// daemon keeps for the person and certifies this device with, the run's launcher its daemon
+/// starts apps with, and, when `installs`, the store of apps and the runtimes their windows run on,
+/// with the publisher its launcher trusts to run them. Answers the launcher.
 ///
 /// # Panics
 /// The home cannot be made, a package cannot be installed, or no run built the launcher.
-fn home_with_apps(installs: bool) -> (tilo_test_env::TestHome, Option<std::path::PathBuf>) {
+fn home_with_apps(installs: bool) -> (tilo_test_env::TestHome, std::path::PathBuf) {
     let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
     let identity = home.root().join("identity");
     home.env()
@@ -235,8 +234,9 @@ fn home_with_apps(installs: bool) -> (tilo_test_env::TestHome, Option<std::path:
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
     let store = home.data().join("tilo-apps");
     home.env().set("TILO_APPS_DATA_DIR", &store);
+    let launcher = crate::common::launcher_for(&mut home);
     if !installs {
-        return (home, None);
+        return (home, launcher);
     }
     crate::common::dev_apps::install(&store, &home.state().join("tilolang"));
     crate::common::dev_apps::install_runtimes(&home.data().join("tilo-runtime"));
@@ -244,12 +244,7 @@ fn home_with_apps(installs: bool) -> (tilo_test_env::TestHome, Option<std::path:
         "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
         &crate::common::dev_apps::runtimes().trusted,
     );
-    let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
-    // The device's daemon runs in this process, so the launcher is not beside its program as it
-    // is for an installed device: the daemon finds the run's own launcher by the variable a
-    // debug build honours, and starts the tilolang hosts the fixture's apps' windows run in.
-    home.env().set("TILO_LAUNCHER_BIN", &launcher);
-    (home, Some(launcher))
+    (home, launcher)
 }
 
 /// A session on a real device daemon, with the app `app` installed and its window open.

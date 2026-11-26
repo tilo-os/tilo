@@ -743,7 +743,21 @@ pub fn device_home() -> tilo_test_env::TestHome {
         .set("TILO_IDENTITY_ROOT", &identity)
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1")
         .set("TILO_SECRETS_DIR", secrets());
+    launcher_for(&mut home);
     home
+}
+
+/// Name the run's launcher to the daemon `home` starts, and answer it. The device's daemon runs in
+/// this process, so the launcher is not beside its program as it is for an installed device: the
+/// daemon finds the run's own by the variable a debug build honours. Every home needs it, one
+/// whose test opens no app too, since the shell is one of the default apps the daemon starts.
+///
+/// # Panics
+/// No run built the launcher.
+pub fn launcher_for(home: &mut tilo_test_env::TestHome) -> std::path::PathBuf {
+    let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
+    home.env().set("TILO_LAUNCHER_BIN", &launcher);
+    launcher
 }
 
 /// The sealed file store this process keeps its secrets in: a process opens the store
