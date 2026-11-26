@@ -2632,6 +2632,17 @@ fn spawn_and_wait(
     } else {
         child.wait()?
     };
+    // A sandbox that ended badly names what it ran: an empty stream from the app leaves this as
+    // the only record of the program and the arguments it was given.
+    if !status.success() {
+        eprintln!(
+            "tilo-launcher: {} {} ran {} {}",
+            opts.app_id.as_deref().unwrap_or("the app"),
+            status,
+            bwrap.display(),
+            argv.join(" ")
+        );
+    }
     drop(system_view);
     Ok(status)
 }
