@@ -2229,10 +2229,12 @@ impl Widget for Button {
         environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         if self.interaction != environment {
+            if !self.interaction.sizes_alike(environment) {
+                self.measured_width = None;
+                self.layout_dirty = true;
+            }
             self.interaction = environment;
             self.is_hovered &= environment.supports_hover();
-            self.measured_width = None;
-            self.layout_dirty = true;
             self.dirty = true;
         }
     }

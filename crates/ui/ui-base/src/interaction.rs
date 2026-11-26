@@ -243,6 +243,14 @@ impl InteractionEnvironment {
         )
     }
 
+    /// Whether a control sized for `self` keeps its size in `other`: a control's size reads how
+    /// precise the pointer is (its minimum target, and whether it hovers), not which device the
+    /// person used last. A person moving between the mouse and the keys measures nothing again.
+    #[must_use]
+    pub fn sizes_alike(self, other: Self) -> bool {
+        self.pointer_precision == other.pointer_precision
+    }
+
     /// Hover affordances have no meaning for a coarse direct pointer.
     pub const fn supports_hover(self) -> bool {
         matches!(self.pointer_precision, PointerPrecision::Fine)

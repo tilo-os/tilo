@@ -2026,8 +2026,8 @@ impl Widget for ToggleGroup {
         environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         if self.interaction != environment {
+            self.layout_dirty |= !self.interaction.sizes_alike(environment);
             self.interaction = environment;
-            self.layout_dirty = true;
             self.cache_dirty = true;
         }
     }
