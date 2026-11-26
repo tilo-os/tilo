@@ -428,7 +428,9 @@ async function connect({
     if (!store) profile ??= identityProfile(identity, origin);
     deviceKey ??= await openDeviceKey({profile: profile ?? identityProfile(identity, origin), storage: idbStorage()});
   }
-  // A page may start connecting while its runtime still loads.
+  // A page may start connecting while its runtime still loads. When it brings
+  // its own (a test's), no page module is fetched for it.
+  const fromHost = runtime === undefined;
   runtime ??= await pageRuntime(desktop);
   if (!origin || !userPublicKey || !deviceKey || !(store || profile) || !runtime) {
     throw new TypeError('origin, userPublicKey, device key, store or profile, and runtime are required');
@@ -726,8 +728,9 @@ async function connect({
     const record = storage ? undefined : await store.get(PEER_RECORD);
     // The peer's code is a module of its own, fetched when a page first
     // starts a session; every call below reaches it through the start
-    // module's exports (`host.mjs`).
-    await (desktop ?? await import('./host.mjs')).loadRuntime?.('peer');
+    // module's exports (`host.mjs`). A caller that brought its own runtime
+    // has the code already.
+    if (fromHost) await (desktop ?? await import('./host.mjs')).loadRuntime?.('peer');
     peer = runtime.WasmPeer.start(
       withStartFields(certified, {
         displayName, address: host.address,
