@@ -57,15 +57,19 @@ pub(crate) async fn chat_holds(host: &host::Host, needle: &str) -> Result<bool, 
     let daemon = host.daemon();
     let workspaces = daemon.workspaces();
     let workspace = host.workspace();
-    let routes = workspaces
-        .document_routes(workspace)
+    let routes = tilo_test_env::within(
+        "the daemon's records of the workspace",
+        workspaces.document_routes(workspace),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    for (app, record) in routes.into_iter().filter(|(app, _)| app == CHAT) {
+        let held = tilo_test_env::within(
+            "the daemon's record of the chat",
+            workspaces.resource_document(workspace, &app, &record),
+        )
         .await
         .map_err(|error| error.to_string())?;
-    for (app, record) in routes.into_iter().filter(|(app, _)| app == CHAT) {
-        let held = workspaces
-            .resource_document(workspace, &app, &record)
-            .await
-            .map_err(|error| error.to_string())?;
         if held.is_some_and(|bytes| bytes.windows(needle.len()).any(|w| w == needle.as_bytes())) {
             return Ok(true);
         }
@@ -316,13 +320,14 @@ fn a_batch_of_posts_is_one_step_and_one_undo_takes_it_back() {
         }
         assert_eq!(kept, BATCH, "every post of the batch is kept");
 
-        // One step: the record's own history takes the whole batch back.
+        // One step: the record's own history takes the whole batch back. The call is held
+        // until the undo has ended, so a batch this size is given the time it takes; the
+        // helpers' deadlines name it if it never ends.
         let undo_answer = agent
             .tool(
                 "tilo_do",
                 &json!({"path": format!("so.tilo.chat/{CHAT_RESOURCE}#undo"),
-                        "args": {"steps": BATCH},
-                        "wait_ms": 5_000}),
+                        "args": {"steps": BATCH}}),
             )
             .await;
         let (undone, failed) = said(&undo_answer);
