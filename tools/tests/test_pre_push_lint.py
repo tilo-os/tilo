@@ -1460,11 +1460,31 @@ class InheritedRedTests(unittest.TestCase):
     def test_the_board_refuses_a_finding_main_does_not_name(self):
         module = pre_push_lint()
         board = self.board(module, [self.item("a" * 40)], logs={"l": {"dead_code a.rs"}},
-                           ancestor=lambda since, of: True)
+                           ancestor=lambda since, of: True, files={"b.rs"})
         found, why = board.judge({"check": "clippy/x", "outcome": "fail",
                                   "findings": ["unused_imports b.rs"]})
         self.assertIsNone(found)
         self.assertEqual(why, "new: unused_imports b.rs")
+
+    def test_a_lint_in_a_file_the_push_leaves_is_not_its_own_before_the_board_judges(self):
+        # Someone's fresh red on main the board has no verdict for yet: the push changes
+        # x.rs, the lint is in kept.rs, so it passes and says why.
+        module = pre_push_lint()
+        board = self.board(module, [], ancestor=lambda since, of: True, files={"x.rs"})
+        found, why = board.judge({"check": "clippy/x", "outcome": "fail",
+                                  "findings": ["clippy::doc_markdown kept.rs"]})
+        self.assertIsNotNone(found)
+        self.assertEqual(why, "")
+        self.assertEqual(module.blame_words({"check": "clippy/x", "blame": module.item_blame(found)}),
+                         "not yours: only in files this push leaves as they are")
+
+    def test_dead_code_in_a_file_the_push_leaves_is_still_refused(self):
+        # Removing the last caller in x.rs makes an item in kept.rs unused.
+        module = pre_push_lint()
+        board = self.board(module, [], ancestor=lambda since, of: True, files={"x.rs"})
+        found, _why = board.judge({"check": "clippy/x", "outcome": "fail",
+                                   "findings": ["dead_code kept.rs"]})
+        self.assertIsNone(found)
 
     def test_the_board_passes_a_finding_main_names(self):
         module = pre_push_lint()

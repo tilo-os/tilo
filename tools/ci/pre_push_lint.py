@@ -1087,6 +1087,8 @@ def blame_words(result: dict) -> str:
             if said.get("unread"):
                 words += ("; main's log is gone, but the push changes no file the finding names")
             return words
+        if blame.get("elsewhere"):
+            return "not yours: only in files this push leaves as they are"
         if "uncompared" in blame:
             return "main's failure and this one can't be told apart one by one: it may be yours"
     return {
@@ -1242,6 +1244,10 @@ def main_board(root: Path) -> list[dict] | None:
     return None
 
 
+# Lints a change can cause in a file it does not touch.
+CROSS_FILE_LINTS = {"dead_code"}
+
+
 def item_blame(item: dict) -> dict:
     """A board item as a Blame, so a red passed on the board is said like t's own.
 
@@ -1249,6 +1255,8 @@ def item_blame(item: dict) -> dict:
     was found under the package it builds on; `log_unread` says the board's own
     log is gone, so only the board's red and the unchanged files stand for it.
     """
+    if item.get("untouched"):
+        return {"elsewhere": True}
     claim = item.get("claim") or {}
     inherited = {"since": item.get("first_bad") or "",
                  "claimed_by": claim.get("session") or claim.get("note")}
@@ -1404,7 +1412,7 @@ class Board:
         if findings:
             at_base, why = self.items_at_base(check, covering=True)
             if not at_base:
-                return None, why
+                return self.elsewhere(check, findings, why)
             theirs: set[str] = set()
             unread: list[dict] = []
             for item in at_base:
@@ -1420,7 +1428,7 @@ class Board:
                 return at_base[0], ""
             if unread and self.files_untouched(missing):
                 return {**unread[0], "log_unread": True}, ""
-            return None, "new: " + ", ".join(missing)
+            return self.elsewhere(check, missing, "new: " + ", ".join(missing))
         at_base, why = self.items_at_base(check)
         if not at_base:
             return None, why
@@ -1428,6 +1436,21 @@ class Board:
             if not item.get("test"):
                 return item, ""
         return None, f"main's {check} red names a test this failure does not"
+
+    def elsewhere(self, check: str | None, findings: list[str], why: str) -> tuple[dict | None, str]:
+        """A lint the push did not write, when main's board cannot say it is main's.
+
+        A lint is reported at the line that breaks it, so a finding in a file the push leaves
+        as it is came with whoever last changed that file: main's red the board has not judged
+        yet, or a commit after the push's base. Refusing it holds a finished change behind
+        someone else's red. `dead_code` is the exception: removing a caller in one file makes
+        an item in another unused, so it stays the push's until the board says otherwise.
+        """
+        if not self.files_untouched(findings):
+            return None, why
+        if any(finding_key(finding).partition(" ")[0] in CROSS_FILE_LINTS for finding in findings):
+            return None, why
+        return {"check": check, "untouched": True}, ""
 
     def files_untouched(self, findings: Iterable[str]) -> bool:
         """Whether every finding names a file this push leaves as it is."""
