@@ -23,6 +23,7 @@ mod atomic;
 mod block_search;
 mod board_lists;
 mod bundle;
+mod bytes;
 mod calendar_agents;
 mod calendar_export;
 mod canvas;
