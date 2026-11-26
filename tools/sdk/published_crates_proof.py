@@ -28,6 +28,11 @@ checkout it was compiled in fails here, as it would on a machine that never had 
     python3 -I tools/sdk/published_crates_proof.py            # every proof
     python3 -I tools/sdk/published_crates_proof.py embedding  # one
     python3 -I tools/sdk/published_crates_proof.py --work DIR # keep the projects and registry in DIR
+    python3 -I tools/sdk/published_crates_proof.py --crates-io # against crates.io itself
+
+`--crates-io` packages nothing and builds no registry: after a release, the same programs and
+the same `cargo install tilolang-cli` resolve the guides' version from crates.io itself, online,
+as a stranger's machine does.
 
 Resolving the registry asks crates.io for the packages Cargo's caches lack; building the
 programs is offline.
@@ -152,8 +157,17 @@ def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(command, check=False, **kwargs)
 
 
+def from_registry(registry: pathlib.Path | None) -> list[str]:
+    """Cargo's arguments for REGISTRY standing in for crates.io; none for crates.io itself."""
+    if registry is None:
+        return []
+    return ["--offline",
+            "--config", 'source.crates-io.replace-with="tilo-published"',
+            "--config", f"source.tilo-published.local-registry={str(registry)!r}"]
+
+
 def prove(name: str, proof: Proof, shown: Program, work: pathlib.Path,
-          registry: pathlib.Path) -> bool:
+          registry: pathlib.Path | None) -> bool:
     project = work / name
     if project.exists():
         shutil.rmtree(project)
@@ -166,11 +180,9 @@ def prove(name: str, proof: Proof, shown: Program, work: pathlib.Path,
     # Its own target directory, whatever the job builds the workspace into.
     env = {key: value for key, value in os.environ.items()
            if key not in ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR")}
-    env["CARGO_NET_OFFLINE"] = "true"
+    env["CARGO_NET_OFFLINE"] = "false" if registry is None else "true"
     done = run(
-        ["cargo", "run", "--quiet", "--offline",
-         "--config", 'source.crates-io.replace-with="tilo-published"',
-         "--config", f"source.tilo-published.local-registry={str(registry)!r}",
+        ["cargo", "run", "--quiet", *from_registry(registry),
          *(["--", *proof.args] if proof.args else [])],
         cwd=project, env=env, stdout=subprocess.PIPE, text=True,
     )
@@ -189,7 +201,7 @@ def prove(name: str, proof: Proof, shown: Program, work: pathlib.Path,
     return True
 
 
-def prove_command(work: pathlib.Path, registry: pathlib.Path, version: str) -> bool:
+def prove_command(work: pathlib.Path, registry: pathlib.Path | None, version: str) -> bool:
     """Install the packaged `tilolang` outside the repository, and with it start, check and
     build an app and check and build a package, as someone with no checkout does."""
     root = work / COMMAND
@@ -199,6 +211,7 @@ def prove_command(work: pathlib.Path, registry: pathlib.Path, version: str) -> b
     (apps / ".cargo").mkdir(parents=True)
     # The registry stands in for crates.io, for the install and for every app under `apps`.
     (apps / ".cargo/config.toml").write_text(
+        '[net]\noffline = false\n' if registry is None else
         '[source.crates-io]\nreplace-with = "tilo-published"\n\n'
         f'[source.tilo-published]\nlocal-registry = {str(registry)!r}\n'
         '[net]\noffline = true\n')
@@ -206,7 +219,7 @@ def prove_command(work: pathlib.Path, registry: pathlib.Path, version: str) -> b
     env = {key: value for key, value in os.environ.items()
            if key not in ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "TILO_REPO",
                           "TILO_UI_PATH", "TILO_NESTED_SESSION_BUILD")}
-    env.update({"CARGO_NET_OFFLINE": "true",
+    env.update({"CARGO_NET_OFFLINE": "false" if registry is None else "true",
                 "XDG_CONFIG_HOME": str(home / "config"), "XDG_DATA_HOME": str(home / "data"),
                 "XDG_STATE_HOME": str(home / "state"), "XDG_CACHE_HOME": str(home / "cache")})
     bin_dir = root / "install/bin"
@@ -223,9 +236,7 @@ def prove_command(work: pathlib.Path, registry: pathlib.Path, version: str) -> b
     ok = (step("cargo install tilolang-cli",
                # `cargo install` reads no configuration of the directory it runs in.
                ["cargo", "install", "tilolang-cli", "--version", f"={version}",
-                "--root", str(root / "install"),
-                "--config", 'source.crates-io.replace-with="tilo-published"',
-                "--config", f"source.tilo-published.local-registry={str(registry)!r}"], apps)
+                "--root", str(root / "install"), *from_registry(registry)], apps)
           and step("tilolang --help", ["tilolang", "--help"], apps)
           and step("tilolang new", ["tilolang", "new", "demo"], apps)
           and step("tilolang check (the new app)", ["tilolang", "check"], apps / "demo")
@@ -246,6 +257,8 @@ def main() -> int:
     parser.add_argument("--work", type=pathlib.Path,
                         help="keep the packages, registry and projects here (default: a "
                         "directory removed afterwards); outside the repository")
+    parser.add_argument("--crates-io", action="store_true",
+                        help="build against crates.io itself, after a release: nothing packaged")
     args = parser.parse_args()
     every = [*PROOFS, COMMAND]
     unknown = [name for name in args.proofs if name not in every]
@@ -270,15 +283,17 @@ def main() -> int:
         # Cargo would take a project under the repository for a member of its workspace.
         raise SystemExit(f"the work directory {work} must be outside the repository")
     try:
-        packages = work / "packages"
-        shutil.rmtree(packages, ignore_errors=True)
-        if run([sys.executable, "-I", str(SDK / "publish_check.py"), "--crates", ",".join(crates),
-                "--version", version, "--crates-out", str(packages)]).returncode != 0:
-            return 1
-        registry = work / "registry"
-        if run([sys.executable, "-I", str(SDK / "local_registry.py"), str(registry),
-                "--packages", str(packages)]).returncode != 0:
-            return 1
+        registry = None if args.crates_io else work / "registry"
+        if registry is not None:
+            packages = work / "packages"
+            shutil.rmtree(packages, ignore_errors=True)
+            if run([sys.executable, "-I", str(SDK / "publish_check.py"),
+                    "--crates", ",".join(crates), "--version", version,
+                    "--crates-out", str(packages)]).returncode != 0:
+                return 1
+            if run([sys.executable, "-I", str(SDK / "local_registry.py"), str(registry),
+                    "--packages", str(packages)]).returncode != 0:
+                return 1
         failed = [name for name, proof in chosen.items()
                   if not prove(name, proof, shown[name], work, registry)]
         if command and not prove_command(work, registry, version):

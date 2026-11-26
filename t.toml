@@ -1479,6 +1479,20 @@ isolation = "nested"
 timeout_secs = 7200
 on = ["dispatch", "idle", "stable"]
 
+# The same programs and the same installed `tilolang`, once a release is out, against crates.io
+# itself: nothing is packaged and no registry stands in, so each resolves the guides' version
+# online as a stranger's machine does. Run by name after publish-crates has carried a release
+# all the way (`t test published-crates-live`); before that the crates it asks for are missing.
+[[check]]
+name = "published-crates-live"
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "python3 -I tools/sdk/published_crates_proof.py --crates-io"
+requires = ["arch=x86_64"]
+isolation = "nested"
+timeout_secs = 7200
+cache = false
+on = ["dispatch"]
+
 # tilolang in a browser, as the npm package `tilolang`, tools/ci/publish/tilolang-npm.sh:
 # tilolang-web's page module (wasm-bindgen's `web` build) and the startup fonts its windows set
 # text in. tilolang-npm builds it in the builder image, which carries wasm-bindgen and the wasm
