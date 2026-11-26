@@ -816,7 +816,9 @@ impl App {
                 .div_ceil(3)
                 .saturating_mul(4)
                 .saturating_add(1024);
-            if client.room() < needs {
+            // The page waits for the shell on its own, smaller bound, and for the connection on
+            // the whole one a large tree may be filling.
+            if client.room() < needs || client.share_room() < needs {
                 self.floating.share_backlog = crate::time::now().checked_add(SHARE_BACKLOG_RETRY);
                 return Ok(());
             }
@@ -833,7 +835,7 @@ impl App {
                     }),
                 )
             };
-            client.send(
+            client.send_share(
                 &crate::floating_surface::FloatingSurfaceClientMessage::PaintStream {
                     payload,
                     page: frame.page,

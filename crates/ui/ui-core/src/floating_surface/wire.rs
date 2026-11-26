@@ -33,6 +33,12 @@ pub(crate) const MAX_PROTOCOL_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// Backpressure bound for a non-reading shell peer: a whole tree and the other asks of a pass.
 #[cfg(unix)]
 pub(crate) const MAX_OUTGOING_QUEUE_BYTES: usize = 2 * MAX_PROTOCOL_FRAME_BYTES;
+/// What a window's shared page queues on the connection before the page waits for the shell to
+/// read: a page is not a whole accessibility tree, and three parts already fill what a slow shell
+/// should ever be handed at once. Kept apart from [`MAX_OUTGOING_QUEUE_BYTES`], which a tree's
+/// frame needs.
+#[cfg(unix)]
+pub(crate) const MAX_SHARE_IN_FLIGHT_BYTES: usize = 3 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

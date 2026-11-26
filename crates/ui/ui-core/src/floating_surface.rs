@@ -102,9 +102,12 @@ pub use wire::*;
 pub struct FloatingSurfaceServiceClient {
     stream: UnixStream,
     incoming: Vec<u8>,
-    outgoing: VecDeque<Vec<u8>>,
+    /// What waits to be written, each frame with whether it carries the shared page.
+    outgoing: VecDeque<(Vec<u8>, bool)>,
     outgoing_offset: usize,
     outgoing_bytes: usize,
+    /// How much of `outgoing_bytes` is the shared page, which has a bound of its own.
+    share_outgoing_bytes: usize,
     /// Tells the readable watcher ([`Self::from_stream_waking`]) the app
     /// has read; dropping it stops the watcher.
     #[cfg(any(test, feature = "local-daemons"))]
@@ -227,6 +230,7 @@ impl FloatingSurfaceServiceClient {
             stream,
             incoming: Vec::new(),
             outgoing: VecDeque::new(),
+            share_outgoing_bytes: 0,
             outgoing_offset: 0,
             outgoing_bytes: 0,
             #[cfg(any(test, feature = "local-daemons"))]
@@ -242,16 +246,19 @@ impl FloatingSurfaceServiceClient {
         Ok(client)
     }
 
-    fn enqueue_frame(&mut self, frame: Vec<u8>) -> Result<(), String> {
+    fn enqueue_frame(&mut self, frame: Vec<u8>, share: bool) -> Result<(), String> {
         let queued = self
             .outgoing_bytes
             .checked_add(frame.len())
             .ok_or_else(|| "floating-surface outgoing queue size overflow".to_string())?;
         if queued > MAX_OUTGOING_QUEUE_BYTES {
-            return Err("floating-surface outgoing queue exceeds 4 MiB".into());
+            return Err("floating-surface outgoing queue is full".into());
         }
         self.outgoing_bytes = queued;
-        self.outgoing.push_back(frame);
+        if share {
+            self.share_outgoing_bytes = self.share_outgoing_bytes.saturating_add(frame.len());
+        }
+        self.outgoing.push_back((frame, share));
         Ok(())
     }
 
@@ -263,6 +270,14 @@ impl FloatingSurfaceServiceClient {
         MAX_OUTGOING_QUEUE_BYTES.saturating_sub(self.outgoing_bytes)
     }
 
+    /// How many more bytes of a window's shared page the connection queues before the page
+    /// waits: what the shell has not read of it counts against its own, smaller bound, so a page
+    /// waits while a large accessibility tree may still be on its way.
+    #[must_use]
+    pub fn share_room(&self) -> usize {
+        MAX_SHARE_IN_FLIGHT_BYTES.saturating_sub(self.share_outgoing_bytes)
+    }
+
     /// Queue and flush one client message.
     ///
     /// # Errors
@@ -270,13 +285,30 @@ impl FloatingSurfaceServiceClient {
     /// Returns an error when the message cannot be encoded, exceeds the
     /// protocol limit, or cannot be written to the service stream.
     pub fn send(&mut self, message: &FloatingSurfaceClientMessage) -> Result<(), String> {
+        self.send_frame(message, false)
+    }
+
+    /// [`Self::send`] for one part of the window's shared page, counted against the page's own
+    /// bound ([`Self::share_room`]).
+    ///
+    /// # Errors
+    /// As [`Self::send`].
+    pub fn send_share(&mut self, message: &FloatingSurfaceClientMessage) -> Result<(), String> {
+        self.send_frame(message, true)
+    }
+
+    fn send_frame(
+        &mut self,
+        message: &FloatingSurfaceClientMessage,
+        share: bool,
+    ) -> Result<(), String> {
         let mut frame = serde_json::to_vec(message)
             .map_err(|error| format!("encode floating-surface message: {error}"))?;
         if frame.len() > MAX_PROTOCOL_FRAME_BYTES {
-            return Err("floating-surface message exceeds 1 MiB".into());
+            return Err("floating-surface message exceeds the protocol's frame bound".into());
         }
         frame.push(b'\n');
-        self.enqueue_frame(frame)?;
+        self.enqueue_frame(frame, share)?;
         self.flush_outgoing()
             .map_err(|error| format!("send floating-surface message: {error}"))
     }
@@ -332,7 +364,7 @@ impl FloatingSurfaceServiceClient {
     }
 
     fn flush_outgoing(&mut self) -> std::io::Result<()> {
-        while let Some(frame) = self.outgoing.front() {
+        while let Some((frame, share)) = self.outgoing.front() {
             let remaining = frame.get(self.outgoing_offset..).unwrap_or_default();
             match self.stream.write(remaining) {
                 Ok(0) => {
@@ -345,6 +377,10 @@ impl FloatingSurfaceServiceClient {
                     self.outgoing_offset = self.outgoing_offset.saturating_add(count);
                     if self.outgoing_offset >= frame.len() {
                         self.outgoing_bytes = self.outgoing_bytes.saturating_sub(frame.len());
+                        if *share {
+                            self.share_outgoing_bytes =
+                                self.share_outgoing_bytes.saturating_sub(frame.len());
+                        }
                         self.outgoing.pop_front();
                         self.outgoing_offset = 0;
                     }
@@ -2228,12 +2264,12 @@ mod tests {
                 let chunk = MAX_PROTOCOL_FRAME_BYTES / 2;
                 let chunks = MAX_OUTGOING_QUEUE_BYTES / chunk;
                 for _ in 0..chunks {
-                    client.enqueue_frame(vec![0; chunk]).unwrap();
+                    client.enqueue_frame(vec![0; chunk], false).unwrap();
                 }
                 assert_eq!(client.outgoing_bytes, MAX_OUTGOING_QUEUE_BYTES);
                 assert_eq!(client.outgoing.len(), chunks);
                 assert!(
-                    client.enqueue_frame(vec![0]).is_err(),
+                    client.enqueue_frame(vec![0], false).is_err(),
                     "a stalled peer must exert bounded backpressure"
                 );
             }
