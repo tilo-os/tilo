@@ -10,7 +10,7 @@ desktop that draws it, also route keys through conditionals and tables, so
 their key-shaped literals in a known namespace are checked too.
 Lookups fall back to the toolkit's catalogue, so its messages count for all.
 A key passed to another crate's resolver (`tilo_desktop::i18n::t_args`, a `t`
-the file imports from it, or `tilo_onboarding::t` from a crate whose root
+the file imports from it, or `tilo_onboarding_session::t` from a crate whose root
 declares `ui::embedded_catalog!(pub fn, ..)`) is checked in that crate's
 catalogue, the one it is looked up in.
 """
@@ -34,7 +34,7 @@ KEY = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)+\Z")
 # next; one that starts with `\b` or an alternation is tried at every offset of some 100 MB of
 # source. A leading `\b` is checked by `starts_word` instead.
 RESOLVER = re.compile(r"t(?:_args|r|r_args)?\s*\(")
-# `<path>::t(`: found by its literal part, then the path (`tilo_desktop::i18n`, `tilo_onboarding`)
+# `<path>::t(`: found by its literal part, then the path (`tilo_desktop::i18n`, `tilo_onboarding_session`)
 # read backwards, which a search from every position took seconds per tree for.
 QUALIFIED = re.compile(r"::(?:t|t_args|tr|tr_args)\s*\(")
 # A crate root that declares its own lookups (`ui::embedded_catalog!(pub fn, ..)`) resolves

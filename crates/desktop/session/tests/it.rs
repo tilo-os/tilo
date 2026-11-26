@@ -254,6 +254,8 @@ mod session_package;
 mod settings_hints_verb;
 #[path = "settings_roam.rs"]
 mod settings_roam;
+#[path = "setup_walk.rs"]
+mod setup_walk;
 #[path = "shared_checklist_between_devices.rs"]
 mod shared_checklist_between_devices;
 #[path = "shared_input.rs"]

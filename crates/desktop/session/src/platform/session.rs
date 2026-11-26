@@ -64,7 +64,7 @@ use turns::Turns;
 
 pub use os_actions::SessionAction;
 
-pub use tilo_onboarding_session::view::OnboardingView;
+pub use tilo_onboarding_session::ceremony::Ceremony;
 
 /// How many times the session starts the lock screen's app for one lock
 /// before it draws the lock itself: a screen whose app goes is started

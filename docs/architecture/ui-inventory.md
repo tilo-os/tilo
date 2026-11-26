@@ -64,8 +64,6 @@ file with one visible surface and several helpers is one row.
 | 31 | **Hung-app card** | `desktop-surface/src/surface/hung.rs` | its heading and body text (the card ground already comes from `floating_surface::paint_card`) | `TextStack` and `Text`; the two buttons already use `ButtonFace` | yes |
 | 32 | **Strip paging and the desktop surface's own scroll** | `desktop-surface/src/surface/paging.rs`, `surface.rs` | the strip's pan position, clamped itself | `ScrollRegion` (a horizontal region) or `ui::motion` for the pan | yes: `ScrollRegion` |
 | 33 | **Workspace title and panel geometry** | `desktop/src/composition.rs` | a `with_gap(0.0)` on a column that should name its rhythm | `Rhythm`/`Spacing` | yes |
-| 34 | **Onboarding pages** | `crates/desktop/onboarding/src/compose.rs` | two written-out gaps in otherwise-composed pages | `Rhythm`/`Spacing` | yes |
-| 35 | **Onboarding ceremony backdrop** | `crates/desktop/onboarding/src/ceremony.rs` | the dim and the two blooms are the backdrop itself, not chrome | `ui::backdrop` if it gains a ceremony backdrop; `auth_backdrop` covers the authentication screens | partly |
 | 36 | **Capture bar** | `crates/desktop/capture-studio/src/surface.rs` | one label on the see-through material | `Text` on `paint_see_through` (already used for the ground) | yes |
 
 ## Converted (no count against them)

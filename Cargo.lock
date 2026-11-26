@@ -18829,16 +18829,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-onboarding"
-version = "0.1.0"
-dependencies = [
- "tilo-app",
- "tilo-app-test-host",
- "workspace-hack",
- "zeroize",
-]
-
-[[package]]
 name = "tilo-onboarding-session"
 version = "0.1.0"
 dependencies = [
@@ -18862,7 +18852,6 @@ dependencies = [
  "tilo-files",
  "tilo-identity",
  "tilo-identity-client",
- "tilo-onboarding",
  "tilo-paths",
  "tilo-resource",
  "tilo-settings-store",
@@ -20568,7 +20557,6 @@ dependencies = [
  "tilo-nm",
  "tilo-notifications-service",
  "tilo-notify",
- "tilo-onboarding",
  "tilo-onboarding-session",
  "tilo-package-store",
  "tilo-paths",
@@ -28017,7 +28005,6 @@ dependencies = [
  "tilo-oauth",
  "tilo-oci-images",
  "tilo-ocr",
- "tilo-onboarding",
  "tilo-onboarding-session",
  "tilo-os-search",
  "tilo-package-store",

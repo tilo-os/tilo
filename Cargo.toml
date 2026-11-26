@@ -437,7 +437,6 @@ members = [
     "crates/desktop/network-actor",
     "crates/os/network-secret-agent",
     "crates/desktop/notifications-service",
-    "crates/desktop/onboarding",
     "crates/desktop/onboarding-session",
     "crates/os/polkit-agent",
     "crates/desktop/portal",

@@ -1,16 +1,17 @@
 //! Recovery keys in the identity ceremony: restoring from the 24 words, with
 //! feedback while they are typed, and writing them down on the backup step.
 
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use zeroize::Zeroizing;
 
 use super::{
-    IdentityDone, KEY_CHOOSE_RECOVERY_KEY, KEY_RECOVERY_KEY_CLOSE, KEY_RECOVERY_KEY_CONFIRM,
-    KEY_RECOVERY_KEY_RESTORE, KEY_RECOVERY_KEY_SHOW, MintedIdentity, OnboardingView, Path, Screen,
-    Stage, WordsCheck, clear_secret, t,
+    Ceremony, IdentityDone, KEY_CHOOSE_RECOVERY_KEY, KEY_RECOVERY_KEY_CLOSE,
+    KEY_RECOVERY_KEY_CONFIRM, KEY_RECOVERY_KEY_RESTORE, KEY_RECOVERY_KEY_SHOW, MintedIdentity,
+    Path, Screen, Stage, WordsCheck, clear_secret, t,
 };
-use tilo_onboarding::t_args;
+use crate::t_args;
 
 /// Have this computer's daemon restore the person from their recovery key, then take them up as
 /// a restored backup is.
@@ -23,7 +24,7 @@ pub(super) fn import_recovery_words(
             crate::identity::OnboardingError::Refused(refusal)
                 if refusal.code == tilo_device_identity::login::ANOTHER_PERSONS_WORDS =>
             {
-                tilo_onboarding::t("onboarding-recovery-key-different")
+                crate::t("onboarding-recovery-key-different")
             }
             error => error.to_string(),
         },
@@ -54,9 +55,7 @@ fn words_problem(problem: tilo_identity::store::RecoveryWordsError) -> String {
             &[("position", position.into())],
         ),
         Problem::Checksum => t("onboarding-recovery-key-checksum"),
-        Problem::DifferentIdentity { .. } => {
-            tilo_onboarding::t("onboarding-recovery-key-different")
-        }
+        Problem::DifferentIdentity { .. } => crate::t("onboarding-recovery-key-different"),
         Problem::NoSecretOnThisDevice | Problem::ThresholdIdentity => problem.to_string(),
     }
 }
@@ -128,19 +127,26 @@ pub(super) struct RecoveryKeyCopy {
     pub(super) words: Zeroizing<String>,
     pub(super) checks: [usize; RECOVERY_KEY_CHECKS],
     pub(super) answers: [Arc<Mutex<String>>; RECOVERY_KEY_CHECKS],
+    /// The ceremony's epoch, moved when typed-back words are forgotten.
+    epoch: Arc<AtomicU64>,
 }
 
 impl RecoveryKeyCopy {
     /// The copy of `words`, typed back into `answers` (the buffers the
     /// setup app's fields write into).
-    pub(super) fn new(words: Zeroizing<String>, answers: [Arc<Mutex<String>>; 3]) -> Self {
+    pub(super) fn new(
+        words: Zeroizing<String>,
+        answers: [Arc<Mutex<String>>; 3],
+        epoch: Arc<AtomicU64>,
+    ) -> Self {
         for answer in &answers {
-            clear_secret(answer);
+            clear_secret(answer, &epoch);
         }
         Self {
             checks: recovery_key_checks(),
             words,
             answers,
+            epoch,
         }
     }
 
@@ -164,7 +170,7 @@ impl RecoveryKeyCopy {
 
     pub(super) fn clear(&self) {
         for answer in &self.answers {
-            clear_secret(answer);
+            clear_secret(answer, &self.epoch);
         }
     }
 }
@@ -187,7 +193,7 @@ fn recovery_key_checks() -> [usize; RECOVERY_KEY_CHECKS] {
     })
 }
 
-impl OnboardingView {
+impl Ceremony {
     pub(super) fn import_words(&mut self) {
         let words = Zeroizing::new(
             self.recovery_words
@@ -227,11 +233,10 @@ impl OnboardingView {
                 // A new attempt replaces the failure of the previous one.
                 self.error = None;
                 self.recovery_check = check;
-                self.invalidation.structure();
             }
         } else if self.recovery_check != WordsCheck::Empty {
             // Leaving the screen forgets the words typed on it.
-            clear_secret(&self.recovery_words);
+            clear_secret(&self.recovery_words, &self.epoch);
             self.recovery_check = WordsCheck::Empty;
         }
         if self.take_idle(KEY_RECOVERY_KEY_RESTORE)
@@ -264,14 +269,12 @@ impl OnboardingView {
             .is_some_and(RecoveryKeyCopy::confirmed);
         if confirmed != self.recovery_key_copy_confirmed {
             self.recovery_key_copy_confirmed = confirmed;
-            self.invalidation.structure();
         }
         if self.pressed.take(KEY_RECOVERY_KEY_CLOSE)
             && let Some(copy) = self.recovery_key_copy.take()
         {
             copy.clear();
             self.recovery_key_copy_confirmed = false;
-            self.invalidation.both();
         }
         if self.take_idle(KEY_RECOVERY_KEY_CONFIRM)
             && on_backup_step
@@ -287,133 +290,6 @@ impl OnboardingView {
             // Written down and checked is a verified backup, as a file that
             // was read back is.
             self.record(Some(Stage::IdentityReadyBackedUp));
-            self.invalidation.both();
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::tests::{press, view};
-    use super::super::{KEY_EXISTING, OnboardingVisualState};
-    use super::*;
-    use automerge::AutoCommit;
-    use std::path::PathBuf;
-    use tilo_ui_base::widget::Widget as _;
-
-    tilo_test_env::scenario! {
-        fn a_recovery_key_is_checked_as_typed_and_as_written_down;
-
-        phase a_recovery_key_is_checked_while_typed_and_restores_only_when_valid;
-        {
-            let seed = [0x3f_u8; 32];
-            let words = tilo_user_identity::recovery_words::encode(&seed)
-                .expect("32 bytes encode")
-                .to_string();
-            let restored = Arc::new(Mutex::new(Vec::<String>::new()));
-            let received = Arc::clone(&restored);
-            let mut view =
-                OnboardingView::with_minter(Box::new(|| Err("create should not run".to_string())));
-            view.words_importer = Arc::new(Mutex::new(Box::new(move |words: &str| {
-                received.lock().expect("record").push(words.to_owned());
-                Ok(MintedIdentity {
-                    fingerprint: "cd".repeat(32),
-                    path: PathBuf::from("/home/user/.config/tilo/identity/cd.json"),
-                })
-            })));
-            let mut doc = AutoCommit::new();
-            press(&view, &mut doc, KEY_EXISTING);
-            view.sync(&doc, &automerge::ROOT);
-            press(&view, &mut doc, KEY_CHOOSE_RECOVERY_KEY);
-            view.sync(&doc, &automerge::ROOT);
-            assert_eq!(view.flow().screen(), Screen::RecoveryKey);
-
-            let set = |view: &OnboardingView, phrase: &str| {
-                *view.recovery_words.lock().expect("words") = phrase.to_owned();
-            };
-            // A word still being typed is not flagged; a finished unknown one is.
-            set(&view, "1. abandon 2. abil");
-            view.sync(&doc, &automerge::ROOT);
-            assert_eq!(view.recovery_check, WordsCheck::Typing { words: 2 });
-            set(&view, "abandon abil ");
-            view.sync(&doc, &automerge::ROOT);
-            let WordsCheck::Problem(problem) = &view.recovery_check else {
-                panic!(
-                    "a finished unknown word is a problem: {:?}",
-                    view.recovery_check
-                );
-            };
-            assert!(
-                problem.contains("abil") && problem.contains("ability"),
-                "names the word as typed and the word probably meant: {problem}"
-            );
-
-            // Restore is refused until the words are a valid key.
-            press(&view, &mut doc, KEY_RECOVERY_KEY_RESTORE);
-            view.sync(&doc, &automerge::ROOT);
-            assert!(restored.lock().expect("record").is_empty());
-
-            // A valid key for another identity than this computer's is refused.
-            view.expected_identity = Some([0x11; 32]);
-            set(&view, &words.to_uppercase());
-            view.sync(&doc, &automerge::ROOT);
-            assert!(matches!(view.recovery_check, WordsCheck::Different { .. }));
-            press(&view, &mut doc, KEY_RECOVERY_KEY_RESTORE);
-            view.sync(&doc, &automerge::ROOT);
-            assert!(restored.lock().expect("record").is_empty());
-
-            view.expected_identity = None;
-            set(&view, &format!("{words}\n"));
-            view.sync(&doc, &automerge::ROOT);
-            assert!(matches!(view.recovery_check, WordsCheck::Ready { .. }));
-            press(&view, &mut doc, KEY_RECOVERY_KEY_RESTORE);
-            view.sync(&doc, &automerge::ROOT);
-            assert_eq!(restored.lock().expect("record").len(), 1);
-            assert!(view.flow().is_done());
-            assert!(
-                view.recovery_words.lock().expect("words").is_empty(),
-                "the typed words are wiped once used"
-            );
-        }
-
-        phase writing_down_the_recovery_key_counts_as_a_verified_backup;
-        {
-            let (mut view, _) = view();
-            view.set_visual_state_for_snapshot(OnboardingVisualState::BackupRecoveryKey);
-            let mut doc = AutoCommit::new();
-            view.sync(&doc, &automerge::ROOT);
-            press(&view, &mut doc, KEY_RECOVERY_KEY_CONFIRM);
-            view.sync(&doc, &automerge::ROOT);
-            assert!(
-                view.recovery_key_copy.is_some(),
-                "two words are still missing, so the copy is not confirmed"
-            );
-            let checks = view.recovery_key_copy.as_ref().expect("copy").checks;
-            for (at, position) in checks.iter().enumerate() {
-                let copy = view.recovery_key_copy.as_ref().expect("copy");
-                let word = copy.word(*position).to_uppercase();
-                *copy.answers[at].lock().expect("answer") = format!(" {word} ");
-            }
-            view.sync(&doc, &automerge::ROOT);
-            assert!(view.recovery_key_copy_confirmed);
-            press(&view, &mut doc, KEY_RECOVERY_KEY_CONFIRM);
-            view.sync(&doc, &automerge::ROOT);
-            assert!(
-                view.recovery_key_copy.is_none(),
-                "the words leave the screen"
-            );
-            assert!(view.recovery_key_written);
-            assert!(view.backup_was_verified);
-        }
-
-        phase recovery_key_checks_take_one_word_from_each_third;
-        {
-            for _ in 0..64 {
-                let checks = recovery_key_checks();
-                assert!((1..=8).contains(&checks[0]), "{checks:?}");
-                assert!((9..=16).contains(&checks[1]), "{checks:?}");
-                assert!((17..=24).contains(&checks[2]), "{checks:?}");
-            }
         }
     }
 }

@@ -19,9 +19,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use crate::{t, t_args};
 use tilo_device_identity::IdentityPaths;
 use tilo_device_identity::login::{Place, Ticket};
-use tilo_onboarding::{t, t_args};
 
 use crate::identity::MintedIdentity;
 

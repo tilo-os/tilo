@@ -5,12 +5,12 @@
 //! `--identity device`, the legacy stream's headless shell) take the same
 //! path a person does instead of writing identity files themselves. They
 //! share this one walk, so a renamed or added onboarding control is fixed
-//! once; `tests/names.rs` checks every name against the onboarding view.
+//! once; `tests/names.rs` checks every name against setup's app (`apps/tl/onboarding`).
+//!
+//! A control is named as assistive technology hears it, in the session's language: the walk
+//! drives a session whose language is English, as a person reading the page would.
 
 use std::time::{Duration, Instant};
-
-/// The prefix every onboarding control's name starts with.
-pub const PREFIX: &str = "onboarding.";
 
 /// One control the walk presses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,19 +37,44 @@ const fn checkbox(name: &'static str) -> Press {
 
 /// Onboarding's controls in the order a person goes through them: begin,
 /// accept that the identity is theirs to protect, create it, skip the
-/// backup (acknowledged), skip the optional codecs and the tour, enter.
-/// Whichever of them a page shows, the earliest is the one to press.
-pub const PRESSES: [Press; 9] = [
-    press("onboarding.begin.card"),
-    checkbox("onboarding.understood.row"),
-    press("onboarding.create.button"),
-    checkbox("onboarding.backup.skip-acknowledged.row"),
-    press("onboarding.backup.continue.button"),
-    press("onboarding.codecs.skip.button"),
-    press("onboarding.tour.skip.button"),
-    press("onboarding.tour.next.button"),
-    press("onboarding.finish.button"),
+/// backup (acknowledged), skip the optional codecs (or skip past their failure) and the tour,
+/// enter. Whichever of them a page shows, the earliest is the one to press.
+pub const PRESSES: [Press; 10] = [
+    press("Create a new identity"),
+    checkbox("I understand that losing this device without a backup means losing this identity."),
+    press("Create local identity"),
+    checkbox(
+        "I understand that without a recovery key or backup, losing this device means losing this identity.",
+    ),
+    press("Continue without backup"),
+    press("Not now"),
+    press("Skip"),
+    press("Skip tour"),
+    press("Enter Tilo"),
+    press("Continue to desktop"),
 ];
+
+/// Setup's controls the walk never presses, which only setup shows: the ways to bring an
+/// existing identity over. A page of only these is still setup. Words a desktop's apps show too
+/// ("Back", "Continue", "Try again", "Join", "Install") are left out, so an app open after setup
+/// never reads as setup.
+pub const SETUP_ONLY: [&str; 8] = [
+    "Use my existing Tilo identity",
+    "Use a code from another device",
+    "Enter your recovery key",
+    "Restore from a backup",
+    "Restore identity",
+    "I wrote it down",
+    "Choose location and save backup…",
+    "Save another copy",
+];
+
+/// Whether `name` is one of the controls only setup shows: while setup stands, the session offers
+/// no control but its own.
+#[must_use]
+pub fn setup_control(name: &str) -> bool {
+    PRESSES.iter().any(|press| press.name == name) || SETUP_ONLY.contains(&name)
+}
 
 /// The next control to press among those `shown`, given those `pressed`
 /// so far: the earliest shown one, skipping a checkbox already pressed.
@@ -73,9 +98,9 @@ pub trait Screen {
     fn press(&mut self, name: &'static str) -> Result<(), Self::Error>;
 
     /// Whether the session is past onboarding, given the controls it shows.
-    /// By default: it shows controls, none of them onboarding's.
+    /// By default: it shows controls, none of them setup's.
     fn finished(&mut self, controls: &[String]) -> bool {
-        !controls.is_empty() && !controls.iter().any(|name| name.starts_with(PREFIX))
+        !controls.is_empty() && !controls.iter().any(|name| setup_control(name))
     }
 
     /// Whether the desktop has settled, so a press reaches its control: the
@@ -187,6 +212,16 @@ pub fn walk<S: Screen>(
 mod tests {
     use super::*;
 
+    const BEGIN: &str = PRESSES[0].name;
+    const UNDERSTOOD: &str = PRESSES[1].name;
+    const CREATE: &str = PRESSES[2].name;
+    const SKIP_BACKUP: &str = PRESSES[3].name;
+    const CONTINUE: &str = PRESSES[4].name;
+    const NOT_NOW: &str = PRESSES[5].name;
+    const SKIP_TOUR: &str = PRESSES[7].name;
+    const ENTER: &str = PRESSES[8].name;
+    const FINISH: &str = PRESSES[9].name;
+
     /// Onboarding's pages, each shown until one of its controls is pressed.
     struct Onboarding {
         pages: Vec<Vec<&'static str>>,
@@ -212,7 +247,7 @@ mod tests {
 
         fn controls(&mut self) -> Result<Vec<String>, String> {
             Ok(self.pages.get(self.page).map_or_else(
-                || vec!["shell.search".to_owned()],
+                || vec!["Search".to_owned()],
                 |page| page.iter().map(|name| (*name).to_owned()).collect(),
             ))
         }
@@ -243,38 +278,34 @@ mod tests {
 
     #[test]
     fn the_earliest_shown_control_is_next_and_a_checkbox_is_pressed_once() {
-        let page = ["onboarding.understood.row", "onboarding.create.button"];
-        assert_eq!(next_press(&page, &[]), Some("onboarding.understood.row"));
-        assert_eq!(
-            next_press(&page, &["onboarding.understood.row"]),
-            Some("onboarding.create.button")
-        );
-        assert_eq!(next_press(&["onboarding.import.button"], &[]), None);
+        let page = [UNDERSTOOD, CREATE];
+        assert_eq!(next_press(&page, &[]), Some(UNDERSTOOD));
+        assert_eq!(next_press(&page, &[UNDERSTOOD]), Some(CREATE));
+        assert_eq!(next_press(&["Restore from a backup"], &[]), None);
     }
 
     #[test]
     fn a_walk_presses_each_page_through_to_the_desktop() {
         let mut screen = Onboarding::new(&[
-            &["onboarding.begin.card", "onboarding.import.button"],
-            &["onboarding.understood.row", "onboarding.create.button"],
-            &[
-                "onboarding.backup.skip-acknowledged.row",
-                "onboarding.backup.continue.button",
-            ],
-            &["onboarding.tour.skip.button", "onboarding.tour.next.button"],
-            &["onboarding.finish.button"],
+            &[BEGIN, "Restore from a backup"],
+            &[UNDERSTOOD, CREATE],
+            &[SKIP_BACKUP, CONTINUE],
+            &["Install", NOT_NOW],
+            &[SKIP_TOUR, ENTER],
+            &[FINISH],
         ]);
         let pressed = walk(&mut screen, quick()).unwrap();
         assert_eq!(
             pressed,
             [
-                "onboarding.begin.card",
-                "onboarding.understood.row",
-                "onboarding.create.button",
-                "onboarding.backup.skip-acknowledged.row",
-                "onboarding.backup.continue.button",
-                "onboarding.tour.skip.button",
-                "onboarding.finish.button",
+                BEGIN,
+                UNDERSTOOD,
+                CREATE,
+                SKIP_BACKUP,
+                CONTINUE,
+                NOT_NOW,
+                SKIP_TOUR,
+                FINISH,
             ]
         );
         assert_eq!(screen.presses, pressed);
@@ -282,8 +313,7 @@ mod tests {
 
     #[test]
     fn a_pressed_control_is_not_pressed_again_until_the_page_had_time_to_move() {
-        let mut screen =
-            Onboarding::new(&[&["onboarding.begin.card"], &["onboarding.finish.button"]]);
+        let mut screen = Onboarding::new(&[&[BEGIN], &[FINISH]]);
         screen.lose_next = true;
         let pace = Pace {
             repress: Duration::from_millis(50),
@@ -291,19 +321,12 @@ mod tests {
         };
         let pressed = walk(&mut screen, pace).unwrap();
         // The lost press is repeated once, after `repress`, not every poll.
-        assert_eq!(
-            pressed,
-            [
-                "onboarding.begin.card",
-                "onboarding.begin.card",
-                "onboarding.finish.button"
-            ]
-        );
+        assert_eq!(pressed, [BEGIN, BEGIN, FINISH]);
     }
 
     #[test]
     fn a_walk_that_runs_out_of_time_says_where_it_stopped() {
-        let mut screen = Onboarding::new(&[&["onboarding.import.button"]]);
+        let mut screen = Onboarding::new(&[&["Restore from a backup"]]);
         let pace = Pace {
             timeout: Duration::ZERO,
             ..quick()
@@ -312,7 +335,7 @@ mod tests {
             walk(&mut screen, pace),
             Err(WalkError::Unfinished {
                 timeout: Duration::ZERO,
-                shown: vec!["onboarding.import.button".to_owned()],
+                shown: vec!["Restore from a backup".to_owned()],
                 pressed: Vec::new(),
             })
         );
@@ -323,7 +346,15 @@ mod tests {
         let mut screen = Onboarding::new(&[]);
         assert!(!screen.finished(&[]));
         assert!(screen.finished(&["shell.search".to_owned()]));
-        assert!(!screen.finished(&["onboarding.begin.card".to_owned()]));
+        assert!(!screen.finished(&[BEGIN.to_owned()]));
+        assert!(
+            !screen.finished(&["Back".to_owned(), "Restore identity".to_owned()]),
+            "a page of setup's that the walk never presses is still setup"
+        );
+        assert!(
+            screen.finished(&["Back".to_owned(), "Try again".to_owned()]),
+            "an app's own words after setup are not setup's"
+        );
     }
 
     /// One page whose control is refused while the desktop moves.
@@ -337,9 +368,9 @@ mod tests {
 
         fn controls(&mut self) -> Result<Vec<String>, String> {
             Ok(if self.presses.is_empty() {
-                vec!["onboarding.begin.card".to_owned()]
+                vec![BEGIN.to_owned()]
             } else {
-                vec!["shell.search".to_owned()]
+                vec!["Search".to_owned()]
             })
         }
 
@@ -364,10 +395,7 @@ mod tests {
             moving_for: 3,
             presses: Vec::new(),
         };
-        assert_eq!(
-            walk(&mut screen, quick()),
-            Ok(vec!["onboarding.begin.card"])
-        );
-        assert_eq!(screen.presses, ["onboarding.begin.card"]);
+        assert_eq!(walk(&mut screen, quick()), Ok(vec![BEGIN]));
+        assert_eq!(screen.presses, [BEGIN]);
     }
 }

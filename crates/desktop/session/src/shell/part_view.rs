@@ -822,6 +822,19 @@ impl ShellSurface for PartView {
         self.open.as_ref()?.widgets.next_deadline()
     }
 
+    fn backdrops(&self) -> Vec<tilo_session_core::surface::BackdropRequest> {
+        self.open
+            .as_ref()
+            .map(|open| open.widgets.backdrops())
+            .unwrap_or_default()
+    }
+
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_session_core::surface::BackdropImage>>) {
+        if let Some(open) = self.open.as_mut() {
+            open.widgets.set_backdrops(images);
+        }
+    }
+
     fn set_frame_interval(&mut self, interval: std::time::Duration) {
         if let Some(open) = self.open.as_mut() {
             open.widgets.set_frame_interval(interval);

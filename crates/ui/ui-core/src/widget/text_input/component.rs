@@ -82,6 +82,13 @@ pub struct TextInputProps {
     /// refuses Copy and Cut, and hands its value over only through the action it fires. For an
     /// API key or a password, where the app never reads the value back.
     pub secret: bool,
+    /// Typed exactly as it is, in the monospace face: nothing checks its spelling or corrects
+    /// it. For words that must stay as written (a recovery key's, a code).
+    pub verbatim: bool,
+    /// The runs of the text that what checks it judges wrong, underlined as a misspelling is:
+    /// the start and end of each run in turn, as byte offsets into the text (a word outside the
+    /// list a recovery key's words come from). A run that does not fit the text marks nothing.
+    pub mistakes: Vec<i64>,
 }
 
 impl Default for TextInputProps {
@@ -107,6 +114,8 @@ impl Default for TextInputProps {
             blur: Event::None,
             caret: false,
             secret: false,
+            verbatim: false,
+            mistakes: Vec::new(),
         }
     }
 }
@@ -117,6 +126,21 @@ fn written_at(value: &Bound<String>) -> Option<(String, String)> {
     let address = tilo_actions::ActionAddress::parse(value.identity.as_deref()?)?;
     let item = tilo_actions::logical_resource_id(&address.resource).into_owned();
     Some((address.action, item))
+}
+
+/// What underlines the runs `mistakes` names ([`TextInputProps::mistakes`]): those that fit the
+/// text as it stands, on its character boundaries.
+fn mistake_marker(mistakes: Vec<i64>) -> impl Fn(&str) -> Vec<std::ops::Range<usize>> + 'static {
+    move |text: &str| {
+        mistakes
+            .chunks_exact(2)
+            .filter_map(|run| {
+                let start = usize::try_from(*run.first()?).ok()?;
+                let end = usize::try_from(*run.get(1)?).ok()?;
+                (start < end && text.get(start..end).is_some()).then_some(start..end)
+            })
+            .collect()
+    }
 }
 
 /// What a field changed by someone else says on hover: who changed it, and what it held.
@@ -160,6 +184,8 @@ impl Described for TextInput {
             blur,
             caret,
             secret,
+            verbatim,
+            mistakes,
         } = props;
         let read_only = read_only || text.is_some();
         let change = changed_by.map(|by| {
@@ -218,6 +244,15 @@ impl Described for TextInput {
         if secret {
             input = input.with_secret(true);
         }
+        if verbatim {
+            input = input
+                .with_mono()
+                .with_spellcheck(false)
+                .with_autocorrect(false);
+        }
+        if !mistakes.is_empty() {
+            input = input.with_mistakes(mistake_marker(mistakes));
+        }
         input
     }
 
@@ -245,6 +280,8 @@ impl Described for TextInput {
             blur,
             caret,
             secret,
+            verbatim,
+            mistakes,
         } = props;
         let read_only = read_only || text.is_some();
         if !self.follows(&value.state) {
@@ -281,6 +318,17 @@ impl Described for TextInput {
         self.set_plain_chrome(title || text.is_some() || caret);
         self.set_caret(caret);
         self.set_secret(secret);
+        if verbatim != self.is_mono() {
+            self.set_mono(verbatim);
+            if !verbatim {
+                self.set_kind(super::TextInputKind::default());
+            }
+            self.spellcheck = verbatim.then_some(false);
+            self.spell_cache_key = None;
+            self.set_autocorrect(verbatim.then_some(false));
+        }
+        self.mistakes = (!mistakes.is_empty())
+            .then(|| Box::new(mistake_marker(mistakes)) as super::MistakeMarker);
         self.set_read_only(read_only);
         if let Some(text) = text
             && self.value() != text
@@ -311,6 +359,31 @@ mod tests {
     use tilo_ui_base::widget::Widget;
     use vello::kurbo::Rect;
     use winit::event::WindowEvent;
+
+    /// A verbatim field is typed as written, in the monospace face with nothing checking or
+    /// correcting it, and underlines exactly the runs it is told are wrong: one past its text
+    /// marks nothing. Told plain again, it checks spelling as any field does.
+    #[test]
+    fn a_verbatim_field_marks_the_runs_it_is_told_and_corrects_nothing() {
+        let mut field = TextInput::from_props(
+            "words",
+            TextInputProps {
+                verbatim: true,
+                mistakes: vec![8, 13, 40, 50],
+                ..TextInputProps::default()
+            },
+        );
+        assert!(field.is_mono());
+        assert!(!field.spellcheck_enabled());
+        let marked = field
+            .mistakes
+            .as_ref()
+            .map(|marker| marker("abandon zzzzz"));
+        assert_eq!(marked, Some(vec![std::ops::Range { start: 8, end: 13 }]));
+        assert!(field.set_props(TextInputProps::default()));
+        assert!(!field.is_mono());
+        assert!(field.mistakes.is_none());
+    }
 
     /// A field keeps the keyboard, the caret and what is being composed into it when its props
     /// change: only what it says and the text it edits change.

@@ -22,10 +22,7 @@ use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-pub use tilo_onboarding::Screen;
-pub use tilo_onboarding::copy::{
-    acknowledgement, intro_body, intro_points, intro_title, no_recovery_points, no_recovery_title,
-};
+pub use crate::ceremony::PageScreen as Screen;
 
 /// The ceremony's state. Pure: no widgets, no I/O, no clock.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -682,81 +679,6 @@ mod tests {
             assert!(!canonical_native_identity_ready(&minted));
             std::fs::rename(&held, &path).unwrap();
             assert!(canonical_native_identity_ready(&minted));
-        }
-    }
-
-    tilo_test_env::scenario! {
-        fn onboarding_copy_is_honest_about_identity_and_recovery;
-
-        phase copy_does_not_promise_recovery;
-        // The copy must not imply a safety net that does not exist: there is
-        // no escrow, only what the person keeps themselves (a recovery key or
-        // an encrypted backup), and the copy names both.
-        {
-            let all = no_recovery_points().join(" ").to_lowercase();
-            assert!(
-                all.contains("there is no recovery"),
-                "the no-recovery screen must say so outright: {all}"
-            );
-            assert!(
-                all.contains("recovery key") && all.contains("encrypted backup"),
-                "the screen must name what the person keeps to recover: {all}"
-            );
-            for weasel in [
-                "backup code",
-                "restore your identity",
-                "we can help",
-                "contact support",
-            ] {
-                // The one legitimate mention is the denial itself, which names these things to rule them out.
-                let denied = all.contains(&format!("no {weasel}"))
-                    || all.contains(&"no backup code, no recovery phrase".to_string());
-                assert!(
-                    !all.contains(weasel) || denied,
-                    "copy must not offer {weasel:?} unless it is denying it: {all}"
-                );
-            }
-        }
-
-        phase the_acknowledgement_names_the_consequence;
-        // The acknowledgement states the consequence rather than asking for agreement, so ticking it means the user read a fact.
-        {
-            let acknowledgement = acknowledgement();
-            let a = acknowledgement.to_lowercase();
-            assert!(
-                a.contains("losing"),
-                "must name the loss: {acknowledgement}"
-            );
-            assert!(
-                a.contains("identity"),
-                "must name what is lost: {acknowledgement}"
-            );
-            assert!(
-                !a.starts_with("i agree"),
-                "this is a fact to understand, not terms to accept: {acknowledgement}"
-            );
-        }
-
-        phase the_intro_says_it_is_not_an_account;
-        // The intro must not describe the identity as an account — the mental model that makes people expect a password reset.
-        {
-            let joined = intro_points().join(" ").to_lowercase();
-            assert!(
-                joined.contains("not an account"),
-                "the intro must rule out the account mental model: {joined}"
-            );
-        }
-
-        phase identity_copy_does_not_overstate_per_edit_signing;
-        {
-            let copy = format!("{} {}", intro_body(), intro_points().join(" ")).to_lowercase();
-            // It admits that signing does not yet cover every edit.
-            assert!(
-                copy.contains("not every edit in apps is signed yet"),
-                "the intro must not imply every edit is signed: {copy}"
-            );
-            assert!(!copy.contains("signs the changes you make"));
-            assert!(!copy.contains("edit in a shared document really came from you"));
         }
     }
 }

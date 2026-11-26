@@ -72,8 +72,7 @@ fn a_session_admits_app_joins_its_own_actions_and_setup() {
     std::fs::create_dir_all(&identity_dir).expect("a directory for the identity");
     let system = home.root().join("system");
     home.env().set("TILO_IDENTITY_ROOT", &system);
-    let ceremony =
-        tilo_onboarding_session::view::OnboardingView::new_for_host_desktop(identity_dir);
+    let ceremony = tilo_onboarding_session::ceremony::Ceremony::new_for_host_desktop(identity_dir);
     let mut session = crate::common::headless(tilo_session::Options {
         setup: Some(tilo_session::BeforeShell::Ceremony(Box::new(ceremony))),
         collab: false,
@@ -81,7 +80,7 @@ fn a_session_admits_app_joins_its_own_actions_and_setup() {
     });
     session.step(Duration::from_millis(1)).expect("a frame");
     assert!(session.setup_up(), "setup stands in front of the shell");
-    let choose = tilo_onboarding::OnboardingEffect::CHOOSE.id;
+    let choose = tilo_onboarding_session::ceremony::OnboardingEffect::CHOOSE.id;
     crate::common::until(&mut session, "setup publishes its first step", |session| {
         crate::common::publisher(session, choose).is_some()
     });
@@ -98,7 +97,8 @@ fn a_session_admits_app_joins_its_own_actions_and_setup() {
         session.setup_up(),
         "setup still runs after the person's first step"
     );
-    let existing = tilo_onboarding::t("onboarding-existing-title");
+    // The title the setup app shows over the ways to bring an identity this person already has.
+    let existing = "Use your existing identity";
     crate::common::until(
         &mut session,
         "setup moves on to the person's existing identity",
@@ -106,7 +106,7 @@ fn a_session_admits_app_joins_its_own_actions_and_setup() {
             session
                 .accessible_labels()
                 .iter()
-                .any(|label| label.contains(&existing))
+                .any(|label| label.contains(existing))
         },
     );
 }

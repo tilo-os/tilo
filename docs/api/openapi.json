@@ -120782,6 +120782,24 @@
       "arguments": "#/components/schemas/tl.so.tilo.notes.Found.$scenario.Arguments"
     },
     {
+      "app": "so.tilo.onboarding",
+      "resource": "tl.tilo.host.Notice",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.onboarding",
+      "resource": "tl.tilo.host.Notice",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.tilo.host.Notice.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.onboarding",
+      "resource": "tl.tilo.host.Notice",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.tilo.host.Notice.edit-flag.Arguments"
+    },
+    {
       "app": "so.tilo.osk",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",

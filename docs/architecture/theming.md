@@ -606,7 +606,7 @@ theme's presence lightness and chroma (one tone for everybody).
 ## Trusted UI
 
 A themable OS gives an attacker a palette. Permission prompts, the identity
-ceremony (`crates/desktop/onboarding/src/ceremony.rs`), the capability
+ceremony (`apps/tl/onboarding`, drawn by the session), the capability
 indicators of `distribution.md` §5 and the lock screen must carry a marker
 that **no theme and no app can reproduce**:
 

@@ -91,7 +91,7 @@ fn directory_has_subdirectory(path: &Path) -> bool {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-impl super::OnboardingView {
+impl super::Ceremony {
     /// The production view of a login with no home and no system identity
     /// root: nothing outside `identity_dir` reaches it.
     pub fn isolated(identity_dir: PathBuf, recovery_only: bool) -> Self {

@@ -18,6 +18,10 @@ pub struct ProgressBarProps {
     /// What is under way ("Uploading"), shown over the track; a named bar announces its
     /// progress without taking focus.
     pub label: Option<String>,
+    /// How assistive technology names it where no label shows: a step track under a heading that
+    /// already says the step is named by the whole stage ("Identity setup, step 2 of 4: Protect")
+    /// without repeating it over the track. A shown label names it otherwise.
+    pub accessible_name: Option<String>,
     /// A status the fill means: a failed transfer stays danger.
     pub tone: Option<Tone>,
     /// A measured level instead of progress: the fill turns warning, then danger, as it fills.
@@ -56,9 +60,10 @@ impl Described for ProgressBar {
             None => Self::indeterminate(),
         };
         bar.fill = fill;
-        match props.label {
-            Some(label) => bar.with_shown_label(label),
-            None => bar,
+        match (props.label, props.accessible_name) {
+            (Some(label), _) => bar.with_shown_label(label),
+            (None, Some(name)) => bar.with_label(name),
+            (None, None) => bar,
         }
     }
 
@@ -73,7 +78,49 @@ impl Described for ProgressBar {
         if props.label.is_some() != self.label_shown {
             return false;
         }
-        self.label = props.label;
+        self.label = props.label.or(props.accessible_name);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProgressBar, ProgressBarProps};
+    use crate::widget::Widget;
+    use tilo_ui_base::component::Described;
+
+    fn bar(label: Option<&str>, accessible_name: Option<&str>) -> ProgressBar {
+        ProgressBar::from_props(
+            "bar",
+            ProgressBarProps {
+                value: Some(0.5),
+                label: label.map(str::to_owned),
+                accessible_name: accessible_name.map(str::to_owned),
+                ..ProgressBarProps::default()
+            },
+        )
+    }
+
+    fn name(bar: &ProgressBar) -> Option<String> {
+        Widget::accessibility(bar).and_then(|node| node.name)
+    }
+
+    #[test]
+    fn a_bar_named_only_for_assistive_technology_shows_no_label_and_follows_its_stage() {
+        let mut quiet = bar(None, Some("Setup, step 2 of 4: Protect"));
+        assert_eq!(name(&quiet).as_deref(), Some("Setup, step 2 of 4: Protect"));
+        assert!(!quiet.label_shown, "the name is not drawn over the track");
+
+        assert!(quiet.set_props(ProgressBarProps {
+            value: Some(0.75),
+            accessible_name: Some("Setup, step 3 of 4: Backup".to_owned()),
+            ..ProgressBarProps::default()
+        }));
+        assert_eq!(name(&quiet).as_deref(), Some("Setup, step 3 of 4: Backup"));
+
+        let shown = bar(Some("Uploading"), Some("ignored while a label shows"));
+        assert_eq!(name(&shown).as_deref(), Some("Uploading"));
+        assert!(shown.label_shown);
+        assert_eq!(name(&bar(None, None)), None, "an unnamed bar stays unnamed");
     }
 }

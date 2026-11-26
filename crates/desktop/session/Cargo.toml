@@ -600,7 +600,6 @@ test-server = { path = "../../../tools/test-server", features = ["questions"] }
 futures-util.workspace = true
 tilo-copy-lint = { path = "../../../tools/copy-lint" }
 tilo-audio-service = { path = "../../os/audio-service" }
-tilo-onboarding = { path = "../onboarding" }
 # The tilolang shell's parts are tested over the instance's test support.
 tilolang-tilo = { path = "../../lang/tilolang-tilo", features = ["test-support"] }
 # The styles the shell's switch lists when no daemon serves a session: the language reads the

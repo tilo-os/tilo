@@ -754,7 +754,7 @@ pub use {
     skeleton::skeleton_tone,
 };
 pub mod backdrop;
-pub use {backdrop::Backdrop, backdrop::BackdropProps};
+pub use {backdrop::Backdrop, backdrop::BackdropProps, backdrop::Ground as BackdropGround};
 pub mod arrival_failure;
 pub use {arrival_failure::WindowFailure, arrival_failure::arrival_failure};
 pub mod arriving_rows;

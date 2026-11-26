@@ -1013,10 +1013,6 @@
       "libraries": 3538142,
       "tests": 11257600
     },
-    "tilo-onboarding": {
-      "libraries": 7333252,
-      "tests": 430412896
-    },
     "tilo-onboarding-session": {
       "libraries": 14732022,
       "tests": 464306328

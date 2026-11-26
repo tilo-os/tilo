@@ -233,19 +233,31 @@ fn compiled_part(binding: &Binding) -> Option<View> {
     } else {
         return None;
     };
-    let root = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
-    let dir = root.join(format!("tilo-{name}-package-{}", std::process::id()));
-    tilolang_tilo::bundle::Bundle::new(
-        &compiled,
-        std::iter::empty::<&tilolang_tilo::tilolang::Compiled>(),
-    )
-    .write(&dir)
-    .ok()?;
+    let dir = shipped_package(&compiled, name)?;
     Some(View::Package {
         dir,
         app: binding.app.clone(),
         view: binding.view.clone(),
     })
+}
+
+/// Write `compiled`, a package this build ships, where a package is read: once per process under
+/// `name`. Its platform packages are descriptions the host loads, so the bundle carries the
+/// package's module alone.
+pub(crate) fn shipped_package(
+    compiled: &tilolang_tilo::tilolang::Compiled,
+    name: &str,
+) -> Option<PathBuf> {
+    let root = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
+    let dir = root.join(format!("tilo-{name}-package-{}", std::process::id()));
+    tilolang_tilo::bundle::Bundle::new(
+        compiled,
+        std::iter::empty::<&tilolang_tilo::tilolang::Compiled>(),
+    )
+    .write(&dir)
+    .map_err(|error| tracing::error!(%error, name, "a package this build ships was not written"))
+    .ok()?;
+    Some(dir)
 }
 
 /// The tilolang package `binding` names, when this machine installed it as an app: its payload

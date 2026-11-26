@@ -531,7 +531,7 @@ pub struct Session {
     /// first used ([`crate::Options::identity_backup`]): a layer raised over the desktop.
     #[cfg(target_os = "linux")]
     pub(crate) identity_backup:
-        fn(bool) -> Result<tilo_onboarding_session::view::OnboardingView, String>,
+        fn(bool) -> Result<tilo_onboarding_session::ceremony::Ceremony, String>,
     /// Whether this session is Tilo installed as a desktop session on an existing Linux host.
     #[cfg(target_os = "linux")]
     pub(crate) host_desktop: bool,

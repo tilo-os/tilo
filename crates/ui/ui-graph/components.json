@@ -351,7 +351,7 @@
     },
     {
       "name": "Backdrop",
-      "doc": "The shell's wallpaper under everything a view draws: the picture the session handed the host, covering the box, or the shell's gradient where it has no picture.",
+      "doc": "What stands under everything a view draws: the shell's wallpaper, the ground of a surface the system itself draws before anything else (setup), or a scrim that dims what it covers.",
       "props": [
         {
           "name": "label",
@@ -360,6 +360,22 @@
             "option": "text"
           },
           "data": true
+        },
+        {
+          "name": "ground",
+          "doc": "Which ground it is: the wallpaper unless said.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "BackdropGround",
+                "cases": [
+                  "wallpaper",
+                  "trusted",
+                  "scrim"
+                ]
+              }
+            }
+          }
         }
       ],
       "semantics": {
@@ -4462,6 +4478,11 @@
           "name": "quiet",
           "doc": "The row reads as subordinate to the rows around it: its title in the weaker ink, as an outline's quieter branch does.",
           "type": "bool"
+        },
+        {
+          "name": "disclosure",
+          "doc": "A trailing chevron: activating the row goes on to a page of its own, as a choice that leads to the next step of a flow does.",
+          "type": "bool"
         }
       ],
       "parts": [
@@ -6516,6 +6537,13 @@
           }
         },
         {
+          "name": "accessible_name",
+          "doc": "How assistive technology names it where no label shows: a step track under a heading that already says the step is named by the whole stage (\"Identity setup, step 2 of 4: Protect\") without repeating it over the track. A shown label names it otherwise.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "tone",
           "doc": "A status the fill means: a failed transfer stays danger.",
           "type": {
@@ -6939,6 +6967,18 @@
           "type": "bool"
         },
         {
+          "name": "label",
+          "doc": "What the region holds, for assistive technology: Tab stops on a region whose content overflows and announces it (\"Identity setup, step 2 of 4: Protect\").",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "reveals_focus",
+          "doc": "Scroll a control that takes the keyboard into view: a form held to a card's height, whose next field Tab reaches below the fold. Scrolling away from the same control stays put.",
+          "type": "bool"
+        },
+        {
           "name": "keep",
           "doc": "Keep the descendant that names itself this (`Widget::kept_in_view`) in view when the one that is named changes: the front strip of a row a person pans, brought into view as they move between windows.",
           "type": {
@@ -6956,7 +6996,8 @@
         }
       ],
       "semantics": {
-        "role": "ScrollView"
+        "role": "ScrollView",
+        "label": "label"
       }
     },
     {
@@ -8165,6 +8206,21 @@
               }
             }
           }
+        },
+        {
+          "name": "align",
+          "doc": "Where its lines sit across the width it is given: `start` unless said, `center` for a short message standing alone in the middle of a page.",
+          "type": {
+            "choice": {
+              "name": "TextAlign",
+              "cases": [
+                "start",
+                "center",
+                "end",
+                "justified"
+              ]
+            }
+          }
         }
       ],
       "semantics": {
@@ -8253,6 +8309,18 @@
           "name": "secret",
           "doc": "A secret: the field masks what it holds, never speaks or shows it in a screenshot, refuses Copy and Cut, and hands its value over only through the action it fires. For an API key or a password, where the app never reads the value back.",
           "type": "bool"
+        },
+        {
+          "name": "verbatim",
+          "doc": "Typed exactly as it is, in the monospace face: nothing checks its spelling or corrects it. For words that must stay as written (a recovery key's, a code).",
+          "type": "bool"
+        },
+        {
+          "name": "mistakes",
+          "doc": "The runs of the text that what checks it judges wrong, underlined as a misspelling is: the start and end of each run in turn, as byte offsets into the text (a word outside the list a recovery key's words come from). A run that does not fit the text marks nothing.",
+          "type": {
+            "list": "int"
+          }
         }
       ],
       "events": [

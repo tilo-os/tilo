@@ -36,6 +36,7 @@ first_party_apps! {
     MONITOR => "so.tilo.monitor",
     MUSIC => "so.tilo.music",
     NOTES => "so.tilo.notes",
+    ONBOARDING => "so.tilo.onboarding",
     OSK => "so.tilo.osk",
     PASSWORDS => "so.tilo.passwords",
     PDF_VIEWER => "so.tilo.pdf-viewer",

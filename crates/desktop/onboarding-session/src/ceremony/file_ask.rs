@@ -9,15 +9,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use taffy::TaffyTree;
 use tilo_actions::remote::asked::{FileType, FilesAsked, FilesMode};
-use tilo_ui_base::widget::Widget;
 use ui::widget::file_picker::FileFilter;
-use ui::{widget::FilePicker, widget::FilePickerMode, widget::FilePickerOutcome};
-use vello::kurbo::Rect;
-use winit::event::WindowEvent;
+use ui::widget::{FilePicker, FilePickerMode};
 
-use tilo_onboarding::t;
+use crate::t;
 
 /// What the person is choosing a file for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,12 +22,6 @@ pub(super) enum AskPurpose {
     Restore,
     /// Where a new backup is saved.
     Save,
-}
-
-/// What the person answered: a file, or dismissal.
-pub(super) enum Answered {
-    Chosen(PathBuf),
-    Dismissed,
 }
 
 /// The question setup asks about `purpose`, opened at `initial`.
@@ -64,16 +54,17 @@ pub(super) fn question(purpose: AskPurpose, initial: &Path) -> FilesAsked {
     }
 }
 
-/// The question standing over the page, with the picker that puts it to the person.
-pub(super) struct FileAsk {
+/// The question standing over the page, which the session puts to the person in the shared file
+/// picker ([`FileAsk::picker`]) and answers with [`super::Ceremony::files_answered`].
+pub struct FileAsk {
     purpose: AskPurpose,
     question: FilesAsked,
-    picker: FilePicker,
+    initial: PathBuf,
+    roots: Vec<PathBuf>,
 }
 
 impl FileAsk {
-    /// The question `question` put in the picker, opened at `initial`, which
-    /// may look under `roots`.
+    /// The question `question` about `purpose`, opened at `initial`, which may look under `roots`.
     #[must_use]
     pub(super) fn new(
         purpose: AskPurpose,
@@ -81,38 +72,11 @@ impl FileAsk {
         initial: &Path,
         roots: Vec<PathBuf>,
     ) -> Self {
-        let title = match purpose {
-            AskPurpose::Restore => t("onboarding-picker-import-title"),
-            AskPurpose::Save => t("onboarding-picker-backup-title"),
-        };
-        let mode = match question.mode {
-            FilesMode::Open => FilePickerMode::Open,
-            FilesMode::Save => FilePickerMode::Save,
-            FilesMode::Folder => FilePickerMode::Directory,
-        };
-        let mut filters: Vec<FileFilter> = question
-            .types
-            .iter()
-            .map(|ty| {
-                let patterns: Vec<&str> = ty.patterns.iter().map(String::as_str).collect();
-                FileFilter::new(ty.label.clone(), &patterns)
-            })
-            .collect();
-        if question.mode == FilesMode::Open {
-            // A backup may be named anything the person kept it under.
-            filters.push(FileFilter::all());
-        }
-        let mut picker = FilePicker::new(title, initial, roots)
-            .with_mode(mode)
-            .with_filters(filters)
-            .with_waker(Some(waker()));
-        if let Some(name) = &question.name {
-            picker = picker.with_filename(name.clone());
-        }
         Self {
             purpose,
             question,
-            picker,
+            initial: initial.to_owned(),
+            roots,
         }
     }
 
@@ -123,85 +87,45 @@ impl FileAsk {
 
     /// The system's question as the person is asked it.
     #[must_use]
-    pub(super) fn question(&self) -> &FilesAsked {
+    pub fn question(&self) -> &FilesAsked {
         &self.question
     }
 
-    pub(super) fn set_rect(&mut self, rect: Rect) {
-        self.picker.set_rect(rect);
-    }
-
+    /// The shared picker that puts the question to the person: titled by what the step is for,
+    /// filtered to the files it takes, and in its own folder.
     #[must_use]
-    pub(super) fn picker(&self) -> &FilePicker {
-        &self.picker
-    }
-
-    pub(super) fn picker_mut(&mut self) -> &mut FilePicker {
-        &mut self.picker
-    }
-
-    /// Look again at the folder the person moved to. Whether what it shows
-    /// changed.
-    pub(super) fn poll_lookups(&mut self) -> bool {
-        self.picker.poll_lookups()
-    }
-
-    /// What the person answered, once they have.
-    pub(super) fn take(&mut self) -> Option<Answered> {
-        match self.picker.take_outcome()? {
-            FilePickerOutcome::Selected(mut paths) => paths.pop().map(Answered::Chosen),
-            FilePickerOutcome::Cancelled => Some(Answered::Dismissed),
+    pub fn picker(&self) -> FilePicker {
+        let title = match self.purpose {
+            AskPurpose::Restore => t("onboarding-picker-import-title"),
+            AskPurpose::Save => t("onboarding-picker-backup-title"),
+        };
+        let mode = match self.question.mode {
+            FilesMode::Open => FilePickerMode::Open,
+            FilesMode::Save => FilePickerMode::Save,
+            FilesMode::Folder => FilePickerMode::Directory,
+        };
+        let mut filters: Vec<FileFilter> = self
+            .question
+            .types
+            .iter()
+            .map(|ty| {
+                let patterns: Vec<&str> = ty.patterns.iter().map(String::as_str).collect();
+                FileFilter::new(ty.label.clone(), &patterns)
+            })
+            .collect();
+        if self.question.mode == FilesMode::Open {
+            // A backup may be named anything the person kept it under.
+            filters.push(FileFilter::all());
         }
-    }
-
-    pub(super) fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
-    ) {
-        let mut picker_taffy = TaffyTree::<()>::new();
-        if let Ok(node) = picker_taffy.new_leaf(taffy::Style::default()) {
-            let path = ctx.path;
-            self.picker.handle_event(
-                event,
-                &mut tilo_ui_base::widget::EventCtx {
-                    taffy: &picker_taffy,
-                    ..ctx.reborrow(path, node)
-                },
-            );
+        let mut picker = FilePicker::new(title, &self.initial, self.roots.clone())
+            .with_mode(mode)
+            .with_filters(filters)
+            .with_waker(Some(waker()));
+        if let Some(name) = &self.question.name {
+            picker = picker.with_filename(name.clone());
         }
+        picker
     }
-
-    pub(super) fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
-        use tilo_ui_base::widget::DrawChild as _;
-        let (scene, transform, text_renderer, theme, env) = ctx.parts();
-        self.picker
-            .draw_child(scene, transform, text_renderer, theme, &env);
-    }
-
-    #[must_use]
-    pub(super) fn needs_animation_frame(&self) -> bool {
-        self.picker.needs_animation_frame()
-    }
-
-    pub(super) fn take_structure_dirty(&mut self) -> bool {
-        self.picker.take_structure_dirty()
-    }
-}
-
-/// Where the question stands over `viewport`: centred, most of what a person
-/// sees, never wider or taller than it.
-#[must_use]
-pub(super) fn rect(viewport: Rect) -> Rect {
-    let width = (viewport.width() * 0.78)
-        .clamp(420.0, 900.0)
-        .min(viewport.width());
-    let height = (viewport.height() * 0.78)
-        .clamp(320.0, 640.0)
-        .min(viewport.height());
-    let x0 = viewport.x0 + (viewport.width() - width) / 2.0;
-    let y0 = viewport.y0 + (viewport.height() - height) / 2.0;
-    Rect::new(x0, y0, x0 + width, y0 + height)
 }
 
 /// The session loop's waker, so a folder read reports when it lands.

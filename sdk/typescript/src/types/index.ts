@@ -54,6 +54,7 @@ export * as migrate from "./migrate.ts";
 export * as monitor from "./monitor.ts";
 export * as music from "./music.ts";
 export * as notes from "./notes.ts";
+export * as onboarding from "./onboarding.ts";
 export * as osk from "./osk.ts";
 export * as passwords from "./passwords.ts";
 export * as pdfViewer from "./pdf_viewer.ts";

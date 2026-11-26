@@ -1210,18 +1210,16 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase onboarding_targets_are_read_from_a_list_targets_answer;
-    // A `list_targets` answer's onboarding names, bare or wrapped in `answer`.
+    phase targets_are_read_from_a_list_targets_answer;
+    // A `list_targets` answer's names, bare or wrapped in `answer`.
     {
         assert_eq!(
-            onboarding_target_names(
-                r#"{"targets":[{"name":"onboarding.begin.card"},{"name":"shell.search"}]}"#
-            ),
-            ["onboarding.begin.card"]
+            target_names(r#"{"targets":[{"name":"Create a new identity"},{"name":"Search"}]}"#),
+            ["Create a new identity", "Search"]
         );
         assert_eq!(
-            onboarding_target_names(r#"{"answer":{"targets":[{"name":"onboarding.finish.button"}]}}"#),
-            ["onboarding.finish.button"]
+            target_names(r#"{"answer":{"targets":[{"name":"Continue to desktop"}]}}"#),
+            ["Continue to desktop"]
         );
     }
 
@@ -1576,19 +1574,25 @@ fn dev_base() -> BaseInfo {
 /// controls are pressed, then the desktop.
 fn onboarding_session() -> RecordingApply {
     let pages: [&[&str]; 7] = [
-        &["onboarding.begin.card"],
-        &["onboarding.understood.row", "onboarding.create.button"],
-        &["onboarding.understood.row", "onboarding.create.button"],
+        &["Create a new identity"],
         &[
-            "onboarding.backup.skip-acknowledged.row",
-            "onboarding.backup.continue.button",
+            "I understand that losing this device without a backup means losing this identity.",
+            "Create local identity",
         ],
         &[
-            "onboarding.backup.skip-acknowledged.row",
-            "onboarding.backup.continue.button",
+            "I understand that losing this device without a backup means losing this identity.",
+            "Create local identity",
         ],
-        &["onboarding.finish.button"],
-        &["shell.search"],
+        &[
+            "I understand that without a recovery key or backup, losing this device means losing this identity.",
+            "Continue without backup",
+        ],
+        &[
+            "I understand that without a recovery key or backup, losing this device means losing this identity.",
+            "Continue without backup",
+        ],
+        &["Continue to desktop"],
+        &["Search"],
     ];
     let mut apply = RecordingApply::default();
     apply.pages.extend(
@@ -1642,12 +1646,12 @@ fn account_create_device_identity_goes_through_onboarding_and_starts_fs() {
     assert_eq!(
         pressed,
         [
-            "onboarding.begin.card",
-            "onboarding.understood.row",
-            "onboarding.create.button",
-            "onboarding.backup.skip-acknowledged.row",
-            "onboarding.backup.continue.button",
-            "onboarding.finish.button",
+            "Create a new identity",
+            "I understand that losing this device without a backup means losing this identity.",
+            "Create local identity",
+            "I understand that without a recovery key or backup, losing this device means losing this identity.",
+            "Continue without backup",
+            "Continue to desktop",
         ]
     );
     {

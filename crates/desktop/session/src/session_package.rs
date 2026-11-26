@@ -96,6 +96,12 @@ fn singletons() -> Vec<(ResourceSpec, Option<Declared>)> {
         // is secret). Its app reads it as `session.keyboard` and asks it what to type through
         // its actions, so a view of it never holds a copy of the field.
         (crate::keyboard::keyboard_resource(), None),
+        // Setup, while the person goes through it: the page its app's view draws, and the
+        // actions that move it on, the same ones a script or an agent here drives setup with.
+        (
+            tilo_onboarding_session::ceremony::resource(),
+            Some(<tilo_onboarding_session::ceremony::OnboardingEffect as Effect>::declaration),
+        ),
     ]
 }
 
@@ -283,13 +289,13 @@ fn entry(
 ) -> Entry {
     let id = spec.id.as_str();
     let mut types = TypeSet::new();
-    // The keyboard's reading is the fields of its resource, which the package declares as its
-    // type (`session.Keyboard`, named after the kind): a named type of the same name beside them
-    // would declare that one type twice under one id.
-    let keyboard_fields = if spec.kind == crate::keyboard::KIND {
-        keyboard_type_fields(&mut types)
-    } else {
-        Vec::new()
+    // A resource a view reads whole (the keyboard, setup) reads as its resource's fields, which
+    // the package declares as its type (`session.Keyboard`, `session.Setup`, named after the
+    // kind): a named type of the same name beside them would declare that one type twice.
+    let fields = match spec.kind.as_str() {
+        crate::keyboard::KIND => keyboard_type_fields(&mut types),
+        tilo_onboarding_session::ceremony::KIND => setup_type_fields(),
+        _ => Vec::new(),
     };
     let verbs = spec
         .actions
@@ -318,7 +324,10 @@ fn entry(
             person: false,
             readers: None,
             verbs,
-            fields: keyboard_fields.into_iter().map(field_surface).collect(),
+            fields: fields
+                .into_iter()
+                .map(|field| field_surface(&spec.kind, field))
+                .collect(),
             types: types.into_types(),
             shows: Vec::new(),
             live: None,
@@ -382,11 +391,77 @@ fn keyboard_type_fields(types: &mut TypeSet) -> Vec<TypeField> {
     ]
 }
 
-/// One field of the keyboard's type, as the resource's own reading declares it.
-fn field_surface(field: TypeField) -> FieldSurface {
+/// Setup's fields as its reading declares them ([`tilo_onboarding_session::ceremony::Page::reading`]).
+fn setup_type_fields() -> Vec<TypeField> {
+    let field = |name: &str, ty: FieldType| TypeField {
+        name: name.to_owned(),
+        ty,
+        title: String::new(),
+    };
+    let text = |name: &str| field(name, FieldType::Text);
+    let flag = |name: &str| field(name, FieldType::Bool);
+    let int = |name: &str| field(name, FieldType::Int);
+    let ints = |name: &str| field(name, FieldType::List(Box::new(FieldType::Int)));
+    vec![
+        text("step"),
+        int("tour"),
+        flag("host_desktop"),
+        flag("mac"),
+        flag("recovery_only"),
+        flag("portable_backup_only"),
+        flag("joined"),
+        text("joined_label"),
+        text("joined_person"),
+        int("total_steps"),
+        flag("acknowledged"),
+        flag("can_create"),
+        flag("busy"),
+        text("error"),
+        text("progress_error"),
+        text("expected_identity"),
+        text("recovery_problem"),
+        flag("nearby_active"),
+        text("nearby_failure_title"),
+        text("nearby_failure_message"),
+        text("connect_path"),
+        int("connect_picked"),
+        text("words_check"),
+        int("words_typed"),
+        text("words_problem"),
+        text("words_fingerprint"),
+        int("words_total"),
+        ints("words_mistakes"),
+        text("backup_error"),
+        text("backup_saved"),
+        flag("backup_verified"),
+        flag("backup_available"),
+        flag("backup_form_open"),
+        flag("skip_acknowledged"),
+        flag("key_shown"),
+        field("key_words", FieldType::List(Box::new(FieldType::Text))),
+        ints("key_checks"),
+        field("key_wrong", FieldType::List(Box::new(FieldType::Bool))),
+        flag("key_written"),
+        flag("key_confirmed"),
+        text("codecs_state"),
+        flag("codecs_running"),
+        text("codecs_error"),
+        field(
+            "codecs_fraction",
+            FieldType::Option(Box::new(FieldType::Float)),
+        ),
+        text("codecs_summary"),
+        text("codecs_when"),
+        text("codecs_last_error"),
+        int("epoch"),
+    ]
+}
+
+/// One field of a type the session's package reads whole, as the resource of `kind` declares it.
+fn field_surface(kind: &str, field: TypeField) -> FieldSurface {
     FieldSurface {
         path: field.name,
-        owner: "keyboard".to_owned(),
+        owner: kind.to_owned(),
         title: String::new(),
         stored: "value".to_owned(),
         ty: field.ty,

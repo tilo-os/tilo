@@ -665,6 +665,13 @@ pub enum ParagraphAlign {
     Justified,
 }
 
+crate::choice!(ParagraphAlign, "TextAlign", {
+    Start => "start",
+    Center => "center",
+    End => "end",
+    Justified => "justified",
+});
+
 impl ParagraphAlign {
     pub(crate) const fn to_cosmic(self) -> Option<Align> {
         match self {

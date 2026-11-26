@@ -58,7 +58,7 @@ pub fn run_setup(host_desktop: bool) -> Result<(), Box<dyn Error>> {
 /// the step their settings hold for this device. A finished setup leaves none of these behind, so
 /// a restart goes straight to the person's session.
 pub fn setup_due(identity_missing: bool, recovery: bool) -> bool {
-    recovery || identity_missing || tilo_onboarding_session::view::setup_unfinished()
+    recovery || identity_missing || tilo_onboarding_session::ceremony::setup_unfinished()
 }
 
 #[cfg(test)]
@@ -111,7 +111,7 @@ mod tests {
         let this_device = hex::encode(key.verifying_key().as_bytes());
         let mut settings = serde_json::Map::new();
         settings.insert(
-            tilo_onboarding_session::view::PROGRESS_SECTION.to_owned(),
+            tilo_onboarding_session::ceremony::PROGRESS_SECTION.to_owned(),
             serde_json::Value::Object(steps(&this_device)),
         );
         settings_store::scoped_source(Some(std::sync::Arc::new(
@@ -150,7 +150,7 @@ mod tests {
                 serde_json::Map::from_iter([(this_device.to_owned(), "identity-ready".into())])
             });
             assert!(
-                tilo_onboarding_session::view::setup_unfinished(),
+                tilo_onboarding_session::ceremony::setup_unfinished(),
                 "the step is the one setup records"
             );
             assert!(

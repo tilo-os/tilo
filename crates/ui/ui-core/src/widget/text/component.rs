@@ -1,5 +1,6 @@
 //! [`Text`] as a described component.
 
+use tilo_ui_base::text_render::ParagraphAlign;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::{component::Component, component::Described};
 
@@ -30,6 +31,9 @@ pub struct TextProps {
     /// person is told without looking (a notice passing, a status that moved). `polite` waits for
     /// a pause, `assertive` interrupts; unset, it is read without announcing.
     pub live: Option<tilo_ui_base::a11y::Politeness>,
+    /// Where its lines sit across the width it is given: `start` unless said, `center` for a
+    /// short message standing alone in the middle of a page.
+    pub align: ParagraphAlign,
 }
 
 impl Described for Text {
@@ -44,8 +48,12 @@ impl Described for Text {
             lines,
             truncate,
             live,
+            align,
         } = props;
         let mut text = Self::new("").with_role(role).with_id(key);
+        if align != ParagraphAlign::Start {
+            text = text.with_align(align);
+        }
         if numeric {
             text = text.numeric();
         }
@@ -79,6 +87,7 @@ impl Described for Text {
             || props.live != self.live
             || lines != self.max_lines()
             || props.truncate != self.truncates()
+            || props.align != self.modifiers.layered.align
         {
             return false;
         }
@@ -99,5 +108,45 @@ impl Text {
             self.layout_dirty = true;
             self.prepared_input = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Text, TextProps};
+    use tilo_ui_base::component::Described;
+    use tilo_ui_base::text_render::ParagraphAlign;
+
+    fn text(align: ParagraphAlign) -> Text {
+        Text::from_props(
+            "message",
+            TextProps {
+                value: "More formats are installed".to_owned(),
+                align,
+                ..TextProps::default()
+            },
+        )
+    }
+
+    #[test]
+    fn centred_words_stay_centred_and_a_new_alignment_lays_them_out_again() {
+        let mut centred = text(ParagraphAlign::Center);
+        assert_eq!(centred.modifiers.layered.align, ParagraphAlign::Center);
+        assert!(centred.set_props(TextProps {
+            value: "Could not install more formats".to_owned(),
+            align: ParagraphAlign::Center,
+            ..TextProps::default()
+        }));
+        assert!(
+            !centred.set_props(TextProps {
+                value: "Could not install more formats".to_owned(),
+                ..TextProps::default()
+            }),
+            "moving the words to the start builds the text again"
+        );
+        assert_eq!(
+            text(ParagraphAlign::Start).modifiers.layered.align,
+            ParagraphAlign::Start
+        );
     }
 }

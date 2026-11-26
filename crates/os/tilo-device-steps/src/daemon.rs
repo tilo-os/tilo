@@ -61,7 +61,8 @@ impl IdentityRequest {
     }
 }
 
-fn onboarding_target_names(reply: &str) -> Vec<String> {
+/// The names of the controls a `list_targets` answer lists: while setup stands, only its own.
+fn target_names(reply: &str) -> Vec<String> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(reply) else {
         return Vec::new();
     };
@@ -75,7 +76,6 @@ fn onboarding_target_names(reply: &str) -> Vec<String> {
     targets
         .iter()
         .filter_map(|target| target.get("name")?.as_str())
-        .filter(|name| name.starts_with(onboarding_walk::PREFIX))
         .map(str::to_owned)
         .collect()
 }
@@ -140,9 +140,12 @@ impl onboarding_walk::Screen for OnboardingScreen<'_> {
         Ok(!desktop_in_transition(reply.stdout.trim()))
     }
 
-    /// Onboarding is gone and its identity has certified the machine.
+    /// Setup is gone (none of its controls shows) and its identity has certified the machine.
     fn finished(&mut self, controls: &[String]) -> bool {
-        controls.is_empty() && self.daemon.apply.machine_identity().certified
+        !controls
+            .iter()
+            .any(|name| onboarding_walk::setup_control(name))
+            && self.daemon.apply.machine_identity().certified
     }
 }
 
@@ -1557,7 +1560,7 @@ impl Daemon {
         ))
     }
 
-    /// The onboarding controls the session shows, by name; empty once onboarding is gone. Waits,
+    /// The controls the session shows, by name: setup's alone while it stands. Waits,
     /// until `deadline`, for a control socket a starting session has not bound yet.
     fn onboarding_targets(
         &mut self,
@@ -1578,7 +1581,7 @@ impl Daemon {
                 detail: format!("listing the session's controls: {}", reply.stderr.trim()),
             });
         }
-        Ok(onboarding_target_names(reply.stdout.trim()))
+        Ok(target_names(reply.stdout.trim()))
     }
 
     /// Have the account's running session give its user a throwaway test identity. A newly minted one

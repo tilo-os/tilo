@@ -7,15 +7,19 @@
 //! fills a screen. A shell with no picture shows its gradient instead: the one
 //! the host set, else the theme's own ground, eased toward neutral and falling
 //! away to the far corner.
+//!
+//! The system's own surfaces stand on other grounds ([`Ground`]): setup, which no app can draw,
+//! on the trusted ground, and a modal card over the desktop on a scrim that keeps it legible.
 
 use std::collections::HashMap;
 
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Size as TaffySize, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{BlendMode, Brush, Color, Extend, Fill, Gradient, ImageBrush};
 
+use tilo_ui_base::ColorCompat as _;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
@@ -23,9 +27,23 @@ use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 mod component;
 pub use component::BackdropProps;
 
+/// What a [`Backdrop`] fills its box with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Ground {
+    /// The shell's wallpaper.
+    #[default]
+    Wallpaper,
+    /// The ground of a surface the system draws before anything else (setup): the theme's base
+    /// surface with two broad, quiet blooms, so it reads as the system's and as no app's.
+    Trusted,
+    /// A dim over what lies beneath, which stays legible: a modal card over the desktop.
+    Scrim,
+}
+
 /// The shell's wallpaper, filling the box it is given.
 pub struct Backdrop {
     rect: Rect,
+    ground: Ground,
 }
 
 impl Default for Backdrop {
@@ -37,7 +55,17 @@ impl Default for Backdrop {
 impl Backdrop {
     #[must_use]
     pub fn new() -> Self {
-        Self { rect: Rect::ZERO }
+        Self {
+            rect: Rect::ZERO,
+            ground: Ground::Wallpaper,
+        }
+    }
+
+    /// Fill the box with `ground` rather than the wallpaper.
+    #[must_use]
+    pub fn with_ground(mut self, ground: Ground) -> Self {
+        self.ground = ground;
+        self
     }
 }
 
@@ -82,6 +110,11 @@ impl Widget for Backdrop {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 || env.should_cull(self.rect) {
             return;
         }
+        match self.ground {
+            Ground::Wallpaper => {}
+            Ground::Trusted => return paint_trusted(scene, transform, self.rect, theme),
+            Ground::Scrim => return paint_scrim(scene, transform, self.rect, theme),
+        }
         let source = tilo_ui_base::part_paint::wallpaper::installed();
         if let Some(picture) = source
             .as_ref()
@@ -109,6 +142,48 @@ impl Widget for Backdrop {
             &self.rect,
         );
     }
+}
+
+/// The trusted ground over `rect`: the theme's base surface, and two broad blooms of the text and
+/// the person's own colour from opposite corners, which give it quiet depth without becoming
+/// illustration. A high-contrast theme keeps the plain surface.
+fn paint_trusted(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
+    let colors = &theme.tokens.colors;
+    scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &rect);
+    if theme.name.eq_ignore_ascii_case("high contrast") {
+        return;
+    }
+    let radius = rect.width().max(rect.height()) * 0.34;
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.text_primary.with_alpha_factor(0.10),
+        None,
+        &Circle::new(Point::new(rect.x0, rect.y0), radius),
+    );
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.intent.you.with_alpha_factor(0.07),
+        None,
+        &Circle::new(Point::new(rect.x1, rect.y1), radius * 0.82),
+    );
+}
+
+/// The scrim over `rect`: a dim that keeps what lies beneath legible, deeper under high contrast.
+fn paint_scrim(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
+    let depth = if theme.name.eq_ignore_ascii_case("high contrast") {
+        0.72
+    } else {
+        0.48
+    };
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.neutral[9].with_alpha_factor(depth),
+        None,
+        &rect,
+    );
 }
 
 /// High enough that the desktop reads as dark rather than blue, short of 1.0 so each theme still

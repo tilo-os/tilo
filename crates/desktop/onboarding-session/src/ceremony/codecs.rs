@@ -7,10 +7,10 @@ use std::sync::mpsc::TryRecvError;
 
 use os_actions::codec_pack::CodecAction;
 
-use super::OnboardingView;
-use tilo_onboarding::t_args;
+use super::Ceremony;
+use crate::t_args;
 
-impl OnboardingView {
+impl Ceremony {
     pub(super) fn start_codec_install(&mut self) {
         let Some(setup) = self.codec_setup.as_ref() else {
             return;
@@ -51,7 +51,6 @@ impl OnboardingView {
                 ));
             }
         }
-        self.invalidation.structure();
     }
 
     /// Pick up the worker's result and status-file changes.
@@ -81,7 +80,6 @@ impl OnboardingView {
             if status != self.codec_status {
                 self.codec_status = status;
             }
-            self.invalidation.structure();
         }
     }
 

@@ -16,12 +16,12 @@
 use std::path::{Path, PathBuf};
 
 use tilo_device_identity::IdentityPaths;
+use tilo_onboarding_session::ceremony::Ceremony;
 use tilo_onboarding_session::firstboot;
 use tilo_onboarding_session::identity::IdentityProblem;
 use tilo_onboarding_session::identity_provisioning::{
     IDENTITY_RECOVERY_ENV, is_secret_service_unavailable, needs_first_run_flow,
 };
-use tilo_onboarding_session::view::OnboardingView;
 use tilo_user_identity::CertificateClockError;
 
 use crate::clock_wait::ClockWait;
@@ -277,7 +277,7 @@ pub fn before_shell(identity: &Identity, host_desktop: bool) -> Option<BeforeShe
 /// identity yet, setup it started and did not finish, the recovery of its identity when startup
 /// found it unusable; `None` when there is nothing left to set up.
 #[must_use]
-pub(crate) fn setup_due_now(host_desktop: bool) -> Option<OnboardingView> {
+pub(crate) fn setup_due_now(host_desktop: bool) -> Option<Ceremony> {
     use crate::firstboot::setup_due;
     let identity_path = match tilo_identity::store::active_identity_path() {
         Ok(path) => path,
@@ -292,10 +292,10 @@ pub(crate) fn setup_due_now(host_desktop: bool) -> Option<OnboardingView> {
         return None;
     }
     Some(match (host_desktop, recovery) {
-        (false, false) => OnboardingView::new(identity_dir),
-        (false, true) => OnboardingView::new_for_recovery(identity_dir),
-        (true, false) => OnboardingView::new_for_host_desktop(identity_dir),
-        (true, true) => OnboardingView::new_for_host_desktop_recovery(identity_dir),
+        (false, false) => Ceremony::new(identity_dir),
+        (false, true) => Ceremony::new_for_recovery(identity_dir),
+        (true, false) => Ceremony::new_for_host_desktop(identity_dir),
+        (true, true) => Ceremony::new_for_host_desktop_recovery(identity_dir),
     })
 }
 
@@ -304,16 +304,16 @@ pub(crate) fn setup_due_now(host_desktop: bool) -> Option<OnboardingView> {
 ///
 /// # Errors
 /// This computer keeps no identity of its own to back up, or it cannot say whether it does.
-pub fn portable_backup(host_desktop: bool) -> Result<OnboardingView, String> {
+pub fn portable_backup(host_desktop: bool) -> Result<Ceremony, String> {
     let record = tilo_identity::store::active_identity_path().map_err(|error| error.to_string())?;
     let identity_dir = record
         .parent()
         .ok_or_else(|| "the identity record has no directory".to_owned())?
         .to_path_buf();
     if host_desktop {
-        OnboardingView::portable_backup_for_host_desktop(identity_dir)
+        Ceremony::portable_backup_for_host_desktop(identity_dir)
     } else {
-        OnboardingView::portable_backup(identity_dir)
+        Ceremony::portable_backup(identity_dir)
     }
 }
 
@@ -461,7 +461,7 @@ pub(crate) fn found_and_certify(identity_dir: &Path) -> Result<bool, String> {
 /// their recovery key written down and goes through the tour, as a computer set up through setup
 /// does.
 fn record_setup_backup() {
-    if let Err(error) = tilo_onboarding_session::view::record_backup_step() {
+    if let Err(error) = tilo_onboarding_session::ceremony::record_backup_step() {
         tracing::warn!(%error, "this device's setup step was not kept");
     }
 }

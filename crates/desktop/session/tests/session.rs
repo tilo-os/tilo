@@ -25,7 +25,7 @@ use tilo_actions::ResourceSpec;
 use tilo_app_test_host::TestApp;
 use tilo_compositor::clipboard_history::TEXT_MIME;
 use tilo_compositor::{Compositor, InputEvent, KeyRepeat, OutputConfig, Selection};
-use tilo_onboarding::OnboardingEffect;
+use tilo_onboarding_session::ceremony::OnboardingEffect;
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::{CLIPBOARD_RESOURCE, Options, Session};
 use tilo_session_core::desktop::verbs::{
@@ -1765,7 +1765,7 @@ fn setup_runs_over_the_desktop_through_its_actions_and_gives_it_back_when_done()
     let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = crate::common::headless(Options {
         setup: Some(tilo_session::BeforeShell::Ceremony(Box::new(
-            tilo_session::OnboardingView::new_tour(),
+            tilo_session::Ceremony::new_tour(),
         ))),
         collab: false,
         ..Options::default()
@@ -1803,14 +1803,14 @@ fn setup_runs_over_the_desktop_through_its_actions_and_gives_it_back_when_done()
 
 /// The device's tooling walks setup by its controls' names, as a screen reader
 /// reaches them (`tilo-vm slot create --identity device`, onboarding-walk): the
-/// steps of the setup app the ceremony shows are listed by their ids, and a
-/// press by that name is the person's press.
+/// controls of the setup app the ceremony shows are listed by the words they
+/// show, and a press by that name is the person's press.
 #[test]
 fn setup_lists_its_steps_by_name_and_a_press_by_name_takes_the_step() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = crate::common::headless(Options {
         setup: Some(tilo_session::BeforeShell::Ceremony(Box::new(
-            tilo_session::OnboardingView::new_tour(),
+            tilo_session::Ceremony::new_tour(),
         ))),
         collab: false,
         ..Options::default()
@@ -1822,7 +1822,7 @@ fn setup_lists_its_steps_by_name_and_a_press_by_name_takes_the_step() {
         .into_iter()
         .map(|control| control.name)
         .collect();
-    let skip = "onboarding.tour.skip.button";
+    let skip = "Skip tour";
     assert!(
         names.iter().any(|name| name == skip),
         "setup's tour step is listed by its name: {names:?}"

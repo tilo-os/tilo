@@ -37,7 +37,6 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-files = { path = "../../platform/tilo-files", features = ["json", "watch"] }
 tilo-identity = { path = "../../core/tilo-identity" }
 tilo-identity-client = { path = "../../core/tilo-identity-client" }
-tilo-onboarding = { path = "../onboarding" }
 # An acknowledgement is a declared action of setup's document.
 tilo-resource = { path = "../../core/tilo-resource" }
 tilo-paths.workspace = true

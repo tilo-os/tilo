@@ -1190,7 +1190,6 @@ doc = false
 "tilo-oauth" = { path = "../../crates/integrations/tilo-oauth", default-features = false, features = ["client", "default", "fake"] }
 "tilo-oci-images" = { path = "../../crates/vm/oci-images", default-features = false, features = [] }
 "tilo-ocr" = { path = "../../crates/engines/ocr", default-features = false, features = [] }
-"tilo-onboarding" = { path = "../../crates/desktop/onboarding", default-features = false, features = [] }
 "tilo-onboarding-session" = { path = "../../crates/desktop/onboarding-session", default-features = false, features = [] }
 "tilo-os-search" = { path = "../../crates/integrations/os-search", default-features = false, features = [] }
 "tilo-package-store" = { path = "../../crates/core/package-store", default-features = false, features = ["default", "dev-overrides", "lease", "store"] }
@@ -3631,7 +3630,6 @@ doc = false
 "tilo-oauth" = { path = "../../crates/integrations/tilo-oauth", default-features = false, features = ["client", "default", "fake"] }
 "tilo-oci-images" = { path = "../../crates/vm/oci-images", default-features = false, features = [] }
 "tilo-ocr" = { path = "../../crates/engines/ocr", default-features = false, features = [] }
-"tilo-onboarding" = { path = "../../crates/desktop/onboarding", default-features = false, features = [] }
 "tilo-onboarding-session" = { path = "../../crates/desktop/onboarding-session", default-features = false, features = ["test-support"] }
 "tilo-os-search" = { path = "../../crates/integrations/os-search", default-features = false, features = [] }
 "tilo-package-store" = { path = "../../crates/core/package-store", default-features = false, features = ["default", "lease", "store"] }

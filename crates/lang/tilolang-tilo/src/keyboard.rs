@@ -36,27 +36,42 @@ pub fn compile() -> Result<Compiled, String> {
 }
 
 fn compile_source() -> Result<Compiled, String> {
+    shipped("apps/tl/osk", FILES, IDS, &CATALOGUES)
+}
+
+/// A package this build ships in the session, compiled from its sources under `dir` over the
+/// session's and the platform's descriptions.
+///
+/// # Errors
+/// The package's diagnostics, rendered with their file names.
+pub(crate) fn shipped(
+    dir: &str,
+    files: &[(&str, &str)],
+    ids: &str,
+    catalogues: &[(&str, &str)],
+) -> Result<Compiled, String> {
     let session = crate::platform_apps::session_package()?;
-    let lock = crate::tilolang::IdsLock::parse(IDS).map_err(|e| e.to_string())?;
+    let lock = crate::tilolang::IdsLock::parse(ids).map_err(|e| e.to_string())?;
     let source = crate::tilolang::PackageSource::new(
-        FILES
+        files
             .iter()
-            .map(|(path, text)| (format!("apps/tl/osk/{path}"), (*text).to_owned())),
+            .map(|(path, text)| (format!("{dir}/{path}"), (*text).to_owned())),
     )
     .with_locales(
-        CATALOGUES
-            .into_iter()
-            .map(|(locale, text)| (locale.to_owned(), text.to_owned())),
+        catalogues
+            .iter()
+            .map(|(locale, text)| ((*locale).to_owned(), (*text).to_owned())),
     );
     let mut imports: Vec<crate::tilolang::PackageMeta> = crate::platform_apps::platform_packages()?
         .into_iter()
         .filter(|meta| meta.app != crate::platform_apps::SESSION_APP)
         .collect();
     imports.insert(0, session);
+    let main = format!("{dir}/app.tl");
     crate::tilolang::compile_package_source(&source, &lock, &imports).map_err(|diagnostics| {
         diagnostics
             .iter()
-            .map(|d| d.render(d.file.as_deref().unwrap_or("apps/tl/osk/app.tl")))
+            .map(|d| d.render(d.file.as_deref().unwrap_or(&main)))
             .collect::<Vec<_>>()
             .join("\n")
     })

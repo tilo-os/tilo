@@ -15,8 +15,8 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::task::Waker;
 
 use tilo_identity::policy_change;
+use tilo_onboarding_session::ceremony::Ceremony;
 use tilo_onboarding_session::identity::IdentityProblem;
-use tilo_onboarding_session::view::OnboardingView;
 use tilo_ui_base::format::UnixSecs;
 use tilo_ui_base::icons::Icon;
 use tilo_user_identity::{CertificateClockError, DeviceCertError};
@@ -45,9 +45,9 @@ pub(crate) enum ClockWaitStep {
     Waiting,
     /// The identity verifies: `Some` is the setup this device still needs,
     /// `None` opens the shell.
-    Verified(Option<OnboardingView>),
+    Verified(Option<Ceremony>),
     /// The identity stopped verifying: its owner restores it.
-    Recovery(OnboardingView),
+    Recovery(Ceremony),
 }
 
 /// The wait for the clock to admit this device's certificate.
@@ -237,11 +237,11 @@ impl ClockWait {
 
 /// The setup an identity that stopped verifying is restored through, for a session on Tilo's own
 /// image or on an operating system it does not control.
-fn recovery_view(identity_dir: &std::path::Path, host_desktop: bool) -> OnboardingView {
+fn recovery_view(identity_dir: &std::path::Path, host_desktop: bool) -> Ceremony {
     if host_desktop {
-        OnboardingView::new_for_host_desktop_recovery(identity_dir.to_path_buf())
+        Ceremony::new_for_host_desktop_recovery(identity_dir.to_path_buf())
     } else {
-        OnboardingView::new_for_recovery(identity_dir.to_path_buf())
+        Ceremony::new_for_recovery(identity_dir.to_path_buf())
     }
 }
 

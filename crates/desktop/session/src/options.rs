@@ -79,7 +79,7 @@ pub struct Options {
     /// passphrase. `host_desktop` is whether this session is Tilo installed on an existing Linux
     /// host. A function returning `Err` says why this computer has nothing to back up.
     #[cfg(target_os = "linux")]
-    pub identity_backup: fn(bool) -> Result<tilo_onboarding_session::view::OnboardingView, String>,
+    pub identity_backup: fn(bool) -> Result<tilo_onboarding_session::ceremony::Ceremony, String>,
     /// Whether this session is Tilo installed as a desktop session on an existing Linux host.
     pub host_desktop: bool,
     /// What this session holds of a workspace, when a workspace VM's daemon started it for one:

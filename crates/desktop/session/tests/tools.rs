@@ -147,7 +147,7 @@ fn session(
         drives,
         // The identity backup is a layer over the desktop, which a test stands in for: what a
         // pass raises is asserted, not the ceremony's own pages.
-        identity_backup: |_| Ok(tilo_onboarding_session::view::OnboardingView::new_tour()),
+        identity_backup: |_| Ok(tilo_onboarding_session::ceremony::Ceremony::new_tour()),
         wake: tilo_service::LoopWake::default(),
         ..Options::default()
     });

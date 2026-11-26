@@ -8,7 +8,7 @@ use super::Scrollable;
 /// A body that scrolls under its column's fixed header, showing the part of the content the
 /// column fits.
 #[derive(Component, Default)]
-#[component(name = "Scroll", role = "ScrollView")]
+#[component(name = "Scroll", role = "ScrollView", label = "label")]
 pub struct ScrollProps {
     /// Open at the end of the content and stay there while it grows, unless the person scrolled
     /// away: a transcript, whose newest line is last.
@@ -21,6 +21,12 @@ pub struct ScrollProps {
     /// Show the bar for as long as the content overflows, not only while it is scrolled: a card
     /// held to a height whose words go on below it, so the person sees there is more.
     pub shows_bar: bool,
+    /// What the region holds, for assistive technology: Tab stops on a region whose content
+    /// overflows and announces it ("Identity setup, step 2 of 4: Protect").
+    pub label: Option<String>,
+    /// Scroll a control that takes the keyboard into view: a form held to a card's height, whose
+    /// next field Tab reaches below the fold. Scrolling away from the same control stays put.
+    pub reveals_focus: bool,
     /// Keep the descendant that names itself this (`Widget::kept_in_view`) in view when the one
     /// that is named changes: the front strip of a row a person pans, brought into view as they
     /// move between windows.
@@ -40,6 +46,8 @@ impl Described for Scrollable {
             across,
             both,
             shows_bar,
+            label,
+            reveals_focus,
             keep,
             content,
         } = props;
@@ -55,6 +63,12 @@ impl Described for Scrollable {
         }
         if shows_bar {
             scroll = scroll.always_visible();
+        }
+        if let Some(label) = label {
+            scroll = scroll.with_label(label);
+        }
+        if reveals_focus {
+            scroll = scroll.with_focus_reveal();
         }
         if let Some(keep) = keep {
             scroll.keep_in_view(keep);
@@ -78,6 +92,8 @@ impl Described for Scrollable {
             self.overlay = !props.shows_bar;
             self.bar_dirty = true;
         }
+        self.label = props.label;
+        self.reveal_focus = props.reveals_focus;
         if let Some(keep) = &props.keep {
             self.keep_in_view(keep.clone());
         }
@@ -112,5 +128,62 @@ impl PartViews for Scrollable {
 
     fn replace(&mut self, _index: usize, view: Element) {
         let _ = self.replace_child(view);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ScrollProps, Scrollable};
+    use crate::widget::Widget;
+    use tilo_ui_base::component::Described;
+
+    fn name(scroll: &Scrollable) -> Option<String> {
+        Widget::accessibility(scroll).and_then(|node| node.name)
+    }
+
+    #[test]
+    fn a_named_region_says_what_it_holds_as_the_page_under_it_changes() {
+        let mut scroll = Scrollable::from_props(
+            "body",
+            ScrollProps {
+                label: Some("Identity setup, step 2 of 4: Protect".to_owned()),
+                reveals_focus: true,
+                shows_bar: true,
+                ..ScrollProps::default()
+            },
+        );
+        assert_eq!(
+            name(&scroll).as_deref(),
+            Some("Identity setup, step 2 of 4: Protect")
+        );
+        assert!(
+            scroll.reveal_focus,
+            "a form region scrolls the focused field into view"
+        );
+        assert!(!scroll.overlay, "the bar stays while the content overflows");
+
+        assert!(scroll.set_props(ScrollProps {
+            label: Some("Identity setup, step 3 of 4: Backup".to_owned()),
+            shows_bar: true,
+            ..ScrollProps::default()
+        }));
+        assert_eq!(
+            name(&scroll).as_deref(),
+            Some("Identity setup, step 3 of 4: Backup")
+        );
+        assert!(
+            !scroll.reveal_focus,
+            "a region that stops asking stops revealing"
+        );
+
+        assert!(scroll.set_props(ScrollProps {
+            shows_bar: true,
+            ..ScrollProps::default()
+        }));
+        assert_eq!(
+            name(&scroll),
+            None,
+            "a region left unnamed is unnamed again"
+        );
     }
 }

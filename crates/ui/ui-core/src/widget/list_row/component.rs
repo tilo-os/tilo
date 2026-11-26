@@ -89,6 +89,9 @@ pub struct ListRowProps {
     /// The row reads as subordinate to the rows around it: its title in the weaker ink, as
     /// an outline's quieter branch does.
     pub quiet: bool,
+    /// A trailing chevron: activating the row goes on to a page of its own, as a choice that
+    /// leads to the next step of a flow does.
+    pub disclosure: bool,
 }
 
 impl ListRowProps {
@@ -124,6 +127,7 @@ impl ListRowProps {
             dense: self.dense,
             activate: self.activate.clone(),
             quiet: self.quiet,
+            disclosure: self.disclosure,
         })
     }
 }
@@ -143,6 +147,7 @@ impl Described for ListRow {
         if props.trailing.is_some()
             || self.trailing.is_some()
             || leading_kind(self.leading.as_ref()) != props_kind(&props)
+            || props.disclosure != self.disclosure
         {
             return false;
         }
@@ -220,6 +225,7 @@ impl ListRow {
             dense,
             activate,
             quiet,
+            disclosure,
         } = props;
         // An empty line is no line: a row of a note without a body is one line high.
         let shown = |text: Option<String>| text.filter(|text| !text.is_empty());
@@ -258,6 +264,7 @@ impl ListRow {
         });
         self.selected = selected;
         self.quiet = quiet;
+        self.disclosure = disclosure;
         self.feel = motion.unwrap_or(tilo_ui_base::motion::Feel::Standard);
         self.dense = dense;
         self.check_binding = None;
@@ -330,5 +337,36 @@ impl SwipeActionProps {
             destructive: self.destructive,
             swipe: self.swipe.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ListRow, ListRowProps};
+    use tilo_ui_base::component::Described;
+
+    fn row(disclosure: bool) -> ListRowProps {
+        ListRowProps {
+            key: "existing".to_owned(),
+            title: "Use your existing identity".to_owned(),
+            secondary: Some("Join from another device or restore a backup".to_owned()),
+            disclosure,
+            ..ListRowProps::default()
+        }
+    }
+
+    #[test]
+    fn a_row_that_goes_on_to_a_page_shows_its_chevron_and_keeps_it_in_place() {
+        let mut leads_on = ListRow::from_props("existing", row(true));
+        assert!(leads_on.disclosure, "the row draws a trailing chevron");
+        assert!(
+            leads_on.set_props(row(true)),
+            "new words beside the chevron change in place"
+        );
+        assert!(
+            !leads_on.set_props(row(false)),
+            "a row losing its chevron lays out its columns again"
+        );
+        assert!(!ListRow::from_props("existing", row(false)).disclosure);
     }
 }

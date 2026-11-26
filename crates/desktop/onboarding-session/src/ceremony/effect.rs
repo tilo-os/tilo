@@ -9,8 +9,7 @@
 //! is always asked first. A secret is a `secret` parameter, kept out of logs,
 //! history and confirmations, and it never comes back in a result.
 
-// `#[derive(Effect)]` names the crate as `tilo_resource`.
-use ui::tilo_resource::{self, Effect};
+use tilo_resource::Effect;
 use zeroize::Zeroize;
 
 /// The ways forward a page may offer besides its main one, by name.
@@ -32,6 +31,7 @@ pub const FIELDS: &[&str] = &["backup-file"];
 /// The secret fields.
 pub const SECRET_FIELDS: &[&str] = &[
     "backup-passphrase",
+    "nearby-code",
     "new-passphrase",
     "new-passphrase-confirmation",
     "recovery-key",

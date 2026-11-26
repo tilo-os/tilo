@@ -4,7 +4,7 @@
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageData, ImageFormat};
 
-use super::Backdrop;
+use super::{Backdrop, Ground};
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
@@ -24,7 +24,17 @@ fn picture(edge: u32, rgba: [u8; 4]) -> ImageData {
 
 /// A backdrop laid out over `rect` and drawn on the theme's ground, rendered.
 fn rendered(theme: &Theme, rect: Rect) -> Vec<u8> {
-    let mut backdrop = Backdrop::new();
+    rendered_over(
+        theme,
+        rect,
+        Ground::Wallpaper,
+        theme.tokens.colors.surfaces.base,
+    )
+}
+
+/// A backdrop of `ground` laid out over `rect` and drawn over `beneath`, rendered.
+fn rendered_over(theme: &Theme, rect: Rect, ground: Ground, beneath: Color) -> Vec<u8> {
+    let mut backdrop = Backdrop::new().with_ground(ground);
     let mut text = tilo_ui_base::font_catalog::fixture_renderer();
     for _ in 0..2 {
         tilo_ui_base::widget::layout::lay_out_detached(&mut backdrop, rect, theme, &mut text)
@@ -34,7 +44,7 @@ fn rendered(theme: &Theme, rect: Rect) -> Vec<u8> {
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        theme.tokens.colors.surfaces.base,
+        beneath,
         None,
         &Rect::new(0.0, 0.0, 240.0, 240.0),
     );
@@ -87,5 +97,32 @@ fn the_backdrop_paints_the_shells_wallpaper_under_everything() {
     assert!(
         near(red, ground.r) && near(green, ground.g) && near(blue, ground.b),
         "the ground stands where no wallpaper was handed: saw {red},{green},{blue}"
+    );
+}
+
+/// Setup stands on the system's own ground, opaque over whatever an app drew; its tour veils the
+/// desktop it covers and leaves it legible, and nothing outside its box.
+#[test]
+fn setup_stands_on_its_own_ground_and_its_tour_veils_only_what_it_covers() {
+    let theme = Theme::dark();
+    let rect = Rect::new(40.0, 40.0, 200.0, 160.0);
+    let red = Color::from_rgb8(220, 40, 40);
+    let seen = rendered_over(&theme, rect, Ground::Trusted, red);
+    let (r, g, b, _) = tilo_ui_base::offscreen::OffscreenRenderer::sample(&seen, 240, 120, 120);
+    assert!(
+        r < 120,
+        "what lies beneath never shows through: saw {r},{g},{b}"
+    );
+
+    let seen = rendered_over(&theme, rect, Ground::Scrim, red);
+    let (r, g, b, _) = tilo_ui_base::offscreen::OffscreenRenderer::sample(&seen, 240, 120, 120);
+    assert!(
+        (r, g, b) != (220, 40, 40) && r > g + 40,
+        "the desktop beneath is veiled and still legible: saw {r},{g},{b}"
+    );
+    let (r, g, b, _) = tilo_ui_base::offscreen::OffscreenRenderer::sample(&seen, 240, 10, 10);
+    assert!(
+        r > 200 && g < 60 && b < 60,
+        "outside its box the desktop is untouched: saw {r},{g},{b}"
     );
 }

@@ -1022,7 +1022,7 @@ impl Apply for RecordingApply {
         if self
             .calls
             .iter()
-            .any(|call| call.contains("onboarding.finish.button"))
+            .any(|call| call.contains("Continue to desktop"))
         {
             MachineIdentity {
                 person: true,

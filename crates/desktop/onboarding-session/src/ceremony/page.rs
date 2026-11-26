@@ -1,7 +1,8 @@
-//! What setup shows: plain data the shell keeps current. Secrets the person
-//! types never appear here; they stay in the buffers the shell lends
-//! ([`crate::Secrets`]). The one secret shown (a recovery key being written
-//! down) is [`SecretText`], zeroized when dropped and never printed.
+//! What setup shows: plain data the session keeps current, and the reading the setup app's view
+//! reads it as (`session.Setup`, [`Page::reading`]). Secrets the person types never appear here;
+//! they stay in the ceremony's buffers. The one secret shown (a recovery key being written down)
+//! is [`SecretText`], zeroized when dropped and never printed, and it travels only in the reading
+//! the session hands the view it draws itself, never in one an API caller reads.
 
 use zeroize::Zeroizing;
 
@@ -220,6 +221,9 @@ pub struct Page {
     pub nearby: Nearby,
     /// The backup file to restore from, as typed or chosen.
     pub connect_path: String,
+    /// Moves each time the person picks the file in the picker: the view takes `connect_path`
+    /// into its field then, and leaves what they type alone otherwise.
+    pub connect_picked: u64,
     pub recovery_check: WordsCheck,
     /// How many words a recovery key has.
     pub recovery_words_total: usize,
@@ -233,8 +237,13 @@ pub struct Page {
     pub recovery_key_copy: Option<KeyCopy>,
     pub recovery_key_written: bool,
     pub recovery_key_copy_confirmed: bool,
-    /// The display is short: denser spacing.
-    pub compact: bool,
+    /// Where in the typed recovery key the words of no recovery key stand, as character ranges.
+    pub recovery_word_mistakes: Vec<std::ops::Range<usize>>,
+    /// Which of the words typed back can no longer be the word asked for.
+    pub key_answers_wrong: [bool; 3],
+    /// Moves each time the ceremony forgets what was typed into its secret fields: the view
+    /// starts its fields empty again.
+    pub epoch: u64,
 }
 
 impl Page {
@@ -273,4 +282,134 @@ pub enum Step {
     Codecs,
     Ready,
     Tour(TourPage),
+}
+
+impl Page {
+    /// The page as the setup app's view reads it (`session.Setup`): one flat record, every text
+    /// empty where the page has none. The words of a recovery key being written down are in it
+    /// only with `words`: the reading the session hands the view it draws itself.
+    #[must_use]
+    pub fn reading(&self, words: bool) -> serde_json::Value {
+        let text = |value: &Option<String>| value.clone().unwrap_or_default();
+        let (check, typed, problem, fingerprint) = match &self.recovery_check {
+            WordsCheck::Empty => ("empty", 0, String::new(), String::new()),
+            WordsCheck::Typing { words } => ("typing", *words, String::new(), String::new()),
+            WordsCheck::Problem(problem) => ("problem", 0, problem.clone(), String::new()),
+            WordsCheck::Ready { fingerprint } => ("ready", 0, String::new(), fingerprint.clone()),
+            WordsCheck::Different { fingerprint } => {
+                ("different", 0, String::new(), fingerprint.clone())
+            }
+        };
+        let joined = self.joined_device.clone().unwrap_or_default();
+        let key_words: Vec<String> = match (&self.recovery_key_copy, words) {
+            (Some(copy), true) => copy.words.expose().split(' ').map(str::to_owned).collect(),
+            _ => Vec::new(),
+        };
+        let key_checks: Vec<usize> = self
+            .recovery_key_copy
+            .as_ref()
+            .map(|copy| copy.checks.to_vec())
+            .unwrap_or_default();
+        let mistakes: Vec<usize> = self
+            .recovery_word_mistakes
+            .iter()
+            .flat_map(|range| [range.start, range.end])
+            .collect();
+        let mut reading = serde_json::json!({
+            "step": self.step().name(),
+            "tour": self.tour_page.map_or(0, TourPage::number),
+            "host_desktop": self.context == OnboardingContext::HostDesktop,
+            "mac": cfg!(target_os = "macos"),
+            "recovery_only": self.recovery_only,
+            "portable_backup_only": self.portable_backup_only,
+            "joined": self.joined_device.is_some(),
+            "joined_label": joined.label.unwrap_or_default(),
+            "joined_person": joined.person.unwrap_or_default(),
+            "total_steps": self.total_steps,
+            "acknowledged": self.acknowledged,
+            "can_create": self.can_create,
+            "busy": self.busy,
+            "error": text(&self.error),
+            "progress_error": text(&self.progress_error),
+            "expected_identity": text(&self.expected_identity),
+            "recovery_problem": match self.recovery_problem {
+                None => "",
+                Some(IdentityProblem::KeyringUnavailable) => "keyring",
+                Some(IdentityProblem::RecordMissing) => "missing",
+                Some(IdentityProblem::ChainInvalid) => "invalid",
+            },
+            "nearby_active": self.nearby.active,
+            "nearby_failure_title": self.nearby.failure.as_ref().map(|(title, _)| title.clone()).unwrap_or_default(),
+            "nearby_failure_message": self.nearby.failure.as_ref().map(|(_, message)| message.clone()).unwrap_or_default(),
+            "connect_path": self.connect_path,
+            "connect_picked": self.connect_picked,
+        });
+        let rest = serde_json::json!({
+            "words_check": check,
+            "words_typed": typed,
+            "words_problem": problem,
+            "words_fingerprint": fingerprint,
+            "words_total": self.recovery_words_total,
+            "words_mistakes": mistakes,
+            "backup_error": text(&self.backup_error),
+            "backup_saved": text(&self.backup_saved),
+            "backup_verified": self.backup_was_verified,
+            "backup_available": self.backup_export_available,
+            "backup_form_open": self.backup_copy_form_open,
+            "skip_acknowledged": self.backup_skip_acknowledged,
+            "key_shown": self.recovery_key_copy.is_some(),
+            "key_words": key_words,
+            "key_checks": key_checks,
+            "key_wrong": self.key_answers_wrong.to_vec(),
+            "key_written": self.recovery_key_written,
+            "key_confirmed": self.recovery_key_copy_confirmed,
+            "codecs_state": self.codecs.state.name(),
+            "codecs_running": self.codecs.running,
+            "codecs_error": text(&self.codecs.error),
+            "codecs_fraction": self.codecs.fraction,
+            "codecs_summary": self.codecs.summary,
+            "codecs_when": text(&self.codecs.when_it_applies),
+            "codecs_last_error": self.codecs.last_error,
+            "epoch": self.epoch,
+        });
+        if let (Some(reading), serde_json::Value::Object(rest)) = (reading.as_object_mut(), rest) {
+            reading.extend(rest);
+        }
+        reading
+    }
+}
+
+impl Step {
+    /// The step's name in the reading.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Intro => "intro",
+            Self::Existing => "existing",
+            Self::Nearby => "nearby",
+            Self::Restore => "restore",
+            Self::RecoveryKey => "recovery-key",
+            Self::Protect => "protect",
+            Self::Backup => "backup",
+            Self::RecoveryKeyCopy => "recovery-key-copy",
+            Self::Codecs => "codecs",
+            Self::Ready => "ready",
+            Self::Tour(_) => "tour",
+        }
+    }
+}
+
+impl PackState {
+    /// The state's name in the reading.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::NotInstalled => "not-installed",
+            Self::Installing => "installing",
+            Self::WaitingForNetwork => "waiting-for-network",
+            Self::Installed => "installed",
+            Self::Removing => "removing",
+            Self::Failed => "failed",
+        }
+    }
 }
