@@ -569,15 +569,7 @@ fn local_directory_fixture() -> LocalDirectoryFixture {
 /// second broker can replace it there.
 #[cfg(test)]
 fn local_directory_fixture_on(fanout: Arc<FanoutState>) -> LocalDirectoryFixture {
-    let mut tree = crate::test_support::WorkspaceTree::default();
-    let mut workspace = crate::test_support::Workspace::new(
-        crate::test_support::WorkspaceId::from_u128(71),
-        "Directory test workspace",
-    );
-    workspace.policy.set_owner("fixture-owner".to_string());
-    tree.workspaces.push(workspace);
-    tree.set_active(crate::test_support::WorkspaceId::from_u128(71));
-    let membership = tree.shared();
+    let membership = directory_workspace_membership();
     let mut fixture = local_directory_fixture_with_authority_on(
         fanout,
         membership.authority(),
@@ -587,6 +579,39 @@ fn local_directory_fixture_on(fanout: Arc<FanoutState>) -> LocalDirectoryFixture
     );
     fixture.membership = Some(membership);
     fixture
+}
+
+/// The workspace the directory fixtures read: one this device hosts, whose
+/// person owns it.
+#[cfg(test)]
+fn directory_workspace_membership() -> crate::test_support::WorkspaceTreeHandle {
+    let mut tree = crate::test_support::WorkspaceTree::default();
+    let mut workspace = crate::test_support::Workspace::new(
+        crate::test_support::WorkspaceId::from_u128(71),
+        "Directory test workspace",
+    );
+    workspace.policy.set_owner("fixture-owner".to_string());
+    tree.workspaces.push(workspace);
+    tree.set_active(crate::test_support::WorkspaceId::from_u128(71));
+    tree.shared()
+}
+
+/// One page of `peer`'s directory as `cursor` names it, with the budgets the
+/// broker tests ask at.
+#[cfg(test)]
+fn page_query(peer: u64, cursor: &[u8]) -> runtime_collab::ActionDirectoryQuery {
+    runtime_collab::ActionDirectoryQuery {
+        peer_id: peer,
+        revision: String::new(),
+        cursor: cursor.to_vec(),
+        needle: String::new(),
+        parent_resource: String::new(),
+        max_results: 8,
+        max_bytes: crate::collab_app_broker::AppBrokerState::DIRECTORY_MAX_BYTES,
+        max_work: 8,
+        max_depth: 4,
+        resource_name: String::new(),
+    }
 }
 
 pub fn local_directory_fixture_with_membership(

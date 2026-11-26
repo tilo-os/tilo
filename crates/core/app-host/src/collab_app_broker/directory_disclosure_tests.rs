@@ -746,7 +746,7 @@ async fn private_directory_continuations_hide_source_metadata_and_bind_the_query
             );
             assert_eq!(
                 page.next_cursor.len(),
-                16,
+                b"continuation-v1:".len().saturating_add(16),
                 "a fixed-size broker token, not an offset or id"
             );
             assert!(!page.next_cursor.windows(6).any(|word| word == b"Secret"));

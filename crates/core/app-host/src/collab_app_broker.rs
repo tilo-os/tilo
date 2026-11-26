@@ -426,7 +426,10 @@ pub struct AppBrokerState {
     /// This intentionally has no durable/archive counterpart: retaining a
     /// capability after disconnect would make a stale live-only row look
     /// executable.
-    /// The broker's own end of the action directory bridge its askers reach.
+    /// The broker's own end of the action directory bridge its askers reach,
+    /// and the queue that reaches it: the fanout's live broker first, this
+    /// one while the fanout holds none.
+    action_directory_bridge: ActionDirectoryRequestQueue,
     action_directory_requests: ActionDirectoryRequests,
     action_directory_roots: Mutex<HashMap<u64, ActionDirectoryRoot>>,
     canonical_directories: Mutex<canonical_route::CanonicalDirectories>,

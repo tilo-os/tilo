@@ -106,7 +106,6 @@ pub enum ActionDirectoryBridgeResponse {
 pub enum ActionDirectoryBridgeError {
     Busy,
     InvalidRequest,
-    Unavailable,
     TimedOut,
     Refused(String),
 }
@@ -124,19 +123,20 @@ impl DirectoryReply {
     /// of its own and gives up by dropping its answer, which ends the wait
     /// sooner; the bound here only stops an owner that never answers from
     /// pinning the request.
-    pub(super) fn patience(&self) -> Duration {
-        AppBrokerState::DIRECTORY_OWNER_HUNG
-    }
-
     /// `answer`, awaited for as long as this asker still wants it: the
     /// owning app answers on its next turn, and a turn running a heavy
     /// action or frame is busy, not gone. `Err(TimedOut)` once the asker's
-    /// patience ran out, `Err(Unavailable)` once it stopped asking.
+    /// patience ran out, `Err(Refused)` once it stopped asking.
     pub(super) async fn awaited<T>(
         &mut self,
         answer: impl std::future::Future<Output = T>,
     ) -> Result<T, ActionDirectoryBridgeError> {
-        await_while_asked(self.patience(), self.0.abandoned(), answer).await
+        await_while_asked(
+            AppBrokerState::DIRECTORY_OWNER_HUNG,
+            self.0.abandoned(),
+            answer,
+        )
+        .await
     }
 
     pub(super) fn is_closed(&self) -> bool {
@@ -149,9 +149,10 @@ impl DirectoryReply {
 }
 
 /// `answer`, or why it stopped being awaited: `patience` ran out
-/// (`TimedOut`) or the asker went away — `gone` resolved — (`Unavailable`).
-/// The asker's departure is an event, so a cancelled request is released
-/// at once rather than on the next check.
+/// (`TimedOut`) or the asker went away — `gone` resolved — which is refused
+/// in words, as the asker's departure released it. The asker's departure is
+/// an event, so a cancelled request is released at once rather than on the
+/// next check.
 pub(super) async fn await_while_asked<T>(
     patience: Duration,
     gone: impl std::future::Future<Output = ()>,
@@ -160,7 +161,9 @@ pub(super) async fn await_while_asked<T>(
     tokio::select! {
         biased;
         value = answer => Ok(value),
-        () = gone => Err(ActionDirectoryBridgeError::Unavailable),
+        () = gone => Err(ActionDirectoryBridgeError::Refused(
+            "the asker stopped waiting".into(),
+        )),
         () = tokio::time::sleep(patience) => Err(ActionDirectoryBridgeError::TimedOut),
     }
 }
@@ -210,7 +213,12 @@ mod directory_patience_tests {
                 reply.awaited(std::future::pending::<()>()),
             )
             .await;
-            assert_eq!(abandoned, Err(ActionDirectoryBridgeError::Unavailable));
+            assert_eq!(
+                abandoned,
+                Err(ActionDirectoryBridgeError::Refused(
+                    "the asker stopped waiting".into()
+                ))
+            );
         });
     }
 
@@ -232,7 +240,9 @@ mod directory_patience_tests {
         drop(answer);
         assert_eq!(
             owner_never_answers.await,
-            Err(ActionDirectoryBridgeError::Unavailable)
+            Err(ActionDirectoryBridgeError::Refused(
+                "the asker stopped waiting".into()
+            ))
         );
         assert_eq!(
             started.elapsed(),
@@ -281,6 +291,9 @@ pub struct ActionDirectoryRequestQueue {
     /// resolves it when it is made, so a handle kept from before a broker
     /// replacement reaches the broker that replaced it.
     fanout: std::sync::Weak<crate::collab_broker::FanoutState>,
+    /// The broker this queue was made under, which answers while the fanout
+    /// holds none (a session whose broker has not attached yet, or a fixture).
+    broker: std::sync::Weak<AppBrokerState>,
 }
 
 /// The broker's own end of the bridge: the queue askers hand their requests
@@ -295,8 +308,11 @@ pub(super) struct ActionDirectoryRequests {
 impl ActionDirectoryRequestQueue {
     pub(super) const CAPACITY: usize = 64;
 
-    pub(super) fn reaching(fanout: std::sync::Weak<crate::collab_broker::FanoutState>) -> Self {
-        Self { fanout }
+    pub(super) fn reaching(
+        fanout: std::sync::Weak<crate::collab_broker::FanoutState>,
+        broker: std::sync::Weak<AppBrokerState>,
+    ) -> Self {
+        Self { fanout, broker }
     }
 
     /// The broker to ask now, or why there is none: a broker that is truly
@@ -305,6 +321,7 @@ impl ActionDirectoryRequestQueue {
         self.fanout
             .upgrade()
             .and_then(|fanout| fanout.app_broker())
+            .or_else(|| self.broker.upgrade().filter(|broker| broker.is_accepting()))
             .map(|broker| broker.action_directory_requests.clone())
             .ok_or_else(|| {
                 ActionDirectoryBridgeError::Refused("the collaboration broker is gone".into())
@@ -417,6 +434,9 @@ const DIRECTORY_REPUBLISH_PAUSE: Duration = Duration::from_millis(5);
 enum Unserved {
     BetweenRevisions,
     Refused(String),
+    /// A continuation for a page read before the app's directory moved on:
+    /// the caller reads the level from its first page and says that it did.
+    Stale,
 }
 
 /// [`Unserved`] for the reason an ask failed.
@@ -913,7 +933,7 @@ impl AppBrokerState {
     /// it later services the request.
     #[must_use]
     pub fn action_directory_request_queue(&self) -> ActionDirectoryRequestQueue {
-        ActionDirectoryRequestQueue::reaching(self.fanout.clone())
+        self.action_directory_bridge.clone()
     }
     #[track_caller]
     pub(super) fn refresh_action_directory_root_snapshot(&self) {
@@ -1135,6 +1155,9 @@ impl AppBrokerState {
             {
                 Ok(page) => return Ok(page),
                 Err(Unserved::Refused(reason)) => return Err(reason),
+                Err(Unserved::Stale) => {
+                    return Err(super::directory_pagination::STALE_CONTINUATION.into());
+                }
                 Err(Unserved::BetweenRevisions) => {
                     tokio::time::sleep(DIRECTORY_REPUBLISH_PAUSE).await;
                 }
@@ -1157,31 +1180,34 @@ impl AppBrokerState {
         let max_bytes = query.max_bytes.min(Self::DIRECTORY_MAX_BYTES);
         let max_work = query.max_work.min(Self::DIRECTORY_MAX_WORK);
         let max_depth = query.max_depth.min(Self::DIRECTORY_MAX_DEPTH);
-        // A continuation names a page of the directory as it was read: one
-        // this broker no longer holds was read before a change (a republish
-        // replaces the registration and its continuations with it), so the
-        // level is read as it is now rather than the ask refused.
-        let cursor = tilo_failure::ignored!(
-            "a continuation this host no longer holds was read before the directory changed",
-            registered.pagination.source_cursor(
-                actor,
-                &query.revision,
-                &query.needle,
-                &query.parent_resource,
-                &query.cursor,
-            )
-        )
-        .ok();
-        let (revision, cursor) = match cursor {
-            Some(cursor) => (query.revision.clone(), cursor),
-            None => (String::new(), Vec::new()),
+        // A continuation names a page of the directory as it was read. One
+        // this host did not issue is malformed; one it issued for a page read
+        // before the app published a change names a page whose source cursor
+        // belongs to the revision it read, so it is refused as stale and the
+        // caller reads the level from its first page.
+        let cursor = match registered.pagination.source_cursor(
+            actor,
+            &query.revision,
+            &query.needle,
+            &query.parent_resource,
+            &query.cursor,
+        ) {
+            Ok(cursor) => cursor,
+            Err(directory_pagination::CursorRefusal::Malformed) => {
+                return Err(Unserved::Refused(
+                    "the directory cursor is malformed".into(),
+                ));
+            }
+            Err(directory_pagination::CursorRefusal::ReadBeforeAChange) => {
+                return Err(Unserved::Stale);
+            }
         };
         let page = registered
             .directory
             .query(
                 runtime_collab::ActionDirectoryQuery {
                     peer_id: query.peer_id,
-                    revision,
+                    revision: query.revision.clone(),
                     cursor,
                     needle: query.needle.clone(),
                     parent_resource: query.parent_resource.clone(),
@@ -1249,7 +1275,8 @@ impl AppBrokerState {
             {
                 Ok(resolution) => return Ok(resolution),
                 Err(Unserved::Refused(reason)) => return Err(reason),
-                Err(Unserved::BetweenRevisions) => {
+                // A resolution names no page, so no continuation is stale here.
+                Err(Unserved::Stale) | Err(Unserved::BetweenRevisions) => {
                     tokio::time::sleep(DIRECTORY_REPUBLISH_PAUSE).await;
                 }
             }

@@ -129,10 +129,21 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
         let mut resumed = 0_u32;
         while level.children.len() <= children && level.unread() {
             let before = level.clone();
-            match self
+            let read = match self
                 .read_pages(provider, parent, level, children.saturating_add(1))
-                .await?
+                .await
             {
+                Ok(read) => read,
+                // The continuation names a page read before the directory
+                // changed, which its source no longer holds: there is no
+                // level from that mark, and the caller reads the level from
+                // its first page.
+                Err(Unresolved::Asked(crate::remote::ActionCallError::StaleRevision)) => {
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
+            };
+            match read {
                 Ok(read) => level = read,
                 Err(Unread::MovedOn(now)) if resumed < RESUMES && !now.is_empty() => {
                     resumed = resumed.saturating_add(1);

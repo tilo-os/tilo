@@ -742,6 +742,10 @@ impl AppBrokerState {
                 window_instances: Mutex::new(HashMap::new()),
                 saves: Mutex::new(HashMap::new()),
                 presses: presses::Presses::default(),
+                action_directory_bridge: ActionDirectoryRequestQueue::reaching(
+                    std::sync::Arc::downgrade(fanout),
+                    state.clone(),
+                ),
                 action_directory_requests: ActionDirectoryRequests {
                     sender: bridge_tx,
                     turn: std::sync::Arc::clone(&local_turn),

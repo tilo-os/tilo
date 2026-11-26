@@ -330,8 +330,7 @@ pub(super) struct ChildRef {
 }
 
 impl ResourceRead {
-    /// `value`, an app's read or an action's output, taken apart: a list
-    /// whose every entry names an item and a title, or holds a collection's
+    /// `value`, an app's read or an action's output, taken apart: a list    /// whose every entry names an item and a title, or holds a collection's
     /// row (`{id, value}`), is children, the rest is fields.
     fn of(value: &Value) -> Self {
         let kind = value.get("kind").and_then(Value::as_str).map(str::to_owned);
@@ -785,6 +784,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // read on from where the last one ended starts past the start.
         let mut first = 0usize;
         let mut read: Option<(Level, usize)> = None;
+        // Whether this page had to read the directory again from its first
+        // page because the app published a change since the page before it.
+        let mut restarted = false;
         if want_resources && resolved.node.is_some() {
             let resumed = match (&cursor.resume, &resolved.node) {
                 (Some((mark, skip)), Some(node)) if offset > 0 => self
@@ -812,6 +814,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             if resumed.is_none() && cached && cursor.resume.is_some() {
                 // The app's directory moved on since that page was read, so this page lists
                 // what the path names now: resolved again, and read from its first page.
+                restarted = true;
                 match self.resolve_with(&parsed, Some(&forms), end).await? {
                     Ok(fresh) => resolved = std::sync::Arc::new(fresh),
                     Err(note) => return Ok(Reply::ok(note)),
@@ -1031,6 +1034,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         } else if total == 0 {
             text.push_str("\n(nothing here)");
         }
+        if restarted {
+            text.push_str("\nthe directory changed; this page reads on from its first page");
+        }
         let mut reply = Reply::ok(text);
         if structured {
             let kind = resolved
@@ -1049,6 +1055,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 "actions": actions_named(&own),
                 "kinds": kinds,
             });
+            if restarted {
+                if let Some(fields) = answer.as_object_mut() {
+                    fields.insert("restarted".into(), json!(true));
+                }
+            }
             if let (Some(fields), Some(next)) = (answer.as_object_mut(), next) {
                 fields.insert("next_cursor".into(), json!(next));
             }

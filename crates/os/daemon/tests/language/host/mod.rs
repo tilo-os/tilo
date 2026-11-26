@@ -1017,13 +1017,10 @@ impl<H: ActionProvider + Send + Sync + 'static> Agent<H> {
         let id = self
             .calls
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        tilo_test_env::within(
-            format!("the agent's {method}"),
-            self.session
-                .handle(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})),
-        )
-        .await
-        .unwrap()
+        self.session
+            .handle(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
+            .await
+            .unwrap()
     }
 }
 

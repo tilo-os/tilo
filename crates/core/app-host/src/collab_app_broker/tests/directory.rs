@@ -146,7 +146,7 @@ tilo_test_env::scenario! {
     phase directory_queue_refuses_oversized_query_text_and_cursor_before_contacting_the_app;
     {
         let fixture = local_directory_fixture();
-        let queue = fixture.broker.action_directory_request_queue();
+        let queue = fixture.state.action_directory_request_queue();
         let mut oversized_text = runtime_collab::ActionDirectoryQuery {
             peer_id: fixture.peer_id,
             revision: String::new(),
@@ -366,18 +366,7 @@ async fn a_call_made_while_the_directory_is_republished_is_answered_from_the_nex
             // The app answers two asks as it does while it publishes a change, then its new
             // directory answers.
             fixture.directory_state.borrow_mut().publishing = 2;
-            let query = runtime_collab::ActionDirectoryQuery {
-                peer_id: fixture.peer_id,
-                revision: String::new(),
-                cursor: Vec::new(),
-                needle: String::new(),
-                parent_resource: String::new(),
-                max_results: 32,
-                max_bytes: AppBrokerState::DIRECTORY_MAX_BYTES,
-                max_work: 128,
-                max_depth: 4,
-                resource_name: String::new(),
-            };
+            let query = page_query(fixture.peer_id, &[]);
             let page = tilo_test_env::within(
                 "the listing made while the app republishes",
                 fixture.state.query_action_directory_for_actor(
@@ -429,7 +418,7 @@ async fn a_queue_kept_from_before_the_host_replaced_its_owner_asks_the_live_one(
         .run_until(async {
             let fanout = std::sync::Arc::new(crate::collab_broker::FanoutState::new());
             let first = local_directory_fixture_on(std::sync::Arc::clone(&fanout));
-            let queue = first.broker.action_directory_request_queue();
+            let queue = first.state.action_directory_request_queue();
             // The broker this queue was made under stops; the next live one
             // takes its place on the same session's fanout.
             first.state.stop();
@@ -437,18 +426,7 @@ async fn a_queue_kept_from_before_the_host_replaced_its_owner_asks_the_live_one(
             let caller = Caller::local_person("fixture-owner")
                 .in_workspace(live.cluster_id.clone())
                 .in_new_execution();
-            let query = runtime_collab::ActionDirectoryQuery {
-                peer_id: live.peer_id,
-                revision: String::new(),
-                cursor: Vec::new(),
-                needle: String::new(),
-                parent_resource: String::new(),
-                max_results: 8,
-                max_bytes: 65536,
-                max_work: 8,
-                max_depth: 4,
-                resource_name: String::new(),
-            };
+            let query = page_query(live.peer_id, &[]);
             let asked = live.drive(
                 queue
                     .try_query_pending(live.state.caller_actor(&caller), &live.cluster_id, query)
@@ -467,11 +445,11 @@ async fn a_queue_kept_from_before_the_host_replaced_its_owner_asks_the_live_one(
         .await;
 }
 
-/// A continuation this broker no longer holds — a page read before a
-/// republish replaced the registration with it — reads the level as it is now
-/// instead of refusing the ask.
+/// A continuation this host issued for a page read before a change is
+/// refused as stale, in words the caller acts on; bytes it never issued are
+/// refused as malformed. Neither is read as the level's first page.
 #[tokio::test(flavor = "current_thread")]
-async fn a_continuation_the_host_no_longer_holds_reads_the_level_now() {
+async fn a_continuation_read_before_a_change_is_refused_and_one_never_issued_is_malformed() {
     use tilo_actions::remote::Caller;
     tokio::task::LocalSet::new()
         .run_until(async {
@@ -480,42 +458,41 @@ async fn a_continuation_the_host_no_longer_holds_reads_the_level_now() {
                 .in_workspace(fixture.cluster_id.clone())
                 .in_new_execution();
             let actor = fixture.state.caller_actor(&caller);
-            let mut query = runtime_collab::ActionDirectoryQuery {
-                peer_id: fixture.peer_id,
-                revision: "directory-r0".into(),
-                cursor: b"a page read before the app republished".to_vec(),
-                needle: String::new(),
-                parent_resource: String::new(),
-                max_results: 8,
-                max_bytes: AppBrokerState::DIRECTORY_MAX_BYTES,
-                max_work: 8,
-                max_depth: 4,
-                resource_name: String::new(),
-            };
-            let page = fixture
+            let malformed_query = page_query(fixture.peer_id, b"a page this host never issued");
+            let malformed = fixture
                 .state
                 .query_action_directory_for_actor(
                     &fixture.directories,
                     &actor,
                     &fixture.cluster_id,
-                    &query,
+                    &malformed_query,
                 )
-                .await
-                .expect("the level reads as it is now");
-            assert_eq!(page.rows.len(), 1, "the directory's page answers");
-            query.cursor.clear();
-            query.revision.clear();
-            let now = fixture
+                .await;
+            assert_eq!(
+                malformed.err().as_deref(),
+                Some("the directory cursor is malformed"),
+                "bytes no continuation of ours carries are malformed"
+            );
+            // One this host issued, for a page read at a revision the app has
+            // since left: the app's source cursor belongs to that revision.
+            let stale_query = page_query(
+                fixture.peer_id,
+                b"continuation-v1:an entry this host has dropped",
+            );
+            let stale = fixture
                 .state
                 .query_action_directory_for_actor(
                     &fixture.directories,
                     &actor,
                     &fixture.cluster_id,
-                    &query,
+                    &stale_query,
                 )
-                .await
-                .expect("the level reads");
-            assert_eq!(page.revision, now.revision, "read as it is now");
+                .await;
+            assert_eq!(
+                stale.err().as_deref(),
+                Some(super::super::directory_pagination::STALE_CONTINUATION),
+                "a page read before a change is refused as stale, read from the start"
+            );
         })
         .await;
 }

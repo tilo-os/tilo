@@ -479,7 +479,14 @@ pub(super) fn bridge_error(app: &str, error: ActionDirectoryBridgeError) -> Acti
             ),
         },
         // The directory's own word, so a refusal is told apart from a
-        // republish and from a directory that is not there.
+        // republish and from a directory that is not there. A continuation
+        // for a page read before a change is the caller's to read again from
+        // the first page, which its typed refusal says.
+        ActionDirectoryBridgeError::Refused(reason)
+            if reason == super::super::directory_pagination::STALE_CONTINUATION =>
+        {
+            ActionCallError::StaleRevision
+        }
         ActionDirectoryBridgeError::Refused(reason) => ActionCallError::Unavailable {
             reason: format!("{app}'s action directory refused the ask: {reason}"),
         },

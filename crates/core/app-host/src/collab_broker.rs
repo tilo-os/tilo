@@ -602,12 +602,6 @@ impl AppActionBroker {
     /// poll the returned oneshot in its cache owner; it must never block a
     /// compositor frame on a broker round trip.
     #[must_use]
-    pub fn action_directory_request_queue(
-        &self,
-    ) -> crate::collab_app_broker::ActionDirectoryRequestQueue {
-        self.state.action_directory_request_queue()
-    }
-
     /// A local action api bound to an already-issued signed workspace admission and
     /// one host-issued execution. No device is enrolled and no grant is minted.
     pub fn certified_local_action_provider(
