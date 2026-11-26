@@ -16,11 +16,11 @@
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 
+use crate::workspace_vault;
 use serde_json::{Value, json};
 use test_http::{Reply, Request, Responder};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::ActionCallError::{self, NotPermitted, Refused, UnknownAction};
-use tilo_actions::remote::person_vault;
 use tilo_actions::remote::{InvokeArgument, InvokeRequest};
 
 use super::super::tests::{admit, caller, hosted};
@@ -66,7 +66,7 @@ fn call(url: &str, key: &Value, more: Value) -> InvokeRequest {
     }
     InvokeRequest {
         invocation: InvocationId::new(),
-        target: person_vault::call_target(),
+        target: workspace_vault::target(workspace_vault::WEB_CALL),
         argument: InvokeArgument::Json(argument),
         context: None,
         confirmation: None,
@@ -244,7 +244,7 @@ async fn a_call_asks_its_person_first_and_their_allow_sends_that_call_once() {
             &service,
             workspace_id,
             hers,
-            person_vault::ADD,
+            workspace_vault::ADD,
             json!({"kind": "key", "belongsTo": [paying.url()], "secret": KEY}),
         )
         .await,
@@ -257,7 +257,7 @@ async fn a_call_asks_its_person_first_and_their_allow_sends_that_call_once() {
     };
     let offered = workspaces.calls_offered(&turn).await;
     assert_eq!(offered.len(), 1, "the turn is offered the call");
-    assert_eq!(offered[0].provider, person_vault::PROVIDER);
+    assert_eq!(offered[0].provider, workspace_vault::PROVIDER);
     assert_eq!(workspaces.uses_offered(&turn).await.len(), 2);
 
     let (lines, guard) = logged();
@@ -320,7 +320,7 @@ async fn a_call_asks_its_person_first_and_their_allow_sends_that_call_once() {
         &service,
         workspace_id,
         hers,
-        person_vault::USES,
+        workspace_vault::USES,
         json!({"item": item}),
     )
     .await
@@ -331,7 +331,7 @@ async fn a_call_asks_its_person_first_and_their_allow_sends_that_call_once() {
     assert_eq!(uses[0]["places"], json!([paying.url()]));
     // And what for: the call's own word, its method and path, and that its
     // person allowed that one call.
-    let word = person_vault::use_word(&person_vault::call_target());
+    let word = workspace_vault::use_word(&workspace_vault::target(workspace_vault::WEB_CALL));
     for used in uses {
         assert_eq!(used["using"], json!(word), "{remembers}");
         assert_eq!(used["what"], "GET /v1/balance", "{remembers}");
@@ -386,7 +386,7 @@ async fn a_key_is_sent_to_its_own_service_and_to_no_other() {
             &service,
             workspace_id,
             hers,
-            person_vault::ADD,
+            workspace_vault::ADD,
             json!({"kind": kind, "belongsTo": [place], "secret": KEY}),
         )
     };
@@ -524,7 +524,7 @@ async fn a_key_rides_where_its_item_says_and_nowhere_the_agent_says() {
         if sent_in == "basic" {
             adding["username"] = json!("ada");
         }
-        let item = reference(ask(&service, workspace_id, hers, person_vault::ADD, adding).await);
+        let item = reference(ask(&service, workspace_id, hers, workspace_vault::ADD, adding).await);
         let said = refusal(
             dispatched(
                 workspaces,
@@ -584,7 +584,7 @@ async fn a_key_rides_where_its_item_says_and_nowhere_the_agent_says() {
             &service,
             workspace_id,
             hers,
-            person_vault::ADD,
+            workspace_vault::ADD,
             unkept.clone(),
         )
         .await;
@@ -600,7 +600,7 @@ async fn a_key_rides_where_its_item_says_and_nowhere_the_agent_says() {
             &service,
             workspace_id,
             hers,
-            person_vault::ADD,
+            workspace_vault::ADD,
             json!({"kind": "key", "belongsTo": [short.url()], "secret": "0123"}),
         )
         .await,
@@ -658,7 +658,7 @@ async fn what_a_service_repeats_comes_back_without_the_key() {
         if !sent_in.is_empty() {
             adding["sentIn"] = json!(sent_in);
         }
-        let item = reference(ask(&service, workspace_id, hers, person_vault::ADD, adding).await);
+        let item = reference(ask(&service, workspace_id, hers, workspace_vault::ADD, adding).await);
         let answer = made(
             allowed(workspaces, &turn, || {
                 call(
@@ -728,7 +728,7 @@ async fn what_a_service_repeats_comes_back_without_the_key() {
             &service,
             workspace_id,
             hers,
-            person_vault::ADD,
+            workspace_vault::ADD,
             json!({"kind": "key", "belongsTo": [gone.url()], "sentIn": "query:api_key", "secret": KEY}),
         )
         .await,
@@ -767,7 +767,7 @@ async fn only_a_hosted_turn_makes_a_call() {
             &service,
             workspace_id,
             hers,
-            person_vault::ADD,
+            workspace_vault::ADD,
             json!({"kind": "key", "belongsTo": [paying.url()], "secret": KEY}),
         )
         .await,
@@ -822,7 +822,7 @@ async fn only_a_hosted_turn_makes_a_call() {
             &service,
             workspace_id,
             (&ada, &as_ada),
-            person_vault::WEB_CALL,
+            workspace_vault::WEB_CALL,
             asking.clone()
         )
         .await,
@@ -832,7 +832,7 @@ async fn only_a_hosted_turn_makes_a_call() {
         &service,
         workspace_id,
         (&ada, &scout),
-        person_vault::WEB_CALL,
+        workspace_vault::WEB_CALL,
         asking,
     )
     .await;
@@ -899,7 +899,7 @@ async fn a_call_sends_the_workspace_content_it_names() {
             &service,
             workspace_id,
             hers,
-            person_vault::ADD,
+            workspace_vault::ADD,
             json!({"kind": "key", "belongsTo": [upload.url()], "secret": KEY}),
         )
         .await,
@@ -972,7 +972,7 @@ async fn a_call_sends_the_workspace_content_it_names() {
         &service,
         workspace_id,
         hers,
-        person_vault::USES,
+        workspace_vault::USES,
         json!({"item": item}),
     )
     .await

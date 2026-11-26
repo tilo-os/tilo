@@ -2,11 +2,12 @@
 //! asked record, listed to the person it asks and to nobody else, and their approve of the
 //! record carries it out once; their decline ends it with nothing done.
 
+use crate::workspace_vault;
 use serde_json::{Value, json};
 use tilo_actions::remote::asked::{self, Asked, AskedStore, Offer, Resolve};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvocationReceipt, InvokeArgument, InvokeRequest,
-    ReceiptStatus, RemoteActionTarget, person_vault,
+    ReceiptStatus, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_server_protocol::WorkspaceId;
@@ -55,7 +56,7 @@ fn calling(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
 /// A login for `site` its agent would keep in the workspace's vault.
 fn keeping(site: &str) -> InvokeRequest {
     calling(
-        person_vault::target(person_vault::ADD),
+        workspace_vault::target(workspace_vault::ADD),
         json!({"kind": "login", "belongsTo": [site], "username": "ada", "secret": "s3cret"}),
     )
 }
@@ -158,7 +159,7 @@ async fn places(
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
 ) -> Vec<Value> {
-    let listing = calling(person_vault::target(person_vault::LIST), json!({}));
+    let listing = calling(workspace_vault::target(workspace_vault::LIST), json!({}));
     let receipt = invoked(service, workspace_id, who, listing).await.unwrap();
     let ReceiptStatus::Completed { output } = receipt.status else {
         panic!("the vault lists at once: {receipt:?}");
@@ -653,7 +654,7 @@ async fn logins_unasked(
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
 ) -> usize {
-    let listing = calling(person_vault::target(person_vault::LIST), json!({}));
+    let listing = calling(workspace_vault::target(workspace_vault::LIST), json!({}));
     let receipt = invoked(service, workspace_id, who, listing.clone())
         .await
         .unwrap();

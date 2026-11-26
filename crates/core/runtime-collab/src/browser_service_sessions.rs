@@ -243,7 +243,7 @@ fn secret(value: &str) -> bool {
 }
 /// A vault item's reference, as an action names it: a text an item keeps is none.
 fn item_reference(value: &str) -> bool {
-    tilo_actions::remote::person_vault::ItemRef::parse(value).is_some()
+    tilo_actions::remote::ItemRef::parse(value).is_some()
 }
 /// A server an account's password belongs to: a mail server (`imap://` or `smtp://`, a name and
 /// a port, and nothing after them), or a file server's origin.

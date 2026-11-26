@@ -52,8 +52,8 @@ use serde_json::{Map, Value, json};
 use tilo_actions::remote::InvokeRequest;
 use tilo_net::{HeaderMap, HeaderName, HeaderValue, Method, Url};
 
-use tilo_actions::remote::person_vault::ContentRef;
-pub(super) use tilo_actions::remote::person_vault::WebCall;
+use crate::workspace_vault::ContentRef;
+pub(super) use crate::workspace_vault::WebCall;
 
 use super::Workspaces;
 // The guard's own names, from the one place this crate takes them.
@@ -975,8 +975,8 @@ mod tests {
     /// rides the request as its item says.
     #[tokio::test]
     async fn a_call_sends_its_parts_with_the_content_its_workspace_keeps() {
+        use crate::workspace_vault::WebCallPart;
         use test_http::{Reply, Responder};
-        use tilo_actions::remote::person_vault::WebCallPart;
 
         let service = Responder::handle(|request| {
             Some(Reply::status(200).body(format!(

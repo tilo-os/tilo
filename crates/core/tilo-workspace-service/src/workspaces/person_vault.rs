@@ -11,8 +11,8 @@
 //! A secret travels in and never back. A listing says what is safe to say
 //! of an item and no request answers more. Its own person alone is handed one
 //! secret at a time, written down as a use: put on their clipboard by this
-//! device ([`person_vault::COPY`]), or answered to be shown while they look
-//! ([`person_vault::REVEAL`]), from Passwords or as themselves.
+//! device ([`workspace_vault::COPY`]), or answered to be shown while they look
+//! ([`workspace_vault::REVEAL`]), from Passwords or as themselves.
 //!
 //! What uses an item names it by its reference and carries no secret, so an
 //! agent whose grants reach both the vault and what it uses the item for may
@@ -36,21 +36,21 @@ use std::sync::Arc;
 
 use crate::models::{self as model_providers, ProviderView, SetKey, SetKeyFromItem};
 use crate::workspace_accounts::{self, AddMailAccount, AddMailWithItem, MailAccount};
+use crate::workspace_vault::{
+    self, AlwaysUse, AskForItem, ItemKind, ItemRef, ItemUse, ItemUses, ItemView, KeptItems,
+    Revealed, VaultAction, part,
+};
 use accounts::vault_items::{self, ItemFacts, NewItem, Place, UsedFor, VaultItems};
 use serde_json::Value;
 use tilo_action_policy::{ActionKind, Answer, Grant, Level};
 use tilo_actions::remote::asked::{AskedFacts, Fact};
-use tilo_actions::remote::person_vault::{
-    self, AddItem, AlwaysUse, AskForItem, ItemKind, ItemRef, ItemUse, ItemUses, ItemView,
-    KeptItems, RemoveItem, Revealed, ShowItem, TakeBack, UsesOf,
-};
 use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
 use tilo_user_identity::DeviceCert;
 
 use super::workspace_stores::{Reach, Store};
 use super::{HostedWorkspace, WorkspaceId, Workspaces};
 
-/// Where a device puts a secret its person copies from the vault ([`person_vault::COPY`]): the
+/// Where a device puts a secret its person copies from the vault ([`workspace_vault::COPY`]): the
 /// clipboard of the session they sit at, which keeps it out of its history and forgets it again
 /// after a while. A device with no session copies nothing.
 pub trait SecretClipboard: Send + Sync {
@@ -105,7 +105,7 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Answer a [`person_vault::PROVIDER`] request.
+    /// Answer a [`workspace_vault::PROVIDER`] request.
     pub(super) async fn person_vault_invoke(
         &self,
         workspace_id: Option<collab_types::WorkspaceId>,
@@ -114,36 +114,36 @@ impl Workspaces {
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
         let action = request.target.address.action.as_str();
-        let effect = match action {
-            person_vault::LIST
-            | person_vault::USES
-            | person_vault::CODE
-            | person_vault::COPY
-            | person_vault::REVEAL => ActionKind::Read,
-            _ => ActionKind::Undoable,
+        let decl = workspace_vault::declaration(action).ok_or(ActionCallError::UnknownAction)?;
+        let effect = if decl.action_kind == ActionKind::Read {
+            ActionKind::Read
+        } else {
+            ActionKind::Undoable
         };
         // A release, and an app keeping its own secret, reach the vault only through the
         // process they answer (`Workspaces::release_to`, `Workspaces::keep_for`): whatever calls
         // them here is refused, saying why.
-        if person_vault::is_page_login(&request.target) {
+        if workspace_vault::asked_by_app(&request.target)
+            .is_some_and(|action| workspace_vault::PAGE_LOGIN_ACTIONS.contains(&action))
+        {
             return Err(ActionCallError::refused(super::page_logins::NOT_A_WINDOW));
         }
-        if action == person_vault::RELEASE
-            || action == person_vault::KEEP
-            || action == person_vault::DEVICE_KEY
-        {
+        if matches!(
+            action,
+            workspace_vault::RELEASE | workspace_vault::KEEP | workspace_vault::DEVICE_KEY
+        ) {
             return Err(ActionCallError::refused(super::vault_release::refusal_for(
                 caller,
             )));
         }
         // Who takes back what an agent may always use is a member, never an
         // agent: an agent's call of it is no call of the vault.
-        if action == person_vault::TAKE_BACK && caller.acting().is_agent() {
+        if action == workspace_vault::TAKE_BACK && caller.acting().is_agent() {
             return Err(ActionCallError::UnknownAction);
         }
         // A secret is shown or copied for its own person alone: no agent is, and an app reaches
         // the vault only as its grants let it ([`Workspaces::reaching`]).
-        if matches!(action, person_vault::COPY | person_vault::REVEAL)
+        if matches!(action, workspace_vault::COPY | workspace_vault::REVEAL)
             && (caller.acting().is_agent() || caller.acting().person_id().is_none())
         {
             return Err(ActionCallError::UnknownAction);
@@ -158,75 +158,58 @@ impl Workspaces {
             )
             .await?;
         let workspace = reach.workspace.to_string();
-        match action {
-            person_vault::CODE | person_vault::USES | person_vault::TAKE_BACK => {
-                self.vault_code_and_uses_invoke(
-                    workspace_id,
-                    certificate,
-                    &workspace,
-                    caller,
-                    request,
-                    action,
-                )
-                .await
+        let asked = asked_of(request)?;
+        match asked {
+            VaultAction::Code { .. } => self.vault_code_invoke(&workspace, caller, request).await,
+            VaultAction::Uses { item } => {
+                self.vault_uses_invoke((workspace_id, certificate), &workspace, &item, None)
+                    .await
             }
-            _ => {
-                self.vault_item_invoke(&workspace, caller, request, action, &reach)
+            VaultAction::TakeBack { item, agent, app } => {
+                let taking = (agent.as_deref(), app.as_deref());
+                self.vault_uses_invoke((workspace_id, certificate), &workspace, &item, Some(taking))
+                    .await
+            }
+            asked => {
+                self.vault_item_invoke(&workspace, caller, request, asked, &reach)
                     .await
             }
         }
     }
 
-    /// Answer the vault's listing, adding, removing, copying or showing of one item, for
-    /// `request`, in the vault `workspace`, acted on by `reach`'s person or agent.
+    /// Answer the vault's listing, adding, removing, copying or showing of one item, `asked`
+    /// for `request`, in the vault `workspace`, acted on by `reach`'s person or agent.
     async fn vault_item_invoke(
         &self,
         workspace: &str,
         caller: &Caller,
         request: &InvokeRequest,
-        action: &str,
+        asked: VaultAction,
         reach: &Reach,
     ) -> Result<Value, ActionCallError> {
-        match action {
-            person_vault::LIST => {
+        let acting = (Some(&reach.acting), Some(request));
+        match asked {
+            VaultAction::List => {
                 let opened = self
                     .open_vault(workspace)
                     .await
                     .map_err(ActionCallError::refused)?;
                 answer(kept(&opened.items()))
             }
-            person_vault::ADD => {
-                let adding: AddItem = argument(
-                    request,
-                    "an item to keep names its kind, where it belongs and its secret",
-                )?;
-                said(
-                    self.changing_vault(workspace, (Some(&reach.acting), Some(request)), |items| {
-                        add(items, adding)
-                    })
+            adding @ VaultAction::Add { .. } => said(
+                self.changing_vault(workspace, acting, |items| add(items, adding))
                     .await,
-                )
-            }
-            person_vault::REMOVE => {
-                let removing: RemoveItem =
-                    argument(request, "an item to forget is named by its reference")?;
-                said(
-                    self.changing_vault(workspace, (Some(&reach.acting), Some(request)), |items| {
-                        remove(items, &removing.item)
-                    })
+            ),
+            VaultAction::Remove { item } => said(
+                self.changing_vault(workspace, acting, |items| remove(items, &item))
                     .await,
-                )
-            }
-            person_vault::COPY | person_vault::REVEAL => {
-                let showing: ShowItem = argument(
-                    request,
-                    "a secret to copy or show names its item by reference, and which part",
-                )?;
+            ),
+            VaultAction::Copy { item, part } | VaultAction::Reveal { item, part } => {
                 let app = caller.acting().app().map(|app| app.as_str().to_owned());
                 let by = app.as_deref().map_or(String::new(), app_name);
-                let copying = action == person_vault::COPY;
+                let copying = request.target.address.action == workspace_vault::COPY;
                 let purpose = UsedFor {
-                    using: action,
+                    using: &request.target.address.action,
                     what: if copying {
                         "Copied to the clipboard"
                     } else {
@@ -234,9 +217,10 @@ impl Workspaces {
                     },
                     allowed: None,
                 };
+                let part = part.as_deref().unwrap_or(part::SECRET);
                 let shown = self
-                    .changing_vault(workspace, (Some(&reach.acting), Some(request)), |items| {
-                        show(items, &showing, &by, purpose)
+                    .changing_vault(workspace, acting, |items| {
+                        show(items, (&item, part), &by, purpose)
                     })
                     .await
                     .map_err(ActionCallError::refused)?;
@@ -253,81 +237,56 @@ impl Workspaces {
         }
     }
 
-    /// Answer the code an item's seed makes now, and an item's uses with the grants that take
-    /// back what an agent may always use, for `request` in the vault `workspace`.
-    async fn vault_code_and_uses_invoke(
+    /// Answer the code an item's seed makes now, for `request` in the vault `workspace`: a read,
+    /// so nothing is written and no use stands in its history. The item is the action's
+    /// resource, so a grant covers that one account.
+    async fn vault_code_invoke(
         &self,
-        workspace_id: Option<collab_types::WorkspaceId>,
-        certificate: Option<&DeviceCert>,
         workspace: &str,
         caller: &Caller,
         request: &InvokeRequest,
-        action: &str,
     ) -> Result<Value, ActionCallError> {
-        match action {
-            // The code of this moment from a code generator's seed, shown where the vault is:
-            // a read, so nothing is written and no use stands in its history. The item is the
-            // action's resource, so a grant covers that one account.
-            person_vault::CODE => {
-                self.using_vault(workspace, caller, None, true)
-                    .await
-                    .map_err(ActionCallError::refused)?;
-                let reference = request
-                    .target
-                    .address
-                    .resource
-                    .strip_prefix(&format!("{}:", person_vault::ITEM_KIND))
-                    .and_then(vault_items::ItemId::parse)
-                    .ok_or(ActionCallError::UnknownAction)?;
-                let reference = format!("{}:{}", person_vault::ITEM_KIND, reference.as_str());
-                let code = self
-                    .vault_code(workspace, &reference)
-                    .await
-                    .map_err(ActionCallError::refused)?;
-                let now = tilo_clock::unix_now();
-                answer(Ok(serde_json::json!({
-                    "code": code.digits(),
-                    "left": code.until_unix.saturating_sub(now),
-                    "period": code.params.period,
-                    "digits": code.params.digits,
-                    "algorithm": code.params.algorithm.word(),
-                })))
-            }
-            person_vault::USES => {
-                let of: UsesOf = argument(request, "an item's uses are read by its reference")?;
-                let workspace_id = workspace_id.ok_or(ActionCallError::UnknownAction)?;
-                let cert = certificate.ok_or(ActionCallError::UnknownAction)?;
-                let opened = self
-                    .open_vault(workspace)
-                    .await
-                    .map_err(ActionCallError::refused)?;
-                let mut history = uses(&opened.items(), &of.item)
-                    .map_err(|err| ActionCallError::refused(err.to_string()))?;
-                history.always = self
-                    .vault_approvals(workspace_id, cert, &of.item, None)
-                    .await?;
-                answer(Ok(history))
-            }
-            person_vault::TAKE_BACK => {
-                let taking: TakeBack = argument(
-                    request,
-                    "what an agent may always use is taken back by the item's reference",
-                )?;
-                let workspace_id = workspace_id.ok_or(ActionCallError::UnknownAction)?;
-                let cert = certificate.ok_or(ActionCallError::UnknownAction)?;
-                let opened = self
-                    .open_vault(workspace)
-                    .await
-                    .map_err(ActionCallError::refused)?;
-                let mut history = uses(&opened.items(), &taking.item)
-                    .map_err(|err| ActionCallError::refused(err.to_string()))?;
-                history.always = self
-                    .vault_approvals(workspace_id, cert, &taking.item, Some(&taking))
-                    .await?;
-                answer(Ok(history))
-            }
-            _ => Err(ActionCallError::UnknownAction),
-        }
+        self.using_vault(workspace, caller, None, true)
+            .await
+            .map_err(ActionCallError::refused)?;
+        let reference = ItemRef::parse(&request.target.address.resource)
+            .ok_or(ActionCallError::UnknownAction)?;
+        let code = self
+            .vault_code(workspace, &reference.to_string())
+            .await
+            .map_err(ActionCallError::refused)?;
+        let now = tilo_clock::unix_now();
+        answer(Ok(serde_json::json!({
+            "code": code.digits(),
+            "left": code.until_unix.saturating_sub(now),
+            "period": code.params.period,
+            "digits": code.params.digits,
+            "algorithm": code.params.algorithm.word(),
+        })))
+    }
+
+    /// Answer an item's uses with the grants that let something use it without its person
+    /// being asked, after taking back those `taking` names (its agent and its app, each when
+    /// named), in the vault `workspace`.
+    async fn vault_uses_invoke(
+        &self,
+        (workspace_id, certificate): (Option<collab_types::WorkspaceId>, Option<&DeviceCert>),
+        workspace: &str,
+        item: &ItemRef,
+        taking: Option<(Option<&str>, Option<&str>)>,
+    ) -> Result<Value, ActionCallError> {
+        let workspace_id = workspace_id.ok_or(ActionCallError::UnknownAction)?;
+        let cert = certificate.ok_or(ActionCallError::UnknownAction)?;
+        let opened = self
+            .open_vault(workspace)
+            .await
+            .map_err(ActionCallError::refused)?;
+        let mut history =
+            uses(&opened.items(), item).map_err(|err| ActionCallError::refused(err.to_string()))?;
+        history.always = self
+            .vault_approvals(workspace_id, cert, item, taking)
+            .await?;
+        answer(Ok(history))
     }
 
     /// Copy the secrets of the vault this device holds to `clipboard` from now on: the
@@ -356,7 +315,7 @@ impl Workspaces {
         workspace: WorkspaceId,
         device: &DeviceCert,
         item: &ItemRef,
-        take_back: Option<&TakeBack>,
+        take_back: Option<(Option<&str>, Option<&str>)>,
     ) -> Result<Vec<AlwaysUse>, ActionCallError> {
         let name = workspace.to_string();
         let workspace = self
@@ -383,14 +342,11 @@ impl Workspaces {
             .filter_map(|grant| Some((grant.clone(), vault_approval(grant, item)?)))
             .collect();
         drop(access);
-        if let Some(taking) = take_back {
+        if let Some((agent, app)) = take_back {
             let mut ids = Vec::new();
             kept.retain(|(grant, shown)| {
-                let other_agent = taking
-                    .agent
-                    .as_ref()
-                    .is_some_and(|agent| *agent != shown.agent);
-                let other_app = taking.app.as_ref().is_some_and(|app| *app != shown.app);
+                let other_agent = agent.is_some_and(|agent| agent != shown.agent);
+                let other_app = app.is_some_and(|app| app != shown.app);
                 if other_agent || other_app {
                     return true;
                 }
@@ -454,7 +410,7 @@ impl Workspaces {
         let root = self.workspace_root(&workspace);
         // What the item is used for is written down with the use. How it
         // was allowed is not the vault's to say here: nothing of it asked.
-        let word = person_vault::use_word(target);
+        let word = workspace_vault::use_word(target);
         let purpose = UsedFor {
             using: &word,
             ..UsedFor::default()
@@ -493,19 +449,17 @@ impl Workspaces {
                     .await,
                 )
             }
-            (person_vault::PROVIDER, person_vault::ASK) => {
-                let asked: AskForItem = argument(
-                    request,
-                    "an ask for a secret names its kind, where it belongs and, when known, the \
-                     name it signs in with, and never the secret",
-                )?;
+            (workspace_vault::PROVIDER, workspace_vault::ASK) => {
+                let VaultAction::Ask { asked } = asked_of(request)? else {
+                    return Err(ActionCallError::UnknownAction);
+                };
                 let asked = asked.checked().map_err(ActionCallError::refused)?;
                 Self::asking_person(caller, certificate, workspace_id)?;
                 if request.approval().is_none() {
                     return Err(ActionCallError::asks(secret_asked(caller, &by, &asked)));
                 }
                 let reference = self.asked_item(&workspace, &asked).await;
-                said(reference.map(|reference| person_vault::Asked { reference }))
+                said(reference.map(|reference| workspace_vault::Asked { reference }))
             }
             _ => Err(ActionCallError::UnknownAction),
         }
@@ -538,12 +492,26 @@ pub fn secret_asked(caller: &Caller, by: &str, asked: &AskForItem) -> AskedFacts
         verb: "keep".to_owned(),
         answered_by: Some(format!(
             "{}/{}#{}",
-            person_vault::PROVIDER,
-            person_vault::RESOURCE,
-            person_vault::ADD
+            workspace_vault::PROVIDER,
+            workspace_vault::RESOURCE,
+            workspace_vault::ADD
         )),
         ..AskedFacts::by(super::asking::asked_by(caller))
     }
+}
+
+/// The vault's action `request` asks, its arguments read as the declaration names them. The
+/// reason a call is refused never quotes its arguments.
+pub(super) fn asked_of(request: &InvokeRequest) -> Result<VaultAction, ActionCallError> {
+    let action = &request.target.address.action;
+    if workspace_vault::declaration(action).is_none() {
+        return Err(ActionCallError::UnknownAction);
+    }
+    let arguments = match &request.argument {
+        InvokeArgument::Json(arguments) => arguments.clone(),
+        InvokeArgument::None | InvokeArgument::Text(_) => serde_json::Map::new(),
+    };
+    workspace_vault::decoded(action, &arguments).map_err(ActionCallError::invalid_request)
 }
 
 /// What a request's arguments name, or `what` they should have named. The
@@ -597,11 +565,11 @@ fn view(facts: ItemFacts) -> Result<ItemView, vault_items::ItemError> {
         has_notes: facts.has_notes,
         changed_at: facts.changed_unix,
         concerns: [
-            (facts.weak, person_vault::Concern::Weak),
-            (facts.reused, person_vault::Concern::Reused),
+            (facts.weak, workspace_vault::Concern::Weak),
+            (facts.reused, workspace_vault::Concern::Reused),
             (
                 tilo_clock::unix_now().saturating_sub(facts.changed_unix) > YEAR,
-                person_vault::Concern::Stale,
+                workspace_vault::Concern::Stale,
             ),
         ]
         .into_iter()
@@ -621,11 +589,13 @@ fn kept(items: &VaultItems) -> Result<KeptItems, vault_items::ItemError> {
     })
 }
 
+/// Keep the item `adding` ([`VaultAction::Add`]) describes in `items`, or change the one it
+/// names, answering what is safe to say of it.
 pub(super) fn add(
     items: &mut VaultItems,
-    adding: AddItem,
+    adding: VaultAction,
 ) -> Result<ItemView, vault_items::ItemError> {
-    let AddItem {
+    let VaultAction::Add {
         item: changing,
         kind,
         belongs_to,
@@ -640,8 +610,24 @@ pub(super) fn add(
         tags,
         generate,
         secret,
-    } = adding;
+    } = adding
+    else {
+        return Err(vault_items::ItemError::Invalid("That is no item to keep"));
+    };
+    let (username, sent_in, algorithm, title) = (
+        username.unwrap_or_default(),
+        sent_in.unwrap_or_default(),
+        algorithm.unwrap_or_default(),
+        title.unwrap_or_default(),
+    );
+    let (notes, fields, tags) = (
+        notes.unwrap_or_default(),
+        fields.unwrap_or_default(),
+        tags.unwrap_or_default(),
+    );
+    let secret = secret.unwrap_or_default();
     let places = belongs_to
+        .unwrap_or_default()
         .iter()
         .map(|place| Place::parse(place))
         .collect::<Result<Vec<_>, _>>()?;
@@ -712,10 +698,10 @@ pub(super) fn add(
 
 /// A strong password drawn here for `asked`: never sent, never typed.
 fn drawn(
-    asked: person_vault::Generate,
+    asked: workspace_vault::Generate,
 ) -> Result<zeroize::Zeroizing<String>, vault_items::ItemError> {
-    if !(person_vault::Generate::SHORTEST..=person_vault::Generate::LONGEST).contains(&asked.length)
-    {
+    use workspace_vault::Generate;
+    if !(Generate::SHORTEST..=Generate::LONGEST).contains(&asked.length) {
         return Err(vault_items::ItemError::Invalid(
             "A drawn password is 12 to 128 characters long",
         ));
@@ -731,20 +717,19 @@ fn drawn(
     .map_err(|_| vault_items::ItemError::Invalid("No password could be drawn here"))
 }
 
-/// The part of `showing`'s item its person is handed, as `by` and for `purpose`.
+/// The part `shown` names of its item its person is handed, as `by` and for `purpose`.
 fn show(
     items: &mut VaultItems,
-    showing: &ShowItem,
+    (item, shown): (&ItemRef, &str),
     by: &str,
     purpose: vault_items::UsedFor<'_>,
 ) -> Result<zeroize::Zeroizing<String>, vault_items::ItemError> {
-    let id =
-        vault_items::ItemId::parse(showing.item.id()).ok_or(vault_items::ItemError::NotFound)?;
-    let part = match showing.part.as_str() {
-        ShowItem::SECRET => vault_items::Part::Secret,
-        ShowItem::NOTES => vault_items::Part::Notes,
-        ShowItem::USERNAME => vault_items::Part::Username,
-        other => match other.strip_prefix(ShowItem::FIELD) {
+    let id = vault_items::ItemId::parse(item.id()).ok_or(vault_items::ItemError::NotFound)?;
+    let part = match shown {
+        part::SECRET => vault_items::Part::Secret,
+        part::NOTES => vault_items::Part::Notes,
+        part::USERNAME => vault_items::Part::Username,
+        other => match other.strip_prefix(part::FIELD) {
             Some(label) => vault_items::Part::Field(label),
             None => {
                 return Err(vault_items::ItemError::Invalid(
@@ -785,15 +770,15 @@ fn vault_approval(grant: &Grant, item: &ItemRef) -> Option<AlwaysUse> {
         return None;
     }
     if let Some(app) = grant.grantee.app_id() {
-        let reads = grant.node.id_at(Level::App) == Some(person_vault::PROVIDER)
-            && grant.node.id_at(Level::Kind) == Some(person_vault::ITEM_KIND)
+        let reads = grant.node.id_at(Level::App) == Some(workspace_vault::PROVIDER)
+            && grant.node.id_at(Level::Kind) == Some(workspace_vault::ITEM_KIND)
             && grant.node.id_at(Level::Resource) == Some(item.to_string().as_str())
-            && grant.node.id_at(Level::Action) == Some(person_vault::RELEASE);
+            && grant.node.id_at(Level::Action) == Some(workspace_vault::RELEASE);
         return reads.then(|| AlwaysUse {
             agent: String::new(),
             app: app.to_owned(),
             by: String::new(),
-            using: person_vault::RELEASE.to_owned(),
+            using: workspace_vault::RELEASE.to_owned(),
             places: Vec::new(),
             since: 0,
         });
@@ -812,8 +797,8 @@ fn vault_approval(grant: &Grant, item: &ItemRef) -> Option<AlwaysUse> {
             model_providers::PROVIDER,
             model_providers::SET_KEY_FROM_ITEM
         ) | (
-            person_vault::PROVIDER,
-            person_vault::FILL_PAGE | person_vault::SIGN
+            workspace_vault::PROVIDER,
+            workspace_vault::FILL_PAGE | workspace_vault::SIGN
         )
     ) {
         return None;

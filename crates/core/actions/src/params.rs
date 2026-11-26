@@ -77,10 +77,17 @@ pub enum ParamType {
 /// The type of a parameter whose Rust type the macros cannot read
 /// (an app's own enum or struct): what its schema says it is written as.
 /// A unit enum is text, a struct an object; a value written in several
-/// shapes is an object.
+/// shapes is an object, and one whose schema names the kind of resource it is the address of
+/// ([`RESOURCE_KIND_ANNOTATION`]) a resource.
 #[must_use]
 pub fn param_type_of(schema: &serde_json::Value) -> ParamType {
     fn of(schema: &serde_json::Value) -> Option<ParamType> {
+        if schema
+            .get(RESOURCE_KIND_ANNOTATION)
+            .is_some_and(serde_json::Value::is_string)
+        {
+            return Some(ParamType::Resource);
+        }
         // A nullable type: what it is when present.
         let kind = match schema.get("type") {
             Some(serde_json::Value::Array(kinds)) => kinds

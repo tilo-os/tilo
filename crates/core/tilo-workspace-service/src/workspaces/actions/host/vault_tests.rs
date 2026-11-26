@@ -13,9 +13,9 @@ use std::sync::Arc;
 
 use crate::models as model_providers;
 use crate::workspace_accounts;
+use crate::workspace_vault;
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;
-use tilo_actions::remote::person_vault;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget,
 };
@@ -67,7 +67,7 @@ async fn vault_history(
         .resource_document(
             &workspace_id.to_string(),
             tilo_app_id::apps::PASSWORDS,
-            tilo_actions::remote::person_vault::VAULT_RECORD,
+            tilo_actions::remote::VAULT_RECORD,
         )
         .await
         .unwrap()
@@ -170,7 +170,7 @@ pub(super) async fn ask(
         service,
         workspace_id,
         who,
-        person_vault::target(action),
+        workspace_vault::target(action),
         argument,
     )
     .await
@@ -255,14 +255,14 @@ async fn a_members_login_is_the_workspaces_and_every_member_reads_only_what_is_s
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_vault::ADD,
+        workspace_vault::ADD,
         a_login("https://www.linkedin.com/login?session=1"),
     )
     .await
     .expect("Ada keeps a login");
     let reference = kept["reference"].as_str().expect("a reference").to_owned();
     assert!(
-        person_vault::ItemRef::parse(&reference).is_some(),
+        workspace_vault::ItemRef::parse(&reference).is_some(),
         "{reference}"
     );
     assert_eq!(kept["kind"], "login");
@@ -297,7 +297,7 @@ async fn a_members_login_is_the_workspaces_and_every_member_reads_only_what_is_s
             &service,
             workspace_id,
             (device, asking),
-            person_vault::LIST,
+            workspace_vault::LIST,
             json!({}),
         )
         .await
@@ -323,7 +323,7 @@ async fn a_members_login_is_the_workspaces_and_every_member_reads_only_what_is_s
             &service,
             workspace_id,
             (device, asking),
-            person_vault::LIST,
+            workspace_vault::LIST,
             json!({}),
         )
         .await;
@@ -335,7 +335,7 @@ async fn a_members_login_is_the_workspaces_and_every_member_reads_only_what_is_s
             &service,
             workspace_id,
             (device, asking),
-            person_vault::REMOVE,
+            workspace_vault::REMOVE,
             json!({"item": &reference}),
         )
         .await;
@@ -349,7 +349,7 @@ async fn a_members_login_is_the_workspaces_and_every_member_reads_only_what_is_s
         &service,
         elsewhere_id,
         (&cy, &caller(&cy)),
-        person_vault::LIST,
+        workspace_vault::LIST,
         json!({}),
     )
     .await
@@ -365,7 +365,7 @@ async fn a_members_login_is_the_workspaces_and_every_member_reads_only_what_is_s
             .resource_document(
                 &workspace_id.to_string(),
                 tilo_app_id::apps::PASSWORDS,
-                tilo_actions::remote::person_vault::VAULT_RECORD,
+                tilo_actions::remote::VAULT_RECORD,
             )
             .await
             .unwrap()
@@ -378,7 +378,7 @@ async fn a_members_login_is_the_workspaces_and_every_member_reads_only_what_is_s
         &service,
         workspace_id,
         (&bo, &as_bo),
-        person_vault::REMOVE,
+        workspace_vault::REMOVE,
         json!({"item": &reference}),
     )
     .await
@@ -428,7 +428,7 @@ async fn an_items_title_note_fields_and_tags_are_the_vaults_and_list_without_sec
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_vault::ADD,
+        workspace_vault::ADD,
         json!({
             "kind": "login",
             "belongsTo": ["https://bank.example"],
@@ -458,7 +458,7 @@ async fn an_items_title_note_fields_and_tags_are_the_vaults_and_list_without_sec
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_vault::ADD,
+        workspace_vault::ADD,
         json!({"kind": "login", "belongsTo": ["https://shop.example"], "secret": STRONG}),
     )
     .await
@@ -467,7 +467,7 @@ async fn an_items_title_note_fields_and_tags_are_the_vaults_and_list_without_sec
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_vault::ADD,
+        workspace_vault::ADD,
         json!({
             "kind": "login",
             "belongsTo": ["https://mail.example"],
@@ -488,7 +488,7 @@ async fn an_items_title_note_fields_and_tags_are_the_vaults_and_list_without_sec
             &service,
             workspace_id,
             (&ada, &as_ada),
-            person_vault::ADD,
+            workspace_vault::ADD,
             refused.clone(),
         )
         .await;
@@ -502,7 +502,7 @@ async fn an_items_title_note_fields_and_tags_are_the_vaults_and_list_without_sec
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_vault::LIST,
+        workspace_vault::LIST,
         json!({}),
     )
     .await
@@ -565,7 +565,7 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_vault::ADD,
+        workspace_vault::ADD,
         a_login("https://example.com"),
     )
     .await
@@ -575,7 +575,7 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_vault::ADD,
+        workspace_vault::ADD,
         json!({"kind": "note", "title": "Bank", "secret": PASSWORD}),
     )
     .await
@@ -588,7 +588,7 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
         &service,
         workspace_id,
         (&ada, &agent),
-        person_vault::LIST,
+        workspace_vault::LIST,
         json!({}),
     )
     .await
@@ -598,7 +598,7 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
     assert_eq!(items.len(), 2, "{listed}");
     assert!(items.contains(&kept), "{listed}");
     assert!(items.contains(&banked), "{listed}");
-    for showing in [person_vault::REVEAL, person_vault::COPY] {
+    for showing in [workspace_vault::REVEAL, workspace_vault::COPY] {
         let refused = ask(
             &service,
             workspace_id,
@@ -616,8 +616,8 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
     // Every change waits for its person: with nobody to ask, their answer
     // is still wanted and nothing changed.
     for (action, argument) in [
-        (person_vault::ADD, a_login("https://attacker.example")),
-        (person_vault::REMOVE, json!({"item": &reference})),
+        (workspace_vault::ADD, a_login("https://attacker.example")),
+        (workspace_vault::REMOVE, json!({"item": &reference})),
     ] {
         let refused = ask(&service, workspace_id, (&ada, &agent), action, argument).await;
         assert!(
@@ -629,7 +629,7 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_vault::LIST,
+        workspace_vault::LIST,
         json!({}),
     )
     .await
@@ -642,7 +642,7 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
         workspace_id,
         (&ada, &agent),
         (
-            person_vault::target(person_vault::ADD),
+            workspace_vault::target(workspace_vault::ADD),
             a_login("https://example.test"),
         ),
     )
@@ -652,7 +652,7 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_vault::LIST,
+        workspace_vault::LIST,
         json!({}),
     )
     .await
@@ -682,12 +682,12 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
     ];
     for (who, device, asking) in &not_her {
         for (action, argument) in [
-            (person_vault::LIST, json!({})),
-            (person_vault::ADD, a_login("https://attacker.example")),
-            (person_vault::REMOVE, json!({"item": &reference})),
-            (person_vault::REVEAL, json!({"item": &reference})),
-            (person_vault::COPY, json!({"item": &reference})),
-            (person_vault::USES, json!({"item": &reference})),
+            (workspace_vault::LIST, json!({})),
+            (workspace_vault::ADD, a_login("https://attacker.example")),
+            (workspace_vault::REMOVE, json!({"item": &reference})),
+            (workspace_vault::REVEAL, json!({"item": &reference})),
+            (workspace_vault::COPY, json!({"item": &reference})),
+            (workspace_vault::USES, json!({"item": &reference})),
         ] {
             let refused = ask(&service, workspace_id, (device, asking), action, argument).await;
             assert!(
@@ -701,11 +701,11 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
     // her first, and nothing is done until she answers.
     let notes = caller(&ada).through_app("so.tilo.notes");
     for (action, argument) in [
-        (person_vault::LIST, json!({})),
-        (person_vault::ADD, a_login("https://attacker.example")),
-        (person_vault::REMOVE, json!({"item": &reference})),
-        (person_vault::REVEAL, json!({"item": &reference})),
-        (person_vault::COPY, json!({"item": &reference})),
+        (workspace_vault::LIST, json!({})),
+        (workspace_vault::ADD, a_login("https://attacker.example")),
+        (workspace_vault::REMOVE, json!({"item": &reference})),
+        (workspace_vault::REVEAL, json!({"item": &reference})),
+        (workspace_vault::COPY, json!({"item": &reference})),
     ] {
         let asked = ask(&service, workspace_id, (&ada, &notes), action, argument).await;
         assert!(
@@ -719,7 +719,7 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_vault::LIST,
+        workspace_vault::LIST,
         json!({}),
     )
     .await
@@ -746,7 +746,7 @@ async fn a_workspace_grant_writes_nothing_into_the_vault() {
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_vault::ADD,
+        workspace_vault::ADD,
         a_login("https://example.com"),
     )
     .await
@@ -784,8 +784,8 @@ async fn a_workspace_grant_writes_nothing_into_the_vault() {
         .unwrap();
 
     for (action, argument) in [
-        (person_vault::ADD, a_login("https://attacker.example")),
-        (person_vault::REMOVE, json!({"item": kept["reference"]})),
+        (workspace_vault::ADD, a_login("https://attacker.example")),
+        (workspace_vault::REMOVE, json!({"item": kept["reference"]})),
     ] {
         let by_agent = ask(
             &service,
@@ -816,7 +816,7 @@ async fn a_workspace_grant_writes_nothing_into_the_vault() {
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_vault::LIST,
+        workspace_vault::LIST,
         json!({}),
     )
     .await
@@ -864,7 +864,7 @@ async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_al
             let page = settled(provider.query(
                 &asking,
                 tilo_actions::remote::CatalogueQuery {
-                    provider: Some(person_vault::PROVIDER.to_owned()),
+                    provider: Some(workspace_vault::PROVIDER.to_owned()),
                     ..tilo_actions::remote::CatalogueQuery::default()
                 },
             ))
@@ -874,7 +874,7 @@ async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_al
                 .rows
                 .into_iter()
                 .filter_map(|row| row.action)
-                .filter(|action| action.address.resource == person_vault::RESOURCE)
+                .filter(|action| action.address.resource == workspace_vault::RESOURCE)
                 .map(|action| action.address.action)
                 .collect();
             verbs.sort();
@@ -904,7 +904,7 @@ async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_al
         &service,
         workspace_id,
         hers,
-        person_vault::ADD,
+        workspace_vault::ADD,
         json!({
             "kind": "wifi",
             "title": "Home",
@@ -926,7 +926,7 @@ async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_al
         &service,
         workspace_id,
         (&bo, &caller(&bo)),
-        person_vault::LIST,
+        workspace_vault::LIST,
         json!({}),
     )
     .await
@@ -947,13 +947,13 @@ async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_al
             &service,
             workspace_id,
             hers,
-            person_vault::REVEAL,
+            workspace_vault::REVEAL,
             showing.clone(),
         )
         .await
         .unwrap_or_else(|error| panic!("{part:?}: {error:?}"));
         assert_eq!(shown, json!({"value": said}));
-        let copied = ask(&service, workspace_id, hers, person_vault::COPY, showing)
+        let copied = ask(&service, workspace_id, hers, workspace_vault::COPY, showing)
             .await
             .unwrap();
         assert!(!copied.to_string().contains(said), "{copied}");
@@ -967,7 +967,7 @@ async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_al
         &service,
         workspace_id,
         (&bo, &caller(&bo)),
-        person_vault::REVEAL,
+        workspace_vault::REVEAL,
         json!({"item": &reference}),
     )
     .await
@@ -977,7 +977,7 @@ async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_al
         &service,
         workspace_id,
         hers,
-        person_vault::USES,
+        workspace_vault::USES,
         json!({"item": &reference}),
     )
     .await
@@ -996,7 +996,7 @@ async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_al
         &service,
         workspace_id,
         hers,
-        person_vault::REVEAL,
+        workspace_vault::REVEAL,
         json!({"item": &reference, "part": "field:PIN"}),
     )
     .await;
@@ -1010,7 +1010,7 @@ async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_al
         &service,
         workspace_id,
         hers,
-        person_vault::ADD,
+        workspace_vault::ADD,
         json!({
             "item": &reference,
             "kind": "wifi",
@@ -1028,7 +1028,7 @@ async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_al
         &service,
         workspace_id,
         hers,
-        person_vault::REVEAL,
+        workspace_vault::REVEAL,
         json!({"item": &reference, "part": "field:network"}),
     )
     .await
@@ -1040,9 +1040,9 @@ async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_al
         &service,
         workspace_id,
         hers,
-        person_vault::release_target(
-            &person_vault::ItemRef::parse(reference.as_str().unwrap()).unwrap(),
-        ),
+        workspace_vault::ItemRef::parse(reference.as_str().unwrap())
+            .unwrap()
+            .target(workspace_vault::RELEASE),
         json!({}),
     )
     .await;
@@ -1050,11 +1050,11 @@ async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_al
     for app in ["so.tilo.notes", "so.tilo.browser", "so.tilo.chat"] {
         let other = caller(&ada).through_app(app);
         for (action, argument) in [
-            (person_vault::LIST, json!({})),
-            (person_vault::ADD, a_login("https://attacker.example")),
-            (person_vault::REVEAL, json!({"item": &reference})),
-            (person_vault::COPY, json!({"item": &reference})),
-            (person_vault::REMOVE, json!({"item": &reference})),
+            (workspace_vault::LIST, json!({})),
+            (workspace_vault::ADD, a_login("https://attacker.example")),
+            (workspace_vault::REVEAL, json!({"item": &reference})),
+            (workspace_vault::COPY, json!({"item": &reference})),
+            (workspace_vault::REMOVE, json!({"item": &reference})),
         ] {
             let asked = ask(&service, workspace_id, (&ada, &other), action, argument).await;
             assert!(
@@ -1068,8 +1068,8 @@ async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_al
     let (elsewhere, elsewhere_id, _) = hosted(workspaces).await;
     let cy = admit(workspaces, &elsewhere, &owner, 3).await;
     for (action, argument) in [
-        (person_vault::LIST, json!({})),
-        (person_vault::REVEAL, json!({"item": &reference})),
+        (workspace_vault::LIST, json!({})),
+        (workspace_vault::REVEAL, json!({"item": &reference})),
     ] {
         let refused = ask(
             &service,
@@ -1088,7 +1088,7 @@ async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_al
         &service,
         elsewhere_id,
         (&cy, &caller(&cy)),
-        person_vault::LIST,
+        workspace_vault::LIST,
         json!({}),
     )
     .await
@@ -1100,7 +1100,7 @@ async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_al
         &service,
         workspace_id,
         hers,
-        person_vault::REMOVE,
+        workspace_vault::REMOVE,
         json!({"item": &reference}),
     )
     .await
@@ -1136,7 +1136,7 @@ async fn an_item_that_is_not_one_is_refused_without_repeating_it() {
             &service,
             workspace_id,
             (&ada, &as_ada),
-            person_vault::ADD,
+            workspace_vault::ADD,
             unusable.clone(),
         )
         .await
@@ -1155,7 +1155,7 @@ async fn an_item_that_is_not_one_is_refused_without_repeating_it() {
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_vault::REMOVE,
+        workspace_vault::REMOVE,
         json!({"item": PASSWORD}),
     )
     .await
@@ -1166,7 +1166,7 @@ async fn an_item_that_is_not_one_is_refused_without_repeating_it() {
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_vault::LIST,
+        workspace_vault::LIST,
         json!({}),
     )
     .await
@@ -1205,7 +1205,7 @@ pub(super) async fn kept_item(
         service,
         workspace_id,
         who,
-        person_vault::ADD,
+        workspace_vault::ADD,
         json!({"kind": kind, "belongsTo": [place], "secret": KEY}),
     )
     .await
@@ -1224,7 +1224,7 @@ async fn uses_of(
         service,
         workspace_id,
         who,
-        person_vault::USES,
+        workspace_vault::USES,
         json!({"item": item}),
     )
     .await
@@ -1303,7 +1303,7 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_vault::LIST,
+        workspace_vault::LIST,
         json!({}),
     )
     .await
@@ -1324,7 +1324,7 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
         &service,
         workspace_id,
         (&ada, &helper),
-        person_vault::USES,
+        workspace_vault::USES,
         json!({"item": item}),
     )
     .await
@@ -1334,7 +1334,7 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
         &service,
         workspace_id,
         (&ada, &helper),
-        person_vault::TAKE_BACK,
+        workspace_vault::TAKE_BACK,
         json!({"item": item}),
     )
     .await;
@@ -1547,7 +1547,7 @@ async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
         &service,
         workspace_id,
         hers,
-        person_vault::ADD,
+        workspace_vault::ADD,
         json!({
             "kind": "login",
             "belongsTo": ["imap://imap.example.test:993", "smtp://smtp.example.test:465"],
@@ -1623,7 +1623,7 @@ async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
 
 /// The entry of the workspace's vault the provider `provider` of the store at `root` names
 /// as its key.
-fn provider_named(root: &std::path::Path, provider: &str) -> Option<person_vault::ItemRef> {
+fn provider_named(root: &std::path::Path, provider: &str) -> Option<workspace_vault::ItemRef> {
     crate::workspaces::person_settings::provider_config(root)
         .profiles
         .iter()
@@ -1637,14 +1637,14 @@ async fn account_named(
     workspaces: &Workspaces,
     workspace: &str,
     account: &str,
-) -> Option<person_vault::ItemRef> {
+) -> Option<workspace_vault::ItemRef> {
     workspaces
         .workspace_accounts(workspace)
         .await
         .unwrap()
         .account(account)
         .and_then(|kept| {
-            accounts::email::password_item(&kept.config).and_then(person_vault::ItemRef::parse)
+            accounts::email::password_item(&kept.config).and_then(workspace_vault::ItemRef::parse)
         })
 }
 
@@ -1652,7 +1652,7 @@ async fn account_named(
 async fn entry_of(
     workspaces: &Workspaces,
     workspace_id: WorkspaceId,
-    named: &person_vault::ItemRef,
+    named: &workspace_vault::ItemRef,
 ) -> Option<String> {
     workspaces
         .open_vault(&workspace_id.to_string())
@@ -1732,9 +1732,15 @@ async fn what_a_host_kept_of_a_vault_before_is_carried_into_the_vault_document()
     // What the host does once as it starts.
     workspaces.carry_vaults_over().await;
 
-    let listed = ask(&service, workspace_id, hers, person_vault::LIST, json!({}))
-        .await
-        .unwrap();
+    let listed = ask(
+        &service,
+        workspace_id,
+        hers,
+        workspace_vault::LIST,
+        json!({}),
+    )
+    .await
+    .unwrap();
     // The item the host kept, and the account's sign-in, an entry of the vault like any other.
     let items = listed["items"].as_array().unwrap();
     assert_eq!(items.len(), 3, "{listed}");
@@ -1768,7 +1774,7 @@ async fn what_a_host_kept_of_a_vault_before_is_carried_into_the_vault_document()
         &service,
         workspace_id,
         hers,
-        person_vault::USES,
+        workspace_vault::USES,
         json!({"item": format!("vault.item:{id}")}),
     )
     .await
@@ -1985,7 +1991,7 @@ async fn a_host_kept_from_passwords_signs_in_with_none_of_the_vaults_entries() {
                 workspace: workspace.clone(),
                 request_id: [9; 32],
                 app: tilo_app_id::apps::PASSWORDS.into(),
-                document: tilo_actions::remote::person_vault::VAULT_RECORD.into(),
+                document: tilo_actions::remote::VAULT_RECORD.into(),
                 recipient: format!("member:{}", hex::encode(owner.user_public_key)),
                 access: "no-access".into(),
             },
@@ -2147,7 +2153,7 @@ async fn a_code_generators_code_reads_where_its_seed_is() {
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_vault::ADD,
+        workspace_vault::ADD,
         json!({
             "kind": "code-generator",
             "belongsTo": [],
@@ -2159,14 +2165,14 @@ async fn a_code_generators_code_reads_where_its_seed_is() {
     )
     .await
     .expect("a seed is kept");
-    let item: person_vault::ItemRef = serde_json::from_value(kept["reference"].clone())
+    let item: workspace_vault::ItemRef = serde_json::from_value(kept["reference"].clone())
         .expect("the item is named by its reference");
 
     let said = ask_at(
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_vault::code_target(&item),
+        workspace_vault::ItemRef::target(&item, workspace_vault::CODE),
         json!({}),
     )
     .await
@@ -2206,7 +2212,7 @@ async fn a_code_generator_that_names_no_hash_makes_its_codes_with_sha1() {
         &service,
         workspace_id,
         (&ada, &caller(&ada)),
-        person_vault::ADD,
+        workspace_vault::ADD,
         json!({"kind": "code-generator", "belongsTo": [], "secret": SEED}),
     )
     .await
@@ -2234,7 +2240,7 @@ async fn an_agents_vault_write_is_the_allowed_calls_declared_step_alone() {
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_vault::ADD,
+        workspace_vault::ADD,
         a_login("https://example.com"),
     )
     .await
@@ -2243,7 +2249,7 @@ async fn an_agents_vault_write_is_the_allowed_calls_declared_step_alone() {
     let agent = tilo_action_policy::Acting::agent("assistant", hers.clone())
         .acting_for(tilo_action_policy::Acting::person(hers.clone()));
     let fill = request_of(
-        person_vault::page_target(),
+        workspace_vault::target(workspace_vault::FILL_PAGE),
         json!({"item": kept["reference"], "site": "https://example.com"}),
     );
     let allowed = super::super::tests::approved(&fill, &workspace);
@@ -2394,7 +2400,7 @@ async fn last_allowed(
         .resource_document(
             &workspace_id.to_string(),
             tilo_app_id::apps::PASSWORDS,
-            tilo_actions::remote::person_vault::VAULT_RECORD,
+            tilo_actions::remote::VAULT_RECORD,
         )
         .await
         .unwrap()
@@ -2457,7 +2463,7 @@ async fn an_app_reaches_a_store_by_its_grants_never_by_its_name() {
             workspace_accounts::SET_SERVICES,
             ActionKind::Undoable,
         ),
-        (Store::VAULT, person_vault::LIST, ActionKind::Read),
+        (Store::VAULT, workspace_vault::LIST, ActionKind::Read),
     ] {
         assert!(
             matches!(
@@ -2476,7 +2482,7 @@ async fn an_app_reaches_a_store_by_its_grants_never_by_its_name() {
     // Passwords, named but not installed: alone it reaches nothing, and through its person
     // the vault asks them first.
     let passwords = tilo_app_id::apps::PASSWORDS;
-    let list = (Store::VAULT, person_vault::LIST, ActionKind::Read);
+    let list = (Store::VAULT, workspace_vault::LIST, ActionKind::Read);
     let alone = Caller::launched(passwords).in_workspace(&workspace);
     let through_ada = caller(&ada).through_app(passwords);
     assert!(matches!(

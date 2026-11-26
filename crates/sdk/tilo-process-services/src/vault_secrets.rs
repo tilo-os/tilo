@@ -15,9 +15,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
-use tilo_actions::remote::person_vault::{self, FindItem, Found, KeepValue, Released};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, InvokeRequest, LineClient, ReceiptStatus,
+    ActionCallError, ActionProvider as _, Caller, InvokeRequest, ItemRef, LineClient,
+    ReceiptStatus, VAULT_FIND, VAULT_KEEP, VAULT_RELEASE, vault_target,
 };
 
 use tilo_secrets::{Protection, Secret, SecretBackend, SecretError};
@@ -102,20 +102,24 @@ impl SecretBackend for VaultStore {
     }
 
     fn get(&self, app: &str, key: &str) -> Result<Option<Secret>, SecretError> {
-        let looking = FindItem {
-            app: app.to_owned(),
-            purpose: key.to_owned(),
-        };
+        #[derive(serde::Deserialize)]
+        struct Found {
+            reference: Option<ItemRef>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Released {
+            secret: String,
+        }
         let found: Found = self.answer(
-            person_vault::target(person_vault::FIND),
-            json!(looking),
+            vault_target(VAULT_FIND),
+            json!({ "app": app, "purpose": key }),
             "the item a key names",
         )?;
         let Some(reference) = found.reference else {
             return Ok(None);
         };
         let released: Released = self.answer(
-            person_vault::release_target(&reference),
+            reference.target(VAULT_RELEASE),
             json!({}),
             "the secret the vault keeps",
         )?;
@@ -127,14 +131,9 @@ impl SecretBackend for VaultStore {
         // passphrase, and a value that is not text has no item to be kept as.
         let value = std::str::from_utf8(value)
             .map_err(|_| SecretError::Failed("a secret the vault keeps is text".to_owned()))?;
-        let keeping = KeepValue {
-            purpose: key.to_owned(),
-            value: value.to_owned(),
-            replacing: None,
-        };
         let _: Value = self.answer(
-            person_vault::keep_target(),
-            json!(keeping),
+            vault_target(VAULT_KEEP),
+            json!({ "purpose": key, "value": value }),
             "the item the secret is kept as",
         )?;
         Ok(())
@@ -172,7 +171,6 @@ mod tests {
 
     use serde::Deserialize;
     use tilo_actions::ActionOutput;
-    use tilo_actions::remote::person_vault::{Found, ItemRef, Kept, Released};
     use tilo_actions::remote::{
         ActionProvider, CataloguePage, CatalogueQuery, HostedContentPuts, InvocationReceipt,
         Pending, serve_lines,
@@ -212,7 +210,8 @@ mod tests {
                 tilo_actions::remote::InvokeArgument::Json(fields) => Value::Object(fields.clone()),
                 _ => Value::Null,
             };
-            let answer = if person_vault::is_keep(&request.target) {
+            let action = request.target.address.action.as_str();
+            let answer = if action == VAULT_KEEP {
                 #[derive(Deserialize)]
                 struct Keeping {
                     purpose: String,
@@ -233,20 +232,19 @@ mod tests {
                 );
                 items.insert(keeping.purpose, (reference.clone(), keeping.value));
                 drop(items);
-                serde_json::to_value(Kept { reference }).expect("a kept answer")
-            } else if person_vault::is_find(&request.target) {
-                let looking: FindItem =
-                    serde_json::from_value(arguments).expect("a find's arguments");
+                json!({ "reference": reference })
+            } else if action == VAULT_FIND {
+                let purpose = arguments["purpose"].as_str().expect("a find's purpose");
                 let reference = self
                     .items
                     .lock()
                     .expect("the fake vault")
-                    .get(&looking.purpose)
+                    .get(purpose)
                     .map(|(reference, _)| reference.clone());
-                serde_json::to_value(Found { reference }).expect("a found answer")
+                json!({ "reference": reference })
             } else {
-                let reference =
-                    person_vault::released_item(&request.target).expect("a release of an item");
+                let reference = ItemRef::addressed(&request.target, VAULT_RELEASE)
+                    .expect("a release of an item");
                 let secret = self
                     .items
                     .lock()
@@ -255,7 +253,7 @@ mod tests {
                     .find(|(kept, _)| *kept == reference)
                     .map(|(_, secret)| secret.clone())
                     .expect("a kept item");
-                serde_json::to_value(Released { secret }).expect("a released answer")
+                json!({ "secret": secret })
             };
             Pending::ready(Ok(InvocationReceipt {
                 invocation: request.invocation,

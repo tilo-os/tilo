@@ -1,5 +1,5 @@
 //! The logins a page in a window of an app's own signs in with, kept in the workspace's vault
-//! ([`person_vault::PAGE_LOGINS`]).
+//! ([`workspace_vault::PAGE_LOGINS`]).
 //!
 //! A browser's window holds its page's engine, and only the engine reads what a person typed
 //! into a login form or writes into one. So the window itself asks the vault, on its own
@@ -10,8 +10,8 @@
 //! - Listing the logins a site has answers what is safe to say of each: its title, the name it
 //!   signs in with and where it belongs.
 //! - Keeping a login the page sent writes it as the app's own, for signing in
-//!   ([`person_vault::SIGN_IN`]): the item is tagged with its app and purpose
-//!   ([`person_vault::app_tag`]), as every item an app keeps for itself is.
+//!   ([`workspace_vault::SIGN_IN`]): the item is tagged with its app and purpose
+//!   ([`workspace_vault::app_tag`]), as every item an app keeps for itself is.
 //! - Filling hands one login's name and secret to the window, for that site alone. A login the app
 //!   kept itself is filled unasked. Any other is filled only where a grant of the workspace's
 //!   lets the app fill that one item; with none, its person is asked once, as an asked record
@@ -26,15 +26,12 @@ use accounts::vault_items::{
 use serde_json::Value;
 use tilo_action_policy::{ActionKind, Answer, Context, Grantee, TreePath, decide};
 use tilo_actions::remote::asked::{AskedFacts, Fact};
-use tilo_actions::remote::person_vault::{
-    self, ForgetPageLogin, ItemRef, KeepPageLogin, PageFillAt, PageFilled, PageLogin, PageLogins,
-    PageLoginsAt,
-};
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 
 use super::Workspaces;
-use super::person_vault::argument;
+use super::person_vault::asked_of;
 use super::vault_release::{AppProcess, device_may_not_read};
+use crate::workspace_vault::{self, ItemRef, PageFilled, PageLogin, PageLogins, VaultAction};
 
 /// What a page login action that reached the vault's provider, rather than the window it would
 /// be answered to, is refused with.
@@ -79,10 +76,10 @@ const NOT_A_SITE: &str = "A page's site is its web origin, such as https://examp
 /// "Approve and grant" on an asked fill writes, the fill being addressed at the item.
 fn fill_node(workspace: &str, item: &ItemRef) -> TreePath {
     TreePath::workspace(workspace)
-        .app(person_vault::PROVIDER)
-        .kind(person_vault::ITEM_KIND)
+        .app(workspace_vault::PROVIDER)
+        .kind(workspace_vault::ITEM_KIND)
         .resource(item.to_string())
-        .action(person_vault::PAGE_FILL)
+        .action(workspace_vault::PAGE_FILL)
 }
 
 /// The site `text` names, when it is a web origin.
@@ -99,8 +96,8 @@ fn site(text: &str) -> Result<Place, ActionCallError> {
 /// names an app's own items.
 fn own_tags(app: &str) -> [String; 2] {
     [
-        person_vault::app_tag(app),
-        person_vault::purpose_tag(person_vault::SIGN_IN),
+        workspace_vault::app_tag(app),
+        workspace_vault::purpose_tag(workspace_vault::SIGN_IN),
     ]
 }
 
@@ -162,7 +159,7 @@ impl Workspaces {
         }
     }
 
-    /// Answer `request`, one of the page login actions ([`person_vault::is_page_login`]), for
+    /// Answer `request`, one of the page login actions ([`workspace_vault::PAGE_LOGIN_ACTIONS`]), for
     /// `process`, a process of `app`'s own in `workspace` as the daemon that started it vouches
     /// for it, on its connection alone.
     ///
@@ -171,7 +168,6 @@ impl Workspaces {
     /// vault for the app, a site that is no web origin, a login that belongs elsewhere or that the
     /// vault does not keep, and a login the app neither kept nor may fill (whose fill asks its
     /// person first).
-    #[expect(clippy::too_many_lines, reason = "one arm per page login action")]
     pub async fn page_login(
         &self,
         (app, workspace): (&str, &str),
@@ -191,27 +187,26 @@ impl Workspaces {
         let caller = Caller::local_app(app)
             .acting_for(person)
             .in_workspace(workspace);
-        let action = request.target.address.action.as_str();
-        match action {
-            person_vault::PAGE_LOGINS => {
-                let at: PageLoginsAt = argument(request, "a page's logins are read by its site")?;
-                answer(&self.logins_at(workspace, app, &site(&at.site)?).await?)
+        match asked_of(request)? {
+            VaultAction::PageLogins { site: at } => {
+                answer(&self.logins_at(workspace, app, &site(&at)?).await?)
             }
-            person_vault::KEEP_PAGE_LOGIN => {
-                let keeping: KeepPageLogin = argument(
-                    request,
-                    "a page's login to keep names its site, its name and its secret",
-                )?;
-                let place = site(&keeping.site)?;
-                let replacing = match &keeping.replacing {
+            VaultAction::KeepPageLogin {
+                site: at,
+                username,
+                secret,
+                replacing,
+            } => {
+                let place = site(&at)?;
+                let replacing = match &replacing {
                     Some(item) => Some(self.usable(workspace, app, item, &place).await?.facts.id),
                     None => None,
                 };
                 let item = NewItem::new(
                     vault_items::ItemKind::Login,
                     vec![place],
-                    keeping.username.clone(),
-                    keeping.secret.clone(),
+                    username.clone(),
+                    secret,
                 );
                 let kept = self
                     .changing_vault(workspace, (Some(caller.acting()), Some(request)), |items| {
@@ -221,21 +216,13 @@ impl Workspaces {
                     .map_err(refused)?;
                 let kept = SiteLogin {
                     facts: kept,
-                    username: keeping.username.clone(),
+                    username,
                 };
                 answer(&shown(kept, app).ok_or_else(|| refused("the kept login has no reference"))?)
             }
-            person_vault::FORGET_PAGE_LOGIN => {
-                let forgetting: ForgetPageLogin = argument(
-                    request,
-                    "a page's login to forget names its site and the login",
-                )?;
-                let place = site(&forgetting.site)?;
-                let id = self
-                    .usable(workspace, app, &forgetting.item, &place)
-                    .await?
-                    .facts
-                    .id;
+            VaultAction::ForgetPageLogin { site: at, item } => {
+                let place = site(&at)?;
+                let id = self.usable(workspace, app, &item, &place).await?.facts.id;
                 self.changing_vault(workspace, (Some(caller.acting()), Some(request)), |items| {
                     Ok(items.remove(&id))
                 })
@@ -243,16 +230,14 @@ impl Workspaces {
                 .map_err(refused)?;
                 answer(&self.logins_at(workspace, app, &place).await?)
             }
-            person_vault::PAGE_FILL => {
-                let item = person_vault::page_filled_item(&request.target).ok_or_else(|| {
-                    ActionCallError::InvalidRequest {
+            VaultAction::PageFill { site: at } => {
+                let item = ItemRef::addressed(&request.target, workspace_vault::PAGE_FILL)
+                    .ok_or_else(|| ActionCallError::InvalidRequest {
                         reason:
                             "a fill is addressed at the login it fills: vault.item:<id>#page-fill"
                                 .to_owned(),
-                    }
-                })?;
-                let at: PageFillAt = argument(request, "a fill names the site its page is at")?;
-                let place = site(&at.site)?;
+                    })?;
+                let place = site(&at)?;
                 let login = self.kept_login(workspace, &item, &place).await?;
                 let facts = &login.facts;
                 let own = kept_by(facts, app);
@@ -390,7 +375,7 @@ impl Workspaces {
             facts: shown,
             verb: "fill".to_owned(),
             plural: Some("this login".to_owned()),
-            kind: person_vault::ITEM_KIND.to_owned(),
+            kind: workspace_vault::ITEM_KIND.to_owned(),
             effect: Some(tilo_actions::ActionKind::Read),
             ..AskedFacts::by(super::asking::asked_by(caller))
         };

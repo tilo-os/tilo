@@ -23,10 +23,11 @@
 use std::sync::{Arc, Mutex};
 
 use crate::workspace_accounts;
+use crate::workspace_vault;
 use collab_types::WorkspaceId;
 use serde_json::{Value, json};
 use tilo_actions::remote::asked::Offer;
-use tilo_actions::remote::{ActionCallError, Caller, person_vault};
+use tilo_actions::remote::{ActionCallError, Caller};
 use tilo_dav::discovery::CalendarCollection;
 use tilo_user_identity::DeviceCert;
 
@@ -143,7 +144,7 @@ impl Hers {
             &self.service,
             self.workspace_id,
             (&self.ada, &caller(&self.ada)),
-            person_vault::target(person_vault::LIST),
+            workspace_vault::target(workspace_vault::LIST),
             json!({}),
         )
         .await

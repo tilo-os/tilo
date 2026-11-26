@@ -34,6 +34,15 @@ use crate::session::Provider;
 use crate::v1::answers;
 use crate::v1::errors::ApiError;
 
+/// The workspace's vault, as the service that keeps it publishes its actions.
+mod vault_actions {
+    tilo_resource_macros::bindings!(
+        provider = "tilo.vault",
+        surface = "../tilo-workspace-service/vault-surface.json"
+    );
+}
+use vault_actions::vault;
+
 /// Names a key file a command acts as, as `--key-file` does.
 pub const KEY_FILE_ENV: &str = "TILO_KEY_FILE";
 
@@ -466,14 +475,9 @@ impl Calls {
             Some(workspace) => caller.in_workspace(workspace),
             None => caller,
         };
-        let answer = settled(
-            &provider,
-            caller,
-            tilo_actions::remote::person_vault::call_target(),
-            arguments,
-        )
-        .await
-        .map_err(|refused| refused.json())?;
+        let answer = settled(&provider, caller, vault::web_call(), arguments)
+            .await
+            .map_err(|refused| refused.json())?;
         Ok(json!({"status": "completed", "result": answer}))
     }
 
@@ -502,8 +506,8 @@ impl Calls {
             None => caller,
         };
         let target = tilo_actions::remote::RemoteActionTarget {
-            provider: tilo_actions::remote::person_vault::PROVIDER.into(),
-            address: tilo_actions::ActionAddress::new(item, "release"),
+            provider: vault_actions::PROVIDER.into(),
+            address: tilo_actions::ActionAddress::new(item, vault::RELEASE),
         };
         settled(&provider, caller, target, serde_json::Map::new())
             .await
@@ -537,13 +541,7 @@ impl Calls {
         let mut arguments = serde_json::Map::new();
         arguments.insert("app".into(), Value::String(app.to_owned()));
         arguments.insert("purpose".into(), Value::String(purpose.to_owned()));
-        let target = tilo_actions::remote::RemoteActionTarget {
-            provider: tilo_actions::remote::person_vault::PROVIDER.into(),
-            address: tilo_actions::ActionAddress::new(
-                tilo_actions::remote::person_vault::RESOURCE,
-                tilo_actions::remote::person_vault::FIND,
-            ),
-        };
+        let target = vault::find();
         settled(&provider, caller, target, arguments)
             .await
             .map_err(|refused| refused.json())

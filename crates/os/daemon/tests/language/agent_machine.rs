@@ -31,10 +31,10 @@ async fn keep(host: &host::Host) -> String {
     let laptop = host.member("Ada's laptop", &workspace).await;
     let kept = laptop
         .call(
-            tilo_actions::remote::person_vault::PROVIDER,
+            tilo_workspace_service::workspace_vault::PROVIDER,
             tilo_actions::ActionAddress::new(
-                tilo_actions::remote::person_vault::RESOURCE,
-                tilo_actions::remote::person_vault::ADD,
+                tilo_workspace_service::workspace_vault::RESOURCE,
+                tilo_workspace_service::workspace_vault::ADD,
             ),
             &json!({"kind": "key", "belongsTo": ["https://api.anthropic.com"], "secret": TOKEN}),
         )

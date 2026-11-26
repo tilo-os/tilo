@@ -294,7 +294,7 @@ impl Workspaces {
         let providers = self.providers().downgrade();
         Arc::new(move |request: &InvokeRequest| {
             let target = &request.target;
-            if tilo_actions::remote::person_vault::answers_secret(request) {
+            if tilo_actions::remote::answers_secret(request) {
                 return true;
             }
             let registered = providers.upgrade().and_then(|providers| {

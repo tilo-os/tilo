@@ -310,15 +310,12 @@ impl Invocations {
         });
         let (mut kept, taken) = without_secrets(request, &names);
         let mut sealed: Vec<String> = taken.keys().cloned().collect();
-        if tilo_actions::remote::person_vault::calls_by_address(
-            request,
-            tilo_actions::remote::person_vault::ADD,
-        ) && let Some(secrets) = self.secrets.get()
+        if tilo_actions::remote::calls_by_address(request, "add")
+            && let Some(secrets) = self.secrets.get()
             && let InvokeArgument::Json(arguments) = &mut kept.argument
             && let Some(serde_json::Value::Object(inner)) = arguments.get_mut("arguments")
         {
-            let add =
-                tilo_actions::remote::person_vault::target(tilo_actions::remote::person_vault::ADD);
+            let add = tilo_actions::remote::vault_target("add");
             let names = secrets(&add).unwrap_or_else(|| inner.keys().cloned().collect());
             for name in names {
                 if inner.remove(&name).is_some() {
@@ -411,7 +408,7 @@ impl Invocations {
     /// every record of it, its answer and its arguments alike.
     fn answers_a_secret(&self, request: &InvokeRequest) -> bool {
         self.answers.get().map_or_else(
-            || tilo_actions::remote::person_vault::answers_secret(request),
+            || tilo_actions::remote::answers_secret(request),
             |answers| answers(request),
         )
     }
@@ -547,7 +544,7 @@ impl Invocations {
         for recorded in kept.by_id.values_mut() {
             let secret = recorded.secret
                 || answers.is_some_and(|answers| answers(&recorded.request))
-                || tilo_actions::remote::person_vault::answers_secret(&recorded.request);
+                || tilo_actions::remote::answers_secret(&recorded.request);
             if secret {
                 recorded.secret = true;
                 recorded.request.argument = InvokeArgument::None;
@@ -1388,8 +1385,7 @@ mod tests {
                 "fields",
             ),
         ];
-        let target =
-            tilo_actions::remote::person_vault::target(tilo_actions::remote::person_vault::ADD);
+        let target = tilo_actions::remote::vault_target("add");
         let described = target.clone();
         // The registry's own `call` is described too: its address and arguments are no secrets.
         invocations.keep_no_secrets(Arc::new(move |asked: &RemoteActionTarget| {
@@ -1485,11 +1481,11 @@ mod tests {
     /// answered.
     #[test]
     fn a_vault_reveal_is_recorded_as_answering_a_secret() {
-        use tilo_actions::remote::{ACCOUNTS_PROVIDER, person_vault};
+        use tilo_actions::remote::{ACCOUNTS_PROVIDER, answers_secret, vault_target};
         let invocations = Arc::new(Invocations::default());
         let asked = Caller::local_person("ada").in_new_execution();
         let mut reveal = request();
-        reveal.target = person_vault::target(person_vault::REVEAL);
+        reveal.target = vault_target("reveal");
         let mut credential = request();
         credential.target = RemoteActionTarget {
             provider: ACCOUNTS_PROVIDER.to_owned(),
@@ -1537,7 +1533,7 @@ mod tests {
             (&called_credential, true),
             (&listed, false),
         ] {
-            assert_eq!(person_vault::answers_secret(request), secret);
+            assert_eq!(answers_secret(request), secret);
             let runs = Arc::new(Runs::default());
             invocations.record(&asked, &asked, request, Some("w1"), (runs, asked.clone()));
             let kept = invocations.get(&asked, &request.invocation).unwrap();

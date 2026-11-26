@@ -202,6 +202,24 @@ impl JsonSchema for tilo_actions::Recipient {
     }
 }
 
+/// A reference to an item of the workspace's vault (`vault.item:<id>`): the address of a
+/// resource of that kind, which a parameter of it takes as a secret by reference.
+impl JsonSchema for tilo_actions::remote::ItemRef {
+    fn json_schema() -> Value {
+        let mut schema = serde_json::Map::new();
+        schema.insert("type".to_owned(), json!("string"));
+        schema.insert(
+            tilo_actions::params::RESOURCE_KIND_ANNOTATION.to_owned(),
+            json!(tilo_actions::remote::VAULT_ITEM_KIND),
+        );
+        Value::Object(schema)
+    }
+
+    fn field_type(_: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::Resource(tilo_actions::remote::VAULT_ITEM_KIND.to_owned())
+    }
+}
+
 impl<T: JsonSchema> JsonSchema for Option<T> {
     const OPTIONAL: bool = true;
 

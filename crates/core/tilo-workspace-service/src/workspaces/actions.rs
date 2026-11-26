@@ -51,6 +51,7 @@ use crate::models as model_providers;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::person_connections;
 use crate::workspace_accounts;
+use crate::workspace_vault;
 use serde_json::{Map, Value, json};
 use tilo_action_policy::roles::{self, governance};
 use tilo_action_policy::{Answer, EntryPolicy, ListingPolicy};
@@ -62,7 +63,7 @@ use tilo_actions::remote::{
     WORKSPACE_INVITATIONS, WORKSPACE_INVITE, WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED,
     WORKSPACE_MEMBERS, WORKSPACE_READ_GRANT, WORKSPACE_READ_REVOKE, WORKSPACE_REGISTRIES,
     WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, formats, mcp_server, person_telling,
-    person_vault, server_account, workspace_app, workspace_app_named, workspace_governance_address,
+    server_account, workspace_app, workspace_app_named, workspace_governance_address,
     workspace_governance_child, workspace_governance_operation, workspace_governance_resource,
     workspace_member, workspace_person,
 };
@@ -1988,7 +1989,7 @@ impl Workspaces {
         }
         // Passwords finds the vault's own calls its person may make, which it calls by address.
         #[cfg(not(target_arch = "wasm32"))]
-        if wants(person_vault::PROVIDER) {
+        if wants(workspace_vault::PROVIDER) {
             let rows = self
                 .passwords_rows((workspace_id, caller, certificate))
                 .await;
@@ -2283,7 +2284,7 @@ impl Workspaces {
                     ) | (
                         model_providers::PROVIDER,
                         model_providers::SET_KEY_FROM_ITEM
-                    ) | (person_vault::PROVIDER, person_vault::ASK)
+                    ) | (workspace_vault::PROVIDER, workspace_vault::ASK)
                 ) =>
             {
                 self.vault_use_invoke(workspace_id, caller, certificate, request)
@@ -2305,7 +2306,7 @@ impl Workspaces {
             // What the person keeps to sign in with, in that same vault:
             // nothing of it is read back, and no agent asks.
             #[cfg(not(target_arch = "wasm32"))]
-            (person_vault::PROVIDER, _) => {
+            (workspace_vault::PROVIDER, _) => {
                 self.person_vault_invoke(workspace_id, caller, certificate, request)
                     .await
             }
@@ -4598,7 +4599,7 @@ const PROVIDERS: [&str; 10] = [
     workspace_accounts::PROVIDER,
     tilo_actions::remote::MODELS_PROVIDER,
     // What the person keeps to sign in with, in the same vault.
-    person_vault::PROVIDER,
+    workspace_vault::PROVIDER,
     // What the person calls important, and what may interrupt them.
     person_telling::PROVIDER,
     // The services the person connected by their address.
@@ -4919,7 +4920,7 @@ pub(super) fn published_params(
 ) -> Option<Vec<ActionParam>> {
     let address = &target.address;
     if let Some((_, action)) = vault::vault_action(address) {
-        return vault::params_of(action);
+        return workspace_vault::params_of(action);
     }
     if let Some((_, action)) = mail::account_action(address) {
         return mail::account_params_of(action);
@@ -4928,7 +4929,7 @@ pub(super) fn published_params(
         return models::params_of(action);
     }
     match target.provider.as_str() {
-        person_vault::PROVIDER => vault::params_of(&address.action),
+        workspace_vault::PROVIDER => workspace_vault::params_of(&address.action),
         workspace_accounts::PROVIDER => workspace_accounts::params_of(&address.action),
         model_providers::PROVIDER => models::params_of(&address.action),
         WORKSPACE_GOVERNANCE_PROVIDER => VERBS
@@ -4957,7 +4958,7 @@ pub(super) fn published_answers_secret(
         return Some(tilo_actions::remote::answers_a_secret(action));
     }
     match target.provider.as_str() {
-        person_vault::PROVIDER
+        workspace_vault::PROVIDER
         | workspace_accounts::PROVIDER
         | model_providers::PROVIDER
         | WORKSPACE_GOVERNANCE_PROVIDER => Some(action(&address.action)),

@@ -884,7 +884,7 @@ fn not_served() -> ActionCallError {
 /// reading the sign-ins and releasing a login's secret): the workspace's accounts and its vault.
 pub(crate) const APP_CONNECTION_PROVIDERS: [&str; 2] = [
     crate::workspace_accounts::PROVIDER,
-    tilo_actions::remote::person_vault::PROVIDER,
+    crate::workspace_vault::PROVIDER,
 ];
 
 fn hosted(provider: &str) -> bool {

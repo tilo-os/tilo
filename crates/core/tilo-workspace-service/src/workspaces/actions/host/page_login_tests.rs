@@ -12,11 +12,9 @@
     reason = "in a test these are the assertion, and each test keeps its host to the end"
 )]
 
+use crate::workspace_vault::{self, ItemRef, PageFilled, PageLogin, PageLogins};
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;
-use tilo_actions::remote::person_vault::{
-    self, ItemRef, KeepPageLogin, PageFilled, PageLogin, PageLogins,
-};
 use tilo_actions::remote::{ActionCallError, InvokeArgument, InvokeRequest, RemoteActionTarget};
 
 use super::super::tests::{caller, hosted};
@@ -52,11 +50,14 @@ fn call(target: RemoteActionTarget, argument: &Value) -> InvokeRequest {
 }
 
 fn at_vault(action: &str, argument: &Value) -> InvokeRequest {
-    call(person_vault::target(action), argument)
+    call(workspace_vault::target(action), argument)
 }
 
 fn fill(item: &ItemRef, site: &str) -> InvokeRequest {
-    call(person_vault::page_fill_target(item), &json!({"site": site}))
+    call(
+        workspace_vault::ItemRef::target(item, workspace_vault::PAGE_FILL),
+        &json!({"site": site}),
+    )
 }
 
 /// The browser's window keeps the login its page sent, reads its site's logins by name, fills its
@@ -73,7 +74,7 @@ async fn a_windows_page_signs_in_with_the_vaults_logins_through_its_grants() {
         &service,
         workspace_id,
         (&owner, &caller(&owner)),
-        person_vault::ADD,
+        workspace_vault::ADD,
         json!({"kind": "login", "belongsTo": [SHOP], "username": "ada", "secret": THEIRS}),
     )
     .await
@@ -90,20 +91,20 @@ async fn a_windows_page_signs_in_with_the_vaults_logins_through_its_grants() {
     };
 
     // The window keeps what the page's form sent, as the Browser's own sign-in.
-    let keeping = KeepPageLogin {
-        site: format!("{SHOP}/account/login"),
-        username: "ada.work".into(),
-        secret: TYPED.into(),
-        replacing: None,
+    let keeping = json!({
+        "site": format!("{SHOP}/account/login"),
+        "username": "ada.work",
+        "secret": TYPED,
+    });
+    let Value::Object(arguments) = &keeping else {
+        unreachable!("a keep's arguments are an object")
     };
-    assert!(!format!("{keeping:?}").contains(TYPED));
+    let decoded = workspace_vault::decoded(workspace_vault::KEEP_PAGE_LOGIN, arguments).unwrap();
+    assert!(!format!("{decoded:?}").contains(TYPED));
     let kept: PageLogin = serde_json::from_value(
-        page(at_vault(
-            person_vault::KEEP_PAGE_LOGIN,
-            &serde_json::to_value(&keeping).unwrap(),
-        ))
-        .await
-        .expect("the window keeps its page's login"),
+        page(at_vault(workspace_vault::KEEP_PAGE_LOGIN, &keeping))
+            .await
+            .expect("the window keeps its page's login"),
     )
     .unwrap();
     assert!(kept.own);
@@ -115,16 +116,19 @@ async fn a_windows_page_signs_in_with_the_vaults_logins_through_its_grants() {
     assert_eq!(
         facts.unwrap().tags,
         [
-            person_vault::app_tag(BROWSER),
-            person_vault::purpose_tag(person_vault::SIGN_IN)
+            workspace_vault::app_tag(BROWSER),
+            workspace_vault::purpose_tag(workspace_vault::SIGN_IN)
         ],
         "the item is tagged with its app and purpose"
     );
 
     // The site's logins, by name alone.
-    let listed = page(at_vault(person_vault::PAGE_LOGINS, &json!({"site": SHOP})))
-        .await
-        .unwrap();
+    let listed = page(at_vault(
+        workspace_vault::PAGE_LOGINS,
+        &json!({"site": SHOP}),
+    ))
+    .await
+    .unwrap();
     assert!(!listed.to_string().contains(TYPED) && !listed.to_string().contains(THEIRS));
     let listed: PageLogins = serde_json::from_value(listed).unwrap();
     let names: Vec<(&str, bool)> = listed
@@ -135,7 +139,7 @@ async fn a_windows_page_signs_in_with_the_vaults_logins_through_its_grants() {
     assert_eq!(names, [("ada", false), ("ada.work", true)]);
     let elsewhere: PageLogins = serde_json::from_value(
         page(at_vault(
-            person_vault::PAGE_LOGINS,
+            workspace_vault::PAGE_LOGINS,
             &json!({"site": "https://other.example.test"}),
         ))
         .await
@@ -169,7 +173,7 @@ async fn a_windows_page_signs_in_with_the_vaults_logins_through_its_grants() {
     // Not its own, not allowed: it neither changes nor forgets it.
     let forget_theirs = refusal(
         page(at_vault(
-            person_vault::FORGET_PAGE_LOGIN,
+            workspace_vault::FORGET_PAGE_LOGIN,
             &json!({"site": SHOP, "item": theirs}),
         ))
         .await,
@@ -213,7 +217,7 @@ async fn a_windows_page_signs_in_with_the_vaults_logins_through_its_grants() {
         &service,
         workspace_id,
         (&owner, &caller(&owner)),
-        person_vault::PAGE_LOGINS,
+        workspace_vault::PAGE_LOGINS,
         json!({"site": SHOP}),
     )
     .await;
@@ -225,7 +229,7 @@ async fn a_windows_page_signs_in_with_the_vaults_logins_through_its_grants() {
     // Forgetting its own login leaves the person's.
     let left: PageLogins = serde_json::from_value(
         page(at_vault(
-            person_vault::FORGET_PAGE_LOGIN,
+            workspace_vault::FORGET_PAGE_LOGIN,
             &json!({"site": SHOP, "item": kept.reference}),
         ))
         .await

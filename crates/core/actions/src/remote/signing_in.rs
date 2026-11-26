@@ -17,9 +17,9 @@ use std::time::Duration;
 
 use serde_json::{Map, Value};
 
-use super::person_vault::{self, ItemRef};
 use super::{
-    ActionProvider as _, Caller, InvokeRequest, LineClient, ReceiptStatus, RemoteActionTarget,
+    ActionProvider as _, Caller, InvokeRequest, ItemRef, LineClient, ReceiptStatus,
+    RemoteActionTarget, VAULT_RELEASE,
 };
 
 /// What the dispatch says when it no longer answers a sign-in.
@@ -82,14 +82,14 @@ impl SigningIn {
         }
         let reference = ItemRef::parse(login)
             .ok_or_else(|| format!("`{login}` names no entry of the vault"))?;
-        let answer = self.ask(person_vault::release_target(&reference), Map::new())?;
-        let released: person_vault::Released = serde_json::from_value(answer)
-            .map_err(|error| format!("That is no released secret: {error}"))?;
-        self.released.insert(
-            account.to_owned(),
-            (login.to_owned(), released.secret.clone()),
-        );
-        Ok(released.secret)
+        let answer = self.ask(reference.target(VAULT_RELEASE), Map::new())?;
+        // The release answers `{"secret": …}`; nothing here prints it.
+        let Some(Value::String(secret)) = answer.get("secret") else {
+            return Err("That is no released secret".to_owned());
+        };
+        self.released
+            .insert(account.to_owned(), (login.to_owned(), secret.clone()));
+        Ok(secret.clone())
     }
 
     /// Invoke `target` with `arguments` and answer what it answered, or the refusal in words a

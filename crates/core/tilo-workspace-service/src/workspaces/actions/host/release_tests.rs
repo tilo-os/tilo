@@ -18,10 +18,10 @@
 use std::fmt::Write as _;
 use std::sync::Arc;
 
+use crate::workspace_vault::{self, ItemRef, Released};
 use accounts::vault_items;
 use serde_json::{Value, json};
 use tilo_actions::remote::asked::{Offer, RecordRef, Resolve};
-use tilo_actions::remote::person_vault::{self, ItemRef, Released};
 use tilo_actions::remote::{
     ActionCallError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
     workspace_invocations,
@@ -75,7 +75,7 @@ impl HostConnections for Bridge {
 fn release_of(item: &ItemRef) -> InvokeRequest {
     InvokeRequest {
         invocation: InvocationId::new(),
-        target: person_vault::release_target(item),
+        target: workspace_vault::ItemRef::target(item, workspace_vault::RELEASE),
         argument: InvokeArgument::None,
         context: None,
         confirmation: None,
@@ -135,7 +135,7 @@ async fn kept(
         service,
         workspace_id,
         (owner, &caller(owner)),
-        person_vault::ADD,
+        workspace_vault::ADD,
         json!({"kind": "key", "belongsTo": [place], "secret": secret}),
     )
     .await
@@ -282,7 +282,7 @@ async fn a_held_connection_is_released_the_one_item_its_person_allowed() {
         &service,
         workspace_id,
         mine,
-        person_vault::USES,
+        workspace_vault::USES,
         json!({"item": token.to_string()}),
     )
     .await
@@ -291,14 +291,14 @@ async fn a_held_connection_is_released_the_one_item_its_person_allowed() {
         panic!("the bridge's leave is listed");
     };
     assert_eq!(leave["app"], BRIDGE);
-    assert_eq!(leave["using"], person_vault::RELEASE);
+    assert_eq!(leave["using"], workspace_vault::RELEASE);
     assert!(leave.get("agent").is_none(), "{leave}");
     assert!(leave["since"].as_u64().unwrap() > 0, "{leave}");
     let others = ask(
         &service,
         workspace_id,
         mine,
-        person_vault::USES,
+        workspace_vault::USES,
         json!({"item": other.to_string()}),
     )
     .await
@@ -308,7 +308,7 @@ async fn a_held_connection_is_released_the_one_item_its_person_allowed() {
         &service,
         workspace_id,
         mine,
-        person_vault::TAKE_BACK,
+        workspace_vault::TAKE_BACK,
         json!({"item": token.to_string(), "agent": "scout"}),
     )
     .await
@@ -326,7 +326,7 @@ async fn a_held_connection_is_released_the_one_item_its_person_allowed() {
         &service,
         workspace_id,
         mine,
-        person_vault::TAKE_BACK,
+        workspace_vault::TAKE_BACK,
         json!({"item": token.to_string(), "app": BRIDGE}),
     )
     .await
@@ -357,7 +357,7 @@ async fn a_held_connection_is_released_the_one_item_its_person_allowed() {
         &service,
         workspace_id,
         (&owner, &caller(&owner)),
-        person_vault::LIST,
+        workspace_vault::LIST,
         Value::Null,
     )
     .await
@@ -401,7 +401,7 @@ async fn every_other_caller_is_refused_a_release_saying_why() {
                 service,
                 workspace_id,
                 (owner, &caller),
-                person_vault::release_target(token),
+                workspace_vault::ItemRef::target(token, workspace_vault::RELEASE),
                 Value::Null,
             )
             .await
@@ -472,7 +472,8 @@ async fn every_other_caller_is_refused_a_release_saying_why() {
         release::NOT_KEPT
     );
     let mut not_an_item = release_of(&token);
-    not_an_item.target.address = ActionAddress::new(person_vault::ITEM_KIND, person_vault::RELEASE);
+    not_an_item.target.address =
+        ActionAddress::new(workspace_vault::ITEM_KIND, workspace_vault::RELEASE);
     assert!(matches!(
         workspaces
             .release_to((BRIDGE, &workspace), &unheld, &not_an_item)
@@ -486,8 +487,8 @@ fn find_of(app: &str, purpose: &str) -> InvokeRequest {
     InvokeRequest {
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
-            provider: person_vault::PROVIDER.to_owned(),
-            address: ActionAddress::new(person_vault::RESOURCE, person_vault::FIND),
+            provider: workspace_vault::PROVIDER.to_owned(),
+            address: ActionAddress::new(workspace_vault::RESOURCE, workspace_vault::FIND),
         },
         argument: InvokeArgument::Json(
             json!({"app": app, "purpose": purpose})
@@ -758,7 +759,7 @@ fn keep_of(purpose: &str, value: &str, replacing: Option<&ItemRef>) -> InvokeReq
     }
     InvokeRequest {
         invocation: InvocationId::new(),
-        target: person_vault::keep_target(),
+        target: workspace_vault::target(workspace_vault::KEEP),
         argument: InvokeArgument::Json(argument.as_object().cloned().unwrap()),
         context: None,
         confirmation: None,
@@ -799,8 +800,10 @@ async fn an_app_keeps_its_own_secret_renews_it_and_reads_it_back_unasked() {
     tracing::info!("the line that shows the log is read");
 
     // The value is a secret of the published action, so no record of a call keeps it.
-    let described = crate::workspaces::actions::published_params(&person_vault::keep_target())
-        .expect("vault#keep is described");
+    let described = crate::workspaces::actions::published_params(&workspace_vault::target(
+        workspace_vault::KEEP,
+    ))
+    .expect("vault#keep is described");
     assert_eq!(
         tilo_actions::remote::secret_arguments::secret_parameters(&described),
         vec!["value".to_owned()]
@@ -854,7 +857,7 @@ async fn an_app_keeps_its_own_secret_renews_it_and_reads_it_back_unasked() {
         &service,
         workspace_id,
         mine,
-        person_vault::LIST,
+        workspace_vault::LIST,
         Value::Null,
     )
     .await
@@ -868,8 +871,8 @@ async fn an_app_keeps_its_own_secret_renews_it_and_reads_it_back_unasked() {
     assert_eq!(
         item["tags"],
         json!([
-            person_vault::app_tag(BRIDGE),
-            person_vault::purpose_tag("bot-token")
+            workspace_vault::app_tag(BRIDGE),
+            workspace_vault::purpose_tag("bot-token")
         ])
     );
 
@@ -916,7 +919,7 @@ async fn an_app_keeps_its_own_secret_renews_it_and_reads_it_back_unasked() {
         &service,
         workspace_id,
         mine,
-        person_vault::USES,
+        workspace_vault::USES,
         json!({"item": kept.reference.to_string()}),
     )
     .await
@@ -930,7 +933,7 @@ async fn an_app_keeps_its_own_secret_renews_it_and_reads_it_back_unasked() {
         &service,
         workspace_id,
         mine,
-        person_vault::TAKE_BACK,
+        workspace_vault::TAKE_BACK,
         json!({"item": kept.reference.to_string(), "app": READER}),
     )
     .await
@@ -996,7 +999,7 @@ async fn every_other_caller_is_refused_a_keep_saying_why() {
                 service,
                 workspace_id,
                 (owner, &caller),
-                person_vault::keep_target(),
+                workspace_vault::target(workspace_vault::KEEP),
                 json!({"purpose": "bot-token", "value": TOKEN}),
             )
             .await
@@ -1133,7 +1136,10 @@ async fn a_tilolang_process_of_the_apps_own_keeps_and_reads_back_only_what_it_ke
             .cloned()
     };
     let kept_record = record_of(call.invocation).expect("the keep is recorded");
-    assert_eq!(kept_record.request.target, person_vault::keep_target());
+    assert_eq!(
+        kept_record.request.target,
+        workspace_vault::target(workspace_vault::KEEP)
+    );
     assert_eq!(kept_record.sealed, vec!["value".to_owned()]);
     assert_eq!(
         kept_record
@@ -1175,11 +1181,11 @@ async fn a_tilolang_process_of_the_apps_own_keeps_and_reads_back_only_what_it_ke
         .in_workspace(&workspace);
     for (target, argument) in [
         (
-            person_vault::release_target(&kept_here.reference),
+            workspace_vault::ItemRef::target(&kept_here.reference, workspace_vault::RELEASE),
             Value::Null,
         ),
         (
-            person_vault::keep_target(),
+            workspace_vault::target(workspace_vault::KEEP),
             json!({"purpose": "bot-token", "value": OTHER}),
         ),
     ] {

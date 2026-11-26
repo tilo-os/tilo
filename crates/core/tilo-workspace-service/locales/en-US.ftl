@@ -218,3 +218,25 @@ tilo-connections-uses = What a connection was used for
 tilo-connections-begin-sign-in = Begin signing in to a connection
 tilo-connections-finish-sign-in = Finish signing in to a connection
 tilo-connections-propose = Propose a connection
+
+# The workspace's vault, kept by the host that keeps the workspace.
+tilo-vault-list = List vault items
+tilo-vault-add = Keep a vault item
+tilo-vault-remove = Forget a vault item
+tilo-vault-uses = Read the uses of a vault item
+tilo-vault-take-back = Take back what may always use a vault item
+tilo-vault-copy = Copy a vault item's secret
+tilo-vault-reveal = Show a vault item's secret
+tilo-vault-ask = Ask your person for a secret
+tilo-vault-fill-page = Fill page field from vault
+tilo-vault-web-call = Call a service with a key from the vault
+tilo-vault-code = Read a code from the vault
+tilo-vault-sign = Sign with an ssh key from the vault
+tilo-vault-release = Hand a vault item's secret to an app's process
+tilo-vault-find = Find an app's vault item
+tilo-vault-keep = Keep an app's own secret
+tilo-vault-device-key = Read this device's key for an app
+tilo-vault-page-logins = List a site's logins
+tilo-vault-keep-page-login = Keep a page's login
+tilo-vault-forget-page-login = Forget a page's login
+tilo-vault-page-fill = Fill a page's login

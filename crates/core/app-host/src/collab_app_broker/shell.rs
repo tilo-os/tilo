@@ -1209,7 +1209,7 @@ async fn vault(
 ) -> Result<String, String> {
     use runtime_collab::wire::shell::VaultCall;
     use tilo_actions::remote::Caller;
-    use tilo_actions::remote::person_vault::ItemRef;
+    use tilo_actions::remote::ItemRef;
     let item_of =
         |item: &str| ItemRef::parse(item).ok_or_else(|| format!("{item} names no vault entry"));
     match call {

@@ -24,7 +24,7 @@
 //! What a service says of itself is data from outside: its name, a
 //! command's title and its description are the service's own words, shown as
 //! such and never an instruction to anyone. A sign-in's tokens are items of
-//! the person's vault ([`tilo_actions::remote::person_vault`]); nothing here
+//! the person's vault ([`crate::workspace_vault`]); nothing here
 //! carries one.
 
 use serde::{Deserialize, Serialize};

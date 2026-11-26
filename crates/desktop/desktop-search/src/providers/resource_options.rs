@@ -18,7 +18,8 @@ use std::sync::Arc;
 use serde_json::Value;
 use tilo_actions::remote::{
     ActionProvider, Caller, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
-    RemoteActionTarget, pending, person_vault, settle_with,
+    RemoteActionTarget, VAULT_ITEM_KIND, VAULT_LIST, VAULT_PROVIDER, VAULT_RESOURCE, pending,
+    settle_with,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use ui::time::Duration;
@@ -101,10 +102,10 @@ pub struct ResourceList {
 
 /// The list actions a resource-kind parameter is filled from, by the kind it names.
 pub const LISTS: &[ResourceList] = &[ResourceList {
-    kind: person_vault::ITEM_KIND,
-    provider: person_vault::PROVIDER,
-    resource: person_vault::RESOURCE,
-    action: person_vault::LIST,
+    kind: VAULT_ITEM_KIND,
+    provider: VAULT_PROVIDER,
+    resource: VAULT_RESOURCE,
+    action: VAULT_LIST,
     read: read_kept_items,
 }];
 
@@ -235,14 +236,25 @@ fn settled(
     }
 }
 
-/// A list of the workspace's vault items, as [`person_vault::LIST`] answers it
-/// ([`person_vault::KeptItems`]): each item's reference, what it is called and where it belongs,
-/// never its secret.
+/// A list of the workspace's vault items, as [`VAULT_LIST`] answers it: each item's reference,
+/// what it is called and where it belongs, never its secret.
 fn read_kept_items(value: Option<&Value>) -> Result<Vec<ResourceOption>, String> {
+    #[derive(serde::Deserialize)]
+    struct KeptItems {
+        items: Vec<Item>,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Item {
+        reference: tilo_actions::remote::ItemRef,
+        kind: String,
+        belongs_to: Vec<String>,
+        title: Option<String>,
+    }
     let Some(value) = value else {
         return Err("the vault listed nothing".to_owned());
     };
-    let kept: person_vault::KeptItems = serde_json::from_value(value.clone())
+    let kept: KeptItems = serde_json::from_value(value.clone())
         .map_err(|_| "the vault answered something that is no list of items".to_owned())?;
     Ok(kept
         .items
@@ -250,7 +262,7 @@ fn read_kept_items(value: Option<&Value>) -> Result<Vec<ResourceOption>, String>
         .map(|item| ResourceOption {
             value: item.reference.to_string(),
             title: item.title.unwrap_or_default(),
-            kind: item.kind.word().to_owned(),
+            kind: item.kind,
             places: item.belongs_to,
         })
         .collect())

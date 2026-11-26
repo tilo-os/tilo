@@ -94,14 +94,16 @@ pub fn call(target: RemoteActionTarget, argument: Map<String, Value>) -> Result<
 /// # Errors
 /// As [`call`], and an answer that holds no key.
 pub fn device_key(purpose: &str) -> Result<[u8; 32], String> {
-    use tilo_actions::remote::person_vault;
+    use tilo_actions::remote::{VAULT_DEVICE_KEY, vault_target};
     const NO_KEY: &str = "Your computer's daemon answered no key";
     let mut argument = Map::new();
     argument.insert("purpose".to_owned(), Value::String(purpose.to_owned()));
-    let answered = call(person_vault::device_key_target(), argument)?;
-    let key: person_vault::DeviceKey =
-        serde_json::from_value(answered).map_err(|_| NO_KEY.to_owned())?;
-    let digits = key.key.as_bytes();
+    let answered = call(vault_target(VAULT_DEVICE_KEY), argument)?;
+    let digits = answered
+        .get("key")
+        .and_then(Value::as_str)
+        .ok_or(NO_KEY)?
+        .as_bytes();
     if digits.len() != 64 {
         return Err(NO_KEY.to_owned());
     }

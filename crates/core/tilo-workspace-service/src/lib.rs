@@ -108,6 +108,9 @@ pub mod styles;
 pub mod surfaces;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tl_records;
+/// The workspace's vault: its actions, declared once, and what they read as.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod workspace_vault;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod work;

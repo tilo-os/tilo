@@ -11,11 +11,11 @@
     reason = "in a test these are the assertion, and the server handle a test binds is kept until the test ends"
 )]
 
+use crate::workspace_vault::{self, ItemRef};
 use serde_json::{Value, json};
 use tilo_action_policy::{ActionKind, Answer, KindSet};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::ActionCallError as Refusal;
-use tilo_actions::remote::person_vault::{self, FillPage, ItemRef};
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest};
 use tilo_user_identity::DeviceCert;
 
@@ -24,7 +24,7 @@ use super::super::tests::{admit, caller, hosted};
 use super::turn_use_tests::{always, approved, asked_by, asks, fact, on_turn};
 use super::vault_tests::{ask, files_holding};
 use crate::workspaces::fixtures::test_host as serving;
-use crate::workspaces::hosted_use::{HostedTurn, PageField, PageText};
+use crate::workspaces::hosted_use::{HostedTurn, PageField, PageFill, PageText};
 use crate::workspaces::tests::hosting_device;
 use crate::workspaces::{WorkspaceId, Workspaces};
 
@@ -45,7 +45,7 @@ async fn kept(
         service,
         workspace_id,
         who,
-        person_vault::ADD,
+        workspace_vault::ADD,
         json!({"kind": kind, "belongsTo": [place], "secret": secret}),
     )
     .await
@@ -69,7 +69,7 @@ async fn remembered(
         service,
         workspace_id,
         who,
-        person_vault::USES,
+        workspace_vault::USES,
         json!({"item": item}),
     )
     .await
@@ -77,6 +77,23 @@ async fn remembered(
         unreachable!("a person reads what their item remembers");
     };
     remembers
+}
+
+/// A page a turn asks to fill: its site, the item, and why.
+struct FillPage {
+    site: String,
+    item: ItemRef,
+    reason: String,
+}
+
+impl FillPage {
+    fn page(&self) -> PageFill<'_> {
+        PageFill {
+            site: &self.site,
+            item: &self.item,
+            reason: &self.reason,
+        }
+    }
 }
 
 fn fill(site: &str, item: &ItemRef) -> FillPage {
@@ -89,12 +106,14 @@ fn fill(site: &str, item: &ItemRef) -> FillPage {
 
 /// The request that fills `wanted`, as a turn's tool makes it.
 fn filling(wanted: &FillPage) -> InvokeRequest {
-    let serde_json::Value::Object(argument) = serde_json::to_value(wanted).unwrap() else {
+    let Value::Object(argument) =
+        json!({"site": wanted.site, "item": wanted.item, "reason": wanted.reason})
+    else {
         panic!("a fill reads as an object");
     };
     InvokeRequest {
         invocation: InvocationId::new(),
-        target: person_vault::page_target(),
+        target: workspace_vault::target(workspace_vault::FILL_PAGE),
         argument: InvokeArgument::Json(argument),
         context: None,
         confirmation: None,
@@ -121,7 +140,9 @@ async fn released(
     wanted: &FillPage,
     request: &InvokeRequest,
 ) -> Result<PageText, Refusal> {
-    workspaces.release_for_turn(turn, wanted, request).await
+    workspaces
+        .release_for_turn(turn, wanted.page(), request)
+        .await
 }
 
 /// The text a fill was released, when it was.
@@ -140,7 +161,11 @@ async fn always_fill(
         workspaces,
         (workspace, owner, ada),
         agent,
-        (&person_vault::page_target(), &json!(item), &[SITE]),
+        (
+            &workspace_vault::target(workspace_vault::FILL_PAGE),
+            &json!(item),
+            &[SITE],
+        ),
     )
     .await;
 }
@@ -331,7 +356,7 @@ async fn after_always_the_agent_fills_there_alone_until_the_leave_is_taken_back(
         &service,
         workspace_id,
         hers,
-        person_vault::TAKE_BACK,
+        workspace_vault::TAKE_BACK,
         json!({"item": login}),
     )
     .await
@@ -454,8 +479,8 @@ async fn any_members_turn_fills_and_a_narrowed_agent_needs_the_rule() {
     let outside = KindSet::of(ActionKind::Outside);
     let named = |action: &str| {
         tilo_automation::action_rule(
-            person_vault::PROVIDER,
-            person_vault::RESOURCE,
+            workspace_vault::PROVIDER,
+            workspace_vault::RESOURCE,
             None,
             action,
             outside,
@@ -464,7 +489,10 @@ async fn any_members_turn_fills_and_a_narrowed_agent_needs_the_rule() {
     };
     for (why, bound) in [
         ("no rule at all", Vec::new()),
-        ("a rule for another action", vec![named(person_vault::LIST)]),
+        (
+            "a rule for another action",
+            vec![named(workspace_vault::LIST)],
+        ),
     ] {
         let policy = narrowing(&workspace_id.to_string(), &scout, &bound);
         let turn = HostedTurn {
@@ -480,7 +508,7 @@ async fn any_members_turn_fills_and_a_narrowed_agent_needs_the_rule() {
             "{why}"
         );
     }
-    let bound = vec![named(person_vault::FILL_PAGE)];
+    let bound = vec![named(workspace_vault::FILL_PAGE)];
     let policy = narrowing(&workspace_id.to_string(), &scout, &bound);
     let turn = HostedTurn {
         workspace: workspace_id,

@@ -148,7 +148,7 @@ impl Workspaces {
         if kept.is_err()
             && let Some((calendar, _)) = &linked
             && let Some(reference) = accounts::email::password_item(&calendar.config)
-                .and_then(tilo_actions::remote::person_vault::ItemRef::from_id)
+                .and_then(crate::workspace_vault::ItemRef::from_id)
         {
             let _ = signing
                 .vault
@@ -435,7 +435,7 @@ impl Workspaces {
             .iter()
             .filter(|(entry, _)| entry.kind == accounts::SecretItemKind::Login)
             .filter_map(|(entry, _)| {
-                let id = tilo_actions::remote::person_vault::ItemRef::from_id(&entry.id.0)?;
+                let id = crate::workspace_vault::ItemRef::from_id(&entry.id.0)?;
                 let account = accounts::vault_items::ItemId::parse(&entry.id.0)
                     .and_then(|id| items.kept_for(&id).map(str::to_owned))
                     .and_then(|kept| held.account(&kept))

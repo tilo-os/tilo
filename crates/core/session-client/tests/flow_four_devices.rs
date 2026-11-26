@@ -18,7 +18,6 @@
 
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
-use tilo_actions::remote::person_vault;
 use tilo_server_protocol::WorkspaceId as ServerWorkspaceId;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_server_protocol::workspaces::{
@@ -27,6 +26,7 @@ use tilo_server_protocol::workspaces::{
 use tilo_session_client::Link;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, UserIdentity};
 use tilo_workspace_service::models as model_providers;
+use tilo_workspace_service::workspace_vault;
 
 use crate::support::flow;
 use crate::support::{Device, TestHost, enrol, start_workspace_host_relaying};
@@ -721,9 +721,9 @@ async fn flow_agent_signs_in_with_a_vault_entry_it_cannot_read_and_acts_on_the_p
     let kept = flow::ask(
         &f.client(&f.desktop_session, &f.desktop, "fedora-desktop"),
         f.work_id(),
-        person_vault::PROVIDER,
-        person_vault::RESOURCE,
-        person_vault::ADD,
+        workspace_vault::PROVIDER,
+        workspace_vault::RESOURCE,
+        workspace_vault::ADD,
         json!({
             "kind": "login",
             "belongsTo": [site],
@@ -755,12 +755,12 @@ async fn flow_agent_signs_in_with_a_vault_entry_it_cannot_read_and_acts_on_the_p
     let agent_device = f.client(&agent_session, &agent, "claude-code");
 
     // It cannot be shown the secret, nor have it copied.
-    for showing in [person_vault::REVEAL, person_vault::COPY] {
+    for showing in [workspace_vault::REVEAL, workspace_vault::COPY] {
         let shown = flow::ask(
             &agent_device,
             f.work_id(),
-            person_vault::PROVIDER,
-            person_vault::RESOURCE,
+            workspace_vault::PROVIDER,
+            workspace_vault::RESOURCE,
             showing,
             json!({"item": reference}),
         )
@@ -776,9 +776,9 @@ async fn flow_agent_signs_in_with_a_vault_entry_it_cannot_read_and_acts_on_the_p
     let answered = flow::ask(
         &agent_device,
         f.work_id(),
-        person_vault::PROVIDER,
-        person_vault::RESOURCE,
-        person_vault::WEB_CALL,
+        workspace_vault::PROVIDER,
+        workspace_vault::RESOURCE,
+        workspace_vault::WEB_CALL,
         json!({
             "url": site,
             "method": "GET",

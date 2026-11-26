@@ -709,7 +709,7 @@ pub(super) async fn add_mail_with(
     tester: Arc<dyn AccountTester>,
     (vault, root): (VaultAt<'_>, &Path),
     adding: AddMailAccount,
-    kept: Option<tilo_actions::remote::person_vault::ItemRef>,
+    kept: Option<crate::workspace_vault::ItemRef>,
     provider: workspace_accounts::Provider,
     linked: Option<(accounts::Account, String)>,
 ) -> Result<MailAccount, String> {
@@ -962,14 +962,14 @@ pub(super) fn save_provider_config(
 /// sign-in left.
 pub(super) fn key_reference(
     profile: &agent_provider_config::ProviderProfile,
-) -> Option<tilo_actions::remote::person_vault::ItemRef> {
+) -> Option<crate::workspace_vault::ItemRef> {
     let named = match &profile.sign_in {
         Some(sign_in) => sign_in.kept.as_ref(),
         None => profile.credential.as_ref(),
     };
     named
         .and_then(agent_provider_config::SecretReference::workspace_vault_item)
-        .and_then(tilo_actions::remote::person_vault::ItemRef::parse)
+        .and_then(crate::workspace_vault::ItemRef::parse)
 }
 
 /// Whether `profile` names a key, or a grant, in the workspace's vault.
@@ -980,7 +980,7 @@ pub(super) fn key_kept(profile: &agent_provider_config::ProviderProfile) -> bool
 /// Name `reference` as `profile`'s key, or as its sign-in's grant, or with `None` name none.
 fn name_key(
     profile: &mut agent_provider_config::ProviderProfile,
-    reference: Option<&tilo_actions::remote::person_vault::ItemRef>,
+    reference: Option<&crate::workspace_vault::ItemRef>,
 ) {
     let named = reference.map(|reference| {
         agent_provider_config::SecretReference::workspace_vault(&reference.to_string())
@@ -1074,7 +1074,7 @@ impl<'a> ProviderKeys<'a> {
     pub(super) async fn name(
         &self,
         profile: &mut agent_provider_config::ProviderProfile,
-        reference: &tilo_actions::remote::person_vault::ItemRef,
+        reference: &crate::workspace_vault::ItemRef,
     ) -> Result<(), String> {
         if let Some(before) = key_reference(profile)
             && &before != reference
@@ -1191,7 +1191,7 @@ pub(super) fn set_enabled(
 pub(super) async fn set_key(
     (keys, root): (ProviderKeys<'_>, &Path),
     setting: SetKey,
-    kept: Option<&tilo_actions::remote::person_vault::ItemRef>,
+    kept: Option<&crate::workspace_vault::ItemRef>,
 ) -> Result<ProviderView, String> {
     let SetKey { provider, key } = setting;
     let key = zeroize::Zeroizing::new(key);
@@ -1595,7 +1595,7 @@ mod tests {
                         password,
                     ))
                     .unwrap();
-                tilo_actions::remote::person_vault::ItemRef::from_id(added.id.as_str()).unwrap()
+                crate::workspace_vault::ItemRef::from_id(added.id.as_str()).unwrap()
             };
             accounts::email::set_password_item(&mut account.config, Some(&reference.to_string()));
             vault.keep_account(&account);

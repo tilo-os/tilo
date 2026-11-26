@@ -12,11 +12,12 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use crate::workspace_vault;
 use agent_provider_config::protocol::{Content, Message, ModelRequest, Role, ToolChoice};
 use serde_json::{Value, json};
 use test_http::Responder;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, ReceiptStatus, RemoteActionTarget, person_vault,
+    ActionCallError, ActionProvider as _, Caller, ReceiptStatus, RemoteActionTarget,
 };
 
 use crate::models as model_providers;
@@ -1168,7 +1169,7 @@ async fn a_vault_items_key_the_provider_does_not_take_leaves_the_kept_key_in_use
             &service,
             workspace_id,
             &ada,
-            person_vault::target(person_vault::ADD),
+            workspace_vault::target(workspace_vault::ADD),
             json!({"kind": "key", "belongsTo": [stand_in.url()], "secret": secret}),
         )
         .await

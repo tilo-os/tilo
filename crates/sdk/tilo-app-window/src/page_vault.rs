@@ -4,16 +4,16 @@
 //! The launcher connected this process to the device's daemon before its sandbox started
 //! (`tilo_actions::remote::handed`), so the daemon knows the connection as the process it launched
 //! for the app, and answers the vault's page login actions for that process alone
-//! (`tilo_actions::remote::person_vault::PAGE_LOGINS`). A password goes between this window's
+//! (`tilo_actions::remote::VAULT_PAGE_LOGINS`). A password goes between this window's
 //! engine and the vault over that connection, and nowhere else.
 
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use tilo_actions::remote::person_vault::{self, ItemRef, KeepPageLogin, PageFilled, PageLogins};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, InvokeRequest, LineClient, ReceiptStatus,
-    RemoteActionTarget,
+    ActionCallError, ActionProvider as _, Caller, InvokeRequest, ItemRef, LineClient,
+    ReceiptStatus, RemoteActionTarget, VAULT_FORGET_PAGE_LOGIN, VAULT_KEEP_PAGE_LOGIN,
+    VAULT_PAGE_FILL, VAULT_PAGE_LOGINS, vault_target,
 };
 use tilo_page_engine::{Answered, LoginVault, VaultLogin};
 use tilo_webview::ReleasedText;
@@ -87,6 +87,17 @@ impl NativeVault {
 
 /// `value` as the logins it lists.
 fn listed(value: Result<Value, String>) -> Result<Vec<VaultLogin>, String> {
+    #[derive(serde::Deserialize)]
+    struct PageLogins {
+        logins: Vec<PageLogin>,
+    }
+    #[derive(serde::Deserialize)]
+    struct PageLogin {
+        reference: ItemRef,
+        title: String,
+        username: String,
+        own: bool,
+    }
     let logins: PageLogins = serde_json::from_value(value?)
         .map_err(|_| "The vault answered what is no list of logins".to_owned())?;
     Ok(logins
@@ -109,7 +120,7 @@ fn item_of(item: &str) -> Result<ItemRef, String> {
 impl LoginVault for NativeVault {
     fn logins(&self, site: &str, done: Answered<Vec<VaultLogin>>) {
         self.call(
-            person_vault::target(person_vault::PAGE_LOGINS),
+            vault_target(VAULT_PAGE_LOGINS),
             json!({"site": site}),
             move |value| done(listed(value)),
         );
@@ -130,15 +141,14 @@ impl LoginVault for NativeVault {
         let Some(secret) = password.take() else {
             return done(Err("The form's password was taken already".to_owned()));
         };
-        let keeping = KeepPageLogin {
-            site: site.to_owned(),
-            username: username.to_owned(),
-            secret: String::clone(&secret),
-            replacing,
-        };
-        let argument = serde_json::to_value(keeping).unwrap_or_default();
+        let argument = json!({
+            "site": site,
+            "username": username,
+            "secret": String::clone(&secret),
+            "replacing": replacing,
+        });
         self.call(
-            person_vault::target(person_vault::KEEP_PAGE_LOGIN),
+            vault_target(VAULT_KEEP_PAGE_LOGIN),
             argument,
             move |value| done(value.map(drop)),
         );
@@ -150,7 +160,7 @@ impl LoginVault for NativeVault {
             Err(why) => return done(Err(why)),
         };
         self.call(
-            person_vault::target(person_vault::FORGET_PAGE_LOGIN),
+            vault_target(VAULT_FORGET_PAGE_LOGIN),
             json!({"site": site, "item": item}),
             move |value| done(listed(value)),
         );
@@ -162,10 +172,15 @@ impl LoginVault for NativeVault {
             Err(why) => return done(Err(why)),
         };
         self.call(
-            person_vault::page_fill_target(&item),
+            item.target(VAULT_PAGE_FILL),
             json!({"site": site}),
             move |value| {
                 done(value.and_then(|value| {
+                    #[derive(serde::Deserialize)]
+                    struct PageFilled {
+                        username: String,
+                        secret: String,
+                    }
                     let filled: PageFilled = serde_json::from_value(value)
                         .map_err(|_| "The vault answered what is no login".to_owned())?;
                     Ok((filled.username, ReleasedText::new(filled.secret)))

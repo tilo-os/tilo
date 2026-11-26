@@ -26,6 +26,14 @@ mod workspace_accounts {
     );
 }
 
+/// The workspace's vault, as the service that keeps it publishes its actions.
+mod vault_actions {
+    tilo_resource::bindings!(
+        provider = "tilo.vault",
+        surface = "../../core/tilo-workspace-service/vault-surface.json"
+    );
+}
+
 /// An action host that admits every ask and keeps what it admitted.
 #[derive(Default)]
 pub struct Host {
@@ -154,12 +162,10 @@ pub fn the_persons_asks_reach_the_api_the_host_hands_the_session() {
 /// an agent of theirs, not an app. No device of theirs is asked.
 #[test]
 pub fn the_persons_vault_is_asked_by_the_person_alone() {
-    use tilo_actions::remote::person_vault;
-
     let (session, _openings) = super::serve("workspace", Arc::default());
     let person = Caller::local_person("ada").in_workspace("workspace");
     let adding = || InvokeRequest {
-        target: person_vault::target(person_vault::ADD),
+        target: vault_actions::vault::add(),
         ..ask(mcp_server::STOP)
     };
     let early = answer(session.invoke(&person, adding()));

@@ -435,7 +435,7 @@ impl std::fmt::Debug for SetKey {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SetKeyFromItem {
     pub provider: String,
-    pub key: tilo_actions::remote::person_vault::ItemRef,
+    pub key: crate::workspace_vault::ItemRef,
     /// Why whoever asks needs it, in a sentence its person reads when they
     /// are asked first; empty when nothing was said.
     #[serde(default, skip_serializing_if = "String::is_empty")]

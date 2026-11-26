@@ -197,7 +197,7 @@ impl Draft {
                 }
                 // A secret named by reference reads as a secret does: the
                 // address of a vault item tells a reviewer nothing.
-                (ParamType::Resource, _) if crate::remote::person_vault::takes_item(param) => {
+                (ParamType::Resource, _) if crate::remote::takes_item(param) => {
                     fields.push(field(path, &param.name, DraftValue::Withheld));
                 }
                 (ParamType::Object, Value::Object(object)) => {

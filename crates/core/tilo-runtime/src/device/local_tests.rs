@@ -908,7 +908,7 @@ fn own_line(
 /// a line whose process ended speaks for nobody.
 #[test]
 fn an_apps_own_process_keeps_reads_back_and_is_keyed_on_its_daemon_line() {
-    use tilo_actions::remote::person_vault;
+    use tilo_workspace_service::workspace_vault;
     const BRIDGE: &str = "so.tilo.bridge";
     const READER: &str = "so.tilo.reader";
     const TOKEN: &str = "made-up-bridge-token-0123456789abcdef";
@@ -932,28 +932,28 @@ fn an_apps_own_process_keeps_reads_back_and_is_keyed_on_its_daemon_line() {
     // The bridge keeps its token, and reads it back with nobody asked.
     let kept = called(
         &bridges,
-        person_vault::keep_target(),
+        workspace_vault::target(workspace_vault::KEEP),
         serde_json::json!({"purpose": "bot-token", "value": TOKEN}),
     )
     .expect("the bridge's own process keeps its token");
-    let kept: person_vault::Kept = serde_json::from_value(kept).unwrap();
+    let kept: workspace_vault::Kept = serde_json::from_value(kept).unwrap();
     let released = called(
         &bridges,
-        person_vault::release_target(&kept.reference),
+        workspace_vault::ItemRef::target(&kept.reference, workspace_vault::RELEASE),
         Value::Null,
     )
     .expect("and reads it back");
-    let released: person_vault::Released = serde_json::from_value(released).unwrap();
+    let released: workspace_vault::Released = serde_json::from_value(released).unwrap();
     assert_eq!(released.secret, TOKEN);
 
     // One key per purpose, the same on every ask.
     let key = |client: &tilo_actions::remote::LineClient, purpose: &str| {
         called(
             client,
-            person_vault::device_key_target(),
+            workspace_vault::target(workspace_vault::DEVICE_KEY),
             serde_json::json!({ "purpose": purpose }),
         )
-        .map(|key| serde_json::from_value::<person_vault::DeviceKey>(key).unwrap())
+        .map(|key| serde_json::from_value::<workspace_vault::DeviceKey>(key).unwrap())
     };
     let first = key(&bridges, "grayjay-noise").expect("the bridge's process is keyed");
     assert_eq!(key(&bridges, "grayjay-noise").unwrap(), first);
@@ -964,7 +964,7 @@ fn an_apps_own_process_keeps_reads_back_and_is_keyed_on_its_daemon_line() {
     assert!(
         called(
             &readers,
-            person_vault::release_target(&kept.reference),
+            workspace_vault::ItemRef::target(&kept.reference, workspace_vault::RELEASE),
             Value::Null
         )
         .is_err_and(|refused| refused.contains(READER)),
@@ -978,7 +978,7 @@ fn an_apps_own_process_keeps_reads_back_and_is_keyed_on_its_daemon_line() {
     assert_eq!(
         called(
             &tasks,
-            person_vault::release_target(&kept.reference),
+            workspace_vault::ItemRef::target(&kept.reference, workspace_vault::RELEASE),
             Value::Null
         ),
         Err(from_a_task.clone())
@@ -986,7 +986,7 @@ fn an_apps_own_process_keeps_reads_back_and_is_keyed_on_its_daemon_line() {
     assert_eq!(
         called(
             &tasks,
-            person_vault::keep_target(),
+            workspace_vault::target(workspace_vault::KEEP),
             serde_json::json!({"purpose": "bot-token", "value": TOKEN}),
         ),
         Err(from_a_task)

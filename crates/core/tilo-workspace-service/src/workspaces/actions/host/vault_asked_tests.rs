@@ -14,10 +14,11 @@
 
 use std::sync::Arc;
 
+use crate::workspace_vault;
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::asked::{Offer, SECRET_GONE};
-use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest, person_vault};
+use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions;
@@ -54,7 +55,7 @@ fn adding(title: &str, secret: &str) -> InvokeRequest {
     };
     InvokeRequest {
         invocation: InvocationId::new(),
-        target: person_vault::target(person_vault::ADD),
+        target: workspace_vault::target(workspace_vault::ADD),
         argument: InvokeArgument::Json(arguments),
         context: None,
         confirmation: None,
@@ -132,7 +133,7 @@ async fn entry_titled(
         service,
         workspace_id,
         (ada, &as_ada),
-        person_vault::LIST,
+        workspace_vault::LIST,
         json!({}),
     )
     .await?;
@@ -165,7 +166,7 @@ async fn entry_titled(
             service,
             workspace_id,
             (ada, &as_ada),
-            person_vault::REVEAL,
+            workspace_vault::REVEAL,
             json!({"item": reference, "part": part}),
         )
         .await?;
@@ -469,7 +470,7 @@ async fn an_action_listed_only_as_it_is_asked_is_taken_for_all_secret() {
     let (key, owner) = hosting_device();
     let server = test_host_holding(dir.path(), &key, &owner, Arc::default()).await;
     let workspaces = server.workspaces();
-    let mut row = person_vault::call_rows().remove(0);
+    let mut row = workspace_vault::call_rows().remove(0);
     row.provider = "test.dynamic".to_owned();
     let mut action = row.action.take().unwrap();
     action.address = tilo_actions::ActionAddress::new("dynamic.accounts", "connect");
@@ -498,7 +499,7 @@ async fn an_action_listed_only_as_it_is_asked_is_taken_for_all_secret() {
     );
     let secrets = workspaces.secret_parameters();
     assert_eq!(secrets(&target), None, "described nowhere read at once");
-    let mut vault_add = secrets(&person_vault::target(person_vault::ADD)).unwrap();
+    let mut vault_add = secrets(&workspace_vault::target(workspace_vault::ADD)).unwrap();
     vault_add.sort();
     assert_eq!(vault_add, ["fields", "notes", "secret"]);
     assert_eq!(

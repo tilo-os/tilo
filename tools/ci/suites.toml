@@ -766,8 +766,12 @@ readers = ["crates/os/app-cli/tests/runtime_fetch.rs"]
 [[cargo]]
 package = "tilo-api"
 # The sign-in tests build a host's answers from the fixture file the API's image ships, so a
-# change to either checks and tests the other.
-inputs = ["os/containers/tilo-api/host-info.json"]
+# change to either checks and tests the other. Its calls of the workspace's vault bind to the
+# surface their service publishes.
+inputs = [
+  "os/containers/tilo-api/host-info.json",
+  "crates/core/tilo-workspace-service/vault-surface.json",
+]
 readers = ["crates/core/tilo-api/src/tests.rs"]
 
 [[cargo]]
@@ -1494,11 +1498,12 @@ inputs = ["crates/core/tilo-workspace-service/accounts-surface.json"]
 
 [[cargo]]
 package = "tilo-session-core"
-# The session's tests name the targets of the workspace's accounts and model providers from the
-# surfaces their service publishes.
+# The session's tests name the targets of the workspace's accounts, model providers and vault
+# from the surfaces their service publishes.
 inputs = [
   "crates/core/tilo-workspace-service/accounts-surface.json",
   "crates/core/tilo-workspace-service/models-surface.json",
+  "crates/core/tilo-workspace-service/vault-surface.json",
 ]
 
 [[cargo]]

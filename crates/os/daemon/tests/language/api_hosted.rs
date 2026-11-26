@@ -16,8 +16,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tilo_actions::remote::workspace_invocations::{self, Invocation, InvocationStatus};
-use tilo_actions::remote::{ActionProvider, ResourceAddress, ResourceCopy, person_vault};
+use tilo_actions::remote::{ActionProvider, ResourceAddress, ResourceCopy};
 use tilo_workspace_service::models as model_providers;
+use tilo_workspace_service::workspace_vault;
 
 use crate::language::host;
 use crate::language::host::said;
@@ -456,7 +457,7 @@ fn a_key_made_for_a_script_reaches_the_workspaces_stores_as_its_persons_agent() 
     host::run(|host| async move {
         let workspace = host.workspace().to_owned();
         let laptop = host.member("Ada's laptop", &workspace).await;
-        let list = person_vault::target(person_vault::LIST);
+        let list = workspace_vault::target(workspace_vault::LIST);
         let kept = laptop
             .call(&list.provider, list.address.clone(), &json!({}))
             .await;
@@ -476,7 +477,7 @@ fn a_key_made_for_a_script_reaches_the_workspaces_stores_as_its_persons_agent() 
         for (what, target, argument) in [
             (
                 "adds to the vault",
-                person_vault::target(person_vault::ADD),
+                workspace_vault::target(workspace_vault::ADD),
                 json!({"kind": "login",
                        "belongsTo": ["https://mail.example.test"],
                        "username": "ada@example.test",

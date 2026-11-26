@@ -5,7 +5,7 @@
 //!
 //! A field of a web page is the one use whose secret leaves this server: the page is in the
 //! workspace's Browser window, and only its engine writes into it. The turn names the field and
-//! the item ([`person_vault::fill_row`]); the window is handed the fill and says which site its
+//! the item ([`workspace_vault::fill_row`]); the window is handed the fill and says which site its
 //! page is at ([`super::windows::Windows::fill_for_turn`]); the entry decides for
 //! that site ([`TurnUses::release`]), waiting for the person's yes as for every use.
 //!
@@ -21,12 +21,13 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::asked::AskedFacts;
-use tilo_actions::remote::person_vault::{FillField, FillPage};
 use tilo_actions::remote::{
     ActionCallError, Caller, CatalogueProvider, CatalogueQuery, CatalogueRow, InvokeArgument,
-    InvokeRequest, Pending, RemoteActionTarget, person_vault,
+    InvokeRequest, Pending, RemoteActionTarget,
 };
 use tilo_lock::MutexRecover as _;
+use tilo_workspace_service::workspace_vault::{self, FillField};
+use tilo_workspace_service::workspaces::hosted_use::PageFill;
 use zeroize::Zeroizing;
 
 use super::turn_provider::{Ending, Rows};
@@ -62,7 +63,7 @@ impl TurnUses {
                 .await
                 .is_ok()
         {
-            vec![person_vault::fill_row()]
+            vec![workspace_vault::fill_row()]
         } else {
             Vec::new()
         };
@@ -148,15 +149,15 @@ impl TurnUses {
         origin: String,
         asks: &Mutex<Option<AskedFacts>>,
     ) -> Release {
-        let fill = FillPage {
-            site: origin,
-            item: wanted.item,
-            reason: wanted.reason.trim().to_owned(),
+        let fill = PageFill {
+            site: &origin,
+            item: &wanted.item,
+            reason: wanted.reason.trim(),
         };
         let released = self
             .agents
             .workspaces
-            .release_for(caller, &fill, request)
+            .release_for(caller, fill, request)
             .await;
         match released {
             Ok(text) => Release::Text {
@@ -181,8 +182,8 @@ impl TurnProvider for TurnUses {
             return Vec::new();
         }
         vec![CatalogueProvider {
-            provider: person_vault::PROVIDER.to_owned(),
-            app_id: person_vault::PROVIDER.to_owned(),
+            provider: workspace_vault::PROVIDER.to_owned(),
+            app_id: workspace_vault::PROVIDER.to_owned(),
             workspace: self.workspace.clone(),
             document_id: String::new(),
             browsable: true,
@@ -204,7 +205,7 @@ impl TurnProvider for TurnUses {
     /// A page's fill is carried out here, also for a turn it is not offered to, which the
     /// entry then refuses.
     fn takes(&self, target: &RemoteActionTarget) -> bool {
-        *target == person_vault::page_target()
+        *target == workspace_vault::target(workspace_vault::FILL_PAGE)
     }
 
     /// A turn's caller changes when its person writes again while it works,

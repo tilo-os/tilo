@@ -13,8 +13,8 @@
 //! left, a key) names the account it is kept for, and goes when the account goes. An account
 //! added with an entry a member keeps for themselves only names it: that entry stays theirs.
 
+use crate::workspace_vault::ItemRef;
 use accounts::vault_items::{ItemError, ItemId, ItemKind, NewItem, Place, Released, UsedFor};
-use tilo_actions::remote::person_vault::ItemRef;
 use zeroize::Zeroizing;
 
 use super::super::vault::VaultAt;

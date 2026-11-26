@@ -17,7 +17,8 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use tilo_actions::remote::ActionProvider as _;
-use tilo_actions::remote::{ReceiptStatus, person_vault};
+use tilo_actions::remote::ReceiptStatus;
+use tilo_workspace_service::workspace_vault;
 
 use crate::language::chat::{opens, said};
 use crate::language::host;
@@ -126,8 +127,8 @@ async fn vault(host: &host::Host, action: &str, args: &Value) -> Result<Value, S
         .invoke(
             &host.caller(),
             host::call(
-                person_vault::PROVIDER,
-                tilo_actions::ActionAddress::new(person_vault::RESOURCE, action),
+                workspace_vault::PROVIDER,
+                tilo_actions::ActionAddress::new(workspace_vault::RESOURCE, action),
                 args,
             ),
         )
@@ -150,7 +151,7 @@ fn the_assistant_calls_a_service_with_a_key_it_never_sees() {
         // The protected path: the person's own device hands the key to their vault here.
         let kept = vault(
             host.as_ref(),
-            person_vault::ADD,
+            workspace_vault::ADD,
             &json!({"kind": "key", "belongsTo": [service.url.clone()], "secret": KEY}),
         )
         .await
@@ -198,7 +199,7 @@ fn the_assistant_calls_a_service_with_a_key_it_never_sees() {
         // answer action runs (the app's open above).
         let allowed = vault(
             host.as_ref(),
-            person_vault::WEB_CALL,
+            workspace_vault::WEB_CALL,
             &balance(&service, &reference),
         )
         .await
@@ -214,7 +215,7 @@ fn the_assistant_calls_a_service_with_a_key_it_never_sees() {
         // What the item remembers of it: when, where and for whom.
         let remembers = vault(
             host.as_ref(),
-            person_vault::USES,
+            workspace_vault::USES,
             &json!({"item": reference}),
         )
         .await

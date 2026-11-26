@@ -11,10 +11,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::workspace_vault;
 use ed25519_dalek::SigningKey;
 use serde_json::json;
 use tilo_actions::InvocationId;
-use tilo_actions::remote::person_vault;
 use tilo_actions::remote::{InvokeArgument, InvokeRequest};
 use tilo_user_identity::DeviceCapabilities;
 
@@ -87,7 +87,7 @@ async fn a_secret_an_app_keeps_on_one_device_is_its_own_on_the_persons_other_dev
     let workspace = created.workspace;
 
     let keep = request(
-        person_vault::keep_target(),
+        workspace_vault::target(workspace_vault::KEEP),
         InvokeArgument::Json(
             json!({"purpose": "bot-token", "value": TOKEN})
                 .as_object()
@@ -136,7 +136,7 @@ async fn a_secret_an_app_keeps_on_one_device_is_its_own_on_the_persons_other_dev
             (BRIDGE, &workspace),
             &AppProcess::connection(BRIDGE),
             &request(
-                person_vault::release_target(&kept.reference),
+                workspace_vault::ItemRef::target(&kept.reference, workspace_vault::RELEASE),
                 InvokeArgument::None,
             ),
         )
@@ -166,7 +166,7 @@ async fn an_apps_own_process_finds_the_item_it_kept_and_reads_it_back() {
         shared_with(one.path(), "Kept", 62, laptop).await;
     let workspace = created.workspace;
     let keeping = request(
-        person_vault::keep_target(),
+        workspace_vault::target(workspace_vault::KEEP),
         InvokeArgument::Json(
             json!({"purpose": "bot-token", "value": TOKEN})
                 .as_object()
@@ -181,7 +181,7 @@ async fn an_apps_own_process_finds_the_item_it_kept_and_reads_it_back() {
         .expect("the bridge keeps its token");
     let finding = |purpose: &str| {
         request(
-            person_vault::target(person_vault::FIND),
+            workspace_vault::target(workspace_vault::FIND),
             InvokeArgument::Json(
                 json!({"app": BRIDGE, "purpose": purpose})
                     .as_object()
@@ -219,7 +219,7 @@ async fn an_apps_own_process_finds_the_item_it_kept_and_reads_it_back() {
             (BRIDGE, &workspace),
             &AppProcess::OwnTilolang,
             &request(
-                person_vault::release_target(&kept.reference),
+                workspace_vault::ItemRef::target(&kept.reference, workspace_vault::RELEASE),
                 InvokeArgument::None,
             ),
         )

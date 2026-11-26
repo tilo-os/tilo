@@ -16,8 +16,8 @@
 
 use std::path::Path;
 
+use crate::workspace_vault::ItemRef;
 use account_credentials::{CredentialError, CredentialStore, OAuthIssuer, OAuthUse, RenewedGrant};
-use tilo_actions::remote::person_vault::ItemRef;
 use zeroize::Zeroizing;
 
 use super::super::vault::VaultAt;

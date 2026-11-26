@@ -49,7 +49,7 @@ use tilo_actions::remote::{
     InvocationState, InvokeArgument, InvokeRequest, MODELS_PROVIDER, NODE_PERMITS_ACTION,
     NODE_RESOURCE_PREFIX, Pending, ReceiptStatus, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION,
     application_provider, application_provider_resource, formats, mcp_server, pending,
-    person_telling, person_vault, provider_workspace, server_account, session_actions,
+    person_telling, provider_workspace, server_account, session_actions,
     workspace_activity as wire,
 };
 
@@ -226,7 +226,7 @@ pub const PERSON_PROVIDERS: [&str; 1] = [mcp_server::PROVIDER];
 pub const WORKSPACE_SERVER_PROVIDERS: [&str; 6] = [
     ACCOUNTS_PROVIDER,
     MODELS_PROVIDER,
-    person_vault::PROVIDER,
+    tilo_actions::remote::VAULT_PROVIDER,
     person_telling::PROVIDER,
     server_account::PROVIDER,
     formats::PROVIDER,

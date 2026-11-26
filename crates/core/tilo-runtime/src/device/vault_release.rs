@@ -15,10 +15,22 @@ use tilo_actions::remote::{
     InvocationState, InvokeRequest, Pending, ReceiptStatus, pending,
 };
 use tilo_actions::{ActionOutput, InvocationId};
+use tilo_workspace_service::workspace_vault;
 use tilo_workspace_service::workspaces::vault_release::AppProcess;
 
 use super::services::Daemon;
 use crate::apps::ProcessOf;
+
+/// `answered` as the value the call is answered with.
+fn answer_of<T: serde::Serialize>(
+    answered: Result<T, ActionCallError>,
+) -> Result<serde_json::Value, ActionCallError> {
+    answered.and_then(|value| {
+        serde_json::to_value(value).map_err(|_| ActionCallError::Unavailable {
+            reason: "the vault's answer could not be written".into(),
+        })
+    })
+}
 
 /// The provider a release frame from process `pid`, the app `app` in `workspace`, is answered
 /// by.
@@ -104,57 +116,28 @@ impl ActionProvider for OwnProcess {
         };
         let workspaces = daemon.workspaces().clone();
         let (app, workspace) = (self.app.clone(), self.workspace.clone());
-        let find = tilo_actions::remote::person_vault::is_find(&request.target);
-        let call = tilo_actions::remote::person_vault::is_web_call(&request.target);
-        let keep = tilo_actions::remote::person_vault::is_keep(&request.target);
-        let device_key = tilo_actions::remote::person_vault::is_device_key(&request.target);
+        let asked = workspace_vault::asked_by_app(&request.target);
         let (completer, answer) = pending();
         tilo_rt::app().spawn(async move {
             let invocation = request.invocation;
-            let answered = if tilo_actions::remote::person_vault::is_page_login(&request.target) {
-                workspaces
-                    .page_login((&app, &workspace), &process, &request)
-                    .await
-            } else if find {
-                workspaces
-                    .find_tagged((&app, &workspace), &process, &request)
-                    .await
-                    .and_then(|found| {
-                        serde_json::to_value(&found).map_err(|_| ActionCallError::Unavailable {
-                            reason: "the found item could not be answered".into(),
-                        })
-                    })
-            } else if call {
-                workspaces
-                    .web_call_to((&app, &workspace), &process, &request)
-                    .await
-            } else if device_key {
-                workspaces
-                    .device_key_for((&app, &workspace), &process, &request)
-                    .await
-                    .and_then(|key| {
-                        serde_json::to_value(&key).map_err(|_| ActionCallError::Unavailable {
-                            reason: "the device key could not be answered".into(),
-                        })
-                    })
-            } else if keep {
-                workspaces
-                    .keep_for((&app, &workspace), &process, &request)
-                    .await
-                    .and_then(|kept| {
-                        serde_json::to_value(&kept).map_err(|_| ActionCallError::Unavailable {
-                            reason: "the kept item could not be answered".into(),
-                        })
-                    })
-            } else {
-                workspaces
-                    .release_to((&app, &workspace), &process, &request)
-                    .await
-                    .and_then(|released| {
-                        serde_json::to_value(&released).map_err(|_| ActionCallError::Unavailable {
-                            reason: "the released item could not be answered".into(),
-                        })
-                    })
+            let at = (app.as_str(), workspace.as_str());
+            let answered = match asked {
+                Some(action) if workspace_vault::PAGE_LOGIN_ACTIONS.contains(&action) => {
+                    workspaces.page_login(at, &process, &request).await
+                }
+                Some(workspace_vault::FIND) => {
+                    answer_of(workspaces.find_tagged(at, &process, &request).await)
+                }
+                Some(workspace_vault::WEB_CALL) => {
+                    workspaces.web_call_to(at, &process, &request).await
+                }
+                Some(workspace_vault::DEVICE_KEY) => {
+                    answer_of(workspaces.device_key_for(at, &process, &request).await)
+                }
+                Some(workspace_vault::KEEP) => {
+                    answer_of(workspaces.keep_for(at, &process, &request).await)
+                }
+                _ => answer_of(workspaces.release_to(at, &process, &request).await),
             };
             completer.complete(answered.map(|value| InvocationReceipt {
                 invocation,
@@ -190,7 +173,7 @@ impl ActionProvider for OwnProcess {
 /// Whether `frame` is a release, a find, a web call, a keep or a device key this connection's own
 /// process asks for, the ways an app's held connection reaches its vault items, one of the page
 /// login actions a window of the app's own asks for its page
-/// ([`tilo_actions::remote::person_vault::is_page_login`]), or a command to its app's records
+/// ([`workspace_vault::PAGE_LOGIN_ACTIONS`]), or a command to its app's records
 /// ([`super::store_lane`]).
 pub(crate) fn is_answered_for_this_process(
     frame: &tilo_actions::remote::RemoteActionFrame,
@@ -201,11 +184,6 @@ pub(crate) fn is_answered_for_this_process(
     ) || matches!(
         &frame.message,
         tilo_actions::remote::RemoteActionMessage::Invoke(request)
-            if tilo_actions::remote::person_vault::is_release(&request.target)
-                || tilo_actions::remote::person_vault::is_find(&request.target)
-                || tilo_actions::remote::person_vault::is_web_call(&request.target)
-                || tilo_actions::remote::person_vault::is_keep(&request.target)
-                || tilo_actions::remote::person_vault::is_device_key(&request.target)
-                || tilo_actions::remote::person_vault::is_page_login(&request.target)
+            if workspace_vault::asked_by_app(&request.target).is_some()
     )
 }

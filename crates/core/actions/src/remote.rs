@@ -77,7 +77,14 @@ mod nodes;
 pub mod own_device;
 mod pending;
 pub mod person_telling;
-pub mod person_vault;
+mod vault;
+pub use vault::{
+    ItemRef, KEEP_SEALED, KEEP_USES, REMOVE_SEALED, VAULT_DEVICE_KEY, VAULT_FIND,
+    VAULT_FORGET_PAGE_LOGIN, VAULT_ITEM_KIND, VAULT_KEEP, VAULT_KEEP_PAGE_LOGIN, VAULT_KIND,
+    VAULT_LIST, VAULT_PAGE_FILL, VAULT_PAGE_LOGINS, VAULT_PROVIDER, VAULT_RECORD, VAULT_RELEASE,
+    VAULT_RESOURCE, VAULT_SECRET_ANSWERS, VAULT_STEPS, answers_secret, calls_answering_a_secret,
+    calls_by_address, item_param, takes_item, vault_step, vault_target,
+};
 pub mod press_points;
 mod providers;
 mod resource_read;
@@ -462,7 +469,6 @@ pub const MODELS_PROVIDER: &str = "tilo.models";
 /// key just kept included. Signing in on the provider's own page keeps the key or grant it left.
 /// An action not named writes nothing there.
 pub const MODEL_VAULT_STEPS: [(&str, &[&str]); 11] = {
-    use person_vault::{KEEP_SEALED, KEEP_USES, REMOVE_SEALED};
     const KEEPS: &[&str] = &[KEEP_SEALED, REMOVE_SEALED, KEEP_USES];
     [
         ("begin-sign-in", &[KEEP_SEALED]),
@@ -493,7 +499,6 @@ pub const ACCOUNTS_PROVIDER: &str = "tilo.accounts";
 /// (`save-account`), a removed one goes (`remove-account`), and a sign-in says how it went
 /// (`report-sync`). An action not named writes nothing besides.
 pub const ACCOUNT_STEPS: [(&str, &[&str], &[&str]); 18] = {
-    use person_vault::{KEEP_SEALED, KEEP_USES, REMOVE_SEALED};
     const SAVE: &str = "save-account";
     const REMOVE: &str = "remove-account";
     const REPORT: &str = "report-sync";
@@ -547,7 +552,7 @@ fn account_steps(action: &str) -> Vec<crate::ActionEffect> {
         .map_or_else(Vec::new, |(_, vault, record)| {
             vault
                 .iter()
-                .map(|verb| person_vault::vault_step(verb))
+                .map(|verb| vault_step(verb))
                 .chain(record.iter().map(|verb| {
                     crate::ActionEffect::new(tilo_app_id::apps::SETTINGS, ACCOUNTS_PROVIDER, *verb)
                 }))
@@ -561,10 +566,7 @@ fn vault_steps(table: &[(&str, &[&str])], action: &str) -> Vec<crate::ActionEffe
         .iter()
         .find(|(id, _)| *id == action)
         .map_or_else(Vec::new, |(_, steps)| {
-            steps
-                .iter()
-                .map(|verb| person_vault::vault_step(verb))
-                .collect()
+            steps.iter().map(|verb| vault_step(verb)).collect()
         })
 }
 
@@ -579,7 +581,6 @@ pub const CONNECTIONS_PROVIDER: &str = "tilo.connections";
 /// it: a service's sign-in tokens are kept, a removed connection's go, and a call made with
 /// them writes down that use. An action not named writes nothing there.
 pub const CONNECTION_VAULT_STEPS: [(&str, &[&str]); 6] = {
-    use person_vault::{KEEP_SEALED, KEEP_USES, REMOVE_SEALED};
     const KEEPS: &[&str] = &[KEEP_SEALED, KEEP_USES];
     [
         ("add", &[KEEP_SEALED]),
@@ -645,9 +646,21 @@ pub fn declared_effects(target: &RemoteActionTarget) -> Vec<crate::ActionEffect>
         }
         _ => Vec::new(),
     };
-    for effect in person_vault::declared_effects(target) {
-        if !effects.contains(&effect) {
-            effects.push(effect);
+    // The vault's own actions take their steps in its record, whether asked of the vault's
+    // provider or of the vault in the workspace's tree (`workspace/vault`).
+    let in_vault = target.provider == VAULT_PROVIDER
+        || (target.provider == WORKSPACE_GOVERNANCE_PROVIDER
+            && address
+                .resource
+                .strip_prefix(workspace_governance_resource("").as_str())
+                .and_then(|rest| rest.strip_suffix(WORKSPACE_VAULT))
+                .and_then(|workspace| workspace.strip_suffix('/'))
+                .is_some_and(|workspace| !workspace.contains('/')));
+    if in_vault {
+        for effect in vault_steps(&VAULT_STEPS, &address.action) {
+            if !effects.contains(&effect) {
+                effects.push(effect);
+            }
         }
     }
     effects
@@ -659,8 +672,7 @@ pub fn declared_effects(target: &RemoteActionTarget) -> Vec<crate::ActionEffect>
 /// carry a one-time code, wherever a host publishes them.
 #[must_use]
 pub fn answers_a_secret(action: &str) -> bool {
-    matches!(action, person_vault::REVEAL | person_vault::CODE)
-        || ACCOUNT_SECRET_ANSWERS.contains(&action)
+    VAULT_SECRET_ANSWERS.contains(&action) || ACCOUNT_SECRET_ANSWERS.contains(&action)
 }
 
 /// The resource `child` of `workspace`'s governance tree: the root for `None`.
@@ -1470,7 +1482,7 @@ pub const ACTIONS_PROVIDER: &str = "tilo.actions";
 pub const WORKSPACE_KEPT_PROVIDERS: [&str; 6] = [
     ACCOUNTS_PROVIDER,
     MODELS_PROVIDER,
-    person_vault::PROVIDER,
+    VAULT_PROVIDER,
     person_telling::PROVIDER,
     CONNECTIONS_PROVIDER,
     formats::PROVIDER,

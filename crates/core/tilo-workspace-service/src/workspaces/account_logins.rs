@@ -11,12 +11,12 @@
 //! ([`Workspaces::using_vault`]). A password leaves the vault only to sign in at
 //! the places its entry names, and each release is written down in the entry's uses first.
 
+use crate::workspace_vault::ItemRef;
 use accounts::person::AccountList;
 /// The place an account signs in at, as [`AccountLogin::places`] names it: what a sign-in is
 /// kept for, and nowhere else.
 pub use accounts::vault_items::Place;
 use accounts::vault_items::{ItemId, ItemKind, NewItem, Released, UsedFor};
-use tilo_actions::remote::person_vault::ItemRef;
 use tilo_actions::remote::{Caller, InvokeRequest};
 use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_resource::{Replica, Resource as _};
@@ -161,7 +161,7 @@ impl Workspaces {
             &collab_types::document_node(
                 workspace,
                 super::vault::APP,
-                tilo_actions::remote::person_vault::VAULT_RECORD,
+                tilo_actions::remote::VAULT_RECORD,
             ),
             MAY_NOT_USE_PASSWORDS,
         )?;

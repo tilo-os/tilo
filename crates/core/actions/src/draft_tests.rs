@@ -365,10 +365,7 @@ fn a_secret_named_by_reference_is_withheld_like_a_secret() {
         "Add mail account",
         vec![
             ActionParam::required("address", ParamType::Text, "Address"),
-            crate::remote::person_vault::item_param(
-                "password",
-                "The account's password, by reference",
-            ),
+            crate::remote::item_param("password", "The account's password, by reference"),
         ],
     );
     let draft = Draft::render(

@@ -1403,15 +1403,15 @@ mod tests {
         // from a device that does not keep the record, and a step `add` does not declare, are
         // refused.
         {
-            use tilo_actions::remote::person_vault;
+            use tilo_actions::remote::{VAULT_KIND, vault_target};
             let (root, _) = UserIdentity::generate("Ada", 1);
             let key = SigningKey::from_bytes(&[31; 32]);
             let cert = cert_of(&root, &key, None);
             let mut adding = request();
-            adding.target = person_vault::target(person_vault::ADD);
+            adding.target = vault_target("add");
             let asked = signed(&adding, &cert, &key, NOW);
             let acting = Acting::person(hex::encode(cert.user_public_key));
-            let passwords = person_vault::VAULT_KIND;
+            let passwords = VAULT_KIND;
             let step = |verb: &str| {
                 let mut context = tilo_actions::ActionContext {
                     source_invocation: Some(asked.invocation),
@@ -1454,16 +1454,16 @@ mod tests {
         // for Ada. The same call from another device, a step it does not declare, and one that
         // names Ada as having made it herself are refused.
         {
-            use tilo_actions::remote::person_vault;
+            use tilo_actions::remote::{VAULT_KIND, vault_target};
             let (host_root, _) = UserIdentity::generate("Host", 1);
             let host_key = SigningKey::from_bytes(&[41; 32]);
             let host = cert_of(&host_root, &host_key, None);
             let mut filling = request();
-            filling.target = person_vault::page_target();
+            filling.target = vault_target("fill-page");
             let asked = signed(&filling, &host, &host_key, NOW);
             let ada = hex::encode([3; 32]);
             let agent = Acting::agent("assistant", ada.clone()).acting_for(Acting::person(ada.clone()));
-            let passwords = person_vault::VAULT_KIND;
+            let passwords = VAULT_KIND;
             let step = |verb: &str, acting: &Acting| tilo_actions::ActionContext {
                 source_invocation: Some(asked.invocation),
                 signed: tilo_actions::remote::SignedCall::of(&asked).map(Box::new),

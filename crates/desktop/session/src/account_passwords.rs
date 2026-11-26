@@ -26,7 +26,7 @@ use runtime_collab::wire::shell::{ShellCall, ShellReply, VaultCall};
 use runtime_collab::{
     BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply,
 };
-use tilo_actions::remote::person_vault::ItemRef;
+use tilo_actions::remote::ItemRef;
 use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_resource::{Id, Replica};
 use tilo_session_client::daemon_documents::{DaemonShell, document_read, whole};

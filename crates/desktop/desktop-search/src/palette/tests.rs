@@ -1955,7 +1955,7 @@ fn two_valued_picking() -> Vec<PublishedActions> {
     let mut published = two_valued();
     published[0].actions[0].params = vec![
         tilo_actions::ActionParam::required("variable", tilo_actions::ParamType::Text, "Variable"),
-        tilo_actions::remote::person_vault::item_param("item", "Vault item"),
+        tilo_actions::remote::item_param("item", "Vault item"),
     ];
     published
 }

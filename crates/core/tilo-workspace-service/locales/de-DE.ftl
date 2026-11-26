@@ -218,3 +218,25 @@ tilo-connections-uses = Wofür eine Verbindung genutzt wurde
 tilo-connections-begin-sign-in = Die Anmeldung bei einer Verbindung beginnen
 tilo-connections-finish-sign-in = Die Anmeldung bei einer Verbindung abschließen
 tilo-connections-propose = Eine Verbindung vorschlagen
+
+# The workspace's vault, kept by the host that keeps the workspace.
+tilo-vault-list = Tresoreinträge auflisten
+tilo-vault-add = Einen Tresoreintrag sichern
+tilo-vault-remove = Einen Tresoreintrag vergessen
+tilo-vault-uses = Die Verwendungen eines Tresoreintrags lesen
+tilo-vault-take-back = Zurücknehmen, was einen Tresoreintrag immer verwenden darf
+tilo-vault-copy = Das Geheimnis eines Tresoreintrags kopieren
+tilo-vault-reveal = Das Geheimnis eines Tresoreintrags zeigen
+tilo-vault-ask = Deine Person nach einem Geheimnis fragen
+tilo-vault-fill-page = Ein Seitenfeld aus dem Tresor ausfüllen
+tilo-vault-web-call = Einen Dienst mit einem Schlüssel aus dem Tresor aufrufen
+tilo-vault-code = Einen Code aus dem Tresor lesen
+tilo-vault-sign = Mit einem SSH-Schlüssel aus dem Tresor signieren
+tilo-vault-release = Das Geheimnis eines Tresoreintrags an den Prozess einer App geben
+tilo-vault-find = Den Tresoreintrag einer App finden
+tilo-vault-keep = Das eigene Geheimnis einer App sichern
+tilo-vault-device-key = Den Schlüssel dieses Geräts für eine App lesen
+tilo-vault-page-logins = Die Anmeldungen einer Website auflisten
+tilo-vault-keep-page-login = Die Anmeldung einer Seite sichern
+tilo-vault-forget-page-login = Die Anmeldung einer Seite vergessen
+tilo-vault-page-fill = Die Anmeldung einer Seite ausfüllen

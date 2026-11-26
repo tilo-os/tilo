@@ -1,4 +1,4 @@
-//! One vault item's secret handed to a process of an app's own ([`person_vault::RELEASE`]).
+//! One vault item's secret handed to a process of an app's own ([`workspace_vault::RELEASE`]).
 //!
 //! Some protocols need the raw secret inside the app's own process: a gateway login, voice, an
 //! SSH or VNC handshake, a database login. A call the vault makes itself (a web call with the
@@ -19,7 +19,7 @@
 //! - the vault keeps the item, and a grant of the workspace's lets the app read it.
 //!
 //! An app's held connection also keeps a secret it obtained or made itself ([`Workspaces::keep_for`],
-//! [`person_vault::KEEP`]): an OAuth token, a key it generated. The item is the app's own, tagged
+//! [`workspace_vault::KEEP`]): an OAuth token, a key it generated. The item is the app's own, tagged
 //! with its app and purpose, under the app's install grant as a login a page of its own keeps is,
 //! so keeping it asks nobody, and neither does releasing it to that app again. Any other app is
 //! asked for it as for every item.
@@ -29,7 +29,7 @@
 //! and the grant "Approve and grant" writes covers that item at that place alone.
 //!
 //! The process's network is its package's grant, as for every launch: the item's places say only
-//! where a secret the vault sends itself may go ([`person_vault::WEB_CALL`]).
+//! where a secret the vault sends itself may go ([`workspace_vault::WEB_CALL`]).
 //!
 //! The secret is answered on that process's connection alone. Nothing here writes it down: the
 //! item's uses say when, where and for which app, never what was handed. Every other caller of
@@ -43,12 +43,13 @@ use serde_json::Value;
 use tilo_action_policy::{ActionKind, Answer, Context, Grantee, TreePath, decide};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::asked::{AskedDispatch, AskedFacts, AskedRecords, Fact};
-use tilo_actions::remote::person_vault::{self, Found, ItemRef, Kept, Released};
 use tilo_actions::remote::{ActionCallError, ActionProvider, Caller, InvokeRequest, Pending};
 use zeroize::Zeroizing;
 
+use super::person_vault::asked_of;
 use super::{WeakWorkspaces, Workspaces};
 use crate::work::Turn;
+use crate::workspace_vault::{self, DeviceKey, Found, ItemRef, Kept, Released, VaultAction};
 
 /// The name an app's asks are kept under in the store of asked records: a release of a vault
 /// item, a web call that carries its key, and any other use its own process asks for
@@ -233,20 +234,20 @@ impl AppProcess {
 /// grant" on an asked release writes, the release being addressed at the item.
 pub(super) fn read_node(workspace: &str, item: &ItemRef) -> TreePath {
     TreePath::workspace(workspace)
-        .app(person_vault::PROVIDER)
-        .kind(person_vault::ITEM_KIND)
+        .app(workspace_vault::PROVIDER)
+        .kind(workspace_vault::ITEM_KIND)
         .resource(item.to_string())
-        .action(person_vault::RELEASE)
+        .action(workspace_vault::RELEASE)
 }
 
 /// Whether `app` kept the item `facts` describe itself, for a purpose of its own: on its held
-/// connection ([`person_vault::KEEP`]), or as a login a page of its own kept. An item adopted from
+/// connection ([`workspace_vault::KEEP`]), or as a login a page of its own kept. An item adopted from
 /// a device's old keeper also names the entry it was kept as, and the person kept it, so a
 /// release of it still asks them.
 pub(super) fn kept_by_app(facts: &ItemFacts, app: &str) -> bool {
-    let purpose = person_vault::purpose_tag("");
-    let adopted = person_vault::item_tag("");
-    facts.tags.contains(&person_vault::app_tag(app))
+    let purpose = workspace_vault::purpose_tag("");
+    let adopted = workspace_vault::item_tag("");
+    facts.tags.contains(&workspace_vault::app_tag(app))
         && facts.tags.iter().any(|tag| tag.starts_with(&purpose))
         && !facts.tags.iter().any(|tag| tag.starts_with(&adopted))
 }
@@ -494,9 +495,9 @@ impl Workspaces {
         item: Option<&str>,
     ) -> Result<Option<ItemRef>, String> {
         let tags = [
-            Some(person_vault::app_tag(app)),
-            Some(person_vault::purpose_tag(purpose)),
-            item.map(person_vault::item_tag),
+            Some(workspace_vault::app_tag(app)),
+            Some(workspace_vault::purpose_tag(purpose)),
+            item.map(workspace_vault::item_tag),
         ];
         let items = self.open_vault(workspace).await?.items();
         Ok(items
@@ -508,7 +509,7 @@ impl Workspaces {
     }
 
     /// Answer `app`'s connection the reference of the item tagged for the app and purpose
-    /// `request` names ([`person_vault::FIND`]): the item a secret the app was moved to is kept
+    /// `request` names ([`workspace_vault::FIND`]): the item a secret the app was moved to is kept
     /// as. The app is the connection's, never the one the request names, so a call cannot read
     /// another app's tags. It reads the vault and releases nothing, so its person is not asked; a
     /// release of the item afterwards is, and names the asking app. Every process that is not the
@@ -525,12 +526,11 @@ impl Workspaces {
         request: &InvokeRequest,
     ) -> Result<Found, ActionCallError> {
         let tilolang = self.keeps_own_secrets((app, workspace), process).await?;
-        let looking: person_vault::FindItem = super::person_vault::argument(
-            request,
-            "an item to find names the purpose it was tagged for",
-        )?;
+        let VaultAction::Find { purpose, .. } = asked_of(request)? else {
+            return Err(ActionCallError::UnknownAction);
+        };
         let mut reference = self
-            .item_tagged(workspace, app, &looking.purpose)
+            .item_tagged(workspace, app, &purpose)
             .await
             .map_err(ActionCallError::refused)?;
         if tilolang && let Some(found) = &reference {
@@ -580,25 +580,25 @@ impl Workspaces {
         if let Some(kept) = self.item_tagged_as(workspace, app, purpose, item).await? {
             return Ok(kept);
         }
-        let adding = person_vault::AddItem {
+        let adding = VaultAction::Add {
             item: None,
-            kind: person_vault::ItemKind::Value,
-            belongs_to: vec![format!("https://{app}")],
-            username: String::new(),
-            sent_in: String::new(),
-            algorithm: String::new(),
+            kind: workspace_vault::ItemKind::Value,
+            belongs_to: Some(vec![format!("https://{app}")]),
+            username: None,
+            sent_in: None,
+            algorithm: None,
             digits: None,
             period: None,
-            title: String::new(),
-            notes: String::new(),
-            fields: Vec::new(),
-            tags: vec![
-                person_vault::app_tag(app),
-                person_vault::purpose_tag(purpose),
-                person_vault::item_tag(item),
-            ],
+            title: None,
+            notes: None,
+            fields: None,
+            tags: Some(vec![
+                workspace_vault::app_tag(app),
+                workspace_vault::purpose_tag(purpose),
+                workspace_vault::item_tag(item),
+            ]),
             generate: None,
-            secret: secret.to_string(),
+            secret: Some(secret.to_string()),
         };
         let acting = tilo_action_policy::Acting::person(person);
         self.changing_vault(workspace, (Some(&acting), None), |items| {
@@ -641,11 +641,12 @@ impl Workspaces {
         request: &InvokeRequest,
     ) -> Result<Released, ActionCallError> {
         let refused = ActionCallError::refused;
-        let item = person_vault::released_item(&request.target).ok_or_else(|| {
-            ActionCallError::InvalidRequest {
-                reason: NOT_AN_ITEM.to_owned(),
-            }
-        })?;
+        let item =
+            ItemRef::addressed(&request.target, workspace_vault::RELEASE).ok_or_else(|| {
+                ActionCallError::InvalidRequest {
+                    reason: NOT_AN_ITEM.to_owned(),
+                }
+            })?;
         let tilolang = self.keeps_own_secrets((app, workspace), process).await?;
         let cert = self.device_cert();
         let person = hex::encode(cert.user_public_key);
@@ -745,7 +746,7 @@ impl Workspaces {
         })
     }
 
-    /// Keep the secret `request` carries ([`person_vault::KeepValue`]) in `workspace`'s vault as
+    /// Keep the secret `request` carries ([`workspace_vault::VaultAction::Keep`]) in `workspace`'s vault as
     /// `app`'s own, for `process`, a process of `app`'s own as the daemon that started it vouches
     /// for it: a value item tagged with the app and the purpose, titled with both for its
     /// person, answered by its reference and never by its secret. Where `replacing` names an
@@ -779,14 +780,18 @@ impl Workspaces {
     ) -> Result<Kept, ActionCallError> {
         let refused = ActionCallError::refused;
         self.keeps_own_secrets((app, workspace), process).await?;
-        let mut keeping: person_vault::KeepValue = super::person_vault::argument(
-            request,
-            "a secret an app keeps names its purpose and its value",
-        )?;
-        let purpose = purpose_of(&keeping.purpose)?;
+        let VaultAction::Keep {
+            purpose,
+            value,
+            replacing,
+        } = asked_of(request)?
+        else {
+            return Err(ActionCallError::UnknownAction);
+        };
+        let purpose = purpose_of(&purpose)?;
         let tags = [
-            person_vault::app_tag(app),
-            person_vault::purpose_tag(&purpose),
+            workspace_vault::app_tag(app),
+            workspace_vault::purpose_tag(&purpose),
         ];
         let own = |facts: &ItemFacts| {
             kept_by_app(facts, app) && tags.iter().all(|tag| facts.tags.contains(tag))
@@ -797,7 +802,7 @@ impl Workspaces {
             .map_err(|why| refused(device_may_not_read(app, &why)))?
             .items()
             .facts();
-        let replacing = match &keeping.replacing {
+        let replacing = match &replacing {
             Some(item) => {
                 let id = ItemId::parse(item.id()).ok_or_else(|| refused(NOT_KEPT.to_owned()))?;
                 let facts = kept
@@ -817,12 +822,7 @@ impl Workspaces {
         };
         let place = Place::parse(&format!("https://{app}"))
             .map_err(|_| refused(format!("{app} is no app the vault keeps a secret for")))?;
-        let item = NewItem::new(
-            ItemKind::Value,
-            vec![place],
-            String::new(),
-            std::mem::take(&mut keeping.value),
-        );
+        let item = NewItem::new(ItemKind::Value, vec![place], String::new(), value);
         let title = format!("{app} · {}", purpose.replace(['-', '_'], " "));
         let person = hex::encode(self.device_cert().user_public_key);
         let caller = Caller::local_app(app)
@@ -840,7 +840,7 @@ impl Workspaces {
     }
 
     /// The key this device holds for `app`'s own `purpose` in `workspace`
-    /// ([`person_vault::DEVICE_KEY`]), answered to `process`: derived from the device's own key,
+    /// ([`workspace_vault::DEVICE_KEY`]), answered to `process`: derived from the device's own key,
     /// so the same on every ask here and different on every other device, for every other app,
     /// purpose and workspace, and kept nowhere. Nobody is asked: it is no item of the vault, and
     /// says nothing of the device's key. The call is written down as the app's, as its keep is,
@@ -854,7 +854,7 @@ impl Workspaces {
         (app, workspace): (&str, &str),
         process: &AppProcess,
         request: &InvokeRequest,
-    ) -> Result<person_vault::DeviceKey, ActionCallError> {
+    ) -> Result<DeviceKey, ActionCallError> {
         let derived = self.device_key_on((app, workspace), process, request).await;
         let ended = derived.as_ref().map(|_| Value::Null);
         self.note_own_call((app, workspace), request, ended, true);
@@ -866,7 +866,7 @@ impl Workspaces {
         (app, workspace): (&str, &str),
         process: &AppProcess,
         request: &InvokeRequest,
-    ) -> Result<person_vault::DeviceKey, ActionCallError> {
+    ) -> Result<DeviceKey, ActionCallError> {
         let refused = ActionCallError::refused;
         match process {
             AppProcess::OwnTilolang => {}
@@ -880,11 +880,12 @@ impl Workspaces {
             AppProcess::Unplaced => return Err(refused(from_an_unplaced_process(app))),
             AppProcess::Tilolang => return Err(refused(from_a_tilolang_process(app))),
         }
-        let asked: person_vault::DeviceKeyFor =
-            super::person_vault::argument(request, "a device key names what it is for")?;
-        let purpose = purpose_of(&asked.purpose)?;
+        let VaultAction::DeviceKey { purpose } = asked_of(request)? else {
+            return Err(ActionCallError::UnknownAction);
+        };
+        let purpose = purpose_of(&purpose)?;
         let key = derive_device_key(&self.inner.host.key, (workspace, app, &purpose));
-        Ok(person_vault::DeviceKey {
+        Ok(DeviceKey {
             key: hex::encode(key.as_slice()),
         })
     }
@@ -923,12 +924,12 @@ impl Workspaces {
             ],
             verb: "read".to_owned(),
             plural: Some("this vault item".to_owned()),
-            kind: person_vault::ITEM_KIND.to_owned(),
+            kind: workspace_vault::ITEM_KIND.to_owned(),
             effect: Some(tilo_actions::ActionKind::Read),
             ..AskedFacts::default()
         };
         let request = InvokeRequest {
-            target: person_vault::release_target(item),
+            target: item.target(workspace_vault::RELEASE),
             ..request.clone()
         };
         self.ask_for_app(workspace, caller, &request, asked).await

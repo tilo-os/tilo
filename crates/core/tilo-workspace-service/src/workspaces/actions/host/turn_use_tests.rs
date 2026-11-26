@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::models as model_providers;
 use crate::workspace_accounts;
+use crate::workspace_vault;
 use serde_json::{Value, json};
 use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet, Rule, TreePath};
 use tilo_actions::InvocationId;
@@ -22,7 +23,6 @@ use tilo_actions::InvocationId;
 use tilo_actions::remote::ActionCallError::NotPermitted;
 use tilo_actions::remote::ActionCallError::{self, InvalidRequest, Refused, UnknownAction};
 use tilo_actions::remote::asked::{AskedBy, AskedFacts, Named};
-use tilo_actions::remote::person_vault;
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
 use tilo_user_identity::DeviceCert;
 
@@ -268,7 +268,7 @@ pub(super) async fn a_mail_login(
         service,
         workspace_id,
         who,
-        person_vault::ADD,
+        workspace_vault::ADD,
         json!({"kind": "login", "belongsTo": [IMAP, SMTP], "username": NAME, "secret": PASSWORD}),
     )
     .await
@@ -301,7 +301,7 @@ async fn remembered(
         service,
         workspace_id,
         who,
-        person_vault::USES,
+        workspace_vault::USES,
         json!({"item": item}),
     )
     .await
@@ -352,7 +352,7 @@ pub(super) async fn always(
     places.sort_unstable();
     let node = TreePath::workspace(workspace)
         .app(&target.provider)
-        .kind(person_vault::use_word(target))
+        .kind(workspace_vault::use_word(target))
         .resource(format!("{id}/{}", json!(places)))
         .action(&target.address.action);
     let grant = Grant::new(
@@ -507,7 +507,7 @@ async fn she_alone_takes_the_leave_back(
         service,
         workspace_id,
         (ada, &helper),
-        person_vault::USES,
+        workspace_vault::USES,
         json!({"item": item}),
     )
     .await
@@ -516,7 +516,7 @@ async fn she_alone_takes_the_leave_back(
         service,
         workspace_id,
         (ada, &helper),
-        person_vault::TAKE_BACK,
+        workspace_vault::TAKE_BACK,
         json!({"item": item}),
     )
     .await;
@@ -525,7 +525,7 @@ async fn she_alone_takes_the_leave_back(
         service,
         workspace_id,
         (ada, &as_ada),
-        person_vault::TAKE_BACK,
+        workspace_vault::TAKE_BACK,
         json!({"item": item}),
     )
     .await
@@ -1045,7 +1045,7 @@ async fn a_providers_key_is_asked_for_first_and_then_kept_alone() {
         &service,
         workspace_id,
         hers,
-        person_vault::target(person_vault::USES),
+        workspace_vault::target(workspace_vault::USES),
         json!({"item": api_key}),
     )
     .await

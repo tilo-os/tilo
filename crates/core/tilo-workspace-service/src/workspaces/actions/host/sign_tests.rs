@@ -14,6 +14,7 @@
     reason = "in a test these are the assertion, the server handle a test binds is kept until the test ends, and a flow is told in one piece"
 )]
 
+use crate::workspace_vault::{self, ItemRef};
 use russh::keys::signature::Verifier;
 use russh::keys::ssh_encoding::Decode as _;
 use russh::keys::ssh_encoding::base64::{Base64, Encoding as _};
@@ -23,7 +24,6 @@ use russh::keys::{PrivateKey, PublicKey};
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::ActionCallError::{self, NotPermitted, Refused, UnknownAction};
-use tilo_actions::remote::person_vault::{self, ItemRef};
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest};
 use tilo_user_identity::DeviceCert;
 
@@ -114,7 +114,7 @@ fn signing(item: &ItemRef, place: &str, data: &[u8], namespace: &str) -> InvokeR
     argument.insert("reason".into(), json!("To sign your commit."));
     InvokeRequest {
         invocation: InvocationId::new(),
-        target: person_vault::sign_target(item),
+        target: workspace_vault::ItemRef::target(item, workspace_vault::SIGN),
         argument: InvokeArgument::Json(argument),
         context: None,
         confirmation: None,
@@ -137,7 +137,7 @@ async fn kept(
         service,
         workspace_id,
         who,
-        person_vault::ADD,
+        workspace_vault::ADD,
         json!({"kind": kind, "belongsTo": [place], "secret": secret}),
     )
     .await
@@ -161,7 +161,7 @@ async fn remembered(
         service,
         workspace_id,
         who,
-        person_vault::USES,
+        workspace_vault::USES,
         json!({"item": item}),
     )
     .await
@@ -426,7 +426,7 @@ async fn after_always_the_agent_signs_unasked_until_the_leave_is_taken_back() {
         &service,
         workspace_id,
         hers,
-        person_vault::TAKE_BACK,
+        workspace_vault::TAKE_BACK,
         json!({"item": ssh_key}),
     )
     .await
@@ -577,7 +577,7 @@ async fn what_signs_is_an_ssh_key_for_its_own_server_asked_by_a_turn() {
             &service,
             workspace_id,
             hers,
-            person_vault::sign_target(&ssh_key),
+            workspace_vault::ItemRef::target(&ssh_key, workspace_vault::SIGN),
             Value::Object(argument.clone()),
         )
         .await,

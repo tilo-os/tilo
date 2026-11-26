@@ -8,10 +8,10 @@
 //! from that document as this server holds it ([`super::vault`]), an item the vault does not
 //! hold is refused, and nothing is read from anywhere else.
 
+use crate::workspace_vault::ItemRef;
 use accounts::vault_items::{ItemError, ItemId, UsedFor};
 use tilo_actions::remote::Caller;
 use tilo_actions::remote::environment_commands::VmSecret;
-use tilo_actions::remote::person_vault::ItemRef;
 use tilo_environment::machine_secrets::{DOCUMENT, MachineSecrets};
 use tilo_resource::Resource as _;
 use zeroize::Zeroizing;

@@ -17,10 +17,10 @@ use std::sync::{Arc, Mutex};
 use crate::workspace_accounts::{
     self, MailAccount, MailAccounts, MailSignIns, Provider, SetFilesMode, SyncControl,
 };
+use crate::workspace_vault;
 use collab_types::WorkspaceId;
 use serde_json::{Value, json};
 use tilo_account_probe::mail_servers::{Found, MailServers, Server};
-use tilo_actions::remote::person_vault;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionTarget,
@@ -599,7 +599,7 @@ async fn an_icloud_account_asked_for_calendars_keeps_them_beside_its_mail() {
     assert_eq!(calendar.config["mail_account"], json!(ADDRESS));
     let sign_in = accounts::email::password_item(&calendar.config)
         .expect("the calendar account names its sign-in");
-    let sign_in = person_vault::ItemRef::parse(sign_in).expect("a vault entry");
+    let sign_in = workspace_vault::ItemRef::parse(sign_in).expect("a vault entry");
     assert!(
         setup
             .workspaces
@@ -664,7 +664,7 @@ async fn an_icloud_account_asked_for_calendars_keeps_them_beside_its_mail() {
         .expect("the calendar account is kept again");
     let sign_in =
         accounts::email::password_item(&calendar.config).expect("it names its sign-in again");
-    let sign_in = person_vault::ItemRef::parse(sign_in).expect("a vault entry");
+    let sign_in = workspace_vault::ItemRef::parse(sign_in).expect("a vault entry");
     assert!(
         setup
             .workspaces
@@ -878,9 +878,9 @@ async fn logins_kept_in_the_vault(setup: &Setup) -> (String, String) {
     let kept = setup
         .ask_target(
             &setup.owner,
-            person_vault::PROVIDER,
-            person_vault::RESOURCE,
-            person_vault::ADD,
+            workspace_vault::PROVIDER,
+            workspace_vault::RESOURCE,
+            workspace_vault::ADD,
             json!({
                 "kind": "login",
                 "title": EXAMPLE,
@@ -896,9 +896,9 @@ async fn logins_kept_in_the_vault(setup: &Setup) -> (String, String) {
     let site = setup
         .ask_target(
             &setup.owner,
-            person_vault::PROVIDER,
-            person_vault::RESOURCE,
-            person_vault::ADD,
+            workspace_vault::PROVIDER,
+            workspace_vault::RESOURCE,
+            workspace_vault::ADD,
             json!({
                 "kind": "login",
                 "title": "example.test",

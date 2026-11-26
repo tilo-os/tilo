@@ -1395,7 +1395,7 @@ pub struct AddMailWithItem {
     #[serde(default = "default_submissions_port")]
     pub outgoing_port: u16,
     /// The vault item that is the account's sign-in.
-    pub password: tilo_actions::remote::person_vault::ItemRef,
+    pub password: crate::workspace_vault::ItemRef,
     /// Why whoever asks needs it, in a sentence its person reads when they
     /// are asked first; empty when nothing was said.
     #[serde(default, skip_serializing_if = "String::is_empty")]

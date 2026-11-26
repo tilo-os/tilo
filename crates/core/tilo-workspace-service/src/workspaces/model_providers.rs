@@ -453,7 +453,7 @@ enum Said {
 pub(super) async fn take_key(
     (keys, root): (ProviderKeys<'_>, &Path),
     setting: SetKey,
-    kept_as: Option<&tilo_actions::remote::person_vault::ItemRef>,
+    kept_as: Option<&crate::workspace_vault::ItemRef>,
     reach: &Reach,
 ) -> Result<ProviderView, String> {
     let profile = provider_config(root)

@@ -1,4 +1,4 @@
-//! The key a device holds for an app's own purpose ([`person_vault::DEVICE_KEY`]), as the app's
+//! The key a device derives for an app's own purpose ([`workspace_vault::DEVICE_KEY`]), as the app's
 //! own process asks it ([`crate::workspaces::vault_release`]): the same on every ask on this
 //! device, another for every other purpose, app, workspace and device, kept nowhere, and refused
 //! to everyone else.
@@ -14,9 +14,9 @@
 use std::fmt::Write as _;
 use std::sync::Arc;
 
+use crate::workspace_vault::{self, DeviceKey};
 use serde_json::json;
 use tilo_actions::InvocationId;
-use tilo_actions::remote::person_vault::{self, DeviceKey};
 use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
 
 use super::super::tests::{caller, hosted};
@@ -69,7 +69,7 @@ impl HostConnections for Bridge {
 fn device_key_of(purpose: &str) -> InvokeRequest {
     InvokeRequest {
         invocation: InvocationId::new(),
-        target: person_vault::device_key_target(),
+        target: workspace_vault::target(workspace_vault::DEVICE_KEY),
         argument: InvokeArgument::Json(json!({ "purpose": purpose }).as_object().cloned().unwrap()),
         context: None,
         confirmation: None,
@@ -194,7 +194,7 @@ async fn a_device_holds_one_key_per_app_and_purpose_answered_to_the_apps_own_pro
                 service,
                 workspace_id,
                 (owner, &caller),
-                person_vault::device_key_target(),
+                workspace_vault::target(workspace_vault::DEVICE_KEY),
                 json!({ "purpose": PURPOSE }),
             )
             .await
@@ -222,7 +222,9 @@ async fn a_device_holds_one_key_per_app_and_purpose_answered_to_the_apps_own_pro
     let listed = records.listed(&workspace);
     let asked: Vec<_> = listed
         .iter()
-        .filter(|recorded| recorded.request.target == person_vault::device_key_target())
+        .filter(|recorded| {
+            recorded.request.target == workspace_vault::target(workspace_vault::DEVICE_KEY)
+        })
         .collect();
     assert!(!asked.is_empty(), "the asks are recorded");
     assert!(asked.iter().all(|recorded| recorded.secret));

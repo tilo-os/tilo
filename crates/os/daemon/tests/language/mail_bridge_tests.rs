@@ -14,10 +14,11 @@ use std::time::Duration;
 
 use serde_json::json;
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
-use tilo_actions::remote::{Caller, person_vault};
+use tilo_actions::remote::Caller;
 use tilo_workspace_service::work::{
     HostConnections, Order, Turn, connection_holder, takes_turn_in,
 };
+use tilo_workspace_service::workspace_vault;
 use tilo_workspace_service::workspaces::MemberDevice;
 use tilo_workspace_service::workspaces::fixtures::{
     TestGroupKeys, hosting_device, record_grants, test_host_holding,
@@ -266,15 +267,15 @@ const KEPT: &str = "kept-for-a-test";
 
 /// The grant that lets Mail read the one entry its account names, as "Approve and grant" on its
 /// asked release writes it.
-fn sign_in_grant(workspace: &str, person: &str, item: &person_vault::ItemRef) -> Grant {
+fn sign_in_grant(workspace: &str, person: &str, item: &workspace_vault::ItemRef) -> Grant {
     Grant::new(
         "test:mail-sign-in",
         Grantee::app(MAIL),
         TreePath::workspace(workspace)
-            .app(person_vault::PROVIDER)
-            .kind(person_vault::ITEM_KIND)
+            .app(workspace_vault::PROVIDER)
+            .kind(workspace_vault::ITEM_KIND)
             .resource(item.to_string())
-            .action(person_vault::RELEASE),
+            .action(workspace_vault::RELEASE),
         KindSet::READ,
         Answer::Allow,
         Grantee::person(person),
@@ -287,7 +288,7 @@ async fn add_mail_account(
     workspaces: &tilo_workspace_service::workspaces::Workspaces,
     workspace: &str,
     address: &str,
-) -> person_vault::ItemRef {
+) -> workspace_vault::ItemRef {
     workspaces
         .keep_mail_account_as_added(workspace, address)
         .await
@@ -296,7 +297,7 @@ async fn add_mail_account(
     let account = held.account(address).expect("the account the person added");
     let named =
         accounts::email::password_item(&account.config).expect("the account names its sign-in");
-    person_vault::ItemRef::parse(named).expect("the sign-in is a vault entry")
+    workspace_vault::ItemRef::parse(named).expect("the sign-in is a vault entry")
 }
 
 /// This device running Mail's connection, its claim written: what a release is answered to.

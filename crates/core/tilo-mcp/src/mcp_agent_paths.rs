@@ -53,7 +53,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     ) -> Result<(), Failure> {
         // A secret named by reference (`vault.item:<id>`) is its person's, not the
         // workspace's, so no path resolves it: the app reads the reference as given.
-        if tilo_actions::remote::person_vault::takes_item(param) {
+        if tilo_actions::remote::takes_item(param) {
             return Ok(());
         }
         // A resource parameter is typed as one, or declared as a reference
@@ -75,7 +75,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // action that takes it holds it to its person and to the place the item belongs to.
         // The action's own declaration of the parameter decides that, never what a caller
         // wrote there.
-        if tilo_actions::remote::person_vault::takes_item(param) {
+        if tilo_actions::remote::takes_item(param) {
             return Ok(());
         }
         let value = match arguments.get(param.name.as_ref()) {

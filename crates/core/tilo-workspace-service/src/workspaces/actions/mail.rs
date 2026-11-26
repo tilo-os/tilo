@@ -14,7 +14,7 @@
 
 use crate::workspace_accounts;
 use tilo_actions::remote::{
-    CatalogueRow, WORKSPACE_MAIL_ACCOUNTS, person_vault, workspace_governance_child,
+    CatalogueRow, WORKSPACE_MAIL_ACCOUNTS, workspace_governance_child,
     workspace_governance_resource,
 };
 use tilo_actions::{ActionKind, ActionParam};
@@ -133,7 +133,7 @@ fn add_account_with_item_params() -> Vec<ActionParam> {
         .into_iter()
         .map(|param| {
             if param.name == "password" {
-                person_vault::item_param(
+                tilo_actions::remote::item_param(
                     "password",
                     "The vault item that is the account's sign-in, by its reference.",
                 )

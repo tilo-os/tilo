@@ -165,7 +165,7 @@ mod tests {
     /// kind in Passwords: what a device reading it takes the step as.
     #[test]
     fn the_vault_actions_declare_steps_this_record_takes() {
-        use tilo_actions::remote::person_vault;
+        use crate::workspace_vault;
         use tilo_resource::Resource as _;
         let verbs: Vec<_> = WorkspaceVaultEntries::declarations()
             .into_iter()
@@ -173,20 +173,20 @@ mod tests {
             .collect();
         let mut declared = 0;
         for action in [
-            person_vault::ADD,
-            person_vault::REMOVE,
-            person_vault::ASK,
-            person_vault::COPY,
-            person_vault::REVEAL,
-            person_vault::FILL_PAGE,
-            person_vault::WEB_CALL,
-            person_vault::SIGN,
-            person_vault::RELEASE,
-            person_vault::KEEP_PAGE_LOGIN,
-            person_vault::FORGET_PAGE_LOGIN,
-            person_vault::PAGE_FILL,
+            workspace_vault::ADD,
+            workspace_vault::REMOVE,
+            workspace_vault::ASK,
+            workspace_vault::COPY,
+            workspace_vault::REVEAL,
+            workspace_vault::FILL_PAGE,
+            workspace_vault::WEB_CALL,
+            workspace_vault::SIGN,
+            workspace_vault::RELEASE,
+            workspace_vault::KEEP_PAGE_LOGIN,
+            workspace_vault::FORGET_PAGE_LOGIN,
+            workspace_vault::PAGE_FILL,
         ] {
-            for effect in person_vault::effects(action) {
+            for effect in workspace_vault::effects(action) {
                 assert_eq!(effect.app, tilo_app_id::apps::PASSWORDS, "{action}");
                 assert_eq!(effect.kind, WorkspaceVaultEntries::KIND, "{action}");
                 assert!(verbs.contains(&effect.verb.as_str()), "{action}: {effect}");
@@ -194,9 +194,9 @@ mod tests {
             }
         }
         assert_eq!(declared, 12, "every action that writes declares its step");
-        for read in [person_vault::LIST, person_vault::USES] {
+        for read in [workspace_vault::LIST, workspace_vault::USES] {
             assert!(
-                person_vault::effects(read).is_empty(),
+                workspace_vault::effects(read).is_empty(),
                 "{read} writes nothing"
             );
         }

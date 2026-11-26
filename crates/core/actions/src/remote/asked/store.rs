@@ -894,7 +894,7 @@ impl AskedStore {
         // An action whose answer is a secret ([`crate::SECRET_ANSWER_TAG`]) keeps only that it
         // was given, here as in the device's record of the call: the workspace's record of this
         // question is one others may read.
-        let secret = super::super::person_vault::answers_secret(&ask.request);
+        let secret = super::super::answers_secret(&ask.request);
         ask.outcome = Some(match outcome {
             crate::InvocationUpdate::Succeeded { invocation, .. } if secret => {
                 crate::InvocationUpdate::Succeeded {

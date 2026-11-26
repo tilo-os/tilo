@@ -77,13 +77,11 @@ use tilo_actions::remote::ActionCallError::{self, InvalidRequest, NotPermitted, 
 #[cfg(feature = "agents")]
 use tilo_actions::remote::CatalogueRow;
 use tilo_actions::remote::asked::{AskedFacts, Fact};
-#[cfg(feature = "agents")]
-use tilo_actions::remote::person_vault::FillPage;
-use tilo_actions::remote::person_vault::{self, ItemRef};
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
 
 use super::workspace_stores::Store;
 use super::{WorkspaceId, Workspaces};
+use crate::workspace_vault::{self, ItemRef, VaultAction};
 
 mod sign;
 mod web_call;
@@ -93,6 +91,19 @@ pub use tilo_account_probe::mail_servers::{Found as MailFound, MailServers, Serv
 /// A mail server with real sockets and made-up mail, for a test to sign in to and read from.
 #[cfg(any(test, feature = "test-support"))]
 pub use tilo_account_probe::stand_in as mail_stand_in;
+
+/// A page an agent asks its vault to fill: the site the page is at, the item whose text goes
+/// into it, and why, in the agent's words.
+#[cfg(feature = "agents")]
+#[derive(Clone, Copy, Debug)]
+pub struct PageFill<'a> {
+    /// The site the page is at.
+    pub site: &'a str,
+    /// The item whose text is written into the page.
+    pub item: &'a ItemRef,
+    /// Why the agent fills it.
+    pub reason: &'a str,
+}
 
 /// A turn this server carries out for the person who asked it, as the code that carries it
 /// out knows it.
@@ -212,14 +223,16 @@ impl TurnCall {
     /// carried out where the turn runs, as only the window's engine writes into its page; what
     /// may be filled is decided here ([`Workspaces::release_for_turn`]).
     fn of(target: &RemoteActionTarget) -> Option<Self> {
-        if *target == person_vault::ask_target() {
+        if *target == workspace_vault::target(workspace_vault::ASK) {
             return Some(Self::AskForSecret);
         }
         // A signature is addressed at its item, so no catalogue row names its address.
-        if person_vault::signing_item(target).is_some() {
+        if ItemRef::addressed(target, workspace_vault::SIGN).is_some() {
             return Some(Self::Use);
         }
-        if person_vault::described_use(target).is_some() && *target != person_vault::page_target() {
+        if workspace_vault::described_use(target).is_some()
+            && *target != workspace_vault::target(workspace_vault::FILL_PAGE)
+        {
             return Some(Self::Use);
         }
         if target.provider == person_connections::PROVIDER {
@@ -259,7 +272,7 @@ pub fn takes(target: &RemoteActionTarget) -> bool {
 /// The providers whose actions an agent's turn is offered of what its workspace keeps for the
 /// person who asked it ([`Workspaces::turn_rows`]).
 pub const TURN_PROVIDERS: [&str; 4] = [
-    person_vault::PROVIDER,
+    workspace_vault::PROVIDER,
     workspace_accounts::PROVIDER,
     model_providers::PROVIDER,
     person_connections::PROVIDER,
@@ -363,7 +376,7 @@ impl Workspaces {
         let mut rows = self.uses_offered(&turn).await;
         rows.extend(self.calls_offered(&turn).await);
         if self.secret_ask_for_turn(&turn).await.is_ok() {
-            rows.push(person_vault::ask_row());
+            rows.push(workspace_vault::ask_row());
         }
         rows.extend(self.calendars_offered(&turn).await);
         rows.extend(self.connection_rows_for_turn(&turn).await);
@@ -395,7 +408,7 @@ impl Workspaces {
     pub async fn release_for(
         &self,
         caller: &Caller,
-        fill: &FillPage,
+        fill: PageFill<'_>,
         request: &InvokeRequest,
     ) -> Result<PageText, ActionCallError> {
         let kept = self.kept_turn(caller).await.ok_or(UnknownAction)?;
@@ -537,11 +550,11 @@ enum Use {
     /// A provider's key kept from an item.
     Key(SetKeyFromItem),
     /// A web call made with a key.
-    Call(web_call::WebCall),
+    Call(workspace_vault::WebCall),
     /// The code of this moment from a code generator's seed.
     Code(ReadCode),
     /// A signature made with an ssh key.
-    Sign(sign::Sign),
+    Sign(workspace_vault::Sign),
 }
 
 impl Use {
@@ -568,22 +581,19 @@ impl Use {
                     invalid("a key to keep names its provider and the vault item that is the key")
                 })
             }
-            (person_vault::PROVIDER, person_vault::WEB_CALL) => {
-                serde_json::from_value(arguments).map(Self::Call).map_err(|_| {
-                    invalid("a web call names its address and the vault item that is its key")
-                })
+            (workspace_vault::PROVIDER, action) => {
+                let Value::Object(arguments) = arguments else {
+                    return Err(UnknownAction);
+                };
+                match workspace_vault::decoded(action, &arguments).map_err(|why| invalid(&why))? {
+                    VaultAction::WebCall { call } => Ok(Self::Call(call)),
+                    VaultAction::Code { reason } => Ok(Self::Code(ReadCode {
+                        reason: reason.unwrap_or_default(),
+                    })),
+                    VaultAction::Sign { signing } => Ok(Self::Sign(signing)),
+                    _ => Err(UnknownAction),
+                }
             }
-            (person_vault::PROVIDER, person_vault::CODE) => serde_json::from_value(arguments)
-                .map(Self::Code)
-                .map_err(|_| invalid("reading a code takes the reason it is needed, if any")),
-            (person_vault::PROVIDER, person_vault::SIGN) => serde_json::from_value(arguments)
-                .map(Self::Sign)
-                .map_err(|_| {
-                    invalid(
-                        "a signature names the ssh server it is for as place, what is signed in \
-                         base64 as data and, to sign in a namespace, the namespace",
-                    )
-                }),
             _ => Err(UnknownAction),
         }
     }
@@ -629,12 +639,12 @@ impl Use {
             }
             Self::Call(call) => web_call::wanted(call),
             Self::Sign(signing) => {
-                sign::wanted(signing, target_resource(target, person_vault::ITEM_KIND))
+                sign::wanted(signing, target_resource(target, workspace_vault::ITEM_KIND))
             }
             // The item the address names is the code generator; it sends nothing anywhere.
             Self::Code(_) => {
                 let item = ItemId::parse(
-                    target_resource(target, person_vault::ITEM_KIND).unwrap_or_default(),
+                    target_resource(target, workspace_vault::ITEM_KIND).unwrap_or_default(),
                 )
                 .ok_or_else(|| vault_items::ItemError::NotFound.to_string())?;
                 Ok((item, vault_items::ItemKind::CodeGenerator, Vec::new()))
@@ -762,7 +772,7 @@ impl Use {
                 // Read where the vault is, as the turn's person: nothing is written, so no use
                 // stands in the item's history.
                 let _ = purpose;
-                let reference = format!("{}:{}", person_vault::ITEM_KIND, item.as_str());
+                let reference = format!("{}:{}", workspace_vault::ITEM_KIND, item.as_str());
                 let code = workspaces.vault_code(workspace, &reference).await?;
                 let now = tilo_clock::unix_now();
                 Ok(json!({
@@ -780,10 +790,10 @@ impl Use {
 #[cfg(feature = "agents")]
 /// The item and the site a page fill names. A text is written only into a
 /// page that arrived over https.
-fn page_wanted(fill: &FillPage) -> Result<(ItemId, Place), String> {
+fn page_wanted(fill: PageFill<'_>) -> Result<(ItemId, Place), String> {
     let item = ItemId::parse(fill.item.id())
         .ok_or_else(|| vault_items::ItemError::NotFound.to_string())?;
-    let site = Place::parse(&fill.site).map_err(|error| error.to_string())?;
+    let site = Place::parse(fill.site).map_err(|error| error.to_string())?;
     if site.scheme() != "https" {
         return Err("A vault item is filled only into a page that arrived over https".to_owned());
     }
@@ -836,7 +846,7 @@ async fn page_text(
 /// What a person is shown of the site a page fill names: its name, and its
 /// origin whole.
 fn shown_site(target: &RemoteActionTarget, arguments: &Map<String, Value>) -> Option<Value> {
-    if *target != person_vault::page_target() {
+    if *target != workspace_vault::target(workspace_vault::FILL_PAGE) {
         return None;
     }
     let origin = arguments.get("site")?.as_str()?;
@@ -899,7 +909,7 @@ fn use_node(
 ) -> TreePath {
     TreePath::workspace(workspace)
         .app(&target.provider)
-        .kind(person_vault::use_word(target))
+        .kind(workspace_vault::use_word(target))
         .resource(use_resource(item, places))
         .action(&target.address.action)
 }
@@ -957,7 +967,7 @@ fn use_asked(
     };
     // What the call sends where, as the person would read it in its log: the method and the
     // address, never the key.
-    if *target == person_vault::call_target() {
+    if *target == workspace_vault::target(workspace_vault::WEB_CALL) {
         let method = match said("method").trim() {
             "" => "GET".to_owned(),
             method => method.to_ascii_uppercase(),
@@ -965,7 +975,7 @@ fn use_asked(
         facts.push(Fact::new("Calls", format!("{method} {}", said("url"))));
     }
     // What a signature is, never what it signs.
-    if person_vault::signing_item(target).is_some() {
+    if ItemRef::addressed(target, workspace_vault::SIGN).is_some() {
         facts.push(Fact::new(
             "Signs",
             match said("namespace").trim() {
@@ -981,7 +991,7 @@ fn use_asked(
     AskedFacts {
         words: reason.to_owned(),
         facts,
-        verb: person_vault::use_word(target),
+        verb: workspace_vault::use_word(target),
         plural: takes_leave.then(|| "vault items".to_owned()),
         ..AskedFacts::by(super::asking::asked_by(caller))
     }
@@ -1056,7 +1066,7 @@ impl Workspaces {
         })
     }
 
-    /// Whether `turn` may ask its person for a secret ([`person_vault::ASK`]): the turn is one
+    /// Whether `turn` may ask its person for a secret ([`workspace_vault::ASK`]): the turn is one
     /// this server carries out, its agent reaches the vault, and an agent that anything
     /// narrows holds a rule that names the ask. The turn as the entry knows it.
     ///
@@ -1066,7 +1076,8 @@ impl Workspaces {
         &self,
         turn: &HostedTurn<'_>,
     ) -> Result<AskedTurn, ActionCallError> {
-        self.turn_uses_for(turn, &person_vault::ask_target()).await
+        self.turn_uses_for(turn, &workspace_vault::target(workspace_vault::ASK))
+            .await
     }
 
     /// Ask the person `turn` acts for for the secret `request` names: it waits for them to type
@@ -1088,14 +1099,15 @@ impl Workspaces {
                 reason: "an ask for a secret names its kind and where it belongs".to_owned(),
             });
         };
-        let asked: person_vault::AskForItem =
-            serde_json::from_value(Value::Object(arguments.clone())).map_err(|_| {
-                InvalidRequest {
-            reason: "an ask for a secret names its kind (login, key, code-generator, ssh-key or \
-                     value), belongsTo and, when known, username, and never the secret"
-                .to_owned(),
-        }
-            })?;
+        let Ok(VaultAction::Ask { asked }) =
+            workspace_vault::decoded(workspace_vault::ASK, arguments)
+        else {
+            return Err(InvalidRequest {
+                reason: "an ask for a secret names its kind (login, key, code-generator, ssh-key \
+                         or value), belongsTo and, when known, username, and never the secret"
+                    .to_owned(),
+            });
+        };
         let asked = asked
             .checked()
             .map_err(|reason| InvalidRequest { reason })?;
@@ -1110,7 +1122,7 @@ impl Workspaces {
             .asked_item(&using.workspace, &asked)
             .await
             .map_err(ActionCallError::refused)?;
-        serde_json::to_value(person_vault::Asked { reference })
+        serde_json::to_value(workspace_vault::Asked { reference })
             .map_err(|error| ActionCallError::refused(error.to_string()))
     }
 
@@ -1145,7 +1157,7 @@ impl Workspaces {
     /// each one it would not be refused before the vault is opened.
     pub(crate) async fn uses_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
         let mut offered = Vec::new();
-        for row in person_vault::use_rows() {
+        for row in workspace_vault::use_rows() {
             let Some(action) = &row.action else {
                 continue;
             };
@@ -1168,7 +1180,7 @@ impl Workspaces {
     /// stands for one.
     pub(crate) async fn calls_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
         let mut offered = Vec::new();
-        for row in person_vault::call_rows() {
+        for row in workspace_vault::call_rows() {
             let Some(action) = &row.action else {
                 continue;
             };
@@ -1205,7 +1217,7 @@ impl Workspaces {
         let (item, kind, places) = wanted
             .wanted(&root, &request.target)
             .map_err(ActionCallError::refused)?;
-        let word = person_vault::use_word(&request.target);
+        let word = workspace_vault::use_word(&request.target);
         let items = self
             .open_vault(&using.workspace)
             .await
@@ -1280,11 +1292,10 @@ impl Workspaces {
     ) -> Result<Value, ActionCallError> {
         let refused = ActionCallError::refused;
         self.held_connection((app, workspace), process).await?;
-        let call: web_call::WebCall = super::person_vault::argument(
-            request,
-            "a web call names its address and the vault item that is its key",
-        )?;
-        let target = person_vault::call_target();
+        let VaultAction::WebCall { call } = super::person_vault::asked_of(request)? else {
+            return Err(UnknownAction);
+        };
+        let target = workspace_vault::target(workspace_vault::WEB_CALL);
         let items = self
             .open_vault(workspace)
             .await
@@ -1320,7 +1331,7 @@ impl Workspaces {
         let caller = Caller::local_app(app)
             .acting_for(hex::encode(self.device_cert().user_public_key))
             .in_workspace(workspace);
-        let word = person_vault::use_word(&target);
+        let word = workspace_vault::use_word(&target);
         let purpose = UsedFor {
             using: &word,
             what: "",
@@ -1365,7 +1376,7 @@ impl Workspaces {
         workspace: &str,
         app: &str,
         request: &InvokeRequest,
-        call: &web_call::WebCall,
+        call: &workspace_vault::WebCall,
         target: &RemoteActionTarget,
         on: ItemIn<'_>,
     ) -> Result<(), String> {
@@ -1406,7 +1417,7 @@ impl Workspaces {
             ],
             verb: "call".to_owned(),
             plural: Some("this service".to_owned()),
-            kind: person_vault::use_word(&person_vault::call_target()),
+            kind: workspace_vault::use_word(&workspace_vault::target(workspace_vault::WEB_CALL)),
             effect: Some(ActionKind::Outside),
             ..AskedFacts::default()
         };
@@ -1526,7 +1537,7 @@ impl Workspaces {
         &self,
         turn: &HostedTurn<'_>,
     ) -> Result<(), ActionCallError> {
-        self.turn_uses_for(turn, &person_vault::page_target())
+        self.turn_uses_for(turn, &workspace_vault::target(workspace_vault::FILL_PAGE))
             .await
             .map(drop)
     }
@@ -1545,10 +1556,10 @@ impl Workspaces {
     pub(crate) async fn release_for_turn(
         &self,
         turn: &HostedTurn<'_>,
-        fill: &FillPage,
+        fill: PageFill<'_>,
         request: &InvokeRequest,
     ) -> Result<PageText, ActionCallError> {
-        let target = person_vault::page_target();
+        let target = workspace_vault::target(workspace_vault::FILL_PAGE);
         let using = self.turn_uses_for(turn, &target).await?;
         let (item, site) = page_wanted(fill).map_err(ActionCallError::refused)?;
         let kind = {

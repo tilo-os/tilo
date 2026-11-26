@@ -37,7 +37,7 @@ use russh::keys::ssh_key::{LineEnding, Signature};
 use russh::keys::{Algorithm, HashAlg, PrivateKey, PublicKey};
 use serde_json::{Value, json};
 
-pub(super) use tilo_actions::remote::person_vault::Sign;
+pub(super) use crate::workspace_vault::Sign;
 
 use super::Workspaces;
 use tilo_actions::remote::InvokeRequest;

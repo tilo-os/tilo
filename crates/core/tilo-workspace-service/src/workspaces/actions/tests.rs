@@ -780,9 +780,8 @@ async fn the_workspaces_owners_and_moderators_rename_it() {
 async fn the_persons_vault_models_and_mail_are_paths_of_the_workspace() {
     use crate::models as model_providers;
     use crate::workspace_accounts;
-    use tilo_actions::remote::{
-        WORKSPACE_MAIL_ACCOUNTS, WORKSPACE_MODELS, WORKSPACE_VAULT, person_vault,
-    };
+    use crate::workspace_vault;
+    use tilo_actions::remote::{WORKSPACE_MAIL_ACCOUNTS, WORKSPACE_MODELS, WORKSPACE_VAULT};
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = hosting_device();
@@ -820,10 +819,10 @@ async fn the_persons_vault_models_and_mail_are_paths_of_the_workspace() {
         assert_eq!(found.params.len(), params, "{child}#{action}");
         found.address.clone()
     };
-    let listed = published(WORKSPACE_VAULT, person_vault::LIST, 0);
+    let listed = published(WORKSPACE_VAULT, workspace_vault::LIST, 0);
     assert_eq!(
         super::vault::vault_action(&listed),
-        Some((workspace.as_str(), person_vault::LIST))
+        Some((workspace.as_str(), workspace_vault::LIST))
     );
     let add_provider = published(WORKSPACE_MODELS, model_providers::ADD_PROVIDER, 4);
     assert_eq!(

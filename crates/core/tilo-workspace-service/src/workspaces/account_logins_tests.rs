@@ -17,11 +17,11 @@
 use std::sync::Arc;
 
 use crate::workspace_accounts;
+use crate::workspace_vault;
+use crate::workspace_vault::ItemRef;
 use accounts::person::AccountList;
 use ed25519_dalek::SigningKey;
 use tilo_account_probe::AccountTester as _;
-use tilo_actions::remote::person_vault;
-use tilo_actions::remote::person_vault::ItemRef;
 use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
 use tilo_resource::{Id, Replica, Resource as _};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
@@ -209,7 +209,7 @@ impl Members {
             .unwrap()
             .document_key_holders(
                 tilo_app_id::apps::PASSWORDS,
-                tilo_actions::remote::person_vault::VAULT_RECORD,
+                tilo_actions::remote::VAULT_RECORD,
                 tilo_clock::wall(),
             )
             .unwrap()
@@ -496,8 +496,7 @@ async fn a_change_a_device_makes_for_another_member_names_the_member_who_asked()
 
     // Each of Bo's asks reaches Ada's device as the call Bo's device signed.
     let mut keeping = asking(workspace_accounts::LIST, &serde_json::json!({}));
-    keeping.target =
-        tilo_actions::remote::person_vault::target(tilo_actions::remote::person_vault::ADD);
+    keeping.target = crate::workspace_vault::target(crate::workspace_vault::ADD);
     let keeping = members.signed(keeping);
     let item = members
         .owner
@@ -816,7 +815,7 @@ fn vault_route(workspace: &str) -> tilo_peer_state::document_frame::DocumentRout
     tilo_peer_state::document_frame::DocumentRoute {
         app_id: tilo_app_id::apps::PASSWORDS.into(),
         cluster_id: workspace.to_owned(),
-        document: tilo_actions::remote::person_vault::VAULT_RECORD.into(),
+        document: tilo_actions::remote::VAULT_RECORD.into(),
     }
 }
 
@@ -907,7 +906,7 @@ async fn a_member_refused_passwords_opens_nothing_the_vault_keeps_after() {
     let artifact = collab_types::document_artifact_id(
         tilo_app_id::apps::PASSWORDS,
         &workspace,
-        tilo_actions::remote::person_vault::VAULT_RECORD,
+        tilo_actions::remote::VAULT_RECORD,
     );
     let (metadata, sealed) = next
         .seal_content(
@@ -1040,7 +1039,7 @@ async fn a_device_that_may_not_read_the_vault_releases_its_connection_nothing() 
     let process = AppProcess::connection(BRIDGE);
     let call = InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
-        target: tilo_actions::remote::person_vault::release_target(&item),
+        target: crate::workspace_vault::ItemRef::target(&item, workspace_vault::RELEASE),
         argument: InvokeArgument::None,
         context: None,
         confirmation: None,
@@ -1140,7 +1139,7 @@ impl HostConnections for MailHeld {
 fn release_of(item: &ItemRef) -> InvokeRequest {
     InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
-        target: person_vault::release_target(item),
+        target: workspace_vault::ItemRef::target(item, workspace_vault::RELEASE),
         argument: InvokeArgument::None,
         context: None,
         confirmation: None,
@@ -1201,10 +1200,10 @@ async fn an_editor_the_rules_ask_first_reads_mail_where_the_vault_is_and_holds_n
                 "test:mail-sign-in",
                 tilo_action_policy::Grantee::app(MAIL),
                 tilo_action_policy::TreePath::workspace(&workspace)
-                    .app(person_vault::PROVIDER)
-                    .kind(person_vault::ITEM_KIND)
+                    .app(workspace_vault::PROVIDER)
+                    .kind(workspace_vault::ITEM_KIND)
                     .resource(named.to_string())
-                    .action(person_vault::RELEASE),
+                    .action(workspace_vault::RELEASE),
                 tilo_action_policy::KindSet::READ,
                 tilo_action_policy::Answer::Allow,
                 tilo_action_policy::Grantee::person(person),

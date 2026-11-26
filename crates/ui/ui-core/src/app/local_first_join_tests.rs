@@ -262,8 +262,8 @@ tilo_test_env::scenario! {
                 tilo_actions::remote::InvokeRequest {
                     on_behalf_of: None,
                     invocation: tilo_actions::InvocationId::new(),
-                    target: tilo_actions::remote::person_vault::target(
-                        tilo_actions::remote::person_vault::LIST,
+                    target: tilo_actions::remote::vault_target(
+                        tilo_actions::remote::VAULT_LIST,
                     ),
                     argument: tilo_actions::remote::InvokeArgument::None,
                     context: None,
