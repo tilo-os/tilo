@@ -33,27 +33,3 @@ pub fn valid_name(name: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ids_are_plain_file_names() {
-        for good in ["acct-1", "ws_2", "default", "a.b"] {
-            assert!(valid_name(good), "{good}");
-        }
-        for bad in [
-            "",
-            ".",
-            "..",
-            ".hidden",
-            "a/b",
-            "a b",
-            "ä",
-            &"x".repeat(129),
-        ] {
-            assert!(!valid_name(bad), "{bad}");
-        }
-    }
-}

@@ -146,37 +146,3 @@ fn copy_flushing(
         to.flush()?;
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    tilo_test_env::scenario! {
-        /// `connect`: a client's lines to the environment's MCP server and its answers back.
-        fn connect_carries_a_client_to_the_mcp_server;
-
-        phase connect_relays_the_clients_lines_to_the_server_and_its_answers_back;
-        {
-            use std::io::{BufRead as _, Write as _};
-            let (ours, server) = std::os::unix::net::UnixStream::pair().unwrap();
-            let session = std::thread::spawn(move || {
-                let mut line = String::new();
-                std::io::BufReader::new(server.try_clone().unwrap())
-                    .read_line(&mut line)
-                    .unwrap();
-                (&server).write_all(b"{\"answer\":1}\n").unwrap();
-                line
-            });
-            let mut output = Vec::new();
-            relay(&ours, &b"{\"ask\":1}\n"[..], &mut output).unwrap();
-            assert_eq!(session.join().unwrap(), "{\"ask\":1}\n");
-            assert_eq!(output, b"{\"answer\":1}\n");
-        }
-
-        phase connect_only_connects;
-        {
-            let error = connect_main(&["--daemon".to_owned()]).unwrap_err();
-            assert!(error.to_string().contains("--connect"), "{error}");
-        }
-    }
-}

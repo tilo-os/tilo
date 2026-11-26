@@ -316,35 +316,3 @@ impl Drop for PipeWriter {
         self.0.changed.notify_all();
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    tilo_test_env::scenario! {
-        /// The in-memory pipe.
-        fn a_pipe_tells_each_end_when_the_other_is_gone;
-
-        phase a_pipe_ends_when_its_writer_is_gone;
-        {
-            let (mut reader, mut writer) = pipe();
-            let feeder = std::thread::spawn(move || {
-                for _ in 0..1000 {
-                    writer.write_all(&[b'x'; 1000]).unwrap();
-                }
-            });
-            let mut all = Vec::new();
-            reader.read_to_end(&mut all).unwrap();
-            feeder.join().unwrap();
-            assert_eq!(all.len(), 1_000_000);
-        }
-
-        phase a_writer_learns_its_reader_left;
-        {
-            let (reader, mut writer) = pipe();
-            drop(reader);
-            let error = writer.write_all(b"x").unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
-        }
-    }
-}

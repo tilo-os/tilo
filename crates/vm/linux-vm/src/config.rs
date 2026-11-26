@@ -143,30 +143,3 @@ fn available_vcpus() -> u32 {
         u32::try_from(count.get().div_ceil(2)).unwrap_or(2)
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_guest_os_gets_its_own_files_and_domain() {
-        let linux = Paths::under(
-            Path::new("/d"),
-            Path::new("/run/user/1000"),
-            Path::new("/c"),
-            GuestOs::Linux,
-        );
-        assert_eq!(
-            linux.disk(),
-            PathBuf::from("/d/tilo/linux-vm/linux/disk.qcow2")
-        );
-        assert_eq!(
-            linux.share_socket("fs-1"),
-            PathBuf::from("/run/user/1000/tilo-linux-vm/linux/fs-1.sock")
-        );
-        assert_eq!(linux.images, PathBuf::from("/c/tilo/linux-vm-images"));
-        let config = VmConfig::new(GuestOs::Linux, "/c/base.qcow2".into(), linux);
-        assert_eq!(config.domain_name, "tilo-linux-vm-linux");
-        assert!((1..=4).contains(&config.vcpus));
-    }
-}

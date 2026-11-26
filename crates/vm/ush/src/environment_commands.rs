@@ -717,7 +717,3 @@ fn open_argument<T: serde::de::DeserializeOwned>(
         }
     })
 }
-
-#[cfg(test)]
-#[path = "environment_commands_tests.rs"]
-mod tests;

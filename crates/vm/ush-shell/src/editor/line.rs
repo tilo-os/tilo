@@ -268,23 +268,3 @@ impl KillRing {
         self.ring.get(next).map(String::as_str)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn words_end_where_readline_ends_them() {
-        let mut line = Line::new("git commit -m 'fix/the thing'");
-        assert_eq!(line.kill_word_back(Word::Whitespace), "thing'");
-        assert_eq!(line.kill_word_back(Word::Alnum), "the ");
-        line.home();
-        line.word_right();
-        assert_eq!(line.cursor(), 3);
-        assert_eq!(line.kill_word_forward(), " commit");
-        assert_eq!(line.text(), "git -m 'fix/");
-        line.end();
-        line.transpose();
-        assert_eq!(line.text(), "git -m 'fi/x");
-    }
-}

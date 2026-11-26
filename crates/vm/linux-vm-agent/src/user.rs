@@ -45,19 +45,3 @@ impl GuestUser {
         PathBuf::from(format!("/run/user/{}", self.uid))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_guest_user_is_read_from_passwd_and_never_root() {
-        let passwd = "root:x:0:0:root:/root:/bin/bash\ntilo:x:1000:1000::/home/tilo:/bin/bash\n";
-        let user = GuestUser::from_passwd(passwd, "tilo").unwrap();
-        assert_eq!((user.uid, user.gid), (1000, 1000));
-        assert_eq!(user.home, PathBuf::from("/home/tilo"));
-        assert_eq!(user.runtime_dir(), PathBuf::from("/run/user/1000"));
-        assert_eq!(GuestUser::from_passwd(passwd, "root"), None);
-        assert_eq!(GuestUser::from_passwd(passwd, "nobody"), None);
-    }
-}

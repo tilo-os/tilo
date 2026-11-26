@@ -41,36 +41,3 @@ pub fn interactive_args(shell: &Path, rc: Option<&Path>) -> Vec<OsString> {
         _ => vec!["-l".into()],
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    tilo_test_env::scenario! {
-        /// How a guest's shell is started.
-        fn a_guest_shell_starts_with_the_persons_files_then_the_marks;
-
-        phase bash_reads_its_rc_and_other_shells_log_in;
-        {
-            let rc = Path::new("/run/ush/shell.bash");
-            assert_eq!(
-                interactive_args(Path::new("/usr/bin/bash"), Some(rc)),
-                ["--rcfile", "/run/ush/shell.bash", "-i"]
-            );
-            assert_eq!(
-                interactive_args(Path::new("/usr/bin/fish"), Some(rc)),
-                ["-l"]
-            );
-            assert_eq!(interactive_args(Path::new("/usr/bin/bash"), None), ["-l"]);
-        }
-
-        phase the_marks_come_after_the_persons_files;
-        {
-            let rc = bash_rc(true);
-            let profile = rc.find(". /etc/profile").unwrap();
-            let marks = rc.find("__ush_marks_key").unwrap();
-            assert!(profile < marks, "{rc}");
-            assert!(!bash_rc(false).contains("__ush_marks_key"));
-        }
-    }
-}

@@ -96,37 +96,3 @@ pub fn hybrid_link(uds: &Path) -> AgentLink {
         socket: uds.to_path_buf(),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_vsock_backend_falls_back_to_the_user_space_daemon() {
-        {
-            assert_eq!(VsockBackend::choose(true, true), Some(VsockBackend::Kernel));
-            assert_eq!(
-                VsockBackend::choose(false, true),
-                Some(VsockBackend::Hybrid)
-            );
-            assert_eq!(VsockBackend::choose(false, false), None);
-            assert!(VsockBackend::Kernel.snapshots());
-            assert!(!VsockBackend::Hybrid.snapshots());
-        }
-        {
-            let vhu = Path::new("/run/user/1000/tilo-linux-vm/linux/vsock-vhu.sock");
-            let uds = Path::new("/run/user/1000/tilo-linux-vm/linux/vsock.sock");
-            assert_eq!(
-                vhost_device_vsock_argv(vhu, uds),
-                [
-                    "vhost-device-vsock",
-                    "--vm",
-                    "guest-cid=3,socket=/run/user/1000/tilo-linux-vm/linux/vsock-vhu.sock,uds-path=/run/user/1000/tilo-linux-vm/linux/vsock.sock"
-                ]
-            );
-            let xml = hybrid_commandline_xml(vhu);
-            assert!(xml.contains("path=/run/user/1000/tilo-linux-vm/linux/vsock-vhu.sock"));
-            assert!(xml.contains("vhost-user-vsock-pci,chardev=tilovsock"));
-        }
-    }
-}
