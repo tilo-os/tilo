@@ -14,10 +14,8 @@
 use std::io::Read as _;
 use std::path::Path;
 
-use tilo_actions::remote::crash_reports::StopReason;
-
 use super::FILE_TIMESTAMP;
-use super::reports::STOPPED_SUFFIX;
+use super::reports::{STOPPED_SUFFIX, StopReason};
 
 /// The heading of a report of the computer stopping.
 pub const STOPPED_TITLE: &str = "tilo computer stopped";

@@ -9,10 +9,8 @@
 
 use std::path::PathBuf;
 
+use crate::reports::{self as wire, CrashKind, CrashReport, CrashReportText, StopReason};
 use serde_json::Value;
-use tilo_actions::remote::crash_reports::{
-    self as wire, CrashKind, CrashReport, CrashReportText, StopReason,
-};
 use tilo_actions::{ApiError, ResourcePresentation, ResourceSpec};
 use tilo_service::{Service, reading};
 

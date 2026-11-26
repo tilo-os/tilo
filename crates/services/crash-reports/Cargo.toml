@@ -15,7 +15,6 @@ tilo-files = { path = "../../platform/tilo-files" }
 tilo-paths.workspace = true
 # `journalctl` for the reports the kernel kept across a reset.
 bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
-# The fact shape Settings, an agent and a script read a report as.
 tilo-actions = { path = "../../core/actions" }
 # The reports a session service publishes.
 tilo-service = { path = "../../desktop/service" }
@@ -23,6 +22,8 @@ tilo-service = { path = "../../desktop/service" }
 tilo-resource = { path = "../../core/tilo-resource" }
 # A report's time reads in the person's own date style.
 ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
+# The reports' facts as Settings, an agent and a script read them.
+serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 # A kept stop is known by the digest of its log, so reading the same ones at

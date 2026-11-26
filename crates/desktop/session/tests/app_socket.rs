@@ -20,10 +20,10 @@ use media::audio::{AudioDevice, AudioGraph};
 use runtime_collab::CollabClient;
 use runtime_collab::wire::Receipt;
 use serde_json::{Map, Value, json};
-use tilo_actions::remote::crash_reports::{self as wire, CrashKind, CrashReport, CrashReportText};
 use tilo_audio_service::sound::{Graph, SoundService};
 use tilo_compositor::OutputConfig;
 use tilo_crash_reports::CrashReports;
+use tilo_crash_reports::reports::{self as wire, CrashKind, CrashReport, CrashReportText};
 use tilo_service::LoopWake;
 use tilo_session::{AppSocket, Options, Service, Session};
 

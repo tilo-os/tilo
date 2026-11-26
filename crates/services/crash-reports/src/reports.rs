@@ -12,9 +12,119 @@
 use std::io::Read as _;
 use std::path::Path;
 
-use tilo_actions::remote::crash_reports::{CrashKind, CrashReport, CrashReportText, StopReason};
-
 use super::{FILE_TIMESTAMP, FREEZE_SUFFIX};
+
+/// The resource every report is listed under, newest first: it reads as `{"reports": […]}`.
+pub const RESOURCE: &str = "crash-reports";
+
+/// What a report's resource id starts with, before its name.
+pub const REPORT_PREFIX: &str = "crash-report:";
+
+/// The resource the report `id` reads as: its facts and its text.
+#[must_use]
+pub fn report(id: &str) -> String {
+    format!("{REPORT_PREFIX}{id}")
+}
+
+/// The list's reading: every report, newest first, without its text.
+#[derive(
+    Clone, Debug, PartialEq, Eq, ::serde::Serialize, ::serde::Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct Listed {
+    /// Every report, newest first.
+    pub reports: Vec<CrashReport>,
+}
+
+/// What a report says happened.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    ::serde::Serialize,
+    ::serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum CrashKind {
+    /// The desktop stopped responding and was ended, then started again.
+    Froze,
+    /// The desktop stopped unexpectedly and started again.
+    Crashed,
+    /// A part of the desktop stopped and started again; the session went on.
+    PartRestarted,
+    /// The whole computer stopped and started again.
+    ComputerStopped,
+    /// The system's core met a fault (an oops) and went on running: the
+    /// kernel kept its log, but the computer did not stop for it.
+    SystemFault,
+}
+
+/// What the kernel's report says it met: why the computer stopped, or the
+/// fault it went on from.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    ::serde::Serialize,
+    ::serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum StopReason {
+    /// The system met an error it could not recover from.
+    Panic,
+    /// A fault in the system's core, which it went on from
+    /// ([`CrashKind::SystemFault`]).
+    Oops,
+    /// The system restarted itself at once.
+    Emergency,
+}
+
+/// One report, as the list reads it: what happened and when, without the
+/// text.
+#[derive(
+    Clone, Debug, PartialEq, Eq, ::serde::Serialize, ::serde::Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct CrashReport {
+    /// The report's name: its resource is [`report`] of it.
+    pub id: String,
+    /// When it happened, in seconds since the Unix epoch. For the computer
+    /// stopping, when it is not recorded, the start that found the report.
+    pub at: i64,
+    /// When it happened, as this computer reads a clock in the person's own
+    /// date style: what a view shows beside it.
+    #[serde(default)]
+    pub when: String,
+    pub kind: CrashKind,
+    /// What the kernel met, for the computer stopping or a fault of the
+    /// system's core, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<StopReason>,
+    /// The version of the desktop that wrote the report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// The exact build that wrote it: the program's build id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<String>,
+}
+
+/// One report's text, as its resource reads.
+#[derive(
+    Clone, Debug, PartialEq, Eq, ::serde::Serialize, ::serde::Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct CrashReportText {
+    pub report: CrashReport,
+    /// The report as it was written: its facts, then every stack or the
+    /// system's log.
+    pub text: String,
+    /// Whether the text is the start of a longer report.
+    #[serde(default)]
+    pub truncated: bool,
+}
 
 /// The end of the name of a report of the computer stopping.
 pub const STOPPED_SUFFIX: &str = "-stopped.log";

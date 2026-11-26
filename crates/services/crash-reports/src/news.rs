@@ -18,9 +18,8 @@
 use std::path::Path;
 
 use jiff::civil::DateTime;
-use tilo_actions::remote::crash_reports::CrashKind;
 
-use super::reports::{is_report_name, read_start, summarize, written_at};
+use super::reports::{CrashKind, is_report_name, read_start, summarize, written_at};
 
 /// The marker naming the newest report already looked at.
 pub const NOTICED: &str = ".noticed";
