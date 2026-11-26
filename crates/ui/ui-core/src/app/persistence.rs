@@ -92,7 +92,11 @@ impl App {
                 tracing::warn!(%error, "the reopened record collaborates once its route opens");
             }
         } else {
-            self.collaboration.manager = CollaborationManager::for_resource(&checkout);
+            let manager = std::mem::replace(
+                &mut self.collaboration.manager,
+                CollaborationManager::disabled(),
+            );
+            self.collaboration.manager = manager.for_reopened(&checkout);
         }
         if let Some(scope) = self.presence.broadcast_scope.clone() {
             self.broadcast_presence(scope, crate::collaboration::PresencePayload::Arrived);

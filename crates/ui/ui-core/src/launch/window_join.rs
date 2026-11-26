@@ -39,11 +39,49 @@ pub(super) fn start_join(spec: &LaunchSpec, args: &LaunchArgs) -> Option<Joining
                 .map_err(LaunchError::Operation)?;
             crate::collaboration::CollaborationManager::join_native(
                 &spec.definition.resource_type,
-                native_connection(),
+                native_connection()?,
             )
             .map_err(LaunchError::from)
         })
     })
+}
+
+/// The live window `args` launch, built as the launch builds its first window, without running
+/// its loop: joined to its workspace on the connection the launch has ([`native_connection`]), and
+/// when its record is not on this device yet, built once that join is over. What hosts the window
+/// other than the launch's own loop drives, a headless one included.
+///
+/// # Errors
+/// The window's join or its build failed, or `args` launch no live window.
+pub(super) fn build_window(spec: &LaunchSpec, args: &LaunchArgs) -> Result<App, LaunchError> {
+    let dispatched = match dispatch_local_first(spec, args, start_join(spec, args)) {
+        LocalFirst::Built(dispatched) => dispatched?,
+        LocalFirst::Arriving(arriving) => dispatch_arrived(spec, args, arriving)?,
+    };
+    dispatched
+        .into_app()
+        .ok_or_else(|| LaunchError::Operation("this launch opens no window".to_owned()))
+}
+
+/// What a process that is its own launcher handed its first window
+/// ([`super::hand_connection`]): the connection its join takes, once, or why the process could not
+/// make one.
+static HANDED: std::sync::Mutex<Option<Result<crate::collaboration::HandedConnection, String>>> =
+    std::sync::Mutex::new(None);
+
+/// Whether this process handed its first window a connection, or tried to: it is its own launcher,
+/// and its windows join the workspace as a launched process's do.
+static WAS_HANDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(super) fn hand(connection: Result<crate::collaboration::HandedConnection, String>) {
+    *HANDED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(connection);
+    WAS_HANDED.store(true, std::sync::atomic::Ordering::Release);
+}
+
+pub(super) fn was_handed() -> bool {
+    WAS_HANDED.load(std::sync::atomic::Ordering::Acquire)
 }
 
 /// Start the join `join` makes in a wake scope of its own, the one the app is built in.
@@ -263,11 +301,34 @@ pub(super) fn dispatch_definition_in(
 /// The connection a native launch's manager joins on: a window the shell opened in this running process
 /// has one of its own ([`crate::window_link`]); the one the launcher handed the process is its first
 /// window's.
-pub(super) fn native_connection() -> crate::collaboration::NativeConnection {
+///
+/// A process that is its own launcher hands its first window the connection it made for it
+/// ([`super::hand_connection`]); a window of such a process with none (its making failed, or a
+/// later window took it) does not open, rather than open on records of this device alone.
+///
+/// # Errors
+/// The process is its own launcher and has no connection for this window.
+pub(super) fn native_connection() -> Result<crate::collaboration::NativeConnection, LaunchError> {
     if crate::window_link::is_building() {
-        crate::collaboration::NativeConnection::Window(crate::window_link::take_collaboration())
-    } else {
-        crate::collaboration::NativeConnection::Launch
+        return Ok(crate::collaboration::NativeConnection::Window(
+            crate::window_link::take_collaboration(),
+        ));
+    }
+    if !was_handed() {
+        return Ok(crate::collaboration::NativeConnection::Launch);
+    }
+    let handed = HANDED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    match handed {
+        Some(Ok(connection)) => Ok(crate::collaboration::NativeConnection::Handed(connection)),
+        Some(Err(why)) => Err(LaunchError::Operation(why)),
+        None => Err(LaunchError::Operation(
+            "this window has no connection to its workspace: its process handed one to its first \
+             window only"
+                .to_owned(),
+        )),
     }
 }
 

@@ -248,6 +248,14 @@ pub struct Driver {
 pub const WINDOW_PARTS: &str = "window-parts";
 
 impl Driver {
+    /// The driver over `app`, a window the launch built
+    /// ([`crate::launch::LaunchSpec::build_window`]), in a surface of `viewport` logical pixels,
+    /// after its first frame.
+    #[must_use]
+    pub fn showing(app: App, viewport: (u32, u32)) -> Self {
+        Self::on_app(Box::new(app), viewport)
+    }
+
     fn on_app(app: Box<App>, viewport: (u32, u32)) -> Self {
         let mut driver = Self::built(app, viewport);
         // A freshly built app has everything to take up: its first frame syncs the tree, as a

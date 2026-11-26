@@ -2005,13 +2005,14 @@ fn prepare_definition(
 /// handed it a connection to Tilo on the device: a profile of this device's own, as a
 /// `--data-dir` launch keeps them. Such an app runs only here, or is Tilo on this device itself
 /// (a phone's app, which starts the device's daemon in its own process and so has no runtime to
-/// attach to). `None` for every other launch, which reads its records over its connection.
+/// attach to) and has handed its window no connection: until a person's identity has the phone.
+/// `None` for every other launch, which reads its records over its connection.
 #[cfg(tilo_native_runner)]
 fn kept_on_this_device(
     app: &AppHooks,
     definition: &ApplicationDefinition,
 ) -> Option<std::path::PathBuf> {
-    if app.attaches_runtime || NativeProcess::connected() {
+    if app.attaches_runtime || ui_core::launch::connection_handed() || NativeProcess::connected() {
         return None;
     }
     tilo_paths::data_dir().map(|data| data.join(definition.app_id()))
@@ -2266,7 +2267,10 @@ pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
         .allowed_live_options(live_options::<A>())
         .allowed_live_flags(live_flags::<A>());
     let spec = if !A::ATTACHES_RUNTIME {
-        spec.runtime_attachment(|_| false)
+        // Such an app attaches to no runtime beside it, but a process that is its own launcher
+        // (a phone running the device's daemon) attaches its window to the workspace over the
+        // connection it handed it, as any launched app's window is.
+        spec.runtime_attachment(|_| ui_core::launch::connection_handed())
     } else if A::PRIVATE_WINDOWS {
         // A private window is nobody's runtime member: it neither syncs
         // nor shares what it shows.

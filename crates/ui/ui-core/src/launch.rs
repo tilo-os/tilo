@@ -28,6 +28,42 @@ pub(crate) use window_join::{
 };
 #[cfg(all(feature = "native", feature = "model"))]
 use window_join::{Unbuilt, construct_native, dispatch_live, live_native, native_connection};
+
+/// Hand the first window of this process, which is its own launcher, the connection it made for
+/// it, as a launcher in another process hands a process it starts its connections: a phone, which
+/// runs the device's daemon in the app's own process, once a person's identity has the device.
+/// The window then joins the workspace over it and keeps its records there, as the window of a
+/// launched app does, even an app that otherwise attaches to no runtime beside it
+/// ([`LaunchSpec::attaches_runtime`] with [`connection_handed`]). The workspace it is in and that
+/// it takes part there as an author are installed as the launcher's.
+///
+/// `Err` hands the window why no connection could be made: it does not open, rather than open on
+/// records of this device alone.
+#[cfg(all(feature = "native", feature = "model"))]
+pub fn hand_connection(connection: Result<crate::collaboration::HandedConnection, String>) {
+    if let Ok(handed) = &connection {
+        let mut launched = (*crate::process::environment()).clone();
+        launched.identity.workspace_id = Some(handed.workspace.to_string());
+        launched.identity.participation = Some("author".to_owned());
+        crate::process::install_environment(launched);
+    }
+    window_join::hand(connection);
+}
+
+/// Whether this process, its own launcher, handed its first window a connection
+/// ([`hand_connection`]), or tried to: its windows join their workspace as a launched app's do.
+#[must_use]
+pub fn connection_handed() -> bool {
+    #[cfg(all(feature = "native", feature = "model"))]
+    {
+        window_join::was_handed()
+    }
+    #[cfg(not(all(feature = "native", feature = "model")))]
+    {
+        false
+    }
+}
+
 mod scenario;
 pub use scenario::HostSource;
 mod shot_frame;
@@ -288,6 +324,17 @@ impl LaunchSpec {
     ) -> Result<crate::application::AppComponent, LaunchError> {
         validate_spec_args(args, self)?;
         self.definition.instantiate(context, target, restore)
+    }
+
+    /// The live window `args` launch, built as [`run`] builds its first window, joined to its
+    /// workspace, without running its loop: for a host that drives the window itself, a headless
+    /// one included.
+    ///
+    /// # Errors
+    /// The window's join or its build failed, or `args` launch no live window.
+    #[cfg(all(feature = "native", feature = "model"))]
+    pub fn build_window(&self, args: &LaunchArgs) -> Result<crate::App, LaunchError> {
+        window_join::build_window(self, args)
     }
 
     /// Scenario-specific default viewport. An explicit `--viewport` always wins over this callback.
@@ -1249,7 +1296,7 @@ fn native_launch_manager(
     }
     crate::collaboration::CollaborationManager::for_native_launch(
         &spec.definition.resource_type,
-        native_connection(),
+        native_connection()?,
     )
     .map_err(LaunchError::from)
 }
