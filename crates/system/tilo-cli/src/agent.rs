@@ -153,7 +153,7 @@ fn check_config(agent: &Agent, config: &Path, tilo: &Path) -> ExitCode {
         );
     }
     println!();
-    println!("{}", crate::login::first_act(agent));
+    println!("{}", crate::login::first_act());
     ExitCode::SUCCESS
 }
 

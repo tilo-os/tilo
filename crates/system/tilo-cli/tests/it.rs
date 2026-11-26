@@ -21,6 +21,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 mod hosted_journey;
 #[path = "machine_tests.rs"]
 mod machine_tests;
+mod ticket_action;
 
 /// The old names, as `tilo` lists them in `src/aliases.rs`.
 fn moved() -> Vec<String> {

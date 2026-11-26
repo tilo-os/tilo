@@ -22,7 +22,7 @@ use ed25519_dalek::SigningKey;
 use serde_json::json;
 use tilo_api::daemon::DaemonPlace;
 use tilo_api::server::ServerAddress;
-use tilo_device_identity::login::{Direction, REPORTED, Step, Ticket};
+use tilo_device_identity::login::{Direction, Step, Ticket};
 use tilo_server_client::CertifyError;
 use tilo_server_client::LinkError;
 use tilo_session_client::Outbox as _;
@@ -478,7 +478,7 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
         device.label(),
         which_agent(&agent.name)
     );
-    entered_after_login(&runtime, &key, &device, &agent, false)?;
+    entered_after_login(&runtime, &key, &device, false)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -528,17 +528,11 @@ pub fn login_at_server(host: &str) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// What the agent does once Tilo's tools are in: the one visible thing that
-/// tells the person, in their own tab, that it is there.
-pub(crate) fn first_act(agent: &Agent) -> String {
-    format!(
-        "Start with the tilo_ls tool, which lists what is in their workspace, then do \
-         one visible thing so they see you working: \
-         tilo_do with {{\"path\": \"notes#open\"}}, then tilo_do with \
-         {{\"path\": \"notes#new-note\", \"args\": {{\"title\": \"Hello from {}\"}}}}. Their tab \
-         shows the note as you write it.",
-        agent.name
-    )
+const REQUESTED_WORK: &str = "Use the actions you find to do the work the person requested. If they \
+    haven't asked for anything yet, ask what they'd like you to do.";
+
+pub(crate) fn first_act() -> String {
+    format!("Start with the tilo_ls tool to see what's in the person's workspace. {REQUESTED_WORK}")
 }
 
 /// The streamable HTTP MCP server that reaches `device`'s workspace, when one does: the API
@@ -570,7 +564,7 @@ fn mcp_servers(tilo: &Path, http: Option<&str>) -> String {
 
 /// What `tilo login` prints last: what the agent does next, in order. `http` is the streamable
 /// HTTP MCP server that reaches the workspace, when one does ([`http_mcp`]).
-fn next_steps(agent: &Agent, tilo: &Path, http: Option<&str>, added: bool) -> String {
+fn next_steps(tilo: &Path, http: Option<&str>, added: bool) -> String {
     let mut steps: Vec<String> = Vec::new();
     if !added {
         steps.push(format!(
@@ -593,13 +587,7 @@ fn next_steps(agent: &Agent, tilo: &Path, http: Option<&str>, added: bool) -> St
         "Call the tilo_ls tool to see what is in their workspace, and tell them what you can do \
          in Tilo: {WHAT_TILO_DOES}."
     ));
-    steps.push(format!(
-        "Then do one visible thing so they see you working: tilo_do with \
-         {{\"path\": \"notes#open\"}}, then tilo_do with \
-         {{\"path\": \"notes#new-note\", \"args\": {{\"title\": \"Hello from {}\"}}}}. Their tab \
-         shows the note as you write it.",
-        agent.name
-    ));
+    steps.push(REQUESTED_WORK.to_owned());
     let numbered: Vec<String> = steps
         .iter()
         .enumerate()
@@ -665,21 +653,14 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
         end.saturating_sub(device.cert.issued_at_ns) / (24 * 3600 * 1_000_000_000)
     });
     println!("{}", logged_in_said(device.label(), days, &agent.name));
-    let client = Client::open(crate::api::Reach {
-        api: None,
-        key_file: None,
-        json: false,
-    })?;
     let text = parsed.encode();
-    report(&runtime, &client, &text, Step::LoggedIn, &agent, None);
-    let added = add_and_report(&runtime, &client, &text, &agent);
-    let entered = entered_after_login(&runtime, &key, &device, &agent, added)?;
+    report(&text, Step::LoggedIn, &agent, None);
+    let added = add_and_report(&text, &agent);
+    let entered = entered_after_login(&runtime, &key, &device, added)?;
     if entered {
-        report(&runtime, &client, &text, Step::Entered, &agent, None);
+        report(&text, Step::Entered, &agent, None);
     } else {
         report(
-            &runtime,
-            &client,
             &text,
             Step::Failed,
             &agent,
@@ -694,12 +675,7 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
 
 /// Add Tilo's tools to the agent's tool with the tool's own command, confirm them, and tell the
 /// tab that showed the ticket what became of them.
-fn add_and_report(
-    runtime: &tokio::runtime::Runtime,
-    client: &Client,
-    ticket: &str,
-    agent: &Agent,
-) -> bool {
+fn add_and_report(ticket: &str, agent: &Agent) -> bool {
     let Some(tool) = agent.tool else {
         return false;
     };
@@ -710,8 +686,8 @@ fn add_and_report(
     let added = match agent::add_tools(tool, &tilo) {
         agent::Added::Verified => {
             println!("Tilo's tools are added to {}.", tool.title());
-            report(runtime, client, ticket, Step::ToolsAdded, agent, None);
-            report(runtime, client, ticket, Step::Check, agent, None);
+            report(ticket, Step::ToolsAdded, agent, None);
+            report(ticket, Step::Check, agent, None);
             true
         }
         agent::Added::Unverified => {
@@ -725,8 +701,6 @@ fn add_and_report(
         agent::Added::Failed(said) => {
             println!("Tilo's tools are not in {} yet: {said}.", tool.title());
             report(
-                runtime,
-                client,
                 ticket,
                 Step::Failed,
                 agent,
@@ -736,34 +710,20 @@ fn add_and_report(
         }
     };
     println!("Restart {}: {}", tool.title(), tool.restart());
-    report(runtime, client, ticket, Step::Restart, agent, None);
+    report(ticket, Step::Restart, agent, None);
     added
 }
 
 /// Tell the tab that showed `ticket` one step of the login, as this computer's daemon reports
 /// it there. A report the host did not take never fails the login: the tab shows what it heard.
-pub(crate) fn report(
-    runtime: &tokio::runtime::Runtime,
-    client: &Client,
-    ticket: &str,
-    step: Step,
-    agent: &Agent,
-    detail: Option<&str>,
-) {
-    let reported = runtime.block_on(async {
-        let workspace = client.founded_workspace().await?;
-        client
-            .act(
-                &workspace,
-                "devices",
-                REPORTED,
-                &json!({"ticket": ticket, "step": step, "agent": agent.name, "detail": detail}),
-                "Report a login's step",
-            )
-            .await
-            .map(|_| ())
-    });
-    if let Err(error) = reported {
+fn report(ticket: &str, step: Step, agent: &Agent, detail: Option<&str>) {
+    let report = tilo_device_identity::login::Report {
+        ticket: ticket.to_owned(),
+        step,
+        agent: Some(agent.name.clone()),
+        detail: detail.map(str::to_owned),
+    };
+    if let Err(error) = crate::ticket_action::Action::Reported.call(&report) {
         debug_why("reporting a login's step", &error);
     }
 }
@@ -828,7 +788,6 @@ fn entered_after_login(
     runtime: &tokio::runtime::Runtime,
     key: &SigningKey,
     device: &Device,
-    agent: &Agent,
     added: bool,
 ) -> Result<bool> {
     let tilo = std::env::current_exe().context("finding this program")?;
@@ -867,10 +826,7 @@ fn entered_after_login(
         }
     }
     println!();
-    println!(
-        "{}",
-        next_steps(agent, &tilo, http_mcp(device).as_deref(), added)
-    );
+    println!("{}", next_steps(&tilo, http_mcp(device).as_deref(), added));
     Ok(entered)
 }
 
@@ -1119,8 +1075,7 @@ mod tests {
         // it does after.
         {
             let tilo = Path::new("/home/me/.local/bin/tilo");
-            let other = agent::named("Reviewer");
-            let next = next_steps(&other, tilo, Some(agent::MCP_URL), false);
+            let next = next_steps(tilo, Some(agent::MCP_URL), false);
             let steps: Vec<&str> = next.lines().collect();
             assert_eq!(steps[0], "Next, in order:");
             assert!(
@@ -1137,14 +1092,10 @@ mod tests {
             );
             assert!(steps[3].contains("restart you"), "{next}");
             assert!(steps[4].starts_with("4. Call the tilo_ls tool"), "{next}");
-            assert!(
-                steps[5].contains("\"path\": \"notes#open\"")
-                    && steps[5].contains("\"title\": \"Hello from Reviewer\""),
-                "the agent does one thing the person sees: {next}"
-            );
+            assert!(steps[5].contains("work the person requested") && steps[5].contains("ask what they"), "{next}");
             // A workspace no HTTP server reaches (one on a company's own server, joined over
             // iroh) is offered the stdio server alone.
-            let elsewhere = next_steps(&other, tilo, None, false);
+            let elsewhere = next_steps(tilo, None, false);
             assert!(
                 elsewhere.contains(
                     "the stdio server /home/me/.local/bin/tilo with the argument mcp. Put it"
@@ -1155,13 +1106,11 @@ mod tests {
         }
 
         phase the_check_tells_the_agent_what_it_does_first;
-        // What the agent's own check says once the server is in: the one visible
-        // thing it does for the person.
+        // The check discovers what this workspace offers and follows the person's request.
         {
-            let said = first_act(&agent::named("Scout"));
+            let said = first_act();
             assert!(said.starts_with("Start with the tilo_ls tool"), "{said}");
-            assert!(said.contains("notes#new-note"), "{said}");
-            assert!(said.contains("Hello from Scout"), "{said}");
+            assert!(said.contains("work the person requested") && said.contains("ask what they"), "{said}");
         }
     }
 }

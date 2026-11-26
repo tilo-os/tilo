@@ -51,6 +51,7 @@ mod server;
 mod service;
 mod settings;
 mod status;
+mod ticket_action;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
@@ -557,6 +558,12 @@ enum DeviceCmd {
     /// that reads it one the daemon refuses.
     #[command(hide = true)]
     PublicKey,
+    /// Make this ticket action through the local device, with its typed arguments on stdin.
+    #[command(hide = true)]
+    TicketAction {
+        #[arg(value_enum)]
+        action: ticket_action::Action,
+    },
     /// Which account on this device is the person its identity belongs to: the one whose
     /// proof, signed by the identity's key, names its uid. Prints `NAME UID:GID`; exits 2 when
     /// several prove it. The system asks this as root when it prepares the store.
@@ -1029,6 +1036,7 @@ fn run_system_command(cmd: DeviceCmd) -> Result<ExitCode> {
             | DeviceCmd::Revoke { .. }
             | DeviceCmd::LocalPerson { .. }
             | DeviceCmd::PublicKey
+            | DeviceCmd::TicketAction { .. }
     ) {
         require_system_provider()?;
     }
@@ -1637,6 +1645,7 @@ fn run_system(cmd: DeviceCmd) -> Result<ExitCode> {
             yes,
         } => device::revoke(&which, reason, yes),
         DeviceCmd::PublicKey => login::print_public_key(),
+        DeviceCmd::TicketAction { action } => action.serve(),
         DeviceCmd::LocalPerson {
             identity_root,
             passwd,

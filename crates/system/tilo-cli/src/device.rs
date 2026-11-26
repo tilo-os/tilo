@@ -221,7 +221,8 @@ pub fn add(
     reason = "one command: the browser's request, the root's signature, and what the person reads"
 )]
 fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
-    use tilo_device_identity::login::{APPROVE, Direction, PENDING};
+    use crate::ticket_action::Action;
+    use tilo_device_identity::login::Direction;
 
     login::trust_test_certificates()?;
     crate::identity::convert_earlier()?;
@@ -241,52 +242,25 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
     }
     let person = crate::identity::held()?;
     let login_place = login::Place::here(crate::identity::paths())?;
-    let (key, here) = login::load(&login_place)?.ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
-    let place = DaemonPlace::of(login_place.dir(), &key.verifying_key().to_bytes())
+    let here = login::load_public(&login_place)?.ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
+    let place = DaemonPlace::of(login_place.dir(), &here.cert.device_public_key)
         .map_err(anyhow::Error::msg)?;
     login::ensure_daemon(&place)?;
-    let runtime = login::runtime()?;
     let text = parsed.encode();
-    let (device, label, capability) = runtime.block_on(async {
-        let client = Client::open(Reach {
-            api: None,
-            key_file: None,
-            json: false,
-        })?;
-        let workspace = here.workspace.clone();
-        let answer = client
-            .act(
-                &workspace,
-                "devices",
-                PENDING,
-                &json!({"ticket": text}),
-                "Sign a browser in",
-            )
-            .await?;
-        let result = answer.get("result").cloned().unwrap_or(Value::Null);
-        let device = result
-            .get("device")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("this computer's daemon answered no browser"))?
-            .to_owned();
-        let label = result
-            .get("label")
-            .and_then(Value::as_str)
-            .unwrap_or("a browser")
-            .to_owned();
-        let capability = result
-            .get("capability")
-            .and_then(Value::as_str)
-            .unwrap_or("a browser of yours")
-            .to_owned();
-        Ok::<(String, String, String), anyhow::Error>((device, label, capability))
-    })?;
+    let waiting = Action::Pending.call(&json!({"ticket": text}))?;
+    let device = waiting["device"]
+        .as_str()
+        .context("this computer's daemon answered no browser")?;
+    let label = waiting["label"].as_str().unwrap_or("a browser");
+    let capability = waiting["capability"]
+        .as_str()
+        .unwrap_or("a browser of yours");
     if !json {
         println!("This browser asks to be one of your devices: \"{label}\" ({capability}).");
     }
     let tab = tilo_device_identity::login::Tab {
-        device_public_key: device.clone(),
-        label: label.clone(),
+        device_public_key: device.to_owned(),
+        label: label.to_owned(),
     };
     // The person's root signs the tab's certificate, as it signs one for any device of theirs.
     // A computer without the root hands the signing to one that holds it: the tab's request is
@@ -302,32 +276,13 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
         }
         None => None,
     };
-    let answer = runtime.block_on(async {
-        let client = Client::open(Reach {
-            api: None,
-            key_file: None,
-            json: false,
-        })?;
-        let argument = match &cert {
-            Some(cert) => json!({"ticket": text, "cert": cert, "label": here.cert.device_label}),
-            None => json!({"ticket": text, "label": here.cert.device_label}),
-        };
-        client
-            .act(
-                &here.workspace,
-                "devices",
-                APPROVE,
-                &argument,
-                "Approve a browser's sign-in",
-            )
-            .await
-    })?;
+    Action::Approve
+        .call(&json!({"ticket": text, "cert": cert, "label": here.cert.device_label}))?;
     if json {
         println!("{}", json!({"label": label, "device": device}));
     } else if cert.is_some() {
         println!("Signed the browser in as one of your devices.");
     } else {
-        let _ = answer;
         println!(
             "This computer does not hold your identity, so it handed the signing on: approve \
              \"{label}\" on a device that does, in your Tilo or in a tab of yours, and the browser \
