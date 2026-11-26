@@ -123,7 +123,13 @@ pub(crate) fn serve(action: CertifiedAction) -> Result<ExitCode> {
                 .context("this computer's daemon answered no browser")?;
             json!({"device": device, "label": result["label"], "capability": result["capability"]})
         }
-        CertifiedAction::Reported | CertifiedAction::Approve => json!({}),
+        CertifiedAction::Reported => {
+            if reply["status"] != "ok" || reply["result"] != json!({}) {
+                bail!("the device that issued the ticket has not confirmed this step");
+            }
+            json!({})
+        }
+        CertifiedAction::Approve => json!({}),
     };
     serde_json::to_writer(std::io::stdout().lock(), &answer)?;
     Ok(ExitCode::SUCCESS)

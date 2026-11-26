@@ -101,16 +101,24 @@ pub fn logged_in() -> bool {
 /// A Tilo desktop serves this login, so it is a device already, or the key cannot be read or
 /// kept.
 pub(crate) fn this_device_key() -> Result<SigningKey> {
+    read_device_key(false)
+}
+
+fn read_device_key(existing_only: bool) -> Result<SigningKey> {
     if tilo_api::client::desktop_socket().is_some() {
         bail!(
             "This computer's Tilo desktop is one of your devices already: `tilo` commands and \
              agents here act through it, with no login of their own."
         );
     }
-    let (key, _) =
-        tilo_device_identity::persist::load_or_create_device_key(&crate::identity::paths())
-            .context("reading this computer's device key")?;
-    Ok(key)
+    let paths = crate::identity::paths();
+    if existing_only {
+        return tilo_device_identity::persist::load_device_key(&paths)
+            .context("reading this computer's existing device key");
+    }
+    tilo_device_identity::persist::load_or_create_device_key(&paths)
+        .map(|(key, _)| key)
+        .context("reading this computer's device key")
 }
 
 /// `tilo device public-key`: this computer's device key as hex, for [`this_device_public_key`].
@@ -118,10 +126,10 @@ pub(crate) fn this_device_key() -> Result<SigningKey> {
 /// # Errors
 /// The key cannot be read or kept.
 pub(crate) fn print_public_key() -> Result<ExitCode> {
-    println!(
-        "{}",
-        hex::encode(this_device_key()?.verifying_key().to_bytes())
-    );
+    // An installer retry compares its original device. A removed key cannot identify it.
+    let existing_only = std::env::var("TILO_HOSTED_EXISTING_KEY").as_deref() == Ok("1");
+    let key = read_device_key(existing_only)?;
+    println!("{}", hex::encode(key.verifying_key().to_bytes()));
     Ok(ExitCode::SUCCESS)
 }
 
@@ -617,17 +625,216 @@ fn not_a_ticket(text: &str) -> anyhow::Error {
 /// The text is no ticket, the issuing device is not reached, the ticket is spent or wrong, the
 /// person declined, or the answer cannot be kept.
 pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<ExitCode> {
-    crate::identity::convert_earlier()?;
+    let resume = std::env::var_os("TILO_HOSTED_RESUME").is_some_and(|value| value == "1");
+    let hosted = resume || std::env::var_os("TILO_HOSTED_SETUP").is_some_and(|value| value == "1");
+    if !hosted {
+        crate::identity::convert_earlier()?;
+    }
     let parsed = Ticket::parse(ticket).map_err(|_| not_a_ticket(ticket))?;
     if parsed.direction == Direction::SignIn {
+        if hosted {
+            bail!("That ticket signs a browser in. Use the computer setup from your Tilo page.");
+        }
         bail!(
             "That ticket signs a browser in: run `tilo device add {}` with it on this computer.",
             ticket.trim()
         );
     }
-    let agent = agent::given(agent);
+    let mut agent = agent::given(agent);
     let login_place = Place::here(crate::identity::paths())?;
-    let device_key = this_device_public_key()?;
+    if !resume && let Err(error) = certify_login(&login_place, ticket, &agent, named, hosted) {
+        if hosted && error.is::<tilo_api::daemon::enter::SetupTicketEnded>() {
+            // The installer can accept a new prompt only while this device is still unclaimed.
+            eprintln!("tilo: {error}");
+            return Ok(ExitCode::from(76));
+        }
+        return Err(error);
+    }
+    let device = if hosted {
+        retained_hosted_login(&login_place, &parsed)?
+    } else {
+        load_public(&login_place)?.ok_or_else(|| anyhow!(LOGIN_DAMAGED))?
+    };
+    if resume {
+        original_hosted_setup(&login_place, ticket, &device.cert.device_public_key, true)?;
+        let place = DaemonPlace::of(login_place.dir(), &device.cert.device_public_key)
+            .map_err(anyhow::Error::msg)?;
+        ensure_daemon(&place)?;
+        agent.name.clone_from(&device.agent);
+    }
+    let days = device.cert.expires_at_ns.map_or(0, |end| {
+        end.saturating_sub(device.cert.issued_at_ns) / (24 * 3600 * 1_000_000_000)
+    });
+    println!("{}", logged_in_said(device.label(), days, &agent.name));
+    let text = parsed.encode();
+    let entry = wait_for_daemon_entry(&device);
+    let ready = entry.is_ok();
+    if hosted {
+        entry.map_err(anyhow::Error::msg)?;
+    }
+    let report = |step, detail: Option<&str>| match report(&text, step, &agent, detail) {
+        Err(error) if !hosted => {
+            debug_why("reporting a login's step", &error);
+            Ok(())
+        }
+        answer => answer,
+    };
+    let mut deferred = Vec::new();
+    let mut progress = |step, detail: Option<&str>| {
+        if ready {
+            report(step, detail)?;
+        } else {
+            deferred.push((step, detail.map(str::to_owned)));
+        }
+        Ok(())
+    };
+    // The original issuer checks this ticket's secret, person, certified device and workspace.
+    // Its receipt is required before a managed setup is allowed to change local tool configuration.
+    progress(Step::LoggedIn, None)?;
+    let added = add_and_report(&agent, progress)?;
+    if hosted && agent.tool.is_some() && !added {
+        bail!("Tilo's tools have not been added to the agent.");
+    }
+    // Registration is local and can finish while the daemon is offline. Only its present
+    // session can confirm the workspace the page is waiting for.
+    let mut entered = daemon_entry(&device);
+    if entered.is_ok() && !deferred.is_empty() {
+        for (step, detail) in deferred {
+            report(step, detail.as_deref())?;
+        }
+        entered = daemon_entry(&device);
+    }
+    if let Err(why) = &entered {
+        report(
+            Step::Failed,
+            Some("this computer could not enter your workspace"),
+        )?;
+        if hosted {
+            bail!("{why}");
+        }
+    } else {
+        report(Step::Entered, None)?;
+    }
+    entered_after_login(&device, added, entered)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Bind a hosted ticket to the device and server in this computer's existing certification.
+/// Reading a retained login never creates or replaces its key.
+fn retained_hosted_login(place: &Place, ticket: &Ticket) -> Result<Device> {
+    if tilo_api::client::desktop_socket().is_some() {
+        bail!("A Tilo desktop is already serving this computer.");
+    }
+    let (_, device) = load(place)?.context("This setup has no retained device login.")?;
+    let now = tilo_clock::unix_now_ns();
+    tilo_user_identity::verify_device_cert_at(&device.cert, now)?;
+    tilo_user_identity::verify_device_cert_at(&device.server_cert, now)?;
+    if device.cert.capabilities != tilo_user_identity::DeviceCapabilities::member()
+        || device.server_cert.device_public_key != ticket.issuer_device()
+        || !device
+            .server_address
+            .as_ref()
+            .is_some_and(|server| server.endpoint_addr.id.as_bytes() == &ticket.issuer.endpoint)
+    {
+        bail!("This setup ticket does not match this computer's retained hosted login.");
+    }
+    Ok(device)
+}
+
+/// Check the private receipt made by this setup's installer before it requested certification.
+/// The later lines name the old holder and login, when the installer saw their creation.
+fn original_hosted_setup(
+    place: &Place,
+    ticket: &str,
+    device: &[u8; 32],
+    resume: bool,
+) -> Result<()> {
+    use sha2::{Digest as _, Sha256};
+    use tilo_files::native::{bounded, nofollow, private};
+    const REFUSED: &str =
+        "This computer has no matching unfinished hosted setup. Use its original setup prompt.";
+    let profile = std::fs::File::open(place.dir()).context(REFUSED)?;
+    let file = nofollow::open_beneath(&profile, Path::new("hosted-cli"), false).context(REFUSED)?;
+    let metadata = file.metadata().context(REFUSED)?;
+    if !metadata.is_file() || !private::private_to_me(&metadata) {
+        bail!(REFUSED);
+    }
+    let bytes = bounded::read_from(file, 4096).context(REFUSED)?;
+    let (first, retained) = std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|receipt| receipt.split_once('\n'))
+        .context(REFUSED)?;
+    if !resume && !retained.is_empty() {
+        bail!(REFUSED);
+    }
+    let version = std::env::var("TILO_VERSION").context(REFUSED)?;
+    let archive = std::env::var("TILO_HOSTED_ARCHIVE_SHA").context(REFUSED)?;
+    let fields: Vec<_> = first.split(' ').collect();
+    let ["pending", release, archive_sha, ticket_sha, physical] = fields.as_slice() else {
+        bail!(REFUSED);
+    };
+    if version.is_empty()
+        || *release != version
+        || *archive_sha != archive
+        || archive.len() != 64
+        || !archive
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || *ticket_sha != hex::encode(Sha256::digest(ticket.as_bytes()))
+        || *physical != hex::encode(device)
+    {
+        bail!(REFUSED);
+    }
+    Ok(())
+}
+
+/// Before certification, the installer has kept just an intent and the physical device key.
+/// Even an incomplete login or an unreadable certificate is an existing enrollment.
+fn unclaimed_hosted_key(place: &Place, ticket: &str) -> Result<SigningKey> {
+    let keys = place.keys();
+    let person_certs = keys.device_cert_for_user(&[0; 32]);
+    let certs = person_certs
+        .parent()
+        .context("finding the device certificates")?;
+    for path in [
+        place.dir().join("login.json").as_path(),
+        place.dir().join("device.json").as_path(),
+        &keys.device_cert,
+        certs,
+        &keys.user_pubkey,
+        &crate::identity::dir()?,
+    ] {
+        match std::fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("checking for an existing device enrollment"),
+            Ok(_) => bail!(
+                "This computer already has a device enrollment. Use its original setup prompt."
+            ),
+        }
+    }
+    if tilo_api::client::desktop_socket().is_some() {
+        bail!("A Tilo desktop is already serving this computer.");
+    }
+    let key = tilo_device_identity::persist::load_device_key(keys)
+        .context("the original setup device key is missing or unreadable")?;
+    original_hosted_setup(place, ticket, &key.verifying_key().to_bytes(), false)?;
+    Ok(key)
+}
+
+fn certify_login(
+    login_place: &Place,
+    ticket: &str,
+    agent: &Agent,
+    named: Option<&str>,
+    hosted: bool,
+) -> Result<()> {
+    let hosted_key = hosted
+        .then(|| unclaimed_hosted_key(login_place, ticket))
+        .transpose()?;
+    let device_key = match &hosted_key {
+        Some(key) => key.verifying_key().to_bytes(),
+        None => this_device_public_key()?,
+    };
     let place = DaemonPlace::of(login_place.dir(), &device_key).map_err(anyhow::Error::msg)?;
     let runtime = runtime()?;
     let said = named.map_or_else(|| label(&agent.name, &hostname()), str::to_owned);
@@ -635,16 +842,24 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
     // A computer no person's certificate names yet logs in itself: its daemon serves the device
     // key alone until then, with no API to ask, and takes the person's workspaces up once the
     // certificate is here.
-    let claimed = tilo_device_identity::login::claimed(&login_place, &device_key);
+    let claimed = tilo_device_identity::login::claimed(login_place, &device_key);
     if claimed {
+        if hosted {
+            bail!(
+                "This computer is already certified. Resume its original hosted setup to finish it."
+            );
+        }
         ensure_daemon(&place)?;
-        asked_daemon(&runtime, ticket, &agent, &said)?;
+        asked_daemon(&runtime, ticket, agent, &said)?;
         restart_after_login(&place)?;
     } else {
-        let key = this_device_key()?;
+        let key = match hosted_key {
+            Some(key) => key,
+            None => this_device_key()?,
+        };
         runtime.block_on(tilo_api::daemon::enter::log_in_here(
             &key,
-            &login_place,
+            login_place,
             ticket,
             &agent.name,
             Some(&said),
@@ -653,61 +868,27 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
         ensure_daemon(&place)?;
     }
     // The login is kept; the daemon serving it hands this computer its workspace.
-    let device = load_public(&login_place)?.ok_or_else(|| anyhow!(LOGIN_DAMAGED))?;
-    let days = device.cert.expires_at_ns.map_or(0, |end| {
-        end.saturating_sub(device.cert.issued_at_ns) / (24 * 3600 * 1_000_000_000)
-    });
-    println!("{}", logged_in_said(device.label(), days, &agent.name));
-    let text = parsed.encode();
-    let ready = wait_for_daemon_entry(&device).is_ok();
-    let mut deferred = Vec::new();
-    let mut progress = |step, detail: Option<&str>| {
-        if ready {
-            report(&text, step, &agent, detail);
-        } else {
-            deferred.push((step, detail.map(str::to_owned)));
-        }
-    };
-    progress(Step::LoggedIn, None);
-    let added = add_and_report(&agent, progress);
-    // Registration is local and can finish while the daemon is offline. Only its present
-    // session can confirm the workspace the page is waiting for.
-    let mut entered = daemon_entry(&device);
-    if entered.is_ok() && !deferred.is_empty() {
-        for (step, detail) in deferred {
-            report(&text, step, &agent, detail.as_deref());
-        }
-        entered = daemon_entry(&device);
-    }
-    if entered.is_ok() {
-        report(&text, Step::Entered, &agent, None);
-    } else {
-        report(
-            &text,
-            Step::Failed,
-            &agent,
-            Some("this computer could not enter your workspace"),
-        );
-    }
-    entered_after_login(&device, added, entered)?;
-    Ok(ExitCode::SUCCESS)
+    Ok(())
 }
 
 /// Add Tilo's tools to the agent's tool with the tool's own command, confirm them, and tell the
 /// tab that showed the ticket what became of them.
-fn add_and_report(agent: &Agent, mut progress: impl FnMut(Step, Option<&str>)) -> bool {
+fn add_and_report(
+    agent: &Agent,
+    mut progress: impl FnMut(Step, Option<&str>) -> Result<()>,
+) -> Result<bool> {
     let Some(tool) = agent.tool else {
-        return false;
+        return Ok(false);
     };
     let Ok(tilo) = std::env::current_exe() else {
-        return false;
+        return Ok(false);
     };
     println!("Adding Tilo's tools to {}…", tool.title());
     let added = match agent::add_tools(tool, &tilo) {
         agent::Added::Verified => {
             println!("Tilo's tools are added to {}.", tool.title());
-            progress(Step::ToolsAdded, None);
-            progress(Step::Check, None);
+            progress(Step::ToolsAdded, None)?;
+            progress(Step::Check, None)?;
             true
         }
         agent::Added::Unverified => {
@@ -723,27 +904,26 @@ fn add_and_report(agent: &Agent, mut progress: impl FnMut(Step, Option<&str>)) -
             progress(
                 Step::Failed,
                 Some(&format!("adding Tilo's tools to {} failed", tool.title())),
-            );
+            )?;
             false
         }
     };
     println!("Restart {}: {}", tool.title(), tool.restart());
-    progress(Step::Restart, None);
-    added
+    progress(Step::Restart, None)?;
+    Ok(added)
 }
 
-/// Tell the tab that showed `ticket` one step of the login, as this computer's daemon reports
-/// it there. A report the host did not take never fails the login: the tab shows what it heard.
-fn report(ticket: &str, step: Step, agent: &Agent, detail: Option<&str>) {
+/// Ask the issuer of `ticket` to acknowledge one step through the current device's daemon.
+fn report(ticket: &str, step: Step, agent: &Agent, detail: Option<&str>) -> Result<()> {
     let report = tilo_device_identity::login::Report {
         ticket: ticket.to_owned(),
         step,
         agent: Some(agent.name.clone()),
         detail: detail.map(str::to_owned),
     };
-    if let Err(error) = crate::ticket_action::call(CertifiedAction::Reported, &report) {
-        debug_why("reporting a login's step", &error);
-    }
+    crate::ticket_action::call(CertifiedAction::Reported, &report)
+        .context("the device that issued the setup ticket did not confirm this step")?;
+    Ok(())
 }
 
 /// Ask this computer's daemon, which serves a person already, to log in with `ticket`.
@@ -963,6 +1143,52 @@ mod tests {
             unattended: false,
             enter_at: None,
         }
+    }
+
+    #[test]
+    fn an_unfinished_hosted_login_keeps_asking_as_its_original_physical_device() {
+        use sha2::{Digest as _, Sha256};
+        tilo_test_env::in_own_process(
+            module_path!(),
+            "an_unfinished_hosted_login_keeps_asking_as_its_original_physical_device",
+            || {
+                let mut home = tilo_test_env::TestHome::new().unwrap();
+                let state = home.root().join("state");
+                let keys = home.root().join("device-identity");
+                let archive = hex::encode([12; 32]);
+                home.env()
+                    .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1")
+                    .set("XDG_STATE_HOME", state)
+                    .set("TILO_IDENTITY_ROOT", keys)
+                    .set("TILO_HOSTED_ARCHIVE_SHA", &archive)
+                    .set("TILO_VERSION", "v0.5.0-rc.1");
+                let place = Place::here(crate::identity::paths()).unwrap();
+                let (key, _) =
+                    tilo_device_identity::persist::load_or_create_device_key(place.keys()).unwrap();
+                let physical = key.verifying_key().to_bytes();
+                let ticket = Ticket::new(tilo_device_identity::login::Reached {
+                    endpoint: *SigningKey::from_bytes(&[8; 32]).verifying_key().as_bytes(),
+                    relay: None,
+                    direct: Vec::new(),
+                })
+                .encode();
+                let marker = format!(
+                    "pending v0.5.0-rc.1 {archive} {} {}\n",
+                    hex::encode(Sha256::digest(ticket.as_bytes())),
+                    hex::encode(physical)
+                );
+                tilo_files::native::atomic::write_private(
+                    &place.dir().join("hosted-cli"),
+                    marker.as_bytes(),
+                )
+                .unwrap();
+                for _ in 0..2 {
+                    let retry = unclaimed_hosted_key(&place, &ticket).unwrap();
+                    assert_eq!(retry.verifying_key(), key.verifying_key());
+                    assert!(!place.logged_in());
+                }
+            },
+        );
     }
 
     #[test]

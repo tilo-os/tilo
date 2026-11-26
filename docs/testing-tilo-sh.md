@@ -376,6 +376,10 @@ requires OpenSSL and checks the signed archive before running the copy under
 or VM if this computer already uses a different Tilo login or daemon, or its
 agent has a `tilo` MCP registration pointing to another CLI. After setup, use
 the same account to approve a returning browser.
+If first setup stops after enrollment, rerun the original prompt in that account
+while its ticket is open because the host can no longer confirm setup after it expires.
+Before enrollment, retry the original prompt after a connection failure. If the
+issuer declines or expires that ticket, run a new setup prompt in the same account.
 
 On a host with separate transport and device keys, setup requires a CLI that reads
 both identities from the ticket. The local browser checks serve their candidate CLI

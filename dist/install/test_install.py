@@ -18,6 +18,7 @@ import tarfile
 import tempfile
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "dist/install/tilo.sh"
@@ -278,6 +279,7 @@ class Install(unittest.TestCase):
         user = "ad" * 32
         settings.update({"TILO_IDENTITY_ROOT": str(keys), "FIXTURE_LOGIN": str(login), "FIXTURE_USER": user})
         self.publish(b'''#!/bin/sh
+if [ "$*" = "device public-key" ]; then printf '%064d\\n' 1; exit; fi
 if [ "$1" = login ]; then
   mkdir -p "$TILO_IDENTITY_ROOT/device/certs" "$(dirname "$FIXTURE_LOGIN")"
   printf '  "user": "%s",\\n' "$FIXTURE_USER" > "$FIXTURE_LOGIN"
@@ -352,6 +354,10 @@ printf "%s %s" "$0" "$*"
             ok = self.install(*args, **settings)
             self.assertEqual(ok.returncode, 0, ok.stderr)
             self.assertEqual(ok.stdout, f"{target}/tilo {' '.join(args)}")
+        original = self.install("login", "ticket", **settings)
+        self.assertEqual(original.returncode, 0, original.stderr)
+        self.assertIn("already", (original.stdout + original.stderr).lower())
+        self.assertNotIn(f"{target}/tilo login", original.stdout)
         # A different login, or a daemon started outside the service manager, cannot
         # take over a returning candidate's installation.
         cert = keys / "device/certs" / f"{user}.bin"
@@ -373,6 +379,307 @@ printf "%s %s" "$0" "$*"
         self.assertIn("differs from the signed CLI", changed.stderr)
         self.assertEqual((target / "tilo").read_bytes(), b"different executable")
         self.assertEqual(self.installed.read_bytes(), b"existing default CLI")
+
+    def test_an_interrupted_hosted_login_finishes_only_for_its_original_device_and_ticket(self):
+        version = "v0.3.1-assistant.1"
+        self.release = self.release.with_name(version)
+        self.release.mkdir()
+        self.archive = self.release / machine()
+        target = self.home / ".local/share/tilo/cli" / version
+        state = self.home / ("Library/Application Support" if os.uname().sysname == "Darwin" else ".local/state")
+        state = state / "tilo/device"
+        keys = self.home / "keys"
+        key = keys / "device-private/keypair.bin"
+        ticket = "tilo1-original-single-use-ticket"
+        person = "ab" * 32
+        device = "12" * 32
+        log = self.home / "actions"
+        settings = {"TILO_VERSION": version, "TILO_HOSTED_SETUP": "1", "TILO_INSTALL_DIR": str(target),
+                    "TILO_IDENTITY_ROOT": str(keys), "STATE": str(state), "TICKET": ticket, "PERSON": person,
+                    "DEVICE": device, "ACTIONS": str(log)}
+        # The signed program models the boundary between approval and starting the daemon.
+        # A returned ticket report requires the issuer's original person, key and ticket.
+        program = br'''#!/bin/sh
+set -eu
+key=$TILO_IDENTITY_ROOT/device-private/keypair.bin
+cert=$TILO_IDENTITY_ROOT/device/certs/$PERSON.bin
+if [ "$*" = "device public-key" ]; then
+  mkdir -p "$(dirname "$key")"
+  [ -e "$key" ] || printf '%s\n' "$DEVICE" > "$key"
+  cat "$key"
+  exit
+fi
+if [ "$1" = device ] && [ "$2" = add ]; then
+  echo device-add >> "$ACTIONS"
+  exit
+fi
+[ "$1" = login ] || exit 2
+if [ "${EXPLICIT_LOGIN_CONSENT:-}" = 1 ]; then
+  [ "${TILO_HOSTED_SETUP:-}" != 1 ] && [ "${TILO_HOSTED_RESUME:-}" != 1 ] || exit 6
+  echo ordinary-consent >> "$ACTIONS"
+  exit
+fi
+[ "$TILO_HOSTED_ARCHIVE_SHA" = "$ARCHIVE" ] && [ "$TILO_HOSTED_SETUP" = 1 ] || exit 7
+if [ "${TILO_HOSTED_RESUME:-}" = 1 ]; then
+  [ "$2" = "$TICKET" ] && [ "$(cat "$key")" = "$DEVICE" ] &&
+    grep -Fq "$PERSON" "$STATE/login.json" && [ "$(cat "$cert")" = "$DEVICE" ] || exit 3
+  [ "${ISSUER_REFUSES:-}" != 1 ] || exit 3
+  printf 'resumed\n' >> "$ACTIONS"
+  exit
+fi
+echo enroll >> "$ACTIONS"
+[ ! -e "$STATE/login.json" ] || exit 4
+"$0" device public-key >/dev/null
+mkdir -p "$STATE" "$(dirname "$cert")"
+printf '{\n  "user": "%s"\n}\n' "$PERSON" > "$STATE/login.json"
+printf '%s\n' "$DEVICE" > "$cert"
+echo 'could not start enrolled device' >&2
+exit 5
+'''
+        self.publish(program, daemon=b"pinned runtime")
+        settings["ARCHIVE"] = hashlib.sha256(self.archive.read_bytes()).hexdigest()
+        first = self.install("login", ticket, **settings)
+        self.assertNotEqual(first.returncode, 0)
+        self.assertIn("could not start enrolled device", first.stderr)
+        self.assertEqual(log.read_text(), "enroll\n")
+        login = state / "login.json"
+        original_login = login.read_bytes()
+        cert = keys / "device/certs" / f"{person}.bin"
+        original_cert = cert.read_bytes()
+        self.assertTrue(all(ticket.encode() not in path.read_bytes() for path in state.rglob("*") if path.is_file()))
+
+        other_version = "v0.3.1-assistant.2"
+        shutil.copytree(self.release, self.release.with_name(other_version))
+        for name, args, overrides in (
+            ("other ticket", ("login", "tilo1-another-ticket"), {}),
+            ("other version", ("login", ticket), {"TILO_VERSION": other_version,
+                                                  "TILO_INSTALL_DIR": str(target.with_name(other_version))}),
+            ("browser sign-in", ("device", "add", "another-ticket"), {}),
+        ):
+            with self.subTest(name=name):
+                denied = self.install(*args, **{**settings, **overrides})
+                self.assertNotEqual(denied.returncode, 0, name)
+                self.assertEqual(log.read_text(), "enroll\n")
+
+        def denied():
+            attempted = self.install("login", ticket, **settings)
+            self.assertNotEqual(attempted.returncode, 0, attempted.stdout)
+            self.assertEqual(log.read_text(), "enroll\n")
+
+        receipt = state / "hosted-cli"
+        original_receipt = self.home / "original-receipt"
+        receipt.rename(original_receipt)
+        denied()
+        original_receipt.rename(receipt)
+        binary = target / "tilo"
+        different = program + b"# different binary\n"
+        binary.write_bytes(different)
+        denied()
+        # A different binary newly signed at the same release URL is still a different install.
+        packed = {p: p.read_bytes() for p in self.release.iterdir()}
+        self.publish(different, daemon=b"pinned runtime")
+        denied()
+        for path, data in packed.items():
+            path.write_bytes(data)
+        binary.write_bytes(program)
+        key.write_text("34" * 32)
+        denied()
+        key.write_text(device + "\n")
+        other_person = "cd" * 32
+        login.write_bytes(original_login.replace(person.encode(), other_person.encode()))
+        (cert.parent / f"{other_person}.bin").write_bytes(original_cert)
+        denied()
+        (cert.parent / f"{other_person}.bin").unlink()
+        login.write_bytes(original_login)
+
+        refused = self.install("login", ticket, **settings, ISSUER_REFUSES="1")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(log.read_text(), "enroll\n")
+        self.assertNotEqual(self.install("device", "add", "another-ticket", **settings).returncode, 0)
+        completed = self.install("login", ticket, **settings)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(log.read_text(), "enroll\nresumed\n")
+        self.assertEqual(login.read_bytes(), original_login)
+        self.assertEqual(cert.read_bytes(), original_cert)
+
+        def original_prompt_is_finished():
+            previous = log.read_text()
+            duplicate = self.install("login", ticket, **settings, ISSUER_REFUSES="1")
+            self.assertEqual(duplicate.returncode, 0, duplicate.stderr)
+            self.assertIn("already", (duplicate.stdout + duplicate.stderr).lower())
+            self.assertEqual(log.read_text(), previous, "a finished prompt must not call login again")
+
+        original_prompt_is_finished()
+        self.assertNotEqual(self.install("login", "different-ticket", **settings).returncode, 0)
+        lines = receipt.read_text().splitlines()
+        self.assertEqual(len(lines), 3)
+        for value in (hashlib.sha256(self.archive.read_bytes()).hexdigest(),
+                      hashlib.sha256(ticket.encode()).hexdigest(), device):
+            self.assertIn(value, lines[2].split())
+        self.assertNotIn(ticket, receipt.read_text())
+        linked = self.install("device", "add", "browser-ticket", **settings)
+        self.assertEqual(linked.returncode, 0, linked.stderr)
+        self.assertEqual(receipt.read_text().splitlines()[2], lines[2])
+        original_prompt_is_finished()
+
+        key.write_text("34" * 32)
+        self.assertNotEqual(self.install("login", ticket, **settings).returncode, 0)
+        key.write_text(device + "\n")
+        self.publish(different, daemon=b"pinned runtime")
+        binary.write_bytes(different)
+        self.assertNotEqual(self.install("login", ticket, **settings).returncode, 0)
+        self.assertEqual(log.read_text(), "enroll\nresumed\ndevice-add\n")
+        for path, data in packed.items():
+            path.write_bytes(data)
+        binary.write_bytes(program)
+        # The earlier installer recorded only the certified profile and the daemon generation.
+        receipt.write_text("\n".join(lines[:2]) + "\n")
+        legacy = self.install("device", "add", "browser-ticket", **settings)
+        self.assertEqual(legacy.returncode, 0, legacy.stderr)
+        self.assertEqual(log.read_text(), "enroll\nresumed\ndevice-add\ndevice-add\n")
+        self.assertFalse("".join(receipt.read_text().splitlines()[2:]).strip())
+        new_login = self.install("login", "newly-offered-ticket", **settings, EXPLICIT_LOGIN_CONSENT="1")
+        self.assertEqual(new_login.returncode, 0, new_login.stderr)
+        self.assertEqual(log.read_text().splitlines()[-1], "ordinary-consent")
+        self.assertEqual(receipt.read_text().splitlines(), lines[:2])
+
+    def hosted_setup_before_certification(self):
+        version = "v0.3.1-assistant.1"
+        self.release = self.release.with_name(version)
+        self.release.mkdir()
+        self.archive = self.release / machine()
+        base = self.home / ("Library/Application Support" if os.uname().sysname == "Darwin" else ".local/state")
+        state = base / "tilo/device"
+        keys = state.parent if os.uname().sysname == "Darwin" else self.home / "keys"
+        attempts = self.home / "attempts"
+        program = br'''#!/bin/sh
+set -eu
+umask 077
+key=$TILO_IDENTITY_ROOT/device-private/keypair.bin
+if [ "$*" = "device public-key" ]; then
+  mkdir -p "$TILO_IDENTITY_ROOT/device-private" "$TILO_IDENTITY_ROOT/device" "$TILO_IDENTITY_ROOT/user-identity"
+  if [ ! -f "$key" ]; then
+    [ "${TILO_HOSTED_EXISTING_KEY:-}" != 1 ] || exit 19
+    printf '%032d' 1 > "$key"
+  fi
+  openssl dgst -sha256 -r "$key" | cut -d' ' -f1
+  exit
+fi
+[ "$1" = login ] && [ "$TILO_HOSTED_SETUP" = 1 ] && [ "${TILO_HOSTED_RESUME:-}" != 1 ] || exit 18
+echo attempt >> "$ATTEMPTS"
+case "$RESULT" in
+  retryable) exit 5 ;;
+  terminal) exit 76 ;;
+  park)
+    touch "$HOME/attempt-running"
+    n=0
+    while [ ! -f "$HOME/finish-attempt" ] && [ "$n" -lt 200 ]; do sleep .05; n=$((n + 1)); done
+    exit 5 ;;
+  approved)
+    mkdir -p "$STATE" "$TILO_IDENTITY_ROOT/device/certs"
+    printf '{\n  "user": "%s"\n}\n' "$PERSON" > "$STATE/login.json"
+    printf 'device certificate' > "$TILO_IDENTITY_ROOT/device/certs/$PERSON.bin" ;;
+  *) exit 2 ;;
+esac
+'''
+        self.publish(program, daemon=b"signed runtime")
+        settings = {"TILO_VERSION": version, "TILO_HOSTED_SETUP": "1",
+                    "TILO_INSTALL_DIR": str(self.home / ".local/share/tilo/cli" / version),
+                    "TILO_IDENTITY_ROOT": str(keys), "STATE": str(state), "PERSON": "ab" * 32,
+                    "ATTEMPTS": str(attempts)}
+        return settings, state, keys, attempts
+
+    def test_an_uncertified_device_retries_its_ticket_and_replaces_one_only_after_a_terminal_answer(self):
+        settings, state, keys, attempts = self.hosted_setup_before_certification()
+        original = "tilo1-test-original"
+        replacement = "tilo1-test-replacement"
+
+        def ask(ticket, result):
+            return self.install("login", ticket, **settings, RESULT=result)
+
+        def refused(ticket):
+            calls = attempts.read_bytes()
+            answer = ask(ticket, "approved")
+            self.assertNotEqual(answer.returncode, 0)
+            self.assertEqual(attempts.read_bytes(), calls, "uncertain state must be refused before asking to enroll")
+
+        first = ask(original, "retryable")
+        self.assertEqual(first.returncode, 5, first.stderr)
+        key = keys / "device-private/keypair.bin"
+        initial_key = key.read_bytes()
+        refused(replacement)
+        same = ask(original, "retryable")
+        self.assertEqual(same.returncode, 5, same.stderr)
+        self.assertEqual(attempts.read_text().splitlines(), ["attempt", "attempt"])
+        refused(replacement)
+        incomplete = state / "login.json"
+        incomplete.write_text('{}')
+        refused(original)
+        incomplete.unlink()
+        terminal = ask(original, "terminal")
+        self.assertEqual(terminal.returncode, 76, terminal.stderr)
+
+        other_version = "v0.3.1-assistant.2"
+        shutil.copytree(self.release, self.release.with_name(other_version))
+        target = pathlib.Path(settings["TILO_INSTALL_DIR"])
+        other = {**settings, "TILO_VERSION": other_version, "TILO_INSTALL_DIR": str(target.with_name(other_version))}
+        self.assertNotEqual(self.install("login", replacement, **other, RESULT="approved").returncode, 0)
+        self.assertEqual(attempts.read_text().splitlines(), ["attempt"] * 3)
+        saved = {p: p.read_bytes() for p in self.release.iterdir()}
+        binary = target / "tilo"
+        program = binary.read_bytes()
+        self.publish(program + b"# other release\n", daemon=b"signed runtime")
+        binary.write_bytes(program + b"# other release\n")
+        refused(replacement)
+        binary.write_bytes(program)
+        for path, data in saved.items():
+            path.write_bytes(data)
+        for path in (state / "login.json", keys / "device/cert.bin", keys / "user-identity/pubkey.bin",
+                     keys / "device/.hidden", keys / "device-private/.other-key"):
+            with self.subTest(entry=path.name):
+                path.write_bytes(b"partial identity")
+                refused(replacement)
+                path.unlink()
+        foreign = keys / "device/certs" / ("12" * 32 + ".bin")
+        foreign.parent.mkdir()
+        foreign.write_bytes(b"another certificate")
+        refused(replacement)
+        foreign.unlink()
+        foreign.parent.rmdir()
+        kept_key = self.home / "original-key"
+        key.rename(kept_key)
+        refused(replacement)
+        self.assertFalse(key.exists(), "checking a returning device must not create a new key")
+        kept_key.rename(key)
+        key.write_bytes(b"2" * 32)
+        refused(replacement)
+        key.write_bytes(initial_key)
+        approved = ask(replacement, "approved")
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        self.assertEqual(attempts.read_text().splitlines(), ["attempt"] * 4)
+        self.assertEqual(key.read_bytes(), initial_key)
+        refused(original)
+
+    def test_two_setup_prompts_cannot_ask_to_certify_the_same_device_at_once(self):
+        settings, _, _, attempts = self.hosted_setup_before_certification()
+        with ThreadPoolExecutor(max_workers=1) as worker:
+            first = worker.submit(self.install, "login", "tilo1-test-original", **settings, RESULT="park")
+            try:
+                deadline = time.monotonic() + 20
+                entered = self.home / "attempt-running"
+                while not entered.exists() and not first.done() and time.monotonic() < deadline:
+                    time.sleep(.05)
+                self.assertTrue(entered.exists(), "the original setup must be waiting for the person's answer")
+                for ticket in ("tilo1-test-original", "tilo1-other"):
+                    second = self.install("login", ticket, **settings, RESULT="approved")
+                    self.assertNotEqual(second.returncode, 0)
+                    self.assertEqual(attempts.read_text().splitlines(), ["attempt"])
+            finally:
+                (self.home / "finish-attempt").touch()
+            self.assertEqual(first.result(timeout=10).returncode, 5)
+        retry = self.install("login", "tilo1-test-original", **settings, RESULT="approved")
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(attempts.read_text().splitlines(), ["attempt", "attempt"])
 
     @unittest.skipUnless(os.uname().sysname == "Linux" and shutil.which("cc"), "Linux daemon process identity")
     def test_a_returning_hosted_login_recognizes_its_undumpable_daemon(self):
@@ -401,7 +708,9 @@ int main(int argc, char **argv) {
         holder = state / "holder.lock"
         program = b'''#!/bin/sh
 set -eu
-if [ "$1" = login ]; then
+if [ "$*" = "device public-key" ]; then printf '%064d\\n' 1; exit; fi
+if [ "$1" = login ] && [ "${TILO_HOSTED_RESUME:-}" != 1 ]; then
+    [ ! -f "$STATE/login.json" ] || exit 9
     mkdir -p "$STATE" "$TILO_IDENTITY_ROOT/device/certs"
     printf '  "user": "%s",\\n' "$PERSON" > "$STATE/login.json"
     printf 'device certificate' > "$TILO_IDENTITY_ROOT/device/certs/$PERSON.bin"
@@ -410,6 +719,7 @@ if [ ! -s "$STATE/holder.lock" ]; then
     "$TILO_INSTALL_DIR/tilo-runtime" "$STATE/holder.lock" </dev/null >/dev/null 2>&1 &
     for i in 1 2 3 4 5; do [ -s "$STATE/holder.lock" ] && break; sleep .1; done
 fi
+if [ "${INTERRUPT_STARTUP:-}" = 1 ]; then exit 5; fi
 '''
         self.publish(program, daemon=executable.read_bytes())
         env = {"TILO_VERSION": self.release.name, "TILO_INSTALL_DIR": str(target),
@@ -432,12 +742,15 @@ fi
                     time.sleep(.01)
                 holder.unlink()
         try:
-            first = self.install("login", "ticket", **env)
-            self.assertEqual(first.returncode, 0, first.stderr)
+            first = self.install("login", "ticket", **env, INTERRUPT_STARTUP="1")
+            self.assertEqual(first.returncode, 5, first.stderr)
             first_pid = holder.read_text()
             if not can_ptrace:
                 with self.assertRaises(PermissionError):
                     os.readlink(f"/proc/{first_pid}/exe")
+            resumed = self.install("login", "ticket", **env)
+            self.assertEqual(resumed.returncode, 0, resumed.stderr)
+            self.assertEqual(holder.read_text(), first_pid)
             again = self.install("device", "add", "returning", **env)
             self.assertEqual(again.returncode, 0, again.stderr)
             self.assertEqual(holder.read_text(), first_pid)

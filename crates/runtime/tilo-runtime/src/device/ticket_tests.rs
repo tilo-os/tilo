@@ -272,7 +272,7 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
     let waiting = ServedTicket::new(
         ticket.clone(),
         root.verifying_key().to_bytes(),
-        enter,
+        enter.clone(),
         DeviceCapabilities::member(),
         Arc::new(RootApprover {
             root: root.clone(),
@@ -285,7 +285,7 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
     let service = ActionService::new(laptop_key.clone(), Arc::new(NoActions));
     service.admit_uncertified(SCOPE, Arc::new(waiting.clone()));
     let router = iroh::protocol::Router::builder(laptop_endpoint.clone())
-        .accept(ACTIONS_ALPN, service)
+        .accept(ACTIONS_ALPN, service.clone())
         .spawn();
 
     let text = ticket.encode();
@@ -337,6 +337,17 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
     .await
     .unwrap_err();
     assert!(refused.contains("didn't take this ticket"), "{refused}");
+    let wrong_secret = tilo_api::daemon::enter::log_in(
+        &desk_key,
+        &desk_endpoint,
+        &place,
+        &wrong.encode(),
+        "Codex",
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(!wrong_secret.is::<tilo_api::daemon::enter::SetupTicketEnded>());
 
     let answer = ask_device(
         &desk,
@@ -355,12 +366,7 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
         desk_login.cert.device_public_key,
         desk_key.verifying_key().to_bytes()
     );
-    let (spent_key, _) = enrol(&root, "another", DeviceCapabilities::member());
-    let spent = ask_issuer(&ticket, &spent_key, SCOPE, CERTIFY).await;
-    assert!(
-        matches!(spent, Some(Err(ActionCallError::Refused { .. }))),
-        "the ticket is spent: {spent:?}"
-    );
+    check_terminal_login_errors(&ticket, &service, enter, root.verifying_key().to_bytes()).await;
 
     let lent = tilo_session_client::Lent {
         endpoint: Some(Arc::new(std::sync::OnceLock::from(desk_endpoint.clone()))),
@@ -414,6 +420,66 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
     desk_endpoint.close().await;
     let _ = router.shutdown().await;
     server.shutdown().await;
+}
+
+/// The issuer confirms a spent ticket or explicitly declines a new one. A computer that
+/// cannot reach that issuer has received neither decision.
+async fn check_terminal_login_errors(
+    ticket: &Ticket,
+    service: &ActionService,
+    enter: Entry,
+    user: [u8; 32],
+) {
+    use tilo_api::daemon::enter::{SetupTicketEnded, log_in};
+    use tilo_device_identity::login::{Approval, Approver, Asked, Declined, Place};
+
+    struct Declines;
+    impl Approver for Declines {
+        fn approve(&self, _asked: Asked) -> Approval {
+            Box::pin(std::future::ready(Err(Declined(
+                "I don't recognize this computer".into(),
+            ))))
+        }
+    }
+
+    let key = SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(getrandom::SysRng));
+    let endpoint = endpoint(&key).await;
+    let state = tempfile::tempdir().unwrap();
+    let keys = tilo_device_identity::IdentityPaths::under(state.path().join("keys"));
+    tilo_device_identity::persist::adopt_device_key(&keys, &key.to_bytes()).unwrap();
+    let place = Place::at(state.path().join("login"), keys);
+    let asked = async |ticket: &Ticket| {
+        log_in(&key, &endpoint, &place, &ticket.encode(), "Codex", None)
+            .await
+            .unwrap_err()
+    };
+
+    let spent = asked(ticket).await;
+    assert!(spent.is::<SetupTicketEnded>(), "{spent}");
+
+    let declined = Ticket::new(ticket.issuer.clone());
+    service.admit_uncertified(
+        SCOPE,
+        Arc::new(ServedTicket::new(
+            declined.clone(),
+            user,
+            enter,
+            DeviceCapabilities::member(),
+            Arc::new(Declines),
+            RevocationList::new(),
+        )),
+    );
+    let refusal = asked(&declined).await;
+    assert!(refusal.is::<SetupTicketEnded>(), "{refusal}");
+
+    endpoint.close().await;
+    let unreachable = asked(&declined).await;
+    assert!(!unreachable.is::<SetupTicketEnded>(), "{unreachable}");
+    assert!(
+        tilo_device_identity::login::load_public(&place)
+            .unwrap()
+            .is_none()
+    );
 }
 
 /// A report from the admitted desk reaches the page's host with its certified identity,

@@ -144,6 +144,53 @@ fn a_new_identity_is_made_once_where_the_session_reads_it() {
     .expect("the session verifies the person and this device as its own");
 }
 
+#[test]
+fn hosted_public_key_reuses_only_the_existing_device_key() {
+    let scratch = tempfile::tempdir().unwrap();
+    let home = scratch.path().canonicalize().unwrap();
+    let identity = home.join("identity");
+    let key_file = tilo_device_identity::IdentityPaths::under(&identity).device_privkey;
+    let public_key = |existing: bool| {
+        Command::new(tilo_test_env::package_binary!("tilo"))
+            .args(["device", "public-key"])
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", home.join("config"))
+            .env("XDG_DATA_HOME", home.join("data"))
+            .env("XDG_RUNTIME_DIR", home.join("run"))
+            .env_remove(tilo_api::client::DESKTOP_ENV)
+            .env("TILO_IDENTITY_ROOT", &identity)
+            .env(tilo_identity::provisioning::FILE_SECRETS_ENV, "1")
+            .env("TILO_HOSTED_EXISTING_KEY", if existing { "1" } else { "0" })
+            .output_locked()
+            .unwrap()
+    };
+    let missing = || {
+        let output = public_key(true);
+        assert!(!output.status.success(), "{output:?}");
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("device key"));
+        assert!(!key_file.exists());
+    };
+    missing();
+
+    let first = public_key(false);
+    assert!(first.status.success(), "{first:?}");
+    assert_eq!(
+        hex::decode(String::from_utf8_lossy(&first.stdout).trim())
+            .unwrap()
+            .len(),
+        32
+    );
+    let private = std::fs::read(&key_file).unwrap();
+    let retry = public_key(true);
+    assert!(retry.status.success(), "{retry:?}");
+    assert_eq!(retry.stdout, first.stdout);
+    assert!(std::fs::read(&key_file).unwrap() == private);
+
+    std::fs::remove_file(&key_file).unwrap();
+    missing();
+}
+
 /// What `tilo mcp` may hold of its own while it waits for its agent: it is a thin bridge. What
 /// counts is what it allocates — its heaps, its stacks and the buffers it reads and writes — not
 /// the pages its program's statics take to be relocated as it loads: those are the program's, paid

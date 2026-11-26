@@ -340,6 +340,19 @@ pub fn issuing_for_test(
         .spawn()
 }
 
+/// The ticket's authenticated issuer has closed that enrollment. A caller can distinguish
+/// this outcome from an interrupted request while keeping the issuer's original explanation.
+#[derive(Debug)]
+pub struct SetupTicketEnded(String);
+
+impl std::fmt::Display for SetupTicketEnded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SetupTicketEnded {}
+
 /// Ask the device that issued `ticket` to have the person's root certify `key`, for `agent`,
 /// listed as `label`: its answer, once the person approved. A call lost on its way is asked again
 /// with the same invocation, which the issuer answers where the call is.
@@ -407,12 +420,30 @@ async fn certified_with(
             .value
             .and_then(|value| serde_json::from_value(value).ok())
             .ok_or_else(|| anyhow!(TOO_OLD)),
-        Some(Ok(tilo_actions::InvocationUpdate::Failed { error, .. })) => Err(anyhow!(
-            "Your device didn't add this computer: {}.",
-            error.message.trim_end_matches('.')
-        )),
+        Some(Ok(tilo_actions::InvocationUpdate::Failed { error, .. })) => {
+            let reason = format!(
+                "Your device didn't add this computer: {}.",
+                error.message.trim_end_matches('.')
+            );
+            if error.code == "declined" {
+                return Err(SetupTicketEnded(reason).into());
+            }
+            Err(anyhow!(reason))
+        }
         Some(Ok(_)) | None => Err(anyhow!(UNREACHED)),
-        Some(Err(error)) => Err(anyhow!(certify_refused(&error))),
+        Some(Err(error)) => {
+            use tilo_device_identity::login::Refused;
+            let said = certify_refused(&error);
+            // The certify action returns its secret refusals in the authenticated peer's reason field.
+            // Other action failures and transport errors cannot close an installer's intent.
+            if let ActionCallError::Refused { reason } = &error
+                && (*reason == Refused::Spent.to_string()
+                    || *reason == Refused::Expired.to_string())
+            {
+                return Err(SetupTicketEnded(said).into());
+            }
+            Err(anyhow!(said))
+        }
     }
 }
 

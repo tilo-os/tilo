@@ -99,19 +99,97 @@ main() {
     login=$state/tilo/device/login.json
     holder=$state/tilo/device/holder.lock
     receipt=$state/tilo/device/hosted-cli
+    [ ! -L "$state/tilo" ] || fail "$other_profile"
+    (umask 077; mkdir -p "$state/tilo") || fail "$other_profile"
+    [ -O "$state/tilo" ] || fail "$other_profile"
+    # The directory inode survives receipt replacement. Keep its open description locked
+    # through certification and the receipt update, including across an interrupted caller.
+    exec 8<"$state/tilo"
+    busy='Another hosted setup is in progress on this computer. Wait for it to finish, then retry.'
+    if [ "$os" = linux ]; then
+      need flock
+      flock -xn 8 || fail "$busy"
+    else
+      /usr/bin/perl -MFcntl=:flock -e 'open my $d, "<&=8" or exit 1; flock $d, LOCK_EX|LOCK_NB or exit 1' || fail "$busy"
+    fi
+    pending=
+    original=
+    identify_device=
+    legacy_login=
+    identity=
+    terminal=
+    setup_ticket=
+    case "${1:-}:${2:-}" in login:-*|login:) ;; login:*) setup_ticket=$(printf '%s' "$2" | digest -) ;; esac
+    resume_refused='This unfinished setup belongs to its original ticket, device and signed CLI release. Use the original setup prompt on this computer.'
     # The ticket's successful login writes its person's certificate and login record. Tie
     # the receipt to both public files, without reading the device's private signing key.
     hosted_identity() {
-      [ -f "$login" ] || return 1
+      [ -f "$login" ] && [ ! -L "$login" ] || return 1
       person=$(sed -n 's/^[[:space:]]*"user":[[:space:]]*"\([0-9a-f]*\)".*$/\1/p' "$login")
       [ "${#person}" -eq 64 ] || return 1
       cert=$keys/device/certs/$person.bin
-      [ -f "$cert" ] || return 1
+      [ -f "$cert" ] && [ ! -L "$cert" ] || return 1
       printf '%s %s %s' "$version" "$(digest "$login")" "$(digest "$cert")"
     }
-    if [ -f "$receipt" ] && [ ! -L "$receipt" ]; then
-      identity=$(hosted_identity) && [ "$identity" = "$(sed -n '1p' "$receipt")" ] || fail "$other_profile"
+    # Refuse every entry except the one named by the native bare-device layout.
+    # This includes dotfiles, subdirectories and dangling links.
+    contains_only() {
+      [ ! -L "$1" ] || return 1
+      [ -e "$1" ] || return 0
+      [ -d "$1" ] && [ -O "$1" ] && [ -r "$1" ] && [ -x "$1" ] || return 1
+      for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+        if [ -e "$entry" ] || [ -L "$entry" ]; then
+          [ "$entry" = "${2:-}" ] && [ ! -L "$entry" ] || return 1
+        fi
+      done
+    }
+    bare_device() {
+      [ ! -L "$keys" ] && contains_only "${receipt%/*}" "$receipt" &&
+        contains_only "$keys/device" "$receipt" && contains_only "$keys/user-identity" &&
+        contains_only "$keys/device-private" "$keys/device-private/keypair.bin" || return 1
+      [ ! -e "${XDG_CONFIG_HOME:-$HOME/.config}/tilo/identity" ] &&
+        [ ! -L "${XDG_CONFIG_HOME:-$HOME/.config}/tilo/identity" ] || return 1
+      keyfile=$keys/device-private/keypair.bin
+      if [ -e "$keyfile" ]; then
+        [ -f "$keyfile" ] && [ -O "$keyfile" ] || return 1
+        if [ "$os" = linux ]; then mode=$(stat -c '%h:%a' "$keyfile"); else mode=$(stat -f '%l:%Lp' "$keyfile"); fi
+        case "$mode" in 1:600|1:640) ;; *) return 1 ;; esac
+      else
+        [ "$os" = macos ] || return 1
+      fi
+      return 0
+    }
+    if [ -f "$receipt" ] && [ ! -L "$receipt" ] && [ -O "$receipt" ]; then
+      first=$(sed -n '1p' "$receipt")
+      case "$first" in
+        pending\ *)
+          pending=$first
+          if [ "$os" = linux ]; then permissions=$(stat -c '%h:%a' "$receipt"); else permissions=$(stat -f '%l:%Lp' "$receipt"); fi
+          [ "$permissions" = 1:600 ] || fail "$resume_refused"
+          IFS=' ' read -r phase prior_version prior_archive prior_ticket prior_device extra < "$receipt"
+          [ -z "$extra" ] && [ "$phase" = pending ] && [ "$prior_version" = "$version" ] &&
+            [ "${#prior_archive}" -eq 64 ] && [ "${#prior_ticket}" -eq 64 ] && [ "${#prior_device}" -eq 64 ] || fail "$resume_refused"
+          case "$prior_archive$prior_ticket$prior_device" in *[!0-9a-f]*) fail "$resume_refused" ;; esac
+          identify_device=1
+          [ -n "$setup_ticket" ] || fail "$resume_refused"
+          prior=$(sed -n '3p' "$receipt")
+          if identity=$(hosted_identity); then
+            [ -z "$prior" ] || [ "$prior" = "$identity" ] || fail "$resume_refused"
+          else
+            [ -z "$prior" ] && bare_device || fail "$other_profile"
+            terminal=$(sed -n '4p' "$receipt")
+            case "$terminal" in ''|terminal) ;; *) fail "$resume_refused" ;; esac
+          fi ;;
+        *) identity=$(hosted_identity) && [ "$identity" = "$first" ] || fail "$other_profile"
+          original=$(sed -n '3p' "$receipt")
+          identify_device=$original
+          if [ -z "$original" ]; then
+            [ "$(sed -n '$=' "$receipt")" = 2 ] || fail "$other_profile"
+            legacy_login=$setup_ticket
+          fi ;;
+      esac
     else
+      identify_device=$setup_ticket
       # Even --help prepares the login directory. On macOS this is also the device
       # key directory. No entry, including a hidden file or dangling link, belongs
       # to that scaffold. -q makes a name consisting of newlines visible to sh.
@@ -126,6 +204,8 @@ main() {
         [ ! -e "$path" ] && [ ! -L "$path" ] || fail "$other_profile"
       done
       [ "${1:-}" != device ] || fail "$other_profile"
+    fi
+    if [ ! -f "$receipt" ] || { [ -n "$pending" ] && [ -z "$identity" ]; }; then
       runtime=${TMPDIR:-/tmp}/tilo-$(id -u)
       case ${XDG_RUNTIME_DIR:-} in /*) [ ! -d "$XDG_RUNTIME_DIR" ] || runtime=$XDG_RUNTIME_DIR/tilo ;; esac
       [ ! -L "$runtime" ] || fail "$other_profile"
@@ -140,7 +220,7 @@ main() {
       service=$HOME/Library/LaunchAgents/so.tilo.peer.plist
       if launchctl print "gui/$(id -u)/so.tilo.runtime" >/dev/null 2>&1; then fail "$other_profile"; fi
     fi
-    if [ ! -f "$receipt" ]; then
+    if [ ! -f "$receipt" ] || { [ -n "$pending" ] && [ -z "$identity" ]; }; then
       [ ! -e "$service" ] && [ ! -L "$service" ] || fail "$other_profile"
       if [ "$os" = linux ]; then
         if systemctl --user is-active --quiet tilo-peer.service 2>/dev/null; then fail "$other_profile"; fi
@@ -207,6 +287,18 @@ KEY
   fi
   if [ "${TILO_HOSTED_SETUP:-}" = 1 ]; then
     [ -f "$work/unpacked/tilo-runtime" ] || fail "the hosted release has no signed tilo-runtime"
+    if [ -n "$pending" ]; then
+      case "$pending" in "pending $version $expected "*) ;; *) fail "$resume_refused" ;; esac
+      if [ "$terminal" != terminal ]; then
+        case "$pending" in "pending $version $expected $setup_ticket "*) ;; *) fail "$resume_refused" ;; esac
+      fi
+    fi
+    if [ -n "$original" ]; then
+      case "$original" in "original $version $expected "*) ;; *) fail "$other_profile" ;; esac
+      if [ -n "$setup_ticket" ]; then
+        case "$original" in "original $version $expected $setup_ticket "*) ;; *) fail "$other_profile" ;; esac
+      fi
+    fi
     for name in $beside tilo; do
       if [ -L "$dir/$name" ] || { [ -e "$dir/$name" ] && ! cmp -s "$work/unpacked/$name" "$dir/$name"; }; then
         fail "$dir/$name differs from the signed CLI in this version directory"
@@ -273,17 +365,76 @@ KEY
     finished=1
     return
   fi
+  resume=0
+  if [ "${TILO_HOSTED_SETUP:-}" = 1 ] && [ -n "$identify_device" ]; then
+    # Read the physical device's public key through the verified binary. Only a
+    # first login on the clean account checked above can create this receipt.
+    kept_key=0
+    if [ -n "$pending$original" ]; then kept_key=1; fi
+    physical=$(TILO_HOSTED_EXISTING_KEY=$kept_key "$dir/tilo" device public-key 8<&- </dev/null) || fail "could not identify this computer's device"
+    case "$physical" in *[!0-9a-f]*) fail "invalid device public key" ;; esac
+    [ "${#physical}" -eq 64 ] || fail "invalid device public key"
+    if [ -n "$original" ]; then
+      case "$original" in *" $physical") ;; *) fail "$other_profile" ;; esac
+      if [ -n "$setup_ticket" ]; then
+        say "This device already completed setup with this signed CLI."
+        finished=1
+        return
+      fi
+    elif [ -n "$pending" ]; then
+      case "$pending" in *" $physical") ;; *) fail "$resume_refused" ;; esac
+      binding="pending $version $expected $setup_ticket $physical"
+      if [ "$pending" != "$binding" ]; then
+        [ "$terminal" = terminal ] && [ -z "$identity" ] && bare_device || fail "$resume_refused"
+        pending=$binding
+        (umask 077; tmp=$(mktemp "$receipt.XXXXXXXX") && printf '%s\n' "$pending" > "$tmp" && mv -f "$tmp" "$receipt")
+      fi
+      original="original $version $expected $setup_ticket $physical"
+      if [ -n "$identity" ]; then resume=1; fi
+    else
+      pending="pending $version $expected $setup_ticket $physical"
+      original="original $version $expected $setup_ticket $physical"
+      mkdir -p "${receipt%/*}"
+      # link(2) gives the original installer exclusive creation without replacing
+      # a different setup that started while this one verified its release.
+      (umask 077; tmp=$(mktemp "$receipt.XXXXXXXX") && printf '%s\n' "$pending" > "$tmp" &&
+        { ln "$tmp" "$receipt" && rm -f "$tmp" || { rm -f "$tmp"; exit 1; }; }) || fail "$resume_refused"
+    fi
+  fi
   rm -rf "$work"
   trap - EXIT INT TERM
   # Its input is the rest of this script's pipe, not the person's.
-  "$dir/tilo" "$@" </dev/null
+  result=0
+  if [ "${TILO_HOSTED_SETUP:-}" = 1 ]; then
+    if [ -n "$legacy_login" ]; then
+      # The old completed receipt identifies this retained login, but kept no ticket.
+      # Its explicit login still asks for native approval and can never resume a setup.
+      (unset TILO_HOSTED_SETUP TILO_HOSTED_RESUME; "$dir/tilo" "$@" 8<&- </dev/null & wait "$!") || result=$?
+    else
+      (TILO_VERSION=$version TILO_HOSTED_ARCHIVE_SHA=$expected TILO_HOSTED_SETUP=1 TILO_HOSTED_RESUME=$resume \
+        "$dir/tilo" "$@" 8<&- </dev/null & wait "$!") || result=$?
+    fi
+  else
+    "$dir/tilo" "$@" </dev/null
+  fi
   if [ "${TILO_HOSTED_SETUP:-}" = 1 ]; then
     case "$1:${2:-}" in
-      login:-*|login:) return 0 ;;
+      login:-*|login:) return "$result" ;;
       login:*|device:add) ;;
-      *) return 0 ;;
+      *) return "$result" ;;
     esac
-    identity=$(hosted_identity) || fail "the hosted login did not leave its device certificate"
+    before=$identity
+    if ! identity=$(hosted_identity); then
+      if [ "$result" -eq 76 ] && [ -n "$pending" ] && [ -z "$before" ] && bare_device; then
+        (umask 077; tmp=$(mktemp "$receipt.XXXXXXXX") && printf '%s\n\n\nterminal\n' "$pending" > "$tmp" && mv -f "$tmp" "$receipt")
+        say "This ticket cannot enroll this computer. Get a new setup prompt and run it in the same account."
+      elif [ -n "$pending" ] && [ -z "$before" ] && bare_device; then
+        say "This computer has not enrolled. Retry the original setup prompt in this account."
+      fi
+      [ "$result" -eq 0 ] || return "$result"
+      fail "the hosted login did not leave its device certificate"
+    fi
+    if [ "$resume" -eq 1 ] && [ "$before" != "$identity" ]; then fail "$resume_refused"; fi
     if [ "$os" = linux ] && [ -f "$holder" ]; then
       need flock
       if ! flock -sn "$holder" true; then
@@ -298,7 +449,16 @@ KEY
         generation=$running
       fi
     fi
-    (umask 077; tmp=$(mktemp "$receipt.XXXXXXXX") && printf '%s\n%s\n' "$identity" "$generation" > "$tmp" && mv -f "$tmp" "$receipt")
+    if [ "$result" -ne 0 ]; then
+      if [ -n "$pending" ] && [ "$pending" = "$(sed -n '1p' "$receipt")" ]; then
+        (umask 077; tmp=$(mktemp "$receipt.XXXXXXXX") && printf '%s\n%s\n%s\n' "$pending" "$generation" "$identity" > "$tmp" && mv -f "$tmp" "$receipt")
+        say "The device enrollment is kept. Retry the original setup prompt on this computer while its ticket is open."
+      fi
+      return "$result"
+    fi
+    (umask 077; tmp=$(mktemp "$receipt.XXXXXXXX") &&
+      { printf '%s\n%s\n' "$identity" "$generation"; [ -z "$original" ] || printf '%s\n' "$original"; } > "$tmp" &&
+      mv -f "$tmp" "$receipt")
   fi
 }
 

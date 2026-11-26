@@ -113,6 +113,7 @@ cloud-source = { path = "../cloud-source" }
 browser-continuity = { workspace = true, features = ["native"] }
 url.workspace = true
 blake3.workspace = true
+sha2.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
