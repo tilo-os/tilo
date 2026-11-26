@@ -1383,7 +1383,9 @@ fn validate_server_identity(identity: &ServerIdentity) -> Result<(), ServerError
         ));
     }
     // The evidence of the calls this server's apps have admitted is signed as this device: the
-    // certificate its identity holds and the key that certificate names.
+    // certificate its identity holds and the key that certificate names. A server without the
+    // app host admits no app's call and signs no receipt.
+    #[cfg(feature = "agents")]
     tilo_app_host::serve_receipts_as(
         identity.device_cert.clone(),
         std::sync::Arc::new(identity.device_signing_key.clone()),
