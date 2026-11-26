@@ -398,6 +398,8 @@ mod tests {
     use tilo_workspace_service::workspaces::fixtures::{hosting_device, test_host};
 
     const CHAT: &str = "so.tilo.chat";
+    const DISCUSSION: &str = "so.tilo.lang.discussion";
+    const TASKS: &str = "so.tilo.tasks";
 
     /// Chat's surface, declared as the device that runs the app names it, so a write to its
     /// record is judged by the types this build carries.
@@ -561,8 +563,6 @@ mod tests {
     /// `record:so.tilo.lang.discussion:`, where a first comment made from a task lands.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn an_installed_apps_root_actions_are_offered_and_a_first_comment_on_a_task_lands() {
-        const DISCUSSION: &str = "so.tilo.lang.discussion";
-        const TASKS: &str = "so.tilo.tasks";
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
@@ -593,46 +593,12 @@ mod tests {
         // The person installs Discussion in the workspace, through its governance.
         let caller = Caller::authenticated(owner.user_public_key, owner.device_public_key)
             .in_workspace(workspace.clone());
-        let installed = workspaces
-            .device_actions()
-            .invoke(
-                &tilo_workspace_service::service::local_caller(&owner)
-                    .in_workspace(workspace.clone()),
-                InvokeRequest {
-                    invocation: tilo_actions::InvocationId::new(),
-                    target: tilo_actions::remote::RemoteActionTarget::workspace_governance(
-                        &workspace,
-                        "install-app",
-                    ),
-                    argument: InvokeArgument::Json(
-                        serde_json::json!({
-                            "app": DISCUSSION,
-                            "version": "0.1.0",
-                            "surface": "00".repeat(32),
-                            "package": "00".repeat(32),
-                            "publisher": "00".repeat(32),
-                            "dev": true,
-                        })
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-                    ),
-                    context: None,
-                    confirmation: None,
-                    revision: None,
-                    on_behalf_of: None,
-                    wait_ms: None,
-                    appearance: None,
-                    signed: None,
-                },
-            )
-            .await
-            .expect("the install is answered")
-            .expect("the workspace installs Discussion");
-        assert!(
-            matches!(installed.status, ReceiptStatus::Completed { .. }),
-            "the workspace runs Discussion: {installed:?}"
-        );
+        install(
+            &workspaces,
+            &tilo_workspace_service::service::local_caller(&owner).in_workspace(workspace.clone()),
+            DISCUSSION,
+        )
+        .await;
 
         // Its root is there from the install on: what it publishes is read without making one.
         let discussion = BuiltInRecords {
@@ -656,9 +622,60 @@ mod tests {
         );
 
         // A first comment, made from a task, goes through Discussion's own provider.
+        a_comment_on_a_new_task_lands(&workspaces, &caller).await;
+        server.shutdown().await;
+    }
+
+    /// The person at `caller` installs `app` in the workspace `caller` is in, through its
+    /// governance: what the app offers on its whole is there from the install on.
+    async fn install(workspaces: &Workspaces, caller: &Caller, app: &str) {
+        let installed = workspaces
+            .device_actions()
+            .invoke(
+                caller,
+                InvokeRequest {
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: tilo_actions::remote::RemoteActionTarget::workspace_governance(
+                        caller.workspace().unwrap(),
+                        "install-app",
+                    ),
+                    argument: InvokeArgument::Json(
+                        serde_json::json!({
+                            "app": app,
+                            "version": "0.1.0",
+                            "surface": "00".repeat(32),
+                            "package": "00".repeat(32),
+                            "publisher": "00".repeat(32),
+                            "dev": true,
+                        })
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    ),
+                    context: None,
+                    confirmation: None,
+                    revision: None,
+                    on_behalf_of: None,
+                    wait_ms: None,
+                    appearance: None,
+                    signed: None,
+                },
+            )
+            .await
+            .expect("the install is answered")
+            .expect("the workspace installs the app");
+        assert!(
+            matches!(installed.status, ReceiptStatus::Completed { .. }),
+            "the workspace runs {app}: {installed:?}"
+        );
+    }
+
+    /// The person at `caller` makes a task, and a first comment on it: the comment goes through
+    /// Discussion's own provider, and it names the comment it made.
+    async fn a_comment_on_a_new_task_lands(workspaces: &Workspaces, caller: &Caller) {
         let made = calls::call(
-            &workspaces,
-            &caller,
+            workspaces,
+            caller,
             TASKS,
             "new_task",
             serde_json::json!({ "title": "Water the plants" }),
@@ -676,8 +693,8 @@ mod tests {
             kind: "tl.so.tilo.tasks.Task".to_owned(),
         };
         let comment = calls::call(
-            &workspaces,
-            &caller,
+            workspaces,
+            caller,
             DISCUSSION,
             "comment",
             serde_json::json!({
@@ -694,7 +711,6 @@ mod tests {
                 .any(|made| made.starts_with(&format!("tl:{DISCUSSION}:"))),
             "the comment it made is named: {comment:?}"
         );
-        server.shutdown().await;
     }
 
     /// tl Chat's record, which no window holds open on a server, is offered to its person and
