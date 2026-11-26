@@ -59,4 +59,4 @@ done
 # writer lock serve nothing a launch reads.
 rm -rf "$store/tmp" "$store/.lock" "$store/content"
 printf '%s\n' "$stamp" > "$store/.image-packages"
-echo "install-apps: installed $(($# - 0)) packages into $store"
+echo "install-apps: installed $# packages into $store"
