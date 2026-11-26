@@ -100,19 +100,6 @@ pub(super) async fn learned_for(
         .filter(|learned| !learned.facts.is_empty())
 }
 
-/// What its person calls important, told to a turn of their own conversation with the agent
-/// ([`keeps`]) before it begins: the rule in their words, how its situations stand, and how a
-/// change they ask for is written down. Read again for every turn, so a turn after the person
-/// changed it is told the change. Nothing for every other turn: the rule is theirs alone.
-pub(super) async fn importance_for(workspaces: &Workspaces, turn: &Turn) -> Option<String> {
-    let person = keeps(turn)?;
-    let workspaces = workspaces.clone();
-    tokio::task::spawn_blocking(move || PersonServices::of(&workspaces).importance_told(&person))
-        .await
-        .ok()
-        .map(|told| format!("\n\n{told}"))
-}
-
 /// What a turn that knows and keeps facts keeps of what it learns: about whom, as which agent,
 /// and the ask it answers.
 #[derive(Clone)]

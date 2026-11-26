@@ -24,7 +24,7 @@ use tilo_user_identity::{
     sign_revocation_entry,
 };
 
-use super::telling_tests::{ASSISTANT, Setup, agent_of, nobody};
+use super::told_tests::{ASSISTANT, Setup, agent_of, nobody};
 use crate::fixtures::guest_device;
 use crate::fixtures::{caller, settled};
 use crate::push_addresses::{

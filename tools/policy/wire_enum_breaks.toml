@@ -809,3 +809,8 @@ reason = "the query an app held open over its route is gone, so the shown action
 file = "crates/core/runtime-collab/src/wire.rs"
 enum = "Event"
 reason = "the pages of the query an app held open over its route are gone, so the shown actions' decisions move up one place; postcard frames on the socket between a runtime and the apps it started, both from one build and live only as long as that connection, and no byte of them is kept"
+
+[[break]]
+file = "crates/core/actions/src/remote/person_telling.rs"
+enum = "WhyCode"
+reason = "a person's told log and the pushes made from it are JSON, read by name and never by position; the four reasons a thing did not reach its person under the importance rule read as `news`, which is what they now are, through serde aliases"

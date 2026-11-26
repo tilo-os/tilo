@@ -133,7 +133,7 @@ async fn a_sign_in_asked_by(
         asking.clone(),
     ))
     .await;
-    let workspaces = crate::fixtures::workspaces_served(&actions);
+    let workspaces = crate::fixtures::workspaces_served(actions);
     answered(
         &workspaces,
         (Some(workspace_id), Some(member)),

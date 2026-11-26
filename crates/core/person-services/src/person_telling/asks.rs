@@ -89,9 +89,7 @@ fn telling(record: &RecordRef, facts: &AskedFacts) -> ToTell {
             ..Tell::default()
         },
         from,
-        workspace: Some(record.workspace.clone()),
         words_stay: false,
-        spender: None,
     }
 }
 
@@ -144,11 +142,9 @@ impl AskedRecords for Told {
         if let (Some(person), Some(workspaces)) = value {
             self.waiting.lock_recover().insert((person, record.clone()));
             let told = telling(&record, facts);
-            tokio::spawn(async move {
-                if let Err(error) = workspaces.tell(&person, told).await {
-                    tracing::warn!(%error, "an asked record was not told to its person");
-                }
-            });
+            if let Err(error) = workspaces.tell(&person, told) {
+                tracing::warn!(%error, "an asked record was not told to its person");
+            }
         }
         Ok(record)
     }

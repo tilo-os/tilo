@@ -225,12 +225,8 @@ fn a_phone_is_told_what_waits_while_it_runs_and_through_its_push_endpoint_while_
 
     // While the phone runs, its daemon reads the person's log, and what waits becomes a
     // notification with its words and its buttons.
-    let told = server
-        .runtime
-        .block_on(
-            tilo_person_services::PersonServices::of(&server.workspaces())
-                .tell(&person, to_tell("The deploy is waiting", "Deploy")),
-        )
+    let told = tilo_person_services::PersonServices::of(&server.workspaces())
+        .tell(&person, to_tell("The deploy is waiting", "Deploy"))
         .expect("the person is told");
     let (services, recorder) = tilo_process_services::process::ProcessServices::recording();
     let mut watching = Watching::new(Some(key.auth_bytes().unwrap()));
@@ -267,16 +263,13 @@ fn a_phone_is_told_what_waits_while_it_runs_and_through_its_push_endpoint_while_
 
     // The app closes; what waits for the person is pushed to the endpoint it handed over.
     let id = "cause:deploy:7";
-    let told = server
-        .runtime
-        .block_on(
-            tilo_person_services::PersonServices::of(&server.workspaces()).tell(
-                &person,
-                ToTell {
-                    id: Some(id.to_owned()),
-                    ..to_tell("The build is red", "Build")
-                },
-            ),
+    let told = tilo_person_services::PersonServices::of(&server.workspaces())
+        .tell(
+            &person,
+            ToTell {
+                id: Some(id.to_owned()),
+                ..to_tell("The build is red", "Build")
+            },
         )
         .expect("the person is told while no device of theirs looks");
     phone.stop().expect("the phone's daemon stops");

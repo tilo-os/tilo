@@ -252,7 +252,7 @@ impl TransformModel for Asked<'_> {
         timeout: Duration,
         stop: &AtomicBool,
     ) -> Result<String, String> {
-        let mut model = PersonServices::of(&self.workspaces).workspace_model(self.workspace, kind);
+        let mut model = PersonServices::of(self.workspaces).workspace_model(self.workspace, kind);
         if let Some(spender) = &self.spender {
             model = model.spending_as(spender.clone());
         }

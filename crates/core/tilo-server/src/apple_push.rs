@@ -10,15 +10,14 @@
 //!
 //! A push carries as little as tells the device that something waits. In
 //! the open, where Apple reads it: a line of the app's own that says
-//! nothing, how much the system may interrupt, what kind of thing it is,
-//! and a name for the thing that only that device can tie to it. The
-//! agent's name, the words, whether it is important and the buttons' ids
-//! and labels are encrypted for the device's own key, with the code the
-//! sender for browsers encrypts with, so neither Apple nor anything
-//! between reads a word. Words that came from a workspace their person
-//! keeps on the server are in no push at all, encrypted or not. A push
-//! never holds a key, a token, what a button invokes or its arguments,
-//! where the thing is, a person's id or a workspace's id.
+//! nothing, what kind of thing it is, and a name for the thing that only
+//! that device can tie to it. The agent's name, the words and the buttons'
+//! ids and labels are encrypted for the device's own key, with the code the
+//! sender for browsers encrypts with, so neither Apple nor anything between
+//! reads a word. Words that stay on the server are in no push at all,
+//! encrypted or not. A push never holds
+//! a key, a token, what a button invokes or its arguments, where the thing
+//! is, a person's id or a workspace's id.
 //!
 //! The server signs in to Apple's service with a key Apple gave whoever
 //! publishes the app. It is a file its owner alone reads, named when the
@@ -181,7 +180,6 @@ struct Refusal {
 struct Sealed<'a> {
     from: &'a str,
     words: &'a str,
-    important: bool,
     actions: Vec<Button<'a>>,
 }
 
@@ -251,7 +249,6 @@ fn sealed(told: &Told, address: &PushAddress) -> Option<String> {
         serde_json::to_vec(&Sealed {
             from,
             words: &told.words,
-            important: told.mark.important,
             actions,
         })
         .ok()
@@ -286,18 +283,12 @@ fn sealed(told: &Told, address: &PushAddress) -> Option<String> {
 /// The push that shows the thing `told`, known to its device as `name`:
 /// what Apple reads, and `enc`, which it cannot.
 fn alert(told: &Told, name: &str, enc: Option<String>) -> Vec<u8> {
-    // Only a kind its person let through breaks a focus.
-    let level = if told.through_quiet {
-        "time-sensitive"
-    } else {
-        "active"
-    };
     let mut push = serde_json::json!({
         "aps": {
             "alert": {"loc-key": ALERT_KEY},
             "mutable-content": 1,
             "thread-id": THREAD,
-            "interruption-level": level,
+            "interruption-level": "active",
         },
         "told": name,
         "seq": told.seq,
@@ -606,10 +597,9 @@ impl ApplePush {
         if !told.waits() {
             return 0;
         }
+        let services = tilo_person_services::PersonServices::of(&self.inner.workspaces);
         let mut took: Vec<String> = Vec::new();
-        for address in
-            tilo_person_services::PersonServices::of(&self.inner.workspaces).push_addresses(person)
-        {
+        for address in services.push_addresses(person) {
             if address.kind != PushKind::Apns || !self.inner.topics.contains(&address.topic) {
                 continue;
             }
@@ -627,8 +617,7 @@ impl ApplePush {
                 took.push(address.token);
             }
         }
-        tilo_person_services::PersonServices::of(&self.inner.workspaces)
-            .push_shown(person, &took, &told.id);
+        services.push_shown(person, &took, &told.id);
         u32::try_from(took.len()).unwrap_or(u32::MAX)
     }
 
@@ -636,9 +625,8 @@ impl ApplePush {
     /// showed one of them on is sent one push that shows nothing and names
     /// the thing as gone, once.
     async fn gone(&self, person: &[u8; 32], ids: &[String]) {
-        for (address, shown) in tilo_person_services::PersonServices::of(&self.inner.workspaces)
-            .push_taken_back(person, ids, PushKind::Apns)
-        {
+        let services = tilo_person_services::PersonServices::of(&self.inner.workspaces);
+        for (address, shown) in services.push_taken_back(person, ids, PushKind::Apns) {
             if address.kind != PushKind::Apns || !self.inner.topics.contains(&address.topic) {
                 continue;
             }

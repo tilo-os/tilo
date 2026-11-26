@@ -1231,7 +1231,7 @@ async fn vault(
                 .map_err(|error| error.to_string())?;
             let item = item.as_deref().map(item_of).transpose()?;
             let by = Caller::authenticated(person, device).in_workspace(workspace.clone());
-            let kept = PersonServices::of(&workspaces)
+            let kept = PersonServices::of(workspaces)
                 .keep_account_password(
                     &workspace,
                     (&by, None),
@@ -1255,7 +1255,7 @@ async fn vault(
         } => {
             let item = item_of(&item)?;
             let by = Caller::authenticated(person, device).in_workspace(workspace.clone());
-            let released = PersonServices::of(&workspaces)
+            let released = PersonServices::of(workspaces)
                 .account_secret(&workspace, &by, &app, &item)
                 .await?;
             Ok(String::clone(&released.secret))
@@ -1272,7 +1272,7 @@ async fn vault(
             let health = accounts::SyncHealth::from_word(&health)
                 .ok_or_else(|| format!("{health} is no account's sync health"))?;
             let by = Caller::authenticated(person, device).in_workspace(workspace.clone());
-            Box::pin(PersonServices::of(&workspaces).report_account_sync(
+            Box::pin(PersonServices::of(workspaces).report_account_sync(
                 (&workspace, by.acting(), None),
                 &account,
                 health,
@@ -1288,7 +1288,7 @@ async fn vault(
             command,
         } => {
             let reply = Box::pin(
-                PersonServices::of(&workspaces).website_session_ask(&workspace, person, command),
+                PersonServices::of(workspaces).website_session_ask(&workspace, person, command),
             )
             .await?;
             serde_json::to_string(&reply).map_err(|error| error.to_string())

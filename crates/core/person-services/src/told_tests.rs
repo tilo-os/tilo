@@ -1,8 +1,7 @@
-//! What a person's assistant tells them: each thing is marked by the
-//! person's own rule, which decides alone where it can and asks the
-//! person's own model once where it cannot; every such call is counted on
-//! the assistant's day and none is made past its limit; and the log is the
-//! person's alone.
+//! What a person's assistant tells them: each thing's mark says what kind
+//! of thing it is and nothing reaches a person but a question, a reminder, a
+//! brief or a mention; a thing that must not be missed is raised again
+//! until they acknowledge it; and the log is the person's alone.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -14,15 +13,11 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
 use std::time::Duration;
 
-use agent_provider_config::protocol::{Content, ErrorKind, Message, ModelError};
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::person_telling::{
-    self, Cause, Kind, Offered, OfferedTarget, Tell, Teller, Told, ToldList, WhyCode,
+    self, Cause, Kind, Offered, OfferedTarget, Tell, Teller, Told, ToldList,
 };
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, ReceiptStatus, WORKSPACE_GOVERNANCE_PROVIDER,
@@ -30,75 +25,82 @@ use tilo_actions::remote::{
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
-use super::telling_tests::{ASSISTANT, Setup, agent_of, nobody};
+use crate::ToTell;
+use crate::fixtures::TestHost;
 use crate::fixtures::guest_device;
 use crate::fixtures::{caller, settled};
-use crate::model_answers::scripted::{Linking, Reply, ScriptedProvider};
-use crate::model_answers::{ProviderProtocol, Spender};
-use crate::{Spenders, ToTell};
+use crate::fixtures::{create_own, let_in, open_home as open};
+use crate::fixtures::{host_dispatch, hosting_device, test_host};
 
-/// A mail as the assistant tells it.
-const MAIL: &str = "Kim at Harbor asks whether we take new customers.";
-/// A line that counts only in one situation.
-const HIRING: &str = "A new customer is important only while we are hiring";
-/// A line that always counts.
-const LANDLORD: &str = "My landlord is always important";
+/// The id and name Ada's assistant is known by.
+pub(super) const ASSISTANT: &str = "assistant";
 
-/// The workspace's one assistant, with the limit the workspace set it.
-struct OneAssistant {
-    limit: Option<u64>,
+/// Ada's setup: a host that keeps workspaces of people's own, a device of
+/// hers, the workspace that is her own, and one she shares with others.
+pub(super) struct Setup {
+    pub(super) workspaces: crate::PersonServices,
+    pub(super) host: tilo_workspace_service::workspaces::actions::ServiceWorkspaceActions,
+    pub(super) ada: DeviceCert,
+    pub(super) own: WorkspaceId,
+    pub(super) shared: WorkspaceId,
+    _server: TestHost,
+    _dir: tempfile::TempDir,
 }
 
-impl Spenders for OneAssistant {
-    fn spender<'a>(
-        &'a self,
-        _person: &'a [u8; 32],
-        workspace: &'a str,
-        agent: Option<&'a str>,
-    ) -> Pin<Box<dyn Future<Output = Option<Spender>> + Send + 'a>> {
-        Box::pin(async move {
-            Some(Spender {
-                workspace: workspace.to_owned(),
-                agent: agent.unwrap_or(ASSISTANT).to_owned(),
-                name: "Assistant".into(),
-                day: "2026-11-17".into(),
-                limit_micros: self.limit,
-            })
-        })
+impl Setup {
+    pub(super) async fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = hosting_device();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = &crate::PersonServices::of(server.workspaces());
+        let host = host_dispatch(workspaces);
+        let (_, ada) = guest_device();
+        let home = open(workspaces).await;
+        let_in(workspaces, &home, ada.user_public_key).await;
+        let created = create_own(&host, &ada, json!({"name": "Ada's workspace"}))
+            .await
+            .unwrap();
+        let own = WorkspaceId::parse(&created.workspace.workspace).unwrap();
+        assert!(workspaces.owns(&ada.user_public_key, &own.to_string()));
+        let shared = workspaces.create("Team").await.unwrap().workspace_id;
+        assert!(!workspaces.owns(&ada.user_public_key, &shared.to_string()));
+        Self {
+            workspaces: workspaces.clone(),
+            host,
+            ada,
+            own,
+            shared,
+            _server: server,
+            _dir: dir,
+        }
+    }
+
+    /// The page `device` holds in `workspace`, which a caller asks over.
+    pub(super) fn page(
+        &self,
+        workspace: WorkspaceId,
+        device: &DeviceCert,
+    ) -> impl ActionProvider + Clone + Send + 'static {
+        self.host.device_page(workspace, device)
     }
 }
 
-/// The workspace's model, which answers as the test scripts it.
-async fn linked(setup: &Setup) -> Arc<ScriptedProvider> {
-    let scripted = ScriptedProvider::answering(Vec::<Reply>::new());
-    setup.workspaces.answer_models_with(scripted.clone());
-    setup
-        .workspaces
-        .link_model_for(
-            &setup.own.to_string(),
-            &Linking {
-                name: "Models",
-                protocol: ProviderProtocol::OpenAiCompatible,
-                endpoint: "https://models.example.com/v1",
-                key: Some("sk-ada"),
-                models: &["judge-small"],
-            },
-            true,
-        )
-        .await
-        .unwrap();
-    scripted
+/// The agent a person keeps, over the connection `device` certified.
+pub(super) fn agent_of(device: &DeviceCert) -> Caller {
+    Caller::delegated_agent(ASSISTANT, device.user_public_key, device.device_public_key)
 }
 
-/// The workspace's model judges, counted on the day of the assistant Ada
-/// keeps, which may spend `limit` a day.
-async fn judge(setup: &Setup, limit: Option<u64>) -> Arc<ScriptedProvider> {
-    let scripted = linked(setup).await;
-    setup
-        .workspaces
-        .count_judgements_with(Arc::new(OneAssistant { limit }));
-    scripted
+/// `answer` is the one answer for unknown and forbidden.
+pub(super) fn nobody(what: &str, answer: Result<Value, ActionCallError>) {
+    let refused = answer.expect_err(what);
+    assert!(
+        matches!(refused, ActionCallError::UnknownAction),
+        "{what}: {refused:?}"
+    );
 }
+
+/// A mail as the assistant tells it.
+const MAIL: &str = "Kim at Harbor asks whether we take new customers.";
 
 /// What `caller` is answered about what was told, over the page `device`
 /// holds in `workspace`.
@@ -136,7 +138,7 @@ async fn told_by_agent(setup: &Setup, words: &str, cause: Value) -> Told {
 /// What this server itself tells Ada as it carries out an event of her
 /// own, a reminder she set up or a brief she asked for: of the kind that
 /// event's own `cause` says, with her assistant named as its teller.
-async fn told_by_her_event(setup: &Setup, words: &str, cause: Value, insists: bool) -> Told {
+fn told_by_her_event(setup: &Setup, words: &str, cause: Value, insists: bool) -> Told {
     let cause: Cause = serde_json::from_value(cause).expect("a cause");
     let telling = ToTell {
         kind: Kind::of_cause(Some(&cause)),
@@ -150,13 +152,11 @@ async fn told_by_her_event(setup: &Setup, words: &str, cause: Value, insists: bo
             agent: ASSISTANT.to_owned(),
             name: ASSISTANT.to_owned(),
         }),
-        workspace: Some(setup.own.to_string()),
         ..ToTell::default()
     };
     setup
         .workspaces
         .tell(&setup.ada.user_public_key, telling)
-        .await
         .expect("the server tells")
 }
 
@@ -176,273 +176,6 @@ async fn listed(setup: &Setup, after: u64) -> ToldList {
 /// An event that hands the assistant a mail, by the event's own key for it.
 fn event(key: &str) -> Value {
     json!({"kind": "event", "label": "Mail arrives", "key": key})
-}
-
-/// What the same event tells besides, handed over by the host itself under
-/// an id of its own.
-fn besides(setup: &Setup, id: &str, key: &str) -> ToTell {
-    ToTell {
-        id: Some(id.to_owned()),
-        kind: Kind::News,
-        tell: Tell {
-            words: "I answered Kim in the usual way.".into(),
-            cause: Some(Cause {
-                kind: "event".into(),
-                label: "Mail arrives".into(),
-                key: key.to_owned(),
-            }),
-            ..Tell::default()
-        },
-        workspace: Some(setup.own.to_string()),
-        ..ToTell::default()
-    }
-}
-
-/// A message's words.
-fn said(message: &Message) -> String {
-    message
-        .content
-        .iter()
-        .filter_map(|part| match part {
-            Content::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect()
-}
-
-#[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one mail through every way the rule decides, in the order a person lives it"
-)]
-async fn the_rule_decides_alone_where_it_can_and_the_persons_own_model_is_asked_once_where_it_cannot()
- {
-    let setup = Setup::new().await;
-    let model = judge(&setup, None).await;
-    let ada = setup.ada.user_public_key;
-
-    // Nobody said what is important: the mail is told and marked, reaches
-    // nobody, and no model is asked.
-    let first = told_by_agent(&setup, MAIL, event("mail-1")).await;
-    assert_eq!((first.kind, first.words.as_str()), (Kind::News, MAIL));
-    assert_eq!(first.mark.why.code, WhyCode::NoRule);
-    assert!(!first.mark.important && !first.reaches);
-    assert_eq!(
-        first.from.as_ref().map(|from| from.name.as_str()),
-        Some(ASSISTANT)
-    );
-    assert!(model.asked().is_empty());
-
-    // She says it depends on a situation, and the situation is otherwise:
-    // the rule decides alone and says which situation.
-    setup
-        .ada(
-            person_telling::SAY,
-            json!({"words": HIRING, "onlyWhile": {"fact": "hiring", "is": "yes"}}),
-        )
-        .await
-        .unwrap();
-    setup
-        .ada(
-            person_telling::SET_FACT,
-            json!({"name": "Hiring", "value": "no"}),
-        )
-        .await
-        .unwrap();
-    let quiet = told_by_agent(&setup, MAIL, event("mail-2")).await;
-    assert_eq!(
-        (
-            quiet.mark.why.code,
-            quiet.mark.why.fact.as_str(),
-            quiet.mark.why.value.as_str()
-        ),
-        (WhyCode::NothingHolds, "Hiring", "no")
-    );
-    assert!(!quiet.mark.important && !quiet.reaches);
-    assert!(model.asked().is_empty(), "the rule decided without a model");
-
-    // The situation changes, and the same mail takes judgement: one call
-    // of her own model, with her key, shown her lines and the mail.
-    setup
-        .ada(
-            person_telling::SET_FACT,
-            json!({"name": "hiring", "value": "yes"}),
-        )
-        .await
-        .unwrap();
-    model.then(
-        Reply::text(r#"{"important": true, "why": "A new customer while you are hiring."}"#)
-            .costing(40),
-    );
-    let important = told_by_agent(&setup, MAIL, event("mail-3")).await;
-    assert!(important.mark.important && important.reaches);
-    assert_eq!(important.mark.why.code, WhyCode::Judged);
-    assert_eq!(
-        important.mark.why.words,
-        "A new customer while you are hiring."
-    );
-    let asked = model.asked();
-    assert_eq!(asked.len(), 1);
-    assert_eq!(asked[0].model, "judge-small");
-    assert_eq!(asked[0].key.as_deref(), Some("sk-ada"));
-    assert!(asked[0].request.tools.is_empty());
-    let (told, about) = (
-        said(&asked[0].request.messages[0]),
-        said(&asked[0].request.messages[1]),
-    );
-    assert!(
-        told.starts_with("You decide whether one thing is important to one person"),
-        "{told}"
-    );
-    assert!(about.contains(HIRING), "{about}");
-    assert!(about.contains("- Hiring: yes"), "{about}");
-    assert!(about.ends_with(MAIL), "{about}");
-
-    // Handed over again it is the same thing: told once, judged once.
-    assert_eq!(
-        told_by_agent(&setup, MAIL, event("mail-3")).await,
-        important
-    );
-    // And what else the same cause tells is not judged a second time.
-    let report = setup
-        .workspaces
-        .tell(&ada, besides(&setup, "reply:m9", "mail-3"))
-        .await
-        .unwrap();
-    assert!(report.mark.important && report.reaches);
-    assert_eq!(report.mark.why, important.mark.why);
-    assert_eq!(model.asked().len(), 1);
-
-    // She changes the rule: what the cause tells next is judged by the
-    // rule as it stands now.
-    setup
-        .ada(person_telling::SAY, json!({"words": LANDLORD}))
-        .await
-        .unwrap();
-    model.then(Reply::text(
-        "```json\n{\"important\": false, \"why\": \"No line covers a report of what was done.\"}\n```",
-    ));
-    let later = setup
-        .workspaces
-        .tell(&ada, besides(&setup, "reply:m10", "mail-3"))
-        .await
-        .unwrap();
-    assert!(!later.mark.important && !later.reaches);
-    assert_eq!(later.mark.why.code, WhyCode::Judged);
-    assert_eq!(
-        later.mark.why.words,
-        "No line covers a report of what was done."
-    );
-    assert_eq!(model.asked().len(), 2);
-
-    // A reminder is hers: told as this server carries out the event she
-    // set up, it reaches her as that, and nobody judges it.
-    let reminder = told_by_her_event(
-        &setup,
-        "Call Jo.",
-        json!({"kind": "reminder", "label": "Call Jo", "key": "r-1"}),
-        false,
-    )
-    .await;
-    assert_eq!(reminder.kind, Kind::Reminder);
-    assert!(reminder.reaches && !reminder.mark.important);
-    assert_eq!(reminder.mark.why.code, WhyCode::Reminder);
-    assert_eq!(model.asked().len(), 2);
-
-    // A brief reaches her as a brief, and carries the mark where her rule
-    // gives it one.
-    model.then(Reply::text(
-        r#"{"important": true, "why": "The landlord is in it."}"#,
-    ));
-    let brief = told_by_her_event(
-        &setup,
-        "At ten: the landlord, about the lease.",
-        json!({"kind": "brief", "label": "Morning rundown", "key": "b-1"}),
-        false,
-    )
-    .await;
-    assert_eq!(brief.kind, Kind::Brief);
-    assert!(brief.reaches && brief.mark.important);
-    assert_eq!(model.asked().len(), 3);
-
-    // A judgement that cannot be had is said as such and never guessed,
-    // and the next thing of that cause is judged anew.
-    model.then(Reply::failing(ModelError::new(ErrorKind::Unavailable)));
-    let unjudged = told_by_agent(&setup, MAIL, event("mail-4")).await;
-    assert_eq!(
-        (unjudged.mark.why.code, unjudged.mark.why.value.as_str()),
-        (WhyCode::Unjudged, "provider")
-    );
-    assert!(!unjudged.mark.important && !unjudged.reaches);
-    assert_eq!(model.asked().len(), 4);
-    model.then(Reply::text(
-        r#"{"important": true, "why": "A new customer while you are hiring."}"#,
-    ));
-    let retried = setup
-        .workspaces
-        .tell(&ada, besides(&setup, "reply:m11", "mail-4"))
-        .await
-        .unwrap();
-    assert!(retried.mark.important && retried.reaches);
-    assert_eq!(model.asked().len(), 5);
-
-    // She reads all of it back, oldest first, each in its place.
-    let log = listed(&setup, 0).await;
-    let places: Vec<u64> = log.told.iter().map(|told| told.seq).collect();
-    assert_eq!(places, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    assert_eq!(log.newest, 9);
-    assert_eq!(log.told[2], important);
-    assert_eq!(listed(&setup, 8).await.told, [retried]);
-}
-
-#[tokio::test]
-async fn a_judgement_is_counted_on_the_assistants_day_and_none_is_made_past_its_limit() {
-    let setup = Setup::new().await;
-    let model = judge(&setup, Some(50)).await;
-    setup
-        .ada(person_telling::SAY, json!({"words": LANDLORD}))
-        .await
-        .unwrap();
-
-    for key in ["mail-1", "mail-2"] {
-        model.then(
-            Reply::text(r#"{"important": false, "why": "It is not the landlord."}"#).costing(40),
-        );
-        let told = told_by_agent(&setup, MAIL, event(key)).await;
-        assert_eq!(told.mark.why.code, WhyCode::Judged, "{key}");
-    }
-    assert_eq!(model.asked().len(), 2);
-
-    // The day's 50 are spent, 80 by now: the next thing is not judged, no
-    // provider is asked, and the thing says why in words she can act on.
-    let past = told_by_agent(&setup, MAIL, event("mail-3")).await;
-    assert_eq!(
-        (past.mark.why.code, past.mark.why.value.as_str()),
-        (WhyCode::Unjudged, "day-limit")
-    );
-    assert!(!past.mark.why.words.is_empty());
-    assert!(!past.mark.important && !past.reaches);
-    assert_eq!(model.asked().len(), 2);
-}
-
-#[tokio::test]
-async fn no_judgement_is_made_that_no_assistants_day_counts() {
-    let setup = Setup::new().await;
-    // She linked a model, and nothing on this host says whose day a call
-    // for her would be counted on.
-    let model = linked(&setup).await;
-    setup
-        .ada(person_telling::SAY, json!({"words": LANDLORD}))
-        .await
-        .unwrap();
-
-    let told = told_by_agent(&setup, MAIL, event("mail-1")).await;
-    assert_eq!(
-        (told.mark.why.code, told.mark.why.value.as_str()),
-        (WhyCode::Unjudged, "no-assistant")
-    );
-    assert!(!told.mark.important && !told.reaches);
-    assert!(model.asked().is_empty());
 }
 
 #[tokio::test]
@@ -621,21 +354,20 @@ async fn a_device_that_waits_is_answered_when_something_is_told() {
 
 /// A reminder Ada set up, told her as its time comes: a thing that reaches
 /// her and waits.
-async fn reminded(setup: &Setup) -> Told {
+fn reminded(setup: &Setup) -> Told {
     told_by_her_event(
         setup,
         "Call Jo.",
         json!({"kind": "reminder", "label": "Call Jo", "key": "r-1"}),
         false,
     )
-    .await
 }
 
 #[tokio::test]
 async fn only_the_person_acknowledges_and_the_first_time_stands() {
     let setup = Setup::new().await;
     let ada = (setup.own, &setup.ada);
-    let reminder = reminded(&setup).await;
+    let reminder = reminded(&setup);
     assert!(reminder.waits());
 
     // Her agent told it. Whether she saw it is not her agent's to say,
@@ -769,7 +501,7 @@ async fn whoever_tells_outside_reads_who_changed_and_writes_down_what_it_told() 
     assert!(setup.workspaces.people_told().is_empty());
     assert!(setup.workspaces.told_changed_people().is_empty());
 
-    let reminder = reminded(&setup).await;
+    let reminder = reminded(&setup);
     assert_eq!(setup.workspaces.people_told(), [ada]);
     assert_eq!(setup.workspaces.told_changed_people(), [ada]);
     assert!(
@@ -806,11 +538,6 @@ async fn whoever_tells_outside_reads_who_changed_and_writes_down_what_it_told() 
     );
 }
 
-/// What `answer` carries, read as a thing told.
-fn a_told(answer: Result<Value, ActionCallError>) -> Told {
-    serde_json::from_value(answer.expect("the host answers")).expect("a thing told")
-}
-
 #[tokio::test]
 async fn a_person_who_comes_back_reads_what_happened_while_they_were_away() {
     let setup = Setup::new().await;
@@ -835,7 +562,7 @@ async fn a_person_who_comes_back_reads_what_happened_while_they_were_away() {
         )
         .await,
     );
-    let reminder = reminded(&setup).await;
+    let reminder = reminded(&setup);
     let question = setup
         .workspaces
         .tell(
@@ -850,7 +577,6 @@ async fn a_person_who_comes_back_reads_what_happened_while_they_were_away() {
                 ..ToTell::default()
             },
         )
-        .await
         .unwrap();
 
     // Her device asks, which is her coming back.
@@ -914,6 +640,11 @@ async fn a_person_who_comes_back_reads_what_happened_while_they_were_away() {
     assert_eq!(theirs, person_telling::Stretch::default());
 }
 
+/// What `answer` carries, read as a thing told.
+fn a_told(answer: Result<Value, ActionCallError>) -> Told {
+    serde_json::from_value(answer.expect("the host answers")).expect("a thing told")
+}
+
 #[tokio::test]
 #[allow(
     clippy::too_many_lines,
@@ -924,16 +655,9 @@ async fn only_its_person_makes_a_quiet_thing_insist() {
     let own = (setup.own, &setup.ada);
     let agent = agent_of(&setup.ada);
     let her = caller(&setup.ada);
-    setup
-        .ada(
-            person_telling::SET_INSISTING,
-            json!({"everySecs": 120, "times": 3}),
-        )
-        .await
-        .unwrap();
 
-    // News her rule keeps quiet is not made loud by whoever tells it:
-    // neither told as not to be missed, nor marked so afterwards.
+    // News is not made loud by whoever tells it: neither told as not to be
+    // missed, nor marked so afterwards.
     let quiet = a_told(
         ask_told(
             &setup,
@@ -959,27 +683,26 @@ async fn only_its_person_makes_a_quiet_thing_insist() {
     );
     assert!(!listed(&setup, 0).await.told[0].reaches);
 
-    // A reminder she said must not be missed insists by her own rhythm,
-    // from the moment it is told.
+    // A reminder she said must not be missed insists from the moment it is
+    // told: every ten minutes, six times at most.
     let must = told_by_her_event(
         &setup,
         "File the tax return.",
         json!({"kind": "reminder", "label": "Tax return", "key": "tax-1"}),
         true,
-    )
-    .await;
+    );
     let insists = must.insists.unwrap();
     assert_eq!(
         (insists.every_secs, insists.times, insists.raised),
-        (120, 3, 1)
+        (600, 6, 1)
     );
     assert_eq!(
         insists.next_at_ms,
-        Some(must.at_ms.saturating_add(120 * 1000))
+        Some(must.at_ms.saturating_add(600 * 1000))
     );
     // Her agent marks a thing that reaches her as not to be missed, when
     // she says so of it later.
-    let reminder = reminded(&setup).await;
+    let reminder = reminded(&setup);
     let marked = a_told(
         ask_told(
             &setup,
@@ -1006,7 +729,6 @@ async fn only_its_person_makes_a_quiet_thing_insist() {
         .await,
     );
     assert!(loud.reaches && loud.insists.is_some());
-    assert!(!loud.mark.important, "her rule's mark stands as it was");
     let calm = a_told(
         ask_told(
             &setup,
@@ -1033,81 +755,16 @@ async fn only_its_person_makes_a_quiet_thing_insist() {
     assert_eq!(seen.insists.map(|insists| insists.next_at_ms), Some(None));
 }
 
-#[tokio::test]
-async fn a_thing_may_break_do_not_disturb_only_where_its_person_let_its_kind_through() {
-    let setup = Setup::new().await;
-    // Nothing breaks do-not-disturb until she says so: a reminder reaches
-    // her, and her devices hold it back while they are quiet.
-    let held = reminded(&setup).await;
-    assert!(held.reaches && !held.through_quiet);
-
-    // She lets reminders through. From then on a reminder says it may
-    // break do-not-disturb; what reaches her another way still may not.
-    setup
-        .ada(
-            person_telling::LET_THROUGH,
-            json!({"kind": "reminder", "may": true}),
-        )
-        .await
-        .unwrap();
-    let through = told_by_her_event(
-        &setup,
-        "Leave for the airport.",
-        json!({"kind": "reminder", "label": "Airport", "key": "r-2"}),
-        false,
-    )
-    .await;
-    assert!(through.reaches && through.through_quiet);
-    let brief = told_by_her_event(
-        &setup,
-        "At ten: the landlord, about the lease.",
-        json!({"kind": "brief", "label": "Morning rundown", "key": "b-1"}),
-        false,
-    )
-    .await;
-    assert!(brief.reaches && !brief.through_quiet);
-    // What was told before she said so stands as it was told.
-    assert!(!listed(&setup, 0).await.told[0].through_quiet);
-
-    // She takes it back, and the next reminder is held again.
-    setup
-        .ada(
-            person_telling::LET_THROUGH,
-            json!({"kind": "reminder", "may": false}),
-        )
-        .await
-        .unwrap();
-    let again = told_by_her_event(
-        &setup,
-        "Water the plants.",
-        json!({"kind": "reminder", "label": "Plants", "key": "r-3"}),
-        false,
-    )
-    .await;
-    assert!(again.reaches && !again.through_quiet);
-}
-
 /// Whoever tells does not say what kind of thing it is. An agent's own
-/// telling that names a reminder or a brief as its cause is news: it is
-/// judged by its person's rule like any other, and where the rule keeps it
-/// quiet it neither reaches them nor insists. What reaches a person
-/// unjudged is what this server tells as it carries out an event of their
-/// own, from that event's own cause.
+/// telling that names a reminder or a brief as its cause is news: it reaches
+/// nobody. What reaches a person is what this server tells as it carries
+/// out an event of their own, from that event's own cause.
 #[tokio::test]
-async fn an_agent_that_names_a_reminder_or_a_brief_is_judged_by_its_persons_rule() {
+async fn an_agent_that_names_a_reminder_or_a_brief_tells_news() {
     let setup = Setup::new().await;
-    let model = judge(&setup, None).await;
-    setup
-        .ada(person_telling::SAY, json!({"words": LANDLORD}))
-        .await
-        .unwrap();
     let own = (setup.own, &setup.ada);
     let agent = agent_of(&setup.ada);
     for (kind, key) in [("reminder", "r-9"), ("brief", "b-9")] {
-        model.then(Reply::text(
-            r#"{"important": false, "why": "No line covers it."}"#,
-        ));
-        let asked = model.asked().len();
         let told = a_told(
             ask_told(
                 &setup,
@@ -1127,34 +784,22 @@ async fn an_agent_that_names_a_reminder_or_a_brief_is_judged_by_its_persons_rule
             Kind::News,
             "an agent called what it tells a {kind}, and it was taken for one"
         );
-        assert_eq!(
-            model.asked().len(),
-            asked + 1,
-            "her rule was not asked about a {kind} an agent named"
-        );
-        assert_eq!(told.mark.why.code, WhyCode::Judged);
         assert!(
             !told.reaches && told.insists.is_none(),
-            "a {kind} an agent named reached her past her rule"
+            "a {kind} an agent named reached her"
         );
     }
 
     // Her own reminder, told as this server carries out the event she set
-    // up, reaches her as that, and nobody judges it.
-    let asked = model.asked().len();
+    // up, reaches her as that.
     let hers = told_by_her_event(
         &setup,
         "Call Jo.",
         json!({"kind": "reminder", "label": "Call Jo", "key": "r-1"}),
         false,
-    )
-    .await;
-    assert_eq!(
-        (hers.kind, hers.mark.why.code),
-        (Kind::Reminder, WhyCode::Reminder)
     );
+    assert_eq!(hers.kind, Kind::Reminder);
     assert!(hers.reaches);
-    assert_eq!(model.asked().len(), asked);
 }
 
 /// A button a thing told offers is pressed by the person and invoked as
@@ -1181,8 +826,8 @@ async fn an_agent_offers_only_buttons_it_may_invoke_itself_and_is_named_for_them
         json!({"app": "so.tilo.settings", "resource": "devices", "action": "answer-device"}),
         // A workspace's governance.
         json!({"app": WORKSPACE_GOVERNANCE_PROVIDER, "resource": "governance", "action": "member.add"}),
-        // What is the person's alone to say.
-        json!({"app": "tilo.telling", "resource": "importance", "action": "let-through"}),
+        // What is the person's alone to do.
+        json!({"app": "tilo.telling", "resource": "told", "action": "list"}),
         // Its own action, aimed at a document it does not name itself.
         json!({"app": "tilo.telling", "record": "uuid:1", "resource": "told", "action": "insist"}),
     ] {
@@ -1240,13 +885,11 @@ async fn an_agent_offers_only_buttons_it_may_invoke_itself_and_is_named_for_them
             }],
             ..Tell::default()
         },
-        workspace: Some(setup.own.to_string()),
         ..ToTell::default()
     };
     let question = setup
         .workspaces
         .tell(&setup.ada.user_public_key, question)
-        .await
         .expect("the server tells");
     assert_eq!(question.actions.len(), 1);
     let read = serde_json::to_value(&question).expect("a thing told");

@@ -484,7 +484,6 @@ struct ToldPush<'a> {
     tag: &'a str,
     title: &'a str,
     body: &'a str,
-    important: bool,
     /// How often it was raised, one the first time.
     raised: u32,
     actions: Vec<ToldButton<'a>>,
@@ -524,8 +523,9 @@ impl WebPush {
         let Some(workspaces) = &self.workspaces else {
             return 0;
         };
+        let services = tilo_person_services::PersonServices::of(workspaces);
         let mut took: Vec<String> = Vec::new();
-        for address in tilo_person_services::PersonServices::of(&workspaces)
+        for address in services
             .push_addresses(person)
             .into_iter()
             .filter(|address| address.kind == PushKind::WebPush)
@@ -540,7 +540,6 @@ impl WebPush {
                     tag: &tag,
                     title,
                     body,
-                    important: told.mark.important,
                     raised: told.insists.map_or(1, |insists| insists.raised),
                     actions,
                 })
@@ -574,18 +573,14 @@ impl WebPush {
             match self.post(&address.endpoint, &key, &plain).await {
                 Ok(()) => took.push(address.reached_as().to_owned()),
                 Err(Pushed::Gone) => {
-                    tilo_person_services::PersonServices::of(&workspaces).forget_push_address(
-                        person,
-                        address.reached_as(),
-                        None,
-                    );
+                    services.forget_push_address(person, address.reached_as(), None);
                 }
                 Err(Pushed::Failed(reason)) => {
                     tracing::debug!(%reason, "a push to a person's closed app failed");
                 }
             }
         }
-        tilo_person_services::PersonServices::of(&workspaces).push_shown(person, &took, &told.id);
+        services.push_shown(person, &took, &told.id);
         took.len()
     }
 
@@ -596,9 +591,8 @@ impl WebPush {
         let Some(workspaces) = &self.workspaces else {
             return;
         };
-        for (address, shown) in tilo_person_services::PersonServices::of(&workspaces)
-            .push_taken_back(person, ids, PushKind::WebPush)
-        {
+        let services = tilo_person_services::PersonServices::of(workspaces);
+        for (address, shown) in services.push_taken_back(person, ids, PushKind::WebPush) {
             let Ok((p256dh, auth)) = address.subscription_key() else {
                 continue;
             };
@@ -620,11 +614,7 @@ impl WebPush {
                     self.post(&address.endpoint, &key, &plain).await,
                     Err(Pushed::Gone)
                 ) {
-                    tilo_person_services::PersonServices::of(&workspaces).forget_push_address(
-                        person,
-                        address.reached_as(),
-                        None,
-                    );
+                    services.forget_push_address(person, address.reached_as(), None);
                     break;
                 }
             }

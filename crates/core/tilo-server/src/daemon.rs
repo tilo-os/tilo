@@ -495,7 +495,7 @@ impl Server {
                     shell_payloads,
                     reaching,
                     // What the server keeps for the people whose workspaces it hosts: their
-                    // accounts, models, vault and what they call important.
+                    // accounts, models, vault and what they were told.
                     registers: vec![tilo_person_services::register],
                     ..config
                 }

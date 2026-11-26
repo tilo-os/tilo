@@ -7,6 +7,7 @@ use tilo_actions::remote::formats;
 use tilo_actions::remote::{ActionCallError, Caller};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
+use tilo_workspace_service::workspaces::person_workspace;
 
 use crate::fixtures::{admit, caller, hosted};
 use crate::fixtures::{hosting_device, test_host};
@@ -51,7 +52,7 @@ async fn a_persons_formats_are_a_resource_for_them_alone() {
     let server = test_host(dir.path(), &key, &ada).await;
     let workspaces = &crate::PersonServices::of(server.workspaces());
     // The device that made the root founds the person's own workspace, where their region is.
-    tilo_workspace_service::workspaces::person_workspace::found(workspaces)
+    person_workspace::found(workspaces)
         .await
         .expect("the person's own workspace");
     let (workspace, workspace_id, service) = hosted(workspaces).await;
@@ -97,11 +98,9 @@ async fn a_persons_formats_are_a_resource_for_them_alone() {
     // It is a typed resource of her own workspace, with a history and an author, and no file of
     // the server's.
     let own = tilo_server_protocol::servers::person_workspace_id(&ada.user_public_key);
-    let region = tilo_workspace_service::workspaces::person_workspace::read_on::<Region>(
-        workspaces, &own, REGION,
-    )
-    .await
-    .expect("the resource reads");
+    let region = person_workspace::read_on::<Region>(workspaces, &own, REGION)
+        .await
+        .expect("the resource reads");
     assert_eq!(region.time_format, "H24");
     assert!(
         !holds_folder(dir.path(), "people"),
@@ -170,7 +169,7 @@ async fn the_browsers_zone_is_taken_until_the_person_chooses_one() {
     let server = test_host(dir.path(), &key, &ada).await;
     let workspaces = &crate::PersonServices::of(server.workspaces());
     // The device that made the root founds the person's own workspace, where their region is.
-    tilo_workspace_service::workspaces::person_workspace::found(workspaces)
+    person_workspace::found(workspaces)
         .await
         .expect("the person's own workspace");
     let (_, workspace_id, service) = hosted(workspaces).await;

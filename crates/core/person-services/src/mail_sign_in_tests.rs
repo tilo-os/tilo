@@ -60,8 +60,8 @@ impl Setup {
         // its own network.
         workspaces.call_private_model_addresses(true);
         workspaces.sign_in_accounts_through(|_address, _password| Ok("signed in".into()));
-        let (workspace, workspace_id, holder) = hosted(&workspaces).await;
-        let device = admit(&workspaces, &workspace, &owner, 1).await;
+        let (workspace, workspace_id, holder) = hosted(workspaces).await;
+        let device = admit(workspaces, &workspace, &owner, 1).await;
         Self {
             workspaces: workspaces.clone(),
             holder,

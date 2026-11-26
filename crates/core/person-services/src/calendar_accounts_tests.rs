@@ -90,8 +90,8 @@ impl Hers {
                 })
                 .collect())
         });
-        let (workspace, workspace_id, service) = hosted(&workspaces).await;
-        let ada = admit(&workspaces, &workspace, &owner, 1).await;
+        let (workspace, workspace_id, service) = hosted(workspaces).await;
+        let ada = admit(workspaces, &workspace, &owner, 1).await;
         Self {
             workspaces: workspaces.clone(),
             service,

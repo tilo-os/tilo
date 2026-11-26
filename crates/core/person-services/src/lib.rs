@@ -1,6 +1,6 @@
 //! What a workspace service keeps for a person: their settings and the accounts they connected,
 //! the model providers they chose and their models' answers, the vault's logins and secrets as
-//! they and their agents use them, what they call important and what they were told, and what
+//! they and their agents use them, what they were told, and what
 //! the agents learned about them.
 //!
 //! All of it is kept in the person's own workspace and its vault, on the workspaces a device
@@ -30,12 +30,12 @@ pub use model_providers::OpenAiSignIn;
 pub mod model_answers;
 pub mod person_learned;
 mod person_settings;
-/// What the person calls important, what may interrupt them, and what they were told.
+/// What the person was told, kept where their workspace runs.
 mod person_telling;
 pub mod this_computer;
+pub use person_telling::ToTell;
 /// Where a person's devices are reached while their Tilo is closed.
 pub use person_telling::addresses as push_addresses;
-pub use person_telling::{Spenders, ToTell};
 /// What the person keeps to sign in with, in the workspace's vault.
 mod person_vault;
 pub use person_vault::{NO_CLIPBOARD, SecretClipboard};
@@ -90,7 +90,7 @@ struct Kept {
     models: Arc<model_answers::Models>,
     /// What uses of a vault item by reference keep here ([`hosted_use`]).
     vault_uses: hosted_use::Uses,
-    /// What its people call important, one writer at a time ([`person_telling`]).
+    /// What its people were told, one writer at a time ([`person_telling`]).
     telling: person_telling::Telling,
     /// Moves whenever a person's own settings kept here (their mail accounts) changed, so a
     /// window following them reads them again ([`person_settings`]).

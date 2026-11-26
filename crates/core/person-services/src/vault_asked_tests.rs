@@ -81,7 +81,7 @@ async fn asked_by_agent(
     ))
     .await?;
     at_once(
-        &crate::fixtures::workspaces_served(&service),
+        &crate::fixtures::workspaces_served(service),
         request,
         receipt,
     )

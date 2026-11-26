@@ -9,28 +9,22 @@
 //!
 //! A thing has an id that stays, so telling the same thing twice tells it
 //! once: whoever feeds the log may hand a thing over again after a
-//! restart. Whoever tells never says what kind of thing it is nor how
-//! important: the kind comes from what caused it, and the mark from the
-//! person's own rule ([`crate::person_telling::judge`]).
+//! restart. Whoever tells never says what kind of thing it is: the kind
+//! comes from what caused it, and it decides the thing's mark.
 
 use std::collections::VecDeque;
-use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::person_telling::{
-    Acknowledged, BY_OPENED, CAUSE_EVENT, Importance, Insists, Kind, ListAfter, MAX_ACTIONS,
-    MAX_LIST_WAIT_MS, MAX_TITLE_BYTES, MAX_WORDS_BYTES, Pushed, Reach, Stretch, Tell, Teller, Told,
-    ToldList,
+    Acknowledged, BY_OPENED, CAUSE_EVENT, INSIST_EVERY_SECS, INSIST_TIMES, Insists, Kind,
+    ListAfter, MAX_ACTIONS, MAX_LIST_WAIT_MS, MAX_TITLE_BYTES, MAX_WORDS_BYTES, Mark, Pushed,
+    Stretch, Tell, Teller, Told, ToldList,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_server_protocol::WorkspaceId;
 
-use super::{clipped, read_rule};
-use crate::model_answers::Spender;
-use crate::person_telling::judge::{self, Matter};
+use super::clipped;
 
 /// How many things a person's log keeps, newest last.
 const TOLD_KEPT: usize = 500;
@@ -147,9 +141,9 @@ impl Kept {
 }
 
 /// How a thing that must not be missed stands when it is first raised at
-/// `now_ms`, by the rhythm `rule` keeps.
-fn insisting(rule: &Importance, now_ms: u64) -> Insists {
-    let (every_secs, times) = (rule.insists.every_secs, rule.insists.times);
+/// `now_ms`, by the one rhythm every such thing keeps.
+fn insisting(now_ms: u64) -> Insists {
+    let (every_secs, times) = (INSIST_EVERY_SECS, INSIST_TIMES);
     Insists {
         every_secs,
         times,
@@ -203,31 +197,9 @@ pub struct ToTell {
     pub tell: Tell,
     /// The agent that told it.
     pub from: Option<Teller>,
-    /// The workspace it was told from, by its id spelled out.
-    pub workspace: Option<String>,
-    /// Whether its words stay on the host whatever the person's rule
-    /// says: what asks for a secret is shown only in Tilo.
+    /// Whether its words stay on the host: what asks for a secret is shown
+    /// only in Tilo.
     pub words_stay: bool,
-    /// Whose day a judgement of it is counted on, where its teller knows:
-    /// the assistant the person keeps. With none this host asks whoever
-    /// knows ([`Spenders`]).
-    pub spender: Option<Spender>,
-}
-
-/// Whose day the judgements made for a person are counted on: the
-/// assistant that person keeps, with the limit they set it. Whatever runs
-/// the host's agents knows, and names itself once
-/// ([`Workspaces::count_judgements_with`]).
-pub trait Spenders: Send + Sync {
-    /// The agent whose day a judgement for `person` in `workspace` is
-    /// counted on, told by `agent` when an agent told it. None where that
-    /// person keeps no assistant there: no judgement is then made.
-    fn spender<'a>(
-        &'a self,
-        person: &'a [u8; 32],
-        workspace: &'a str,
-        agent: Option<&'a str>,
-    ) -> Pin<Box<dyn Future<Output = Option<Spender>> + Send + 'a>>;
 }
 
 /// `tell` as it is kept: its words within what a notification shows, its
@@ -280,21 +252,15 @@ fn id_of(id: Option<String>, tell: &Tell) -> Result<Option<String>, String> {
 }
 
 impl crate::PersonServices {
-    /// Name what knows whose day the judgements made for a person are
-    /// counted on. Named once; a later call keeps the first.
-    pub fn count_judgements_with(&self, spenders: std::sync::Arc<dyn Spenders>) {
-        let _ = self.inner.telling.spenders.set(spenders);
-    }
-
-    /// Tell `person` one thing: mark it by their own rule, keep it in
-    /// their log, and answer it as kept. A thing whose id the log already
-    /// keeps is answered as it stands there, and nothing is judged again.
+    /// Tell `person` one thing: mark it by its kind, keep it in their log,
+    /// and answer it as kept. A thing whose id the log already keeps is
+    /// answered as it stands there.
     ///
     /// # Errors
     /// It says nothing, a button of it is incomplete, or the log could not
     /// be written.
-    pub async fn tell(&self, person: &[u8; 32], telling: ToTell) -> Result<Told, String> {
-        self.tell_offered(person, telling, None).await
+    pub fn tell(&self, person: &[u8; 32], telling: ToTell) -> Result<Told, String> {
+        self.tell_offered(person, telling, None)
     }
 
     /// [`Self::tell`], with who offered its buttons where an agent's own
@@ -302,7 +268,7 @@ impl crate::PersonServices {
     ///
     /// # Errors
     /// As [`Self::tell`].
-    pub(super) async fn tell_offered(
+    pub(super) fn tell_offered(
         &self,
         person: &[u8; 32],
         telling: ToTell,
@@ -313,9 +279,7 @@ impl crate::PersonServices {
             kind,
             tell,
             from,
-            workspace,
             words_stay,
-            spender,
         } = telling;
         let tell = checked(tell)?;
         let id = id_of(id, &tell)?;
@@ -324,49 +288,16 @@ impl crate::PersonServices {
             let id = id.as_ref()?;
             kept.told.iter().find(|told| told.id == *id).cloned()
         };
-        let (rule, earlier) = {
-            let _writing = self.inner.telling.writing.lock_recover();
-            let kept = read_log(&root);
-            if let Some(told) = known(&kept) {
-                return Ok(told);
-            }
-            let rule = read_rule(&root);
-            let earlier = judge::judged_before(&kept.told, tell.cause.as_ref(), rule.revision);
-            (rule, earlier)
-        };
-        let matter = Matter {
-            kind,
-            title: &tell.title,
-            words: &tell.words,
-            cause: tell.cause.as_ref(),
-        };
-        let mark = if let Some(mark) = judge::settled(&rule, &matter, earlier.as_ref()) {
-            mark
-        } else {
-            let spender = match spender {
-                Some(spender) => Some(spender),
-                None => {
-                    self.spender_for(person, workspace.as_deref(), from.as_ref())
-                        .await
-                }
-            };
-            let working_in = workspace.as_deref().and_then(WorkspaceId::parse);
-            self.judged(&rule, &matter, spender, working_in).await
-        };
-        let reach = Reach::of(kind, mark.important);
-        let outside = !words_stay
-            && workspace
-                .as_deref()
-                .is_none_or(|workspace| rule.carries_outside(workspace));
         let told = {
             let _writing = self.inner.telling.writing.lock_recover();
             let mut kept = read_log(&root);
-            // Handed over twice while it was judged: told once.
+            // Handed over twice: told once.
             if let Some(told) = known(&kept) {
                 return Ok(told);
             }
             kept.newest = kept.newest.saturating_add(1);
             let now_ms = tilo_clock::unix_now_ms();
+            let reaches = kind.reaches();
             let told = Told {
                 seq: kept.newest,
                 id: id.unwrap_or_else(|| format!("told-{}", kept.newest)),
@@ -378,15 +309,14 @@ impl crate::PersonServices {
                 about: tell.about,
                 task: tell.task,
                 cause: tell.cause,
-                mark,
-                reaches: reach.is_some(),
-                through_quiet: reach.is_some_and(|reach| rule.lets_through(reach)),
-                outside,
+                mark: Mark::of(kind),
+                reaches,
+                outside: !words_stay,
                 actions: tell.actions,
                 offered_by,
                 // Only what reaches its person insists: whoever tells
-                // cannot make a thing loud that the rule keeps quiet.
-                insists: (tell.insists && reach.is_some()).then(|| insisting(&rule, now_ms)),
+                // cannot make a thing loud that reaches nobody.
+                insists: (tell.insists && reaches).then(|| insisting(now_ms)),
                 acknowledged: None,
                 withdrawn_at_ms: None,
                 pushed: Vec::new(),
@@ -400,21 +330,6 @@ impl crate::PersonServices {
         };
         self.told_moved(person);
         Ok(told)
-    }
-
-    /// Whose day a judgement of a thing `from` told `person` from
-    /// `workspace` is counted on, as whatever runs this host's agents
-    /// knows it.
-    async fn spender_for(
-        &self,
-        person: &[u8; 32],
-        workspace: Option<&str>,
-        from: Option<&Teller>,
-    ) -> Option<Spender> {
-        let spenders = self.inner.telling.spenders.get()?;
-        spenders
-            .spender(person, workspace?, from.map(|teller| teller.agent.as_str()))
-            .await
     }
 
     /// What `person` was told after place `after` of their log, oldest
@@ -560,11 +475,10 @@ impl crate::PersonServices {
     }
 
     /// Say whether the thing `id` told `person` must not be missed. One
-    /// that must is raised again by the person's own rhythm until they
-    /// acknowledge it. The person may say so of anything they were told,
-    /// and it then reaches them; whoever else says so (`theirs` false)
-    /// only of what reaches them already: nothing the rule keeps quiet is
-    /// made loud by its teller.
+    /// that must is raised again until they acknowledge it. The person may
+    /// say so of anything they were told, and it then reaches them;
+    /// whoever else says so (`theirs` false) only of what reaches them
+    /// already: nothing that reaches nobody is made loud by its teller.
     ///
     /// # Errors
     /// Nothing was told that person under that id, or it is not theirs to
@@ -576,7 +490,6 @@ impl crate::PersonServices {
         insists: bool,
         theirs: bool,
     ) -> Result<Told, String> {
-        let rule = self.importance_of(person);
         let mut refused = false;
         let told = self.change_told(person, id, |told, now_ms| {
             if !insists {
@@ -597,7 +510,7 @@ impl crate::PersonServices {
                 return Changed::Nothing;
             }
             told.reaches = true;
-            told.insists = Some(insisting(&rule, now_ms));
+            told.insists = Some(insisting(now_ms));
             Changed::Moved
         })?;
         if refused {

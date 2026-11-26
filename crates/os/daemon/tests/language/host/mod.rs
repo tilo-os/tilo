@@ -517,18 +517,18 @@ impl Host {
             default_model: Some("scripted".to_owned()),
             ..ProviderProfile::local_vllm()
         };
-        let mut config = tilo_person_services::PersonServices::of(&workspaces)
-            .workspace_models(self.workspace());
+        let mut config =
+            tilo_person_services::PersonServices::of(workspaces).workspace_models(self.workspace());
         config.default_profile = Some(profile.id.clone());
         config.profiles = vec![profile];
         assert!(
-            tilo_person_services::PersonServices::of(&workspaces)
+            tilo_person_services::PersonServices::of(workspaces)
                 .link_this_computer(self.workspace(), &config, Linking::Chosen)
                 .expect("the computer's model choice is linked"),
             "the workspace runs on the model this computer chose"
         );
         let scripted = ScriptedProvider::answering(replies);
-        tilo_person_services::PersonServices::of(&workspaces).answer_models_with(scripted.clone());
+        tilo_person_services::PersonServices::of(workspaces).answer_models_with(scripted.clone());
         scripted
     }
 

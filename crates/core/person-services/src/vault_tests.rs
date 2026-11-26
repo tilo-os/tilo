@@ -146,7 +146,7 @@ pub(crate) async fn asked(
     )
     .await?;
     crate::waiting::at_once(
-        &crate::fixtures::workspaces_served(&service),
+        &crate::fixtures::workspaces_served(service),
         request,
         receipt,
     )
@@ -1811,7 +1811,7 @@ async fn the_sign_ins_a_host_kept_are_the_vaults_once_it_starts() {
     let keys = Arc::new(crate::fixtures::TestGroupKeys::default());
     let server = test_host_holding(dir.path(), &key, &owner, Arc::clone(&keys)).await;
     let workspaces = &crate::PersonServices::of(server.workspaces());
-    let (_, workspace_id, _) = hosted(&workspaces).await;
+    let (_, workspace_id, _) = hosted(workspaces).await;
     let workspace = workspace_id.to_string();
     // Its vault opened here before, so the host holds its keys as it starts, and its accounts
     // are the workspace's.

@@ -43,7 +43,7 @@ public struct ClosedPush: Equatable, Sendable {
         guard !words.isEmpty else { return nil }
         let from = said.from.trimmingCharacters(in: .whitespacesAndNewlines)
         return Opened(title: from.isEmpty ? AssistantWords.assistant.said : from,
-                      subtitle: said.important ? AssistantWords.important.said : nil,
+                      subtitle: nil,
                       words: Markdown.plain(words), category: "assistant.\(ClosedPush.noticeKind(of: kind).rawValue)")
     }
 
@@ -61,7 +61,6 @@ public struct ClosedPush: Equatable, Sendable {
     private struct Said: Decodable {
         let from: String
         let words: String
-        let important: Bool
     }
 
     /// The kind of notice a thing of this kind is, as the app's own notices name kinds.

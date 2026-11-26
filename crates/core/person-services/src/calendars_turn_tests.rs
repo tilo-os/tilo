@@ -104,14 +104,14 @@ async fn a_members_turn_chooses_the_calendars_their_account_reads() {
     let (key, owner) = hosting_device();
     let server = test_server(dir.path(), &key, &owner).await;
     let workspaces = &crate::PersonServices::of(server.workspaces());
-    let (workspace, workspace_id, _service) = crate::fixtures::hosted(&workspaces).await;
-    let ada = crate::fixtures::admit(&workspaces, &workspace, &owner, 1).await;
-    keep_the_calendar(&workspaces, &workspace).await;
+    let (workspace, workspace_id, _service) = crate::fixtures::hosted(workspaces).await;
+    let ada = crate::fixtures::admit(workspaces, &workspace, &owner, 1).await;
+    keep_the_calendar(workspaces, &workspace).await;
 
     let scout = on_turn(&ada, &workspace, SCOUT);
     let asking_turn = turn(workspace_id, &scout, None);
     assert_eq!(
-        offered(&workspaces, &asking_turn).await,
+        offered(workspaces, &asking_turn).await,
         [
             workspace_accounts::BEGIN_SIGN_IN,
             workspace_accounts::DISCOVER_CALENDARS,
@@ -122,7 +122,7 @@ async fn a_members_turn_chooses_the_calendars_their_account_reads() {
     // The turn chooses the other calendar to show, and it is kept on the account the bridge reads.
     let asked = json!({"account": ACCOUNT, "calendars": ["home"]});
     let answered = asks(
-        &workspaces,
+        workspaces,
         &asking_turn,
         workspace_accounts::SET_CALENDARS,
         asked.clone(),
@@ -133,7 +133,7 @@ async fn a_members_turn_chooses_the_calendars_their_account_reads() {
         answered.is_null() || answered.get("accounts").is_some(),
         "the choice is answered: {answered}"
     );
-    assert_eq!(on_show(&workspaces, &workspace).await, ["home"]);
+    assert_eq!(on_show(workspaces, &workspace).await, ["home"]);
     assert!(
         !asked.to_string().to_lowercase().contains("password"),
         "the call names no sign-in"
@@ -142,7 +142,7 @@ async fn a_members_turn_chooses_the_calendars_their_account_reads() {
     // Asking its server for its calendars is answered by the calendar path: the account keeps no
     // sign-in here, which is what it is refused for, and not for being an action nobody knows.
     let refused = asks(
-        &workspaces,
+        workspaces,
         &asking_turn,
         workspace_accounts::DISCOVER_CALENDARS,
         json!({"account": ACCOUNT}),
@@ -156,10 +156,10 @@ async fn a_members_turn_chooses_the_calendars_their_account_reads() {
     // An agent the workspace's answers narrow to another app reaches none of it.
     let narrowed = narrowing(&workspace, &scout, &narrowed_elsewhere(&workspace));
     let narrowed_turn = turn(workspace_id, &scout, Some(&narrowed));
-    assert!(offered(&workspaces, &narrowed_turn).await.is_empty());
+    assert!(offered(workspaces, &narrowed_turn).await.is_empty());
     assert!(matches!(
         asks(
-            &workspaces,
+            workspaces,
             &narrowed_turn,
             workspace_accounts::SET_CALENDARS,
             asked
@@ -172,10 +172,10 @@ async fn a_members_turn_chooses_the_calendars_their_account_reads() {
     let herself =
         Caller::authenticated(ada.user_public_key, ada.device_public_key).in_workspace(&workspace);
     let no_turn = turn(workspace_id, &herself, None);
-    assert!(offered(&workspaces, &no_turn).await.is_empty());
+    assert!(offered(workspaces, &no_turn).await.is_empty());
     assert!(matches!(
         asks(
-            &workspaces,
+            workspaces,
             &no_turn,
             workspace_accounts::SET_CALENDARS,
             json!({"account": ACCOUNT, "calendars": ["work"]})
@@ -196,14 +196,14 @@ async fn only_a_turn_of_a_members_own_agent_is_offered_the_connecting() {
     let (key, owner) = hosting_device();
     let server = test_server(dir.path(), &key, &owner).await;
     let workspaces = &crate::PersonServices::of(server.workspaces());
-    let (workspace, workspace_id, _service) = crate::fixtures::hosted(&workspaces).await;
-    let ada = crate::fixtures::admit(&workspaces, &workspace, &owner, 1).await;
-    let bo = crate::fixtures::admit(&workspaces, &workspace, &owner, 2).await;
+    let (workspace, workspace_id, _service) = crate::fixtures::hosted(workspaces).await;
+    let ada = crate::fixtures::admit(workspaces, &workspace, &owner, 1).await;
+    let bo = crate::fixtures::admit(workspaces, &workspace, &owner, 2).await;
 
     let bos_caller = on_turn(&bo, &workspace, SCOUT);
     let bos_turn = turn(workspace_id, &bos_caller, None);
     assert!(
-        offered(&workspaces, &bos_turn)
+        offered(workspaces, &bos_turn)
             .await
             .contains(&workspace_accounts::BEGIN_SIGN_IN.to_owned()),
         "another member's agent connects the workspace's calendars"
@@ -211,7 +211,7 @@ async fn only_a_turn_of_a_members_own_agent_is_offered_the_connecting() {
     for (who, caller) in crate::hosted_use::turn_use_tests::not_hosted_turns(&ada, &workspace) {
         let not_a_turn = turn(workspace_id, &caller, None);
         assert!(
-            offered(&workspaces, &not_a_turn).await.is_empty(),
+            offered(workspaces, &not_a_turn).await.is_empty(),
             "{who} is offered no connecting"
         );
     }
@@ -223,7 +223,7 @@ async fn only_a_turn_of_a_members_own_agent_is_offered_the_connecting() {
     let with_mail = json!({"provider": "google", "calendar": true, "mail": true});
     assert!(matches!(
         asks(
-            &workspaces,
+            workspaces,
             &hers,
             workspace_accounts::BEGIN_SIGN_IN,
             with_mail

@@ -1,20 +1,16 @@
 //! Telling people outside Tilo what their assistant told them.
 //!
 //! What a person's assistant tells them is one log on this host
-//! ([`Workspaces::tell`]), each thing marked by the person's own rule. A
+//! ([`Workspaces::tell`]), each thing marked by what kind of thing it is. A
 //! device of theirs that runs reads it live and raises its own notice. Here
 //! is what reaches a person no device of theirs is looking for: a thing that
 //! is to reach them, was not acknowledged, and is a few seconds old is told
 //! once through whatever tells outside Tilo ([`Outside`]: the browsers they
 //! subscribed, today), and that it was is written down on the thing. A
-//! thing that must not be missed is raised again by its person's own
-//! rhythm until they acknowledge it, and told outside again each time
-//! nothing of theirs is looking. Everything else stays in the thread and in
-//! the log, and nothing is told outside for it.
-//!
-//! This is also where a judgement made for a person finds whose day it is
-//! counted on: the assistant that person keeps in the workspace
-//! ([`count_judgements`]).
+//! thing that must not be missed is raised again until they acknowledge it,
+//! and told outside again each time nothing of theirs is looking.
+//! Everything else stays in the thread and in the log, and nothing is told
+//! outside for it.
 
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -25,11 +21,8 @@ use tilo_person_services::PersonServices;
 
 use tilo_actions::remote::person_telling::Told;
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_agent::{Agent, WorkspaceAgents};
 
-use tilo_person_services::Spenders;
-use tilo_person_services::model_answers::Spender;
-use tilo_workspace_service::workspaces::{WeakWorkspaces, Workspaces};
+use tilo_workspace_service::workspaces::Workspaces;
 
 /// The longest the teller sleeps when nothing is due: what it would miss is
 /// only a log it was not told had moved.
@@ -174,15 +167,13 @@ impl Teller {
             waited.extend(PersonServices::of(&self.workspaces).told_changed_people());
             waited.iter().copied().collect()
         };
+        let services = PersonServices::of(&self.workspaces);
         let mut next: Option<u64> = None;
         for person in people {
             let mut waits = false;
             // What was told outside Tilo and waits no more.
             let mut over: Vec<Told> = Vec::new();
-            for told in PersonServices::of(&self.workspaces)
-                .told_after(&person, 0)
-                .told
-            {
+            for told in services.told_after(&person, 0).told {
                 if !told.waits() {
                     if !told.pushed.is_empty() {
                         over.push(told);
@@ -254,7 +245,8 @@ impl Teller {
     /// theirs that runs raises its notice again by itself, and with none
     /// looking it is told outside again. Answers when it comes round next.
     async fn raise(&self, person: [u8; 32], id: &str, now_ms: u64) -> Option<u64> {
-        let raised = match PersonServices::of(&self.workspaces).raise_told(&person, id, now_ms) {
+        let services = PersonServices::of(&self.workspaces);
+        let raised = match services.raise_told(&person, id, now_ms) {
             Ok(raised) => raised,
             Err(error) => {
                 tracing::warn!(%error, "a thing that insists was not raised again");
@@ -262,9 +254,7 @@ impl Teller {
             }
         };
         let next = raised.insists.and_then(|insists| insists.next_at_ms);
-        if raised.waits()
-            && !PersonServices::of(&self.workspaces).looking(&person, self.pace.watching)
-        {
+        if raised.waits() && !services.looking(&person, self.pace.watching) {
             self.tell(person, raised).await;
         }
         next
@@ -274,14 +264,10 @@ impl Teller {
     /// has, and write down on the thing that it was, once for each.
     async fn tell(&self, person: [u8; 32], told: Told) {
         let (id, kind) = (told.id.clone(), told.kind);
+        let services = PersonServices::of(&self.workspaces);
         for outside in &self.outside {
             let took = outside.tell(person, told.clone()).await;
-            if let Err(error) = PersonServices::of(&self.workspaces).told_outside(
-                &person,
-                &id,
-                outside.name(),
-                took,
-            ) {
+            if let Err(error) = services.told_outside(&person, &id, outside.name(), took) {
                 tracing::warn!(%error, "what a person was told outside Tilo is not written down");
             }
             tracing::info!(
@@ -307,94 +293,6 @@ impl Teller {
             }
         }
     }
-}
-
-/// Whose day the judgements made for a person are counted on: the agents
-/// that person keeps, read from the workspace's own record of its agents.
-struct Assistants {
-    workspaces: WeakWorkspaces,
-}
-
-/// The person `agent` acts for, by their root.
-fn person_of(agent: &Agent) -> Option<[u8; 32]> {
-    tilo_failure::ignored!(
-        "an agent kept by nobody's person has nobody to tell",
-        tilo_action_policy::PersonId::parse(&agent.acts_for).ok()
-    )
-    .and_then(|acts_for| acts_for.root())
-}
-
-/// The agents `workspace` keeps, or none where its record does not read.
-async fn agents_of(workspaces: &Workspaces, workspace: &str) -> Option<Vec<Agent>> {
-    let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-    let bytes = workspaces
-        .resource_document(workspace, tilo_workspace_agent::OWNER, &record)
-        .await
-        .ok()??;
-    let mut doc = automerge::AutoCommit::load(&bytes).ok()?;
-    let agents = crate::agents::opened::<WorkspaceAgents>((workspace, &record), &mut doc).ok()?;
-    Some(agents.agents.iter().cloned().collect())
-}
-
-/// The agent among `agents` whose day a judgement for `person` is counted
-/// on: the agent `told_by` that told the thing, where that person keeps it
-/// and it still works; else the assistant they keep, which is the first
-/// made of their working agents that no MCP client connects as. None where
-/// they keep no such agent: somebody else's agent is never theirs.
-fn counted_on<'a>(
-    agents: &'a [Agent],
-    person: &[u8; 32],
-    told_by: Option<&str>,
-) -> Option<&'a Agent> {
-    let kept = |agent: &&Agent| agent.is_active() && person_of(agent) == Some(*person);
-    told_by
-        .and_then(|id| agents.iter().filter(kept).find(|agent| agent.id.0 == id))
-        .or_else(|| {
-            agents
-                .iter()
-                .filter(kept)
-                .filter(|agent| agent.mcp_client.is_none())
-                .min_by_key(|agent| agent.created_at)
-        })
-}
-
-impl Spenders for Assistants {
-    fn spender<'a>(
-        &'a self,
-        person: &'a [u8; 32],
-        workspace: &'a str,
-        agent: Option<&'a str>,
-    ) -> Pin<Box<dyn Future<Output = Option<Spender>> + Send + 'a>> {
-        Box::pin(async move {
-            let workspaces = self.workspaces.upgrade()?;
-            let agents = agents_of(&workspaces, workspace).await?;
-            let assistant = counted_on(&agents, person, agent)?;
-            Some(Spender {
-                workspace: workspace.to_owned(),
-                agent: assistant.id.0.clone(),
-                name: assistant.name.clone(),
-                // The day as the agents' own runtime counts it.
-                day: tilo_clock::local::today().to_string(),
-                limit_micros: assistant.spend_limit_micros,
-            })
-        })
-    }
-}
-
-/// Count the judgements `workspaces` makes for its people on the day of
-/// the assistant each of them keeps, within the limit they set it. Until
-/// this is called no judgement is made: no model is asked for a call that
-/// no day counts.
-pub fn count_judgements(workspaces: &Workspaces) {
-    PersonServices::of(&workspaces).count_judgements_with(Arc::new(Assistants {
-        workspaces: workspaces.downgrade(),
-    }));
-}
-
-/// Start what a host does for what its people are told, beside telling
-/// them outside Tilo: count their judgements on their assistants' days.
-pub fn start(workspaces: &Workspaces) {
-    count_judgements(workspaces);
 }
 
 #[cfg(test)]

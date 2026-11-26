@@ -289,11 +289,11 @@ async fn add_mail_account(
     workspace: &str,
     address: &str,
 ) -> workspace_vault::ItemRef {
-    tilo_person_services::PersonServices::of(&workspaces)
+    tilo_person_services::PersonServices::of(workspaces)
         .keep_mail_account_as_added(workspace, address)
         .await
         .expect("the account and its sign-in are kept");
-    let held = tilo_person_services::PersonServices::of(&workspaces)
+    let held = tilo_person_services::PersonServices::of(workspaces)
         .workspace_accounts(workspace)
         .await
         .unwrap();

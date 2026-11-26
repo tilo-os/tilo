@@ -56,7 +56,7 @@ fn a_migrated_account_is_connected_and_kept_for_mail() {
         let workspaces = daemon.workspaces();
         let proven = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let proving = std::sync::Arc::clone(&proven);
-        tilo_person_services::PersonServices::of(&workspaces).sign_in_accounts_through(
+        tilo_person_services::PersonServices::of(workspaces).sign_in_accounts_through(
             move |account, password| {
                 proving.lock().unwrap().push(account.to_owned());
                 if password == SAVED {

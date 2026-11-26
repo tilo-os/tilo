@@ -252,7 +252,7 @@ async fn ask_as(
     let provider = host.device_page(workspace_id, device);
     let invocation = request.invocation;
     let first = settled(provider.invoke(caller, request.clone())).await;
-    let workspaces = crate::fixtures::workspaces_served(&host);
+    let workspaces = crate::fixtures::workspaces_served(host);
     let mut receipt = answered(
         &workspaces,
         (Some(workspace_id), Some(device)),

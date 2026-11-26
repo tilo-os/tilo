@@ -109,6 +109,9 @@ impl Provided {
     }
 }
 
+/// How the parameters of a provider's action are read, by the action's name.
+type ParamsOf = fn(&str) -> Option<Vec<ActionParam>>;
+
 impl WorkspaceAnswers for Provided {
     fn children(&self) -> &'static [&'static str] {
         match self.provider {
@@ -151,7 +154,7 @@ impl WorkspaceAnswers for Provided {
 
     fn params(&self, target: &RemoteActionTarget) -> Option<Vec<ActionParam>> {
         let address = &target.address;
-        let (child, own): (fn(&str) -> Option<Vec<ActionParam>>, _) = match self.provider {
+        let (child, own): (ParamsOf, _) = match self.provider {
             workspace_vault::PROVIDER => (workspace_vault::params_of, vault::vault_action(address)),
             workspace_accounts::PROVIDER => {
                 (mail::account_params_of, mail::account_action(address))
@@ -209,13 +212,14 @@ impl WorkspaceAnswers for Provided {
                 // Passwords finds the vault's own calls its person may make, which it calls by
                 // address.
                 workspace_vault::PROVIDER => (vault::VAULT, services.passwords_rows(asked).await),
-                // An agent of a person's finds that person's rule for what is important here:
-                // to read wherever it works for them, to change in a workspace of theirs.
+                // An agent of a person's finds that person's log of what
+                // they were told here: it tells them, and marks what it
+                // told as not to be missed.
                 person_telling::PROVIDER => {
-                    match services.tells_as_agent(caller, certificate, call.workspace) {
-                        Some(own) => (telling::TELLING, telling::agent_rows(own)),
-                        None => return Vec::new(),
+                    if !crate::PersonServices::tells_as_agent(caller, certificate, call.workspace) {
+                        return Vec::new();
                     }
+                    (telling::TELLING, telling::agent_rows())
                 }
                 // An agent finds what it may read of the services the workspace connected.
                 // Adding one is no row.
@@ -325,8 +329,7 @@ impl PersonServices {
                 self.person_vault_invoke(workspace, caller, certificate, request)
                     .await
             }
-            // What the person calls important, and what may interrupt them: theirs, and their
-            // own agent's to read and to keep.
+            // What the person was told: their agents tell them, and only they read it.
             (person_telling::PROVIDER, _) => {
                 self.person_telling_invoke(workspace, caller, certificate, request)
                     .await

@@ -52,7 +52,7 @@ final class ClosedKeyTests: XCTestCase {
 
     func testItOpensWhatIsSealedForItTheWayItsServerSealsAndNoOtherDeviceDoes() throws {
         let key = ClosedKey.made()
-        let said = Data(#"{"from":"Assistant","words":"The form is ready to sign.","important":true,"actions":[]}"#.utf8)
+        let said = Data(#"{"from":"Assistant","words":"The form is ready to sign.","actions":[]}"#.utf8)
         let message = try Sealing.sealed(said, for: key)
         XCTAssertEqual(key.open(message), said)
         XCTAssertNil(ClosedKey.made().open(message))

@@ -37,7 +37,7 @@ fn the_model_chosen_in_a_computers_agent_models_pane_answers_its_agents() {
                 default_model: Some(chosen.to_owned()),
                 ..ProviderProfile::local_vllm()
             };
-            let mut config = tilo_person_services::PersonServices::of(&workspaces)
+            let mut config = tilo_person_services::PersonServices::of(workspaces)
                 .workspace_models(host.workspace());
             config.default_profile = Some(profile.id.clone());
             config.profiles = vec![profile];
@@ -46,13 +46,13 @@ fn the_model_chosen_in_a_computers_agent_models_pane_answers_its_agents() {
 
         let choice = choose(&["llama3.2", "qwen3"], "llama3.2");
         assert!(
-            tilo_person_services::PersonServices::of(&workspaces)
+            tilo_person_services::PersonServices::of(workspaces)
                 .link_this_computer(host.workspace(), &choice, Linking::Chosen)
                 .unwrap(),
             "the computer's choice becomes the workspace's"
         );
-        let models = tilo_person_services::PersonServices::of(&workspaces)
-            .workspace_models(host.workspace());
+        let models =
+            tilo_person_services::PersonServices::of(workspaces).workspace_models(host.workspace());
         assert_eq!(models.default_profile.as_deref(), Some("ollama"));
         assert_eq!(
             models
@@ -83,13 +83,13 @@ fn the_model_chosen_in_a_computers_agent_models_pane_answers_its_agents() {
         // follows.
         let picked = choose(&["llama3.2", "qwen3"], "qwen3");
         assert!(
-            tilo_person_services::PersonServices::of(&workspaces)
+            tilo_person_services::PersonServices::of(workspaces)
                 .link_this_computer(host.workspace(), &picked, Linking::Following)
                 .unwrap(),
             "the pane's next choice is followed"
         );
-        let models = tilo_person_services::PersonServices::of(&workspaces)
-            .workspace_models(host.workspace());
+        let models =
+            tilo_person_services::PersonServices::of(workspaces).workspace_models(host.workspace());
         assert_eq!(
             models
                 .profiles

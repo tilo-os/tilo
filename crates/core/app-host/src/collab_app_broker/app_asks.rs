@@ -124,7 +124,7 @@ impl AppAsks {
         let workspaces = &state.services.shell.as_ref()?.workspaces;
         let store = workspaces.asked_store()?;
         let dispatch: Weak<dyn AskedDispatch> = Arc::downgrade(self) as Weak<dyn AskedDispatch>;
-        let records = PersonServices::of(&workspaces).told(store.for_dispatch(DISPATCH, dispatch));
+        let records = PersonServices::of(workspaces).told(store.for_dispatch(DISPATCH, dispatch));
         Some(Arc::clone(&self.records.get_or_init(|| (records, store)).0))
     }
 }

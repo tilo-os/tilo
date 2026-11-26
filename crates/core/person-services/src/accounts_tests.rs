@@ -53,12 +53,12 @@ async fn a_window_following_the_accounts_is_sent_them_again_when_they_change() {
     let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = &crate::PersonServices::of(server.workspaces());
-    let (workspace, workspace_id, host) = hosted(&workspaces).await;
-    let ada = admit(&workspaces, &workspace, &owner, 1).await;
-    let bo = admit(&workspaces, &workspace, &owner, 2).await;
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let bo = admit(workspaces, &workspace, &owner, 2).await;
     let keeping = workspace_id.to_string();
-    keep(&workspaces, &keeping, "ada@example.test").await;
-    keep(&workspaces, &keeping, "bob@example.test").await;
+    keep(workspaces, &keeping, "ada@example.test").await;
+    keep(workspaces, &keeping, "bob@example.test").await;
     let hers = host.device_page(workspace_id, &ada);
     let ada = caller(&ada);
     let bos_page = host.device_page(workspace_id, &bo);

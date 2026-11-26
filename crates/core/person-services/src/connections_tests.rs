@@ -97,7 +97,7 @@ impl<'a> Asking<'a> {
         )
         .await?;
         crate::waiting::at_once(
-            &crate::fixtures::workspaces_served(&self.actions),
+            &crate::fixtures::workspaces_served(self.actions),
             request,
             receipt,
         )

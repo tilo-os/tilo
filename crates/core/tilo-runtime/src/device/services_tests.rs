@@ -3158,7 +3158,7 @@ fn a_secret_answer_is_kept_out_of_every_invocation_record() {
     let reference = tilo_rt::app()
         .block_on(async {
             let place = Place::parse("https://bank.example.test").unwrap();
-            tilo_person_services::PersonServices::of(&workspaces)
+            tilo_person_services::PersonServices::of(workspaces)
                 .keep_account_password(
                     &workspace,
                     (&device, None),

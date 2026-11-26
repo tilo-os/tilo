@@ -885,7 +885,7 @@ impl crate::PersonServices {
             return Err(ActionCallError::UnknownAction);
         };
         let purpose = purpose_of(&purpose)?;
-        let key = derive_device_key(&self.host_key(), (workspace, app, &purpose));
+        let key = derive_device_key(self.host_key(), (workspace, app, &purpose));
         Ok(DeviceKey {
             key: hex::encode(key.as_slice()),
         })

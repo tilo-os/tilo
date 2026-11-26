@@ -35,8 +35,8 @@ async fn a_mail_server_whose_name_answers_inside_is_refused_and_connected_to_by_
     let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = &crate::PersonServices::of(server.workspaces());
-    let (workspace, workspace_id, actions) = hosted(&workspaces).await;
-    let device = admit(&workspaces, &workspace, &owner, 1).await;
+    let (workspace, workspace_id, actions) = hosted(workspaces).await;
+    let device = admit(workspaces, &workspace, &owner, 1).await;
     let page = actions.device_page(workspace_id, &device);
     let caller = caller(&device);
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a port here");

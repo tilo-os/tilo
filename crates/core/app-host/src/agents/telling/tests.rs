@@ -1,8 +1,8 @@
 //! What a host tells its people outside Tilo, with no device of theirs on:
-//! what is to reach a person is told once and the rest never; the person's
-//! own rule and how their situation stands decide which; a device that is
-//! looking is left to tell it; and what was acknowledged, taken back or
-//! kept on the host is not carried out.
+//! what is to reach a person is told once and the rest never; a device that
+//! is looking is left to tell it; what was acknowledged or taken back is
+//! not carried out; and a thing that must not be missed comes round again
+//! until it is acknowledged.
 
 #![allow(
     clippy::unwrap_used,
@@ -15,21 +15,17 @@
 )]
 
 use tilo_actions::remote::person_telling::{
-    Cause, Fact, Holds, Importance, Kind, Line, ListAfter, Tell, Teller as ToldBy, WhyCode,
+    Cause, Kind, ListAfter, Tell, Teller as ToldBy, WhyCode,
 };
 
 use super::*;
-use tilo_person_services::ToTell;
-use tilo_person_services::model_answers::ProviderProtocol;
-use tilo_person_services::model_answers::scripted::{Linking, Reply, ScriptedProvider};
+use tilo_person_services::{PersonServices, ToTell};
 use tilo_workspace_service::workspaces::fixtures::{TestHost, hosting_device, test_host};
 
 /// A person this host keeps a log for. No device of theirs is on.
 const ADA: [u8; 32] = [8; 32];
 /// The workspace her assistant works in.
 const WORKSPACE: &str = "6f1f0f7e-3c1d-4a54-9b6e-2d1c5a7e9f10";
-/// A mail as her assistant tells it.
-const MAIL: &str = "Kim at Harbor asks whether we take new customers.";
 const SECOND: u64 = 1_000;
 
 /// What was told outside Tilo, in order.
@@ -93,26 +89,9 @@ impl Host {
         Teller::new(self.workspaces.clone(), self.heard.clone())
     }
 
-    /// Ada's own model for judging, answering as scripted.
-    async fn judge(&self, replies: impl IntoIterator<Item = Reply>) -> Arc<ScriptedProvider> {
-        let scripted = ScriptedProvider::answering(replies);
-        tilo_person_services::PersonServices::of(&self.workspaces)
-            .answer_models_with(scripted.clone());
-        tilo_person_services::PersonServices::of(&self.workspaces)
-            .link_model_for(
-                WORKSPACE,
-                &Linking {
-                    name: "Models",
-                    protocol: ProviderProtocol::OpenAiCompatible,
-                    endpoint: "https://models.example.com/v1",
-                    key: Some("sk-ada"),
-                    models: &["judge-small"],
-                },
-                true,
-            )
-            .await
-            .unwrap();
-        scripted
+    /// What this host keeps for its people on its workspaces.
+    fn services(&self) -> PersonServices {
+        PersonServices::of(&self.workspaces)
     }
 }
 
@@ -141,8 +120,7 @@ fn reminder(words: &str, key: &str) -> ToTell {
     }
 }
 
-/// News her assistant tells her, which an event caused, counted on her
-/// assistant's day where it takes judgement.
+/// News her assistant tells her.
 fn news(words: &str, key: &str) -> ToTell {
     ToTell {
         kind: Kind::News,
@@ -156,81 +134,37 @@ fn news(words: &str, key: &str) -> ToTell {
             ..Tell::default()
         },
         from: Some(assistant()),
-        workspace: Some(WORKSPACE.into()),
-        spender: Some(Spender {
-            workspace: WORKSPACE.into(),
-            agent: "assistant".into(),
-            name: "Assistant".into(),
-            day: "2026-11-17".into(),
-            limit_micros: None,
-        }),
         ..ToTell::default()
     }
 }
 
-fn line(id: &str, words: &str, only_while: Option<(&str, &str)>) -> Line {
-    Line {
-        id: id.into(),
-        words: words.into(),
-        only_while: only_while.map(|(fact, is)| Holds {
-            fact: fact.into(),
-            is: is.into(),
-        }),
-        ..Line::default()
-    }
-}
-
 #[tokio::test]
-async fn what_is_to_reach_a_person_is_told_outside_once_and_the_rest_never() {
+async fn what_reaches_a_person_is_told_outside_once_and_news_never() {
     let host = Host::new().await;
     let teller = host.teller();
-    let model = host
-        .judge([
-            Reply::text(r#"{"important": true, "why": "The landlord wrote."}"#),
-            Reply::text(r#"{"important": false, "why": "It is not the landlord."}"#),
-        ])
-        .await;
-    tilo_person_services::PersonServices::of(&host.workspaces)
-        .keep_importance(
-            &ADA,
-            &Importance {
-                lines: vec![line("line-1", "My landlord is always important", None)],
-                revision: 1,
-                ..Importance::default()
-            },
-        )
-        .unwrap();
-
-    let important = tilo_person_services::PersonServices::of(&host.workspaces)
-        .tell(&ADA, news("The landlord writes about the lease.", "mail-1"))
-        .await
-        .unwrap();
-    let unimportant = tilo_person_services::PersonServices::of(&host.workspaces)
-        .tell(&ADA, news("A newsletter arrived.", "mail-2"))
-        .await
-        .unwrap();
-    let reminded = tilo_person_services::PersonServices::of(&host.workspaces)
+    let reminded = host
+        .services()
         .tell(&ADA, reminder("Call Jo.", "r-1"))
-        .await
         .unwrap();
-    assert!(important.mark.important && important.reaches);
-    assert!(!unimportant.mark.important && !unimportant.reaches);
-    assert!(reminded.reaches && !reminded.mark.important);
-    assert_eq!(model.asked().len(), 2, "a reminder is not judged");
+    let unread = host
+        .services()
+        .tell(&ADA, news("A newsletter arrived.", "mail-2"))
+        .unwrap();
+    assert!(reminded.reaches);
+    assert!(!unread.reaches);
 
     // Not at once: a device that is open hears of it first.
-    let newest = reminded.at_ms;
-    let next = teller.step(important.at_ms.saturating_add(SECOND)).await;
-    assert_eq!(next, Some(important.at_ms.saturating_add(4 * SECOND)));
+    let next = teller.step(reminded.at_ms.saturating_add(SECOND)).await;
+    assert_eq!(next, Some(reminded.at_ms.saturating_add(4 * SECOND)));
     assert!(host.heard.ids().is_empty());
 
     // Four seconds on, with no device of hers looking: what reaches her is
-    // told outside, each thing once, and what does not reach her is not.
-    assert_eq!(teller.step(newest.saturating_add(4 * SECOND)).await, None);
+    // told outside, once, and the news that reaches nobody is not.
     assert_eq!(
-        host.heard.ids(),
-        [important.id.clone(), reminded.id.clone()]
+        teller.step(unread.at_ms.saturating_add(4 * SECOND)).await,
+        None
     );
+    assert_eq!(host.heard.ids(), std::slice::from_ref(&reminded.id));
     assert!(
         host.heard
             .told
@@ -240,9 +174,7 @@ async fn what_is_to_reach_a_person_is_told_outside_once_and_the_rest_never() {
             .all(|(person, _)| *person == ADA)
     );
     // That it was told is written down on the thing, which keeps its place.
-    let log = tilo_person_services::PersonServices::of(&host.workspaces)
-        .told_after(&ADA, 0)
-        .told;
+    let log = host.services().told_after(&ADA, 0).told;
     let outside: Vec<(&str, u32)> = log
         .iter()
         .map(|told| {
@@ -251,80 +183,14 @@ async fn what_is_to_reach_a_person_is_told_outside_once_and_the_rest_never() {
                 .map_or(("", 0), |pushed| (pushed.by.as_str(), pushed.took))
         })
         .collect();
-    assert_eq!(outside, [("heard", 2), ("", 0), ("heard", 2)]);
-    assert_eq!(log[1].mark.why.code, WhyCode::Judged);
+    assert_eq!(outside, [("heard", 2), ("", 0)]);
+    assert_eq!(log[0].mark.why.code, WhyCode::Reminder);
 
     // Never a second time, however long it waits unacknowledged.
     for later in [5 * SECOND, 60 * SECOND, 3_600 * SECOND] {
-        assert_eq!(teller.step(newest.saturating_add(later)).await, None);
+        assert_eq!(teller.step(unread.at_ms.saturating_add(later)).await, None);
     }
-    assert_eq!(host.heard.ids().len(), 2);
-}
-
-#[tokio::test]
-async fn the_same_mail_is_told_outside_or_kept_quiet_as_the_persons_situation_stands() {
-    let host = Host::new().await;
-    let teller = host.teller();
-    let model = host
-        .judge([Reply::text(
-            r#"{"important": true, "why": "A new customer while you are hiring."}"#,
-        )])
-        .await;
-    let rule = |hiring: &str, revision: u64| Importance {
-        lines: vec![line(
-            "line-1",
-            "A new customer is important only while we are hiring",
-            Some(("hiring", "yes")),
-        )],
-        facts: vec![Fact {
-            name: "Hiring".into(),
-            value: hiring.into(),
-            ..Fact::default()
-        }],
-        revision,
-        ..Importance::default()
-    };
-
-    // She is not hiring: the rule decides alone, the mail stays in the
-    // thread, and nothing is told outside however long it lies there.
-    tilo_person_services::PersonServices::of(&host.workspaces)
-        .keep_importance(&ADA, &rule("no", 1))
-        .unwrap();
-    let quiet = tilo_person_services::PersonServices::of(&host.workspaces)
-        .tell(&ADA, news(MAIL, "mail-1"))
-        .await
-        .unwrap();
-    assert_eq!(
-        (
-            quiet.mark.why.code,
-            quiet.mark.why.fact.as_str(),
-            quiet.mark.why.value.as_str()
-        ),
-        (WhyCode::NothingHolds, "Hiring", "no")
-    );
-    assert!(!quiet.reaches);
-    assert!(model.asked().is_empty(), "no model was asked");
-    assert_eq!(
-        teller.step(quiet.at_ms.saturating_add(60 * SECOND)).await,
-        None
-    );
-    assert!(host.heard.ids().is_empty());
-
-    // She is hiring: the same mail takes one judgement and reaches her.
-    tilo_person_services::PersonServices::of(&host.workspaces)
-        .keep_importance(&ADA, &rule("yes", 2))
-        .unwrap();
-    let loud = tilo_person_services::PersonServices::of(&host.workspaces)
-        .tell(&ADA, news(MAIL, "mail-2"))
-        .await
-        .unwrap();
-    assert!(loud.mark.important && loud.reaches);
-    assert_eq!(model.asked().len(), 1);
-    assert_eq!(
-        teller.step(loud.at_ms.saturating_add(4 * SECOND)).await,
-        None
-    );
-    assert_eq!(host.heard.ids(), [loud.id]);
+    assert_eq!(host.heard.ids().len(), 1);
 }
 
 #[tokio::test]
@@ -335,14 +201,15 @@ async fn a_person_whose_device_is_looking_is_not_told_outside_until_it_stops() {
         after: Duration::ZERO,
         watching: lately,
     });
-    let reminded = tilo_person_services::PersonServices::of(&host.workspaces)
+    let reminded = host
+        .services()
         .tell(&ADA, reminder("Call Jo.", "r-1"))
-        .await
         .unwrap();
 
     // A device of hers reads her log: it shows the reminder itself, and
     // the teller looks again once that device may have stopped looking.
-    let read = tilo_person_services::PersonServices::of(&host.workspaces)
+    let read = host
+        .services()
         .told_listed(&ADA, &ListAfter::default())
         .await;
     assert_eq!(read.told, std::slice::from_ref(&reminded));
@@ -361,24 +228,22 @@ async fn a_person_whose_device_is_looking_is_not_told_outside_until_it_stops() {
 async fn what_was_acknowledged_or_taken_back_is_not_told_outside() {
     let host = Host::new().await;
     let teller = host.teller();
-    let seen = tilo_person_services::PersonServices::of(&host.workspaces)
+    let seen = host
+        .services()
         .tell(&ADA, reminder("Call Jo.", "r-1"))
-        .await
         .unwrap();
-    let gone = tilo_person_services::PersonServices::of(&host.workspaces)
+    let gone = host
+        .services()
         .tell(&ADA, reminder("Send the lease.", "r-2"))
-        .await
         .unwrap();
-    let waits = tilo_person_services::PersonServices::of(&host.workspaces)
+    let waits = host
+        .services()
         .tell(&ADA, reminder("Water the plants.", "r-3"))
-        .await
         .unwrap();
-    tilo_person_services::PersonServices::of(&host.workspaces)
+    host.services()
         .acknowledge_told(&ADA, &seen.id, "Ada's phone", "dismissed")
         .unwrap();
-    tilo_person_services::PersonServices::of(&host.workspaces)
-        .withdraw_told(&ADA, &gone.id)
-        .unwrap();
+    host.services().withdraw_told(&ADA, &gone.id).unwrap();
 
     assert_eq!(
         teller.step(waits.at_ms.saturating_add(4 * SECOND)).await,
@@ -388,31 +253,21 @@ async fn what_was_acknowledged_or_taken_back_is_not_told_outside() {
 }
 
 #[tokio::test]
-async fn words_a_person_keeps_on_the_host_do_not_leave_it() {
+async fn words_that_stay_on_the_host_do_not_leave_it() {
     let host = Host::new().await;
-    tilo_person_services::PersonServices::of(&host.workspaces)
-        .keep_importance(
-            &ADA,
-            &Importance {
-                kept_on_host: vec![WORKSPACE.into()],
-                revision: 1,
-                ..Importance::default()
-            },
-        )
-        .unwrap();
-    let kept = tilo_person_services::PersonServices::of(&host.workspaces)
+    let kept = host
+        .services()
         .tell(
             &ADA,
             ToTell {
-                workspace: Some(WORKSPACE.into()),
+                words_stay: true,
                 ..reminder("Sign the term sheet in the data room.", "r-1")
             },
         )
-        .await
         .unwrap();
-    let free = tilo_person_services::PersonServices::of(&host.workspaces)
+    let free = host
+        .services()
         .tell(&ADA, reminder("Call Jo.", "r-2"))
-        .await
         .unwrap();
     assert!(!kept.outside && free.outside);
 
@@ -440,181 +295,101 @@ async fn words_a_person_keeps_on_the_host_do_not_leave_it() {
 #[tokio::test]
 async fn one_teller_tells_for_a_host() {
     let host = Host::new().await;
-    assert!(tilo_person_services::PersonServices::of(&host.workspaces).claim_telling_outside());
+    assert!(host.services().claim_telling_outside());
     // A second one, started for the same workspaces, ends at once: nothing
     // is told outside twice.
     tokio::time::timeout(Duration::from_secs(5), host.teller().run())
         .await
         .expect("a second teller ends at once");
-    assert!(!tilo_person_services::PersonServices::of(&host.workspaces).claim_telling_outside());
+    assert!(!host.services().claim_telling_outside());
 }
 
-/// A reminder Ada said must not be missed, raised again every minute, three
-/// times at most.
-async fn must_not_be_missed(host: &Host) -> Told {
-    tilo_person_services::PersonServices::of(&host.workspaces)
-        .keep_importance(
-            &ADA,
-            &Importance {
-                insists: tilo_actions::remote::person_telling::Insisting {
-                    every_secs: 60,
-                    times: 3,
-                },
-                revision: 1,
-                ..Importance::default()
-            },
-        )
-        .unwrap();
+/// A reminder Ada said must not be missed: raised again every ten minutes,
+/// six times at most.
+fn must_not_be_missed(host: &Host) -> Told {
     let mut must = reminder("File the tax return.", "tax-1");
     must.tell.insists = true;
-    tilo_person_services::PersonServices::of(&host.workspaces)
-        .tell(&ADA, must)
-        .await
-        .unwrap()
+    host.services().tell(&ADA, must).unwrap()
 }
+
+/// The default rhythm, in milliseconds: ten minutes.
+const TEN_MINUTES: u64 = 600 * SECOND;
 
 #[tokio::test]
 async fn what_must_not_be_missed_is_told_again_until_it_is_acknowledged() {
     let host = Host::new().await;
     let teller = host.teller();
-    let told = must_not_be_missed(&host).await;
+    let told = must_not_be_missed(&host);
     let began = told.at_ms;
     assert_eq!(
         told.insists
             .map(|insists| (insists.raised, insists.next_at_ms)),
-        Some((1, Some(began.saturating_add(60 * SECOND))))
+        Some((1, Some(began.saturating_add(TEN_MINUTES))))
     );
 
     // Told outside the first time like anything that reaches her, and due
-    // again in a minute.
+    // again in ten minutes.
     assert_eq!(
         teller.step(began.saturating_add(4 * SECOND)).await,
-        Some(began.saturating_add(60 * SECOND))
+        Some(began.saturating_add(TEN_MINUTES))
     );
     assert_eq!(host.heard.ids().len(), 1);
     // Not before its time.
     assert_eq!(
         teller.step(began.saturating_add(30 * SECOND)).await,
-        Some(began.saturating_add(60 * SECOND))
+        Some(began.saturating_add(TEN_MINUTES))
     );
     assert_eq!(host.heard.ids().len(), 1);
 
-    // A minute on she has not acknowledged it: it is raised again, takes a
-    // new place so a device of hers that runs raises its notice again, and
-    // is told outside again.
+    // Ten minutes on she has not acknowledged it: it is raised again,
+    // takes a new place so a device of hers that runs raises its notice
+    // again, and is told outside again.
     assert_eq!(
-        teller.step(began.saturating_add(60 * SECOND)).await,
-        Some(began.saturating_add(120 * SECOND))
+        teller.step(began.saturating_add(TEN_MINUTES)).await,
+        Some(began.saturating_add(2 * TEN_MINUTES))
     );
     assert_eq!(host.heard.ids(), [told.id.clone(), told.id.clone()]);
-    let raised = tilo_person_services::PersonServices::of(&host.workspaces)
-        .told_after(&ADA, told.seq)
-        .told;
+    let raised = host.services().told_after(&ADA, told.seq).told;
     assert_eq!(raised.len(), 1);
     assert_eq!(raised[0].insists.map(|insists| insists.raised), Some(2));
 
     // She acknowledges it, and it stops.
-    tilo_person_services::PersonServices::of(&host.workspaces)
+    host.services()
         .acknowledge_told(&ADA, &told.id, "Ada's phone", "opened")
         .unwrap();
-    for later in [120 * SECOND, 180 * SECOND, 3_600 * SECOND] {
+    for later in [2, 3, 60].map(|minutes| minutes * TEN_MINUTES) {
         assert_eq!(teller.step(began.saturating_add(later)).await, None);
     }
     assert_eq!(host.heard.ids().len(), 2);
 }
 
 #[tokio::test]
-async fn what_insists_is_raised_no_more_often_than_its_person_said() {
+async fn what_insists_is_raised_its_six_times_and_no_more() {
     let host = Host::new().await;
     let teller = host.teller();
-    let told = must_not_be_missed(&host).await;
+    let told = must_not_be_missed(&host);
     let began = told.at_ms;
 
-    // Three times in all, the first telling included, and then no more,
+    // Six times in all, the first telling included, and then no more,
     // though she never acknowledges it.
     teller.step(began.saturating_add(4 * SECOND)).await;
-    teller.step(began.saturating_add(60 * SECOND)).await;
-    assert_eq!(teller.step(began.saturating_add(120 * SECOND)).await, None);
-    assert_eq!(host.heard.ids().len(), 3);
-    for later in [180 * SECOND, 240 * SECOND, 3_600 * SECOND] {
-        assert_eq!(teller.step(began.saturating_add(later)).await, None);
+    for times in 1..6 {
+        teller.step(began.saturating_add(times * TEN_MINUTES)).await;
     }
-    assert_eq!(host.heard.ids().len(), 3);
-    let last = tilo_person_services::PersonServices::of(&host.workspaces)
-        .told_after(&ADA, 0)
-        .told;
+    assert_eq!(host.heard.ids().len(), 6);
+    for later in [6, 7, 60] {
+        assert_eq!(
+            teller.step(began.saturating_add(later * TEN_MINUTES)).await,
+            None
+        );
+    }
+    assert_eq!(host.heard.ids().len(), 6);
+    let last = host.services().told_after(&ADA, 0).told;
     assert_eq!(
         last[0]
             .insists
             .map(|insists| (insists.raised, insists.next_at_ms)),
-        Some((3, None))
+        Some((6, None))
     );
     assert!(last[0].waits(), "it still waits for her in Tilo");
-}
-
-/// Somebody else on the same host.
-const BO: [u8; 32] = [9; 32];
-
-/// An agent `person` keeps, made at `made`.
-fn agent(id: &str, acts_for: [u8; 32], made: i64) -> Agent {
-    Agent {
-        id: tilo_resource::Atom(id.to_owned()),
-        name: id.to_owned(),
-        acts_for: hex::encode(acts_for),
-        created_at: made,
-        ..Agent::default()
-    }
-}
-
-/// A judgement made for a person is counted on an agent that person keeps:
-/// the one that told the thing, else their assistant. It is never counted
-/// on somebody else's agent, and for a person who keeps none there is no
-/// day to count it on, so none is made.
-#[test]
-fn a_judgement_is_counted_on_an_agent_its_person_keeps_and_on_nobody_elses() {
-    let mut retired = agent("old", ADA, 1);
-    retired.state = tilo_workspace_agent::AgentState::Retired;
-    let mut connected = agent("claude-code", ADA, 2);
-    connected.mcp_client = Some("Claude Code".to_owned());
-    let mut assistant = agent("assistant", ADA, 3);
-    assistant.spend_limit_micros = Some(50);
-    let agents = [
-        retired,
-        connected,
-        assistant,
-        agent("researcher", ADA, 4),
-        agent("bos-assistant", BO, 0),
-    ];
-    let on = |person: &[u8; 32], told_by: Option<&str>| {
-        counted_on(&agents, person, told_by).map(|agent| agent.id.0.clone())
-    };
-
-    // Nobody told it: the assistant she keeps, the first made that still
-    // works and that no MCP client connects as. Its limit travels with it.
-    assert_eq!(on(&ADA, None).as_deref(), Some("assistant"));
-    assert_eq!(
-        counted_on(&agents, &ADA, None).and_then(|agent| agent.spend_limit_micros),
-        Some(50)
-    );
-    // An agent of hers told it: that agent's own day.
-    assert_eq!(on(&ADA, Some("researcher")).as_deref(), Some("researcher"));
-    assert_eq!(
-        on(&ADA, Some("claude-code")).as_deref(),
-        Some("claude-code")
-    );
-    // What is not hers, works no more or is nobody: her assistant's day.
-    for other in ["bos-assistant", "old", "nobody"] {
-        assert_eq!(
-            on(&ADA, Some(other)).as_deref(),
-            Some("assistant"),
-            "{other}"
-        );
-    }
-    // Somebody else's judgements are counted on their own agent, never on
-    // hers, whatever names it.
-    assert_eq!(on(&BO, None).as_deref(), Some("bos-assistant"));
-    assert_eq!(on(&BO, Some("assistant")).as_deref(), Some("bos-assistant"));
-    // Who keeps no agent has no day a call could be counted on.
-    assert_eq!(on(&[7; 32], None), None);
-    assert_eq!(on(&[7; 32], Some("assistant")), None);
 }

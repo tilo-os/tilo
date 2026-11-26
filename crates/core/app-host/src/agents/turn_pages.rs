@@ -185,7 +185,7 @@ impl TurnPages {
                 &reply.workspace,
                 &on_browser(NAVIGATE),
             )
-            && PersonServices::of(&workspaces)
+            && PersonServices::of(workspaces)
                 .asked_turn_of(workspace_id, &reply.caller)
                 .await
                 .is_ok();

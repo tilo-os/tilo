@@ -175,7 +175,7 @@ impl Daemon {
             &mut |app, purpose, item, secret| {
                 tilo_rt::app()
                     .block_on(
-                        PersonServices::of(&workspaces)
+                        PersonServices::of(workspaces)
                             .adopt_secret(&workspace, &person, app, purpose, item, secret),
                     )
                     .map_err(|error| error.to_string())

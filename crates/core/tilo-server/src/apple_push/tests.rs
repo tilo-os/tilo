@@ -26,17 +26,13 @@ use hyper::{Request, Response};
 use ring::agreement;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use serde_json::{Value, json};
-use tilo_actions::remote::person_telling::{
-    Cause, Importance, Insisting, Kind, Line, Tell, Teller as ToldBy,
-};
+use tilo_actions::remote::person_telling::{Cause, Kind, Tell, Teller as ToldBy};
 
 use super::*;
 use crate::workspaces::fixtures::{hosting_device, test_host};
 use tilo_app_host::agents::telling::Teller;
 use tilo_person_services::PersonServices;
 use tilo_person_services::ToTell;
-use tilo_person_services::model_answers::scripted::{Linking, Reply, ScriptedProvider};
-use tilo_person_services::model_answers::{ProviderProtocol, Spender};
 use tilo_person_services::push_addresses::{PushKey, Register};
 
 /// A person this server keeps a log for. No device of theirs is on.
@@ -388,8 +384,7 @@ fn reminder(words: &str, key: &str) -> ToTell {
     }
 }
 
-/// News her assistant tells her, which an event caused, counted on her
-/// assistant's day where it takes judgement.
+/// News her assistant tells her.
 fn news(words: &str, key: &str) -> ToTell {
     ToTell {
         kind: Kind::News,
@@ -403,36 +398,8 @@ fn news(words: &str, key: &str) -> ToTell {
             ..Tell::default()
         },
         from: Some(assistant()),
-        workspace: Some(WORKSPACE.into()),
-        spender: Some(Spender {
-            workspace: WORKSPACE.into(),
-            agent: "assistant".into(),
-            name: "Assistant".into(),
-            day: "2026-11-17".into(),
-            limit_micros: None,
-        }),
         ..ToTell::default()
     }
-}
-
-/// Ada's own model for judging, answering as scripted. Its key is made up.
-async fn judge(workspaces: &Workspaces, replies: impl IntoIterator<Item = Reply>) {
-    let scripted = ScriptedProvider::answering(replies);
-    PersonServices::of(workspaces).answer_models_with(scripted);
-    PersonServices::of(workspaces)
-        .link_model_for(
-            WORKSPACE,
-            &Linking {
-                name: "Models",
-                protocol: ProviderProtocol::OpenAiCompatible,
-                endpoint: "https://models.example.com/v1",
-                key: Some("sk-ada"),
-                models: &["judge-small"],
-            },
-            true,
-        )
-        .await
-        .unwrap();
 }
 
 /// What `authorization` signs in with: the header and the claims of its
@@ -471,50 +438,31 @@ fn in_the_open(name: &str, told: &Told, kind: &str, raised: u32) -> Value {
 }
 
 #[tokio::test]
-async fn an_important_thing_is_pushed_once_and_an_unimportant_one_never() {
+async fn a_thing_that_reaches_a_person_is_pushed_once_and_news_never() {
     let served = served().await;
     let workspaces = &served.workspaces;
     let phone = Device::new(1);
     reach(workspaces, &ADA, &phone);
-    judge(
-        workspaces,
-        [
-            Reply::text(r#"{"important": true, "why": "The landlord wrote."}"#),
-            Reply::text(r#"{"important": false, "why": "It is not the landlord."}"#),
-        ],
-    )
-    .await;
-    let rule = Importance {
-        lines: vec![Line {
-            id: "line-1".into(),
-            words: "My landlord is always important".into(),
-            ..Line::default()
-        }],
-        revision: 1,
-        ..Importance::default()
-    };
-    PersonServices::of(workspaces)
-        .keep_importance(&ADA, &rule)
+    let reminded = PersonServices::of(workspaces)
+        .tell(
+            &ADA,
+            reminder("The landlord writes about the lease.", "lease-1"),
+        )
         .unwrap();
-    let important = PersonServices::of(workspaces)
-        .tell(&ADA, news("The landlord writes about the lease.", "mail-1"))
-        .await
-        .unwrap();
-    let unimportant = PersonServices::of(workspaces)
+    let unread = PersonServices::of(workspaces)
         .tell(&ADA, news("A newsletter arrived.", "mail-2"))
-        .await
         .unwrap();
-    assert!(important.mark.important && important.reaches);
-    assert!(!unimportant.mark.important && !unimportant.reaches);
+    assert!(reminded.reaches);
+    assert!(!unread.reaches);
 
-    // Four seconds on, with no device of hers looking: the one thing that
-    // reaches her is pushed to her phone, once, and the other is not.
-    let due = unimportant.at_ms.saturating_add(4 * SECOND);
+    // Four seconds on, with no device of hers looking: the reminder is
+    // pushed to her phone, once, and the news that reaches nobody is not.
+    let due = unread.at_ms.saturating_add(4 * SECOND);
     assert_eq!(served.teller.step(due).await, None);
     let heard = served.apple.heard();
     assert_eq!(heard.len(), 1);
     let push = heard.first().unwrap();
-    let name = phone.name_of(&important.id);
+    let name = phone.name_of(&reminded.id);
     assert_eq!(push.token, phone.token);
     assert_eq!(push.header("apns-topic"), Some(APP));
     assert_eq!(push.header("apns-push-type"), Some("alert"));
@@ -530,28 +478,26 @@ async fn an_important_thing_is_pushed_once_and_an_unimportant_one_never() {
     // workspace and no person.
     let mut open = push.body.clone();
     assert!(open.as_object_mut().unwrap().remove("enc").is_some());
-    assert_eq!(open, in_the_open(&name, &important, "news", 1));
+    assert_eq!(open, in_the_open(&name, &reminded, "reminder", 1));
     let read = push.in_the_open();
     let ada = hex::encode(ADA);
     for kept_back in [
         "landlord",
         "lease",
         "Assistant",
-        "mail-1",
-        important.id.as_str(),
+        "lease-1",
+        reminded.id.as_str(),
         WORKSPACE,
         ada.as_str(),
     ] {
         assert!(!read.contains(kept_back), "{kept_back} in {read}");
     }
-    // The rest is for her phone alone: who tells, the words, and that it
-    // is important.
+    // The rest is for her phone alone: who tells and the words.
     assert_eq!(
         phone.opened(push),
         json!({
             "from": "Assistant",
             "words": "The landlord writes about the lease.",
-            "important": true,
             "actions": [],
         })
     );
@@ -584,7 +530,6 @@ async fn a_thing_seen_on_another_device_is_taken_back_once() {
     reach(workspaces, &ADA, &laptop);
     let told = PersonServices::of(workspaces)
         .tell(&ADA, reminder("Call Jo.", "r-1"))
-        .await
         .unwrap();
     let due = told.at_ms.saturating_add(4 * SECOND);
     assert_eq!(served.teller.step(due).await, None);
@@ -620,32 +565,22 @@ async fn a_thing_seen_on_another_device_is_taken_back_once() {
 }
 
 #[tokio::test]
-async fn the_words_of_a_workspace_its_person_keeps_on_the_server_are_in_no_push() {
+async fn words_that_stay_on_the_server_are_in_no_push() {
     let served = served().await;
     let workspaces = &served.workspaces;
     let phone = Device::new(1);
     reach(workspaces, &ADA, &phone);
-    let rule = Importance {
-        kept_on_host: vec![WORKSPACE.into()],
-        revision: 1,
-        ..Importance::default()
-    };
-    PersonServices::of(workspaces)
-        .keep_importance(&ADA, &rule)
-        .unwrap();
     let kept = PersonServices::of(workspaces)
         .tell(
             &ADA,
             ToTell {
-                workspace: Some(WORKSPACE.into()),
+                words_stay: true,
                 ..reminder("Sign the term sheet before the board meets.", "r-1")
             },
         )
-        .await
         .unwrap();
     let free = PersonServices::of(workspaces)
         .tell(&ADA, reminder("Call Jo.", "r-2"))
-        .await
         .unwrap();
     assert!(!kept.outside && free.outside);
 
@@ -676,7 +611,7 @@ async fn the_words_of_a_workspace_its_person_keeps_on_the_server_are_in_no_push(
     assert!(!aloud.in_the_open().contains("Call Jo."));
     assert_eq!(
         phone.opened(aloud),
-        json!({"from": "Assistant", "words": "Call Jo.", "important": false, "actions": []})
+        json!({"from": "Assistant", "words": "Call Jo.", "actions": []})
     );
 }
 
@@ -691,11 +626,9 @@ async fn a_push_for_one_person_never_reaches_another_persons_device() {
     // its own person's log.
     let for_ada = PersonServices::of(workspaces)
         .tell(&ADA, reminder("Call Jo.", "r-1"))
-        .await
         .unwrap();
     let for_bo = PersonServices::of(workspaces)
         .tell(&BO, reminder("Pay the rent.", "r-1"))
-        .await
         .unwrap();
     assert_eq!(for_ada.id, for_bo.id);
 
@@ -775,7 +708,6 @@ async fn the_sender_is_off_without_a_key_and_takes_no_key_others_can_read() {
     // And with no sender nothing is pushed: what waits is told nowhere.
     let reminded = PersonServices::of(workspaces)
         .tell(&ADA, reminder("Call Jo.", "r-1"))
-        .await
         .unwrap();
     assert!(reminded.waits());
     assert!(served.apple.heard().is_empty());
@@ -808,7 +740,6 @@ async fn an_address_apples_service_says_is_gone_is_forgotten_and_a_refused_one_i
 
     let told = PersonServices::of(workspaces)
         .tell(&ADA, reminder("Call Jo.", "r-1"))
-        .await
         .unwrap();
     let due = told.at_ms.saturating_add(4 * SECOND);
     assert_eq!(served.teller.step(due).await, None);
@@ -832,23 +763,9 @@ async fn what_must_not_be_missed_is_pushed_again_in_its_own_place() {
     let workspaces = &served.workspaces;
     let phone = Device::new(1);
     reach(workspaces, &ADA, &phone);
-    let rule = Importance {
-        insists: Insisting {
-            every_secs: 60,
-            times: 3,
-        },
-        revision: 1,
-        ..Importance::default()
-    };
-    PersonServices::of(workspaces)
-        .keep_importance(&ADA, &rule)
-        .unwrap();
     let mut must = reminder("File the tax return.", "tax-1");
     must.tell.insists = true;
-    let told = PersonServices::of(workspaces)
-        .tell(&ADA, must)
-        .await
-        .unwrap();
+    let told = PersonServices::of(workspaces).tell(&ADA, must).unwrap();
     let again = told.insists.unwrap().next_at_ms.unwrap();
 
     let due = told.at_ms.saturating_add(4 * SECOND);
@@ -857,8 +774,8 @@ async fn what_must_not_be_missed_is_pushed_again_in_its_own_place() {
     assert_eq!(first.len(), 1);
     assert_eq!(first[0].body["raised"], 1);
 
-    // A minute on it is raised again, and pushed under the same name, so
-    // it takes the place of itself on the device.
+    // Ten minutes on it is raised again, and pushed under the same name,
+    // so it takes the place of itself on the device.
     served.teller.step(again).await;
     let second = served.apple.heard();
     assert_eq!(second.len(), 1);

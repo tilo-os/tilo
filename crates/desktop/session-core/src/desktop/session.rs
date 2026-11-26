@@ -217,7 +217,7 @@ pub const PERSON_PROVIDERS: [&str; 1] = [mcp_server::PROVIDER];
 /// server the way an action of a resource is ([`DesktopSession::serve_workspace_api`]):
 /// the workspace's mail and calendar accounts and model providers, the vault
 /// they sign in with (a protected field in a window hands what was typed
-/// there), and what its people call important and were told (the server tells
+/// there), and what its people were told (the server tells
 /// while no device is on), and the person's own account with that server (its
 /// plan and what they used), and the formats and zone they read dates in, which
 /// a server of the person's keeps in their own workspace. The server stores and
