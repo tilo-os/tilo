@@ -182,7 +182,7 @@ impl DeviceWorkspaces {
         written: Written,
     ) -> Result<(), String> {
         match written {
-            Ok(_) => {
+            Ok(()) => {
                 self.changes.note(workspace, app, record, false);
                 Ok(())
             }

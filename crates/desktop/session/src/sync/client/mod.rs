@@ -641,8 +641,8 @@ impl Local {
     /// whether this session keeps a fabric or not.
     #[must_use]
     #[cfg(target_os = "linux")]
-    pub(crate) fn person_resources(&self) -> Option<crate::PersonResources> {
-        Some(self.person.clone())
+    pub(crate) fn person_resources(&self) -> crate::PersonResources {
+        self.person.clone()
     }
 
     /// The actions one of the person's devices sent this one since the last call, for the session's
@@ -1527,8 +1527,8 @@ impl Client {
                 return false;
             };
             live.live_sessions()
-                .into_iter()
-                .map(|(workspace, _)| (workspace, workspace.to_string()))
+                .into_keys()
+                .map(|workspace| (workspace, workspace.to_string()))
                 .collect()
         };
         self.hosting
@@ -1548,9 +1548,10 @@ impl Client {
     /// what they hold, and carries their device fabric.
     #[cfg(target_os = "linux")]
     pub(crate) fn follow_person(&self, runtime: &tokio::runtime::Handle, wake: tilo_service::Wake) {
-        let (Some(dials), Some(store)) = (self.sibling_dials(), self.person_resources()) else {
+        let Some(dials) = self.sibling_dials() else {
             return;
         };
+        let store = self.person_resources();
         runtime.spawn(async move {
             let mut changes = store.changes();
             let mut again = tokio::time::interval(std::time::Duration::from_secs(60));
@@ -1575,7 +1576,7 @@ impl Client {
     /// alone through once its service holds the workspace.
     #[must_use]
     #[cfg(target_os = "linux")]
-    pub(crate) fn person_resources(&self) -> Option<crate::PersonResources> {
+    pub(crate) fn person_resources(&self) -> crate::PersonResources {
         self.hosting.local.person_resources()
     }
 

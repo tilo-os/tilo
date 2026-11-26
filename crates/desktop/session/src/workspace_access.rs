@@ -169,7 +169,7 @@ pub(crate) fn declared_outside() -> Vec<(String, Vec<String>)> {
 
 /// What the device's packages declare their code can reach outside, as one number that moves only
 /// when a declaration does: what the reading is read again by.
-fn outside_revision(outside: Vec<(String, Vec<String>)>) -> u64 {
+fn outside_revision(outside: &[(String, Vec<String>)]) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     outside.hash(&mut hasher);
@@ -253,7 +253,7 @@ impl Served {
             tree: self.handle.revision(),
             chosen: self.chosen.as_ref().map_or(0, |table| table.revision()),
             mounts: self.mounts.revision(),
-            outside: outside_revision((self.outside)()),
+            outside: outside_revision(&(self.outside)()),
         }
     }
 
@@ -333,7 +333,7 @@ impl Served {
             .as_ref()
             .map(|view| crate::membership::Membership::of(&**view, held.id()).changes(held, &edit));
         let workspace_id = held.id();
-        self.write(tree, workspace_id, view, written, output(&id))
+        Ok(self.write(tree, workspace_id, view, written, output(&id)))
     }
 
     /// Let `app` carry out `capability` in `workspace`, or stop it: the denial is a grant of the
@@ -397,13 +397,13 @@ impl Served {
             .as_ref()
             .map(|view| crate::membership::Membership::of(&**view, held.id()).changes(held, &edit));
         let workspace_id = held.id();
-        self.write(
+        Ok(self.write(
             tree,
             workspace_id,
             view,
             written,
             outside_output(id.as_str()),
-        )
+        ))
     }
 
     /// Write what `edit` changed in `workspace` through `view`'s governance, or keep it here when
@@ -415,21 +415,21 @@ impl Served {
         view: Option<Arc<WorkspaceView>>,
         written: Option<Vec<tilo_peer_state::workspace_membership::WorkspaceMembershipCommand>>,
         answer: tilo_actions::ActionOutput,
-    ) -> Result<Started, ApiError> {
+    ) -> Started {
         let Some(view) = view else {
             // A session that holds no workspace's governance has only the shell: the change
             // stands here, and nowhere else.
             self.handle.replace_tree(tree);
-            return Ok(Started::Done(answer));
+            return Started::Done(answer);
         };
         let written = written.unwrap_or_default();
-        Ok(Started::Later(crate::landing::off_loop(async move {
+        Started::Later(crate::landing::off_loop(async move {
             crate::membership::Membership::of(&*view, workspace)
                 .write(&written)
                 .await
                 .map_err(ApiError::Failed)?;
             Ok(answer)
-        })))
+        }))
     }
 
     /// The workspace holding a grant with `id`, as the shell reads it.

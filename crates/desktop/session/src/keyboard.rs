@@ -552,19 +552,29 @@ impl crate::Session {
         let field = self.compositor.focused_field();
         // The settings sections publish these readings from the very types read here: one that
         // does not read back is a bug in this build, never a person's doing.
-        let settings: OskSourceSettings =
-            self.read(SETTINGS)
-                .map_or_else(Default::default, |reading| {
-                    serde_json::from_value(reading)
-                        .expect("the keyboard's settings read as they are published")
-                });
+        let settings: OskSourceSettings = match self.read(SETTINGS) {
+            Some(reading) => serde_json::from_value(reading).unwrap_or_else(|error| {
+                tracing::error!(
+                    %error,
+                    "the keyboard's settings did not read as they are published"
+                );
+                OskSourceSettings::default()
+            }),
+            None => OskSourceSettings::default(),
+        };
         let personal = self
             .read(PERSONAL_WORDS)
             .map(|reading| {
                 serde_json::from_value::<
                         settings_sections::personal_dictionary::PersonalDictionary,
                     >(reading)
-                    .expect("the personal dictionary reads as it is published")
+                    .unwrap_or_else(|error| {
+                        tracing::error!(
+                            %error,
+                            "the personal dictionary did not read as it is published"
+                        );
+                        settings_sections::personal_dictionary::PersonalDictionary::default()
+                    })
             })
             .map(|dictionary| {
                 dictionary
@@ -876,9 +886,9 @@ fn key_of(name: &str) -> Option<(u32, bool)> {
 /// The keysym of `keysym`'s lower-case letter, for a letter the layout reaches with Shift: a
 /// layout that types `A` has the key code of `a`, and the Shift held over it types the capital.
 fn lowercase_of(keysym: u32) -> u32 {
-    char::from_u32(keysym)
-        .map(|ch| ch.to_lowercase().next().map_or(keysym, u32::from))
-        .unwrap_or(keysym)
+    char::from_u32(keysym).map_or(keysym, |ch| {
+        ch.to_lowercase().next().map_or(keysym, u32::from)
+    })
 }
 
 const KEY_LEFT_SHIFT: u32 = 0xffe1;

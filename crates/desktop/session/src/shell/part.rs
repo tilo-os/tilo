@@ -52,6 +52,10 @@ mod settings;
 mod surface;
 
 use tilolang_tilo::shell::LayoutWriter;
+
+/// An answer the shell handed the session: the workspace the record is in, the record's own
+/// action, and its arguments by name ([`SessionLink::take_answers`]).
+type Answer = (String, ActionAddress, serde_json::Map<String, Json>);
 /// The shell's package, as every host compiles it.
 pub use tilolang_tilo::shell::{
     catalogues as shell_catalogues, compile as compile_shell, sources as shell_sources,
@@ -208,13 +212,7 @@ pub struct SessionLink {
     /// The person's answers to their asked records, in order: each the workspace the record is
     /// in, the record's own action and its arguments by name, which the session runs on the
     /// device's dispatch at that workspace's invocations ([`SessionLink::take_answers`]).
-    answers: RefCell<
-        Vec<(
-            String,
-            ActionAddress,
-            serde_json::Map<String, serde_json::Value>,
-        )>,
-    >,
+    answers: RefCell<Vec<Answer>>,
     /// How many effects the shell handed the session, and how many the session ran.
     handed: Cell<u64>,
     served: Cell<u64>,

@@ -353,7 +353,7 @@ fn verify(identity_dir: &Path, paths: &IdentityPaths) -> std::io::Result<()> {
                 std::thread::sleep(SECRET_SERVICE_RETRY);
                 attempt = attempt.saturating_add(1);
             }
-            result => return result.map(|_| ()),
+            result => return result,
         }
     }
 }

@@ -52,7 +52,7 @@ impl ModelSteps {
 }
 
 /// The step `decl` declares, described for the broker's catalogue.
-fn descriptor(decl: tilo_resource::EffectDecl) -> ActionDescriptor {
+fn descriptor(decl: &tilo_resource::EffectDecl) -> ActionDescriptor {
     let (kind, contract) = if decl.action_kind == tilo_actions::ActionKind::Read {
         (OperationKind::View, ActionContract::view())
     } else {
@@ -109,7 +109,7 @@ impl tilo_actions::remote::Admits for ModelSteps {
     const APP: &'static str = settings_sections::APP_ID;
 
     fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
-        top_level(steps().map(descriptor).collect())
+        top_level(steps().map(|decl| descriptor(&decl)).collect())
     }
 
     /// Carry out an invocation the device's dispatch admitted for `caller`.

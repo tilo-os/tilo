@@ -1106,8 +1106,10 @@ enum ApiAsk {
         beside: String,
         /// The run the step is one of, as its invocation names it.
         run: Option<tilo_actions::WorkGroup>,
-        done: tilo_actions::remote::Completer<
-            Result<Option<tilo_actions::ActionOutput>, ActionCallError>,
+        done: Box<
+            tilo_actions::remote::Completer<
+                Result<Option<tilo_actions::ActionOutput>, ActionCallError>,
+            >,
         >,
     },
     /// The packages the session runs itself, which a task's host loads to run programs against:
@@ -1248,7 +1250,7 @@ impl crate::platform::steps::SessionSteps for SessionServices {
             slot,
             beside,
             run,
-            done,
+            done: Box::new(done),
         });
     }
 }
@@ -1674,7 +1676,7 @@ impl SessionServices {
                             &address,
                             &arguments,
                             &beside,
-                            done,
+                            *done,
                         );
                     }
                     // The system's `open` stands a place beside the conversation of the turn that
@@ -2229,7 +2231,6 @@ impl ActionProvider for Host {
     fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
         Some(Arc::new(self.service_records()))
     }
-
 }
 
 impl Host {

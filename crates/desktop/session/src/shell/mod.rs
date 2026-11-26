@@ -1955,10 +1955,7 @@ impl crate::Session {
     /// The person's store is borrowed only for it, so the parts' displays after it borrow the
     /// session freely.
     fn follow_shell_record(shell: &Shell, shared: &crate::Shared) {
-        let store = shared
-            .sync
-            .as_ref()
-            .and_then(|sync| sync.person_resources());
+        let store = shared.sync.as_ref().map(|sync| sync.person_resources());
         // The shell's resources are the person's on every device of theirs: what they arranged here
         // reaches their others through their own workspace, and what they arranged there reaches
         // this session.

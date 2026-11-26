@@ -300,11 +300,10 @@ pub(crate) fn start_collaboration(
     // through it instead: the workspaces' live sessions carry who is here and what they say, and
     // the daemon says this device's one word ([`crate::live::Live`]). Two endpoints under one key
     // push each other off the network, so none is bound here.
-    if identity
+    if let Some(identity) = identity
         .as_ref()
-        .is_some_and(|identity| identity.signer.endpoint_secret().is_none())
+        .filter(|identity| identity.signer.endpoint_secret().is_none())
     {
-        let identity = identity.as_ref().expect("an identity checked above");
         let publisher =
             iroh::EndpointId::from_bytes(&identity.device_cert.device_public_key).ok()?;
         let saying = live.borrow().as_ref().map(|live| {
@@ -362,8 +361,8 @@ pub(crate) fn start_collaboration(
         Ok(sync) => {
             // What is the person's alone is kept in their own workspace: the answers they gave
             // about this device's camera, screen and the rest.
-            if let Some(store) = sync.person_resources() {
-                let store = std::sync::Arc::new(store);
+            {
+                let store = std::sync::Arc::new(sync.person_resources());
                 if let Some(consents) = options
                     .desktop
                     .as_ref()

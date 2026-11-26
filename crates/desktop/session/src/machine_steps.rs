@@ -134,7 +134,12 @@ impl tilo_actions::remote::Admits for MachineSteps {
     const APP: &'static str = APP_ID;
 
     fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
-        top_level(machines::STEPS.into_iter().map(descriptor).collect())
+        top_level(
+            machines::STEPS
+                .into_iter()
+                .map(|decl| descriptor(&decl))
+                .collect(),
+        )
     }
 
     /// Carry out an invocation the device's dispatch admitted for `caller`.

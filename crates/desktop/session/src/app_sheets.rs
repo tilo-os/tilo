@@ -112,14 +112,11 @@ struct Uninstalling {
     copies: usize,
 }
 
-/// What a question the person was asked came to, polled on the session's loop: their answer, or
-/// `None` for one they declined, and nothing yet while it still stands.
-fn answered(asked: &mut Asked) -> Option<Option<Answer>> {
+/// What a question the person was asked came to, polled on the session's loop: `Ready` holds
+/// their answer, or `None` for one they declined, and `Pending` says it still stands.
+fn answered(asked: &mut Asked) -> std::task::Poll<Option<Answer>> {
     let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    match std::pin::Pin::new(asked).poll(&mut context) {
-        std::task::Poll::Ready(answer) => Some(answer),
-        std::task::Poll::Pending => None,
-    }
+    std::pin::Pin::new(asked).poll(&mut context)
 }
 
 impl AppSheets {
@@ -180,7 +177,12 @@ impl AppSheets {
             .retain(|file| offers.iter().any(|offer| offer.file == *file));
         let came = {
             let mut adding = self.adding.borrow_mut();
-            let came = adding.as_mut().and_then(|(asked, _)| answered(asked));
+            let came = adding
+                .as_mut()
+                .and_then(|(asked, _)| match answered(asked) {
+                    std::task::Poll::Ready(answer) => Some(answer),
+                    std::task::Poll::Pending => None,
+                });
             came.and_then(|answer| adding.take().map(|(_, offer)| (answer, offer)))
         };
         if let Some((answer, offer)) = came {
@@ -224,7 +226,12 @@ impl AppSheets {
     fn follow_uninstall(&self, reading: Option<&DownloadedApps>) {
         let came = {
             let mut removing = self.removing.borrow_mut();
-            let came = removing.as_mut().and_then(|(asked, _)| answered(asked));
+            let came = removing
+                .as_mut()
+                .and_then(|(asked, _)| match answered(asked) {
+                    std::task::Poll::Ready(answer) => Some(answer),
+                    std::task::Poll::Pending => None,
+                });
             came.and_then(|answer| removing.take().map(|(_, app)| (answer, app)))
         };
         if let Some((Some(_), app)) = came {

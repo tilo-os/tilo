@@ -725,11 +725,10 @@ impl Session {
         // The workspaces' live sessions: this device's one place in each, run through the
         // device's daemon, which holds the endpoint and relays them. Whom its relay turned away,
         // and why, is the daemon's own reading: shown beside them.
-        let live_sessions: Rc<RefCell<Option<crate::live::Live>>> = Rc::new(RefCell::new(
-            crate::sync::device_identity().map(|identity| {
-                crate::live::Live::new(identity.device_cert.clone(), options.wake.handle())
-            }),
-        ));
+        let live_sessions: Rc<RefCell<Option<crate::live::Live>>> =
+            Rc::new(RefCell::new(crate::sync::device_identity().map(
+                |identity| crate::live::Live::new(identity.device_cert, options.wake.handle()),
+            )));
         if let Ok(link) = &daemon_link {
             let turned = crate::followed_resource::FollowedReading::follow(
                 &daemon,
@@ -780,7 +779,7 @@ impl Session {
         // What is the person's alone is kept in their own workspace, which the device's daemon
         // keeps: the session reads and writes it there.
         if let (Some(store), Some(identity)) = (
-            sync.as_ref().and_then(|sync| sync.person_resources()),
+            sync.as_ref().map(|sync| sync.person_resources()),
             crate::sync::device_identity(),
         ) {
             store.attach(
@@ -820,10 +819,10 @@ impl Session {
                 (None, Some(own)) => Some(own),
                 (None, None) => None,
             };
-        if let Some(resources) = sync.as_ref().and_then(|sync| sync.person_resources()) {
+        if let Some(sync) = sync.as_ref() {
             // Notifications continue on the person's other devices, through the record of them.
             notifications.borrow().attach_record(
-                resources,
+                sync.person_resources(),
                 continuity.clone(),
                 options.wake.handle(),
             );
@@ -835,7 +834,7 @@ impl Session {
                 sync.as_ref()
                     .and_then(|sync| sync.own_devices())
                     .map(|own| Arc::new(own) as Arc<dyn crate::shared_input::Carrier>),
-                sync.as_ref().and_then(|sync| sync.person_resources()),
+                sync.as_ref().map(|sync| sync.person_resources()),
                 options.wake.handle(),
                 continuity.clone(),
                 placed,
@@ -1838,7 +1837,7 @@ impl Session {
             readings,
             osd: Rc::default(),
             #[cfg(unix)]
-            link: daemon_link.clone().ok(),
+            link: daemon_link.ok(),
             carried: std::cell::Cell::new(0.0),
             services,
             sends,

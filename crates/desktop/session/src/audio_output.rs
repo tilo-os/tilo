@@ -299,7 +299,7 @@ impl Shared {
         &self,
         key: &Key,
         revalidate: &(dyn Fn() -> Result<(), String> + Send + Sync),
-        request: Request,
+        request: &Request,
         samples: Vec<i16>,
     ) -> Result<Snapshot, String> {
         if let Err(error) = revalidate() {
@@ -308,7 +308,7 @@ impl Shared {
             self.stop(Some(key.peer));
             return Err(error);
         }
-        let generation = match &request {
+        let generation = match request {
             Request::Open {} => return Err("an output opens with `open`".into()),
             Request::Write { generation, .. }
             | Request::Pause { generation, .. }
@@ -344,20 +344,20 @@ impl Shared {
             return Ok(snapshot);
         }
         match request {
-            Request::Write { sequence, .. } => write(entry, sequence, samples)?,
+            Request::Write { sequence, .. } => write(entry, *sequence, samples)?,
             Request::Pause { paused, .. } => {
                 entry
                     .pcm
                     .lock()
                     .map_err(|_| "audio output state unavailable".to_owned())?
-                    .paused = paused;
+                    .paused = *paused;
             }
             Request::Volume { percent, .. } => {
                 entry
                     .pcm
                     .lock()
                     .map_err(|_| "audio output state unavailable".to_owned())?
-                    .gain = f32::from(percent) / 100.0;
+                    .gain = f32::from(*percent) / 100.0;
             }
             Request::Flush { .. } => entry
                 .pcm
@@ -477,7 +477,7 @@ impl AudioOutputServices for AppAudioOutput {
                 Box::pin(async move { this.0.open(key, revalidate, app).await })
             }
             request => {
-                let outcome = self.0.control(&key, &*revalidate, request, samples);
+                let outcome = self.0.control(&key, &*revalidate, &request, samples);
                 Box::pin(async move { outcome })
             }
         }
@@ -643,7 +643,7 @@ mod tests {
         let (request, samples) = packet_of(1, vec![16384, 16384, 16384, 16384]);
         audio
             .0
-            .control(&key(1), &*admitted(), request, samples)
+            .control(&key(1), &*admitted(), &request, samples)
             .unwrap();
         let played = rendered(device, 0, 2);
         assert_eq!(
@@ -680,12 +680,12 @@ mod tests {
         let (request, samples) = packet_of(1, vec![1, 1]);
         audio
             .0
-            .control(&key(1), &*admitted(), request, samples)
+            .control(&key(1), &*admitted(), &request, samples)
             .unwrap();
         let (request, samples) = packet_of(1, vec![1, 1]);
         audio
             .0
-            .control(&key(1), &*admitted(), request, samples)
+            .control(&key(1), &*admitted(), &request, samples)
             .expect("a retried packet is taken once");
         let queued = |audio: &AppAudioOutput| {
             let outputs = audio.0.outputs.lock().unwrap();
@@ -702,7 +702,7 @@ mod tests {
         assert!(
             audio
                 .0
-                .control(&key(1), &*admitted(), request, samples)
+                .control(&key(1), &*admitted(), &request, samples)
                 .is_err(),
             "a packet that skipped one is refused rather than played out of order"
         );
@@ -719,7 +719,7 @@ mod tests {
         let (request, samples) = packet_of(1, vec![8000, 8000]);
         audio
             .0
-            .control(&key(1), &*admitted(), request, samples)
+            .control(&key(1), &*admitted(), &request, samples)
             .unwrap();
         audio
             .0
@@ -770,7 +770,7 @@ mod tests {
         let (request, samples) = packet_of(2, vec![8000, 8000]);
         audio
             .0
-            .control(&key(1), &*admitted(), request, samples)
+            .control(&key(1), &*admitted(), &request, samples)
             .unwrap();
         audio
             .0
@@ -812,7 +812,7 @@ mod tests {
         let ended: Arc<dyn Fn() -> Result<(), String> + Send + Sync> =
             Arc::new(|| Err("committed read launcher ownership ended".into()));
         let (request, samples) = packet_of(1, vec![1, 1]);
-        let refused = audio.0.control(&key(1), &*ended, request, samples);
+        let refused = audio.0.control(&key(1), &*ended, &request, samples);
         assert!(
             refused.is_err(),
             "an admission that ended refuses every command"

@@ -1830,7 +1830,7 @@ impl Layouts {
                 self.keep(key, *record, laying.revision);
             }
             Laid::Wrote(taken) => match taken.took {
-                Ok(_) => {
+                Ok(()) => {
                     tracing::debug!(%workspace_id, "the layout's write was taken");
                     let written = written();
                     self.written_windows
