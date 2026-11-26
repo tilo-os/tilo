@@ -624,3 +624,380 @@ pub fn serve_os() -> Option<Stream> {
         .ok()?;
     Some(app)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    /// What the person's selection holds on each of the two selections, as the session would
+    /// answer it, and the last copy's secrecy.
+    #[derive(Default)]
+    struct Selection {
+        held: Mutex<[Formats; 2]>,
+        secret: Mutex<bool>,
+    }
+
+    impl Selection {
+        fn slot(target: Target) -> usize {
+            match target {
+                Target::Clipboard => 0,
+                Target::Primary => 1,
+            }
+        }
+    }
+
+    impl ClipboardSide for Selection {
+        fn copy(&self, target: Target, secret: bool, formats: &[(String, Vec<u8>)]) -> bool {
+            if formats.is_empty() {
+                return false;
+            }
+            held(self.held.lock())[Self::slot(target)] = formats.to_vec();
+            *held(self.secret.lock()) = secret;
+            true
+        }
+
+        fn paste(&self, target: Target, types: &[&str]) -> Vec<(String, Vec<u8>)> {
+            let slot = Self::slot(target);
+            let held = held(self.held.lock());
+            types
+                .iter()
+                .filter_map(|wanted| held[slot].iter().find(|(mime, _)| mime == wanted).cloned())
+                .collect()
+        }
+    }
+
+    /// A session's end and both apps' ends of one service: a Rust app's
+    /// ([`ServiceClipboard`]) and a tilolang instance's ([`Connected`]).
+    fn served() -> (Arc<Selection>, ServiceClipboard, Connected) {
+        let selection = Arc::new(Selection::default());
+        let (rust_app, rust_session) = tilo_socket::pair().expect("a socket pair");
+        let (lang_app, lang_session) = tilo_socket::pair().expect("a socket pair");
+        for session in [rust_session, lang_session] {
+            let side = Arc::clone(&selection);
+            std::thread::spawn(move || serve(session, &*side));
+        }
+        (
+            selection,
+            ServiceClipboard(Connected::connect(rust_app).expect("the connection is usable")),
+            Connected::connect(lang_app).expect("the connection is usable"),
+        )
+    }
+
+    /// What the selection holds as text now.
+    fn text_held(selection: &Selection) -> Option<Vec<u8>> {
+        selection
+            .paste(Target::Clipboard, &["text/plain"])
+            .into_iter()
+            .next()
+            .map(|(_, bytes)| bytes)
+    }
+
+    #[test]
+    fn a_tilolang_secret_copy_leaves_the_clipboard_unless_something_else_was_copied() {
+        let (selection, rust, lang) = served();
+        let lang = Arc::new(lang);
+        assert!(lang.copy_secret("sk-live-1234", Duration::from_millis(50)));
+        assert!(
+            *held(selection.secret.lock()),
+            "histories are told it is a secret"
+        );
+        assert_eq!(text_held(&selection).as_deref(), Some(&b"sk-live-1234"[..]));
+        let gone = std::time::Instant::now() + Duration::from_secs(10);
+        while text_held(&selection).as_deref() != Some(&b""[..]) {
+            assert!(
+                std::time::Instant::now() < gone,
+                "the secret is taken off the clipboard"
+            );
+            std::thread::yield_now();
+        }
+
+        // A copy the person makes after the secret is theirs: the clear leaves it alone.
+        assert!(lang.copy_secret("hunter2", Duration::from_millis(50)));
+        assert!(rust.set_text(ClipboardTarget::Clipboard, "the next thing"));
+        std::thread::park_timeout(Duration::from_millis(300));
+        assert_eq!(
+            text_held(&selection).as_deref(),
+            Some(&b"the next thing"[..]),
+            "a later copy is never destroyed"
+        );
+    }
+
+    #[test]
+    fn a_rust_apps_copy_pastes_in_a_tilolang_app_and_the_reverse() {
+        let (_selection, rust, lang) = served();
+        assert!(rust.set_text(ClipboardTarget::Clipboard, "Lisbon in May"));
+        assert_eq!(
+            lang.paste(&["text/plain"]),
+            Some(("text/plain".to_owned(), b"Lisbon in May".to_vec())),
+            "what a Rust app copies is what a tilolang app pastes"
+        );
+        assert!(lang.copy("text/plain", b"from the language"));
+        assert_eq!(
+            rust.text(ClipboardTarget::Clipboard).as_deref(),
+            Some("from the language"),
+            "what a tilolang app copies is what a Rust app pastes"
+        );
+    }
+
+    #[test]
+    fn every_format_an_app_copies_crosses_the_one_service() {
+        let (selection, rust, lang) = served();
+        // An image a Rust app copies as RGBA8 pastes in tilolang as its file's type.
+        let rgba = [0x89, b'P', b'N', b'G'];
+        assert!(rust.set_image(1, 1, &rgba));
+        let (mime, png) = lang.paste(&IMAGE_TYPES).expect("the image pastes");
+        assert_eq!(mime, "image/png");
+        assert_eq!(&png[..4], b"\x89PNG", "the image pastes as encoded PNG");
+        assert!(lang.copy("image/png", &png));
+        assert_eq!(
+            rust.image().map(|image| (image.mime, image.bytes)),
+            Some(("image/png", png)),
+            "an image a tilolang app copies pastes in a Rust app"
+        );
+        // Formatted text keeps its formatting for an app that reads it and is its words
+        // elsewhere.
+        assert!(rust.set_rich_text("<b>bold</b>", "bold"));
+        let offer = rust.rich_text().expect("the formatting pastes back");
+        assert_eq!(offer.html, "<b>bold</b>");
+        assert_eq!(offer.plain.as_deref(), Some("bold"));
+        assert_eq!(
+            lang.paste(&["text/plain"]),
+            Some(("text/plain".to_owned(), b"bold".to_vec()))
+        );
+        // The primary selection is its own: a copy there is not the Ctrl+C clipboard.
+        assert!(rust.set_text(ClipboardTarget::Primary, "picked"));
+        assert_eq!(
+            rust.text(ClipboardTarget::Primary).as_deref(),
+            Some("picked")
+        );
+        assert_ne!(
+            rust.text(ClipboardTarget::Clipboard).as_deref(),
+            Some("picked")
+        );
+        // A secret copy is marked as one, and still pastes as plain text.
+        assert!(rust.set_secret_text("hunter2"));
+        assert!(*held(selection.secret.lock()));
+        assert_eq!(
+            lang.paste(&["text/plain"]),
+            Some(("text/plain".to_owned(), b"hunter2".to_vec()))
+        );
+        // Clearing a secret is a copy of nothing over the same service.
+        assert!(rust.set_secret_text(""));
+        assert_eq!(rust.text(ClipboardTarget::Clipboard).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn a_copy_the_selection_refuses_answers_no_and_nothing_pastes() {
+        struct Refusing;
+        impl ClipboardSide for Refusing {
+            fn copy(&self, _: Target, _: bool, _: &[(String, Vec<u8>)]) -> bool {
+                false
+            }
+
+            fn paste(&self, _: Target, _: &[&str]) -> Vec<(String, Vec<u8>)> {
+                Vec::new()
+            }
+        }
+        let (app, session) = tilo_socket::pair().expect("a socket pair");
+        let refusing: Arc<dyn ClipboardSide> = Arc::new(Refusing);
+        std::thread::spawn(move || serve(session, &*refusing));
+        let app = ServiceClipboard(Connected::connect(app).expect("the connection is usable"));
+        assert!(!app.set_text(ClipboardTarget::Clipboard, "words"));
+        assert_eq!(app.text(ClipboardTarget::Clipboard), None);
+        assert_eq!(app.image(), None);
+    }
+
+    /// An app is handed its session connection as an inherited descriptor, which only Unix does.
+    #[cfg(unix)]
+    #[test]
+    fn an_app_with_no_session_connection_refuses_rather_than_keeping_a_private_copy() {
+        assert!(
+            ServiceClipboard::from_env().is_none(),
+            "no connection is handed to this process"
+        );
+        // A connection whose session went away refuses what it tries to copy and reads nothing.
+        let (app, session) = tilo_socket::pair().expect("a socket pair");
+        drop(session);
+        let app = ServiceClipboard(Connected::connect(app).expect("the connection is usable"));
+        assert!(!app.set_text(ClipboardTarget::Clipboard, "gone"));
+        assert_eq!(app.text(ClipboardTarget::Clipboard), None);
+        assert_eq!(app.rich_text(), None);
+    }
+
+    #[test]
+    fn a_copy_larger_than_the_clipboard_holds_is_refused_before_it_is_sent() {
+        let (app, session) = tilo_socket::pair().expect("a socket pair");
+        // Nothing answers on the other end: the bound is the client's, checked before anything is
+        // written, and nothing here waits for a reply.
+        drop(session);
+        let app = ServiceClipboard(Connected::connect(app).expect("the connection is usable"));
+        assert!(!app.set_text(ClipboardTarget::Clipboard, &"a".repeat(TEXT + 1)));
+        assert!(!app.set_rich_text(&"a".repeat(TEXT + 1), "plain"));
+        assert!(
+            !app.set_image(0, 0, &[]),
+            "an image with no pixels copies nothing"
+        );
+        assert!(
+            !app.set_image(2, 1, &[0; 4]),
+            "an image whose bytes do not match copies nothing"
+        );
+    }
+
+    #[test]
+    fn the_wire_bounds_text_to_what_text_is_and_images_to_what_an_image_taken_in_is() {
+        assert_eq!(most_of("text/plain"), TEXT);
+        assert_eq!(most_of("text/html"), TEXT);
+        assert_eq!(most_of("image/png"), MAX_CLIPBOARD_IMAGE_INPUT_BYTES);
+        assert_eq!(most_of("image/jpeg"), MAX_CLIPBOARD_IMAGE_INPUT_BYTES);
+    }
+
+    /// An in-memory OS clipboard: what the launcher's side reads and writes on a person's own
+    /// desktop, with no Tilo session and no display.
+    #[derive(Default)]
+    struct TestOs {
+        text: Mutex<[Option<String>; 2]>,
+        rich: Mutex<Option<(String, String)>>,
+        image: Mutex<Option<(&'static str, Vec<u8>)>>,
+        secret: Mutex<bool>,
+    }
+
+    impl TestOs {
+        fn slot(target: ClipboardTarget) -> usize {
+            match target {
+                ClipboardTarget::Clipboard => 0,
+                ClipboardTarget::Primary => 1,
+            }
+        }
+    }
+
+    impl ClipboardBackend for TestOs {
+        fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
+            held(self.text.lock())[Self::slot(target)] = Some(text.to_owned());
+            if target == ClipboardTarget::Clipboard {
+                *held(self.rich.lock()) = None;
+            }
+            true
+        }
+
+        fn text(&self, target: ClipboardTarget) -> Option<String> {
+            held(self.text.lock())[Self::slot(target)].clone()
+        }
+
+        fn set_rich_text(&self, html: &str, plain: &str) -> bool {
+            self.set_text(ClipboardTarget::Clipboard, plain);
+            *held(self.rich.lock()) = Some((html.to_owned(), plain.to_owned()));
+            true
+        }
+
+        fn rich_text(&self) -> Option<RichTextOffer> {
+            let (html, plain) = held(self.rich.lock()).clone()?;
+            Some(RichTextOffer {
+                html,
+                plain: Some(plain),
+            })
+        }
+
+        fn set_secret_text(&self, text: &str) -> bool {
+            *held(self.secret.lock()) = true;
+            self.set_text(ClipboardTarget::Clipboard, text)
+        }
+
+        fn set_image(&self, width: usize, height: usize, rgba: &[u8]) -> bool {
+            let Some(png) = crate::images::encode_png(width, height, rgba) else {
+                return false;
+            };
+            *held(self.image.lock()) = Some(("image/png", png));
+            true
+        }
+
+        fn image(&self) -> Option<ClipboardImage> {
+            held(self.image.lock())
+                .clone()
+                .map(|(mime, bytes)| ClipboardImage { mime, bytes })
+        }
+
+        fn name(&self) -> &'static str {
+            "test-os"
+        }
+    }
+
+    /// The launcher's service over one OS clipboard, for a Rust app and a tilolang instance that
+    /// have no Tilo session: each gets its own connection to the same served clipboard.
+    fn served_by_os() -> (Arc<TestOs>, ServiceClipboard, Connected) {
+        let os = Arc::new(TestOs::default());
+        let (rust_app, rust_session) = tilo_socket::pair().expect("a socket pair");
+        let (lang_app, lang_session) = tilo_socket::pair().expect("a socket pair");
+        for session in [rust_session, lang_session] {
+            let backend = os.clone() as Arc<dyn ClipboardBackend>;
+            std::thread::spawn(move || serve(session, &BackendSide::new(backend)));
+        }
+        (
+            os,
+            ServiceClipboard(Connected::connect(rust_app).expect("the connection is usable")),
+            Connected::connect(lang_app).expect("the connection is usable"),
+        )
+    }
+
+    #[test]
+    fn with_no_session_both_languages_copy_and_paste_through_the_launchers_os_clipboard() {
+        let (os, rust, lang) = served_by_os();
+        assert!(rust.set_text(ClipboardTarget::Clipboard, "from the Rust app"));
+        assert_eq!(
+            os.text(ClipboardTarget::Clipboard).as_deref(),
+            Some("from the Rust app")
+        );
+        assert_eq!(
+            lang.paste(&["text/plain"]),
+            Some(("text/plain".to_owned(), b"from the Rust app".to_vec())),
+            "what a Rust app copies with no session is what a tilolang app pastes"
+        );
+        assert!(lang.copy("text/plain", b"from the language"));
+        assert_eq!(
+            rust.text(ClipboardTarget::Clipboard).as_deref(),
+            Some("from the language"),
+            "what a tilolang app copies with no session is what a Rust app pastes"
+        );
+
+        assert!(rust.set_rich_text("<b>bold</b>", "bold"));
+        assert_eq!(
+            lang.paste(&["text/plain"]),
+            Some(("text/plain".to_owned(), b"bold".to_vec()))
+        );
+        assert_eq!(
+            rust.rich_text().and_then(|offer| offer.plain),
+            Some("bold".to_owned())
+        );
+
+        assert!(rust.set_image(1, 1, &[0x89, b'P', b'N', b'G']));
+        let (mime, png) = lang.paste(&IMAGE_TYPES).expect("the image pastes");
+        assert_eq!(mime, "image/png");
+        assert!(png.starts_with(b"\x89PNG"));
+        assert!(lang.copy("image/png", &png));
+        assert_eq!(
+            rust.image().map(|image| (image.mime, image.bytes)),
+            Some(("image/png", png))
+        );
+
+        assert!(rust.set_text(ClipboardTarget::Primary, "picked"));
+        assert_eq!(
+            rust.text(ClipboardTarget::Primary).as_deref(),
+            Some("picked")
+        );
+        assert_ne!(
+            rust.text(ClipboardTarget::Clipboard).as_deref(),
+            Some("picked")
+        );
+
+        assert!(rust.set_secret_text("hunter2"));
+        assert!(
+            *held(os.secret.lock()),
+            "the OS side is told it is a secret"
+        );
+        assert_eq!(
+            lang.paste(&["text/plain"]),
+            Some(("text/plain".to_owned(), b"hunter2".to_vec()))
+        );
+    }
+}

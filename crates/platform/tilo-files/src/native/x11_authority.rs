@@ -35,3 +35,23 @@ pub fn write(path: &Path, display: u32, cookie: &[u8; 16]) -> io::Result<()> {
     file.write_all(&contents)?;
     file.sync_all()
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_file_names_the_display_the_protocol_and_the_cookie() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let path = dir.path().join("Xauthority");
+        super::write(&path, 12, &[7; 16]).expect("written");
+        let bytes = std::fs::read(&path).expect("read");
+        let mut expected = vec![0xff, 0xff, 0, 0, 0, 2, b'1', b'2', 0, 18];
+        expected.extend_from_slice(super::PROTOCOL);
+        expected.extend_from_slice(&[0, 16]);
+        expected.extend_from_slice(&[7; 16]);
+        assert_eq!(bytes, expected);
+        assert!(
+            super::write(&path, 12, &[7; 16]).is_err(),
+            "never over another"
+        );
+    }
+}

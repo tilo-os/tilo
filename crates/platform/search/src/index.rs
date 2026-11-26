@@ -524,3 +524,7 @@ fn commit(
     *rebuild = false;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "index_writer_tests.rs"]
+mod writer_tests;

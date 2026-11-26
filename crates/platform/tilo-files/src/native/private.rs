@@ -427,3 +427,188 @@ pub unsafe fn activated_socket(
     }
     Ok(Some(listener))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    #[cfg(windows)]
+    use tilo_test_env::SpawnUnderEnvLock as _;
+
+    #[test]
+    fn private_files_are_created_and_replaced_atomically_without_substitution() {
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("key.bin");
+            write_atomic(&path, b"old secret").unwrap();
+            write_atomic(&path, b"new secret").unwrap();
+            let mut bytes = Vec::new();
+            read(&path).unwrap().read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"new secret");
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+        }
+        {
+            let temporary = tempfile::tempdir().unwrap();
+            let root = temporary.path().join("identity");
+            directory(&root).unwrap();
+            let path = root.join("secret");
+            let mut file = create_new(&path).unwrap();
+            file.write_all(b"private identity").unwrap();
+            file.sync_all().unwrap();
+            drop(file);
+            crate::native::atomic::sync_directory(&root).unwrap();
+            assert_eq!(
+                create_new(&path).unwrap_err().kind(),
+                io::ErrorKind::AlreadyExists
+            );
+            let mut bytes = Vec::new();
+            read(&path).unwrap().read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"private identity");
+            rewrite(&path).unwrap().write_all(b"new").unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        }
+        {
+            let temporary = tempfile::tempdir().unwrap();
+            let root = temporary.path().join("identity");
+            directory(&root).unwrap();
+            assert!(read(&root).is_err());
+            let file = root.join("file");
+            create_new(&file).unwrap();
+            assert!(directory(&file).is_err());
+        }
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("broker-identity");
+            assert!(create_atomic(&path, b"first").unwrap());
+            assert!(!create_atomic(&path, b"second").unwrap());
+            let mut bytes = Vec::new();
+            read(&path).unwrap().read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"first");
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junction_cannot_redirect_identity_directory() {
+        let temporary = tempfile::tempdir().unwrap();
+        let target = temporary.path().join("target");
+        let link = temporary.path().join("junction");
+        std::fs::create_dir(&target).unwrap();
+        let sentinel = target.join("untouched");
+        std::fs::write(&sentinel, b"outside").unwrap();
+        let result = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&link)
+            .arg(&target)
+            .output_locked()
+            .unwrap();
+        assert!(result.status.success(), "{result:?}");
+        assert_eq!(
+            directory(&link).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside");
+        // Remove only the junction itself, never recursively traverse it.
+        std::fs::remove_dir(&link).unwrap();
+        assert!(target.is_dir());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn public_read_access_is_rejected_before_truncation() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("identity");
+        directory(&root).unwrap();
+        let path = root.join("secret");
+        create_new(&path)
+            .unwrap()
+            .write_all(b"must survive")
+            .unwrap();
+        // icacls is the Windows ACL editor; grant the well-known Everyone SID explicitly so this
+        // fixture is independent of OS display language.
+        let result = std::process::Command::new("icacls.exe")
+            .arg(&path)
+            .args(["/grant", "*S-1-1-0:(R)"])
+            .output_locked()
+            .unwrap();
+        assert!(result.status.success(), "{result:?}");
+        assert_eq!(
+            read(&path).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            rewrite(&path).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            write_atomic(&path, b"replacement").unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"must survive");
+    }
+
+    tilo_test_env::scenario! {
+        #[cfg(unix)]
+        fn private_files_sockets_and_directories_stay_owner_only;
+
+        phase public_read_access_is_rejected_before_truncation;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let temporary = tempfile::tempdir().unwrap();
+            let path = temporary.path().join("secret");
+            create_new(&path)
+                .unwrap()
+                .write_all(b"must survive")
+                .unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(read(&path).is_err());
+            assert!(rewrite(&path).is_err());
+            assert!(write_atomic(&path, b"replacement").is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), b"must survive");
+        }
+
+        phase socket_binds_owner_only_and_replaces_only_a_socket;
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("service.sock");
+
+            let previous = bind_socket(&path).unwrap();
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+            drop(previous);
+            let _replacement = bind_socket(&path).unwrap();
+
+            let file = root.path().join("not-a-socket");
+            std::fs::write(&file, b"keep").unwrap();
+            assert_eq!(
+                bind_socket(&file).unwrap_err().kind(),
+                io::ErrorKind::AlreadyExists
+            );
+            assert_eq!(std::fs::read(&file).unwrap(), b"keep");
+        }
+
+        phase restricting_a_restricted_directory_leaves_its_attributes_alone;
+        {
+            use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+            let root = tempfile::tempdir().unwrap();
+            let dir = root.path().join("identity");
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            restrict_directory(&dir).unwrap();
+            let restricted = std::fs::metadata(&dir).unwrap();
+            assert_eq!(restricted.permissions().mode() & 0o7777, 0o700);
+            // A chmod, even to the mode it has, moves the change time and wakes every watcher of the
+            // directory.
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            restrict_directory(&dir).unwrap();
+            directory(&dir).unwrap();
+            let again = std::fs::metadata(&dir).unwrap();
+            assert_eq!(
+                (again.ctime(), again.ctime_nsec()),
+                (restricted.ctime(), restricted.ctime_nsec())
+            );
+        }
+    }
+}

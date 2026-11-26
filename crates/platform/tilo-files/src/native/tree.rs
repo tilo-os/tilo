@@ -248,3 +248,164 @@ pub fn shares_extents(directory: &Path) -> io::Result<bool> {
     let _ = fs::remove_file(&target);
     answer
 }
+
+#[cfg(test)]
+#[cfg(unix)]
+mod tests {
+    use super::*;
+
+    /// A tree with a little of everything a workspace's files hold.
+    fn tree() -> tempfile::TempDir {
+        let root = tempfile::tempdir().expect("a tree");
+        let at = root.path();
+        fs::create_dir_all(at.join("src/deep")).unwrap();
+        fs::write(at.join("README.md"), b"# Plan\n").unwrap();
+        fs::write(at.join("src/main.rs"), b"fn main() {}\n").unwrap();
+        fs::write(at.join("src/deep/data.bin"), vec![7_u8; 1 << 20]).unwrap();
+        fs::write(at.join("run.sh"), b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(at.join("run.sh"), fs::Permissions::from_mode(0o750)).unwrap();
+        std::os::unix::fs::symlink("src/main.rs", at.join("main")).unwrap();
+        std::os::unix::fs::symlink("/etc/hostname", at.join("outside")).unwrap();
+        std::os::unix::net::UnixListener::bind(at.join("socket")).unwrap();
+        root
+    }
+
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "a place, as `clone_tree` asks of every entry"
+    )]
+    fn keep(path: &Path) -> Option<PathBuf> {
+        Some(path.to_path_buf())
+    }
+
+    fn same(from: &Path, to: &Path) {
+        for file in ["README.md", "src/main.rs", "src/deep/data.bin", "run.sh"] {
+            assert_eq!(
+                fs::read(from.join(file)).unwrap(),
+                fs::read(to.join(file)).unwrap(),
+                "{file} holds what its source holds"
+            );
+            assert_eq!(
+                fs::metadata(from.join(file)).unwrap().modified().unwrap(),
+                fs::metadata(to.join(file)).unwrap().modified().unwrap(),
+                "{file} keeps its time"
+            );
+        }
+        assert_eq!(
+            fs::metadata(to.join("run.sh"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o750
+        );
+        assert_eq!(
+            fs::read_link(to.join("main")).unwrap(),
+            Path::new("src/main.rs")
+        );
+        assert_eq!(
+            fs::read_link(to.join("outside")).unwrap(),
+            Path::new("/etc/hostname"),
+            "a link is made again, never followed"
+        );
+        assert!(
+            fs::symlink_metadata(to.join("socket")).is_err(),
+            "a socket is no file to copy"
+        );
+    }
+
+    tilo_test_env::scenario! {
+        fn a_tree_copy_is_whole_separate_and_never_mixed_in;
+
+        phase a_copy_holds_what_the_tree_holds_and_shares_nothing_with_it;
+        {
+            let source = tree();
+            let into = tempfile::tempdir().unwrap();
+            let to = into.path().join("copy");
+            let copied =
+                clone_tree(source.path(), &to, Strategy::Copy, &mut keep, &mut |_| {}).unwrap();
+            same(source.path(), &to);
+            assert_eq!(
+                (copied.files, copied.cloned, copied.links, copied.skipped),
+                (4, 0, 2, 1)
+            );
+            assert_eq!(copied.bytes, 7 + 13 + (1 << 20) + 10);
+            // The copy is a tree of its own: changing it leaves the source as it was.
+            fs::write(to.join("README.md"), b"# Changed\n").unwrap();
+            assert_eq!(
+                fs::read(source.path().join("README.md")).unwrap(),
+                b"# Plan\n"
+            );
+        }
+
+        phase a_clone_shares_extents_where_it_can_and_copies_where_it_cannot;
+        // Where the file system shares extents, every file of the copy does; where it does not, the clone
+        // falls back to copying and the copy is the same. Both are the one answer a caller gets.
+        {
+            let source = tree();
+            let to = source.path().with_extension("clone");
+            let sharing = shares_extents(source.path()).unwrap();
+            let mut heard = 0;
+            let copied = clone_tree(source.path(), &to, Strategy::Clone, &mut keep, &mut |_| {
+                heard += 1;
+            })
+            .unwrap();
+            same(source.path(), &to);
+            assert_eq!(copied.files, 4);
+            assert_eq!(heard, 4, "progress after every file");
+            if sharing {
+                assert_eq!(copied.cloned, 4, "every file shares its source's extents");
+            } else {
+                assert_eq!(copied.cloned, 0, "nothing is shared here, so all is copied");
+            }
+            fs::write(to.join("src/main.rs"), b"changed").unwrap();
+            assert_eq!(
+                fs::read(source.path().join("src/main.rs")).unwrap(),
+                b"fn main() {}\n",
+                "a clone written to leaves its source"
+            );
+            fs::remove_dir_all(&to).unwrap();
+        }
+
+        phase the_caller_places_and_leaves_out_entries;
+        {
+            let source = tree();
+            let into = tempfile::tempdir().unwrap();
+            let to = into.path().join("copy");
+            let copied = clone_tree(
+                source.path(),
+                &to,
+                Strategy::Clone,
+                &mut |path| {
+                    if path == Path::new("src/deep") {
+                        return None;
+                    }
+                    Some(PathBuf::from(
+                        path.to_string_lossy().replace("README", "NOTES"),
+                    ))
+                },
+                &mut |_| {},
+            )
+            .unwrap();
+            assert_eq!(fs::read(to.join("NOTES.md")).unwrap(), b"# Plan\n");
+            assert!(!to.join("README.md").exists());
+            assert!(!to.join("src/deep").exists(), "a directory left out whole");
+            assert_eq!(copied.files, 3);
+        }
+
+        phase a_copy_never_mixes_into_what_exists;
+        {
+            let source = tree();
+            let into = tempfile::tempdir().unwrap();
+            let error = clone_tree(
+                source.path(),
+                into.path(),
+                Strategy::Copy,
+                &mut keep,
+                &mut |_| {},
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        }
+    }
+}

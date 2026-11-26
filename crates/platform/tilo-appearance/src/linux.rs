@@ -130,3 +130,173 @@ fn accent(value: &Value<'_>) -> Option<[u8; 3]> {
     };
     Some([channel(*r)?, channel(*g)?, channel(*b)?])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    fn applied(key: &str, value: &Value<'_>) -> Appearance {
+        let mut appearance = Appearance::default();
+        assert!(apply(&mut appearance, key, value), "{key} is read");
+        appearance
+    }
+
+    tilo_test_env::scenario! {
+        fn a_portal_setting_is_read_into_the_appearance;
+
+        phase color_scheme_maps_prefer_dark_and_prefer_light;
+        {
+            assert_eq!(
+                applied("color-scheme", &Value::U32(1)).scheme,
+                Some(Scheme::Dark)
+            );
+            assert_eq!(
+                applied("color-scheme", &Value::U32(2)).scheme,
+                Some(Scheme::Light)
+            );
+            assert_eq!(applied("color-scheme", &Value::U32(0)).scheme, None);
+            assert_eq!(applied("color-scheme", &Value::U32(7)).scheme, None);
+            assert_eq!(
+                applied("color-scheme", &Value::Value(Box::new(Value::U32(1)))).scheme,
+                Some(Scheme::Dark),
+                "a doubly boxed value reads the same"
+            );
+        }
+
+        phase accent_maps_unit_rgb_and_rejects_out_of_range;
+        {
+            let rgb = |r, g, b| Value::from((r, g, b));
+            assert_eq!(
+                applied("accent-color", &rgb(1.0, 0.5, 0.0)).accent,
+                Some([255, 128, 0])
+            );
+            assert_eq!(applied("accent-color", &rgb(-1.0, 0.5, 0.0)).accent, None);
+            assert_eq!(applied("accent-color", &rgb(0.2, 1.5, 0.0)).accent, None);
+            assert_eq!(applied("accent-color", &Value::U32(3)).accent, None);
+        }
+
+        phase contrast_and_reduced_motion_are_on_only_at_one;
+        {
+            assert!(applied("contrast", &Value::U32(1)).high_contrast);
+            assert!(!applied("contrast", &Value::U32(0)).high_contrast);
+            assert!(applied("reduced-motion", &Value::U32(1)).reduce_motion);
+            assert!(!applied("reduced-motion", &Value::U32(0)).reduce_motion);
+            let mut appearance = Appearance::default();
+            assert!(!apply(&mut appearance, "wallpaper", &Value::U32(1)));
+            assert_eq!(appearance, Appearance::default());
+        }
+    }
+
+    struct FakePortal {
+        appearance: HashMap<String, OwnedValue>,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.portal.Settings")]
+    impl FakePortal {
+        fn read_all(
+            &self,
+            namespaces: Vec<String>,
+        ) -> HashMap<String, HashMap<String, OwnedValue>> {
+            namespaces
+                .into_iter()
+                .filter(|namespace| namespace == NAMESPACE)
+                .map(|namespace| {
+                    let values = self
+                        .appearance
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.try_clone().expect("clone")))
+                        .collect();
+                    (namespace, values)
+                })
+                .collect()
+        }
+    }
+
+    fn owned(value: Value<'_>) -> OwnedValue {
+        value.try_into().expect("owned value")
+    }
+
+    #[test]
+    fn follows_a_fake_portal_over_dbus() {
+        const GUID: &str = "0123456789abcdef0123456789abcdef";
+        const PATH: &str = "/org/freedesktop/portal/desktop";
+        let portal = FakePortal {
+            appearance: HashMap::from([
+                ("color-scheme".to_owned(), owned(Value::U32(2))),
+                (
+                    "accent-color".to_owned(),
+                    owned(Value::from((0.0, 0.5, 1.0))),
+                ),
+                ("contrast".to_owned(), owned(Value::U32(0))),
+            ]),
+        };
+        // The runtime's workers drive both connections; `watch` blocks on
+        // its own thread as it does in the app.
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let (server, client) = runtime.block_on(async {
+            let (server, client) = tokio::net::UnixStream::pair().expect("socket pair");
+            let server = zbus::connection::Builder::unix_stream(server)
+                .server(GUID)
+                .expect("guid")
+                .p2p()
+                .serve_at(PATH, portal)
+                .expect("serve")
+                .build();
+            let client = zbus::connection::Builder::unix_stream(client).p2p().build();
+            let (server, client) = tokio::join!(server, client);
+            (server.expect("server"), client.expect("client"))
+        });
+        let client = zbus::blocking::Connection::from(client);
+
+        let (published, readings) = mpsc::channel();
+        std::thread::spawn(move || {
+            watch(&client, |appearance| {
+                let _ = published.send(appearance);
+            })
+        });
+        let next = || tilo_test_env::recv("a reading", &readings);
+        let emit = |namespace: &str, key: &str, value: Value<'_>| {
+            runtime
+                .block_on(server.emit_signal(
+                    None::<zbus::names::BusName<'_>>,
+                    PATH,
+                    "org.freedesktop.portal.Settings",
+                    "SettingChanged",
+                    &(namespace, key, value),
+                ))
+                .expect("emit");
+        };
+
+        assert_eq!(
+            next(),
+            Appearance {
+                scheme: Some(Scheme::Light),
+                accent: Some([0, 128, 255]),
+                high_contrast: false,
+                reduce_motion: false,
+            },
+            "the initial read"
+        );
+        emit(
+            "org.gnome.desktop.a11y.interface",
+            "contrast",
+            Value::U32(1),
+        );
+        emit(NAMESPACE, "color-scheme", Value::U32(1));
+        assert_eq!(
+            next(),
+            Appearance {
+                scheme: Some(Scheme::Dark),
+                accent: Some([0, 128, 255]),
+                high_contrast: false,
+                reduce_motion: false,
+            },
+            "a change in another namespace is not an appearance change"
+        );
+        emit(NAMESPACE, "contrast", Value::U32(1));
+        assert!(next().high_contrast);
+        emit(NAMESPACE, "accent-color", Value::from((1.0, 0.0, 0.0)));
+        assert_eq!(next().accent, Some([255, 0, 0]));
+    }
+}

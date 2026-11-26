@@ -24,6 +24,8 @@ use sha2::{Digest, Sha256};
 /// Preparing the catalog from what this crate carries, fetching its pinned fonts.
 #[cfg(feature = "prepare")]
 pub mod prepare;
+#[cfg(test)]
+mod tests;
 
 /// The web page's cuts of Tilo Sans, which the host serving a page serves beside it.
 #[cfg(feature = "web")]

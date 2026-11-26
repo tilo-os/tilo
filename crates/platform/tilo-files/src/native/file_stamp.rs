@@ -157,3 +157,29 @@ mod platform {
         Err(io::Error::from(io::ErrorKind::Unsupported))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rewrite_or_a_replacement_moves_the_stamp_and_a_read_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fleet.json");
+        assert_eq!(FileStamp::of(&path).unwrap(), None);
+        std::fs::write(&path, b"one").unwrap();
+        let first = FileStamp::of(&path).unwrap().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"one");
+        assert_eq!(FileStamp::of(&path).unwrap(), Some(first));
+
+        std::fs::write(&path, b"three").unwrap();
+        let rewritten = FileStamp::of(&path).unwrap().unwrap();
+        assert_ne!(rewritten, first);
+
+        let other = dir.path().join("fleet.json.tmp");
+        std::fs::write(&other, b"three").unwrap();
+        std::fs::rename(&other, &path).unwrap();
+        assert_ne!(FileStamp::of(&path).unwrap().unwrap(), rewritten);
+        assert!(FileStamp::of(dir.path()).unwrap().is_some());
+    }
+}

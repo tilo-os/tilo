@@ -623,3 +623,336 @@ impl Notifier for ServiceNotifier {
         Self::did(self.ask(move |id| Request::CancelScheduled { id, tag })?)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{NotificationButton, NotificationSender, Severity};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Recorded {
+        shown: Vec<Notification>,
+        withdrawn: Vec<String>,
+        scheduled: Vec<(Notification, SystemTime, Option<AlarmRequest>)>,
+        cancelled: Vec<String>,
+        contacts: Vec<PriorityContact>,
+        channel: Mutex<Option<Arc<Channel>>>,
+    }
+
+    struct Recording(Arc<Mutex<Recorded>>);
+
+    impl NotifySide for Recording {
+        fn attached(&self, channel: Arc<Channel>) {
+            *self.0.lock().unwrap().channel.lock().unwrap() = Some(channel);
+        }
+
+        fn show(&self, notification: &Notification) -> Result<(), Refusal> {
+            self.0.lock().unwrap().shown.push(notification.clone());
+            Ok(())
+        }
+
+        fn withdraw(&self, tag: &str) -> Result<(), Refusal> {
+            self.0.lock().unwrap().withdrawn.push(tag.to_owned());
+            Ok(())
+        }
+
+        fn schedule(
+            &self,
+            notification: &Notification,
+            at: SystemTime,
+            alarm: Option<&AlarmRequest>,
+        ) -> Result<(), Refusal> {
+            self.0
+                .lock()
+                .unwrap()
+                .scheduled
+                .push((notification.clone(), at, alarm.cloned()));
+            Ok(())
+        }
+
+        fn scheduled(&self) -> Result<Vec<Scheduled>, Refusal> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .scheduled
+                .iter()
+                .map(|(notification, at, _)| Scheduled {
+                    tag: notification.tag.clone(),
+                    at: *at,
+                })
+                .collect())
+        }
+
+        fn alarm_states(&self) -> Result<Vec<AlarmState>, Refusal> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .scheduled
+                .iter()
+                .filter_map(|(notification, at, alarm)| {
+                    let alarm = alarm.as_ref()?.schedule();
+                    Some(AlarmState {
+                        tag: notification.tag.clone(),
+                        alarm: alarm.alarm,
+                        enabled_at_ms: alarm.enabled_at_ms,
+                        next_at: Some(*at),
+                        last_at: None,
+                        last_rung: alarm.last_rung,
+                    })
+                })
+                .collect())
+        }
+
+        fn cancel_scheduled(&self, tag: &str) -> Result<(), Refusal> {
+            self.0.lock().unwrap().cancelled.push(tag.to_owned());
+            Ok(())
+        }
+
+        fn priority_contacts(&self, contacts: &[PriorityContact]) -> Result<(), Refusal> {
+            self.0.lock().unwrap().contacts = contacts.to_vec();
+            Ok(())
+        }
+    }
+
+    /// A client over one end of a socket pair, with a recording side and a channel on the other.
+    fn session() -> (ServiceNotifier, Arc<Mutex<Recorded>>) {
+        let (app, service) = tilo_socket::pair().expect("a socket pair");
+        let recorded = Arc::new(Mutex::new(Recorded::default()));
+        let side = Arc::new(Recording(Arc::clone(&recorded)));
+        std::thread::spawn(move || serve(service, &*side));
+        let client = ServiceNotifier::connect(app).expect("the connection is usable");
+        (client, recorded)
+    }
+
+    fn waiting(recorded: &Arc<Mutex<Recorded>>) -> Arc<Channel> {
+        for _ in 0..1000 {
+            let channel = { recorded.lock().unwrap().channel.lock().unwrap().clone() };
+            if let Some(channel) = channel {
+                return channel;
+            }
+            std::thread::yield_now();
+        }
+        panic!("the service never attached its channel");
+    }
+
+    #[test]
+    fn an_app_shows_replaces_and_withdraws_its_notifications_over_its_connection() {
+        let (client, recorded) = session();
+        let shown = Notification::new("task", "Saved", "Your change is on every device")
+            .with_activation("tilo-test:open")
+            .with_button("Undo", "tilo-test:undo")
+            .with_severity(Severity::Warning)
+            .quietly();
+        client.show(&shown).expect("the service took it");
+        assert_eq!(recorded.lock().unwrap().shown, [shown]);
+        client.withdraw("task").expect("the service withdrew it");
+        assert_eq!(recorded.lock().unwrap().withdrawn, ["task"]);
+    }
+
+    #[test]
+    fn a_malformed_notification_is_refused_before_it_reaches_the_session() {
+        let (client, recorded) = session();
+        assert!(matches!(
+            client.show(&Notification::new("", "Title", "")),
+            Err(NotifyError::Invalid(_))
+        ));
+        assert!(matches!(
+            client.withdraw("t\nag"),
+            Err(NotifyError::Invalid(_))
+        ));
+        assert!(
+            recorded.lock().unwrap().shown.is_empty(),
+            "nothing malformed reaches the service"
+        );
+    }
+
+    #[test]
+    fn what_the_person_chose_reaches_the_app_that_showed_it() {
+        let (client, recorded) = session();
+        let (seen, chosen) = std::sync::mpsc::channel();
+        crate::set_activation_handler("tilo-service-test", move |uri| {
+            let _ = seen.send(uri.to_owned());
+        });
+        client
+            .show(&Notification::new("task", "Saved", "").with_activation("tilo-service-test:open"))
+            .expect("the service took it");
+        let channel = waiting(&recorded);
+        channel.activated("tilo-service-test:open");
+        assert_eq!(
+            chosen.recv_timeout(Duration::from_secs(30)),
+            Ok("tilo-service-test:open".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_notification_that_goes_away_is_reported_under_its_tag_and_reason() {
+        let (client, recorded) = session();
+        let (gone, closings) = std::sync::mpsc::channel();
+        crate::set_close_handler("tilo-service-close-test:", move |tag, reason| {
+            let _ = gone.send((tag.to_owned(), reason));
+        });
+        client
+            .show(&Notification::new("tilo-service-close-test:1", "Saved", ""))
+            .expect("the service took it");
+        let channel = waiting(&recorded);
+        channel.closed("tilo-service-close-test:1", CloseReason::Dismissed);
+        assert_eq!(
+            closings.recv_timeout(Duration::from_secs(30)),
+            Ok((
+                "tilo-service-close-test:1".to_owned(),
+                CloseReason::Dismissed
+            ))
+        );
+    }
+
+    #[test]
+    fn an_alarm_is_scheduled_read_back_and_cancelled_over_the_connection() {
+        let (client, recorded) = session();
+        let notification = Notification::new("wake", "Wake up", "It is 7:00");
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let alarm = AlarmSchedule {
+            alarm: CalendarAlarm {
+                hour: 7,
+                minute: 0,
+                weekdays: 0,
+            },
+            enabled_at_ms: 1_700_000_000_000,
+            last_rung: Some(jiff::civil::date(2026, 11, 25)),
+        };
+        client
+            .schedule_alarm(&notification, at, alarm)
+            .expect("the service scheduled it");
+        let scheduled = client.scheduled().expect("the deadlines");
+        assert_eq!(
+            scheduled,
+            [Scheduled {
+                tag: "wake".to_owned(),
+                at
+            }]
+        );
+        let states = client.alarm_states().expect("the alarms");
+        assert_eq!(states.len(), 1, "{states:?}");
+        assert_eq!(states[0].alarm, alarm.alarm);
+        assert_eq!(states[0].enabled_at_ms, alarm.enabled_at_ms);
+        assert_eq!(states[0].last_rung, alarm.last_rung);
+        client
+            .cancel_scheduled("wake")
+            .expect("the service cancelled it");
+        assert_eq!(recorded.lock().unwrap().cancelled, ["wake"]);
+    }
+
+    #[test]
+    fn priority_contacts_go_over_the_connection_that_names_the_app() {
+        let (client, recorded) = session();
+        let contacts = vec![PriorityContact {
+            id: "person-1".to_owned(),
+            name: "Ada".to_owned(),
+            endpoints: vec!["ada@example.com".to_owned()],
+        }];
+        client
+            .ask(move |id| Request::PriorityContacts { id, contacts })
+            .map(ServiceNotifier::did)
+            .expect("the service answered")
+            .expect("the service took them");
+        assert_eq!(recorded.lock().unwrap().contacts.len(), 1);
+        assert_eq!(recorded.lock().unwrap().contacts[0].id, "person-1");
+    }
+
+    #[test]
+    fn a_refusal_is_the_error_the_app_reads() {
+        struct Refusing;
+
+        impl NotifySide for Refusing {
+            fn show(&self, _notification: &Notification) -> Result<(), Refusal> {
+                Err(Refusal::Failed("the notification centre is off".into()))
+            }
+
+            fn withdraw(&self, _tag: &str) -> Result<(), Refusal> {
+                Err(Refusal::Unsupported)
+            }
+
+            fn schedule(
+                &self,
+                _notification: &Notification,
+                _at: SystemTime,
+                _alarm: Option<&AlarmRequest>,
+            ) -> Result<(), Refusal> {
+                Err(Refusal::Unsupported)
+            }
+
+            fn scheduled(&self) -> Result<Vec<Scheduled>, Refusal> {
+                Err(Refusal::Unsupported)
+            }
+
+            fn alarm_states(&self) -> Result<Vec<AlarmState>, Refusal> {
+                Err(Refusal::Unsupported)
+            }
+
+            fn cancel_scheduled(&self, _tag: &str) -> Result<(), Refusal> {
+                Err(Refusal::Unsupported)
+            }
+        }
+
+        let (app, service) = tilo_socket::pair().expect("a socket pair");
+        std::thread::spawn(move || {
+            let side = Refusing;
+            serve(service, &side);
+        });
+        let client = ServiceNotifier::connect(app).expect("the connection is usable");
+        assert_eq!(
+            client.show(&Notification::new("t", "Title", "")),
+            Err(NotifyError::Failed("the notification centre is off".into()))
+        );
+        assert!(matches!(
+            client.withdraw("t"),
+            Err(NotifyError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn a_process_the_launcher_handed_no_service_is_refused() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove(FD_ENV);
+        let notifier = crate::system(Some("so.tilo.notify-test"));
+        assert_eq!(
+            notifier.show(&Notification::new("t", "Title", "")),
+            Err(NotifyError::Unavailable)
+        );
+        assert_eq!(notifier.withdraw("t"), Err(NotifyError::Unavailable));
+    }
+
+    #[test]
+    fn every_notification_shape_survives_the_wire() {
+        let notification = Notification {
+            tag: "tag".into(),
+            title: "Title".into(),
+            body: "Body".into(),
+            activation: Some("tilo-test:open".into()),
+            action: Some("Open".into()),
+            severity: Severity::Error,
+            buttons: vec![NotificationButton {
+                label: "Retry".into(),
+                activation: "tilo-test:retry".into(),
+            }],
+            silent: true,
+            app: Some("Files".into()),
+            from: Some(NotificationSender {
+                name: "Ada".into(),
+                id: "person-1".into(),
+                agent: false,
+            }),
+        };
+        let request = Request::Show {
+            id: 7,
+            notification,
+        };
+        let bytes = serde_json::to_vec(&request).expect("the request");
+        assert_eq!(
+            serde_json::from_slice::<Request>(&bytes).expect("the request"),
+            request
+        );
+    }
+}

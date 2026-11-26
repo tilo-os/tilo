@@ -175,3 +175,210 @@ async fn follow_events(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use zbus::connection::Builder;
+    use zbus::object_server::SignalEmitter;
+
+    #[tokio::test]
+    async fn a_hosted_status_suspends_the_portal_and_wakes_the_watcher() {
+        crate::status::clear_host_status();
+        let (portal_sender, mut portable_updates) = watch::channel(NetStatus {
+            connectivity: Connectivity::Online,
+            metered: Some(false),
+        });
+        let monitor_task = tokio::spawn(async move { monitor(&portal_sender).await });
+        tokio::time::pause();
+        crate::status::set_host_status(Some(true), Some(true));
+        assert!(
+            tokio::time::timeout(imp::POLL * 2, portable_updates.changed())
+                .await
+                .is_err(),
+            "a supported rich host must suspend fallback route reads and portal retries"
+        );
+        tokio::time::resume();
+        let mut changes = crate::status::watch();
+        crate::status::set_host_status(Some(true), Some(false));
+        assert_eq!(changes.changed().await.metered, Some(false));
+        crate::status::set_host_status(Some(false), None);
+        assert_eq!(changes.changed().await.connectivity, Connectivity::Offline);
+        crate::status::clear_host_status();
+        monitor_task.abort();
+        assert!(monitor_task.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            *crate::status::host().borrow(),
+            None,
+            "host loss must release the rich snapshot"
+        );
+    }
+
+    struct Portal {
+        available: Option<bool>,
+        metered: Option<bool>,
+        denied: bool,
+        reads: Arc<AtomicUsize>,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.portal.NetworkMonitor")]
+    impl Portal {
+        fn get_status(&self) -> zbus::fdo::Result<HashMap<String, OwnedValue>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            if self.denied {
+                return Err(zbus::fdo::Error::AccessDenied("network not allowed".into()));
+            }
+            let mut values = HashMap::new();
+            if let Some(available) = self.available {
+                values.insert("available".into(), OwnedValue::from(available));
+            }
+            if let Some(metered) = self.metered {
+                values.insert("metered".into(), OwnedValue::from(metered));
+            }
+            // Captive portal still has a route: it remains worth trying.
+            values.insert("connectivity".into(), OwnedValue::from(3_u32));
+            Ok(values)
+        }
+
+        #[zbus(signal, name = "changed")]
+        async fn changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+    }
+
+    async fn serve(portal: Portal) -> (zbus::Connection, zbus::Connection) {
+        let (server, client) = tokio::net::UnixStream::pair().unwrap();
+        let server = Builder::unix_stream(server)
+            .server(zbus::Guid::generate())
+            .unwrap()
+            .p2p()
+            .serve_at(PATH, portal)
+            .unwrap()
+            .build();
+        let client = Builder::unix_stream(client).p2p().build();
+        let (server, client) = tokio::join!(server, client);
+        (server.unwrap(), client.unwrap())
+    }
+
+    async fn next(receiver: &mut watch::Receiver<NetStatus>) -> NetStatus {
+        tilo_test_env::within("the next status", receiver.changed())
+            .await
+            .unwrap();
+        *receiver.borrow_and_update()
+    }
+
+    #[tokio::test]
+    async fn portal_transitions_idle_dedup_and_disconnect_use_the_production_subscription() {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let (server, client) = serve(Portal {
+            available: Some(true),
+            metered: Some(false),
+            denied: false,
+            reads: reads.clone(),
+        })
+        .await;
+        let proxy = zbus::Proxy::new(&client, BUS, PATH, INTERFACE)
+            .await
+            .unwrap();
+        let (sender, mut receiver) = watch::channel(NetStatus {
+            connectivity: Connectivity::Unknown,
+            metered: None,
+        });
+        let task = tokio::spawn(async move { follow(&proxy, &sender).await });
+        assert_eq!(
+            next(&mut receiver).await,
+            NetStatus {
+                connectivity: Connectivity::Online,
+                metered: None
+            }
+        );
+        // Longer than DEADLINE, on the runtime's clock, which runs ahead while every
+        // task waits: an idle portal causes no reads.
+        tokio::time::pause();
+        assert!(
+            tokio::time::timeout(imp::POLL * 2, receiver.changed())
+                .await
+                .is_err()
+        );
+        tokio::time::resume();
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        let iface = server
+            .object_server()
+            .interface::<_, Portal>(PATH)
+            .await
+            .unwrap();
+        Portal::changed(iface.signal_emitter()).await.unwrap();
+        // The signal is read again; the unchanged answer publishes nothing,
+        // so the next status seen below is the metered one.
+        tilo_test_env::within("the changed signal to be read", async {
+            while reads.load(Ordering::SeqCst) < 2 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await;
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
+        iface.get_mut().await.metered = Some(true);
+        Portal::changed(iface.signal_emitter()).await.unwrap();
+        assert_eq!(next(&mut receiver).await.metered, Some(true));
+        iface.get_mut().await.available = Some(false);
+        Portal::changed(iface.signal_emitter()).await.unwrap();
+        assert_eq!(
+            next(&mut receiver).await.connectivity,
+            Connectivity::Offline
+        );
+        server.close().await.unwrap();
+        assert_eq!(next(&mut receiver).await.metered, None);
+        assert!(
+            tilo_test_env::within("the follower to end", task)
+                .await
+                .unwrap()
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn refusal_and_malformed_status_discard_stale_metering() {
+        for (available, denied) in [(Some(true), true), (None, false)] {
+            let (server, client) = serve(Portal {
+                available,
+                metered: Some(false),
+                denied,
+                reads: Arc::new(AtomicUsize::new(0)),
+            })
+            .await;
+            let proxy = zbus::Proxy::new(&client, BUS, PATH, INTERFACE)
+                .await
+                .unwrap();
+            let (sender, receiver) = watch::channel(NetStatus {
+                connectivity: Connectivity::Online,
+                metered: Some(false),
+            });
+            assert!(follow(&proxy, &sender).await.is_err());
+            assert_eq!(receiver.borrow().metered, None);
+            server.close().await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn absent_metering_stays_unknown_instead_of_claiming_unmetered() {
+        let (server, client) = serve(Portal {
+            available: Some(true),
+            metered: None,
+            denied: false,
+            reads: Arc::new(AtomicUsize::new(0)),
+        })
+        .await;
+        let proxy = zbus::Proxy::new(&client, BUS, PATH, INTERFACE)
+            .await
+            .unwrap();
+        assert_eq!(
+            read(&proxy).await.unwrap(),
+            NetStatus {
+                connectivity: Connectivity::Online,
+                metered: None
+            }
+        );
+        server.close().await.unwrap();
+    }
+}

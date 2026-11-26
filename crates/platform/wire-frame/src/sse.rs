@@ -272,3 +272,184 @@ impl Reader {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn collect(
+        reader: &mut Reader,
+        chunks: &[&[u8]],
+        unterminated: bool,
+    ) -> Result<Vec<(String, String)>, Error> {
+        let mut out = Vec::new();
+        for chunk in chunks {
+            let _ = reader.push(chunk, |event| {
+                out.push((event.kind().to_owned(), event.data.to_owned()));
+                ControlFlow::<()>::Continue(())
+            })?;
+        }
+        if unterminated {
+            let _ = reader.finish_unterminated(|event| {
+                out.push((event.kind().to_owned(), event.data.to_owned()));
+                ControlFlow::<()>::Continue(())
+            })?;
+        }
+        Ok(out)
+    }
+
+    #[test]
+    fn line_endings_and_cuts_at_every_byte_boundary_give_identical_events() {
+        let streams = [
+            "event: text\ndata: hello 🦀\n\n",
+            "event: text\r\ndata: hello 🦀\r\n\r\n",
+            "event: text\rdata: hello 🦀\r\r",
+            "event: text\r\ndata: hello 🦀\n\r\n",
+        ];
+        for stream in streams {
+            for cut in 1..=stream.len() {
+                let mut reader = Reader::new(Utf8::Strict, None);
+                let chunks: Vec<&[u8]> = stream.as_bytes().chunks(cut).collect();
+                let got = collect(&mut reader, &chunks, false).unwrap();
+                assert_eq!(
+                    got,
+                    [("text".to_owned(), "hello 🦀".to_owned())],
+                    "cut={cut} stream={stream:?}"
+                );
+                assert!(!reader.has_pending(), "cut={cut} stream={stream:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn empty_chunk_between_cr_and_lf_stays_one_line_end() {
+        let mut reader = Reader::new(Utf8::Strict, None);
+        let got = collect(
+            &mut reader,
+            &[
+                b"event: text\r",
+                b"",
+                b"\ndata: one\r",
+                b"",
+                b"\n\r",
+                b"",
+                b"\n",
+            ],
+            false,
+        )
+        .unwrap();
+        assert_eq!(got, [("text".to_owned(), "one".to_owned())]);
+        assert!(!reader.has_pending());
+    }
+
+    #[test]
+    fn data_lines_join_with_newline_and_strip_at_most_one_space() {
+        let mut reader = Reader::new(Utf8::Strict, None);
+        let stream = concat!(
+            "data: first\n",
+            "data:  second\n",
+            "data:\tthird\n",
+            "data:fourth\n",
+            "\n",
+            "data:\n",
+            "data: after-empty\n",
+            "\n",
+        );
+        let got = collect(&mut reader, &[stream.as_bytes()], false).unwrap();
+        assert_eq!(
+            got,
+            [
+                (
+                    "message".to_owned(),
+                    "first\n second\n\tthird\nfourth".to_owned()
+                ),
+                ("message".to_owned(), "\nafter-empty".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn comments_and_event_type_resets_follow_sse_rules() {
+        let mut reader = Reader::new(Utf8::Strict, None);
+        let stream = concat!(
+            ": keep-alive\n\n",
+            "event: custom\n\n",
+            "data: plain\n\n",
+            "event: first\nevent: second\ndata: x\n\n",
+            "event: overridden\nevent:\ndata: y\n\n",
+        );
+        let got = collect(&mut reader, &[stream.as_bytes()], false).unwrap();
+        assert_eq!(
+            got,
+            [
+                ("custom".to_owned(), String::new()),
+                ("message".to_owned(), "plain".to_owned()),
+                ("second".to_owned(), "x".to_owned()),
+                ("message".to_owned(), "y".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn utf8_policy_is_strict_or_lenient_as_chosen() {
+        let bad = b"data: hi \xff there\n\n";
+        let mut strict = Reader::new(Utf8::Strict, None);
+        assert_eq!(collect(&mut strict, &[bad], false), Err(Error::InvalidUtf8));
+
+        let mut lenient = Reader::new(Utf8::Lenient, None);
+        assert_eq!(
+            collect(&mut lenient, &[bad], false).unwrap(),
+            [("message".to_owned(), "hi \u{FFFD} there".to_owned())]
+        );
+    }
+
+    #[test]
+    fn byte_limit_enforces_exact_cap_before_reading_overflowing_chunk() {
+        let stream = b"data: ok\n\n";
+        let mut exact = Reader::new(Utf8::Strict, Some(stream.len()));
+        assert_eq!(
+            collect(&mut exact, &[stream], false).unwrap(),
+            [("message".to_owned(), "ok".to_owned())]
+        );
+
+        let mut capped = Reader::new(Utf8::Strict, Some(stream.len() - 1));
+        let mut seen = 0_usize;
+        let result = capped.push(stream, |_| {
+            seen += 1;
+            ControlFlow::<()>::Continue(())
+        });
+        assert_eq!(result, Err(Error::TooLarge));
+        assert_eq!(seen, 0);
+    }
+
+    #[test]
+    fn unterminated_trailing_event_is_pending_until_flushed() {
+        for raw in [
+            &b"data: tail"[..],
+            &b"data: tail\n"[..],
+            &b"data: tail\r\n"[..],
+            &b"data: tail\r"[..],
+        ] {
+            let mut reader = Reader::new(Utf8::Lenient, None);
+            assert!(collect(&mut reader, &[raw], false).unwrap().is_empty());
+            assert!(reader.has_pending());
+            let flushed = collect(&mut reader, &[], true).unwrap();
+            assert_eq!(flushed, [("message".to_owned(), "tail".to_owned())]);
+            assert!(!reader.has_pending());
+        }
+    }
+
+    #[test]
+    fn control_flow_break_stops_reading_immediately() {
+        let mut reader = Reader::new(Utf8::Strict, None);
+        let mut seen = Vec::new();
+        let flow = reader
+            .push(b"data: one\n\ndata: two\n\n", |event| {
+                seen.push(event.data.to_owned());
+                ControlFlow::Break("stopped")
+            })
+            .unwrap();
+        assert_eq!(flow, ControlFlow::Break("stopped"));
+        assert_eq!(seen, ["one"]);
+    }
+}

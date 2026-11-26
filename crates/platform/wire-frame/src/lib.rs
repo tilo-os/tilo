@@ -356,3 +356,6 @@ impl FrameError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

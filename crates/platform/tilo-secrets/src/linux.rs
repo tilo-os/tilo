@@ -401,6 +401,9 @@ pub(crate) fn read_nextcloud(key: &str) -> Result<Option<Secret>, SecretError> {
 }
 
 #[cfg(test)]
+mod nextcloud_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

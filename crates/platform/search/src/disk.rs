@@ -256,3 +256,190 @@ impl DiskWriter {
         self.reader.reload()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    tilo_test_env::scenario! {
+        fn a_disk_index_opens_only_what_it_can_read_and_shows_each_commit;
+
+        phase an_incompatible_index_is_refused_without_changing_it;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut builder = Schema::builder();
+            builder.add_text_field("body", STRING | STORED);
+            let schema = builder.build();
+            Index::create_in_dir(dir.path(), schema.clone()).unwrap();
+            let metadata = std::fs::read(dir.path().join("meta.json")).unwrap();
+
+            assert!(matches!(
+                DiskIndex::open_or_create(dir.path()),
+                Err(tantivy::TantivyError::SchemaError(_))
+            ));
+            assert_eq!(Index::open_in_dir(dir.path()).unwrap().schema(), schema);
+            assert_eq!(
+                std::fs::read(dir.path().join("meta.json")).unwrap(),
+                metadata
+            );
+        }
+
+        phase an_index_tantivy_0_22_wrote_opens_and_keeps_its_documents;
+        // Files' body index on a user's disk may have been written by tantivy
+        // 0.22 (index format 6). It opens as it is, keeps every document, and
+        // takes new writes and merges in the current format.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let fixture = include_str!("../tests/fixtures/tantivy-0.22-disk-index.hex");
+            for line in fixture.lines().filter(|line| !line.starts_with('#')) {
+                let (name, hex) = line.split_once(' ').unwrap();
+                let bytes: Vec<u8> = hex
+                    .as_bytes()
+                    .chunks(2)
+                    .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                    .collect();
+                std::fs::write(dir.path().join(name), bytes).unwrap();
+            }
+            let postings =
+                std::fs::read(dir.path().join("e43ba5cdcfcb434b81109ed4f5c24b98.idx")).unwrap();
+            let footer = String::from_utf8_lossy(&postings);
+            assert!(
+                footer.contains(r#""minor":22,"patch":1,"index_format_version":6"#),
+                "a segment tantivy 0.22.1 wrote"
+            );
+
+            let index = DiskIndex::open_or_create(dir.path()).unwrap();
+            let versions = index.versions().unwrap();
+            assert_eq!(versions.len(), 3);
+            assert_eq!(versions.get("/home/a/notes.txt"), Some(&1_700_000_000));
+            assert_eq!(versions.get("/home/a/travel.md"), Some(&1_700_000_200));
+            let budget: Vec<String> = index
+                .search("budget", 5)
+                .into_iter()
+                .map(|hit| hit.key)
+                .collect();
+            assert_eq!(budget.len(), 2);
+            assert!(budget.contains(&"/home/a/notes.txt".to_owned()));
+            assert!(budget.contains(&"/home/a/recipe.md".to_owned()));
+
+            // A merge over every segment rewrites the old ones in the current format.
+            let mut writer = index.writer(15_000_000, 2_000).unwrap();
+            writer
+                .upsert("/home/a/recipe.md", 1_700_000_300, "recipe", "soup")
+                .unwrap();
+            writer.commit().unwrap();
+            let segments = index.index.searchable_segment_ids().unwrap();
+            writer.writer.merge(&segments).wait().unwrap();
+            writer.close().unwrap();
+
+            let index = DiskIndex::open_or_create(dir.path()).unwrap();
+            let versions = index.versions().unwrap();
+            assert_eq!(versions.len(), 3);
+            assert_eq!(versions.get("/home/a/recipe.md"), Some(&1_700_000_300));
+            assert_eq!(index.search("lisbon", 5).len(), 1);
+            assert_eq!(index.search("soup", 5).len(), 1);
+            assert_eq!(index.search("budget", 5).len(), 1);
+        }
+
+        phase a_commit_is_searchable_without_a_reload;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let index = DiskIndex::open_or_create(dir.path()).unwrap();
+            let mut writer = index.writer(15_000_000, 2_000).unwrap();
+            writer.upsert("/a/one.md", 1, "one", "first").unwrap();
+            writer.commit().unwrap();
+            assert_eq!(index.search("first", 5).len(), 1, "the first commit");
+            let seen = index.generation();
+            writer.upsert("/a/two.md", 1, "two", "second").unwrap();
+            writer.commit().unwrap();
+            assert_ne!(index.generation(), seen, "a commit moves the generation");
+            assert_eq!(index.search("second", 5).len(), 1, "a later commit");
+        }
+    }
+
+    #[test]
+    fn documents_persist_version_and_rank_by_bm25() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let index = DiskIndex::open_or_create(dir.path()).unwrap();
+            let mut writer = index.writer(15_000_000, 2_000).unwrap();
+            writer
+                .upsert("/a/shopping.md", 3, "shopping", "apples oranges pears")
+                .unwrap();
+            writer
+                .upsert("/a/notes.md", 5, "notes", "Crème brûlée recipe, apples")
+                .unwrap();
+            writer.upsert("/a/gone.md", 1, "gone", "retired").unwrap();
+            writer.remove("/a/gone.md");
+            writer.commit().unwrap();
+        }
+        let index = DiskIndex::open_or_create(dir.path()).unwrap();
+        let versions = index.versions().unwrap();
+        assert_eq!(versions.get("/a/notes.md"), Some(&5));
+        assert!(!versions.contains_key("/a/gone.md"));
+        let hits = index.search("creme", 5);
+        assert_eq!(
+            hits.first().map(|hit| hit.key.as_str()),
+            Some("/a/notes.md")
+        );
+        let hits = index.search("shopping apples", 5);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].key, "/a/shopping.md", "a title word counts more");
+        assert!(index.search("retired", 5).is_empty());
+    }
+
+    #[test]
+    fn a_writer_a_crash_left_behind_does_not_lock_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = DiskIndex::open_or_create(dir.path()).unwrap();
+        // The lock file of a process that died holding the writer.
+        std::fs::write(dir.path().join(".tantivy-writer.lock"), b"").unwrap();
+        let mut writer = index.writer(15_000_000, 2_000).unwrap();
+        writer.upsert("/a/one.md", 1, "one", "first").unwrap();
+        assert!(
+            index.writer(15_000_000, 2_000).is_err(),
+            "a live writer still holds the index"
+        );
+        // A writer whose thread panicked releases the index as it unwinds.
+        std::thread::scope(|scope| {
+            let held = scope.spawn(move || {
+                let _writer = writer;
+                panic!("indexing failed");
+            });
+            assert!(held.join().is_err());
+        });
+        let mut writer = index.writer(15_000_000, 2_000).unwrap();
+        writer.upsert("/a/two.md", 1, "two", "second").unwrap();
+        writer.close().unwrap();
+        assert_eq!(index.search("second", 5).len(), 1, "close commits");
+        assert!(
+            index.search("first", 5).is_empty(),
+            "the panicked writer's change was never committed"
+        );
+        assert!(index.writer(15_000_000, 2_000).is_ok(), "close releases");
+    }
+
+    /// tantivy names its `meta.json` poller `thread-tantivy-meta-file-watcher`;
+    /// the kernel keeps its first 15 bytes.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_open_index_starts_no_meta_file_poller() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = DiskIndex::open_or_create(dir.path()).unwrap();
+        let mut writer = index.writer(15_000_000, 2_000).unwrap();
+        writer.upsert("/a/one.md", 1, "one", "first").unwrap();
+        writer.commit().unwrap();
+        let pollers: Vec<String> = std::fs::read_dir("/proc/self/task")
+            .unwrap()
+            .filter_map(|task| {
+                let comm = task.ok()?.path().join("comm");
+                let name = std::fs::read_to_string(comm).ok()?;
+                (name.trim() == "thread-tantivy-").then(|| name.trim().to_owned())
+            })
+            .collect();
+        assert!(
+            pollers.is_empty(),
+            "an open index polls meta.json: {pollers:?}"
+        );
+    }
+}

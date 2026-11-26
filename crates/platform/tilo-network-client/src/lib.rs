@@ -630,6 +630,205 @@ fn hex_dump(bytes: &[u8]) -> String {
     out
 }
 
+#[cfg(test)]
+mod tests {
+    /// The app the request tests act for.
+    const APP: &str = "so.tilo.api-tester";
+    use super::*;
+
+    fn ask(method: &str, url: &str) -> Ask {
+        Ask {
+            method: method.into(),
+            url: url.into(),
+            params: Vec::new(),
+            headers: Vec::new(),
+            vars: Vec::new(),
+            auth_scheme: String::new(),
+            auth_username: String::new(),
+            auth_header: String::new(),
+            auth_reference: String::new(),
+            body_mode: BodyMode::None,
+            body: String::new(),
+            form: Vec::new(),
+        }
+    }
+
+    fn env(pairs: &[(&str, &str)]) -> Vec<(String, String, String)> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).into(), (*value).into(), String::new()))
+            .collect()
+    }
+
+    #[test]
+    fn variables_resolve_where_written_and_an_unknown_one_stays_visible() {
+        let vars: std::collections::HashMap<String, String> =
+            [("base", "https://api.example.com"), ("id", "7")]
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect();
+        assert_eq!(
+            substitute("{{base}}/users/{{ id }}", &vars),
+            "https://api.example.com/users/7"
+        );
+        assert_eq!(substitute("{{missing}}", &vars), "{{missing}}");
+        assert_eq!(substitute("no braces", &vars), "no braces");
+        assert_eq!(substitute("a {{ b", &vars), "a {{ b");
+    }
+
+    #[test]
+    fn query_pairs_precede_fragments_and_reuse_query_separators() {
+        for (base, expected) in [
+            (
+                "/search#section?ignored",
+                "/search?q=rust%20lang#section?ignored",
+            ),
+            ("/search?sort=id#top", "/search?sort=id&q=rust%20lang#top"),
+            ("/search?#", "/search?q=rust%20lang#"),
+            ("/search?sort=id&", "/search?sort=id&q=rust%20lang"),
+        ] {
+            let mut ask = ask("GET", base);
+            ask.params = vec![("q".into(), "rust lang".into())];
+            assert_eq!(
+                build_outgoing(APP, &ask).unwrap().url,
+                expected,
+                "base: {base}"
+            );
+
+            ask.params.clear();
+            assert_eq!(build_outgoing(APP, &ask).unwrap().url, base);
+        }
+        for suffix in ["", "#section?ignored"] {
+            let mut ask = ask("GET", &format!("https://example.com/items&{suffix}"));
+            ask.params = vec![("q".into(), "test".into())];
+            assert_eq!(
+                build_outgoing(APP, &ask).unwrap().url,
+                format!("https://example.com/items&?q=test{suffix}")
+            );
+        }
+    }
+
+    #[test]
+    fn variables_reach_the_url_params_headers_and_body() {
+        let mut ask = ask("GET", "{{base}}/search");
+        ask.params = vec![("q".into(), "rust lang".into()), ("off".into(), "1".into())];
+        ask.headers = vec![
+            ("X-Trace".into(), "{{trace}}".into()),
+            ("  ".into(), "unnamed".into()),
+        ];
+        ask.vars = env(&[("base", "https://api.example.com"), ("trace", "abc")]);
+        let out = build_outgoing(APP, &ask).unwrap();
+        assert_eq!(
+            out.url,
+            "https://api.example.com/search?q=rust%20lang&off=1"
+        );
+        assert_eq!(out.headers, vec![("X-Trace".into(), "abc".into())]);
+    }
+
+    #[test]
+    fn a_body_follows_its_mode_and_keeps_a_content_type_it_was_given() {
+        let mut ask = ask("post", "https://x.test");
+        ask.body_mode = BodyMode::Json;
+        ask.body = r#"{"id":{{id}}}"#.into();
+        ask.vars = env(&[("id", "7")]);
+        let out = build_outgoing(APP, &ask).unwrap();
+        assert_eq!(out.method, "POST");
+        assert_eq!(out.body.as_deref(), Some(r#"{"id":7}"#));
+        assert_eq!(
+            out.headers,
+            vec![("Content-Type".into(), "application/json".into())]
+        );
+
+        ask.body_mode = BodyMode::Form;
+        ask.headers = vec![("content-type".into(), "text/plain".into())];
+        ask.form = vec![
+            ("q".into(), "a&b=c".into()),
+            ("off".into(), "1".into()),
+            ("name".into(), "{{id}}".into()),
+        ];
+        let out = build_outgoing(APP, &ask).unwrap();
+        assert_eq!(out.body.as_deref(), Some("q=a%26b%3Dc&off=1&name=7"));
+        assert_eq!(
+            out.headers,
+            vec![("content-type".into(), "text/plain".into())]
+        );
+
+        ask.body_mode = BodyMode::None;
+        ask.headers.clear();
+        assert!(build_outgoing(APP, &ask).unwrap().body.is_none());
+    }
+
+    #[test]
+    fn a_binary_body_is_a_hex_dump_and_a_text_body_is_shown_whole() {
+        let text = ShownBody::of(b"hello".to_vec(), true, true);
+        assert!(!text.binary);
+        assert_eq!(text.text, "hello");
+
+        let binary = ShownBody::of(vec![0xff, 0x00, b'A'], true, false);
+        assert!(binary.binary);
+        assert_eq!(
+            binary.text,
+            "00000000  ff 00 41                                         ..A\n"
+        );
+        assert_eq!(binary.bytes, 3);
+
+        // A body cut inside a character is not binary: it shows the text before the cut.
+        let cut = ShownBody::of(vec![b'o', b'k', 0xc3], false, false);
+        assert!(!cut.binary);
+        assert_eq!(cut.text, "ok");
+        assert_eq!(cut.bytes, 2);
+
+        assert!(textual("application/json; charset=utf-8"));
+        assert!(textual("text/plain"));
+        assert!(!textual("image/png"));
+        assert!(!textual(""));
+    }
+
+    #[test]
+    fn a_job_is_unknown_until_it_starts_and_a_bad_op_is_refused() {
+        let unheard: Moved = Arc::new(|_, _| {});
+        assert!(!cancel("no-such-job"));
+        assert!(start(APP, "job-1", "paint", "{}", Arc::clone(&unheard)).is_err());
+        assert!(start(APP, "job-2", "send", "not json", unheard).is_err());
+        assert!(call(APP, "paint", "{}").is_err());
+    }
+
+    #[test]
+    fn a_credential_is_kept_and_forgotten_on_this_device() {
+        tilo_secrets::keep_in_memory_for_process();
+        let reference = keep_credential(APP, "private-token").unwrap();
+        assert_eq!(
+            credential(APP, &reference).as_deref(),
+            Some("private-token")
+        );
+        forget_credential(APP, &reference).unwrap();
+        assert_eq!(credential(APP, &reference), None);
+
+        let mut ask = ask("GET", "https://x.test");
+        ask.auth_scheme = "bearer".into();
+        ask.auth_reference = keep_credential(APP, "secret123").unwrap();
+        assert_eq!(
+            build_outgoing(APP, &ask).unwrap().headers,
+            vec![("Authorization".into(), "Bearer secret123".into())]
+        );
+        ask.auth_scheme = "basic".into();
+        ask.auth_username = "user".into();
+        assert_eq!(
+            build_outgoing(APP, &ask).unwrap().headers,
+            vec![("Authorization".into(), "Basic dXNlcjpzZWNyZXQxMjM=".into())]
+        );
+        ask.auth_scheme = "api_key".into();
+        ask.auth_header = "X-Api-Key".into();
+        assert_eq!(
+            build_outgoing(APP, &ask).unwrap().headers,
+            vec![("X-Api-Key".into(), "secret123".into())]
+        );
+        ask.auth_reference = "not-there".into();
+        assert!(build_outgoing(APP, &ask).is_err());
+        forget_credential(APP, &ask.auth_reference).ok();
+    }
+}
+
 /// One response as the language's `web.get` and `web.post` read it: the status, the headers
 /// each `Name: value`, and the body whole, up to `max_body` bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -703,4 +902,98 @@ pub fn fetch(
         headers,
         body: read,
     })
+}
+
+#[cfg(test)]
+mod fetch_tests {
+    use super::*;
+    use test_http::{Reply as Served, Responder};
+
+    /// The one path `web.get` and `web.post` take: any method, its headers both ways, a body
+    /// sent and read whole, and the answer's status and headers.
+    #[test]
+    fn one_request_moves_a_body_and_its_headers_both_ways() {
+        let served = Responder::start(vec![
+            Served::status(200)
+                .header("content-type", "text/plain")
+                .body("hello"),
+            Served::status(201).body("made"),
+        ]);
+        let answer = fetch(
+            "GET",
+            &served.url(),
+            &[("X-Test".to_owned(), "one".to_owned())],
+            None,
+            2 * 1024 * 1024,
+            std::time::Duration::from_secs(10),
+        )
+        .expect("the reply");
+        assert_eq!(answer.status, 200);
+        assert_eq!(answer.status_text, "OK");
+        assert_eq!(answer.body, b"hello");
+        assert!(
+            answer
+                .headers
+                .iter()
+                .any(|line| line.eq_ignore_ascii_case("content-type: text/plain")),
+            "{:?}",
+            answer.headers
+        );
+        let seen = served.next_request();
+        assert_eq!(seen.method, "GET");
+        assert_eq!(seen.header("x-test"), Some("one"));
+
+        let post = fetch(
+            "POST",
+            &served.url(),
+            &[("content-type".to_owned(), "application/json".to_owned())],
+            Some(br#"{"a":1}"#),
+            2 * 1024 * 1024,
+            std::time::Duration::from_secs(10),
+        )
+        .expect("the reply");
+        assert_eq!(post.status, 201);
+        assert_eq!(post.body, b"made");
+        let seen = served.next_request();
+        assert_eq!(seen.method, "POST");
+        assert_eq!(seen.body_text(), r#"{"a":1}"#);
+    }
+
+    /// A body past the bound is refused rather than kept whole: the language reads values.
+    #[test]
+    fn a_reply_larger_than_its_bound_is_refused() {
+        let served = Responder::start(vec![Served::status(200).body("0123456789")]);
+        let refused = fetch(
+            "GET",
+            &served.url(),
+            &[],
+            None,
+            4,
+            std::time::Duration::from_secs(10),
+        );
+        assert_eq!(
+            refused,
+            Err("the reply is larger than 4 bytes".to_owned()),
+            "{refused:?}"
+        );
+    }
+
+    /// A host that answers nothing is a value with a reason, never a trap.
+    #[test]
+    fn an_unreachable_host_answers_a_reason() {
+        let served = Responder::silent();
+        let answer = fetch(
+            "GET",
+            &format!("http://127.0.0.1:{}/", served.port()),
+            &[],
+            None,
+            1024,
+            std::time::Duration::from_millis(200),
+        );
+        let reason = answer.expect_err("no answer");
+        assert!(
+            reason.contains("no answer") || reason.contains("could not reach"),
+            "{reason}"
+        );
+    }
 }

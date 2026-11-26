@@ -900,6 +900,39 @@ fn channel<T: Send + 'static>() -> (impl FnOnce(T) + Send, std::sync::mpsc::Rece
     (deliver, rx)
 }
 
+#[cfg(test)]
+mod directory_contract_tests {
+    use super::*;
+
+    #[test]
+    fn writable_directory_survives_wire_encoding_without_upgrading_read_picks() {
+        for (request, expected) in [
+            (
+                PickRequest::directory("Read folder", "Choose"),
+                PickMode::Directory,
+            ),
+            (
+                PickRequest::writable_directory("Import into folder", "Import here"),
+                PickMode::WritableDirectory,
+            ),
+        ] {
+            let frame = serde_json::to_vec(&pick_request(&request)(7)).unwrap();
+            let Request::Pick {
+                mode,
+                multiple,
+                suggested_name,
+                ..
+            } = serde_json::from_slice::<Request>(&frame).unwrap()
+            else {
+                panic!("not a pick")
+            };
+            assert_eq!(mode, expected);
+            assert!(!multiple);
+            assert_eq!(suggested_name, None);
+        }
+    }
+}
+
 fn pick_request(request: &PickRequest) -> impl FnOnce(u64) -> Request + use<> {
     let (mode, multiple, suggested_name) = match &request.kind {
         PickKind::Open { multiple } => (PickMode::Open, *multiple, None),
@@ -1323,5 +1356,392 @@ fn reopen_and_write(link: &ShellLink, reference: &Path, bytes: &[u8]) -> SaveOut
         Ok(Ok((file, held, _name))) => write_and_commit(link, file, &held, bytes),
         Ok(Err(reason)) => SaveOutcome::Failed(reason),
         Err(_) => SaveOutcome::Failed("the chooser did not answer in time".to_owned()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(unix)]
+    use std::io::Read as _;
+    use std::io::{BufRead as _, BufReader};
+    use std::path::Path;
+    use std::time::Duration;
+
+    fn answer() -> Duration {
+        tilo_test_env::hang_bound()
+    }
+
+    /// A reply the shell writes, with the files it hands over.
+    struct Answer(Reply, Vec<std::fs::File>);
+
+    impl Answer {
+        fn reply(reply: Reply) -> Self {
+            Self(reply, Vec::new())
+        }
+
+        /// A choice of `documents`, each opened in `file`.
+        fn handed(id: u64, documents: &[(&str, std::fs::File)]) -> Self {
+            Self(
+                Reply::Handed {
+                    id,
+                    documents: documents
+                        .iter()
+                        .map(|(reference, _)| HandedDocument {
+                            reference: PathBuf::from(reference),
+                            name: Path::new(reference)
+                                .file_name()
+                                .map_or_else(String::new, |name| {
+                                    name.to_string_lossy().into_owned()
+                                }),
+                        })
+                        .collect(),
+                },
+                documents
+                    .iter()
+                    .map(|(_, file)| file.try_clone().unwrap())
+                    .collect(),
+            )
+        }
+    }
+
+    fn shell(respond: impl Fn(Request) -> Answer + Send + 'static) -> Stream {
+        let (app, shell) = tilo_socket::pair().unwrap();
+        std::thread::spawn(move || {
+            let writer = shell.try_clone().unwrap();
+            for line in BufReader::new(shell).lines() {
+                let Ok(line) = line else { break };
+                let request: Request = serde_json::from_str(&line).unwrap();
+                let Answer(reply, files) = respond(request);
+                let mut frame = serde_json::to_vec(&reply).unwrap();
+                frame.push(b'\n');
+                #[cfg(unix)]
+                let fds: Vec<Descriptor> = files
+                    .into_iter()
+                    .map(|file| Descriptor::from(OwnedFd::from(file)))
+                    .collect();
+                #[cfg(not(unix))]
+                let fds: Vec<Descriptor> = {
+                    drop(files);
+                    Vec::new()
+                };
+                if send_frame(&writer, &frame, &fds).is_err() {
+                    break;
+                }
+            }
+        });
+        app
+    }
+
+    fn id_of(request: &Request) -> u64 {
+        match request {
+            Request::Pick { id, .. }
+            | Request::Open { id, .. }
+            | Request::OpenUri { id, .. }
+            | Request::Reopen { id, .. }
+            | Request::Saved { id, .. }
+            | Request::PickContents { id, .. }
+            | Request::ReadContents { id, .. }
+            | Request::ReleaseContents { id, .. }
+            | Request::ChooseApp { id, .. }
+            | Request::AwaitIdentity { id }
+            | Request::ChooseIdentity { id } => *id,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_an_inherited_socket_is_adopted() {
+        use std::os::fd::IntoRawFd as _;
+
+        let file = tempfile::tempfile().unwrap().into_raw_fd();
+        assert!(adopt_socket(file).is_none(), "a file is not the chooser");
+        // SAFETY: the test owns `file` and nothing adopted it.
+        drop(unsafe { std::fs::File::from_raw_fd(file) });
+        assert!(adopt_socket(2).is_none());
+
+        let (app, mut shell) = tilo_socket::pair().unwrap();
+        let adopted = adopt_socket(app.into_raw_fd()).expect("a socket is adopted");
+        // SAFETY: reading the flags of a descriptor the test owns.
+        let flags =
+            unsafe { libc::fcntl(std::os::fd::AsRawFd::as_raw_fd(&adopted), libc::F_GETFD) };
+        assert_ne!(
+            flags & libc::FD_CLOEXEC,
+            0,
+            "the app's children don't inherit it"
+        );
+        drop(adopted);
+        let mut rest = Vec::new();
+        shell.read_to_end(&mut rest).unwrap();
+        assert!(rest.is_empty(), "dropping the adopted socket closes it");
+    }
+
+    tilo_test_env::scenario! {
+        fn an_app_asks_its_shell_and_reports_the_shells_answer;
+
+        phase the_shell_chooser_keeps_the_picker_contract;
+        {
+            let chooser = picker(
+                shell(|request| {
+                    Answer::reply(Reply::Failed {
+                        id: id_of(&request),
+                        reason: "no".into(),
+                    })
+                }),
+                crate::unavailable_picker(),
+            )
+            .unwrap();
+            crate::conformance::check_picker_contract(&*chooser);
+        }
+
+        phase a_pick_carries_the_request_and_delivers_what_the_shell_chose;
+        {
+            let (seen_tx, seen) = std::sync::mpsc::channel();
+            let chooser = picker(
+                shell(move |request| {
+                    let id = id_of(&request);
+                    let _ = seen_tx.send(request);
+                    let with = |name: &str| {
+                        let file = tempfile::tempfile().unwrap();
+                        (name.to_owned(), file)
+                    };
+                    let documents = [with("/data/in/x.xlsx"), with("/data/in/y.xlsx")];
+                    Answer::handed(
+                        id,
+                        &documents
+                            .iter()
+                            .map(|(name, file)| (name.as_str(), file.try_clone().unwrap()))
+                            .collect::<Vec<_>>(),
+                    )
+                }),
+                crate::unavailable_picker(),
+            )
+            .unwrap();
+            let request = PickRequest::open("Import spreadsheet", "Import")
+                .filter(FileFilter::new("Excel").glob("*.xlsx"));
+            assert_eq!(
+                chooser.pick(request).recv_timeout(answer()).unwrap(),
+                PortalOutcome::Opened("/data/in/x.xlsx".into())
+            );
+            let Request::Pick {
+                mode,
+                multiple,
+                title,
+                accept_label,
+                suggested_name,
+                filters,
+                ..
+            } = seen.recv_timeout(answer()).unwrap()
+            else {
+                panic!("a chooser request is a pick");
+            };
+            assert_eq!(mode, PickMode::Open);
+            assert!(!multiple);
+            assert_eq!(title, "Import spreadsheet");
+            assert_eq!(accept_label, "Import");
+            assert_eq!(suggested_name, None);
+            assert_eq!(
+                filters.first().map(|f| f.globs.clone()),
+                Some(vec!["*.xlsx".to_owned()])
+            );
+
+            assert_eq!(
+                chooser
+                    .pick_multiple(PickRequest::open_multiple("Open", "Open"))
+                    .recv_timeout(answer())
+                    .unwrap(),
+                MultiOutcome::Selected(vec!["/data/in/x.xlsx".into(), "/data/in/y.xlsx".into()])
+            );
+            let Request::Pick { multiple, .. } = seen.recv_timeout(answer()).unwrap() else {
+                panic!("a chooser request is a pick");
+            };
+            assert!(multiple);
+        }
+
+        phase nobody_at_the_computer_falls_back_to_the_unattended_picker;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let unattended = crate::unattended_picker(directory.path().to_path_buf());
+            let nobody = |request: Request| {
+                Answer::reply(Reply::Nobody {
+                    id: id_of(&request),
+                })
+            };
+            let chooser = picker(shell(nobody), unattended.expect("an unattended picker")).unwrap();
+            assert_eq!(
+                chooser
+                    .pick(PickRequest::save("Save", "Save", "report.xlsx"))
+                    .recv_timeout(answer())
+                    .unwrap(),
+                PortalOutcome::Opened(directory.path().join("report.xlsx"))
+            );
+            assert!(matches!(
+                chooser.pick(PickRequest::open("Open", "Open")).recv_timeout(answer()),
+                Ok(PortalOutcome::Failed(reason)) if reason.contains("nobody")
+            ));
+
+            // An app that brought no chooser of its own says plainly there is none.
+            let alone = picker(shell(nobody), crate::unavailable_picker()).unwrap();
+            assert!(matches!(
+                alone
+                    .pick(PickRequest::save("Save", "Save", "report.xlsx"))
+                    .recv_timeout(answer()),
+                Ok(PortalOutcome::Failed(_))
+            ));
+        }
+
+        phase opening_a_file_asks_the_shell_and_reports_its_answer;
+        {
+            let chooser = picker(
+                shell(|request| {
+                    Answer::reply(match request {
+                        Request::Open { id, path } if path == Path::new("/data/in/a.docx") => {
+                            Reply::Opened { id }
+                        }
+                        other => Reply::Failed {
+                            id: id_of(&other),
+                            reason: "not granted".into(),
+                        },
+                    })
+                }),
+                crate::unavailable_picker(),
+            )
+            .unwrap();
+            assert_eq!(
+                chooser
+                    .launch(LaunchRequest::open("/data/in/a.docx"))
+                    .recv_timeout(answer())
+                    .unwrap(),
+                LaunchOutcome::Opened
+            );
+            assert_eq!(
+                chooser
+                    .launch(LaunchRequest::open("/etc/shadow"))
+                    .recv_timeout(answer())
+                    .unwrap(),
+                LaunchOutcome::Failed("not granted".into())
+            );
+        }
+
+        phase the_app_chooser_answers_the_app_chosen_or_none;
+        {
+            let terminal = ChosenApp {
+                id: "org.example.Terminal".into(),
+                name: "Terminal".into(),
+                window_ids: vec!["org.example.Terminal".into(), "terminal".into()],
+            };
+            let answer_with = terminal.clone();
+            let link = ShellLink::connect(shell(move |request| {
+                Answer::reply(match request {
+                    Request::ChooseApp { id, purpose } if purpose == "Paste in apps" => {
+                        Reply::AppChosen {
+                            id,
+                            app: answer_with.clone(),
+                        }
+                    }
+                    other => Reply::Cancelled { id: id_of(&other) },
+                })
+            }))
+            .unwrap();
+            let (chosen_tx, chosen) = std::sync::mpsc::channel();
+            let tx = chosen_tx.clone();
+            link.choose_app("Paste in apps", move |outcome| tx.send(outcome).unwrap());
+            assert_eq!(chosen.recv_timeout(answer()).unwrap(), Ok(Some(terminal)));
+            link.choose_app("Something else", move |outcome| {
+                chosen_tx.send(outcome).unwrap();
+            });
+            assert_eq!(chosen.recv_timeout(answer()).unwrap(), Ok(None));
+        }
+
+        phase a_link_opens_through_the_shell_and_only_what_it_leaves_goes_elsewhere;
+        {
+            let elsewhere = Arc::new(Elsewhere::default());
+            let opener = ShellLink::connect(shell(|request| {
+                Answer::reply(match request {
+                    Request::OpenUri { id, uri } if uri.starts_with("settings:") => {
+                        Reply::Opened { id }
+                    }
+                    Request::OpenUri { id, uri } if uri.starts_with("mailto:") => {
+                        Reply::Unclaimed { id }
+                    }
+                    other => Reply::Failed {
+                        id: id_of(&other),
+                        reason: "the app could not start".into(),
+                    },
+                })
+            }))
+            .unwrap()
+            .opener(Arc::clone(&elsewhere) as Arc<dyn crate::UriOpener>);
+            crate::conformance::check_opener_contract(&*opener);
+
+            opener.open("settings://updates").unwrap();
+            assert!(elsewhere.0.lock().unwrap().is_empty());
+            opener.open("mailto:ada@example.test").unwrap();
+            assert_eq!(*elsewhere.0.lock().unwrap(), ["mailto:ada@example.test"]);
+            let refused = opener.open("web+notes:today").unwrap_err();
+            assert_eq!(refused.to_string(), "the app could not start");
+            assert_eq!(
+                elsewhere.0.lock().unwrap().len(),
+                1,
+                "a refusal is reported, not rerouted"
+            );
+
+            let (app, gone) = tilo_socket::pair().unwrap();
+            drop(gone);
+            let alone = ShellLink::connect(app)
+                .unwrap()
+                .opener(Arc::clone(&elsewhere) as Arc<dyn crate::UriOpener>);
+            alone.open("https://example.test/").unwrap();
+            assert_eq!(
+                elsewhere.0.lock().unwrap().last().map(String::as_str),
+                Some("https://example.test/"),
+                "without its shell an app's links still open"
+            );
+        }
+
+        phase a_cancelled_pick_and_a_gone_shell_answer_instead_of_hanging;
+        {
+            let chooser = picker(
+                shell(|request| {
+                    Answer::reply(Reply::Cancelled {
+                        id: id_of(&request),
+                    })
+                }),
+                crate::unavailable_picker(),
+            )
+            .unwrap();
+            assert_eq!(
+                chooser
+                    .pick(PickRequest::open("Open", "Open"))
+                    .recv_timeout(answer())
+                    .unwrap(),
+                PortalOutcome::Cancelled
+            );
+
+            let (app, shell) = tilo_socket::pair().unwrap();
+            let chooser = picker(app, crate::unavailable_picker()).unwrap();
+            let waiting = chooser.pick(PickRequest::open("Open", "Open"));
+            drop(shell);
+            assert!(matches!(
+                waiting.recv_timeout(answer()),
+                Ok(PortalOutcome::Failed(_))
+            ));
+            assert!(matches!(
+                chooser
+                    .launch(LaunchRequest::open("/data/in/a.docx"))
+                    .recv_timeout(answer()),
+                Ok(LaunchOutcome::Failed(_))
+            ));
+        }
+    }
+
+    #[derive(Default)]
+    struct Elsewhere(Mutex<Vec<String>>);
+
+    impl crate::UriOpener for Elsewhere {
+        fn open(&self, uri: &str) -> std::io::Result<()> {
+            self.0.lock().unwrap().push(uri.to_owned());
+            Ok(())
+        }
     }
 }

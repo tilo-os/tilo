@@ -908,3 +908,577 @@ pub mod testing {
         libc::WEXITSTATUS(status)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(target_os = "linux")]
+    use tilo_test_env::SpawnUnderEnvLock as _;
+
+    tilo_test_env::scenario! {
+        #[cfg(target_os = "linux")]
+        fn seccomp_profiles_compile_to_the_rules_their_grants_allow;
+
+        phase seccomp_baselines_compile_serialise_and_select_write_exec_rules;
+        {
+            {
+                let bytes = compile_baseline(SeccompProfile::TiloDefault).expect("compile");
+                assert!(!bytes.is_empty(), "empty BPF");
+                assert_eq!(
+                    bytes.len() % 8,
+                    0,
+                    "BPF blob length {} not aligned to 8-byte sock_filter",
+                    bytes.len()
+                );
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let path = write_baseline_to(dir.path(), SeccompProfile::TiloDefault).unwrap();
+                assert!(path.exists());
+                let bytes = std::fs::read(&path).unwrap();
+                assert_eq!(
+                    bytes,
+                    compile_baseline(SeccompProfile::TiloDefault).unwrap()
+                );
+            }
+            {
+                let strict = compile_baseline(SeccompProfile::TiloDefault).unwrap();
+                let jit = compile_baseline(SeccompProfile::TiloJit).unwrap();
+                assert!(
+                    strict.len() > jit.len(),
+                    "the strict profile must carry more program than the JIT one \
+                 (strict={} bytes, jit={} bytes)",
+                    strict.len(),
+                    jit.len()
+                );
+                assert!(!jit.is_empty());
+                assert_eq!(jit.len() % 8, 0);
+            }
+            {
+                let mut rules = BTreeMap::new();
+                rules.insert(libc::SYS_ptrace, Vec::new());
+                let program = deny_list_program(rules.clone()).unwrap();
+                assert_eq!(compile_deny_list(rules).unwrap(), program_bytes(&program));
+                assert_eq!(program_bytes(&program).len(), program.len() * 8);
+            }
+        }
+
+        phase io_uring_is_refused_unless_the_app_holds_the_grant;
+        // `io_uring` is a permission: the baseline refuses it, an app holding
+        // the grant reaches the kernel. EPERM is what tokio's driver and libuv
+        // treat as "no `io_uring` here" and fall back to `epoll` from.
+        {
+            // `io_uring_setup(0, NULL)`: the kernel itself answers EINVAL (no
+            // entries) or, where the host disabled io_uring, EPERM or ENOSYS.
+            fn setup_errno() -> i32 {
+                // SAFETY: zero entries and a null parameter block; the kernel
+                // rejects the call before touching memory.
+                let rc = unsafe { libc::syscall(libc::SYS_io_uring_setup, 0_i64, 0_i64) };
+                if rc >= 0 {
+                    // SAFETY: closing the descriptor the kernel just returned.
+                    unsafe { libc::close(i32::try_from(rc).unwrap_or(-1)) };
+                    0
+                } else {
+                    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+                }
+            }
+            fn under(grants: SyscallGrants) -> i32 {
+                let program = baseline_program_with(SeccompProfile::TiloDefault, grants).unwrap();
+                // SAFETY: the child installs a filter, makes one raw syscall and
+                // exits without returning into the test harness.
+                let pid = unsafe { libc::fork() };
+                assert!(pid >= 0, "fork failed");
+                if pid == 0 {
+                    let code = if seccompiler::apply_filter(&program).is_err() {
+                        255
+                    } else {
+                        setup_errno()
+                    };
+                    // SAFETY: `_exit` does not unwind.
+                    unsafe { libc::_exit(code) };
+                }
+                let mut status = 0;
+                // SAFETY: waiting on our own child.
+                unsafe { libc::waitpid(pid, &raw mut status, 0) };
+                assert!(libc::WIFEXITED(status), "status {status:#x}");
+                libc::WEXITSTATUS(status)
+            }
+
+            let rules = baseline_rules(SeccompProfile::TiloDefault, SyscallGrants::default()).unwrap();
+            let granted = baseline_rules(
+                SeccompProfile::TiloDefault,
+                SyscallGrants {
+                    io_uring: true,
+                    ..SyscallGrants::default()
+                },
+            )
+            .unwrap();
+            for nr in IO_URING_SYSCALLS {
+                assert_eq!(rules.get(nr), Some(&Vec::new()), "syscall {nr} not refused");
+                assert!(
+                    !granted.contains_key(nr),
+                    "syscall {nr} refused despite the grant"
+                );
+            }
+            // Every profile refuses it by default; the grant changes nothing else.
+            for profile in [
+                SeccompProfile::TiloDefault,
+                SeccompProfile::TiloJit,
+                SeccompProfile::TiloWebEngine,
+            ] {
+                let mut denied = baseline_rules(profile, SyscallGrants::default()).unwrap();
+                let allowed = baseline_rules(profile, SyscallGrants {
+                    io_uring: true,
+                    ..SyscallGrants::default()
+                }).unwrap();
+                for nr in IO_URING_SYSCALLS {
+                    assert!(denied.remove(nr).is_some());
+                }
+                assert_eq!(denied, allowed, "{}", profile.as_str());
+            }
+
+            assert_eq!(
+                under(SyscallGrants::default()),
+                libc::EPERM,
+                "the baseline must refuse io_uring_setup with EPERM"
+            );
+            let host = setup_errno();
+            if host != libc::EPERM {
+                assert_eq!(
+                    under(SyscallGrants {
+                    io_uring: true,
+                    ..SyscallGrants::default()
+                }),
+                    host,
+                    "with the grant the kernel answers, as it does unconfined"
+                );
+            }
+        }
+
+        phase only_the_web_engine_profile_builds_a_nested_sandbox;
+        // The web engine gets the user, PID and network namespaces and chroot of
+        // Chromium's renderer sandbox; every profile refuses the rest.
+        {
+            for profile in [
+                SeccompProfile::TiloDefault,
+                SeccompProfile::TiloJit,
+                SeccompProfile::TiloWebEngine,
+            ] {
+                assert_eq!(
+                    testing::probe_namespaces_under(profile),
+                    0,
+                    "{}: 20 = a sandbox namespace got the wrong answer, 21 = another \
+                 namespace kind was allowed, 22 = chroot got the wrong answer, \
+                 12 = the filter would not install",
+                    profile.as_str()
+                );
+            }
+        }
+    }
+
+    /// A 32-bit call through `int 0x80`, as Wine's `WoW64` mode makes it. `ebx` holds the one
+    /// argument; LLVM keeps `rbx` for itself, so it is swapped in and back around the call.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn i386_call(nr: i32, arg: u32) -> i32 {
+        let result: i32;
+        // SAFETY: `int 0x80` enters the kernel's 32-bit entry and returns; rbx is restored.
+        unsafe {
+            std::arch::asm!(
+                "xchg {arg:r}, rbx",
+                "int 0x80",
+                "xchg {arg:r}, rbx",
+                arg = inout(reg) u64::from(arg) => _,
+                inlateout("eax") nr => result,
+                options(nostack),
+            );
+        }
+        result
+    }
+
+    /// How a forked child ended.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[derive(Debug, PartialEq, Eq)]
+    enum Ended {
+        /// It exited with the call's result (its magnitude, at most 99).
+        Exited(i32),
+        /// A signal killed it.
+        Killed(i32),
+    }
+
+    /// How a forked child that installs `program` (or none) and makes one i386 call ended.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn i386_call_under(program: Option<&BpfProgram>, nr: i32) -> Ended {
+        // SAFETY: the child installs a filter, makes one call and exits without unwinding.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            if let Some(program) = program
+                && seccompiler::apply_filter(program).is_err()
+            {
+                // SAFETY: `_exit` does not unwind.
+                unsafe { libc::_exit(100) };
+            }
+            // A null descriptor: an allowed set_thread_area answers EFAULT.
+            let result = i386_call(nr, 0);
+            // SAFETY: `_exit` does not unwind.
+            unsafe { libc::_exit(i32::try_from(result.unsigned_abs().min(99)).unwrap_or(99)) };
+        }
+        let mut status = 0;
+        // SAFETY: waiting for the child forked above.
+        assert_eq!(unsafe { libc::waitpid(pid, &raw mut status, 0) }, pid);
+        if libc::WIFSIGNALED(status) {
+            Ended::Killed(libc::WTERMSIG(status))
+        } else {
+            Ended::Exited(libc::WEXITSTATUS(status))
+        }
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn wine_may_set_its_32_bit_thread_area_and_make_no_other_32_bit_call() {
+        const I386_GETPID: i32 = 20;
+        const I386_SET_THREAD_AREA: i32 = 243;
+        if matches!(i386_call_under(None, I386_GETPID), Ended::Killed(_)) {
+            eprintln!("this kernel takes no 32-bit calls; nothing to check");
+            return;
+        }
+        let wine = baseline_program_with(
+            SeccompProfile::TiloJit,
+            SyscallGrants {
+                wow64_thread_area: true,
+                ..SyscallGrants::default()
+            },
+        )
+        .expect("compile the Wine filter");
+        let plain = baseline_program(SeccompProfile::TiloJit).expect("compile the baseline");
+        assert_eq!(
+            i386_call_under(Some(&wine), I386_SET_THREAD_AREA),
+            Ended::Exited(libc::EFAULT),
+            "the granted call reaches the kernel"
+        );
+        assert_eq!(
+            i386_call_under(Some(&wine), I386_GETPID),
+            Ended::Killed(libc::SIGSYS),
+            "every other 32-bit call is still killed"
+        );
+        assert_eq!(
+            i386_call_under(Some(&plain), I386_SET_THREAD_AREA),
+            Ended::Killed(libc::SIGSYS),
+            "without the grant the call is killed"
+        );
+        assert_eq!(
+            plain.len() + 4,
+            wine.len(),
+            "the grant adds only the exception ahead of the same rules"
+        );
+        assert_eq!(plain[3..], wine[7..]);
+    }
+
+    #[test]
+    fn unknown_profile_name_resolves_to_the_strict_one() {
+        for name in ["tilo-default", "", "tilo-jitt", "TILO-JIT", "anything"] {
+            assert_eq!(
+                SeccompProfile::parse(name),
+                SeccompProfile::TiloDefault,
+                "{name:?} must not resolve to a weaker profile"
+            );
+        }
+        assert_eq!(SeccompProfile::parse("tilo-jit"), SeccompProfile::TiloJit);
+    }
+
+    tilo_test_env::scenario! {
+        #[cfg(target_os = "linux")]
+        fn seccomp_programs_are_enforced_by_the_kernel;
+
+        phase seccomp_filters_are_enforced_by_the_kernel;
+        {
+            // Phase `clone3_compat_preserves_pthreads_without_exposing_clone3`.
+            {
+                let current = std::env::current_exe().expect("current test executable");
+                let status = std::process::Command::new(current)
+                    .arg("seccomp::tests::thread_creation_probe_in_clean_process")
+                    .arg("--exact")
+                    .arg("--test-threads=1")
+                    .env("TILO_SECCOMP_THREAD_PROBE", "1")
+                    .status_locked()
+                    .expect("run clean seccomp probe process");
+                assert_eq!(
+                    status.code(),
+                    Some(0),
+                    "11 = pthread creation was refused, 12 = a filter would not install"
+                );
+            }
+            {
+                assert_eq!(
+                    testing::probe_mappings_under(SeccompProfile::TiloDefault),
+                    0,
+                    "10 = W+X was allowed, 11 = an ordinary mapping was refused, \
+                 12 = the filter would not install"
+                );
+            }
+            {
+                for profile in [SeccompProfile::TiloJit, SeccompProfile::TiloWebEngine] {
+                    assert_eq!(
+                        testing::probe_mappings_under(profile),
+                        0,
+                        "{}: 10 = W+X was allowed, 11 = an ordinary mapping was refused, \
+                     12 = the filter would not install",
+                        profile.as_str()
+                    );
+                }
+            }
+            {
+                let program = baseline_program(SeccompProfile::TiloDefault).expect("compile filter");
+                // SAFETY: the child installs a filter, invokes raw syscalls with inert
+                // arguments, and exits without returning into the test harness.
+                let pid = unsafe { libc::fork() };
+                assert!(pid >= 0, "fork failed");
+                if pid == 0 {
+                    if seccompiler::apply_filter(&program).is_err() {
+                        // SAFETY: `_exit` does not unwind.
+                        unsafe { libc::_exit(12) };
+                    }
+                    for syscall in [
+                        libc::SYS_userfaultfd,
+                        libc::SYS_perf_event_open,
+                        libc::SYS_pidfd_getfd,
+                        libc::SYS_process_vm_readv,
+                    ] {
+                        // SAFETY: arguments are ignored because seccomp returns EPERM
+                        // before the target syscall runs.
+                        let result = unsafe { libc::syscall(syscall, -1_i64, 0_i64, 0_i64, 0_i64) };
+                        if result != -1
+                            || std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM)
+                        {
+                            // SAFETY: `_exit` does not unwind.
+                            unsafe { libc::_exit(10) };
+                        }
+                    }
+                    // SAFETY: `_exit` does not unwind.
+                    unsafe { libc::_exit(0) };
+                }
+                let mut status = 0_i32;
+                // SAFETY: `pid` is our own child.
+                unsafe { libc::waitpid(pid, &raw mut status, 0) };
+                assert!(libc::WIFEXITED(status));
+                assert_eq!(libc::WEXITSTATUS(status), 0);
+            }
+            {
+                let program = parser_program().expect("compile filter");
+                // SAFETY: the child installs a filter, invokes raw syscalls with inert
+                // arguments, and exits without returning into the test harness.
+                let pid = unsafe { libc::fork() };
+                assert!(pid >= 0, "fork failed");
+                if pid == 0 {
+                    if seccompiler::apply_filter(&program).is_err() {
+                        // SAFETY: `_exit` does not unwind.
+                        unsafe { libc::_exit(12) };
+                    }
+                    for family in [libc::AF_UNIX, libc::AF_INET, libc::AF_INET6] {
+                        // SAFETY: socket(2) with constant arguments.
+                        let fd = unsafe { libc::socket(family, libc::SOCK_STREAM, 0) };
+                        if fd != -1
+                            || std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM)
+                        {
+                            // SAFETY: `_exit` does not unwind.
+                            unsafe { libc::_exit(10) };
+                        }
+                    }
+                    let path = c"/bin/true";
+                    let argv = [path.as_ptr(), std::ptr::null()];
+                    let envp = [std::ptr::null::<libc::c_char>()];
+                    // SAFETY: valid NUL-terminated argument vectors.
+                    let rc = unsafe { libc::execve(path.as_ptr(), argv.as_ptr(), envp.as_ptr()) };
+                    if rc != -1 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM) {
+                        // SAFETY: `_exit` does not unwind.
+                        unsafe { libc::_exit(11) };
+                    }
+                    // SAFETY: `_exit` does not unwind.
+                    unsafe { libc::_exit(0) };
+                }
+                let mut status = 0;
+                // SAFETY: waiting on our own child.
+                unsafe { libc::waitpid(pid, &raw mut status, 0) };
+                assert!(libc::WIFEXITED(status));
+                assert_eq!(
+                    libc::WEXITSTATUS(status),
+                    0,
+                    "10 = a socket was created, 11 = exec was allowed, 12 = the filter would not install"
+                );
+            }
+        }
+
+        phase parser_program_with_socket_pairs_allows_pairs_and_no_socket;
+        // A media helper's filter lets it make a connected pair, which its
+        // framework's buses wake through, and still no socket that could be
+        // bound or connected.
+        {
+            let program = parser_program_with_socket_pairs().expect("compile filter");
+            // SAFETY: the child installs a filter, invokes raw syscalls with inert
+            // arguments, and exits without returning into the test harness.
+            let pid = unsafe { libc::fork() };
+            assert!(pid >= 0, "fork failed");
+            if pid == 0 {
+                if seccompiler::apply_filter(&program).is_err() {
+                    // SAFETY: `_exit` does not unwind.
+                    unsafe { libc::_exit(12) };
+                }
+                let mut pair = [-1_i32; 2];
+                // SAFETY: socketpair(2) writes two descriptors into `pair`.
+                let rc =
+                    unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, pair.as_mut_ptr()) };
+                if rc != 0 {
+                    // SAFETY: `_exit` does not unwind.
+                    unsafe { libc::_exit(13) };
+                }
+                for family in [libc::AF_UNIX, libc::AF_INET, libc::AF_INET6] {
+                    // SAFETY: socket(2) with constant arguments.
+                    let fd = unsafe { libc::socket(family, libc::SOCK_STREAM, 0) };
+                    if fd != -1 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM) {
+                        // SAFETY: `_exit` does not unwind.
+                        unsafe { libc::_exit(10) };
+                    }
+                }
+                // SAFETY: `_exit` does not unwind.
+                unsafe { libc::_exit(0) };
+            }
+            let mut status = 0;
+            // SAFETY: waiting on our own child.
+            unsafe { libc::waitpid(pid, &raw mut status, 0) };
+            assert!(libc::WIFEXITED(status));
+            assert_eq!(
+                libc::WEXITSTATUS(status),
+                0,
+                "10 = a socket was created, 12 = the filter would not install, 13 = no pair"
+            );
+        }
+
+        phase driver_program_signals_only_itself_and_opens_no_socket;
+        {
+            {
+                // SAFETY: the child compiles and installs a filter, invokes
+                // syscalls with inert arguments, and exits without returning into
+                // the test harness.
+                let pid = unsafe { libc::fork() };
+                assert!(pid >= 0, "fork failed");
+                if pid == 0 {
+                    // SAFETY: getpid/getppid cannot fail.
+                    let (own, parent) = unsafe { (libc::getpid(), libc::getppid()) };
+                    let installed = u32::try_from(own)
+                        .ok()
+                        .and_then(|own| driver_program(own).ok())
+                        .is_some_and(|program| seccompiler::apply_filter(&program).is_ok());
+                    if !installed {
+                        // SAFETY: `_exit` does not unwind.
+                        unsafe { libc::_exit(12) };
+                    }
+                    // SAFETY: socket(2) with constant arguments.
+                    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+                    if fd != -1 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM) {
+                        // SAFETY: `_exit` does not unwind.
+                        unsafe { libc::_exit(10) };
+                    }
+                    // SAFETY: signal 0 only probes; the filter decides first.
+                    let other = unsafe { libc::kill(parent, 0) };
+                    if other != -1
+                        || std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM)
+                    {
+                        // SAFETY: `_exit` does not unwind.
+                        unsafe { libc::_exit(11) };
+                    }
+                    // SAFETY: as above, aimed at this process.
+                    if unsafe { libc::kill(own, 0) } != 0 {
+                        // SAFETY: `_exit` does not unwind.
+                        unsafe { libc::_exit(13) };
+                    }
+                    // SAFETY: `_exit` does not unwind.
+                    unsafe { libc::_exit(0) };
+                }
+                let mut status = 0;
+                // SAFETY: waiting on our own child.
+                unsafe { libc::waitpid(pid, &raw mut status, 0) };
+                assert!(libc::WIFEXITED(status));
+                assert_eq!(
+                    libc::WEXITSTATUS(status),
+                    0,
+                    "10 = a socket was created, 11 = another process was signalled, \
+                 12 = the filter would not install, 13 = it could not signal itself"
+                );
+            }
+        }
+
+        phase allow_list_kills_on_any_other_syscall_in_the_kernel;
+        {
+            let mut rules = BTreeMap::new();
+            for nr in [libc::SYS_getpid, libc::SYS_exit_group, libc::SYS_exit] {
+                rules.insert(nr, Vec::new());
+            }
+            let program = allow_list_program(rules).expect("compile filter");
+            // SAFETY: the child installs a filter, makes raw syscalls and exits
+            // without returning into the test harness.
+            let pid = unsafe { libc::fork() };
+            assert!(pid >= 0, "fork failed");
+            if pid == 0 {
+                // The kill is the outcome under test, not a crash to debug: it
+                // must not leave a core file in the directory the tests run in.
+                let no_core = libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                // SAFETY: `setrlimit` only reads the limit it is handed.
+                if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &raw const no_core) } != 0
+                    || seccompiler::apply_filter(&program).is_err()
+                {
+                    // SAFETY: `_exit` does not unwind.
+                    unsafe { libc::_exit(12) };
+                }
+                // SAFETY: getpid has no arguments; allowed by the filter.
+                unsafe { libc::syscall(libc::SYS_getpid) };
+                // SAFETY: getppid is not listed, so the filter kills us here.
+                unsafe { libc::syscall(libc::SYS_getppid) };
+                // SAFETY: `_exit` does not unwind.
+                unsafe { libc::_exit(0) };
+            }
+            let mut status = 0;
+            // SAFETY: waiting on our own child.
+            unsafe { libc::waitpid(pid, &raw mut status, 0) };
+            assert!(
+                libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGSYS,
+                "the unlisted syscall must kill with SIGSYS (status {status:#x})"
+            );
+        }
+    }
+
+    /// A clean process for `seccomp_filters_are_enforced_by_the_kernel` to
+    /// re-exec with `TILO_SECCOMP_THREAD_PROBE` set, since the parent's own
+    /// threads were made before its filters. Anywhere else it returns at once.
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[allow(
+        clippy::exit,
+        reason = "the parent test distinguishes seccomp setup and pthread failures by helper-process exit status"
+    )]
+    fn thread_creation_probe_in_clean_process() {
+        if std::env::var_os("TILO_SECCOMP_THREAD_PROBE").is_none() {
+            return;
+        }
+        let compat = clone3_compat_program().expect("build clone3 compatibility filter");
+        let baseline = baseline_program(SeccompProfile::TiloDefault).expect("build baseline");
+        if seccompiler::apply_filter(&compat).is_err()
+            || seccompiler::apply_filter(&baseline).is_err()
+        {
+            std::process::exit(12);
+        }
+        let result = std::thread::Builder::new()
+            .name("seccomp-thread-probe".into())
+            .spawn(|| 42_u8)
+            .and_then(|thread| {
+                thread
+                    .join()
+                    .map_err(|_| std::io::Error::other("thread panicked"))
+            });
+        if !matches!(result, Ok(42)) {
+            std::process::exit(11);
+        }
+    }
+}
