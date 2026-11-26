@@ -67,13 +67,23 @@ tilo_test_env::scenario! {
         {
             let (mut app, clicks) = fixture(6);
             layout(&mut app, 900);
+            // The grid is one keyboard control beside the card buttons it moves
+            // between (see `CardGrid`'s focus handling), so it comes first.
             assert_eq!(
                 app.focusable_order.len(),
-                6,
-                "all card buttons enter host focus traversal"
+                7,
+                "the grid and all six card buttons enter host focus traversal"
+            );
+            let grid = app.focusable_order[0];
+            assert_eq!(
+                app.inspect_node(grid, |widget| widget.name().to_owned())
+                    .unwrap(),
+                "CardGrid"
             );
             let before = button_rects(&app);
-            for (index, &node) in app.focusable_order.iter().enumerate() {
+            let buttons: Vec<NodeId> = app.focusable_order[1..].to_vec();
+            assert_eq!(buttons.len(), 6);
+            for (index, &node) in buttons.iter().enumerate() {
                 assert_eq!(
                     app.inspect_node(node, |widget| widget.name().to_owned())
                         .unwrap(),
@@ -93,7 +103,7 @@ tilo_test_env::scenario! {
             let target = before[4].center();
             assert!(app.dispatch_semantic_click(target.x, target.y));
             assert_eq!(*clicks.borrow(), vec![4]);
-            assert_eq!(app.focused_node, Some(app.focusable_order[4]));
+            assert_eq!(app.focused_node, Some(buttons[4]));
             let order = app.focusable_order.clone();
             let mut scene = Scene::new();
             app.root_widget.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut app.text_renderer, &app.theme, PresenceCtx::default().draw_env()));
@@ -173,7 +183,11 @@ tilo_test_env::scenario! {
             app.root_widget.update(&app.state.doc, &app.state.root);
             app.init_layout();
             layout(&mut app, 300);
-            assert_eq!(app.focusable_order.len(), 1);
+            assert_eq!(
+                app.focusable_order.len(),
+                2,
+                "the grid and the body's one button take focus"
+            );
             app.root_widget.take_structure_dirty();
             requested.set(2);
             assert!(app.root_widget.update(&app.state.doc, &app.state.root));
@@ -181,9 +195,13 @@ tilo_test_env::scenario! {
             app.rebuild_structure();
             let root = app.layout.root_node.unwrap();
             run_layout_pass(&mut app, root, 300, 2000, 1.0, true, None).unwrap();
-            assert_eq!(app.focusable_order.len(), 2);
-            let rects = app
-                .focusable_order
+            assert_eq!(
+                app.focusable_order.len(),
+                3,
+                "the grid and the body's two buttons take focus"
+            );
+            let buttons: Vec<NodeId> = app.focusable_order[1..].to_vec();
+            let rects = buttons
                 .iter()
                 .map(|&node| app.inspect_node(node, |widget| widget.get_rect()).unwrap())
                 .collect::<Vec<_>>();
@@ -196,7 +214,7 @@ tilo_test_env::scenario! {
             assert_eq!(*clicks.borrow(), vec![1]);
             let mut scene = Scene::new();
             app.root_widget.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut app.text_renderer, &app.theme, PresenceCtx::default().draw_env()));
-            for (&node, before) in app.focusable_order.iter().zip(rects) {
+            for (&node, before) in buttons.iter().zip(rects) {
                 assert_eq!(
                     app.inspect_node(node, |widget| widget.get_rect()).unwrap(),
                     before
@@ -226,7 +244,11 @@ tilo_test_env::scenario! {
                     .iter()
                     .all(|button| button.get_rect().x1 <= card.get_rect().x1)
             );
-            assert_eq!(app.focusable_order.len(), 2);
+            assert_eq!(
+                app.focusable_order.len(),
+                4,
+                "both grids and the two buttons inside them take focus"
+            );
         }
     }
 
@@ -291,7 +313,13 @@ tilo_test_env::scenario! {
             );
             app.init_layout();
             layout(&mut app, 900);
-            let node = app.focusable_order[0];
+            let grid = app.focusable_order[0];
+            assert_eq!(
+                app.inspect_node(grid, |widget| widget.name().to_owned())
+                    .unwrap(),
+                "CardGrid"
+            );
+            let node = app.focusable_order[1];
             app.set_focused_node(Some(node));
             let state = app
                 .inspect_node(node, |widget| tilo_ui_base::widget::undo_points::get_state(widget))
@@ -299,7 +327,7 @@ tilo_test_env::scenario! {
             assert!(state.is_some());
             for width in [200, 600, 900] {
                 layout(&mut app, width);
-                assert_eq!(app.focusable_order, vec![node]);
+                assert_eq!(app.focusable_order, vec![grid, node]);
                 assert_eq!(app.focused_node, Some(node));
                 assert_eq!(
                     app.inspect_node(node, |widget| tilo_ui_base::widget::undo_points::get_state(widget))
@@ -400,7 +428,11 @@ tilo_test_env::scenario! {
                     .first()
                     .map_or(0.0, |c| c.get_rect().height());
                 assert_eq!(grid.get_rect().height(), expected);
-                assert_eq!(app.focusable_order.len(), count);
+                assert_eq!(
+                    app.focusable_order.len(),
+                    if count == 0 { 0 } else { count + 1 },
+                    "an empty grid takes no focus; a filled one takes its own and each card's"
+                );
             }
         }
     }
