@@ -3675,12 +3675,11 @@ impl ResourceStore {
             dirty.put |= put;
             dirty.edits.extend(edits);
         })?;
+        // The item's field, and nothing of the collection it is in: an edit neither adds, removes
+        // nor moves an item, and the views that filter or order the collection by this field
+        // read it again from the field itself (`Live::reach_item`). Naming the collection too
+        // would read its whole listing again, for every view that saw it, at every keystroke.
         self.touch(txn, at, &field_id, false)?;
-        // A change to an item's field can change any list filtered or sorted by it, so readers
-        // of the collection the item is in read the list again.
-        if let Some((holder, field)) = self.container(at).unwrap_or(None) {
-            self.touch(txn, &holder, &field, true)?;
-        }
         Ok(Applied::Done)
     }
 
