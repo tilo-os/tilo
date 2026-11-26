@@ -525,22 +525,26 @@ impl Use {
         (workspace, root): (&str, &Path),
         by: &str,
         purpose: UsedFor<'_>,
-    ) -> Result<Value, String> {
+        key_permission: impl Future<Output = Result<(), ActionCallError>>,
+    ) -> Result<Value, ActionCallError> {
         match self {
             Self::Mail(adding) => {
                 let kept = workspaces
                     .mail_with_item((workspace, root), adding, by, purpose)
-                    .await?;
+                    .await
+                    .map_err(refused)?;
                 workspaces.person_settings_changed();
-                serde_json::to_value(kept).map_err(|error| error.to_string())
+                serde_json::to_value(kept).map_err(|error| refused(error.to_string()))
             }
             Self::Key(setting) => {
                 let kept = workspaces
-                    .key_from_item((workspace, root), &setting, by, purpose)
+                    .key_from_item((workspace, root), &setting, by, purpose, key_permission)
                     .await?;
-                serde_json::to_value(kept).map_err(|error| error.to_string())
+                serde_json::to_value(kept).map_err(|error| refused(error.to_string()))
             }
-            Self::Call(call) => web_call::send(workspaces, workspace, call, by, purpose).await,
+            Self::Call(call) => web_call::send(workspaces, workspace, call, by, purpose)
+                .await
+                .map_err(refused),
         }
     }
 }
@@ -819,7 +823,40 @@ impl Workspaces {
         {
             return Err(NotPermitted);
         }
+        if target.provider == person_models::PROVIDER
+            && target.address.action == person_models::SET_KEY_FROM_ITEM
+            && !self
+                .turn_reaches(
+                    turn,
+                    Store::MODELS,
+                    &target.address.action,
+                    ActionKind::Undoable,
+                )
+                .await
+        {
+            return Err(NotPermitted);
+        }
         Ok(using)
+    }
+
+    /// The provider has answered. Both stores must still admit the same turn, and a
+    /// standing approval it relied on must still cover this item and destination.
+    pub(super) async fn may_finish_key_use(
+        &self,
+        turn: &HostedTurn<'_>,
+        scope: &Asked,
+        allowed: Allowance,
+    ) -> Result<(), ActionCallError> {
+        let target = person_models::target(person_models::SET_KEY_FROM_ITEM);
+        let using = self.turn_uses_for(turn, &target).await?;
+        let stands = self
+            .governed_permission_stands(&using.person, scope)
+            .await
+            .map_err(|_| NotPermitted)?;
+        if allowed == Allowance::Always && !stands {
+            return Err(NotPermitted);
+        }
+        Ok(())
     }
 
     /// The uses by reference `turn` is offered, as a catalogue lists them:
@@ -900,11 +937,9 @@ impl Workspaces {
         items
             .fits(&item, kind, &places)
             .map_err(|error| refused(error.to_string()))?;
+        let scope = vault_use_scope(&using, &request.target, &item, &places);
         let stands = self
-            .governed_permission_stands(
-                &using.person,
-                &vault_use_scope(&using, &request.target, &item, &places),
-            )
+            .governed_permission_stands(&using.person, &scope)
             .await
             .map_err(refused)?;
         wanted.sendable(self, &items).map_err(refused)?;
@@ -918,17 +953,22 @@ impl Workspaces {
         } else {
             None
         };
-        if allowed.is_some() {
+        if let Some(allowed) = allowed {
             let purpose = UsedFor {
                 using: &word,
                 what: "",
-                allowed,
+                allowed: Some(allowed),
             };
             return wanted
-                .carry_out(self, (&using.workspace, &root), &using.name, purpose)
+                .carry_out(
+                    self,
+                    (&using.workspace, &root),
+                    &using.name,
+                    purpose,
+                    self.may_finish_key_use(turn, &scope, allowed),
+                )
                 .await
-                .map(TurnUse::Done)
-                .map_err(refused);
+                .map(TurnUse::Done);
         }
         let belongs = places.iter().map(ToString::to_string).collect();
         self.ask_first(
@@ -1197,20 +1237,26 @@ impl Workspaces {
             self.inner.vault_uses.calls.allow(&using, &kept.arguments);
             return Ok(Some(json!({"allowed": "once"})));
         }
+        let allowed = if always {
+            Allowance::Always
+        } else {
+            Allowance::Once
+        };
         let purpose = UsedFor {
             using: &word,
             what: "",
-            allowed: Some(if always {
-                Allowance::Always
-            } else {
-                Allowance::Once
-            }),
+            allowed: Some(allowed),
         };
         wanted
-            .carry_out(self, (&using.workspace, &root), &using.name, purpose)
+            .carry_out(
+                self,
+                (&using.workspace, &root),
+                &using.name,
+                purpose,
+                self.may_finish_key_use(turn, &scope, allowed),
+            )
             .await
             .map(Some)
-            .map_err(refused)
     }
 }
 

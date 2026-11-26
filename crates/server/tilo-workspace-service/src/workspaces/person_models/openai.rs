@@ -25,7 +25,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::super::WorkspaceId;
-use super::super::workspace_stores::Store;
 use agent_provider_config::presets::{CHATGPT_ENDPOINT, Preset};
 use agent_provider_config::{ProviderConfig, ProviderProfile, SignInIssuer, transform};
 use serde::{Deserialize, Serialize};
@@ -199,19 +198,15 @@ pub(super) struct SignInDevice {
 
 impl SignInDevice {
     async fn still_allowed(&self, workspaces: &Workspaces) -> Result<(), String> {
-        let reach = workspaces
-            .reaching(
+        workspaces
+            .may_finish_change(
                 (Some(self.workspace), &self.caller, Some(&self.certificate)),
-                Store::MODELS,
+                super::super::workspace_stores::Store::MODELS,
                 tilo_actions::remote::person_models::BEGIN_SIGN_IN,
-                tilo_action_policy::ActionKind::Undoable,
+                self.consented,
             )
             .await
-            .map_err(|error| error.to_string())?;
-        if reach.answer == tilo_action_policy::Answer::Ask && !self.consented {
-            return Err("The workspace now requires approval. Begin signing in again.".to_owned());
-        }
-        Ok(())
+            .map_err(|error| error.to_string())
     }
 }
 

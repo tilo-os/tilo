@@ -946,3 +946,150 @@ async fn a_providers_key_is_asked_for_first_and_then_kept_alone() {
     assert_eq!(kept["always"][0]["using"], "tilo.models/set-key-from-item");
     server.shutdown().await;
 }
+
+fn key_use_scope(
+    open: &OpenAsk,
+    item: &person_vault::ItemRef,
+) -> tilo_actions::remote::person_asking::Asked {
+    use tilo_actions::remote::person_asking::{ActionName, Asked, Thing};
+
+    let target = open.target();
+    Asked {
+        workspace: open.workspace.clone(),
+        agent: open.agent.clone(),
+        action: ActionName {
+            kind: person_vault::use_word(&target),
+            provider: target.provider,
+            action: target.address.action,
+        },
+        on: Some(Thing {
+            document: item.id().to_owned(),
+            resource: open.detail["use"]["item"]["belongsTo"].to_string(),
+        }),
+    }
+}
+
+#[tokio::test]
+async fn finishing_a_hosted_key_use_requires_current_store_and_item_permissions() {
+    use crate::workspaces::workspace_stores::Store;
+    use accounts::vault_items::{Allowance, UsedFor};
+    use tilo_action_policy::{Grant, Grantee};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, id, service) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let as_ada = caller(&ada);
+    let hers = (&ada, &as_ada);
+    let provider = test_http::Responder::handle(|_| {
+        Some(test_http::Reply::status(200).body(r#"{"data":[{"id":"test-model"}]}"#))
+    });
+    workspaces.call_private_model_addresses(true);
+    let added = ask_at(
+        &service,
+        id,
+        hers,
+        person_models::target(person_models::ADD_PROVIDER),
+        json!({"name": "Test provider", "protocol": "open-ai-compatible", "endpoint": provider.url()}),
+    )
+    .await
+    .unwrap();
+    let item = kept_item(&service, id, hers, ("key", &provider.url())).await;
+    let scout = on_turn(&ada, &workspace, "scout");
+    let turn = HostedTurn {
+        workspace: id,
+        caller: &scout,
+        bound: None,
+    };
+    let setting = person_models::SetKeyFromItem {
+        provider: added["id"].as_str().unwrap().to_owned(),
+        key: serde_json::from_value(item.clone()).unwrap(),
+        reason: String::new(),
+    };
+    let keeping = request(
+        person_models::target(person_models::SET_KEY_FROM_ITEM),
+        serde_json::to_value(&setting).unwrap(),
+    );
+    let open = asked(workspaces.use_for_turn(&turn, &keeping, json!({})).await);
+    let scope = key_use_scope(&open, &setting.key);
+    let check = |allowed| workspaces.may_finish_key_use(&turn, &scope, allowed);
+    let kept = workspaces
+        .answer_use(&turn, &open.ask, &open.detail, UseAnswer::Always)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept["configured"], true);
+    assert_eq!(check(Allowance::Always).await, Ok(()));
+    let removed = ask_at(
+        &service,
+        id,
+        hers,
+        person_models::target(person_models::REMOVE_KEY),
+        json!({"provider": added["id"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(removed["configured"], false);
+
+    she_alone_takes_the_leave_back(&service, id, &ada, &item).await;
+    assert_eq!(check(Allowance::Always).await, Err(NotPermitted));
+    assert_eq!(check(Allowance::Once).await, Ok(()));
+    let root = workspaces.workspace_root(&workspace);
+    let refused = workspaces
+        .key_from_item(
+            (&workspace, &root),
+            &setting,
+            &open.name,
+            UsedFor {
+                using: &scope.action.kind,
+                what: "",
+                allowed: Some(Allowance::Always),
+            },
+            std::future::ready(Err(NotPermitted)),
+        )
+        .await;
+    assert!(matches!(refused, Err(NotPermitted)));
+
+    for (store, put, remove) in [(Store::VAULT, 41, 42), (Store::MODELS, 43, 44)] {
+        let open = asked(workspaces.use_for_turn(&turn, &keeping, json!({})).await);
+        let deny = Grant::new(
+            "deny-scout-key-use",
+            Grantee::agent("scout"),
+            store.node(&workspace, person_models::SET_KEY_FROM_ITEM),
+            KindSet::UNDOABLE,
+            Answer::Deny,
+            Grantee::person(hex::encode(owner.user_public_key)),
+        );
+        let grant_id = deny.id.clone();
+        workspaces
+            .put_workspace_grants(&workspace, &owner, [put; 32], vec![deny])
+            .await
+            .unwrap();
+        assert_eq!(check(Allowance::Once).await, Err(NotPermitted), "{store:?}");
+        assert_eq!(
+            workspaces
+                .answer_use(&turn, &open.ask, &open.detail, UseAnswer::Once)
+                .await,
+            Err(NotPermitted),
+            "{store:?}"
+        );
+        workspaces
+            .remove_workspace_grants(&workspace, &owner, [remove; 32], vec![grant_id])
+            .await
+            .unwrap();
+    }
+    let models = ask_at(
+        &service,
+        id,
+        hers,
+        person_models::target(person_models::LIST),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(models["providers"][0]["id"], added["id"]);
+    assert_eq!(models["providers"][0]["configured"], false);
+    server.shutdown().await;
+}

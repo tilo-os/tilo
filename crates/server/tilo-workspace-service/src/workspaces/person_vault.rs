@@ -311,10 +311,11 @@ impl Workspaces {
         } else {
             Store::MODELS
         };
-        let reach = self
-            .reaching_allowed(asked, used_for, action, ActionKind::Undoable)
+        let (reach, consented) = self
+            .reaching_with_consent(asked, used_for, action, ActionKind::Undoable)
             .await?;
-        self.reaching_allowed(asked, Store::VAULT, action, ActionKind::Undoable)
+        let (_, vault_consented) = self
+            .reaching_with_consent(asked, Store::VAULT, action, ActionKind::Undoable)
             .await?;
         let by = reach.by();
         let workspace = reach.workspace.to_string();
@@ -345,10 +346,16 @@ impl Workspaces {
                     request,
                     "a key to keep names its provider and the vault item that is the key",
                 )?;
-                said(
-                    self.key_from_item((&workspace, &root), &setting, &by, purpose)
-                        .await,
-                )
+                let permission = async {
+                    self.may_finish_change(asked, Store::MODELS, action, consented)
+                        .await?;
+                    self.may_finish_change(asked, Store::VAULT, action, vault_consented)
+                        .await
+                };
+                let kept = self
+                    .key_from_item((&workspace, &root), &setting, &by, purpose, permission)
+                    .await?;
+                serde_json::to_value(kept).map_err(|error| refused(error.to_string()))
             }
             (person_vault::PROVIDER, person_vault::ASK) => {
                 let asked: AskForItem = argument(
@@ -662,7 +669,7 @@ impl Workspaces {
     /// Name the key the vault item `setting` names as its provider's API key. The item must be
     /// a key that belongs to the provider's endpoint, as the person set it: a key is never sent
     /// to an endpoint it does not belong to. Where the provider names a key already, the item
-    /// takes its place only once the provider took it ([`super::person_models::take_key`]); the
+    /// takes its place only once the provider took it ([`super::person_models::accepts_key`]); the
     /// provider names the item from then on, and nothing copies the key.
     pub(super) async fn key_from_item(
         &self,
@@ -670,15 +677,16 @@ impl Workspaces {
         setting: &SetKeyFromItem,
         by: &str,
         purpose: UsedFor<'_>,
-    ) -> Result<ProviderView, String> {
+        permission: impl Future<Output = Result<(), ActionCallError>>,
+    ) -> Result<ProviderView, ActionCallError> {
         let endpoint = {
             let config = super::person_settings::provider_config(root);
             let profile = config
                 .profiles
                 .iter()
                 .find(|profile| profile.id == setting.provider)
-                .ok_or_else(|| "That provider is not kept here".to_owned())?;
-            Place::parse(&profile.endpoint).map_err(|error| error.to_string())?
+                .ok_or_else(|| refused("That provider is not kept here".to_owned()))?;
+            Place::parse(&profile.endpoint).map_err(|error| refused(error.to_string()))?
         };
         let key = self
             .release_item(
@@ -688,18 +696,19 @@ impl Workspaces {
                 by,
                 purpose,
             )
-            .await?;
+            .await
+            .map_err(refused)?;
         let keeping = SetKey {
             provider: setting.provider.clone(),
             key: key.secret.to_string(),
         };
         let keys = super::person_settings::ProviderKeys::of(self.vault_at(workspace), by);
-        super::person_models::take_key(
-            (keys, root),
-            keeping,
-            Some(&setting.key),
-            &self.model_reach(),
-        )
-        .await
+        super::person_models::accepts_key((keys, root), &keeping, &self.model_reach())
+            .await
+            .map_err(refused)?;
+        permission.await?;
+        super::person_settings::set_key((keys, root), keeping, Some(&setting.key))
+            .await
+            .map_err(refused)
     }
 }

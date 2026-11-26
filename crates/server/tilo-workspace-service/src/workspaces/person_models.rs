@@ -185,17 +185,13 @@ impl Workspaces {
             }
             _ => tilo_action_policy::ActionKind::Undoable,
         };
-        let reach = self
-            .reaching(
+        let (reach, consented) = self
+            .reaching_with_consent(
                 (workspace_id, caller, certificate),
                 Store::MODELS,
                 action,
                 effect,
             )
-            .await?;
-        let consented = reach.answer == tilo_action_policy::Answer::Ask;
-        let reach = self
-            .allowed(reach, caller, Store::MODELS, action, effect)
             .await?;
         if action == person_models::ASK {
             let asked: ModelRequest = argument(request, "a model request")?;
@@ -228,7 +224,17 @@ impl Workspaces {
             }
             person_models::SET_KEY => {
                 let setting: SetKey = argument(request, "a key to keep")?;
-                answer(&take_key((keys, &root), setting, None, &reach).await)
+                accepts_key((keys, &root), &setting, &reach)
+                    .await
+                    .map_err(|reason| ActionCallError::Refused { reason })?;
+                self.may_finish_change(
+                    (workspace_id, caller, certificate),
+                    Store::MODELS,
+                    action,
+                    consented,
+                )
+                .await?;
+                answer(&set_key((keys, &root), setting, None).await)
             }
             person_models::REMOVE_KEY => {
                 let provider = provider_argument(request)?;
@@ -395,8 +401,8 @@ enum Said {
     NotNow,
 }
 
-/// Keep `setting`'s key for its provider: what [`person_models::SET_KEY`]
-/// and [`person_models::SET_KEY_FROM_ITEM`] do with the key they are handed.
+/// Check the candidate key before changing what [`person_models::SET_KEY`] or
+/// [`person_models::SET_KEY_FROM_ITEM`] keeps for this provider.
 ///
 /// The provider is asked about a new key first ([`asked_about`]), and a key
 /// it turns away is never kept: the person is told so, and a key kept
@@ -407,12 +413,11 @@ enum Said {
 /// ([`refresh_models`]). Where nothing at the provider says of a key the
 /// new one is kept as typed, since nothing else could ever replace a key
 /// there. No refusal carries a key.
-pub(super) async fn take_key(
+pub(super) async fn accepts_key(
     (keys, root): (ProviderKeys<'_>, &Path),
-    setting: SetKey,
-    kept_as: Option<&tilo_actions::remote::person_vault::ItemRef>,
+    setting: &SetKey,
     reach: &Reach,
-) -> Result<ProviderView, String> {
+) -> Result<(), String> {
     let profile = provider_config(root)
         .profiles
         .into_iter()
@@ -450,7 +455,7 @@ pub(super) async fn take_key(
             }
         }
     }
-    set_key((keys, root), setting, kept_as).await
+    Ok(())
 }
 
 /// Where `profile`'s provider is asked with a key so that its answer says of

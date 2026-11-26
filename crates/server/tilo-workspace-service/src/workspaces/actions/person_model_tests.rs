@@ -29,6 +29,7 @@ use crate::workspaces::fixtures::test_host;
 use crate::workspaces::person_model::scripted::{Reply, ScriptedProvider};
 use crate::workspaces::person_model::{Interaction, ModelRefusal};
 use crate::workspaces::tests::governor;
+use crate::workspaces::workspace_stores::Store;
 use crate::workspaces::{AsksPeople, PersonAnswer, Workspaces};
 
 const ADA_KEY: &str = "sk-ada-linked-through-settings";
@@ -999,6 +1000,113 @@ async fn a_key_the_provider_does_not_take_leaves_the_kept_key_in_use() {
         &said,
         &lines.written(),
     );
+}
+
+#[tokio::test]
+async fn a_hosted_provider_key_stays_unchanged_when_the_workspace_revokes_the_pending_write() {
+    check_delayed_key_revocation(Store::MODELS).await;
+}
+
+#[tokio::test]
+async fn a_vault_key_stays_unlinked_when_the_workspace_revokes_its_use_during_the_provider_check() {
+    check_delayed_key_revocation(Store::VAULT).await;
+}
+
+/// The provider accepts the replacement only after the resource it came through refuses it.
+async fn check_delayed_key_revocation(store: Store) {
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet};
+
+    let checking = Arc::new(tokio::sync::Notify::new());
+    let received = checking.clone();
+    let (resume, permission_changed) = std::sync::mpsc::channel();
+    let permission_changed = Mutex::new(permission_changed);
+    let provider = Responder::handle(move |req| {
+        if req
+            .header("authorization")
+            .and_then(|v| v.strip_prefix("Bearer "))
+            == Some(BO_KEY)
+        {
+            received.notify_one();
+            permission_changed
+                .lock()
+                .unwrap()
+                .recv_timeout(tilo_test_env::hang_bound())
+                .unwrap();
+        }
+        Some(test_http::Reply::status(200).body(json!({"data": [{"id": LISTED}]}).to_string()))
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, id, service) = governed(workspaces).await;
+    let member = admit(workspaces, &workspace, &owner, 1).await;
+    let scripted = ScriptedProvider::answering([]);
+    workspaces.answer_models_with(scripted.clone());
+    let linked = linked_at_stand_in(
+        workspaces,
+        (&service, id, &member),
+        (&provider.url(), ADA_KEY),
+    )
+    .await;
+    let (action, candidate) = if store == Store::VAULT {
+        let kept = ask_at(
+            &service,
+            id,
+            &member,
+            person_vault::target(person_vault::ADD),
+            json!({"kind": "key", "belongsTo": [provider.url()], "secret": BO_KEY}),
+        )
+        .await
+        .expect("the member keeps the prospective key in the vault");
+        (person_models::SET_KEY_FROM_ITEM, kept["reference"].clone())
+    } else {
+        (person_models::SET_KEY, json!(BO_KEY))
+    };
+    let argument = json!({"provider": linked, "key": candidate});
+    let caller = caller(&member);
+    let (result, ()) = tokio::join!(
+        async {
+            let target = person_models::target(action);
+            if action == person_models::SET_KEY_FROM_ITEM {
+                ask_at(&service, id, &member, target, argument).await
+            } else {
+                let mut setting = request("", "", argument);
+                setting.target = target;
+                workspaces
+                    .page_model_setting(id, &caller, &member, &setting)
+                    .await
+            }
+        },
+        async {
+            tokio::time::timeout(tilo_test_env::hang_bound(), checking.notified())
+                .await
+                .expect("the provider received the new key before revocation");
+            let deny = Grant::new(
+                "deny-provider-key",
+                Grantee::person(hex::encode(member.user_public_key)),
+                store.node(&workspace, action),
+                KindSet::UNDOABLE,
+                Answer::Deny,
+                Grantee::person(hex::encode(owner.user_public_key)),
+            );
+            workspaces
+                .put_workspace_grants(&workspace, &owner, [3; 32], vec![deny])
+                .await
+                .unwrap();
+            resume.send(()).unwrap();
+        }
+    );
+    assert!(
+        matches!(result, Err(ActionCallError::NotPermitted)),
+        "the workspace refused the pending write: {result:?}"
+    );
+    assert_eq!(
+        asked_with(workspaces, id, &scripted).await.as_deref(),
+        Some(ADA_KEY)
+    );
+    server.shutdown().await;
 }
 
 /// A person links a provider and types a first key the provider turns away.

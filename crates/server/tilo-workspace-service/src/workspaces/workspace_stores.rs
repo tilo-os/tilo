@@ -285,8 +285,43 @@ impl Workspaces {
         action: &str,
         effect: ActionKind,
     ) -> Result<Reach, ActionCallError> {
+        self.reaching_with_consent(asked, store, action, effect)
+            .await
+            .map(|(reach, _)| reach)
+    }
+
+    /// The current grant and whether the person expressly approved this invocation.
+    pub(super) async fn reaching_with_consent(
+        &self,
+        asked: (Option<WorkspaceId>, &Caller, Option<&DeviceCert>),
+        store: Store,
+        action: &str,
+        effect: ActionKind,
+    ) -> Result<(Reach, bool), ActionCallError> {
         let reach = self.reaching(asked, store, action, effect).await?;
-        self.allowed(reach, asked.1, store, action, effect).await
+        let consented = reach.answer == Answer::Ask;
+        let reach = self.allowed(reach, asked.1, store, action, effect).await?;
+        Ok((reach, consented))
+    }
+
+    /// Recheck the original actor's workspace grant after a provider answers.
+    /// An existing approval applies only to the action it was obtained for.
+    pub(super) async fn may_finish_change(
+        &self,
+        asked: (Option<WorkspaceId>, &Caller, Option<&DeviceCert>),
+        store: Store,
+        action: &str,
+        consented: bool,
+    ) -> Result<(), ActionCallError> {
+        let reach = self
+            .reaching(asked, store, action, ActionKind::Undoable)
+            .await?;
+        if reach.answer == Answer::Ask && !consented {
+            return Err(ActionCallError::Refused {
+                reason: "The workspace now requires approval. Start the request again.".to_owned(),
+            });
+        }
+        Ok(())
     }
 
     /// `reach`, once its person allowed it where the policy asks them first:
