@@ -308,6 +308,16 @@ impl<L: Layout> Arranged<L> {
         self
     }
 
+    /// Finish this layout with the window's main content. The host reads its view and call
+    /// state from that content, while the controls beside it stay in the ordinary widget tree.
+    #[must_use]
+    pub fn with_window_content(self, content: Element, fit: Fit) -> impl Widget
+    where
+        L: 'static,
+    {
+        WindowContent(self.push_fit(content, fit))
+    }
+
     /// Add a prepared part.
     #[must_use]
     pub fn push_part(mut self, part: Part) -> Self {
@@ -709,6 +719,83 @@ impl<L: Layout> Arranged<L> {
         tree.children(wrapper)
             .ok()
             .and_then(|children| children.first().copied())
+    }
+}
+
+/// A finished layout: the last part is the content its window presents. Only window-wide
+/// capabilities come from that part. Control and resource discovery still visit every child.
+struct WindowContent<L: Layout>(Arranged<L>);
+
+macro_rules! window_capability {
+    ($request:expr) => {
+        $request.wants::<dyn crate::widget::Continuable>()
+            || $request.wants::<dyn crate::widget::Collaborative>()
+            || $request.wants::<dyn crate::widget::FloatingSurfaceProvider>()
+            || $request.wants::<dyn crate::presence::capability::PublishesPresence>()
+            || $request.wants::<dyn crate::application_view::ApplicationViewState>()
+            || $request.wants::<dyn crate::view::capability::ViewState>()
+            || $request.wants::<dyn crate::semantic_document_read::SemanticReaders>()
+            || $request.wants::<dyn crate::component_lifecycle::WindowTitle>()
+    };
+}
+
+impl<L: Layout + 'static> crate::widget::Decorator for WindowContent<L> {
+    type Inner = Arranged<L>;
+
+    fn inner(&self) -> &Self::Inner {
+        &self.0
+    }
+
+    fn inner_mut(&mut self) -> &mut Self::Inner {
+        &mut self.0
+    }
+
+    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+        if window_capability!(request) {
+            if let Some(content) = self.0.parts.last() {
+                content.element.provide(request);
+            }
+        } else {
+            self.0.provide(request);
+        }
+    }
+
+    fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
+        if window_capability!(request) {
+            if let Some(content) = self.0.parts.last_mut() {
+                content.element.provide_mut(request);
+            }
+        } else {
+            self.0.provide_mut(request);
+        }
+    }
+
+    fn native_input_snapshot(
+        &self,
+        state: &AppModel,
+        path: &ModelPath,
+    ) -> Option<serde_json::Value> {
+        self.0
+            .parts
+            .last()?
+            .element
+            .native_input_snapshot(state, path)
+    }
+
+    fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
+        self.0.parts.last()?.element.primary_vertical_scroll()
+    }
+
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        action: crate::widget::PrimaryScrollAction,
+    ) -> crate::widget::PrimaryScrollResult {
+        self.0
+            .parts
+            .last_mut()
+            .map_or(crate::widget::PrimaryScrollResult::Unsupported, |part| {
+                part.element.apply_primary_vertical_scroll(action)
+            })
     }
 }
 

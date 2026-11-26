@@ -383,7 +383,7 @@ fn conversation_setup(
             .fill_height()
             .push(Box::new(controls))
             .push(grant)
-            .push_fit(window, Fit::fill(1.0)),
+            .with_window_content(window, Fit::fill(1.0)),
     )
 }
 
