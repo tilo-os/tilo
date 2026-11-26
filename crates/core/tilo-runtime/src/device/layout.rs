@@ -223,8 +223,7 @@ impl DeviceLayouts {
                     person: person.to_owned(),
                     opened_by,
                 };
-                let mut ask = tilo_desktop_model::record::founded(workspace)
-                    .map_err(|error| error.to_string())?;
+                let mut ask = tilo_desktop_model::record::founded(workspace)?;
                 tilo_desktop_model::asked::ask(
                     &mut ask,
                     &format!("{person}:{app}:{document}"),
