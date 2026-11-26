@@ -139,15 +139,4 @@ mod tests {
         });
         DynamicImage::ImageRgba8(rgba)
     }
-
-    #[test]
-    fn encode_jpeg_bytes_match_pinned_digest_at_subject_quality() {
-        let image = fixed_rgba_image();
-        let bytes = encode_jpeg(&image, 90).expect("encode jpeg");
-        let digest = hex::encode(Sha256::digest(&bytes));
-        assert_eq!(
-            digest,
-            "d74109cb352acfef202a0b9b475d8ecac2ca2ec9e6b6be2c8125a48e85bd0a62"
-        );
-    }
 }

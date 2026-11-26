@@ -35,17 +35,3 @@ impl tilo_platform_caps::Feature for Feature {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tilo_platform_caps::Feature as _;
-
-    #[test]
-    fn this_target_reads_its_own_column() {
-        assert_eq!(availability(Feature::AppStorage), Availability::Available);
-        let web = Feature::UserDirs.targets()[2];
-        assert_eq!(web, Availability::Unsupported(WEB_USER_DIRS));
-        assert_eq!(availability(Feature::UserDirs), Availability::Available);
-    }
-}

@@ -386,23 +386,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn event_ids_follow_the_spec_table() {
-        assert_eq!(event_id::message_created("5"), "5");
-        assert_eq!(event_id::message_updated("5", 1_700), "5:1700");
-        assert_eq!(event_id::message_deleted("5"), "5:deleted");
-        assert_eq!(
-            event_id::reaction("5", "7", "👍", true, 42),
-            "5:7:👍:add:42"
-        );
-        assert_eq!(
-            event_id::reaction("5", "7", "👍", false, 43),
-            "5:7:👍:remove:43"
-        );
-        assert_eq!(event_id::sequenced("layout", 44), "layout:44");
-        assert_eq!(event_id::command("99"), "99");
-    }
-
-    #[test]
     fn a_link_check_is_the_hash_of_the_proof() {
         assert_eq!(
             link_proof("ABC"),

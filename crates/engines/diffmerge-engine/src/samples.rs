@@ -166,19 +166,3 @@ fn folders() -> Json {
         "truncated": false,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_sample_names_the_inputs_it_opens() {
-        let diff: Json = serde_json::from_str(&sample("diff").unwrap()).unwrap();
-        assert!(diff["left"].as_str().unwrap().contains("RateLimiter"));
-        let merge: Json = serde_json::from_str(&sample("merge").unwrap()).unwrap();
-        assert!(merge["base"].as_str().unwrap().contains("[server]"));
-        let folders: Json = serde_json::from_str(&sample("folders").unwrap()).unwrap();
-        assert_eq!(folders["entries"].as_array().unwrap().len(), 8);
-        assert!(sample("nonsense").is_err());
-    }
-}

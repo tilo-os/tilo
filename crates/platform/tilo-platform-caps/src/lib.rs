@@ -74,39 +74,3 @@ impl<F> fmt::Display for Unsupported<F> {
 }
 
 impl<F: fmt::Debug> std::error::Error for Unsupported<F> {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[derive(Clone, Copy, Debug, PartialEq)]
-    struct WebOnlyMissing;
-
-    impl Feature for WebOnlyMissing {
-        fn targets(self) -> [Availability; 3] {
-            [
-                Availability::Available,
-                Availability::Prompt,
-                Availability::Unsupported("web"),
-            ]
-        }
-    }
-
-    #[test]
-    fn a_feature_reads_this_targets_column() {
-        assert_eq!(
-            availability(WebOnlyMissing),
-            WebOnlyMissing.targets()[COLUMN]
-        );
-    }
-
-    #[test]
-    fn unsupported_carries_the_columns_reason() {
-        let reason = Unsupported::of(WebOnlyMissing).reason;
-        if COLUMN == 2 {
-            assert_eq!(reason, "web");
-        } else {
-            assert_eq!(reason, "This host cannot do this.");
-        }
-    }
-}

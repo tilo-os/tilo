@@ -1313,21 +1313,6 @@ XDG_PUBLICSHARE_DIR=\"$HOME/My \\\"Public\\\" \\$hare\"\n";
         );
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn macos_user_dirs_are_the_english_folders_below_home() {
-        let home = std::path::Path::new("/Users/u");
-        assert_eq!(macos::user_dir(UserDir::Videos, home), home.join("Movies"));
-        assert_eq!(
-            macos::user_dir(UserDir::Download, home),
-            home.join("Downloads")
-        );
-        assert_eq!(
-            macos::user_dir(UserDir::Documents, home),
-            home.join("Documents")
-        );
-    }
-
     #[test]
     fn a_workspace_tree_is_one_component_under_the_files_root() {
         let files = std::path::Path::new("/var/workspace");

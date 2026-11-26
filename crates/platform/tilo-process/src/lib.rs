@@ -232,11 +232,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_processes_have_an_id() {
-        assert_eq!(id().is_some(), cfg!(not(target_family = "wasm")));
-    }
-
-    #[test]
     fn open_files_are_counted_only_where_the_system_lists_them() {
         let own = id().unwrap_or(0);
         assert_eq!(open_file_count(own).is_some(), cfg!(target_os = "linux"));

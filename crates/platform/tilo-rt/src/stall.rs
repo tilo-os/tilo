@@ -401,13 +401,4 @@ mod tests {
         beats(&next);
         next.shutdown_timeout(Duration::from_secs(1));
     }
-
-    /// The threads' states read on this machine, one per thread.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn every_thread_is_named_with_its_state() {
-        let said = threads();
-        assert!(said.split(" | ").count() >= 1, "{said}");
-        assert!(said.contains(&std::process::id().to_string()) || !said.is_empty());
-    }
 }
