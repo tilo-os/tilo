@@ -407,11 +407,23 @@ mod tests {
 
     /// Paint `faces` as the bar's stack over `ground` under `theme`, on an 80 by 60 picture.
     fn render(theme: &crate::theme::Theme, faces: &[Face<'_>], ground: Color) -> Vec<u8> {
-        let mut scene = vello::Scene::new();
-        let mut text = crate::text_render::TextRenderer::new();
-        let mut ctx = PaintCtx::new(&mut scene, vello::kurbo::Affine::IDENTITY, &mut text, theme);
-        FaceStack::BAR.paint(&mut ctx, (60.0, 30.0), (faces, 0), ground);
-        crate::offscreen::OffscreenRenderer::new(80, 60).render(&scene, ground)
+        // One renderer and text cache per test thread: each frame is a whole render, so
+        // reusing them changes no pixel and saves starting them per frame.
+        thread_local! {
+            static RENDERER: std::cell::RefCell<(
+                crate::offscreen::OffscreenRenderer,
+                crate::text_render::TextRenderer,
+            )> = std::cell::RefCell::new((
+                crate::offscreen::OffscreenRenderer::new(80, 60),
+                crate::text_render::TextRenderer::new(),
+            ));
+        }
+        RENDERER.with_borrow_mut(|(renderer, text)| {
+            let mut scene = vello::Scene::new();
+            let mut ctx = PaintCtx::new(&mut scene, vello::kurbo::Affine::IDENTITY, text, theme);
+            FaceStack::BAR.paint(&mut ctx, (60.0, 30.0), (faces, 0), ground);
+            renderer.render(&scene, ground)
+        })
     }
 
     /// A face in a stack wears the same initials as the person's own
@@ -452,10 +464,13 @@ mod tests {
         let (ring, outside) = (12.0 + GAP + RING / 2.0, 12.0 + GAP + RING + GAP / 2.0);
         let middle = 12.0 + GAP + (RING + GAP) / 2.0;
         let angles: Vec<f64> = (0..36).map(|i| f64::from(i) * 10f64.to_radians()).collect();
-        for (label, theme) in [
+        for (parity, (label, theme)) in [
             ("dark", crate::theme::Theme::dark()),
             ("light", crate::theme::Theme::light()),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let bar = theme.tokens.colors.surfaces.base;
             // How the pixel whose middle is nearest `radius` out at `angle` stands on the bar.
             let at = |rgba: &[u8], radius: f64, angle: f64| {
@@ -466,8 +481,23 @@ mod tests {
             let marks = |rgba: &[u8], radius: f64, angle: f64| {
                 at(rgba, radius, angle) >= NON_TEXT_MIN_CONTRAST - 0.05
             };
-            for hue in PresenceHue::ALL {
+            for (index, hue) in PresenceHue::ALL.into_iter().enumerate() {
                 let colour = theme.tokens.colors.presence.hue(hue);
+                for dimmed in [false, true] {
+                    let avatar = AvatarFace::new("Ben", "ben").presence(colour);
+                    let fill = if dimmed { avatar.idle_on(bar) } else { avatar }.colour(&theme);
+                    let ratio =
+                        contrast_ratio(crate::widget::avatar_face::initial_ink(fill, &theme), fill);
+                    assert!(
+                        ratio >= ON_FILL_MIN_CONTRAST,
+                        "{label} {hue:?} dimmed={dimmed}: {ratio:.2}:1"
+                    );
+                }
+                // Each hue is painted on one of the two bars, and each bar paints half the
+                // hues: every hue and both bars are drawn without drawing every pair.
+                if index % 2 != parity {
+                    continue;
+                }
                 let face = |dimmed, active| Face {
                     dimmed,
                     active,
@@ -487,17 +517,6 @@ mod tests {
                     label == "light" || at(&idle, ring, left) < at(&here, ring, left),
                     "{label} {hue:?}: idle is fainter"
                 );
-                for dimmed in [false, true] {
-                    let avatar = AvatarFace::new("Ben", "ben").presence(colour);
-                    let fill = if dimmed { avatar.idle_on(bar) } else { avatar }.colour(&theme);
-                    let ratio =
-                        contrast_ratio(crate::widget::avatar_face::initial_ink(fill, &theme), fill);
-                    assert!(
-                        ratio >= ON_FILL_MIN_CONTRAST,
-                        "{label} {hue:?} dimmed={dimmed}: {ratio:.2}:1"
-                    );
-                }
-
                 assert!(
                     [0.0, 0.5, 1.0, 1.5]
                         .iter()

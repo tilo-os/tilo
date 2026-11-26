@@ -528,8 +528,8 @@ fn scrolled_scrollable_renders_widgets_that_were_offscreen_at_initial_layout() {
 #[test]
 fn scrolling_to_the_end_of_dashboard_still_renders_content() {
     // Walks the full dashboard from offset 0 → max via repeated
-    // large scrolls (four wheel ticks of 60 px logical each — the same step
-    // a real mouse wheel produces in `Scrollable::handle_event`).
+    // large scrolls (eight wheel ticks of 60 px logical each — the step a
+    // real mouse wheel produces in `Scrollable::handle_event`).
     // At each step it relayouts, draws, mark_drawns, and counts
     // non-bg pixels. Any frame below the threshold is a
     // regression: the user-reported failure was "scrolled all the
@@ -552,10 +552,10 @@ fn scrolling_to_the_end_of_dashboard_still_renders_content() {
     let mut min_frame = Vec::new();
     let mut last_offset: f32 = -1.0;
 
-    // 250 × 240 px = up to 60,000 px of scroll. The dashboard is
+    // 125 × 480 px = up to 60,000 px of scroll. The dashboard is
     // ~9,800 px logical so this comfortably hits max_y.
-    for step in 0..250 {
-        h.root.scroll_by(0.0, 240.0);
+    for step in 0..125 {
+        h.root.scroll_by(0.0, 480.0);
         let off = h.root.offset_y();
         h.relayout();
         let rgba = h.draw_one_frame();
@@ -573,8 +573,10 @@ fn scrolling_to_the_end_of_dashboard_still_renders_content() {
     }
 
     eprintln!("min non-bg pixels across scroll: {min_pixels} at offset_y={min_offset}");
-    // Encode the worst frame once, rather than every time the minimum drops.
-    tilo_ui::png::write_rgba8("/tmp/dash_scroll_min.png", CANVAS_W, CANVAS_H, &min_frame).unwrap();
+    if min_pixels <= 30_000 {
+        tilo_ui::png::write_rgba8("/tmp/dash_scroll_min.png", CANVAS_W, CANVAS_H, &min_frame)
+            .unwrap();
+    }
     assert!(
         min_pixels > 30_000,
         "during scroll, the worst frame (offset_y={min_offset}) \

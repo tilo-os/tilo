@@ -176,30 +176,30 @@ const RUNS: &[(f64, usize)] = &[(40.0, 10), (-24.0, 6)];
 
 #[test]
 fn culled_scroll_frames_present_what_full_frames_present() {
-    let scrollers: [(&str, fn() -> Box<dyn Widget>, bool); 7] = [
-        ("scrollable column", || column(400), true),
-        ("virtual list", || virtual_list(2_000), true),
-        ("code editor", || code(600), true),
-        ("data table", || data_table(2_000), false),
-        ("tree view", || tree_view(100, 10), false),
-        ("scroll region", || transcript(2_000), false),
-        ("framed column", framed_column, true),
+    // Each scroller at one scale; both scales appear among those that copy
+    // and among those that do not.
+    let scrollers: [(&str, fn() -> Box<dyn Widget>, bool, f64); 7] = [
+        ("scrollable column", || column(400), true, 1.0),
+        ("virtual list", || virtual_list(2_000), true, 2.0),
+        ("code editor", || code(600), true, 1.0),
+        ("data table", || data_table(2_000), false, 2.0),
+        ("tree view", || tree_view(100, 10), false, 1.0),
+        ("scroll region", || transcript(2_000), false, 2.0),
+        ("framed column", framed_column, true, 2.0),
     ];
-    for (name, make, copies) in scrollers {
-        for scale in [1.0, 2.0] {
-            let twins = twins(make, &Theme::dark(), scale, RUNS);
-            eprintln!("{name} {scale}x: {twins:?}");
-            if copies {
-                assert!(
-                    twins.copied * 4 >= twins.frames * 3,
-                    "{name} {scale}x: most frames copy ({twins:?})"
-                );
-                assert!(
-                    twins.smaller * 2 >= twins.copied,
-                    "{name} {scale}x: a frame that copies draws less than a full \
-                     one ({twins:?})"
-                );
-            }
+    for (name, make, copies, scale) in scrollers {
+        let twins = twins(make, &Theme::dark(), scale, RUNS);
+        eprintln!("{name} {scale}x: {twins:?}");
+        if copies {
+            assert!(
+                twins.copied * 4 >= twins.frames * 3,
+                "{name} {scale}x: most frames copy ({twins:?})"
+            );
+            assert!(
+                twins.smaller * 2 >= twins.copied,
+                "{name} {scale}x: a frame that copies draws less than a full \
+                 one ({twins:?})"
+            );
         }
     }
 

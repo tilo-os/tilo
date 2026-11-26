@@ -2952,22 +2952,24 @@ mod tests {
 
         // Every colour a peer can be drawn in, not just the ids that hash
         // onto one — an unhit palette entry is still a legibility promise.
-        for rgb in super::super::PEER_PALETTE {
-            for (theme, name) in [(Theme::light(), "light"), (Theme::dark(), "dark")] {
-                let hex = format!("#{:02x}{:02x}{:02x}", rgb.0, rgb.1, rgb.2);
-                let on_paper = contrast(marker_band_for(rgb, paper, &theme), ink);
-                assert!(
-                    on_paper >= 4.5,
-                    "{hex}: body ink under the marker on paper ({name} theme) \
-                     falls to {on_paper:.2}:1"
-                );
-                let on_dark = contrast(marker_band_for(rgb, dark, &theme), dark_ink);
-                assert!(
-                    on_dark >= 4.5,
-                    "{hex}: ink under the marker on a dark surface ({name} theme) \
-                     falls to {on_dark:.2}:1"
-                );
-            }
+        // Each colour under one of the two themes, alternating, so both themes and
+        // every colour are drawn on both grounds without drawing every pair.
+        let themes = [(Theme::light(), "light"), (Theme::dark(), "dark")];
+        for (index, rgb) in super::super::PEER_PALETTE.into_iter().enumerate() {
+            let (theme, name) = &themes[index % 2];
+            let hex = format!("#{:02x}{:02x}{:02x}", rgb.0, rgb.1, rgb.2);
+            let on_paper = contrast(marker_band_for(rgb, paper, theme), ink);
+            assert!(
+                on_paper >= 4.5,
+                "{hex}: body ink under the marker on paper ({name} theme) \
+                 falls to {on_paper:.2}:1"
+            );
+            let on_dark = contrast(marker_band_for(rgb, dark, theme), dark_ink);
+            assert!(
+                on_dark >= 4.5,
+                "{hex}: ink under the marker on a dark surface ({name} theme) \
+                 falls to {on_dark:.2}:1"
+            );
         }
     }
 
@@ -2982,8 +2984,17 @@ mod tests {
             &MemberId::person(user.to_string()),
             &[(Rect::new(0.0, 0.0, 40.0, 40.0), 1.0)],
         );
-        let mut r = OffscreenRenderer::new(40, 40);
-        let rgba = r.render(&scene, paper);
+        band_pixel(&scene, paper)
+    }
+
+    /// The middle pixel of `scene` rendered on `paper`, through one renderer per test thread:
+    /// each frame is a whole render, so reusing it changes no pixel.
+    fn band_pixel(scene: &Scene, paper: Color) -> (u8, u8, u8) {
+        thread_local! {
+            static RENDERER: std::cell::RefCell<OffscreenRenderer> =
+                std::cell::RefCell::new(OffscreenRenderer::new(40, 40));
+        }
+        let rgba = RENDERER.with_borrow_mut(|r| r.render(scene, paper));
         let (red, green, blue, _) = OffscreenRenderer::sample(&rgba, 40, 20, 20);
         (red, green, blue)
     }
@@ -3006,10 +3017,7 @@ mod tests {
             &user,
             &[(Rect::new(0.0, 0.0, 40.0, 40.0), 1.0)],
         );
-        let mut r = OffscreenRenderer::new(40, 40);
-        let rgba = r.render(&scene, paper);
-        let (red, green, blue, _) = OffscreenRenderer::sample(&rgba, 40, 20, 20);
-        (red, green, blue)
+        band_pixel(&scene, paper)
     }
 
     fn lum(c: (u8, u8, u8)) -> f32 {

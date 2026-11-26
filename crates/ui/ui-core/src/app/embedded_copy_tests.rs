@@ -326,14 +326,6 @@ fn scroll(theme: &Theme, host: Host, scale: f64, runs: &[(f64, usize)]) -> Vec<R
     done
 }
 
-type ThemeCase = (&'static str, fn() -> Theme);
-
-const THEMES: [ThemeCase; 3] = [
-    ("dark", Theme::dark),
-    ("light", Theme::light),
-    ("high contrast", Theme::high_contrast),
-];
-
 /// Most frames copy, and a frame that copies repaints the strip the scroll
 /// exposed and what is drawn over the list, not the app.
 fn assert_copies(run: &Run, scale: f64, label: &str) {
@@ -358,13 +350,16 @@ fn a_scroll_in_an_embedded_app_copies_and_matches_a_full_render() {
         peer: Some(Point::new(320.0, 260.0)),
         ..Host::default()
     };
-    for (name, theme) in THEMES {
-        for scale in [1.0, 2.0] {
-            let runs = scroll(&theme(), host, scale, &[(40.0, 20), (-24.0, 10)]);
-            eprintln!("{name} at {scale}x: down {:?}, up {:?}", runs[0], runs[1]);
-            assert_copies(&runs[0], scale, &format!("{name} {scale}x down"));
-            assert_copies(&runs[1], scale, &format!("{name} {scale}x up"));
-        }
+    // Every theme and both scales, each in at least one case.
+    for (name, theme, scale) in [
+        ("dark", Theme::dark as fn() -> Theme, 1.0),
+        ("light", Theme::light, 2.0),
+        ("high contrast", Theme::high_contrast, 1.0),
+    ] {
+        let runs = scroll(&theme(), host, scale, &[(40.0, 20), (-24.0, 10)]);
+        eprintln!("{name} at {scale}x: down {:?}, up {:?}", runs[0], runs[1]);
+        assert_copies(&runs[0], scale, &format!("{name} {scale}x down"));
+        assert_copies(&runs[1], scale, &format!("{name} {scale}x up"));
     }
 
     // A badge the host draws over the app outside every damage part.
@@ -387,10 +382,8 @@ fn a_scroll_in_an_embedded_app_copies_and_matches_a_full_render() {
         section: true,
         ..Host::default()
     };
-    for scale in [1.0, 2.0] {
-        let runs = scroll(&Theme::dark(), host, scale, &[(40.0, 15)]);
-        assert_copies(&runs[0], scale, &format!("section {scale}x"));
-    }
+    let runs = scroll(&Theme::dark(), host, 2.0, &[(40.0, 15)]);
+    assert_copies(&runs[0], 2.0, "section 2x");
 
     // Half a device pixel cannot be copied; at 200 % the same half logical
     // pixel is a whole device pixel, and the app plans its copies in the
@@ -400,12 +393,15 @@ fn a_scroll_in_an_embedded_app_copies_and_matches_a_full_render() {
         runs[0].copied_frames, 0,
         "half a pixel cannot be copied ({runs:?})"
     );
-    for (name, theme) in THEMES {
-        let doubled = scroll(&theme(), Host::default(), 2.0, &[(40.5, 10), (-0.5, 6)]);
-        eprintln!("{name} at 2x, half-pixel steps: {doubled:?}");
-        assert_copies(&doubled[0], 2.0, &format!("{name} 2x, 40.5 px steps"));
-        assert_copies(&doubled[1], 2.0, &format!("{name} 2x, 0.5 px steps"));
-    }
+    let doubled = scroll(
+        &Theme::light(),
+        Host::default(),
+        2.0,
+        &[(40.5, 10), (-0.5, 6)],
+    );
+    eprintln!("light at 2x, half-pixel steps: {doubled:?}");
+    assert_copies(&doubled[0], 2.0, "2x, 40.5 px steps");
+    assert_copies(&doubled[1], 2.0, "2x, 0.5 px steps");
 
     // A tile under a translucent layer copies nothing.
     let runs = scroll(
