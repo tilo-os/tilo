@@ -3498,6 +3498,7 @@ run = "bash tools/ci/publish/cli-release.sh build {arch}-apple-darwin /target/pu
 setup = { run = "bash tools/ci/install-cli-toolchain.sh {arch}-apple-darwin", egress = { to = ["0.0.0.0/0", "::/0"], pinned = true } }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/cli/macos-{arch}/*"]
+timeout_secs = 7200
 on = ["tag:v+cli-*"]
 default = false
 [check.matrix]
