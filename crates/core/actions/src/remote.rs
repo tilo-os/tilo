@@ -2848,7 +2848,7 @@ fn read_answered<H: ActionProvider>(
 ) -> Pending<RemoteActionMessage> {
     provider.resource_reads().map_or_else(
         || resource_read::unanswered(correlation),
-        |reads| resource_read::on_a_task(reads.answer_read(caller, correlation, read)),
+        |reads| resource_read::answered_where_it_ends(reads.answer_read(caller, correlation, read)),
     )
 }
 

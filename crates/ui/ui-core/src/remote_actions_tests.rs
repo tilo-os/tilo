@@ -684,9 +684,9 @@ impl Records {
         )
     }
 
-    fn reading(&self, correlation: u64) -> RemoteActionMessage {
-        // The answer every reader of a record is given, from the copy the provider reads: an
-        // answer built here would test the shape against itself.
+    /// The readings every reader of the record is given, from the copy the provider reads: an
+    /// answer built here would test the shape against itself.
+    fn readings(&self) -> Result<serde_json::Value, ActionCallError> {
         let asks = [tilo_actions::remote::ResourceAsk {
             address: tilo_actions::remote::ResourceAddress {
                 workspace: "workspace".into(),
@@ -695,18 +695,30 @@ impl Records {
             },
             joined: false,
         }];
+        tilo_actions::remote::readings_of(&asks, |_| Ok(self.copied())).and_then(|readings| {
+            readings
+                .readable()
+                .map_err(|reason| ActionCallError::Refused { reason })
+        })
+    }
+
+    /// The revision the readings name: what a follow asks to be answered past.
+    fn revision(&self) -> Option<String> {
+        self.readings().ok().and_then(|readings| {
+            readings
+                .get("revision")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+    }
+
+    fn reading(&self, correlation: u64) -> RemoteActionMessage {
         let result = if self.refuses.load(Ordering::SeqCst) {
             Err(ActionCallError::Refused {
                 reason: tilo_actions::remote::RESOURCE_READ_REFUSED.into(),
             })
         } else {
-            tilo_actions::remote::readings_of(&asks, |_| Ok(self.copied()))
-                .and_then(|readings| {
-                    readings
-                        .readable()
-                        .map_err(|reason| ActionCallError::Refused { reason })
-                })
-                .map(|readings| readings.to_string())
+            self.readings().map(|readings| readings.to_string())
         };
         RemoteActionMessage::ResourceReading {
             correlation,
@@ -752,8 +764,8 @@ impl tilo_actions::remote::ResourceReads for Records {
         correlation: u64,
         read: ResourceReadRequest,
     ) -> tilo_actions::remote::ReadingAnswer {
-        let at = format!("r{}", *self.writes.lock().unwrap());
-        let waits = read.wait_ms.is_some() && read.after.as_deref() == Some(at.as_str());
+        // A read that names the revision its reading would show, and waits, is held for a write.
+        let waits = read.wait_ms.is_some() && read.after == self.revision();
         self.asked.lock().unwrap().push(read);
         if waits && self.holds.load(Ordering::SeqCst) && !self.refuses.load(Ordering::SeqCst) {
             let (answer, held) = tilo_actions::remote::pending();
@@ -848,10 +860,7 @@ tilo_test_env::scenario! {
         assert_eq!(writes_shown(&followed), Some(0));
         assert_eq!(
             records.asked(),
-            [
-                (None, None),
-                (Some("r0".to_owned()), Some(FOLLOW_WAIT_MS)),
-            ],
+            [(None, None), (records.revision(), Some(FOLLOW_WAIT_MS))],
             "the first read is answered as the record is, the next names what is shown and waits"
         );
         assert!(

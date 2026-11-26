@@ -695,19 +695,120 @@ pub async fn answered(
     }
 }
 
-/// `reading`, answered on a task of the runtime that asked, or of the app's runtime when no
-/// runtime asked: what the API's dispatch, which answers through [`super::Pending`], waits on.
+/// `reading`, answered where it is completed: polled first in the call that asked, so a reader
+/// that has the record answers it there, and again on the thread each wait of it ends on, so a
+/// reader that answers on its own turn — the desktop reading its windows' records — is delivered
+/// inside that turn, and a follow asks again in it. No thread is parked on the read: whoever ends
+/// a wait runs the rest of it.
+///
+/// A read is polled within a runtime's context ([`tilo_rt::Handle`]), so one that waits on a timer
+/// has one wherever it is resumed.
 #[cfg(all(feature = "answer-reads", not(tilo_no_js)))]
-pub(crate) fn on_a_task(reading: ReadingAnswer) -> super::Pending<super::RemoteActionMessage> {
+pub(crate) fn answered_where_it_ends(
+    reading: ReadingAnswer,
+) -> super::Pending<super::RemoteActionMessage> {
     let (answer, answered) = super::pending();
-    let task = async move { answer.complete(reading.await) };
-    #[cfg(not(target_family = "wasm"))]
-    if let Ok(runtime) = tilo_rt::Handle::try_current() {
-        drop(runtime.spawn(task));
-        return answered;
-    }
-    drop(tilo_rt::app().spawn(task));
+    let driven = std::sync::Arc::new(Driven {
+        slot: std::sync::Mutex::new(Slot::Held(Held { reading, answer })),
+        again: std::sync::atomic::AtomicBool::new(false),
+    });
+    driven.drive();
     answered
+}
+
+/// What a [`Driven`] holds between polls, if anything.
+#[cfg(all(feature = "answer-reads", not(tilo_no_js)))]
+enum Slot {
+    /// The reading and the answer it completes.
+    Held(Held),
+    /// This thread polls it now: a wake meanwhile asks for one more poll.
+    Polling,
+    /// It answered, or the client went.
+    Done,
+}
+
+#[cfg(all(feature = "answer-reads", not(tilo_no_js)))]
+struct Held {
+    reading: ReadingAnswer,
+    answer: super::Completer<super::RemoteActionMessage>,
+}
+
+/// A read answered on the thread that ends its wait: [`Driven::drive`] polls it, and its waker —
+/// given to whatever the read awaits — drives it again on the thread that completes that wait.
+#[cfg(all(feature = "answer-reads", not(tilo_no_js)))]
+struct Driven {
+    slot: std::sync::Mutex<Slot>,
+    /// A wake that came while the reading was polled on another thread.
+    again: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(all(feature = "answer-reads", not(tilo_no_js)))]
+impl Driven {
+    /// Poll the held reading as far as it goes. Called in the call that asked and on every wake,
+    /// on whichever thread that is.
+    fn drive(self: &std::sync::Arc<Self>) {
+        use std::sync::atomic::Ordering;
+        use tilo_lock::MutexRecover as _;
+
+        loop {
+            let held = {
+                let mut slot = self.slot.lock_recover();
+                match std::mem::replace(&mut *slot, Slot::Polling) {
+                    Slot::Held(held) => held,
+                    Slot::Polling => {
+                        // Another thread polls it: that poll ends with one more.
+                        self.again.store(true, Ordering::Release);
+                        return;
+                    }
+                    Slot::Done => {
+                        *slot = Slot::Done;
+                        return;
+                    }
+                }
+            };
+            self.again.store(false, Ordering::Release);
+            let Held {
+                mut reading,
+                answer,
+            } = held;
+            let waker = std::task::Waker::from(std::sync::Arc::clone(self));
+            let mut context = std::task::Context::from_waker(&waker);
+            // A read may wait on a timer, and resumed on a thread that runs no runtime it would
+            // fail to find one: poll it in the context of this thread's runtime, or the app's.
+            #[cfg(not(target_family = "wasm"))]
+            let polled = {
+                let runtime = tilo_rt::Handle::try_current()
+                    .unwrap_or_else(|_| tilo_rt::app().handle().clone());
+                let _entered = runtime.enter();
+                reading.as_mut().poll(&mut context)
+            };
+            #[cfg(target_family = "wasm")]
+            let polled = reading.as_mut().poll(&mut context);
+            if let std::task::Poll::Ready(message) = polled {
+                *self.slot.lock_recover() = Slot::Done;
+                answer.complete(message);
+                return;
+            }
+            let mut slot = self.slot.lock_recover();
+            *slot = Slot::Held(Held { reading, answer });
+            let again = self.again.swap(false, Ordering::Acquire);
+            drop(slot);
+            if !again {
+                return;
+            }
+        }
+    }
+}
+
+#[cfg(all(feature = "answer-reads", not(tilo_no_js)))]
+impl std::task::Wake for Driven {
+    fn wake(self: std::sync::Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &std::sync::Arc<Self>) {
+        self.drive();
+    }
 }
 
 /// What a provider that reads no records answers a read of one: the API posts every read through
