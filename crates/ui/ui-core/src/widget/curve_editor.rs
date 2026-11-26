@@ -369,6 +369,8 @@ mod component;
 pub use component::CurveEditorProps;
 
 impl Widget for CurveEditor {
+    tilo_ui_base::described!();
+
     fn name(&self) -> &'static str {
         "CurveEditor"
     }
