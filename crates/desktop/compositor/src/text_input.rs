@@ -655,12 +655,14 @@ fn secret(content: Option<(ContentHint, ContentPurpose)>) -> bool {
 }
 
 /// Which field a text-input object makes on a surface, for the life of this compositor: neither id
-/// is reused while it runs.
+/// is reused while it runs. The keyboard's reading publishes it as an `Int`, a signed 64-bit
+/// integer, so the hash keeps to 63 bits: with the top bit set, the keyboard's view could not read
+/// the field it types into.
 fn field_id(input: &ZwpTextInputV3, surface: &WlSurface) -> u64 {
     let mut hasher = DefaultHasher::new();
     input.id().hash(&mut hasher);
     surface.id().hash(&mut hasher);
-    hasher.finish()
+    hasher.finish() >> 1
 }
 
 impl State {

@@ -489,11 +489,13 @@ impl PartView {
             return Err("the session could not start a runtime for it".to_owned());
         };
         // What the view reads is the part's reading, as the session's watch last had it; what
-        // it invokes goes to the session's API, in the shapes the verbs declare.
+        // it invokes of the session's state goes to the session's API, in the shapes the verbs
+        // declare. The package's own actions (what a key press means, the word it composes) run
+        // here, over what it keeps of its own.
         host.runtime()
             .set_reading(&target, reading)
             .map_err(|error| error.to_string())?;
-        host.runtime().set_invoker(PartInvoker {
+        host.runtime().set_foreign_invoker(PartInvoker {
             meta,
             target: ResourceRef::clone(&target),
             asked: Rc::clone(&asked),

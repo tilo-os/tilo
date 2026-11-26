@@ -401,3 +401,46 @@ fn a_changed_geometry_cancels_a_contact_before_its_lift() {
         "a contact in geometry that moved types nothing"
     );
 }
+
+/// Where the keys stand is known once the pad is laid out, before it is ever drawn: a screen
+/// reader, the session's controls and a first touch all find the keys of a keyboard that has not
+/// painted yet, and find them again after its keys change.
+#[test]
+fn a_laid_out_pad_names_its_keys_before_it_is_drawn() {
+    let theme = Theme::dark();
+    let mut text = tilo_ui_base::text_render::TextRenderer::new();
+    let mut pad = super::KeyPad::default();
+    let keys = |labels: &str| -> Vec<PadKey> {
+        labels
+            .chars()
+            .enumerate()
+            .map(|(column, c)| PadKey {
+                label: c.to_string(),
+                name: c.to_string(),
+                width: 1.0,
+                row: 0,
+                column: i64::try_from(column).unwrap_or(0),
+                ..PadKey::default()
+            })
+            .collect()
+    };
+    let named = |pad: &super::KeyPad| -> Vec<String> {
+        pad.accessibility()
+            .expect("the pad reads")
+            .children
+            .iter()
+            .map(|child| child.name.clone().unwrap_or_default())
+            .collect()
+    };
+    pad.set_keys(keys("qwe"));
+    let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+    tilo_ui_base::widget::layout::lay_out_detached(&mut pad, rect, &theme, &mut text)
+        .expect("the pad lays out");
+    assert_eq!(named(&pad), ["q", "w", "e"], "the keys stand once laid out");
+
+    pad.set_keys(keys("123"));
+    assert!(pad.is_layout_dirty(), "new keys ask for a layout");
+    tilo_ui_base::widget::layout::lay_out_detached(&mut pad, rect, &theme, &mut text)
+        .expect("the pad lays out");
+    assert_eq!(named(&pad), ["1", "2", "3"], "the new keys stand");
+}

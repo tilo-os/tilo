@@ -252,6 +252,12 @@ pub struct KeyPad {
     cells: Vec<Rect>,
     band: Rect,
     row_height: f64,
+    /// A row's height as the theme wants it, read when the pad is laid out: layout places the
+    /// keys with it, so where each key stands is known before the pad is first drawn, to an
+    /// assistive technology and to a touch alike.
+    wanted_row: f64,
+    /// Whether `cells` stand for the keys and the box the pad holds now.
+    placed: bool,
     hovered: Option<usize>,
     pressed: Option<usize>,
     fingers: Vec<Finger>,
@@ -284,6 +290,8 @@ impl Default for KeyPad {
             cells: Vec::new(),
             band: Rect::ZERO,
             row_height: 0.0,
+            wanted_row: 0.0,
+            placed: false,
             hovered: None,
             pressed: None,
             fingers: Vec::new(),
@@ -316,6 +324,16 @@ impl KeyPad {
             self.cancel_contacts();
             self.keys = keys;
             self.dirty = true;
+            self.placed = false;
+        }
+    }
+
+    /// Take `size`: the keys are placed again at its row height.
+    pub(crate) fn set_size(&mut self, size: PadSize) {
+        if size != self.size {
+            self.size = size;
+            self.dirty = true;
+            self.placed = false;
         }
     }
 
@@ -336,6 +354,13 @@ impl KeyPad {
     /// Place every key: rows split the band's height, and a row's width by the keys' weights, left
     /// to right in their columns.
     fn place(&mut self, theme: &Theme) {
+        self.wanted_row = f64::from(theme.tokens.metrics.header_height);
+        self.place_rows();
+    }
+
+    /// Place every key at the row height the theme last asked for.
+    fn place_rows(&mut self) {
+        self.placed = true;
         let rows = self.rows();
         if rows == 0 || self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             self.cells = Vec::new();
@@ -345,7 +370,7 @@ impl KeyPad {
         }
         // The keys keep the theme's row height, by the person's size, and dock at the bottom: a
         // panel taller than the keys is spare room above them, never taller key wells.
-        let wanted = f64::from(theme.tokens.metrics.header_height) * f64::from(self.size.scale());
+        let wanted = self.wanted_row * f64::from(self.size.scale());
         let height = (wanted * rows as f64).min(self.rect.height());
         let row_height = height / rows as f64;
         let band = Rect::new(
@@ -1170,21 +1195,40 @@ impl Widget for KeyPad {
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
+        let wanted_row = f64::from(theme.tokens.metrics.header_height);
+        // Any change of the theme's row height places the keys again: an exact reading.
+        if wanted_row.to_bits() != self.wanted_row.to_bits() {
+            self.wanted_row = wanted_row;
+            self.placed = false;
+        }
+        // The keys' rows are the pad's own height, whatever box holds it: a box that sizes to its
+        // content gives it that, and one with room to spare lets it grow, docking the keys at
+        // the bottom.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a few rows of keys are far from f32::MAX"
+        )]
+        let height = (self.wanted_row * f64::from(self.size.scale()) * self.rows() as f64) as f32;
         let style = taffy::Style {
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::auto(),
             },
+            min_size: taffy::Size {
+                width: taffy::Dimension::auto(),
+                height: taffy::Dimension::length(height),
+            },
+            flex_grow: 1.0,
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
     }
 
     fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
+        self.rect == Rect::ZERO || !self.placed
     }
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
@@ -1193,6 +1237,10 @@ impl Widget for KeyPad {
             self.rect = rect;
             self.dirty = true;
             self.cancel_contacts();
+            self.placed = false;
+        }
+        if !self.placed {
+            self.place_rows();
         }
     }
 

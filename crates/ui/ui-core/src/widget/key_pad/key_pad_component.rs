@@ -90,7 +90,7 @@ impl Described for KeyPad {
             changed = true;
         }
         self.set_keys(props.keys);
-        self.size = props.size;
+        self.set_size(props.size);
         self.caps = props.caps;
         self.secret = props.secret;
         self.enabled = props.enabled;
