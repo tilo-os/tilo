@@ -183,12 +183,6 @@ impl ProvisionedHome {
     }
 }
 
-impl Default for ProvisionedHome {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl WorkspaceTreeHandle {
     /// The workspaces this tree describes, which the fixture's host serves.
     fn opened(&self) -> Vec<String> {
