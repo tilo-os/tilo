@@ -124,6 +124,9 @@ dev_features = ["tilo-session/dev-overrides"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-session", to = "/usr/bin/tilo-session", mode = "0755" },
+  # A person's own device daemon starts their shell from beside itself, as a distribution's
+  # package installs the two: here the daemon is in /usr/libexec/tilo, so the session is too.
+  { link = "../../bin/tilo-session", to = "/usr/libexec/tilo/tilo-session" },
   # The program a task's tilolang programs run in: the session and `tilo` start it beside
   # themselves.
   { from = "tilolang-process", to = "/usr/bin/tilolang-process", mode = "0755" },
