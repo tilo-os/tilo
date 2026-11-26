@@ -457,10 +457,7 @@ impl Book {
         for (id, stands) in &decided {
             // Each was waiting a moment ago, so neither is refused.
             let _ = match stands {
-                InTracker::Given => {
-                    self.given_tasks.insert(id.clone());
-                    self.accept(id, now_ms)
-                }
+                InTracker::Given => self.accept(id, now_ms),
                 InTracker::Dropped => self.decline(id, now_ms, false),
                 InTracker::Waits => continue,
             };
@@ -615,6 +612,10 @@ mod tests {
         assert!(changed);
         let state = |id: &str| book.get(id).map(|proposal| proposal.state);
         assert_eq!(state("a"), Ok(State::Accepted));
+        assert!(
+            book.needs_task_receipt(book.get("a").unwrap()),
+            "the board status does not identify who gave the task"
+        );
         assert_eq!(state("b"), Ok(State::Declined));
         assert!(
             book.listed().kinds.is_empty(),
