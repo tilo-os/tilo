@@ -149,6 +149,17 @@ pub(super) fn is_local_host_caller(
     if caller.is_foreign_device() {
         return false;
     }
+    // An agent of the person whose own session the socket admitted acts under its own key: its
+    // run is that session's, made for it once the workspace listed the agent, so it is local as
+    // the person is, from a device of theirs.
+    if let Some(super::published_invocation::InvocationCaller::Local { admitted, .. }) = origin
+        && caller.device_public_key().is_some()
+        && caller.acting().is_agent()
+    {
+        return admitted.certificate.as_ref().is_some_and(|cert| {
+            !cert.capabilities.foreign && caller.user_public_key() == Some(&cert.user_public_key)
+        });
+    }
     if caller.device_public_key().is_none()
         && !matches!(
             origin,

@@ -430,7 +430,8 @@ fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_it() {
         assert!(!failed, "the agent lists the workspace's people: {listed}");
         assert!(listed.contains(host.person()), "{listed}");
 
-        // Inviting someone asks the person first: allowed, the link comes back.
+        // Inviting someone asks the person first: the call waits in its asked record, and
+        // nothing is issued until they answer.
         let invited = agent
             .tool_structured(
                 "tilo_do",
@@ -438,8 +439,12 @@ fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_it() {
             )
             .await;
         assert_eq!(
-            invited["structuredContent"]["status"], "pending",
+            invited["structuredContent"]["status"], "asked",
             "its person is asked first: {invited}"
+        );
+        assert!(
+            invited["structuredContent"]["record"].is_string(),
+            "the asked record is named: {invited}"
         );
     });
 }
