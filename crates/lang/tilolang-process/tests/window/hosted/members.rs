@@ -12,6 +12,8 @@ const INTERACTION: &str = "so.tilo.lang.interaction";
 
 /// Ada at a window of the conversation the `interaction` package stages, in a workspace whose
 /// member list names `people` (member, name); `policy` makes the workspace's policy, given its id.
+/// The list also names the people who speak in the staged conversation, Mia and Leo, as a
+/// workspace has the people its conversations hold: its store takes no one a scenario makes up.
 fn in_a_conversation(
     people: &[(MemberId, &str)],
     policy: impl FnOnce(&str) -> Option<policy::WorkspacePolicy>,
@@ -20,6 +22,12 @@ fn in_a_conversation(
     bus.member(MemberId::person("ada"), "Ada");
     for (id, name) in people {
         bus.member(id.clone(), name);
+    }
+    for speaker in ["Mia", "Leo"] {
+        let id = MemberId::person(speaker);
+        if !people.iter().any(|(listed, _)| *listed == id) {
+            bus.member(id, speaker);
+        }
     }
     let route = RouteSpec::app(INTERACTION, uuid::Uuid::new_v4());
     let workspace = route.cluster_id.to_string();
@@ -178,10 +186,11 @@ fn the_composers_drawer_offers_the_members_of_the_conversation_by_the_names_the_
 #[test]
 fn the_composers_drawer_offers_the_workspaces_people_and_writes_a_mention_that_is_sent() {
     let _settled = ui::motion::testing::settled();
+    // The workspace's people are the ones who speak in the staged conversation.
     let mut session = in_a_conversation(
         &[
-            (MemberId::person("u_mia"), "Mia"),
-            (MemberId::person("u_leo"), "Leo"),
+            (MemberId::person("Mia"), "Mia"),
+            (MemberId::person("Leo"), "Leo"),
         ],
         |_| None,
     );
