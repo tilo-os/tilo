@@ -14,7 +14,7 @@ tilo_ui_base::choice!(DiffSide, "DiffSide", {
 
 /// Two texts aligned line by line, as a comparison reads: each side's own line numbers, the
 /// changed rows washed, and a strip down the side where the changes stand.
-#[derive(Component, Default)]
+#[derive(Component)]
 #[component(name = "DiffGrid", role = "Table", label = "label")]
 pub struct DiffGridProps {
     /// The left side's lines, one per aligned row: an empty line where it has none.
@@ -42,6 +42,30 @@ pub struct DiffGridProps {
     /// moves by, down for a positive number.
     #[component(event(value = i64))]
     pub wheel: Event,
+    /// Whether a press on a row runs now.
+    pub enabled: bool,
+    /// Why it cannot be pressed now, where the label does not say (an action whose requirement
+    /// does not hold): spoken as its description beside its name.
+    pub description: Option<String>,
+}
+
+/// A grid takes a press until something says otherwise.
+impl Default for DiffGridProps {
+    fn default() -> Self {
+        Self {
+            left: Vec::new(),
+            right: Vec::new(),
+            kinds: String::new(),
+            at: None,
+            side: DiffSide::default(),
+            language: None,
+            label: None,
+            press: Event::None,
+            wheel: Event::None,
+            enabled: true,
+            description: None,
+        }
+    }
 }
 
 impl Described for DiffGrid {
@@ -62,7 +86,8 @@ impl Described for DiffGrid {
             || at_changed
             || numbering_changed
             || props.side != self.side
-            || props.label != self.label;
+            || props.label != self.label
+            || props.description != self.description;
         self.left = props.left;
         self.right = props.right;
         self.kinds = props.kinds;
@@ -70,6 +95,7 @@ impl Described for DiffGrid {
         self.side = props.side;
         self.language = props.language;
         self.label = props.label;
+        self.description = props.description;
         if text_changed {
             self.first = 0;
             self.highlight_rows();
@@ -81,7 +107,7 @@ impl Described for DiffGrid {
             self.reveal(at);
         }
         let press = props.press;
-        self.on_press = (!press.is_none()).then(|| {
+        self.on_press = (props.enabled && !press.is_none()).then(|| {
             Box::new(move |row: usize| {
                 press.fire(Some(tilo_ui_base::component::Value::Int(
                     i64::try_from(row).unwrap_or(i64::MAX),

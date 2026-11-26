@@ -222,6 +222,10 @@ pub struct TrackTimeline {
     pub(crate) zoomed: Event,
     pub(crate) scrolled: Event,
     pub(crate) press: Event,
+    /// Whether a press on a track runs now.
+    pub(crate) enabled: bool,
+    /// Why a press cannot run now, where the label does not say.
+    pub(crate) description: Option<String>,
     /// Where each span is drawn, by its key: its start then its length, settling toward where its
     /// props put it.
     shown: HashMap<String, MotionValue<Vec2>>,
@@ -259,6 +263,8 @@ impl TrackTimeline {
             zoomed: Event::None,
             scrolled: Event::None,
             press: Event::None,
+            enabled: true,
+            description: None,
             shown: HashMap::new(),
             lift: HashMap::new(),
             theme: None,
@@ -2156,15 +2162,22 @@ impl Widget for TrackTimeline {
                 children.push(node);
             }
         }
-        Some(
-            AccessNode::new(Role::Group)
-                .with_optional_name(self.label.clone())
-                .with_value(timecode(head, true))
-                .with_bounds(self.rect)
-                .with_state(AccessState::new().focused(self.focus.is_some()))
-                .with_children(children)
-                .with_keyed_action_routes("track-timeline"),
-        )
+        let node = AccessNode::new(Role::Group)
+            .with_optional_name(self.label.clone())
+            .with_value(timecode(head, true))
+            .with_bounds(self.rect)
+            .with_state(
+                AccessState::new()
+                    .focused(self.focus.is_some())
+                    .disabled(!self.enabled),
+            )
+            .with_children(children)
+            .with_keyed_action_routes("track-timeline");
+        // Why it cannot be pressed now, if it says: read beside its name, never instead.
+        Some(match &self.description {
+            Some(why) => node.with_description(why.clone()),
+            None => node,
+        })
     }
 
     fn perform_action(

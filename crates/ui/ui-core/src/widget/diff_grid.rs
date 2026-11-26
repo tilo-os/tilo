@@ -170,6 +170,8 @@ pub struct DiffGrid {
     pub(crate) side: DiffSide,
     pub(crate) language: Option<Language>,
     pub(crate) label: Option<String>,
+    /// Why a press cannot run now, where the label does not say.
+    pub(crate) description: Option<String>,
     /// Each line of each side as its language colours it, once per change of the text.
     left_spans: Vec<LineSpans>,
     right_spans: Vec<LineSpans>,
@@ -197,6 +199,7 @@ impl Default for DiffGrid {
             side: DiffSide::Both,
             language: None,
             label: None,
+            description: None,
             left_spans: Vec::new(),
             right_spans: Vec::new(),
             rect: Rect::ZERO,
@@ -563,12 +566,18 @@ impl Widget for DiffGrid {
     }
 
     fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
-        use tilo_ui_base::a11y::Role;
-        Some(
-            tilo_ui_base::a11y::AccessNode::new(Role::Table)
-                .with_optional_name(self.label.clone())
-                .with_hashed_key("diff_grid"),
-        )
+        use tilo_ui_base::a11y::{AccessState, Role};
+        let node = tilo_ui_base::a11y::AccessNode::new(Role::Table)
+            .with_optional_name(self.label.clone())
+            .with_hashed_key("diff_grid")
+            .with_state(
+                AccessState::new().disabled(self.on_press.is_none() && self.description.is_some()),
+            );
+        // Why it cannot be pressed now, if it says: read beside its name, never instead.
+        Some(match &self.description {
+            Some(why) => node.with_description(why.clone()),
+            None => node,
+        })
     }
 
     fn is_focusable(&self) -> bool {

@@ -91,7 +91,7 @@ pub struct StagePinProps {
 }
 
 /// A page of a fixed size, with what stands on it placed in the page's own coordinates.
-#[derive(Component, Default)]
+#[derive(Component)]
 #[component(name = "Stage", role = "Group", label = "name")]
 pub struct StageProps {
     /// What the stage is, for assistive technology.
@@ -119,6 +119,11 @@ pub struct StageProps {
     /// than a click: carries the page point, its x then its y.
     #[component(event(value = Vec<i64>))]
     pub press: Event,
+    /// Whether a press on the page runs now.
+    pub enabled: bool,
+    /// Why it cannot be pressed now, where the name does not say (an action whose requirement
+    /// does not hold): spoken as its description beside its name.
+    pub description: Option<String>,
     /// The person pressed a place: carries what it stands for and the page point.
     #[component(event(value = String, at = Vec<i64>))]
     pub select: Event,
@@ -303,6 +308,10 @@ pub struct Stage {
     panned: Event,
     open: Event,
     delete: Event,
+    /// Whether a press on the page runs now.
+    enabled: bool,
+    /// Why a press cannot run now, where the name does not say.
+    description: Option<String>,
     /// The pin whose view a change inside it is patching, by its index.
     editing: Option<usize>,
     /// What a place being dragged lines up with, while it moves: drawn across the page.
@@ -843,6 +852,35 @@ impl Stage {
     }
 }
 
+/// A stage takes a press until something says otherwise.
+impl Default for StageProps {
+    fn default() -> Self {
+        Self {
+            name: None,
+            canvas: Vec::new(),
+            zoom: None,
+            pan: None,
+            background: None,
+            chosen: None,
+            pins: Vec::new(),
+            press: Event::None,
+            select: Event::None,
+            moved: Event::None,
+            resized: Event::None,
+            context: Event::None,
+            zoomed: Event::None,
+            panned: Event::None,
+            open: Event::None,
+            delete: Event::None,
+            enabled: true,
+            description: None,
+            still: false,
+            transition: None,
+            motion: None,
+        }
+    }
+}
+
 impl Described for Stage {
     type Props = StageProps;
 
@@ -865,6 +903,8 @@ impl Described for Stage {
             panned,
             open,
             delete,
+            enabled,
+            description,
             still,
             transition: _,
             motion: _,
@@ -905,7 +945,9 @@ impl Described for Stage {
             gesture: None,
             cursor: Point::ORIGIN,
             slop: 6.0,
-            press,
+            press: if enabled { press } else { Event::None },
+            enabled,
+            description,
             select,
             moved,
             resized,
@@ -960,6 +1002,8 @@ impl Described for Stage {
             panned,
             open,
             delete,
+            enabled,
+            description,
             still,
             transition: _,
             motion: _,
@@ -1005,7 +1049,9 @@ impl Described for Stage {
             self.chosen = chosen;
             self.layout_dirty = true;
         }
-        self.press = press;
+        self.press = if enabled { press } else { Event::None };
+        self.enabled = enabled;
+        self.description = description;
         self.select = select;
         self.moved = moved;
         self.resized = resized;
@@ -1855,9 +1901,14 @@ impl Widget for Stage {
 
     fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let mut node = tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group)
-            .with_optional_name(self.name.clone());
+            .with_optional_name(self.name.clone())
+            .with_state(tilo_ui_base::a11y::AccessState::new().disabled(!self.enabled));
         if let Some(menu) = self.menu_node() {
             node.children.push(menu);
+        }
+        // Why it cannot be pressed now, if it says: read beside its name, never instead.
+        if let Some(why) = &self.description {
+            node = node.with_description(why.clone());
         }
         Some(node)
     }

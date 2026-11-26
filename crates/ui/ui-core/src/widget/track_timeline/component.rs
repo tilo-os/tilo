@@ -54,6 +54,11 @@ pub struct TrackTimelineProps {
     /// A track's empty stretch was pressed: carries the moment and the track's key.
     #[component(event(value = f64, at = String))]
     pub press: Event,
+    /// Whether a press on a track runs now.
+    pub enabled: bool,
+    /// Why it cannot be pressed now, where the label does not say (an action whose requirement
+    /// does not hold): spoken as its description beside its name.
+    pub description: Option<String>,
 }
 
 impl Default for TrackTimelineProps {
@@ -73,6 +78,8 @@ impl Default for TrackTimelineProps {
             zoomed: Event::None,
             scrolled: Event::None,
             press: Event::None,
+            enabled: true,
+            description: None,
         }
     }
 }
@@ -251,7 +258,13 @@ impl Described for TrackTimeline {
         timeline.seek = props.seek;
         timeline.zoomed = props.zoomed;
         timeline.scrolled = props.scrolled;
-        timeline.press = props.press;
+        timeline.enabled = props.enabled;
+        timeline.description = props.description;
+        timeline.press = if props.enabled {
+            props.press
+        } else {
+            Event::None
+        };
         timeline
     }
 
@@ -268,7 +281,13 @@ impl Described for TrackTimeline {
         self.seek = props.seek;
         self.zoomed = props.zoomed;
         self.scrolled = props.scrolled;
-        self.press = props.press;
+        self.enabled = props.enabled;
+        self.description = props.description;
+        self.press = if props.enabled {
+            props.press
+        } else {
+            Event::None
+        };
         true
     }
 }
