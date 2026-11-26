@@ -79,26 +79,23 @@ impl Invoker {
         }
     }
 
-    /// The invoker `text` names, keeping `text` as it is.
+    /// The invoker `text` names, keeping `text` as it is: in today's form, or as a claim signed
+    /// before agents named their person wrote it
+    /// ([`crate::before_call::acting_before_agents_named_their_person`]).
     ///
     /// # Errors
-    /// Text that is no tree.
+    /// Text that is no tree of either form.
     pub fn read(text: String) -> Result<Self, serde_json::Error> {
+        let acting = match serde_json::from_str(&text) {
+            Ok(acting) => acting,
+            Err(error) => {
+                crate::before_call::acting_before_agents_named_their_person(&text).ok_or(error)?
+            }
+        };
         Ok(Self {
-            acting: serde_json::from_str(&text)?,
-            text: Some(text),
-        })
-    }
-}
-
-impl Invoker {
-    /// `acting`, read from `text`, the text its signer wrote: the claim's signature is checked
-    /// over `text`, whatever this build would write for `acting`.
-    pub(crate) const fn kept(acting: tilo_action_policy::Acting, text: String) -> Self {
-        Self {
             acting,
             text: Some(text),
-        }
+        })
     }
 }
 

@@ -37,10 +37,11 @@ struct DocumentWriteBeforeCall {
 pub(super) fn brought_up(bytes: &[u8], version: u32) -> Result<Vec<u8>, String> {
     type Head = (u32, String, [u8; 32], Option<Vec<u8>>, usize);
     let ((_, workspace, owner, workspace_bytes, count), mut rest) =
-        postcard::take_from_bytes::<Head>(bytes).map_err(err)?;
+        postcard::take_from_bytes::<Head>(bytes).map_err(|error| format!("its head: {error}"))?;
     let mut documents = Vec::new();
-    for _ in 0..count {
-        let (document, after) = postcard::take_from_bytes::<DurableDocument>(rest).map_err(err)?;
+    for at in 0..count {
+        let (document, after) = postcard::take_from_bytes::<DurableDocument>(rest)
+            .map_err(|error| format!("document {at}: {error}"))?;
         documents.push(document);
         rest = after;
     }
@@ -50,19 +51,38 @@ pub(super) fn brought_up(bytes: &[u8], version: u32) -> Result<Vec<u8>, String> 
         Vec<tilo_user_identity::RevocationEntry>,
         usize,
     )>(rest)
-    .map_err(err)?;
+    .map_err(|error| format!("its receipts and certificates: {error}"))?;
     let mut pending = VecDeque::new();
-    for _ in 0..held {
-        let (source, after) = postcard::take_from_bytes::<[u8; 32]>(rest).map_err(err)?;
-        let (message, after) = message_before_call(after)?;
-        let (replayed, after) = postcard::take_from_bytes::<bool>(after).map_err(err)?;
+    for at in 0..held {
+        let pending_write = |error: String| format!("held write {at}: {error}");
+        let (source, after) = postcard::take_from_bytes::<[u8; 32]>(rest)
+            .map_err(err)
+            .map_err(pending_write)?;
+        let (message, after) = message_before_call(after).map_err(pending_write)?;
+        let (replayed, after) = postcard::take_from_bytes::<bool>(after)
+            .map_err(err)
+            .map_err(pending_write)?;
         pending.push_back((source, message, replayed));
         rest = after;
     }
-    let ((_, exact), rest) =
-        postcard::take_from_bytes::<(usize, Option<&[u8]>)>(rest).map_err(err)?;
-    let (kept, rest) =
-        postcard::take_from_bytes::<Vec<(Route, Vec<SignedOpBeforeCall>)>>(rest).map_err(err)?;
+    let ((_, exact), mut rest) = postcard::take_from_bytes::<(usize, Option<&[u8]>)>(rest)
+        .map_err(|error| format!("its exact admissions: {error}"))?;
+    let (routes, after) = postcard::take_from_bytes::<usize>(rest).map_err(err)?;
+    rest = after;
+    let mut kept = Vec::with_capacity(routes.min(rest.len()));
+    for _ in 0..routes {
+        let ((route, count), after) = postcard::take_from_bytes::<(Route, usize)>(rest)
+            .map_err(|error| format!("a sealed history's record: {error}"))?;
+        rest = after;
+        let mut ops = Vec::with_capacity(count.min(rest.len()));
+        for at in 0..count {
+            let (op, after) = postcard::take_from_bytes::<SignedOpBeforeCall>(rest)
+                .map_err(|error| format!("sealed write {at} of {route:?}: {error}"))?;
+            ops.push(op);
+            rest = after;
+        }
+        kept.push((route, ops));
+    }
     if !rest.is_empty() {
         return Err("trailing bytes after durable state".into());
     }
@@ -73,9 +93,11 @@ pub(super) fn brought_up(bytes: &[u8], version: u32) -> Result<Vec<u8>, String> 
     let mut sealed = Vec::with_capacity(kept.len());
     for (route, ops) in kept {
         let mut writes = Vec::with_capacity(ops.len());
-        for op in ops {
+        for (at, op) in ops.into_iter().enumerate() {
             let was = *blake3::hash(&op.kept_bytes().map_err(err)?).as_bytes();
-            let op = op.into_op()?;
+            let op = op
+                .into_op()
+                .map_err(|error| format!("sealed write {at} of {route:?}: {error}"))?;
             if let Some(index) = index.as_mut() {
                 let now =
                     crate::DocumentAdmission::from_op(&workspace, &route.app, &route.record, &op)

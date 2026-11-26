@@ -61,7 +61,10 @@ impl SignedOpBeforeCall {
             }
             let invoker = run
                 .invoker
-                .map(invoker_before_agents_named_their_person)
+                .map(|text| {
+                    Invoker::read(text.clone())
+                        .map_err(|error| format!("a claim's invoker: {error}: {text}"))
+                })
                 .transpose()?;
             claims.extend(run.changes.into_iter().map(|change| ChangeClaim {
                 change,
@@ -97,20 +100,16 @@ impl SignedOpBeforeCall {
     }
 }
 
-/// An invoker as builds before calls wrote it, with the text its signer wrote. Those builds named
-/// an agent by its id alone (`{"agent":"scout"}`); an agent is now the pair of its id and the
-/// person it acts for (`{"agent":{"id":"scout","person":…}}`), the person its acting chain names.
-/// The tree is read in today's form, the text is kept as it was signed.
-///
-/// # Errors
-/// Text that is no tree, or an agent whose chain names no person.
-fn invoker_before_agents_named_their_person(text: String) -> Result<Invoker, String> {
-    let mut tree: serde_json::Value =
-        serde_json::from_str(&text).map_err(|error| format!("a claim's invoker: {error}"))?;
-    name_agents_with_their_person(&mut tree, None)?;
-    let acting = serde_json::from_value(tree)
-        .map_err(|error| format!("a claim's invoker: {error}: {text}"))?;
-    Ok(Invoker::kept(acting, text))
+/// Who an invoker's `text` names, as builds before agents named their person wrote it: those
+/// named an agent by its id alone (`{"agent":"scout"}`), and an agent is now the pair of its id and
+/// the person it acts for (`{"agent":{"id":"scout","person":…}}`), the person its acting chain
+/// names. `None` for text that is no tree, or names an agent whose chain names no person.
+pub(crate) fn acting_before_agents_named_their_person(
+    text: &str,
+) -> Option<tilo_action_policy::Acting> {
+    let mut tree: serde_json::Value = serde_json::from_str(text).ok()?;
+    name_agents_with_their_person(&mut tree, None).ok()?;
+    serde_json::from_value(tree).ok()
 }
 
 /// The first person an acting chain's `for` names, depth first.
@@ -236,13 +235,22 @@ mod tests {
         key: &ed25519_dalek::SigningKey,
         invoker: String,
     ) -> (SignedOpBeforeCall, Vec<u8>) {
+        #[derive(Serialize)]
+        struct Claim<'a> {
+            change: [u8; 32],
+            action: &'a ClaimedAction,
+            units: &'a [UnitPath],
+            invoker: &'a Option<String>,
+        }
         let mut op = SignedOpBeforeCall {
             payload: vec![7; 48],
             artifact: ArtifactId::new(),
             author: Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
             attestation_id: AttestationId::new(),
             kind: OpKind::Change,
-            timestamp: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(9),
+            timestamp: SystemTime::UNIX_EPOCH
+                .checked_add(std::time::Duration::from_secs(9))
+                .unwrap(),
             seq: 9,
             encryption: None,
             claims: vec![RunBeforeCall {
@@ -255,13 +263,6 @@ mod tests {
             governance: vec![[3; 4]],
             signature: Signature::from_bytes([0; 64]),
         };
-        #[derive(Serialize)]
-        struct Claim<'a> {
-            change: [u8; 32],
-            action: &'a ClaimedAction,
-            units: &'a [UnitPath],
-            invoker: &'a Option<String>,
-        }
         let run = &op.claims[0];
         let claims: Vec<Claim<'_>> = run
             .changes
@@ -340,6 +341,10 @@ mod tests {
                 })
             );
             assert!(crate::crypto::verify_op(&op).is_ok());
+            // Kept as this build keeps it, the op reads back whole, the old text and all.
+            let again: SignedOp = postcard::from_bytes(&postcard::to_allocvec(&op).unwrap()).unwrap();
+            assert_eq!(again, op, "written as today and read back, it is the same op");
+            assert!(crate::crypto::verify_op(&again).is_ok());
             let (alone, _) = kept_with(&key, r#"{"by":{"member":{"agent":"claude"}}}"#.into());
             assert!(alone.into_op().is_err(), "an agent acting for no person is not guessed");
         }
