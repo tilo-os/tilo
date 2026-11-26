@@ -5,19 +5,23 @@
 //! ([`tilo_ui_base::part_paint::wallpaper::install`]); a `Backdrop` fills its box with
 //! the picture, scaled to cover it and centred, as a desktop's wallpaper
 //! fills a screen. A shell with no picture shows its gradient instead: the one
-//! the host set, else the theme's own ground, eased toward neutral and falling
-//! away to the far corner.
+//! the host set, else the theme's own ground falling away to the far corner,
+//! dithered so the ramp never bands.
 //!
 //! The system's own surfaces stand on other grounds ([`Ground`]): setup, which no app can draw,
 //! on the trusted ground, and a modal card over the desktop on a scrim that keeps it legible.
 
 use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
 
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Size as TaffySize, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
-use vello::peniko::{BlendMode, Brush, Color, Extend, Fill, Gradient, ImageBrush};
+use vello::peniko::{
+    BlendMode, Blob, Brush, Color, Extend, Fill, Gradient, ImageAlphaType, ImageBrush, ImageData,
+    ImageFormat,
+};
 
 use tilo_ui_base::ColorCompat as _;
 use tilo_ui_base::theme::Theme;
@@ -124,8 +128,7 @@ impl Widget for Backdrop {
             return;
         }
         // No picture: the shell's own gradient stands corner to corner, as it does under the
-        // surfaces that frost it: the theme's ground, settled toward neutral and falling away, so
-        // the desktop reads as the colour of the machine whichever theme the person chose.
+        // surfaces that frost it: the theme's ground, falling away to the far corner.
         let stops = source
             .as_ref()
             .and_then(tilo_ui_base::part_paint::wallpaper::Source::gradient)
@@ -139,6 +142,16 @@ impl Widget for Backdrop {
             transform,
             &Brush::Gradient(gradient),
             None,
+            &self.rect,
+        );
+        // Grain over the ramp: a whole screen's gradient steps by a level every few rows, and the
+        // dithered grain breaks those steps into a surface catching light instead of bands. The
+        // wallpaper is left whole.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            noise_brush(),
+            Some(Affine::translate((self.rect.x0, self.rect.y0))),
             &self.rect,
         );
     }
@@ -186,20 +199,82 @@ fn paint_scrim(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) 
     );
 }
 
-/// High enough that the desktop reads as dark rather than blue, short of 1.0 so each theme still
-/// tints its own ground.
+/// High enough that a dark desktop reads as dark rather than blue, short of 1.0 so each theme
+/// still tints its own ground.
 const GROUND_NEUTRALITY: f32 = 0.72;
 
-/// Enough to read as depth across a whole screen; gentle enough that a light theme's ground stays
-/// light rather than ramping into grey.
-const GROUND_FALLOFF: f32 = 0.82;
+/// The dark desktop's fall toward the far corner: enough to read as depth across a whole screen.
+const GROUND_FALLOFF_DARK: f32 = 0.82;
 
-/// The shell's own ground, corner to corner: the theme's desktop surface eased toward its own
-/// luminance, then darkened toward the far corner. Both ends are the *same* ground, one lit and
-/// one fallen away, so the ramp reads as a surface catching light, not two materials.
+/// How far a light desktop falls toward its own ink at the far corner: a share small enough that
+/// the page still reads as light paper, never a grey wall.
+const GROUND_FALL_LIGHT: f32 = 0.10;
+
+/// The shell's own ground, corner to corner: the theme's desktop surface, falling away toward the
+/// far corner. Both ends are the *same* ground, one lit and one fallen away, so the ramp reads as
+/// a surface catching light, not two materials. A light page keeps its temperature and its light:
+/// it eases only a little toward the ink it keeps its contrast against, where a dark one settles
+/// toward neutral and darkens by its own shade.
 fn ground_stops(theme: &Theme) -> (Color, Color) {
-    let base = settle_toward_neutral(theme.tokens.colors.surfaces.base, GROUND_NEUTRALITY);
-    (base, shade(base, GROUND_FALLOFF))
+    let colors = &theme.tokens.colors;
+    let base = colors.surfaces.base;
+    // A dark theme's ground settles toward neutral and falls away from its own shade; a light
+    // page keeps its temperature and its light, easing only a little toward the ink it keeps its
+    // contrast against.
+    if colors.palette.dark {
+        let base = settle_toward_neutral(base, GROUND_NEUTRALITY);
+        (base, shade(base, GROUND_FALLOFF_DARK))
+    } else {
+        let far = tilo_ui_base::tokens::colors::mix8(base, colors.text_primary, GROUND_FALL_LIGHT);
+        (base, far)
+    }
+}
+
+/// Edge length (in pixels) of the tileable grain: one tile repeats across the ground.
+const NOISE_SIZE: u32 = 64;
+
+/// Its pixels, a compile-time count so nothing at run time can overflow it.
+const NOISE_PIXEL_COUNT: usize = (NOISE_SIZE as usize) * (NOISE_SIZE as usize);
+
+/// Its bytes, four to a pixel.
+const NOISE_BYTE_COUNT: usize = NOISE_PIXEL_COUNT * 4;
+
+/// The grain's speckle alphas: a black speck and a white one each move a pixel by about a level
+/// against the light and dark grounds the ramp runs between, enough to break its steps, never
+/// enough to be made out one by one.
+const NOISE_SPECK_DARK: u8 = 2;
+const NOISE_SPECK_LIGHT: u8 = 9;
+
+/// Fixed so every session renders the same grain, keeping the ground identical between runs.
+const NOISE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// The tileable grain: black and white specks a level apart, one tile repeated across the ground.
+fn noise_brush() -> &'static ImageBrush {
+    static GRAIN: OnceLock<ImageBrush> = OnceLock::new();
+    GRAIN.get_or_init(|| {
+        let mut bytes = Vec::with_capacity(NOISE_BYTE_COUNT);
+        let mut state = NOISE_SEED;
+        for _ in 0..NOISE_PIXEL_COUNT {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let lighter = (state & 0x100) != 0;
+            let (channel, alpha) = if lighter {
+                (0xFF, NOISE_SPECK_LIGHT)
+            } else {
+                (0x00, NOISE_SPECK_DARK)
+            };
+            bytes.extend_from_slice(&[channel, channel, channel, alpha]);
+        }
+        let data = ImageData {
+            data: Blob::new(Arc::new(bytes)),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: NOISE_SIZE,
+            height: NOISE_SIZE,
+        };
+        ImageBrush::new(data).with_extend(Extend::Repeat)
+    })
 }
 
 /// `color` eased `amount` of the way to its own luminance, leaving its alpha as it was.

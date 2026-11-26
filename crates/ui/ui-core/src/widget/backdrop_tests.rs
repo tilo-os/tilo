@@ -87,16 +87,70 @@ fn the_backdrop_paints_the_shells_wallpaper_under_everything() {
         blue > 150 && red < 90,
         "the gradient stands where no picture does: saw {red},{green},{blue}"
     );
-    // And nothing stands where the shell was handed no wallpaper at all.
+    // And the theme's own ground stands where the shell was handed no wallpaper at all: light
+    // paper on a light theme, the dark ground on a dark one.
     wallpaper::install(None);
-    let seen = rendered(&theme, rect);
-    let (red, green, blue, _) =
-        tilo_ui_base::offscreen::OffscreenRenderer::sample(&seen, 240, 120, 120);
-    let ground = theme.tokens.colors.surfaces.base.to_rgba8();
-    let near = |seen: u8, want: u8| (i32::from(seen) - i32::from(want)).abs() <= 12;
+    let luma = |(red, green, blue, _): (u8, u8, u8, u8)| {
+        0.2126 * f64::from(red) + 0.7152 * f64::from(green) + 0.0722 * f64::from(blue)
+    };
+    let stands: [(Theme, &str, fn(f64) -> bool); 2] = [
+        (Theme::light(), "light paper", |value| value > 170.0),
+        (Theme::dark(), "the dark ground", |value| value < 80.0),
+    ];
+    for (theme, what, stands) in stands {
+        let seen = rendered(&theme, rect);
+        let ground = tilo_ui_base::offscreen::OffscreenRenderer::sample(&seen, 240, 120, 120);
+        assert!(
+            stands(luma(ground)),
+            "the ground stands where no wallpaper was handed, as {what}: saw {ground:?}"
+        );
+    }
+}
+
+/// A light theme's ground stays light from corner to corner, and the ramp is dithered: a whole
+/// screen's gradient steps by a level every few rows, and without the grain those steps band.
+#[test]
+fn a_light_ground_stays_light_and_its_ramp_is_dithered() {
+    let theme = Theme::light();
+    wallpaper::install(None);
+    let seen = rendered(&theme, Rect::new(0.0, 0.0, 240.0, 240.0));
+    let luma = |(red, green, blue, _): (u8, u8, u8, u8)| {
+        0.2126 * f64::from(red) + 0.7152 * f64::from(green) + 0.0722 * f64::from(blue)
+    };
+    // The far corner is the darkest point of the ramp, and it still reads as light paper.
+    let lit = tilo_ui_base::offscreen::OffscreenRenderer::sample(&seen, 240, 48, 48);
+    let far = tilo_ui_base::offscreen::OffscreenRenderer::sample(&seen, 240, 196, 156);
     assert!(
-        near(red, ground.r) && near(green, ground.g) && near(blue, ground.b),
-        "the ground stands where no wallpaper was handed: saw {red},{green},{blue}"
+        luma(far) > 170.0,
+        "the light ground's far corner stays light: saw {far:?}"
+    );
+    assert!(
+        luma(far) < luma(lit),
+        "the ground falls away toward the far corner: {far:?} against {lit:?}"
+    );
+    // Neighbouring pixels along one row of the ramp differ by a level here and there: the grain
+    // is what makes them, where the bare ramp would step once every few columns.
+    let varied = (80..160).any(|x| {
+        let a = tilo_ui_base::offscreen::OffscreenRenderer::sample(&seen, 240, x, 100);
+        let b = tilo_ui_base::offscreen::OffscreenRenderer::sample(&seen, 240, x + 1, 100);
+        a != b
+    });
+    assert!(varied, "the ground's ramp is dithered, not bare steps");
+    // A level's grain, no more: the specks break the ramp's steps without reading as dots.
+    let patch: Vec<f64> = (90..130)
+        .flat_map(|y| (60..100).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            luma(tilo_ui_base::offscreen::OffscreenRenderer::sample(
+                &seen, 240, x, y,
+            ))
+        })
+        .collect();
+    let count = f64::from(u32::try_from(patch.len()).unwrap_or(1));
+    let mean = patch.iter().sum::<f64>() / count;
+    let spread = (patch.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / count).sqrt();
+    assert!(
+        (0.4..=4.0).contains(&spread),
+        "the grain is a level's, never dots: spread {spread:.2}"
     );
 }
 
