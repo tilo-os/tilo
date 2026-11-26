@@ -84,6 +84,14 @@ pub fn opened(workspace: &str) {
     }
 }
 
+/// `workspace` is one this host serves no more: it closed it, left it or was removed from it, and
+/// the receipts of its calls are signed no longer.
+pub fn closed(workspace: &str) {
+    if let Some(host) = named_host() {
+        host.opened.write().remove(workspace);
+    }
+}
+
 /// Whether a host named what signs this process's receipts yet: what a fixture asks before it
 /// waits on evidence, so a missing signer fails at once naming it.
 #[must_use]
@@ -203,6 +211,17 @@ mod tests {
             opened(&own.to_string());
             assert!(sign(&own.to_string(), b"its own workspace").is_ok());
             assert!(sign(&uuid::Uuid::new_v4().to_string(), b"elsewhere").is_err());
+        }
+
+        phase a_workspace_the_host_closed_signs_nothing;
+        {
+            let fixture = Fixture::new((247, 248), DeviceCapabilities::member());
+            let workspace = uuid::Uuid::new_v4().to_string();
+            opened(&workspace);
+            assert!(sign(&workspace, b"before it closed").is_ok());
+            closed(&workspace);
+            assert!(sign(&workspace, b"after it closed").is_err());
+            let _ = fixture.signer;
         }
 
         phase a_process_no_host_named_signs_nothing;

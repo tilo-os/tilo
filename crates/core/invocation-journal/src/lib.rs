@@ -24,6 +24,7 @@ pub mod action_evidence;
 mod evidence_signer;
 #[cfg(any(test, feature = "test-support"))]
 pub use evidence_signer::BEFORE_SIGN;
+pub use evidence_signer::closed;
 pub use evidence_signer::opened;
 pub use evidence_signer::serve_as;
 pub use evidence_signer::serves_a_signer;

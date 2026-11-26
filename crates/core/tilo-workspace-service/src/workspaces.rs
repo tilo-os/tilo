@@ -1867,6 +1867,8 @@ impl Workspaces {
         let marker = hosted.path.with_extension(RELEASED);
         tilo_files::native::atomic::write(&marker, b"").map_err(|error| error.to_string())?;
         self.inner.workspaces.lock().await.remove(workspace);
+        // The receipts of the calls this host admitted there are signed no longer.
+        tilo_invocation_journal::closed(workspace);
         self.inner.readings.forget(workspace);
         self.inner.direct.release(hosted.workspace_id());
         // A member copy stops syncing with the device serving it.

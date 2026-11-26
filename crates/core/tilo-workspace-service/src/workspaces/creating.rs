@@ -220,6 +220,9 @@ impl super::Workspaces {
         self.inner
             .readings
             .hold(&summary.workspace, &workspace, reading);
+        // Opened before it is held: a call admitted in the moment between holding it and the
+        // settle below signs for a workspace this host serves.
+        tilo_invocation_journal::opened(&summary.workspace);
         self.inner
             .workspaces
             .lock()
