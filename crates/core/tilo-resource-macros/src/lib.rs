@@ -1888,10 +1888,83 @@ fn doc_lines(attrs: &[Attribute]) -> Vec<String> {
                         ..
                     }),
                 ..
-            }) => Some(text.value().trim().to_owned()),
+            }) => Some(plain_text(text.value().trim())),
             _ => None,
         })
         .collect()
+}
+
+/// A doc comment's line as the words a person or agent reads where it is published: rustdoc's
+/// link syntax goes and the words it marked stay. `[`Item`]`, `[Item]`, `[words](target)` and
+/// `[words][target]` read as `` `Item` ``, `Item` and `words`; a bracket that is not a link
+/// (`[…]` in an example) stays as written.
+fn plain_text(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some((before, after)) = rest.split_once('[') {
+        out.push_str(before);
+        let Some((words, tail)) = after.split_once(']') else {
+            out.push('[');
+            out.push_str(after);
+            return out;
+        };
+        let target = |open: char, close: char| {
+            tail.strip_prefix(open)
+                .and_then(|target| target.split_once(close))
+                .map(|(_, rest)| rest)
+        };
+        let linked = target('(', ')').or_else(|| target('[', ']'));
+        let named = words.len() > 2 && words.starts_with('`') && words.ends_with('`')
+            || words.starts_with(|c: char| c.is_ascii_alphabetic())
+                && words
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '.'));
+        match linked {
+            Some(after_link) if !words.is_empty() => {
+                out.push_str(words);
+                rest = after_link;
+            }
+            _ if named => {
+                out.push_str(words);
+                rest = tail;
+            }
+            _ => {
+                out.push('[');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+#[cfg(test)]
+mod plain_text_tests {
+    use super::plain_text;
+
+    #[test]
+    fn rustdoc_links_read_as_their_words_and_other_brackets_stay() {
+        let cases = [
+            (
+                "answered as a [`MailAccounts`].",
+                "answered as a `MailAccounts`.",
+            ),
+            ("see [Item] and [crate::a::B]", "see Item and crate::a::B"),
+            ("the [vault](crate::vault) keeps it", "the vault keeps it"),
+            ("by [its id][Id] alone", "by its id alone"),
+            (
+                "reads as `{\"reports\": […]}`",
+                "reads as `{\"reports\": […]}`",
+            ),
+            (
+                "[1, 2] and an open [ bracket",
+                "[1, 2] and an open [ bracket",
+            ),
+        ];
+        for (doc, read) in cases {
+            assert_eq!(plain_text(doc), read, "{doc}");
+        }
+    }
 }
 
 fn last_ident(ty: &Type) -> Option<(String, Option<&Type>)> {

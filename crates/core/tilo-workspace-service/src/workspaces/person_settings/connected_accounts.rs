@@ -22,8 +22,8 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::workspace_accounts::{
-    AccountIssuer, CONNECT_ACCOUNT, ConnectAccount, ConnectedAccount, FINISH_CONNECT_ACCOUNT,
-    FORGET_CONNECTED_ACCOUNT, FinishConnectAccount, ForgetConnectedAccount, SignInStep,
+    AccountIssuer, AccountsAction, CONNECT_ACCOUNT, ConnectedAccount, FINISH_CONNECT_ACCOUNT,
+    FORGET_CONNECTED_ACCOUNT, SignInStep,
 };
 use accounts::vault_items::{ItemId, ItemKind, NewItem, Place};
 use serde::{Deserialize, Serialize};
@@ -286,21 +286,25 @@ impl Workspaces {
     ) -> Result<Value, ActionCallError> {
         if request.target.address.action == FORGET_CONNECTED_ACCOUNT {
             let person = forgetter(caller)?;
-            let forgetting: ForgetConnectedAccount =
-                super::argument(request, "the app and issuer of the account to forget")?;
-            return super::answer(&self.forget_connected(&person, &forgetting, request).await);
+            let AccountsAction::ForgetConnectedAccount { app, issuer } = super::asked_of(request)?
+            else {
+                return Err(ActionCallError::UnknownAction);
+            };
+            return super::answer(
+                &self
+                    .forget_connected(&person, (&app, &issuer), request)
+                    .await,
+            );
         }
         let (person, app) = asker(caller)?;
-        match request.target.address.action.as_str() {
-            CONNECT_ACCOUNT => {
-                let asking: ConnectAccount =
-                    super::argument(request, "an issuer to connect an account at")?;
-                super::answer(&self.connect_account((&person, &app), asking, request).await)
-            }
-            FINISH_CONNECT_ACCOUNT => {
-                let finishing: FinishConnectAccount =
-                    super::argument(request, "the connect to wait for")?;
-                super::answer(&finish(&person, &app, &finishing.sign_in).await)
+        match super::asked_of(request)? {
+            AccountsAction::ConnectAccount { issuer, client_id } => super::answer(
+                &self
+                    .connect_account((&person, &app), (issuer, &client_id), request)
+                    .await,
+            ),
+            AccountsAction::FinishConnectAccount { sign_in } => {
+                super::answer(&finish(&person, &app, &sign_in).await)
             }
             _ => Err(ActionCallError::UnknownAction),
         }
@@ -309,17 +313,17 @@ impl Workspaces {
     async fn connect_account(
         &self,
         (person, app): (&str, &str),
-        asking: ConnectAccount,
+        (issuer, client_id): (AccountIssuer, &str),
         call: &InvokeRequest,
     ) -> Result<SignInStep, String> {
         // Where the account would be kept is settled before the browser goes anywhere.
         self.changing_connected(person).await?;
-        let issuer = described(asking.issuer);
+        let issuer = described(issuer);
         issuer.check()?;
         if !plain(&issuer.id) {
             return Err("An issuer's id is letters, digits, dots, dashes and underscores".into());
         }
-        let client_id = asking.client_id.trim().to_owned();
+        let client_id = client_id.trim().to_owned();
         if client_id.is_empty() {
             return Err(format!("{} names no client to sign in as", issuer.label));
         }
@@ -461,16 +465,15 @@ impl Workspaces {
 }
 
 impl Workspaces {
-    /// Forget the account `person` connected at `forgetting`'s issuer: the grant leaves their
+    /// Forget the account `person` connected at `app`'s `issuer`: the grant leaves their
     /// vault, the issuer is given it back where it takes one back, and nothing of it is kept.
     /// Answers the accounts still connected.
     async fn forget_connected(
         &self,
         person: &str,
-        forgetting: &ForgetConnectedAccount,
+        (app, issuer): (&str, &str),
         call: &InvokeRequest,
     ) -> Result<Vec<ConnectedAccount>, String> {
-        let (app, issuer) = (forgetting.app.as_str(), forgetting.issuer.as_str());
         let workspace = self.changing_connected(person).await?;
         let kept = self
             .connected_record(person)

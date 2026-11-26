@@ -417,10 +417,15 @@ impl Workspaces {
         };
         match (target.provider.as_str(), target.address.action.as_str()) {
             (workspace_accounts::PROVIDER, workspace_accounts::ADD_MAIL_WITH_ITEM) => {
-                let adding: AddMailWithItem = argument(
-                    request,
-                    "a mail account to add names its address, its servers and the vault item that is its password",
-                )?;
+                let adding = match &request.argument {
+                    InvokeArgument::Json(arguments) => AddMailWithItem::asked(arguments),
+                    _ => None,
+                }
+                .ok_or_else(|| ActionCallError::InvalidRequest {
+                    reason: "a mail account to add names its address, its servers and the vault \
+                             item that is its password"
+                        .to_owned(),
+                })?;
                 let kept = self
                     .mail_with_item(
                         (&workspace, &root),
@@ -435,10 +440,14 @@ impl Workspaces {
                 said(kept)
             }
             (model_providers::PROVIDER, model_providers::SET_KEY_FROM_ITEM) => {
-                let setting: SetKeyFromItem = argument(
-                    request,
-                    "a key to keep names its provider and the vault item that is the key",
-                )?;
+                let setting = match &request.argument {
+                    InvokeArgument::Json(arguments) => SetKeyFromItem::asked(arguments),
+                    _ => None,
+                }
+                .ok_or_else(|| ActionCallError::InvalidRequest {
+                    reason: "a key to keep names its provider and the vault item that is the key"
+                        .to_owned(),
+                })?;
                 said(
                     self.key_from_item(
                         (&workspace, &root),
@@ -512,21 +521,6 @@ pub(super) fn asked_of(request: &InvokeRequest) -> Result<VaultAction, ActionCal
         InvokeArgument::None | InvokeArgument::Text(_) => serde_json::Map::new(),
     };
     workspace_vault::decoded(action, &arguments).map_err(ActionCallError::invalid_request)
-}
-
-/// What a request's arguments name, or `what` they should have named. The
-/// reason never quotes the arguments.
-pub(super) fn argument<T: serde::de::DeserializeOwned>(
-    request: &InvokeRequest,
-    what: &str,
-) -> Result<T, ActionCallError> {
-    let invalid = || ActionCallError::InvalidRequest {
-        reason: what.to_owned(),
-    };
-    let InvokeArgument::Json(argument) = &request.argument else {
-        return Err(invalid());
-    };
-    serde_json::from_value(Value::Object(argument.clone())).map_err(|_| invalid())
 }
 
 /// What the caller reads of an outcome, or the reason it was refused.
@@ -915,7 +909,7 @@ impl Workspaces {
                 outgoing_port: adding.outgoing_port,
                 password: sign_in.secret.to_string(),
                 identities: Vec::new(),
-                services: workspace_accounts::Services::default(),
+                services: workspace_accounts::AccountServices::default(),
             },
             Some(kept),
             workspace_accounts::Provider::Other,

@@ -80,6 +80,8 @@ pub enum AccountsAction {
         password: String,
         #[param("Other names and addresses it sends as, each `Name <address>`.")]
         identities: Option<Vec<String>>,
+        #[param("What else of the account the person uses; left out, its mail alone.")]
+        services: Option<AccountServices>,
     },
     /// Add a mail account from the vault
     ///
@@ -535,15 +537,6 @@ pub struct AccountView {
     pub paused: bool,
 }
 
-/// Which of one account's services its person uses, as its row reads them.
-#[derive(Debug, Serialize, tilo_resource::JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountServices {
-    pub mail: bool,
-    pub calendar: bool,
-    pub files: bool,
-}
-
 /// One of a calendar account's calendars, as its person chooses which show.
 #[derive(Debug, Serialize, tilo_resource::JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -642,19 +635,19 @@ impl Provider {
 
     /// The services an account of this provider can feed.
     #[must_use]
-    pub const fn offers(self) -> Services {
+    pub const fn offers(self) -> AccountServices {
         match self {
-            Self::Google | Self::Icloud => Services {
+            Self::Google | Self::Icloud => AccountServices {
                 mail: true,
                 calendar: true,
                 files: false,
             },
-            Self::Microsoft | Self::Other => Services {
+            Self::Microsoft | Self::Other => AccountServices {
                 mail: true,
                 calendar: false,
                 files: false,
             },
-            Self::Nextcloud => Services {
+            Self::Nextcloud => AccountServices {
                 mail: false,
                 calendar: true,
                 files: true,
@@ -719,9 +712,11 @@ impl CloudKind {
 
 /// Which of an account's services the person uses. One account feeds every
 /// app: Mail reads it where `mail` is on, Calendar where `calendar` is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "camelCase")]
-pub struct Services {
+pub struct AccountServices {
     #[serde(default)]
     pub mail: bool,
     #[serde(default)]
@@ -730,7 +725,7 @@ pub struct Services {
     pub files: bool,
 }
 
-impl Default for Services {
+impl Default for AccountServices {
     /// A mail account's: its mail.
     fn default() -> Self {
         Self {
@@ -741,7 +736,7 @@ impl Default for Services {
     }
 }
 
-impl Services {
+impl AccountServices {
     /// Only what `provider` offers of these.
     #[must_use]
     pub const fn within(self, provider: Provider) -> Self {
@@ -783,7 +778,7 @@ pub struct MailAccount {
     pub provider: Provider,
     /// Which of its services the person uses.
     #[serde(default)]
-    pub services: Services,
+    pub services: AccountServices,
     /// The server a Nextcloud account signs in to, or the calendar server of
     /// another; empty where there is none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -824,13 +819,6 @@ pub struct MailAccounts {
     pub signs_in_with: Vec<Provider>,
 }
 
-/// An address whose servers to find ([`FIND_SERVERS`]).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FindServers {
-    pub address: String,
-}
-
 /// One server and its port.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -856,68 +844,41 @@ pub struct FoundServers {
 }
 
 /// A sign-in to begin on a provider's own page ([`BEGIN_SIGN_IN`]).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BeginSignIn {
     /// Google, Microsoft or Nextcloud.
     pub provider: Provider,
     /// The Nextcloud server's address; empty for the others.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub server: String,
     /// What the account is used for, said one service at a time: the
     /// provider is asked for only what it offers of them.
-    #[serde(default)]
-    pub mail: bool,
-    #[serde(default)]
-    pub calendar: bool,
-    #[serde(default)]
-    pub files: bool,
+    pub services: AccountServices,
     /// The name the account is shown under; its server's or its address
     /// where it is empty.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
     /// The address the person signs in with, when the provider's page is
     /// asked for a mailbox: what Google's and Microsoft's pages sign in to,
     /// shown to them on that page and kept as the account's address.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub address: String,
     /// The account this signs in to again, when its sign-in stopped working;
     /// empty for a new account.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub account: String,
 }
 
-impl BeginSignIn {
-    /// What it says the account feeds.
-    #[must_use]
-    pub const fn services(&self) -> Services {
-        Services {
-            mail: self.mail,
-            calendar: self.calendar,
-            files: self.files,
-        }
-    }
-}
-
 /// A cloud-storage account to connect ([`BEGIN_CLOUD_SIGN_IN`]).
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, PartialEq, Eq)]
 pub struct BeginCloudSignIn {
     pub kind: CloudKind,
     /// The name the account is shown under; the provider's where it is empty.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
     /// A `WebDAV` server's address; empty for the providers whose own page
     /// is opened.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub server: String,
     /// The sign-in name: a `WebDAV` server's or the `Apple ID`. Empty for the
     /// providers whose own page is opened.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub username: String,
     /// Its password or app password, used once for this request and never
     /// kept here: sealed in the workspace's vault once the sign-in holds.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub password: String,
 }
 
@@ -948,48 +909,6 @@ pub struct SignInStep {
     pub code: String,
 }
 
-/// A sign-in that waits for a code ([`SUBMIT_SIGN_IN_CODE`]).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SubmitSignInCode {
-    pub sign_in: String,
-    pub code: String,
-}
-
-/// A sign-in to stop waiting for ([`CANCEL_SIGN_IN`]).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CancelSignIn {
-    pub sign_in: String,
-}
-
-/// The services one account feeds ([`SET_SERVICES`]), said one by one: a
-/// view passes what its person chose for each, and the host keeps only what
-/// the account's provider offers.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SetServices {
-    pub account: String,
-    #[serde(default)]
-    pub mail: bool,
-    #[serde(default)]
-    pub calendar: bool,
-    #[serde(default)]
-    pub files: bool,
-}
-
-impl SetServices {
-    /// What it says the account feeds.
-    #[must_use]
-    pub const fn services(&self) -> Services {
-        Services {
-            mail: self.mail,
-            calendar: self.calendar,
-            files: self.files,
-        }
-    }
-}
-
 /// An issuer an app describes, to connect a person's account there ([`CONNECT_ACCOUNT`]): its
 /// endpoints, what it is asked for, which fields of its identity answer name the account, and
 /// the one loopback port its client registered `http://127.0.0.1:<port>/oauth` for. Data, never
@@ -1013,31 +932,6 @@ pub struct AccountIssuer {
     pub name_field: String,
     pub scopes: Vec<String>,
     pub redirect_port: u16,
-}
-
-/// A connect of the person's account at `issuer` ([`CONNECT_ACCOUNT`]), signed in to as the
-/// public client `client_id`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConnectAccount {
-    pub issuer: AccountIssuer,
-    pub client_id: String,
-}
-
-/// The connect to wait for ([`FINISH_CONNECT_ACCOUNT`]), as its [`SignInStep::id`] names it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FinishConnectAccount {
-    pub sign_in: String,
-}
-
-/// A connected account to forget ([`FORGET_CONNECTED_ACCOUNT`]): the app that described its
-/// issuer, and the issuer's id.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ForgetConnectedAccount {
-    pub app: String,
-    pub issuer: String,
 }
 
 /// An account its person connected at an issuer an app describes: who they are there, never
@@ -1114,16 +1008,6 @@ pub struct MailSignIns {
     pub sign_ins: Vec<MailSignIn>,
 }
 
-/// Whether one cloud-storage account's files stay in sync or are copied into
-/// the workspace once ([`SET_FILES_MODE`]).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SetFilesMode {
-    pub account: String,
-    /// `sync` or `import`.
-    pub mode: String,
-}
-
 /// One cloud-storage account as a device's mount reads it ([`CLOUD_ACCOUNTS`]): its
 /// settings, without its secret.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1142,18 +1026,6 @@ pub struct CloudAccount {
 #[serde(rename_all = "camelCase")]
 pub struct CloudAccounts {
     pub accounts: Vec<CloudAccount>,
-}
-
-/// A cloud mount's ask for what its account signs in with ([`CLOUD_CREDENTIAL`]).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CloudCredentialAt {
-    /// The account's id, as [`CLOUD_ACCOUNTS`] names it.
-    pub account: String,
-    /// The mount refused the credential it was handed, so its grant is renewed once
-    /// more rather than read as it is.
-    #[serde(default)]
-    pub rejected: bool,
 }
 
 /// What a cloud mount signs in with ([`CLOUD_CREDENTIAL`]): one of a password, an
@@ -1262,62 +1134,64 @@ impl std::fmt::Debug for CloudHeader {
     }
 }
 
-/// How a cloud mount's sync of one account went on this device ([`REPORT_SYNC`]).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SyncReport {
-    pub account: String,
-    /// The health, as the workspace's `SyncHealth` words it.
-    pub health: String,
-    /// Its person just signed in to it.
-    #[serde(default)]
-    pub signed_in: bool,
-    /// A short summary a person reads, never a server's own words.
-    #[serde(default)]
-    pub message: String,
-}
-
-/// One cloud-storage account whose sync is controlled ([`SYNC_NOW`],
-/// [`PAUSE_SYNC`], [`RESUME_SYNC`]).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SyncControl {
-    pub account: String,
-}
-
 /// A mail account to add. The password travels here and nowhere back: the
 /// host keeps it in the person's vault and answers only [`MailAccount`].
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AddMailAccount {
     pub address: String,
-    #[serde(default)]
     pub display_name: String,
     /// The sign-in name, when it is not the address itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
     /// The incoming (IMAP) server. Empty: the server finds both from
     /// the address ([`FIND_SERVERS`]).
-    #[serde(default)]
     pub incoming_host: String,
-    #[serde(default = "default_imaps_port")]
     pub incoming_port: u16,
     /// The outgoing (SMTP) server. Empty: found with the incoming one.
-    #[serde(default)]
     pub outgoing_host: String,
-    #[serde(default = "default_submissions_port")]
     pub outgoing_port: u16,
     /// The account's sign-in. Empty for an account another mail program
     /// moved in whose sign-in the person has not given yet.
-    #[serde(default)]
     pub password: String,
     /// Other names and addresses it sends as, each `Name <address>`.
-    #[serde(default)]
     pub identities: Vec<String>,
     /// What the account is used for. An iCloud account's calendars are
     /// kept with the same app password where `calendar` is on.
-    #[serde(default)]
-    pub services: Services,
+    pub services: AccountServices,
+}
+
+impl AddMailAccount {
+    /// The account `asked` adds, where it is [`AccountsAction::AddMail`]: a port it leaves out
+    /// is the standard secure one, and services it leaves out are its mail alone.
+    #[must_use]
+    pub fn asked(asked: AccountsAction) -> Option<Self> {
+        let AccountsAction::AddMail {
+            address,
+            display_name,
+            username,
+            incoming_host,
+            incoming_port,
+            outgoing_host,
+            outgoing_port,
+            password,
+            identities,
+            services,
+        } = asked
+        else {
+            return None;
+        };
+        Some(Self {
+            address,
+            display_name: display_name.unwrap_or_default(),
+            username,
+            incoming_host: incoming_host.unwrap_or_default(),
+            incoming_port: incoming_port.unwrap_or(IMAPS_PORT),
+            outgoing_host: outgoing_host.unwrap_or_default(),
+            outgoing_port: outgoing_port.unwrap_or(SUBMISSIONS_PORT),
+            password,
+            identities: identities.unwrap_or_default(),
+            services: services.unwrap_or_default(),
+        })
+    }
 }
 
 impl std::fmt::Debug for AddMailAccount {
@@ -1335,99 +1209,64 @@ impl std::fmt::Debug for AddMailAccount {
     }
 }
 
-/// A calendar account to connect at a `CalDAV` server ([`ADD_CALENDAR`]). The
-/// password travels here and nowhere back: it is sealed in the workspace's
-/// vault once the server took it.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AddCalendarAccount {
-    /// The server's address as its person typed it: a bare name
-    /// (`dav.example.org`) is that server over https.
-    pub server: String,
-    /// The name it signs in with.
-    pub username: String,
-    pub password: String,
-    /// The name it is shown under; its user name where it is empty.
-    #[serde(default)]
-    pub name: String,
-    /// Whether nothing is ever written to its server: once connected so, it
-    /// stays so until its person removes it, whoever adds it again.
-    #[serde(default)]
-    pub read_only: bool,
-}
+/// The port an account's incoming server is asked at where none is named: IMAP over TLS.
+const IMAPS_PORT: u16 = 993;
 
-impl std::fmt::Debug for AddCalendarAccount {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AddCalendarAccount")
-            .field("server", &self.server)
-            .field("username", &self.username)
-            .field("name", &self.name)
-            .field("read_only", &self.read_only)
-            .finish_non_exhaustive()
-    }
-}
-
-const fn default_imaps_port() -> u16 {
-    993
-}
-
-const fn default_submissions_port() -> u16 {
-    465
-}
+/// The port an account's outgoing server is asked at where none is named: SMTP over TLS.
+const SUBMISSIONS_PORT: u16 = 465;
 
 /// A mail account to add with a sign-in the person's vault keeps. Nothing
 /// here is a secret: `password` names the vault item, which must be a login
 /// that belongs to both servers (`imap://<incoming host>:<port>` and
 /// `smtp://<outgoing host>:<port>`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AddMailWithItem {
     pub address: String,
-    #[serde(default)]
     pub display_name: String,
     /// The sign-in name, when it is neither the item's own nor the address.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
     pub incoming_host: String,
-    #[serde(default = "default_imaps_port")]
     pub incoming_port: u16,
     pub outgoing_host: String,
-    #[serde(default = "default_submissions_port")]
     pub outgoing_port: u16,
     /// The vault item that is the account's sign-in.
     pub password: crate::workspace_vault::ItemRef,
     /// Why whoever asks needs it, in a sentence its person reads when they
     /// are asked first; empty when nothing was said.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub reason: String,
 }
 
-/// A new sign-in for an account whose saved one no longer works: the account's id and the
-/// password or app password its server took.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReplacePassword {
-    pub account: String,
-    pub password: String,
-}
-
-impl std::fmt::Debug for ReplacePassword {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ReplacePassword")
-            .field("account", &self.account)
-            .finish_non_exhaustive()
+impl AddMailWithItem {
+    /// The account [`ADD_MAIL_WITH_ITEM`] asks for with `arguments`, read as its declaration
+    /// names them; `None` where they do not read, or its password names no vault item.
+    #[must_use]
+    pub fn asked(arguments: &serde_json::Map<String, serde_json::Value>) -> Option<Self> {
+        let Ok(AccountsAction::AddMailWithItem {
+            address,
+            display_name,
+            username,
+            incoming_host,
+            incoming_port,
+            outgoing_host,
+            outgoing_port,
+            password,
+            reason,
+        }) = AccountsAction::decode(ADD_MAIL_WITH_ITEM, arguments)
+        else {
+            return None;
+        };
+        Some(Self {
+            address,
+            display_name: display_name.unwrap_or_default(),
+            username,
+            incoming_host,
+            incoming_port: incoming_port.unwrap_or(IMAPS_PORT),
+            outgoing_host,
+            outgoing_port: outgoing_port.unwrap_or(SUBMISSIONS_PORT),
+            password: tilo_actions::remote::ItemRef::parse(&password)?,
+            reason: reason.unwrap_or_default(),
+        })
     }
-}
-
-/// Which of a calendar account's calendars show: the account's id and the ids
-/// of the calendars it keeps on show, as the accounts reading names them. The
-/// calendars left out are kept, with their events out of the calendar.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SetCalendars {
-    pub account: String,
-    #[serde(default)]
-    pub calendars: Vec<String>,
 }
 
 #[cfg(test)]
@@ -1533,7 +1372,7 @@ mod tests {
             outgoing_port: 465,
             password: "hunter2".into(),
             identities: Vec::new(),
-            services: Services::default(),
+            services: AccountServices::default(),
         };
         let printed = format!("{adding:?}");
         assert!(!printed.contains("hunter2"), "{printed}");
@@ -1560,13 +1399,19 @@ mod tests {
     /// ports; a caller that names none is not refused.
     #[test]
     fn a_mail_account_defaults_to_the_secure_ports() {
-        let adding: AddMailAccount = serde_json::from_value(serde_json::json!({
-            "address": "ada@example.com",
-            "incomingHost": "imap.example.com",
-            "outgoingHost": "smtp.example.com",
-            "password": "hunter2",
-        }))
+        let asked = AccountsAction::decode(
+            ADD_MAIL,
+            serde_json::json!({
+                "address": "ada@example.com",
+                "incomingHost": "imap.example.com",
+                "outgoingHost": "smtp.example.com",
+                "password": "hunter2",
+            })
+            .as_object()
+            .unwrap(),
+        )
         .unwrap();
+        let adding = AddMailAccount::asked(asked).unwrap();
         assert_eq!(adding.incoming_port, 993);
         assert_eq!(adding.outgoing_port, 465);
     }

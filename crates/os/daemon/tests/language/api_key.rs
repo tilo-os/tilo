@@ -261,8 +261,8 @@ fn a_workspace_streams_changes_finds_and_undoes_runs() {
             "{found}"
         );
 
-        // The run is taken back whole, by its id.
         let run = run.expect("the run's id");
+        // The run is taken back whole, by its id.
         let (status, undone) = key
             .post(&format!("{base}/invocations/{run}/undo"), &json!({}))
             .await;
@@ -278,6 +278,51 @@ fn a_workspace_streams_changes_finds_and_undoes_runs() {
                 .expect("the stream stays open");
             seen.push_str(&String::from_utf8_lossy(&chunk));
         }
+    });
+}
+
+/// A run that ended before its output is asked for still tells how it ended, and the stream
+/// closes rather than waiting for an end that already came.
+#[test]
+fn an_ended_runs_output_tells_its_end_and_closes() {
+    host::run(|host| async move {
+        let workspace = host.workspace().to_owned();
+        let key = host.key("Notes backend");
+        let base = format!("/v1/workspaces/{workspace}");
+        let (status, invited) = key
+            .request(
+                "POST",
+                &format!("{base}/resources/workspace/invitations/actions/invite"),
+                &[("content-type", "application/json")],
+                json!({"role": "editor", "invitee_name": "Reviewer"})
+                    .to_string()
+                    .as_bytes(),
+            )
+            .await;
+        assert_eq!(
+            (status, &invited["status"]),
+            (200, &json!("ok")),
+            "{invited}"
+        );
+        let run = invited["invocation"]
+            .as_str()
+            .expect("the run's id")
+            .to_owned();
+        let output = key
+            .stream("GET", &format!("{base}/invocations/{run}/output"), &[], b"")
+            .await;
+        let within = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut told = String::new();
+        while let Some(chunk) = tokio::time::timeout_at(within, output.next())
+            .await
+            .unwrap_or_else(|_| panic!("an ended run's output closes within 30 s: {told}"))
+        {
+            told.push_str(&String::from_utf8_lossy(&chunk));
+        }
+        assert!(
+            told.contains("event: invocation") && told.contains("\"phase\":\"succeeded\""),
+            "{told}"
+        );
     });
 }
 

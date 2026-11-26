@@ -431,7 +431,7 @@ impl Computer {
                     .await
                     .unwrap();
                 match written {
-                    ShellReply::Written(Ok(_)) => return,
+                    ShellReply::Written(Ok(())) => return,
                     ShellReply::Written(Err(refusal)) if refusal.contains("Waiting") => {
                         tokio::time::sleep(Duration::from_millis(50)).await;
                     }

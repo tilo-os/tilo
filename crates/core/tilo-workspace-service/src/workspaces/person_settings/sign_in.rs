@@ -23,8 +23,8 @@ use std::sync::{Mutex, mpsc};
 use std::time::Duration;
 
 use crate::workspace_accounts::{
-    BeginCloudSignIn, BeginSignIn, CancelSignIn, CloudKind, Provider, Services, SignInStep,
-    SigningIn, SubmitSignInCode,
+    AccountServices, AccountsAction, BeginCloudSignIn, BeginSignIn, CloudKind, Provider,
+    SignInStep, SigningIn,
 };
 use account_credentials::icloud::{ICloudAuth, ICloudChallenge, ICloudSignIn, WebICloud};
 use account_credentials::nextcloud;
@@ -136,9 +136,9 @@ const fn provider_label(provider: Provider) -> &'static str {
 
 /// What the person signs in for: what they chose, or, when they chose
 /// nothing, what the provider is used for by default.
-fn chosen(provider: Provider, services: Services) -> Services {
+fn chosen(provider: Provider, services: AccountServices) -> AccountServices {
     let chosen = if services.none() {
-        Services::default()
+        AccountServices::default()
     } else {
         services
     }
@@ -147,7 +147,7 @@ fn chosen(provider: Provider, services: Services) -> Services {
         return chosen;
     }
     match provider {
-        Provider::Nextcloud => Services {
+        Provider::Nextcloud => AccountServices {
             mail: false,
             calendar: true,
             files: false,
@@ -205,7 +205,7 @@ impl Workspaces {
         reach: &tilo_account_probe::imap::Reach,
     ) -> Result<SignInStep, String> {
         let provider = asking.provider;
-        let services = chosen(provider, asking.services());
+        let services = chosen(provider, asking.services);
         prune();
         if begun().len() >= MAX_BEGUN {
             return Err("Too many sign-ins are open here. Finish or cancel one first".into());
@@ -228,7 +228,7 @@ impl Workspaces {
     async fn begin_nextcloud(
         &self,
         (person, workspace, call): ([u8; 32], &str, Option<&tilo_actions::remote::InvokeRequest>),
-        services: Services,
+        services: AccountServices,
         asking: &BeginSignIn,
         reach: &tilo_account_probe::imap::Reach,
     ) -> Result<SignInStep, String> {
@@ -447,10 +447,10 @@ impl Workspaces {
     pub(super) async fn cancel_account_sign_in(
         &self,
         person: [u8; 32],
-        stopping: &CancelSignIn,
+        sign_in: &str,
         (workspace, root): (&str, &Path),
     ) -> Result<super::MailAccounts, String> {
-        cancel(&person, stopping)?;
+        cancel(&person, sign_in)?;
         let listed = super::mail_accounts(&self.workspace_accounts(workspace).await?, root);
         self.person_settings_changed();
         Ok(listed)
@@ -491,7 +491,7 @@ impl Workspaces {
 
     /// Begin a drive's sign-in on its provider's page: the loopback waits for
     /// the browser, or, where no port is free, the person pastes the code the
-    /// provider shows ([`SubmitSignInCode`]).
+    /// provider shows ([`SUBMIT_SIGN_IN_CODE`]).
     fn begin_oauth_cloud(
         &self,
         (person, workspace): ([u8; 32], &str),
@@ -595,7 +595,7 @@ impl Workspaces {
     }
 
     /// Begin an `Apple ID`'s sign-in: Apple sends a verification code to the
-    /// person's devices, which [`SubmitSignInCode`] finishes the sign-in with.
+    /// person's devices, which [`SUBMIT_SIGN_IN_CODE`] finishes the sign-in with.
     async fn begin_icloud_cloud(
         &self,
         (person, workspace): ([u8; 32], &str),
@@ -689,7 +689,7 @@ impl Workspaces {
         })
     }
 
-    /// Finish the sign-in `submitting` names with the code it carries
+    /// Finish the sign-in `sign_in` names with `code`
     /// ([`SUBMIT_SIGN_IN_CODE`]), keeping the account it signs in to.
     ///
     /// # Errors
@@ -700,15 +700,15 @@ impl Workspaces {
         person: [u8; 32],
         (workspace, root): (&str, &Path),
         call: Option<&tilo_actions::remote::InvokeRequest>,
-        submitting: &SubmitSignInCode,
+        (sign_in, code): (&str, &str),
     ) -> Result<super::MailAccounts, String> {
         let theirs = begun()
-            .get(&submitting.sign_in)
+            .get(sign_in)
             .is_some_and(|entry| entry.person == person);
         if !theirs {
             return Err("That sign-in was not begun here".into());
         }
-        let code = submitting.code.trim().to_owned();
+        let code = code.trim().to_owned();
         if code.is_empty() {
             return Err("Enter the code the provider sent or showed".into());
         }
@@ -720,7 +720,7 @@ impl Workspaces {
         );
         let finish = {
             let mut entries = begun();
-            let Some(entry) = entries.get_mut(&submitting.sign_in) else {
+            let Some(entry) = entries.get_mut(sign_in) else {
                 return Err("That sign-in was not begun here".into());
             };
             let finish = match &mut entry.flow {
@@ -749,13 +749,8 @@ impl Workspaces {
         };
         match finish {
             Finish::Icloud(challenge, name, apple_id) => {
-                finish_icloud_sign_in(
-                    self,
-                    vault,
-                    (challenge, name, apple_id),
-                    (&code, &submitting.sign_in),
-                )
-                .await?;
+                finish_icloud_sign_in(self, vault, (challenge, name, apple_id), (&code, sign_in))
+                    .await?;
             }
             Finish::Pasted(authorization, cloud, name) => {
                 let finished = tokio::task::spawn_blocking(move || {
@@ -766,12 +761,12 @@ impl Workspaces {
                 let tokens = match finished {
                     Ok(tokens) => tokens,
                     Err(error) => {
-                        begun().remove(&submitting.sign_in);
+                        begun().remove(sign_in);
                         return Err(format!("{error}. Begin the sign-in again"));
                     }
                 };
                 keep_oauth_account(vault, cloud, &name, &tokens, root).await?;
-                begun().remove(&submitting.sign_in);
+                begun().remove(sign_in);
             }
             Finish::None => {
                 return Err("That sign-in does not wait for a code".to_owned());
@@ -858,8 +853,8 @@ fn mail_sign_in_name(issuer: OAuthIssuer, asking: &BeginSignIn, address: &str) -
 
 /// The services a mailbox's sign-in keeps: its mail alone, the provider's others asked for
 /// later, from the account's row.
-const fn mail_services() -> Services {
-    Services {
+const fn mail_services() -> AccountServices {
+    AccountServices {
         mail: true,
         calendar: false,
         files: false,
@@ -909,81 +904,99 @@ fn keep_failed(id: &str, reason: &str, until_ms: u64) {
     }
 }
 
-/// Answer a request of the sign-in actions: where a browser goes, or the
+/// Answer `asked`, one of the sign-in actions: where a browser goes, or the
 /// accounts as they are once a sign-in was stopped.
 ///
 /// # Errors
-/// The request does not read, or names a provider or sign-in this server
-/// does not know.
+/// It names a provider or sign-in this server does not know.
 pub(super) async fn accounts_sign_in(
     workspaces: &Workspaces,
     person: [u8; 32],
     workspace: &str,
-    request: &tilo_actions::remote::InvokeRequest,
+    (request, asked): (&tilo_actions::remote::InvokeRequest, AccountsAction),
 ) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
-    use crate::workspace_accounts::{
-        BEGIN_CLOUD_SIGN_IN, BEGIN_SIGN_IN, CANCEL_SIGN_IN, SUBMIT_SIGN_IN_CODE,
-    };
-
-    match request.target.address.action.as_str() {
-        BEGIN_SIGN_IN => {
-            let asking: BeginSignIn = super::argument(request, "a provider to sign in with")?;
+    let root = || workspaces.workspace_root(workspace);
+    match asked {
+        AccountsAction::BeginSignIn {
+            provider,
+            server,
+            name,
+            address,
+            mail,
+            calendar,
+            files,
+            account,
+        } => {
+            let asking = BeginSignIn {
+                provider: super::read_as("provider", provider)?,
+                server: server.unwrap_or_default(),
+                services: AccountServices {
+                    mail: mail.unwrap_or(false),
+                    calendar: calendar.unwrap_or(false),
+                    files: files.unwrap_or(false),
+                },
+                name: name.unwrap_or_default(),
+                address: address.unwrap_or_default(),
+                account: account.unwrap_or_default(),
+            };
             super::answer(
                 &workspaces
                     .begin_account_sign_in((person, workspace, Some(request)), &asking)
                     .await,
             )
         }
-        BEGIN_CLOUD_SIGN_IN => {
-            let asking: BeginCloudSignIn = super::argument(request, "storage to connect")?;
+        AccountsAction::BeginCloudSignIn {
+            kind,
+            name,
+            server,
+            username,
+            password,
+        } => {
+            let asking = BeginCloudSignIn {
+                kind: super::read_as("kind", kind)?,
+                name: name.unwrap_or_default(),
+                server: server.unwrap_or_default(),
+                username: username.unwrap_or_default(),
+                password: password.unwrap_or_default(),
+            };
             super::answer(
                 &workspaces
                     .begin_cloud_sign_in((person, workspace), Some(request), &asking)
                     .await,
             )
         }
-        SUBMIT_SIGN_IN_CODE => {
-            let submitting: SubmitSignInCode = super::argument(request, "a sign-in's code")?;
-            super::answer(
-                &workspaces
-                    .submit_sign_in_code(
-                        person,
-                        (workspace, &workspaces.workspace_root(workspace)),
-                        Some(request),
-                        &submitting,
-                    )
-                    .await,
-            )
-        }
-        CANCEL_SIGN_IN => {
-            let stopping: CancelSignIn = super::argument(request, "a sign-in to stop")?;
-            super::answer(
-                &workspaces
-                    .cancel_account_sign_in(
-                        person,
-                        &stopping,
-                        (workspace, &workspaces.workspace_root(workspace)),
-                    )
-                    .await,
-            )
-        }
+        AccountsAction::SubmitSignInCode { sign_in, code } => super::answer(
+            &workspaces
+                .submit_sign_in_code(
+                    person,
+                    (workspace, &root()),
+                    Some(request),
+                    (&sign_in, &code),
+                )
+                .await,
+        ),
+        AccountsAction::CancelSignIn { sign_in } => super::answer(
+            &workspaces
+                .cancel_account_sign_in(person, &sign_in, (workspace, &root()))
+                .await,
+        ),
         _ => Err(tilo_actions::remote::ActionCallError::UnknownAction),
     }
 }
 
-/// Stop waiting for the sign-in `cancel` names, or forget one that failed.
+/// Stop waiting for the sign-in `sign_in` names, or forget one that failed.
 ///
 /// # Errors
 /// No such sign-in was begun by this person.
-pub(super) fn cancel(person: &[u8; 32], cancel: &CancelSignIn) -> Result<(), String> {
+pub(super) fn cancel(person: &[u8; 32], sign_in: &str) -> Result<(), String> {
     let mut entries = begun();
     let theirs = entries
-        .get(&cancel.sign_in)
+        .get(sign_in)
         .is_some_and(|entry| &entry.person == person);
     if !theirs {
         return Err("That sign-in was not begun here".into());
     }
-    if let Some(entry) = entries.remove(&cancel.sign_in) {
+    if let Some(entry) = entries.remove(sign_in) {
         match entry.flow {
             Flow::Oauth {
                 stop: Some(stop), ..
@@ -1069,7 +1082,7 @@ async fn keep_oauth_mail(
     name: &str,
     typed: &str,
     replace: &str,
-    services: Services,
+    services: AccountServices,
     tester: std::sync::Arc<dyn tilo_account_probe::AccountTester>,
 ) -> Result<(), String> {
     let email = match issuer {
@@ -1345,7 +1358,7 @@ pub(super) async fn mail_secret(
 async fn keep_nextcloud(
     vault: VaultAt<'_>,
     login: &nextcloud::NextcloudLogin,
-    services: Services,
+    services: AccountServices,
     replace: &str,
 ) -> Result<(), String> {
     let server = login.server.trim().trim_end_matches('/').to_owned();
@@ -1484,9 +1497,7 @@ mod tests {
         BeginSignIn {
             provider: Provider::Nextcloud,
             server,
-            mail: true,
-            calendar: false,
-            files: false,
+            services: AccountServices::default(),
             name: String::new(),
             address: String::new(),
             account: String::new(),

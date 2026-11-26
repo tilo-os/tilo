@@ -13,7 +13,7 @@
 //! carries out, the workspace's policy lets that agent reach its calendars, and an agent anything
 //! narrows holds a rule that names the very action. Unknown and forbidden are one answer.
 
-use crate::workspace_accounts;
+use crate::workspace_accounts::{self, AccountsAction};
 use serde_json::Value;
 use tilo_action_policy::ActionKind;
 use tilo_actions::remote::{ActionCallError, CatalogueRow, InvokeRequest, RemoteActionTarget};
@@ -98,16 +98,28 @@ impl Workspaces {
         {
             return Err(ActionCallError::NotPermitted);
         }
-        if action == workspace_accounts::BEGIN_SIGN_IN {
+        let wanted = super::asked_of(request)?;
+        if let AccountsAction::BeginSignIn {
+            mail,
+            calendar,
+            files,
+            ..
+        } = &wanted
+        {
             // A turn connects an account for its calendars alone: the person's mail and files are
             // not reached with the calendars' grant.
-            let signing_in: workspace_accounts::BeginSignIn =
-                super::argument(request, "a provider to sign in with")?;
-            let services = signing_in.services();
-            if !services.calendar || services.mail || services.files {
+            let only_calendars =
+                *calendar == Some(true) && *mail != Some(true) && *files != Some(true);
+            if !only_calendars {
                 return Err(ActionCallError::UnknownAction);
             }
-            return sign_in::accounts_sign_in(self, using.person, &using.workspace, request).await;
+            return sign_in::accounts_sign_in(
+                self,
+                using.person,
+                &using.workspace,
+                (request, wanted),
+            )
+            .await;
         }
         let root = self.workspace_root(&using.workspace);
         let asker = using.acting();
@@ -118,12 +130,7 @@ impl Workspaces {
         };
         // The sign-in is released for the account's server alone and written down as its use: the
         // same path Settings takes, with the arguments checked the same way.
-        match self
-            .person_mail_action(signing, &using.workspace, &asker, request)
-            .await?
-        {
-            Some(answered) => Ok(answered),
-            None => Err(ActionCallError::UnknownAction),
-        }
+        self.person_mail_action(signing, &using.workspace, &asker, wanted)
+            .await
     }
 }

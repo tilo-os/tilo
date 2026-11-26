@@ -503,10 +503,11 @@ impl<'a> Caller<'a> {
             }
             _ => Ok(Answer::Stream {
                 content_type: "text/event-stream",
-                body: events::stream(
+                body: events::invocation_stream(
                     events::Watch::new(Arc::clone(&self.session), ws, None, None),
-                    Some(invocation.to_owned()),
-                ),
+                    invocation.to_owned(),
+                )
+                .await?,
             }),
         }
     }

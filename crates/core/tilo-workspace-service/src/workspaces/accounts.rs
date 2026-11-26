@@ -15,8 +15,7 @@ use super::Workspaces;
 use super::person_settings;
 use super::person_settings::cloud_control::Mount;
 use crate::workspace_accounts::{
-    AccountKind as Kind, AccountServices, AccountStatus as Status, AccountView as View, Accounts,
-    CalendarView,
+    AccountKind as Kind, AccountStatus as Status, AccountView as View, Accounts, CalendarView,
 };
 
 impl Workspaces {
@@ -178,11 +177,7 @@ fn view_of(
                     .collect()
             })
             .unwrap_or_default(),
-        services: AccountServices {
-            mail: services.mail,
-            calendar: services.calendar,
-            files: services.files,
-        },
+        services,
         files_mode: account
             .config
             .get(accounts::cloud_types::FILES_MODE_KEY)

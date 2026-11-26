@@ -8,20 +8,19 @@
 use std::path::Path;
 
 use crate::workspace_accounts::{
-    self, AddCalendarAccount, AddMailAccount, FindServers, FoundServers, MailAccount, MailAccounts,
-    MailSignIn, MailSignIns, Provider, ServerAt, Services, SetCalendars, SetFilesMode, SetServices,
-    SignedInAccount, SyncControl,
+    AccountServices, AccountsAction, AddMailAccount, FoundServers, MailAccount, MailAccounts,
+    MailSignIn, MailSignIns, Provider, ServerAt, SignedInAccount,
 };
 use serde_json::{Map, Value};
 use tilo_account_probe::mail_servers::MailServers;
-use tilo_actions::remote::{ActionCallError, InvokeRequest};
+use tilo_actions::remote::ActionCallError;
 
 use super::cloud_control::Request;
 use super::kept_sign_ins::sign_in_of;
 use super::kept_sign_ins::{
     NO_SIGN_IN, SIGN_IN, Signing, has_sign_in, places_of, sign_in_of as kept_sign_in_of,
 };
-use super::{add_mail_with, answer, argument, remove_mail};
+use super::{add_mail_with, answer, remove_mail};
 use crate::workspaces::Workspaces;
 use crate::workspaces::vault::VaultAt;
 
@@ -227,18 +226,18 @@ impl Workspaces {
             .map_err(|_| "the account's check did not finish".to_owned())?
     }
 
-    /// Replace `replacing.account`'s saved sign-in with the new one once its server
-    /// takes it (`REPLACE_PASSWORD`): the account keeps the same vault reference.
+    /// Replace `account`'s saved sign-in with `password` once its server takes it
+    /// (`REPLACE_PASSWORD`): the account keeps the same vault reference.
     async fn replace_password(
         &self,
         signing: Signing<'_>,
-        replacing: crate::workspace_accounts::ReplacePassword,
+        (account, password): (&str, String),
     ) -> Result<(), String> {
-        let (kept, _) = super::account_with_secret(signing, &replacing.account).await?;
+        let (kept, _) = super::account_with_secret(signing, account).await?;
         let places = super::kept_sign_ins::places_of(&kept)?;
         let before = super::kept_sign_ins::sign_in_of(&kept.config);
         let checking = kept.clone();
-        let secret = accounts::Secret::password(replacing.password.clone());
+        let secret = accounts::Secret::password(password.clone());
         let tester = self.account_tester();
         tokio::task::spawn_blocking(move || tester.test(&checking, &secret))
             .await
@@ -254,7 +253,7 @@ impl Workspaces {
                 kept.id.as_str(),
                 (accounts::vault_items::ItemKind::Login, places),
                 &username,
-                zeroize::Zeroizing::new(replacing.password),
+                zeroize::Zeroizing::new(password),
                 before.as_ref(),
             )
             .await?;
@@ -303,8 +302,8 @@ impl Workspaces {
         signing.vault.keep_account(&kept).await
     }
 
-    /// Connect the calendar account `adding` names at its `CalDAV` server (`ADD_CALENDAR`), once
-    /// that server took its sign-in: the calendars it lists are kept on the account, each on
+    /// Connect the calendar account `username` signs in to at the `CalDAV` server `server` with
+    /// `password`, shown as `name` (`ADD_CALENDAR`), once that server took its sign-in: the calendars it lists are kept on the account, each on
     /// show, and the sign-in in the workspace's vault. The server is asked only where this
     /// server's mail may go. Added again, it is the same account, signed in with what was typed
     /// now: an account connected for reading only stays so, whoever adds it, until its person
@@ -312,22 +311,23 @@ impl Workspaces {
     async fn add_calendar(
         &self,
         signing: Signing<'_>,
-        adding: AddCalendarAccount,
+        (server, username, password): (&str, &str, &str),
+        (name, read_only): (&str, bool),
     ) -> Result<MailAccount, String> {
-        let username = adding.username.trim().to_owned();
+        let username = username.trim().to_owned();
         if username.is_empty() {
             return Err("A calendar account has a user name".to_owned());
         }
-        if adding.password.is_empty() {
+        if password.is_empty() {
             return Err("A calendar account has a password".to_owned());
         }
-        let server = calendar_server(&adding.server)?;
+        let server = calendar_server(server)?;
         let id = caldav_id(&username, &server);
         let held = signing.vault.accounts().await?;
         let before = held
             .account(&id)
             .filter(|kept| kept.type_id.as_str() == accounts::calendar::TYPE_ID);
-        let read_only = adding.read_only || before.as_ref().is_some_and(is_read_only);
+        let read_only = read_only || before.as_ref().is_some_and(is_read_only);
         let mut asking = accounts::Account::new(
             accounts::AccountId::from(id.clone()),
             accounts::calendar::TYPE_ID,
@@ -340,7 +340,7 @@ impl Workspaces {
             }
         }
         let tester = self.account_tester();
-        let secret = accounts::Secret::password(adding.password.clone());
+        let secret = accounts::Secret::password(password.to_owned());
         let looked = asking.clone();
         let found =
             tokio::task::spawn_blocking(move || tester.discover_calendars(&looked, &secret))
@@ -351,8 +351,8 @@ impl Workspaces {
             signing.vault,
             server.as_str(),
             &username,
-            &adding.password,
-            &adding.name,
+            password,
+            name,
             None,
         )
         .await?;
@@ -371,15 +371,15 @@ impl Workspaces {
     async fn set_calendars(
         &self,
         signing: Signing<'_>,
-        choosing: SetCalendars,
+        (account, calendars): (&str, &[String]),
     ) -> Result<(), String> {
         let held = signing.vault.accounts().await?;
         let mut kept = held
-            .account(&choosing.account)
+            .account(account)
             .filter(|kept| kept.type_id.as_str() == accounts::calendar::TYPE_ID)
             .ok_or_else(|| "That account is no calendar account".to_owned())?;
         let on_show: std::collections::BTreeSet<&str> =
-            choosing.calendars.iter().map(String::as_str).collect();
+            calendars.iter().map(String::as_str).collect();
         let known: std::collections::BTreeSet<String> = kept
             .config
             .get("calendars")
@@ -452,21 +452,21 @@ impl Workspaces {
         Ok(MailSignIns { sign_ins })
     }
 
-    /// Keep the cloud-storage account `saying` names in the files mode its person chose
+    /// Keep the cloud-storage account `account` in the files mode `mode` its person chose
     /// (`SET_FILES_MODE`): files kept in sync, or copied into the workspace once.
     pub(super) async fn set_files_mode(
         &self,
         signing: Signing<'_>,
-        saying: SetFilesMode,
+        (account, mode): (&str, &str),
     ) -> Result<MailAccounts, String> {
         let held = signing.vault.accounts().await?;
         let account = held
-            .account(&saying.account)
+            .account(account)
             .ok_or_else(|| "That account is not kept here".to_owned())?;
         if !is_file_account(&account) {
             return Err("Only a cloud-storage account's files have a mode".to_owned());
         }
-        let mode = match saying.mode.trim() {
+        let mode = match mode.trim() {
             "sync" => accounts::cloud_types::FilesMode::Sync,
             "import" => accounts::cloud_types::FilesMode::Import,
             other => {
@@ -491,33 +491,23 @@ impl Workspaces {
         ))
     }
 
-    /// Do `action` to the cloud-storage account `control` names on this device's files
-    /// service (`SYNC_NOW`, `PAUSE_SYNC`, `RESUME_SYNC`), answering the accounts as they are.
+    /// Tell this device's files service `request`, of one cloud-storage account (`SYNC_NOW`,
+    /// `PAUSE_SYNC`, `RESUME_SYNC`), answering the accounts as they are.
     pub(super) async fn control_sync(
         &self,
         signing: Signing<'_>,
-        action: &str,
-        control: SyncControl,
+        request: Request,
     ) -> Result<MailAccounts, String> {
+        let (Request::SyncNow { account }
+        | Request::Pause { account }
+        | Request::Resume { account }) = &request;
         let held = signing.vault.accounts().await?;
         let account = held
-            .account(&control.account)
+            .account(account)
             .ok_or_else(|| "That account is not kept here".to_owned())?;
         if !is_file_account(&account) {
             return Err("Only a cloud-storage account's files sync on this device".to_owned());
         }
-        let request = match action {
-            workspace_accounts::SYNC_NOW => Request::SyncNow {
-                account: control.account.clone(),
-            },
-            workspace_accounts::PAUSE_SYNC => Request::Pause {
-                account: control.account.clone(),
-            },
-            workspace_accounts::RESUME_SYNC => Request::Resume {
-                account: control.account.clone(),
-            },
-            _ => return Err("That is no cloud-sync action".to_owned()),
-        };
         let cloud = self.cloud_control();
         tokio::task::spawn_blocking(move || cloud.control(request))
             .await
@@ -531,26 +521,26 @@ impl Workspaces {
     pub(super) async fn set_services(
         &self,
         signing: Signing<'_>,
-        saying: SetServices,
+        (account, chosen): (&str, AccountServices),
     ) -> Result<MailAccounts, String> {
         let held = signing.vault.accounts().await?;
         let account = held
-            .account(&saying.account)
+            .account(account)
             .ok_or_else(|| "That account is not kept here".to_owned())?;
         let provider = provider_of_account(&account);
         // A file account's services are its mount's own choice, which its
         // provider list does not limit: `Nextcloud` offers files and
         // calendars, a drive its files.
         let chosen = if is_file_account(&account) {
-            saying.services()
+            chosen
         } else {
-            saying.services().within(provider)
+            chosen.within(provider)
         };
         #[cfg(feature = "agents")]
         let mut services = chosen;
         // A build without the calendar module keeps no calendar account.
         #[cfg(not(feature = "agents"))]
-        let services = Services {
+        let services = AccountServices {
             calendar: false,
             ..chosen
         };
@@ -561,7 +551,10 @@ impl Workspaces {
         if provider == Provider::Icloud {
             let linked = linked_calendar(&held, &account);
             if services.calendar && linked.is_none() {
-                match self.keep_service_calendar(signing, &saying.account).await {
+                match self
+                    .keep_service_calendar(signing, account.id.as_str())
+                    .await
+                {
                     Ok(calendar) => {
                         let server = self.icloud_calendar_server();
                         let mail = with_link(&account, services, Some((&calendar, &server)));
@@ -576,7 +569,7 @@ impl Workspaces {
                     }
                     Err(why) => {
                         tracing::warn!(
-                            account = %saying.account,
+                            account = %account.id.as_str(),
                             %why,
                             "mail: an iCloud account's calendars were not kept, so it feeds mail alone"
                         );
@@ -663,87 +656,95 @@ impl Workspaces {
         ICLOUD_CALENDARS.to_owned()
     }
 
-    /// Answer a request that finds an address's servers, adds an account,
-    /// signs one in again or says what it feeds, or none when `request` asks
-    /// anything else: what a person does with the accounts their vault keeps.
+    /// Answer `asked`, which finds an address's servers, adds an account, signs one in again or
+    /// says what it feeds: what a person does with the accounts their vault keeps.
     pub(super) async fn person_mail_action(
         &self,
         signing: Signing<'_>,
         workspace: &str,
         acting: &tilo_action_policy::Acting,
-        request: &InvokeRequest,
-    ) -> Result<Option<Value>, ActionCallError> {
-        let answered = match request.target.address.action.as_str() {
-            workspace_accounts::FIND_SERVERS => {
-                let asking: FindServers = argument(request, "an address whose servers to find")?;
-                answer(&self.find_servers(&asking.address).await)
-            }
-            workspace_accounts::ADD_MAIL => {
-                let adding: AddMailAccount = argument(request, "an account to add")?;
+        asked: AccountsAction,
+    ) -> Result<Value, ActionCallError> {
+        match asked {
+            AccountsAction::FindServers { address } => answer(&self.find_servers(&address).await),
+            asked @ AccountsAction::AddMail { .. } => {
+                let adding = AddMailAccount::asked(asked).ok_or(ActionCallError::UnknownAction)?;
                 self.answered_account_change(&self.add_mail(signing, adding).await)
             }
-            workspace_accounts::ADD_CALENDAR => {
-                let adding: AddCalendarAccount =
-                    argument(request, "a calendar server and its sign-in")?;
-                self.answered_account_change(&Box::pin(self.add_calendar(signing, adding)).await)
+            AccountsAction::AddCalendar {
+                server,
+                username,
+                password,
+                name,
+                read_only,
+            } => {
+                let signing_in = (server.as_str(), username.as_str(), password.as_str());
+                let shown = (
+                    name.as_deref().unwrap_or_default(),
+                    read_only.unwrap_or(false),
+                );
+                self.answered_account_change(
+                    &Box::pin(self.add_calendar(signing, signing_in, shown)).await,
+                )
             }
-            workspace_accounts::RECONNECT => {
-                let account = one_account(request)?;
+            AccountsAction::Reconnect { account } => {
+                let account = named(account)?;
                 self.answered_account_change(
                     &Box::pin(self.reconnect(signing, workspace, acting, &account)).await,
                 )
             }
-            workspace_accounts::CHECK => {
-                let account = one_account(request)?;
-                let checked = Box::pin(self.check_saved_sign_in(signing, &account)).await;
-                answer(&checked)
+            AccountsAction::Check { account } => {
+                let account = named(account)?;
+                answer(&Box::pin(self.check_saved_sign_in(signing, &account)).await)
             }
-            workspace_accounts::REPLACE_PASSWORD => {
-                let replacing: crate::workspace_accounts::ReplacePassword =
-                    argument(request, "an account and its new password")?;
-                self.answered_account_change(
-                    &Box::pin(self.replace_password(signing, replacing)).await,
-                )
-            }
-            workspace_accounts::DISCOVER_CALENDARS => {
-                let account = one_account(request)?;
+            AccountsAction::ReplacePassword { account, password } => self.answered_account_change(
+                &Box::pin(self.replace_password(signing, (&account, password))).await,
+            ),
+            AccountsAction::DiscoverCalendars { account } => {
+                let account = named(account)?;
                 self.answered_account_change(
                     &Box::pin(self.discover_calendars(signing, &account)).await,
                 )
             }
-            workspace_accounts::SET_CALENDARS => {
-                let choosing: SetCalendars =
-                    argument(request, "a calendar account and its calendars")?;
-                self.answered_account_change(&Box::pin(self.set_calendars(signing, choosing)).await)
-            }
-            workspace_accounts::SET_SERVICES => {
-                let saying: SetServices = argument(request, "an account and its services")?;
-                self.answered_account_change(&Box::pin(self.set_services(signing, saying)).await)
-            }
-            workspace_accounts::SIGN_INS => answer(&self.vault_sign_ins(workspace).await),
-            workspace_accounts::SET_FILES_MODE => {
-                let saying: SetFilesMode =
-                    argument(request, "an account and the files mode it takes")?;
-                self.answered_account_change(&Box::pin(self.set_files_mode(signing, saying)).await)
-            }
-            workspace_accounts::SYNC_NOW
-            | workspace_accounts::PAUSE_SYNC
-            | workspace_accounts::RESUME_SYNC => {
-                let control: SyncControl = argument(request, "an account whose sync to control")?;
-                let action = request.target.address.action.clone();
+            AccountsAction::SetCalendars { account, calendars } => self.answered_account_change(
+                &Box::pin(self.set_calendars(signing, (&account, &calendars))).await,
+            ),
+            AccountsAction::SetServices {
+                account,
+                mail,
+                calendar,
+                files,
+            } => {
+                let services = AccountServices {
+                    mail: mail.unwrap_or(false),
+                    calendar: calendar.unwrap_or(false),
+                    files: files.unwrap_or(false),
+                };
                 self.answered_account_change(
-                    &Box::pin(self.control_sync(signing, &action, control)).await,
+                    &Box::pin(self.set_services(signing, (&account, services))).await,
                 )
             }
-            workspace_accounts::REMOVE => {
-                let account = one_account(request)?;
+            AccountsAction::SignIns => answer(&self.vault_sign_ins(workspace).await),
+            AccountsAction::SetFilesMode { account, mode } => self.answered_account_change(
+                &Box::pin(self.set_files_mode(signing, (&account, &mode))).await,
+            ),
+            AccountsAction::SyncNow { account } => self.answered_account_change(
+                &Box::pin(self.control_sync(signing, Request::SyncNow { account })).await,
+            ),
+            AccountsAction::PauseSync { account } => self.answered_account_change(
+                &Box::pin(self.control_sync(signing, Request::Pause { account })).await,
+            ),
+            AccountsAction::ResumeSync { account } => self.answered_account_change(
+                &Box::pin(self.control_sync(signing, Request::Resume { account })).await,
+            ),
+            AccountsAction::Remove { account } => {
+                let account = named(account)?;
                 self.answered_account_change(
                     &remove_mail((signing.vault, signing.root), &account).await,
                 )
             }
-            _ => return Ok(None),
-        };
-        Ok(Some(answered?))
+            _ => Err(ActionCallError::UnknownAction),
+        }
     }
 
     /// Answer `outcome`, a change to the person's accounts, and tell what reads them that they
@@ -953,7 +954,7 @@ const ICLOUD_CALENDARS: &str = "https://caldav.icloud.com";
 #[cfg(feature = "agents")]
 fn with_link(
     account: &accounts::Account,
-    services: Services,
+    services: AccountServices,
     calendar: Option<(&accounts::Account, &str)>,
 ) -> accounts::Account {
     let mut account = account.clone();
@@ -1020,9 +1021,9 @@ fn caldav_id(username: &str, server: &tilo_dav::Url) -> String {
 
 /// The id the calendar account `adding` names would be kept under, where its server's address
 /// reads.
-pub(in crate::workspaces) fn calendar_account_id(adding: &AddCalendarAccount) -> Option<String> {
-    let username = adding.username.trim();
-    let server = calendar_server(&adding.server).ok()?;
+pub(in crate::workspaces) fn calendar_account_id(server: &str, username: &str) -> Option<String> {
+    let username = username.trim();
+    let server = calendar_server(server).ok()?;
     (!username.is_empty()).then(|| caldav_id(username, &server))
 }
 
@@ -1077,7 +1078,7 @@ fn calendar_row(account: &accounts::Account) -> MailAccount {
         display_name: account.display_name.clone(),
         has_secret: has_sign_in(account),
         server: field(account, "server_url"),
-        services: Services {
+        services: AccountServices {
             mail: false,
             calendar: true,
             files: false,
@@ -1163,7 +1164,7 @@ fn is_file_account(account: &accounts::Account) -> bool {
     )
 }
 
-pub(super) fn services_of(account: &accounts::Account, provider: Provider) -> Services {
+pub(super) fn services_of(account: &accounts::Account, provider: Provider) -> AccountServices {
     // A file account's choice is written in the words the cloud service
     // reads (`use_files`, `use_calendar`) as well as its own (`services`): the
     // words the cloud service reads stand where no choice was ever written,
@@ -1171,7 +1172,7 @@ pub(super) fn services_of(account: &accounts::Account, provider: Provider) -> Se
     if is_file_account(account)
         && let Some(written) = account.config.get("services")
     {
-        match serde_json::from_value::<Services>(written.clone()) {
+        match serde_json::from_value::<AccountServices>(written.clone()) {
             Ok(services) => return services,
             Err(error) => tracing::warn!(
                 %error,
@@ -1187,14 +1188,14 @@ pub(super) fn services_of(account: &accounts::Account, provider: Provider) -> Se
                 .and_then(Value::as_bool)
                 .unwrap_or(usual)
         };
-        return Services {
+        return AccountServices {
             mail: flag("use_mail", false),
             calendar: flag("use_calendar", false),
             files: flag("use_files", true),
         };
     }
     let default = if account.type_id.as_str() == accounts::email::TYPE_ID {
-        Services::default()
+        AccountServices::default()
     } else {
         provider.offers()
     };
@@ -1306,7 +1307,7 @@ async fn change_config(
 async fn set_services_in_config(
     vault: VaultAt<'_>,
     account: &accounts::Account,
-    services: Services,
+    services: AccountServices,
 ) -> Result<(), String> {
     let file_account = is_file_account(account);
     change_config(vault, account.id.as_str(), |config| {
@@ -1343,13 +1344,12 @@ fn port(account: &accounts::Account, name: &str, default: u16) -> u16 {
         .unwrap_or(default)
 }
 
-/// The account a request names, as `{ "account": … }`.
-fn one_account(request: &InvokeRequest) -> Result<String, ActionCallError> {
-    let value: Map<String, Value> = argument(request, "the account")?;
-    value
-        .get("account")
-        .and_then(Value::as_str)
-        .filter(|account| !account.trim().is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| ActionCallError::invalid_request("the request names its account"))
+/// `account`, the id an action names, where it names one.
+fn named(account: String) -> Result<String, ActionCallError> {
+    if account.trim().is_empty() {
+        return Err(ActionCallError::invalid_request(
+            "the request names its account",
+        ));
+    }
+    Ok(account)
 }

@@ -24,8 +24,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::models::{
-    self as model_providers, AddModel, AddProvider, ListedModels, ListingProblem, ModelProviders,
-    ModelsAction, ProviderView, SetAssignment, SetAssignments, SetDefault, SetKey,
+    self as model_providers, AddProvider, ListedModels, ListingProblem, ModelProviders,
+    ModelsAction, ProviderView, SetKey,
 };
 use agent_provider_config::presets::{Authentication, Preset};
 use agent_provider_config::protocol::{ModelError, ModelRequest, ModelResponse};
@@ -222,35 +222,21 @@ impl Workspaces {
                 answer(&refresh_models((keys, root), &provider, &reach).await)
             }
             ModelsAction::AddModel { provider, model } => {
-                answer(&add_model(root, &AddModel { provider, model }))
+                answer(&add_model(root, &provider, &model))
             }
             ModelsAction::SetDefault { provider, model } => {
-                answer(&set_default(root, &SetDefault { provider, model }))
+                answer(&set_default(root, &provider, &model))
             }
             ModelsAction::SetAssignment {
                 kind,
                 provider,
                 model,
-            } => answer(&set_assignment(
-                root,
-                SetAssignment {
-                    kind,
-                    provider,
-                    model,
-                },
-            )),
+            } => answer(&set_assignment(root, &kind, (provider, model))),
             ModelsAction::SetAssignments {
                 kinds,
                 provider,
                 model,
-            } => answer(&set_assignments(
-                root,
-                SetAssignments {
-                    kinds,
-                    provider,
-                    model,
-                },
-            )),
+            } => answer(&set_assignments(root, &kinds, (provider, model))),
             ModelsAction::SetReasoning { provider, effort } => {
                 answer(&set_reasoning(root, &provider, effort.as_deref()))
             }
@@ -705,8 +691,9 @@ async fn asked(
     Ok((status, body))
 }
 
-fn add_model(root: &Path, adding: &AddModel) -> Result<ProviderView, String> {
-    let id = adding.model.trim();
+/// Name `model` by hand among `provider`'s models, where it lists none.
+fn add_model(root: &Path, provider: &str, model: &str) -> Result<ProviderView, String> {
+    let id = model.trim();
     if id.is_empty() || id.len() > MAX_MODEL_ID_BYTES || id.contains(char::is_control) {
         return Err("A model is named by its id at the provider".into());
     }
@@ -714,7 +701,7 @@ fn add_model(root: &Path, adding: &AddModel) -> Result<ProviderView, String> {
     let profile = config
         .profiles
         .iter_mut()
-        .find(|profile| profile.id == adding.provider)
+        .find(|profile| profile.id == provider)
         .ok_or_else(not_kept)?;
     if !profile.models.iter().any(|model| model.id == id) {
         profile.models.push(ModelDescriptor::named(id));
@@ -779,41 +766,44 @@ fn set_reasoning(
     Ok(view_of(&profile))
 }
 
-fn set_default(root: &Path, choosing: &SetDefault) -> Result<ModelProviders, String> {
+/// Run work whose kind names no model on `provider`'s `model`.
+fn set_default(root: &Path, provider: &str, model: &str) -> Result<ModelProviders, String> {
     let mut config = provider_config(root);
     let profile = config
         .profiles
         .iter_mut()
-        .find(|profile| profile.id == choosing.provider)
+        .find(|profile| profile.id == provider)
         .ok_or_else(not_kept)?;
     if !profile.enabled {
         return Err("That provider is not offered to agents".into());
     }
-    if !profile
-        .models
-        .iter()
-        .any(|model| model.id == choosing.model)
-    {
+    if !profile.models.iter().any(|offered| offered.id == model) {
         return Err("That provider does not offer this model".into());
     }
-    profile.default_model = Some(choosing.model.clone());
-    config.default_profile = Some(choosing.provider.clone());
+    profile.default_model = Some(model.to_owned());
+    config.default_profile = Some(provider.to_owned());
     save_provider_config(root, &config)?;
     Ok(providers(root))
 }
 
-/// One model for every kind `choosing` names, or none of them changed.
-fn set_assignments(root: &Path, choosing: SetAssignments) -> Result<ModelProviders, String> {
-    if choosing.kinds.is_empty() {
+/// One model for every kind of work `kinds` names, chosen together so they never differ by half
+/// a change, or none of them changed: with neither provider nor model, they follow the default
+/// again.
+fn set_assignments(
+    root: &Path,
+    kinds: &[String],
+    (provider, model): (Option<String>, Option<String>),
+) -> Result<ModelProviders, String> {
+    if kinds.is_empty() {
         return Err("A model choice names the kinds of work it is for".into());
     }
-    let chosen = match (choosing.provider, choosing.model) {
+    let chosen = match (provider, model) {
         (Some(profile), Some(model)) => Some(AgentModel { profile, model }),
         (None, None) => None,
         _ => return Err("A model choice names both a provider and its model".into()),
     };
     let mut config = provider_config(root);
-    for kind in &choosing.kinds {
+    for kind in kinds {
         let kind =
             Interaction::from_id(kind).ok_or_else(|| "That is not a kind of work".to_owned())?;
         config
@@ -1294,22 +1284,12 @@ mod tests {
         );
         keep_key(root.path(), &id, KEY).await;
         for model in ["retired", "stray"] {
-            add_model(
-                root.path(),
-                &AddModel {
-                    provider: id.clone(),
-                    model: model.into(),
-                },
-            )
-            .expect("a model is named by hand");
+            add_model(root.path(), &id, model).expect("a model is named by hand");
         }
         set_assignments(
             root.path(),
-            SetAssignments {
-                kinds: vec!["subtask".into()],
-                provider: Some(id.clone()),
-                model: Some("retired".into()),
-            },
+            &["subtask".into()],
+            (Some(id.clone()), Some("retired".into())),
         )
         .expect("the model is chosen");
 
@@ -1401,31 +1381,14 @@ mod tests {
             "https://models.example/v1",
             Destinations::Public,
         );
-        let naming = |model: &str| {
-            add_model(
-                root.path(),
-                &AddModel {
-                    provider: id.clone(),
-                    model: model.into(),
-                },
-            )
-        };
+        let naming = |model: &str| add_model(root.path(), &id, model);
         naming(" typed-model ").expect("a model is named");
         let again = naming("typed-model").expect("naming it again changes nothing");
         assert_eq!(ids(&again), ["typed-model"]);
         for unusable in ["", "   ", "two\nlines"] {
             assert!(naming(unusable).is_err(), "{unusable:?}");
         }
-        assert!(
-            add_model(
-                root.path(),
-                &AddModel {
-                    provider: "nobody's".into(),
-                    model: "typed-model".into(),
-                },
-            )
-            .is_err()
-        );
+        assert!(add_model(root.path(), "nobody's", "typed-model").is_err());
     }
 
     /// A provider at `endpoint` that offers `models`, each named by hand.
@@ -1437,14 +1400,7 @@ mod tests {
             Destinations::Public,
         );
         for model in models {
-            add_model(
-                root,
-                &AddModel {
-                    provider: id.clone(),
-                    model: (*model).into(),
-                },
-            )
-            .expect("a model is named");
+            add_model(root, &id, model).expect("a model is named");
         }
         id
     }
@@ -1457,11 +1413,11 @@ mod tests {
     ) -> Result<ModelProviders, String> {
         set_assignments(
             root,
-            SetAssignments {
-                kinds: kinds.iter().map(|kind| (*kind).to_owned()).collect(),
-                provider: Some(provider.into()),
-                model: Some(model.into()),
-            },
+            &kinds
+                .iter()
+                .map(|kind| (*kind).to_owned())
+                .collect::<Vec<_>>(),
+            (Some(provider.into()), Some(model.into())),
         )
     }
 
@@ -1478,23 +1434,13 @@ mod tests {
     fn chosen(root: &Path) -> (String, String) {
         let first = offering(root, "https://first.example/v1", &["everyday", "main"]);
         let second = offering(root, "https://second.example/v1", &["quick", "sub"]);
-        set_default(
-            root,
-            &SetDefault {
-                provider: first.clone(),
-                model: "everyday".into(),
-            },
-        )
-        .expect("a default is chosen");
+        set_default(root, &first, "everyday").expect("a default is chosen");
         choose(root, &["request", "task"], &first, "main").expect("the main thread's model");
         choose(root, &["subtask"], &second, "sub").expect("the sub-agents' model");
         set_assignment(
             root,
-            SetAssignment {
-                kind: "classifier".into(),
-                provider: Some(second.clone()),
-                model: Some("quick".into()),
-            },
+            "classifier",
+            (Some(second.clone()), Some("quick".into())),
         )
         .expect("the model for quick judgments");
         (first, second)
@@ -1557,16 +1503,7 @@ mod tests {
         let (first, second) = chosen(root.path());
         let read = providers(root.path());
 
-        assert!(
-            set_default(
-                root.path(),
-                &SetDefault {
-                    provider: first.clone(),
-                    model: "sub".into(),
-                },
-            )
-            .is_err()
-        );
+        assert!(set_default(root.path(), &first, "sub").is_err());
         assert!(choose(root.path(), &["request", "errand"], &second, "sub").is_err());
         assert!(choose(root.path(), &[], &second, "sub").is_err());
         assert!(choose(root.path(), &["task"], &second, "main").is_err());
@@ -1574,11 +1511,8 @@ mod tests {
 
         let following = set_assignments(
             root.path(),
-            SetAssignments {
-                kinds: vec!["request".into(), "task".into()],
-                provider: None,
-                model: None,
-            },
+            &["request".into(), "task".into()],
+            (None, None),
         )
         .expect("the main thread follows the default");
         assert_eq!(runs_on(&following, "request"), None);

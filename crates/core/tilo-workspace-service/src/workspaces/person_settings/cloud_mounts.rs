@@ -14,22 +14,21 @@
 //! is kept of it.
 
 use crate::workspace_accounts::{
-    self, CloudAccount, CloudAccounts, CloudCredential, CloudCredentialAt, CloudCredentialKind,
-    SyncReport,
+    AccountsAction, CloudAccount, CloudAccounts, CloudCredential, CloudCredentialKind,
 };
 use accounts::vault_items::ItemKind;
 use serde_json::Value;
-use tilo_actions::remote::{ActionCallError, InvokeRequest};
+use tilo_actions::remote::ActionCallError;
 use zeroize::Zeroizing;
 
+use super::answer;
 use super::kept_sign_ins::{self, Signing};
-use super::{answer, argument};
 use crate::workspaces::Workspaces;
 
 /// What a cloud mount's sign-in is written down as among its item's uses.
 const SIGN_IN: &str = "tilo.accounts/sign-in";
 
-/// Answer one of `tilo.accounts`' cloud mount actions, [`request`] as `signing` names it.
+/// Answer `asked`, one of `tilo.accounts`' cloud mount actions, with what `signing` names.
 ///
 /// # Errors
 /// The caller is not the person on their own connection, or the vault or the account refused.
@@ -38,10 +37,10 @@ pub(super) async fn invoke(
     signing: Signing<'_>,
     workspace: &str,
     acting: &tilo_action_policy::Acting,
-    request: &InvokeRequest,
+    asked: AccountsAction,
 ) -> Result<Value, ActionCallError> {
-    match request.target.address.action.as_str() {
-        workspace_accounts::CLOUD_ACCOUNTS => {
+    match asked {
+        AccountsAction::CloudAccounts => {
             let held = signing
                 .vault
                 .accounts()
@@ -65,9 +64,8 @@ pub(super) async fn invoke(
                 .collect();
             answer(&Ok::<_, String>(CloudAccounts { accounts }))
         }
-        workspace_accounts::CLOUD_CREDENTIAL => {
-            let asking: CloudCredentialAt = argument(request, "an account to sign in with")?;
-            let credential = credential(workspaces, signing, asking)
+        AccountsAction::CloudCredential { account, rejected } => {
+            let credential = credential(workspaces, signing, &account, rejected.unwrap_or(false))
                 .await
                 .map_err(ActionCallError::refused)?;
             Ok(
@@ -76,18 +74,29 @@ pub(super) async fn invoke(
                 })?,
             )
         }
-        workspace_accounts::REPORT_SYNC => {
-            let report: SyncReport = argument(request, "how a mount's sync went")?;
-            Box::pin(report_sync(workspaces, workspace, acting, report))
-                .await
-                .map_err(ActionCallError::refused)?;
+        AccountsAction::ReportSync {
+            account,
+            health,
+            signed_in,
+            message,
+        } => {
+            let report = (&*account, &*health, signed_in.unwrap_or(false));
+            let message = message.unwrap_or_default();
+            Box::pin(report_sync(
+                workspaces,
+                (workspace, acting),
+                report,
+                &message,
+            ))
+            .await
+            .map_err(ActionCallError::refused)?;
             Ok(Value::Null)
         }
         _ => Err(ActionCallError::UnknownAction),
     }
 }
 
-/// What the account `asking` names signs in with now, from the sign-in the workspace's vault
+/// What `account` signs in with now, from the sign-in the workspace's vault
 /// keeps for it: a password as it is, an `OAuth` grant's access token renewed when it was due
 /// (or when the mount refused the last one), or an iCloud session's headers. A renewed grant is
 /// kept in the vault in its place, as a change to the account's own sign-in.
@@ -97,11 +106,12 @@ pub(super) async fn invoke(
 async fn credential(
     workspaces: &Workspaces,
     signing: Signing<'_>,
-    asking: CloudCredentialAt,
+    account: &str,
+    rejected: bool,
 ) -> Result<CloudCredential, String> {
     let held = signing.vault.accounts().await?;
     let account = held
-        .account(&asking.account)
+        .account(account)
         .filter(|account| account.enabled)
         .filter(|account| account_credentials::is_cloud_type(account.type_id.as_str()))
         .ok_or_else(|| "That account is not kept here".to_owned())?;
@@ -145,7 +155,6 @@ async fn credential(
         password: String::new(),
         token: Some(released.secret.to_string()),
     };
-    let rejected = asking.rejected;
     let account = account.clone();
     let made =
         tokio::task::spawn_blocking(move || store.drive_credential(&account, &secret, rejected))
@@ -177,27 +186,27 @@ async fn credential(
     ))
 }
 
-/// Report how the sync of `report`'s account went on this device, as every member's Settings
-/// reads it.
+/// Report how the sync of `account` went on this device, `message` summing it up, as every
+/// member's Settings reads it.
 ///
 /// # Errors
 /// The account is not the workspace's, its health is no health, or the record does not take the
 /// write on this device.
 async fn report_sync(
     workspaces: &Workspaces,
-    workspace: &str,
-    acting: &tilo_action_policy::Acting,
-    report: SyncReport,
+    (workspace, acting): (&str, &tilo_action_policy::Acting),
+    (account, health, signed_in): (&str, &str, bool),
+    message: &str,
 ) -> Result<(), String> {
-    let health = accounts::SyncHealth::from_word(&report.health)
-        .ok_or_else(|| format!("{} is no account's sync health", report.health))?;
+    let health = accounts::SyncHealth::from_word(health)
+        .ok_or_else(|| format!("{health} is no account's sync health"))?;
     workspaces
         .report_account_sync(
             (workspace, acting, None),
-            &report.account,
+            account,
             health,
-            report.signed_in,
-            &report.message,
+            signed_in,
+            message,
         )
         .await
 }

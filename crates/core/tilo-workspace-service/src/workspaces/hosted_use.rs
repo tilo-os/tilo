@@ -567,25 +567,21 @@ impl Use {
         let invalid = |what: &str| InvalidRequest {
             reason: what.to_owned(),
         };
-        let arguments = Value::Object(arguments.clone());
         match (target.provider.as_str(), target.address.action.as_str()) {
             (workspace_accounts::PROVIDER, workspace_accounts::ADD_MAIL_WITH_ITEM) => {
-                serde_json::from_value(arguments).map(Self::Mail).map_err(|_| {
+                AddMailWithItem::asked(arguments).map(Self::Mail).ok_or_else(|| {
                     invalid(
                         "a mail account to add names its address, its servers and the vault item that is its password",
                     )
                 })
             }
             (model_providers::PROVIDER, model_providers::SET_KEY_FROM_ITEM) => {
-                serde_json::from_value(arguments).map(Self::Key).map_err(|_| {
+                SetKeyFromItem::asked(arguments).map(Self::Key).ok_or_else(|| {
                     invalid("a key to keep names its provider and the vault item that is the key")
                 })
             }
             (workspace_vault::PROVIDER, action) => {
-                let Value::Object(arguments) = arguments else {
-                    return Err(UnknownAction);
-                };
-                match workspace_vault::decoded(action, &arguments).map_err(|why| invalid(&why))? {
+                match workspace_vault::decoded(action, arguments).map_err(|why| invalid(&why))? {
                     VaultAction::WebCall { call } => Ok(Self::Call(call)),
                     VaultAction::Code { reason } => Ok(Self::Code(ReadCode {
                         reason: reason.unwrap_or_default(),

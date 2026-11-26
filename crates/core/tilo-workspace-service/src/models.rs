@@ -431,27 +431,34 @@ impl std::fmt::Debug for SetKey {
 /// A provider's API key to keep from the person's vault. Nothing here is a
 /// secret: `key` names the vault item, which must be a key that belongs to
 /// the provider's endpoint.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SetKeyFromItem {
     pub provider: String,
     pub key: crate::workspace_vault::ItemRef,
     /// Why whoever asks needs it, in a sentence its person reads when they
     /// are asked first; empty when nothing was said.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub reason: String,
 }
 
-/// The model one kind of work runs on, or with neither provider nor model,
-/// that kind follows the default again.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SetAssignment {
-    pub kind: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
+impl SetKeyFromItem {
+    /// The key [`SET_KEY_FROM_ITEM`] keeps with `arguments`, read as its declaration names them;
+    /// `None` where they do not read, or its key names no vault item.
+    #[must_use]
+    pub fn asked(arguments: &serde_json::Map<String, serde_json::Value>) -> Option<Self> {
+        let Ok(ModelsAction::SetKeyFromItem {
+            provider,
+            key,
+            reason,
+        }) = ModelsAction::decode(SET_KEY_FROM_ITEM, arguments)
+        else {
+            return None;
+        };
+        Some(Self {
+            provider,
+            key: tilo_actions::remote::ItemRef::parse(&key)?,
+            reason: reason.unwrap_or_default(),
+        })
+    }
 }
 
 /// A provider after its models were asked for ([`REFRESH_MODELS`]).
@@ -484,37 +491,6 @@ pub enum ListingProblem {
     NotAllowed,
     /// The provider answered something that is no list of models.
     Unreadable,
-}
-
-/// A model to add to a provider that lists none.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AddModel {
-    pub provider: String,
-    /// The model's id, as the provider's API names it.
-    pub model: String,
-}
-
-/// The provider and model work runs on when its kind names none.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SetDefault {
-    pub provider: String,
-    pub model: String,
-}
-
-/// One model for several kinds of work, chosen together so they never
-/// differ by half a change: a person's main thread answers as `request` and
-/// works as `task`. With neither provider nor model, those kinds follow the
-/// default again.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SetAssignments {
-    pub kinds: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
 }
 
 /// What a person's `OpenAI` account is used for once they signed in.

@@ -14,9 +14,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::workspace_accounts::{
-    self, MailAccount, MailAccounts, MailSignIns, Provider, SetFilesMode, SyncControl,
-};
+use crate::workspace_accounts::{self, MailAccount, MailAccounts, MailSignIns, Provider};
 use crate::workspace_vault;
 use collab_types::WorkspaceId;
 use serde_json::{Value, json};
@@ -1080,15 +1078,11 @@ async fn its_files_mode_is_chosen(setup: &Setup, id: &str) {
         accounts::cloud_types::mode_of(&settings(setup, id).await),
         Some(accounts::cloud_types::FilesMode::Sync)
     );
-    let kept: SetFilesMode = SetFilesMode {
-        account: id.to_owned(),
-        mode: "import".to_owned(),
-    };
     setup
         .ask(
             workspace_accounts::RESOURCE,
             workspace_accounts::SET_FILES_MODE,
-            serde_json::to_value(&kept).unwrap(),
+            json!({"account": id, "mode": "import"}),
         )
         .await
         .expect("its person chooses to copy it once");
@@ -1112,10 +1106,7 @@ async fn its_files_mode_is_chosen(setup: &Setup, id: &str) {
 
 /// Sync now, pause and resume each reach this device's files service.
 async fn sync_controls_reach_the_files_service(setup: &Setup, cloud: &StandInCloud, id: &str) {
-    let sync = serde_json::to_value(SyncControl {
-        account: id.to_owned(),
-    })
-    .unwrap();
+    let sync = json!({ "account": id });
     setup
         .ask(
             workspace_accounts::RESOURCE,

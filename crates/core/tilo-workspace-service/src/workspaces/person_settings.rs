@@ -29,15 +29,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::models as model_providers;
-use crate::models::{
-    Assignment, ModelProviders, OfferedModel, ProviderView, SetAssignment, SetKey,
-};
+use crate::models::{Assignment, ModelProviders, OfferedModel, ProviderView, SetKey};
 use crate::workspace_accounts;
-use crate::workspace_accounts::{AddMailAccount, MailAccount, MailAccounts};
+use crate::workspace_accounts::{AccountsAction, AddMailAccount, MailAccount, MailAccounts};
 use serde_json::Value;
 use tilo_account_probe::AccountTester;
 use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
 use tilo_net::proxy::host::Destinations;
+use tilo_resource::Effect as _;
 use tilo_user_identity::DeviceCert;
 
 use super::Workspaces;
@@ -431,20 +430,31 @@ impl Workspaces {
             return answered;
         }
         let effect = mail_effect(action);
-        let asked = (workspace_id, caller, certificate);
-        let reach = self.reaching(asked, Store::MAIL, action, effect).await?;
+        let asking = (workspace_id, caller, certificate);
+        let reach = self.reaching(asking, Store::MAIL, action, effect).await?;
+        // An account added from an entry of the workspace's vault is that entry's use,
+        // decided at the vault as well: the same path a provider's key takes.
+        if action == workspace_accounts::ADD_MAIL_WITH_ITEM {
+            self.allowed(reach, caller, Store::MAIL, action, request)
+                .await?;
+            return Box::pin(self.vault_use_invoke(workspace_id, caller, certificate, request))
+                .await;
+        }
+        let asked = asked_of(request)?;
         // An agent's connect of a calendar account the workspace keeps already adds nothing, and
         // nobody is asked about it: signing a connected account in again is its person's.
-        if action == workspace_accounts::ADD_CALENDAR && reach.agent.is_some() {
+        if let AccountsAction::AddCalendar {
+            server, username, ..
+        } = &asked
+            && reach.agent.is_some()
+        {
             let here = reach.workspace.to_string();
             let kept = self
                 .vault_for(&here, &reach.acting)
                 .accounts()
                 .await
                 .map_err(ActionCallError::refused)?;
-            let adding: workspace_accounts::AddCalendarAccount =
-                argument(request, "a calendar server and its sign-in")?;
-            if let Some(id) = person_mail::calendar_account_id(&adding)
+            if let Some(id) = person_mail::calendar_account_id(server, username)
                 && kept.account(&id).is_some()
             {
                 return Err(ActionCallError::Refused {
@@ -463,46 +473,33 @@ impl Workspaces {
             root: &root,
             by: &by,
         };
-        // Signing in on a provider's own page: begun, stopped, and the
-        // accounts as they are.
-        if matches!(
-            action,
-            workspace_accounts::BEGIN_SIGN_IN
-                | workspace_accounts::BEGIN_CLOUD_SIGN_IN
-                | workspace_accounts::SUBMIT_SIGN_IN_CODE
-                | workspace_accounts::CANCEL_SIGN_IN
-        ) {
-            return sign_in::accounts_sign_in(self, reach.person, &here, request).await;
-        }
-        // An account added from an entry of the workspace's vault is that entry's use,
-        // decided at the vault as well: the same path a provider's key takes.
-        if action == workspace_accounts::ADD_MAIL_WITH_ITEM {
-            return Box::pin(self.vault_use_invoke(workspace_id, caller, certificate, request))
-                .await;
-        }
-        // What changes the accounts the workspace keeps is answered before
-        // the rest: finding servers, adding an account, signing one in again,
-        // saying what it feeds and removing it.
-        if let Some(answered) =
-            Box::pin(self.person_mail_action(signing, &here, &reach.acting, request)).await?
-        {
-            return Ok(answered);
-        }
-        // The workspace's mail accounts, without their secrets.
-        if action == workspace_accounts::LIST {
-            let held = signing
-                .vault
-                .accounts()
-                .await
-                .map_err(ActionCallError::refused)?;
-            let mut listed = mail_accounts(&held, &root);
-            if reach.agent.is_some() {
-                // Whose sign-in is running is no agent's business.
-                listed.signing_in.clear();
+        match asked {
+            // Signing in on a provider's own page: begun, stopped, and the
+            // accounts as they are.
+            AccountsAction::BeginSignIn { .. }
+            | AccountsAction::BeginCloudSignIn { .. }
+            | AccountsAction::SubmitSignInCode { .. }
+            | AccountsAction::CancelSignIn { .. } => {
+                sign_in::accounts_sign_in(self, reach.person, &here, (request, asked)).await
             }
-            return answer(&Ok::<_, String>(listed));
+            // The workspace's mail accounts, without their secrets.
+            AccountsAction::List => {
+                let held = signing
+                    .vault
+                    .accounts()
+                    .await
+                    .map_err(ActionCallError::refused)?;
+                let mut listed = mail_accounts(&held, &root);
+                if reach.agent.is_some() {
+                    // Whose sign-in is running is no agent's business.
+                    listed.signing_in.clear();
+                }
+                answer(&Ok::<_, String>(listed))
+            }
+            // What changes the accounts the workspace keeps: finding servers, adding an
+            // account, signing one in again, saying what it feeds and removing it.
+            asked => Box::pin(self.person_mail_action(signing, &here, &reach.acting, asked)).await,
         }
-        Err(ActionCallError::UnknownAction)
     }
 
     /// Answer what a device's cloud mount reads and signs in with, from
@@ -523,6 +520,7 @@ impl Workspaces {
             });
         }
         let workspace = workspace_id.ok_or(ActionCallError::UnknownAction)?;
+        let asked = asked_of(request)?;
         let here = workspace.to_string();
         let root = self.workspace_root(&here);
         let signing = Signing {
@@ -535,7 +533,7 @@ impl Workspaces {
             signing,
             &here,
             caller.acting(),
-            request,
+            asked,
         ))
         .await
     }
@@ -572,6 +570,34 @@ pub(super) fn answer<T: serde::Serialize>(
     }
 }
 
+/// The action `request` asks of the accounts, its arguments read as the action declares them.
+/// A refusal names the argument that does not read and what it takes, never what it held: it
+/// may be a password.
+pub(super) fn asked_of(request: &InvokeRequest) -> Result<AccountsAction, ActionCallError> {
+    let arguments = match &request.argument {
+        InvokeArgument::Json(arguments) => arguments.clone(),
+        _ => serde_json::Map::new(),
+    };
+    AccountsAction::decode(&request.target.address.action, &arguments).map_err(
+        |error| match error {
+            tilo_resource::EffectDecodeError::Unknown(_) => ActionCallError::UnknownAction,
+            tilo_resource::EffectDecodeError::Argument { name, source } => {
+                not_readable(&name, &source)
+            }
+            other => ActionCallError::invalid_request(other.to_string()),
+        },
+    )
+}
+
+/// The declared text argument `name`, `value`, read as the `T` it names: a provider or a kind
+/// of storage.
+pub(super) fn read_as<T: serde::de::DeserializeOwned>(
+    name: &str,
+    value: String,
+) -> Result<T, ActionCallError> {
+    serde_json::from_value(Value::String(value)).map_err(|error| not_readable(name, &error))
+}
+
 /// The arguments of a request, as the value its action names.
 pub(super) fn argument<T: serde::de::DeserializeOwned>(
     request: &InvokeRequest,
@@ -590,16 +616,21 @@ pub(super) fn argument<T: serde::de::DeserializeOwned>(
     })
 }
 
-/// `error` said without the value it was about, which may be a password:
-/// serde names a field it missed between backticks, and quotes a value it
-/// could not read (`invalid type: string "…", expected u16`), so its words
-/// are kept up to the first quoted value.
+/// The refusal of the argument `name`, which did not read as `error` says.
+fn not_readable(name: &str, error: &serde_json::Error) -> ActionCallError {
+    ActionCallError::invalid_request(format!(
+        "The `{name}` argument is not readable: {}",
+        without_values(error)
+    ))
+}
+
+/// `error` said without the values it quotes, which may be a password: serde
+/// names a field or a variant between backticks, and quotes a value it could
+/// not read (`invalid type: string "…", expected u16`).
 fn without_values(error: &serde_json::Error) -> String {
     let said = error.to_string();
-    match said.split_once('"') {
-        Some((before, _)) => before.trim_end().to_owned(),
-        None => said,
-    }
+    let unquoted: Vec<&str> = said.split('"').step_by(2).collect();
+    unquoted.join("").replace(" ,", ",")
 }
 
 /// The sign-in a mail account of `workspace` reads with, as the session would be given it.
@@ -630,7 +661,7 @@ pub(crate) fn provider_key(account: &accounts::Account) -> String {
 }
 
 /// The services `account` feeds, as its row reads them.
-pub(crate) fn services_of(account: &accounts::Account) -> workspace_accounts::Services {
+pub(crate) fn services_of(account: &accounts::Account) -> workspace_accounts::AccountServices {
     person_mail::services_of(account, person_mail::provider_of_account(account))
 }
 
@@ -1266,12 +1297,13 @@ pub(super) async fn remove_provider(
 
 pub(super) fn set_assignment(
     root: &Path,
-    choosing: SetAssignment,
+    kind: &str,
+    (provider, model): (Option<String>, Option<String>),
 ) -> Result<ModelProviders, String> {
     let mut config = provider_config(root);
-    let kind = agent_provider_config::Interaction::from_id(&choosing.kind)
+    let kind = agent_provider_config::Interaction::from_id(kind)
         .ok_or_else(|| "That is not a kind of work".to_owned())?;
-    let chosen = match (choosing.provider, choosing.model) {
+    let chosen = match (provider, model) {
         (Some(profile), Some(model)) => Some(agent_provider_config::AgentModel { profile, model }),
         (None, None) => None,
         _ => return Err("A model choice names both a provider and its model".into()),
@@ -1321,13 +1353,15 @@ mod tests {
             appearance: None,
             signed: None,
         };
-        let Err(ActionCallError::InvalidRequest { reason }) =
-            argument::<workspace_accounts::AddMailAccount>(&request, "an account to add")
-        else {
+        let Err(ActionCallError::InvalidRequest { reason }) = asked_of(&request) else {
             panic!("an account of the wrong shape is refused");
         };
         assert!(!reason.contains("a-secret-value"), "{reason}");
-        assert!(reason.contains("invalid type"), "{reason}");
+        assert!(reason.contains("`incomingPort`"), "{reason}");
+        assert!(
+            reason.contains("invalid type: string, expected u16"),
+            "{reason}"
+        );
     }
 
     fn temp_root() -> tempfile::TempDir {
@@ -1716,7 +1750,7 @@ mod accounts_sign_in_tests {
                     outgoing_port: 465,
                     password: "thunderbird-secret".into(),
                     identities: vec!["Ada at work <ada@work.example.test>".into()],
-                    services: workspace_accounts::Services::default(),
+                    services: workspace_accounts::AccountServices::default(),
                 },
                 None,
                 workspace_accounts::Provider::Other,
@@ -1790,7 +1824,7 @@ mod accounts_sign_in_tests {
                     outgoing_port: 465,
                     password: String::new(),
                     identities: Vec::new(),
-                    services: workspace_accounts::Services::default(),
+                    services: workspace_accounts::AccountServices::default(),
                 },
                 None,
                 workspace_accounts::Provider::Other,

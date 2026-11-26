@@ -112,12 +112,14 @@ async fn did_channel(key: &host::Key, workspace: &str, name: &str) -> String {
         .as_array()
         .and_then(|made| made.first())
         .and_then(Value::as_str)
-        .map(|made| {
-            made.strip_prefix(&format!("tl:{CHAT}:"))
-                .unwrap_or(made)
-                .to_owned()
-        })
-        .unwrap_or_else(|| panic!("the call names the channel it made: {answer}"))
+        .map_or_else(
+            || panic!("the call names the channel it made: {answer}"),
+            |made| {
+                made.strip_prefix(&format!("tl:{CHAT}:"))
+                    .unwrap_or(made)
+                    .to_owned()
+            },
+        )
 }
 
 /// Every message Chat lists in the conversation at `path`, read at the path the listing gave

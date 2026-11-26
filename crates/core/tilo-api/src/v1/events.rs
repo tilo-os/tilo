@@ -15,7 +15,7 @@ use std::sync::Arc;
 /// is alive this often.
 const LOOK_MS: u64 = 15_000;
 /// The phases an invocation ends in.
-const ENDED: [&str; 4] = ["succeeded", "failed", "cancelled", "refused"];
+const ENDED: [&str; 5] = ["succeeded", "failed", "cancelled", "refused", "undone"];
 
 /// One workspace's events, read in a session.
 pub struct Watch {
@@ -109,14 +109,64 @@ fn data_of(event: &Value) -> Value {
     Value::Object(data)
 }
 
+/// One invocation's events, ending when it ends. A watch tells only what happens after it
+/// starts, so its place is taken before the invocation is read: one that already ended answers
+/// how it ended at once, and one still going cannot end unseen in between.
+///
+/// # Errors
+/// The workspace could not be watched, or the invocation not read.
+pub async fn invocation_stream(
+    mut watch: Watch,
+    invocation: String,
+) -> Result<crate::Body, ApiError> {
+    let early = watch.next(0).await?;
+    let asked = json!({"invocation_id": invocation});
+    let status = watch
+        .session
+        .typed(Some(&watch.workspace), "tilo_status", asked, None)
+        .await?;
+    let phase = match status.get("status").and_then(Value::as_str) {
+        Some("pending") | None => None,
+        Some("ok") => Some("succeeded"),
+        Some(ended) => Some(
+            ENDED
+                .iter()
+                .copied()
+                .find(|phase| *phase == ended)
+                .unwrap_or("failed"),
+        ),
+    };
+    if let Some(phase) = phase {
+        let mut data = status.as_object().cloned().unwrap_or_default();
+        data.insert("invocation".into(), json!(invocation));
+        data.insert("phase".into(), json!(phase));
+        let id = watch.cursor().map(str::to_owned);
+        let ended = frame(id.as_deref(), "invocation", &Value::Object(data));
+        let (sender, receiver) = tokio::sync::mpsc::channel::<Bytes>(1);
+        let _ = sender.send(ended).await;
+        return Ok(super::chunked_body(receiver));
+    }
+    Ok(stream_from(watch, Some(invocation), early))
+}
+
 /// The workspace's events as server-sent events, or only one invocation's,
 /// ending when it ends. The stream reads on while someone reads it.
 #[must_use]
-pub fn stream(mut watch: Watch, invocation: Option<String>) -> crate::Body {
+pub fn stream(watch: Watch, invocation: Option<String>) -> crate::Body {
+    stream_from(watch, invocation, Vec::new())
+}
+
+/// [`stream`], telling `early` (what the watch already read) first.
+fn stream_from(mut watch: Watch, invocation: Option<String>, early: Vec<Event>) -> crate::Body {
     let (sender, receiver) = tokio::sync::mpsc::channel::<Bytes>(16);
     tokio::spawn(async move {
+        let mut early = Some(early).filter(|early| !early.is_empty());
         loop {
-            let events = match watch.next(LOOK_MS).await {
+            let read = match early.take() {
+                Some(early) => Ok(early),
+                None => watch.next(LOOK_MS).await,
+            };
+            let events = match read {
                 Ok(events) => events,
                 Err(refused) => {
                     let _ = sender.send(frame(None, "error", &refused.json())).await;

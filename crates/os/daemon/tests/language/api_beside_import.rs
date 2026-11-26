@@ -150,7 +150,7 @@ async fn upload(key: &host::Key, workspace: &str, bytes: &[u8]) -> String {
 #[test]
 fn a_keys_listings_answer_whole_beside_an_import_into_another_app() {
     host::run_with_packages(&["tasks", "chat"], &[], |host| async move {
-        beside_an_import(&host).await;
+        Box::pin(beside_an_import(&host)).await;
     });
 }
 
@@ -159,7 +159,7 @@ fn a_keys_listings_answer_whole_beside_an_import_into_another_app() {
 #[ignore = "the throughput check runs it alone, for the times it prints"]
 fn an_import_into_another_app_never_slows_a_keys_listings() {
     host::run_with_packages(&["tasks", "chat"], &[], |host| async move {
-        beside_an_import(&host).await;
+        Box::pin(beside_an_import(&host)).await;
     });
 }
 
