@@ -34,7 +34,9 @@ use crate::connection::Connection;
 use crate::personal::PersonalDocument;
 use collab_types::history::verbs::{EDIT_TYPE, HistoryEdit, VIEW_TYPE};
 use collaboration::action_directory::PublishedDirectory;
-use collaboration::{CollabEvent, CollabRequest, SurfaceDelta, SurfacePublication};
+use collaboration::{
+    ActionDirectoryRequest, CollabEvent, CollabRequest, SurfaceDelta, SurfacePublication,
+};
 use runtime_portal::process_link::Shows;
 use tilo_actions::{
     ActionAddress, ActionContext, ActionDescriptor, ActionInvoker, EncodedAction, InvocationUpdate,
@@ -3056,11 +3058,16 @@ impl Hosted {
         // answer only for what the window shows.
         let Some(host) = self.instance.host() else {
             for request in requests {
+                let request = self.kept_request(request);
                 self.directory.answer(request);
             }
             return;
         };
         self.forget_answers();
+        let requests: Vec<ActionDirectoryRequest> = requests
+            .into_iter()
+            .map(|request| self.kept_request(request))
+            .collect();
         let at = self.moved();
         let answers = &mut self.answers;
         for request in requests {
@@ -3074,6 +3081,30 @@ impl Hosted {
                     descriptor.offers(&offered);
                 }
             });
+        }
+    }
+
+    /// `request` naming the resource an answer named by its published id (`tl:<app>:<id>`), where
+    /// the directory keeps the id the app does (`<id>`): the same row, at the address this
+    /// directory answers it. An action's answer names what it made or revealed by the published
+    /// id, so a caller that follows it must reach the action here.
+    fn kept_request(&self, request: ActionDirectoryRequest) -> ActionDirectoryRequest {
+        match request {
+            ActionDirectoryRequest::Resolve {
+                revision,
+                resource,
+                action,
+                reply,
+            } => {
+                let resource = kept_address(&self.directory, &resource, &action);
+                ActionDirectoryRequest::Resolve {
+                    revision,
+                    resource,
+                    action,
+                    reply,
+                }
+            }
+            other => other,
         }
     }
 
@@ -5151,5 +5182,62 @@ fn output_of(app: &str, value: &Value) -> tilo_actions::ActionOutput {
             )],
         },
         _ => tilo_actions::ActionOutput::default(),
+    }
+}
+
+/// `resource` as the directory `directory` names it: as given while it answers it, else the id
+/// the app keeps for the published id `tl:<app>:<id>`, when it answers that. An action's answer
+/// names what it made or revealed by the published id, so a caller that follows the answer
+/// reaches the row the app published under its own id.
+fn kept_address(directory: &PublishedDirectory, resource: &str, action: &str) -> String {
+    if directory.answers(resource, action) {
+        return resource.to_owned();
+    }
+    tilolang_tilo::publish::split_published(resource)
+        .filter(|(_, path)| directory.answers(path, action))
+        .map_or_else(|| resource.to_owned(), |(_, path)| path.to_owned())
+}
+
+#[cfg(test)]
+mod kept_address_tests {
+    use super::kept_address;
+    use collaboration::action_directory::PublishedDirectory;
+    use tilo_actions::{ActionSpec, OperationKind, ResourceSpec};
+
+    fn action(id: &str) -> ActionSpec {
+        ActionSpec::operation(id, id, OperationKind::Effect, "test.directory", &0usize)
+            .expect("a test action builds")
+    }
+
+    /// A directory publishing a report of Chat, under the id the app keeps for it.
+    fn directory() -> PublishedDirectory {
+        let resources = vec![
+            ResourceSpec::new("root-lmdoxbnn", "so.tilo.chat.Conversations", "Chat"),
+            ResourceSpec::new("root-lmdoxbnn/i01a2", "so.tilo.chat.Report", "Report")
+                .with_action(action("decide")),
+        ];
+        let mut directory = PublishedDirectory::default();
+        directory.publish(&resources, &tilo_actions::api::survey(&resources));
+        directory
+    }
+
+    /// The published id an answer names resolves the row the app published under its own id; an
+    /// address the directory answers is left as it is; one it knows nothing of stays as asked,
+    /// so the refusal names what the caller asked for.
+    #[test]
+    fn a_published_id_reaches_the_id_the_app_keeps() {
+        let directory = directory();
+        assert_eq!(
+            kept_address(&directory, "tl:so.tilo.chat:root-lmdoxbnn/i01a2", "decide"),
+            "root-lmdoxbnn/i01a2"
+        );
+        assert_eq!(
+            kept_address(&directory, "root-lmdoxbnn/i01a2", "decide"),
+            "root-lmdoxbnn/i01a2"
+        );
+        assert_eq!(
+            kept_address(&directory, "tl:so.tilo.chat:nothing", "decide"),
+            "tl:so.tilo.chat:nothing"
+        );
     }
 }

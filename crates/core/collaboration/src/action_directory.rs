@@ -201,6 +201,17 @@ impl PublishedDirectory {
             .map(|(revision, _)| revision.as_str())
     }
 
+    /// Whether the directory answers the action `action` of `resource`, as it published them: the
+    /// address a resolution of it finds a row at.
+    #[must_use]
+    pub fn answers(&self, resource: &str, action: &str) -> bool {
+        self.published.as_ref().is_some_and(|(_, snapshot)| {
+            snapshot
+                .actions
+                .contains_key(&ActionAddress::new(resource, action))
+        })
+    }
+
     /// The page `query` asks for.
     #[must_use]
     #[allow(
