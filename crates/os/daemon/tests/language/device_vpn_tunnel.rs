@@ -8,7 +8,6 @@
 //! as the desktop session does.
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::sync::Arc;
 use std::time::Duration;
 
 use device_vpn::link::{self, Control, Frame};
@@ -120,7 +119,7 @@ impl OtherDevice {
 
 /// The shell's end of a device-VPN link, as the desktop session opens it.
 async fn vpn_link(host: &Host) -> (tokio::net::UnixStream, ShellClient) {
-    let mut link = host
+    let link = host
         .daemon()
         .shell_link()
         .expect("the daemon hands its shell a link");
