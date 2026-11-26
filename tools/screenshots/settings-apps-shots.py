@@ -50,6 +50,15 @@ tapps = tl_packages(STATE, OUT, ["settings", "mail"])
 
 session = Session(STATE).start(apps="terminal", fresh=True, tapps=tapps)
 try:
+    # The ready handshake comes before the daemon and shell a fresh home starts: the desktop
+    # answers the control socket once it draws, which takes a few seconds on a scratch profile.
+    def answered() -> bool:
+        try:
+            return bool(session.targets())
+        except Exception:  # noqa: BLE001 - not up yet, asked again
+            return False
+
+    until("the desktop to answer", answered, 180)
     session.launch("so.tilo.settings")
     row = until(
         "the App page's own action",
