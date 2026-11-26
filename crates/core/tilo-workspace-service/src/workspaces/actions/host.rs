@@ -845,7 +845,10 @@ impl Workspaces {
     /// exactly as the same request on a page's own session is.
     ///
     /// # Errors
-    /// The arguments name no request, or the reply does not encode.
+    /// The arguments name no request, the reply does not encode, or a request
+    /// an agent's grant leaves to its person answers
+    /// [`ActionCallError::ConfirmationRequired`], which the dispatch keeps as
+    /// the record they are shown.
     pub(super) async fn administer_invoke(
         &self,
         caller: &Caller,
@@ -855,7 +858,9 @@ impl Workspaces {
         let args = Args::of(&request.argument)?;
         let asked = administered_request(&args.0)
             .map_err(|error| ActionCallError::InvalidRequest { reason: error })?;
-        let reply = self.answer_administration(device, caller, asked).await;
+        let reply = self
+            .answer_administration(device, caller, asked, request.approval().is_some())
+            .await?;
         administered_answer(&reply).map_err(|reason| ActionCallError::Refused { reason })
     }
 

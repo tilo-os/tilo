@@ -338,7 +338,7 @@ impl Workspaces {
 /// Each request a page asks ([`WorkspacesRequest`]), by its name, as the
 /// action asked of the server itself (`true`) or of the workspaces it is: an agent's grant
 /// for the one is its grant for the other.
-const PAGE_ACTIONS: [(&str, bool, &str); 20] = [
+const PAGE_ACTIONS: [(&str, bool, &str); 21] = [
     ("List", true, LIST_WORKSPACES),
     ("Create", true, CREATE_WORKSPACE),
     ("Place", true, CREATE_WORKSPACE),
@@ -359,6 +359,9 @@ const PAGE_ACTIONS: [(&str, bool, &str); 20] = [
     ("Servers", false, super::SERVERS),
     ("AddServer", false, super::ADD_SERVER),
     ("RemoveServer", false, super::REMOVE_SERVER),
+    // The change's own action is taken from the change ([`Workspaces::admit_page`]): setting a
+    // member's role is not defining one of the workspace's own.
+    ("EditRoles", false, governance::SET_ROLE),
 ];
 
 /// The action `action` of the server itself (`own`) or of the workspaces, as the grants
@@ -391,16 +394,20 @@ fn operation_of(own: bool, action: &'static str) -> Operation<'static> {
 impl Workspaces {
     /// Let `caller`, on `device`, have the page request `request` answered:
     /// what the same action asked of the workspaces or the server would let it
-    /// ([`Self::admit_operation`]).
+    /// ([`Self::admit_operation`]), `approved` being its person's yes to the
+    /// call it waits in.
     ///
     /// # Errors
-    /// Why not, as the page reads a refusal.
+    /// Why not, as the page reads a refusal; one that waits for the person
+    /// answers [`ActionCallError::ConfirmationRequired`], which the dispatch
+    /// keeps as the record they are shown.
     pub async fn admit_page(
         &self,
         device: &DeviceCert,
         caller: &Caller,
         request: &WorkspacesRequest,
-    ) -> Result<(), String> {
+        approved: bool,
+    ) -> Result<(), ActionCallError> {
         // The request is its name, with its fields under it: what the person
         // reads of it is its text, and the people it names by their key.
         let asked = serde_json::to_value(request).unwrap_or_default();
@@ -423,14 +430,19 @@ impl Workspaces {
             return Ok(());
         }
         let Some(&(_, own, action)) = PAGE_ACTIONS.iter().find(|(page, ..)| *page == name) else {
-            return Err(format!("an agent does not ask for {name} here"));
+            return Err(ActionCallError::refused(format!(
+                "an agent does not ask for {name} here"
+            )));
         };
         // What the person's own checks refuse is refused before they are
         // asked about it.
         self.check_page(device, request)
             .await
-            .map_err(|refused| refused.to_string())?;
-        let operation = operation_of(own, action);
+            .map_err(|refused| ActionCallError::refused(refused.to_string()))?;
+        let operation = match request {
+            WorkspacesRequest::EditRoles { change, .. } => operation_of(false, change.action()),
+            _ => operation_of(own, action),
+        };
         let arguments = fields
             .as_object()
             .into_iter()
@@ -452,10 +464,9 @@ impl Workspaces {
             caller,
             device,
             &operation,
-            (&arguments, false),
+            (&arguments, approved),
         )
         .await
-        .map_err(|refused| refused.to_string())
     }
 }
 
@@ -466,8 +477,9 @@ const CREATING: WorkspaceOp<'static> =
 impl Workspaces {
     /// The person's own checks of the page request `request` by `device`, as
     /// the request makes them when it is carried out:
-    /// the role an invitation gives, making a workspace, and the governance
-    /// action an invitation's or the workspace's name's change is decided by.
+    /// the role an invitation gives, making a workspace, the governance
+    /// action an invitation's or the workspace's name's change is decided by,
+    /// and a role change, which its own change decides.
     async fn check_page(
         &self,
         device: &DeviceCert,
@@ -487,6 +499,9 @@ impl Workspaces {
             | Asked::MailInvite { workspace, .. } => {
                 (Some(workspace), WorkspaceOp::Govern(governance::ADD_MEMBER))
             }
+            Asked::EditRoles {
+                workspace, change, ..
+            } => (Some(workspace), WorkspaceOp::Change(change)),
             _ => return Ok(()),
         };
         self.check_now(device, workspace.map(String::as_str), op)

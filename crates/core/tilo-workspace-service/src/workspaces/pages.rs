@@ -33,7 +33,7 @@ use super::{
     IssuedInvitation, WorkspaceSummary, Workspaces, system_time,
 };
 use crate::service_authority::ServiceOperation;
-use tilo_actions::remote::{Caller, Invited};
+use tilo_actions::remote::{ActionCallError, Caller, Invited};
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 
@@ -182,20 +182,25 @@ impl Workspaces {
     }
 
     /// Answer one workspace administration request of `device`, on the
-    /// action `caller` asks as: admitted first as an agent's requests are
+    /// action `caller` asks as, `approved` being its person's yes to the call
+    /// it waits in: admitted first as an agent's requests are
     /// ([`Workspaces::admit_page`]), then decided as the workspace each
     /// request names decides it. A host with no workspaces refuses rather than
     /// staying silent.
+    ///
+    /// # Errors
+    /// Why the request is refused; one an agent's grant leaves to its person
+    /// answers [`ActionCallError::ConfirmationRequired`], which the dispatch
+    /// keeps as the record they are shown.
     pub async fn answer_administration(
         &self,
         device: &DeviceCert,
-        caller: &tilo_actions::remote::Caller,
+        caller: &Caller,
         request: WorkspacesRequest,
-    ) -> WorkspacesReply {
-        match self.admit_page(device, caller, &request).await {
-            Ok(()) => self.page_workspaces(device, request).await,
-            Err(why) => WorkspacesReply::Refused(why),
-        }
+        approved: bool,
+    ) -> Result<WorkspacesReply, ActionCallError> {
+        self.admit_page(device, caller, &request, approved).await?;
+        Ok(self.page_workspaces(device, request).await)
     }
 
     async fn page_document_access(
@@ -263,7 +268,7 @@ impl Workspaces {
                 request_id,
                 change,
             } => {
-                self.edit_member_list(&workspace, device, request_id, change)
+                self.edit_roles(&workspace, device, request_id, change)
                     .await?;
                 self.page_roles(&workspace, device, now).await?
             }

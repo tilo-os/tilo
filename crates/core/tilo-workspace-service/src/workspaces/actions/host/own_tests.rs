@@ -14,7 +14,7 @@ use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_server_protocol::workspaces::JoinReply;
 use tilo_server_protocol::workspaces::{
     AdminRefusal, CREATE_OWN_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE, HOST_ACTIONS_PROVIDER,
-    HOST_WORKSPACES_RESOURCE,
+    HOST_WORKSPACES_RESOURCE, WorkspacesRequest, administer_invoke,
 };
 use tilo_user_identity::{
     AgentScope, DeviceCapabilities, DeviceCert, RevocationList, prepare_minted_grant,
@@ -29,7 +29,10 @@ use crate::workspaces::fixtures::{
     open_home as open, own_request,
 };
 use crate::workspaces::tests::{guest_device, hosting_device, test_host};
-use crate::workspaces::{IssueInvitationRequest, OwnWorkspaceOffer, WaitListSecrets, Workspaces};
+use crate::workspaces::{
+    AddMemberRequest, IssueInvitationRequest, MemberPlace, OwnWorkspaceOffer, WaitListSecrets,
+    Workspaces,
+};
 
 async fn offered(
     host: &ServiceWorkspaceActions,
@@ -1109,8 +1112,153 @@ async fn a_signed_agents_invocation_asks_before_deleting_a_workspace() {
     server.shutdown().await;
 }
 
-/// The host's page administration is its person's own: an agent's key asked to change a
-/// member's role through it is refused, whatever its certificate reaches.
+/// An agent changing a member's role through the host's administration asks its person first,
+/// as every change of theirs does: the role stands until they answer, a no leaves it, and a yes
+/// changes it. In a workspace the person does not administer, their own check refuses the
+/// request before anyone is asked.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one person's workspace, their agent's ask, its no and its yes"
+)]
+async fn an_agent_asks_before_changing_a_members_role_and_changes_it_only_on_yes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let home = open(workspaces).await;
+    let host = super::super::tests::host_dispatch(workspaces);
+    let root = SigningKey::from_bytes(&rand::random());
+    let person = root.verifying_key().to_bytes();
+    let_in(workspaces, &home, person).await;
+    let own_signing = SigningKey::from_bytes(&rand::random());
+    let own_key = certified(&root, &own_signing, DeviceCapabilities::server_key_grant());
+    let created = create_own(&host, &own_key, json!({})).await.unwrap();
+    let workspace = created.workspace.workspace.clone();
+    // One of their own devices redeems the invitation the workspace gives them: an agent acts
+    // through a device of its person's, and the workspace holds that one.
+    let device_signing = SigningKey::from_bytes(&rand::random());
+    let device = certified(&root, &device_signing, DeviceCapabilities::member());
+    join(workspaces, &created, (&device_signing, &device)).await;
+    // Someone else in it, at Viewer.
+    let (_, member) = guest_device();
+    workspaces
+        .add_member(
+            &workspace,
+            &device,
+            AddMemberRequest {
+                request_id: rand::random(),
+                user_public_key: member.user_public_key,
+                place: MemberPlace::Role(Role::Viewer),
+                name: None,
+            },
+        )
+        .await
+        .unwrap();
+    // The agent the person's own device hands its session to.
+    let as_agent = Caller::authenticated(device.user_public_key, device.device_public_key)
+        .delegated_to("keeper of the members");
+    let raising = || {
+        administer_invoke(
+            &WorkspacesRequest::EditRoles {
+                workspace: workspace.clone(),
+                request_id: rand::random(),
+                change: tilo_action_policy::Change::SetRole {
+                    person: hex::encode(member.user_public_key),
+                    role: Role::Editor,
+                },
+            },
+            tilo_actions::InvocationId::new(),
+        )
+        .unwrap()
+    };
+
+    let asking = raising();
+    let waits = settled(host.as_host(&device).invoke(&as_agent, asking.clone()))
+        .await
+        .unwrap();
+    assert!(
+        !matches!(waits.status, ReceiptStatus::Completed { .. }),
+        "changing the role waits for its person: {waits:?}"
+    );
+    assert_eq!(
+        access(workspaces, &workspace, member.user_public_key).await,
+        Some((Role::Viewer, false)),
+        "nothing changes before a yes"
+    );
+
+    let declining = Answering::declining();
+    let refused = answered(
+        workspaces,
+        (None, Some(&device)),
+        &as_agent,
+        &asking,
+        Ok(waits),
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(ActionCallError::ConfirmationRequired(_))),
+        "the person was asked: {refused:?}"
+    );
+    assert_eq!(declining.asked().len(), 1, "one question, one answer");
+    assert_eq!(
+        access(workspaces, &workspace, member.user_public_key).await,
+        Some((Role::Viewer, false)),
+        "a no leaves the role"
+    );
+
+    let approving = Answering::approving();
+    let again = raising();
+    let waits = settled(host.as_host(&device).invoke(&as_agent, again.clone()))
+        .await
+        .unwrap();
+    let done = answered(
+        workspaces,
+        (None, Some(&device)),
+        &as_agent,
+        &again,
+        Ok(waits),
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(done.status, ReceiptStatus::Completed { .. }),
+        "the yes changes the role: {done:?}"
+    );
+    assert_eq!(approving.asked().len(), 1, "one question, one answer");
+    assert_eq!(
+        access(workspaces, &workspace, member.user_public_key).await,
+        Some((Role::Editor, false)),
+        "the yes changes the role"
+    );
+
+    // A workspace the person does not administer: their own check refuses it, and nobody is
+    // asked what they may not do.
+    let elsewhere = workspaces.create("Not theirs").await.unwrap().workspace;
+    let unasked = Answering::approving();
+    let stray = WorkspacesRequest::EditRoles {
+        workspace: elsewhere,
+        request_id: rand::random(),
+        change: tilo_action_policy::Change::SetRole {
+            person: hex::encode(member.user_public_key),
+            role: Role::Editor,
+        },
+    };
+    let refused = workspaces
+        .admit_page(&device, &as_agent, &stray, false)
+        .await;
+    assert!(
+        matches!(refused, Err(ActionCallError::Refused { .. })),
+        "their person cannot change roles there: {refused:?}"
+    );
+    assert!(unasked.asked().is_empty(), "nobody is asked");
+    server.shutdown().await;
+}
+
+/// A key is no device of its person's own: an agent's key asking the host to change a member's
+/// role is refused by the person's own set-role check, in their own workspace even, and nobody
+/// is asked. What an agent changes, it changes through a device of its person's, which is what
+/// their answer admits.
 #[tokio::test]
 async fn an_agents_key_changes_no_members_role_through_the_hosts_administration() {
     let dir = tempfile::tempdir().unwrap();
@@ -1118,29 +1266,40 @@ async fn an_agents_key_changes_no_members_role_through_the_hosts_administration(
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let home = open(workspaces).await;
+    let host = super::super::tests::host_dispatch(workspaces);
     let root = SigningKey::from_bytes(&rand::random());
-    let person = root.verifying_key().to_bytes();
-    let_in(workspaces, &home, person).await;
+    let_in(workspaces, &home, root.verifying_key().to_bytes()).await;
+    let own_signing = SigningKey::from_bytes(&rand::random());
+    let own_key = certified(&root, &own_signing, DeviceCapabilities::server_key_grant());
+    let created = create_own(&host, &own_key, json!({})).await.unwrap();
+    let workspace = created.workspace.workspace.clone();
+    let (_, member) = guest_device();
     let agent = certified(
         &root,
         &SigningKey::from_bytes(&rand::random()),
         DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
     );
-    let request = tilo_server_protocol::workspaces::WorkspacesRequest::EditRoles {
-        workspace: home,
-        request_id: rand::random(),
-        change: tilo_action_policy::Change::SetRole {
-            person: hex::encode([9u8; 32]),
-            role: Role::Editor,
-        },
-    };
+    let unasked = Answering::approving();
     let refused = workspaces
-        .admit_page(&agent, &crate::service::local_caller(&agent), &request)
+        .admit_page(
+            &agent,
+            &crate::service::local_caller(&agent),
+            &WorkspacesRequest::EditRoles {
+                workspace,
+                request_id: rand::random(),
+                change: tilo_action_policy::Change::SetRole {
+                    person: hex::encode(member.user_public_key),
+                    role: Role::Editor,
+                },
+            },
+            false,
+        )
         .await;
     assert!(
-        refused.is_err(),
-        "an agent's key changes no member's role: {refused:?}"
+        matches!(&refused, Err(ActionCallError::Refused { reason }) if reason.contains("set-role")),
+        "their person's own set-role check refuses it: {refused:?}"
     );
+    assert!(unasked.asked().is_empty(), "nobody is asked");
     server.shutdown().await;
 }
 

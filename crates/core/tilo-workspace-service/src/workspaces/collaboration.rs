@@ -693,6 +693,40 @@ impl Workspaces {
         completion
     }
 
+    /// Make `change`, a page's role edit, to `workspace`'s members as `caller`, whom the
+    /// workspace must allow it: one member's role ([`Self::set_member_role`]), or a custom
+    /// role or its assignment ([`Self::edit_member_list`]).
+    pub(super) async fn edit_roles(
+        &self,
+        workspace: &str,
+        caller: &DeviceCert,
+        request_id: [u8; 32],
+        change: tilo_action_policy::Change,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        match change {
+            tilo_action_policy::Change::SetRole { person, role } => {
+                let user_public_key = hex::decode(&person)
+                    .ok()
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .ok_or_else(|| CollaborationError::new("the change names no person"))?;
+                self.set_member_role(
+                    workspace,
+                    caller,
+                    SetMemberRoleRequest {
+                        request_id,
+                        user_public_key,
+                        role,
+                    },
+                )
+                .await
+            }
+            change => {
+                self.edit_member_list(workspace, caller, request_id, change)
+                    .await
+            }
+        }
+    }
+
     /// Make `change`, a custom role's, to `workspace`'s member list as `caller`, whom the
     /// workspace must allow it.
     pub(super) async fn edit_member_list(
