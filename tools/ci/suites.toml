@@ -319,6 +319,7 @@ suites = [
   "os/containers/tilo-lounge/test-entrypoint.sh",
   "os/containers/tilo-sh/test-native-env.sh",
   "os/containers/tilo-sh/test-refused-setup.sh",
+  "os/containers/tilo-sh/test-state-removal.sh",
   "os/tests/rpm_snapshot_invariants.sh",
   "os/tests/test_rpm_snapshot_fingerprint.py",
   "os/tests/test_kernel_build_environment.py",

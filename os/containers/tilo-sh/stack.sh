@@ -149,6 +149,11 @@ host, and for \`check\`).
 What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
   server     the device's daemon keeping the Lounge, through the image's entrypoint, as tilo.sh's
             server
+  home      the stack's person's own server: the same program, started the
+            same way, added on its first start with a server ticket of
+            theirs, as \`tilo device add --server\` adds one; it keeps the
+            workspaces they place on it (natively; --images runs none).
+            \`restart server\` restarts both.
   tls       production's Caddy and Caddyfile in front of it, plain HTTP:
             http://127.0.0.1:BASE (eu1.tilo.sh) and http://127.0.0.1:BASE+6
             (live-eu1.tilo.sh)
@@ -307,7 +312,9 @@ discord_control_port=$((base + 42))
 models_port=$((base + 43))     # the fake OpenAI sign-in and model providers
 control_port=$((base + 44))    # the held program's control port, for a stack on the build server
 person_port=$((base + 45))     # the stack's person's own device, UDP: never the 7703 a real login here holds
-last_port=$person_port   # the highest port a stack on this base takes
+home_iroh_port=$((base + 46))  # the person's own server's iroh endpoint, UDP
+home_web_port=$((base + 47))   # the person's own server's HTTPS and WebTransport listener
+last_port=$home_web_port   # the highest port a stack on this base takes
 
 # Plain HTTP on this machine, which a browser treats as a secure context as it
 # does https://, so any browser profile opens the site with no certificate to
@@ -453,13 +460,15 @@ use_mode "$(cat "$state/mode" 2>/dev/null || echo native)"
 # server, here as a forward), by the kind of socket: the ones a base reserves,
 # whether or not this bring-up uses each (the fake Discord's are forwarded).
 stack_tcp_ports() {
-  printf '%s\n' "$server_port" "$server_web_port" \
+  printf '%s\n' "$server_port" "$server_web_port" "$home_web_port" \
     "$live_port" "$caddy_http_port" "$api_port" "$site_port" "$web_port" \
     "$releases_port" "$mail_port" "$mail_stand_in_imap_port" \
     "$mail_stand_in_smtp_port" "$discord_rest_port" "$discord_gateway_port" \
     "$discord_control_port" "$models_port" "$control_port"
 }
-stack_udp_ports() { printf '%s\n' "$packet_port" "$iroh_port" "$server_web_port"; }
+stack_udp_ports() {
+  printf '%s\n' "$packet_port" "$iroh_port" "$server_web_port" "$home_iroh_port" "$home_web_port"
+}
 
 # check_ports: refuse a base this machine cannot give the stack whole.
 #
@@ -559,7 +568,7 @@ claim_state() {
   local owner svc
   owner=$(cat "$state/checkout" 2>/dev/null || true)
   if [[ -n $owner && $owner != "$repo" && ${TILO_SH_TAKE_OVER:-0} != 1 ]]; then
-    for svc in tls server api web; do
+    for svc in tls server home api web; do
       running "$svc" && die "the stack in $state runs from $owner, not this checkout ($repo): give this one its own TILO_SH_STATE and TILO_SH_PORT_BASE, or TILO_SH_TAKE_OVER=1 to take that one over"
     done
   fi
@@ -665,24 +674,33 @@ not_answered() { # WHAT WHY
 # is alive, up to TILO_SH_SERVER_START_SECONDS (600). One that stopped fails
 # at once; one still not up at the limit fails with what it last said.
 wait_server_up() {
-  local what='server (its web UI)' url="https://127.0.0.1:$server_web_port/"
+  local name=${1:-server}
+  local what="$name (its web UI)" url="https://127.0.0.1:$(server_web_port_of "$name")/"
   local limit=${TILO_SH_SERVER_START_SECONDS:-600} began=$SECONDS told=$SECONDS last=''
   until curl -ksS --max-time 5 -o /dev/null "$url" 2>/dev/null; do
-    running server || not_answered "$what" 'stopped before it served'
+    running "$name" || not_answered "$what" 'stopped before it served'
     [[ -n $last ]] || last='it never answered'
     ((SECONDS - began < limit)) \
       || not_answered "$what" "was not up at $url within ${limit}s (TILO_SH_SERVER_START_SECONDS waits longer)"
     if ((SECONDS - told >= 15)); then
       told=$SECONDS
-      say "waiting for the server to serve its web UI at $url ($((SECONDS - began))s)"
+      say "waiting for $name to serve its web UI at $url ($((SECONDS - began))s)"
     fi
     sleep 0.5
   done
 }
 
-# The server's environment: apps/tilo-sh-server/deployment.yaml, its names
-# turned into this stack's addresses, its secrets into throwaway local ones.
+# The servers this stack runs, each the same program started the same way (start_native_server):
+# `server`, the deployment's own, which keeps the Lounge and runs the stack's packet relay; and
+# `home`, the stack's person's own server, which a computer of theirs adds as any person adds
+# one, with a server ticket of theirs, and which keeps the workspaces they place on it.
+server_web_port_of() { if [[ $1 == home ]]; then printf '%s' "$home_web_port"; else printf '%s' "$server_web_port"; fi; }
+server_iroh_port_of() { if [[ $1 == home ]]; then printf '%s' "$home_iroh_port"; else printf '%s' "$iroh_port"; fi; }
+
+# server_env NAME: the environment of the server NAME (above): apps/tilo-sh-server/deployment.yaml,
+# its names turned into this stack's addresses, its secrets into throwaway local ones.
 server_env() {
+  local name=${1:-server}
   # TILO_SH_REACHED_THROUGH=<packet relay URL>: the server starts no packet relay
   # of its own and is reached through that one (tilo.sh's is
   # https://live-eu1.tilo.sh), its iroh endpoint on every address: how a stack
@@ -693,13 +711,18 @@ server_env() {
     printf '%s' "$TILO_SH_REACHED_THROUGH" > "$state/reached-through"
   fi
   local through live_bind=127.0.0.1:$packet_port live_published=$live_origin
-  local iroh_bind=127.0.0.1:$iroh_port
+  local iroh_port_here
+  iroh_port_here=$(server_iroh_port_of "$name")
+  local iroh_bind=127.0.0.1:$iroh_port_here
   through=$(cat "$state/reached-through" 2>/dev/null || true)
   if [[ -n $through ]]; then
     live_bind=none
     live_published=$through
-    iroh_bind=0.0.0.0:$iroh_port
+    iroh_bind=0.0.0.0:$iroh_port_here
   fi
+  # The stack runs one packet relay, the deployment's server's: the person's own server is
+  # reached through it, as any server of theirs is reached through the relay it names.
+  [[ $name == server ]] || live_bind=none
   # The server configuration, under the state this stack keeps for it: the
   # daemon reads where it binds and is reached from here, so a restart serves
   # the same addresses. The Lounge's workspace is named here, once, as a
@@ -707,16 +730,19 @@ server_env() {
   # and keeps it from then on, with the entry and the words the deployment gives
   # it. Its server therefore makes the Lounge's invitations, and the links it
   # hands out open the stack's own site.
-  mkdir -p "$state/server"
-  local id_file=$state/server/lounge/workspace-id admission
-  mkdir -p "$(dirname "$id_file")"
-  [[ -s $id_file ]] || python3 -c 'import uuid; print(uuid.uuid4())' > "$id_file" \
-    || die 'could not name the Lounge'
-  admission=$(cat "$state/admission" 2>/dev/null || echo invite)
-  case $admission in
-    open|invite) ;;
-    *) die "TILO_SH_ADMISSION is invite (production's) or open, not $admission" ;;
-  esac
+  mkdir -p "$state/$name"
+  local id_file=$state/server/lounge/workspace-id admission config=$state/$name/server.toml
+  [[ $name != server ]] || config=$server_config
+  if [[ $name == server ]]; then
+    mkdir -p "$(dirname "$id_file")"
+    [[ -s $id_file ]] || python3 -c 'import uuid; print(uuid.uuid4())' > "$id_file" \
+      || die 'could not name the Lounge'
+    admission=$(cat "$state/admission" 2>/dev/null || echo invite)
+    case $admission in
+      open|invite) ;;
+      *) die "TILO_SH_ADMISSION is invite (production's) or open, not $admission" ;;
+    esac
+  fi
   {
     printf 'iroh_listen = "%s"\n' "$iroh_bind"
     if [[ $live_bind != none ]]; then
@@ -724,7 +750,9 @@ server_env() {
     fi
     printf 'packet_relay_url = "%s"\n' "${live_published%/}"
     printf 'web_entry = "%s"\n' "$site_origin/"
-    printf 'web_listen = "127.0.0.1:%s"\n' "$server_web_port"
+    printf 'web_listen = "127.0.0.1:%s"\n' "$(server_web_port_of "$name")"
+  } > "$state/$name/server.toml"
+  if [[ $name == server ]]; then {
     printf '\n[[kept]]\nid = "%s"\nname = "Lounge"\nentry = "%s"\ndefault_role = "editor"\n' \
       "$(cat "$id_file")" "$admission"
     printf 'description = "%s"\n' "${TILO_SH_DESCRIPTION:-The Tilo community: chat, notes and a shared desktop}"
@@ -735,18 +763,19 @@ server_env() {
       [[ -z ${TILO_SH_MAIL_TEMPLATES:-} ]] \
         || printf 'mail_templates = "%s"\n' "$TILO_SH_MAIL_TEMPLATES"
     fi
-  } > "$state/server/server.toml"
+  } >> "$state/server/server.toml"; fi
   # The mail the entry sends: the stack's sink takes what Resend's API takes, and
   # the key stays a file among the deployment's secrets, never in a workspace's
   # records. Every address here is loopback, so the links mails carry open here.
   # The owner root the deployment hands makes this volume that person's own
   # device, which founds the workspace its configuration keeps; the site is this
-  # machine's, so the links it mints open here.
-  local env=("TILO_SERVER_CONFIG=$server_config"
-    "TILO_WORKSPACES_ROOT_FILE=$secrets_path/workspace-root-lounge"
+  # machine's, so the links it mints open here. The person's own server is given
+  # no root: a ticket of theirs adds it (start_native_server).
+  local env=("TILO_SERVER_CONFIG=$config"
     "TILO_WORKSPACES_RESEND_KEY_FILE=$secrets_path/resend-key"
     "TILO_WORKSPACES_RESEND_URL=http://127.0.0.1:$mail_port/emails"
     "TILO_WORKSPACES_LOCAL=1")
+  [[ $name != server ]] || env+=("TILO_WORKSPACES_ROOT_FILE=$secrets_path/workspace-root-lounge")
   # Not here: the summary model key (no model is asked locally).
   # TILO_SH_TERMINAL_ON_MACHINE=1: with no VM host, the workspaces' Terminal
   # (a person's and their agents') starts its programs on this machine, as the
@@ -784,8 +813,9 @@ server_env() {
   fi
   # A workspace's programs and its Browser run in its VM on this stack's own
   # VM host, when it is up: where to place a workspace, which device holds it,
-  # and the log its page actions are counted in.
-  if vm_host_running; then
+  # and the log its page actions are counted in. The host places for the
+  # deployment's server, whose device it names.
+  if [[ $name == server ]] && vm_host_running; then
     local line
     while IFS= read -r line; do env+=("$line"); done < <(vm_host env)
   fi
@@ -2107,7 +2137,7 @@ stop_native() {
   # The server first lets its agents' turns that are going end (five minutes at
   # most), so a restart never cuts one off halfway.
   local patience=5
-  [[ $1 != server ]] || patience=310
+  [[ $1 != server && $1 != home ]] || patience=310
   [[ -f $pidfile ]] || return 0
   pid=$(cat "$pidfile")
   if kill -0 "$pid" 2>/dev/null; then
@@ -2142,21 +2172,30 @@ start_native_tls() {
   run_native tls "$state/tls" "$caddy" run --config "$state/tls/Caddyfile" --adapter caddyfile
 }
 
+# start_native_server [NAME]: the server NAME (server_env), through the Lounge image's
+# entrypoint, as tilo.sh's server starts. The deployment's server is the owner root's own
+# device (make_secrets): it founds and keeps the Lounge, and no ticket joins it. The person's
+# own server joins their devices on its first start with one of the server tickets their
+# founding issued (stack_person), which the person's computer certifies as their own server;
+# its volume keeps that login from then on.
 start_native_server() {
-  local lounge=${lounge:-$native/lounge}
-  # The server is the person's own device, made by the owner root its
-  # configuration hands it (make_secrets): it founds and keeps the Lounge, and
-  # no ticket joins it.
+  local name=${1:-server} lounge=${lounge:-$native/lounge} ticket=()
   stack_person >/dev/null
+  if [[ $name == home && ! -s $state/home/identity/device/cert.bin ]]; then
+    local made
+    made=$(take_ticket server) \
+      || die "the stack's person has no first server ticket left for their own server: one stack.sh up --fresh makes its person again"
+    ticket=("TILO_TICKET=$made")
+  fi
   # The apps the workspace runs, installed into this server's own store as a
   # device installs the packages it is given (install-apps.sh): once per set of
   # packages this context carries, and again when a build changes them.
   TILO_INSTALL="$lounge/bin/tilo-install" TILO_RUNTIME_BUNDLE_DIR="$lounge/runtimes" \
-    sh "$lounge/install-apps.sh" "$lounge/packages" "$state/server/apps" >&2 \
+    sh "$lounge/install-apps.sh" "$lounge/packages" "$state/$name/apps" >&2 \
     || die 'could not install the apps the workspace runs'
-  { private_env server "$lounge/bin"
+  { private_env "$name" "$lounge/bin"
     image_env_here "$repo/os/containers/tilo-lounge/Containerfile" \
-      "TILO_WORKSPACES_STATE=$state/server" "TILO_SECRETS_DIR=$state/server/secrets"
+      "TILO_WORKSPACES_STATE=$state/$name" "TILO_SECRETS_DIR=$state/$name/secrets"
     # Where the image keeps the app surfaces the server publishes at start,
     # and the product font catalog its components lay text out from.
     printf '%s\n' "TILO_SURFACES=$lounge/surfaces"
@@ -2166,18 +2205,19 @@ start_native_server() {
     # by itself (the store a device's own, the list in /etc/tilo); outside it
     # they are this context's, and the launcher — a `lounge-check` build, which
     # honours where the trust list is — is told.
-    printf '%s\n' "TILO_APPS_DATA_DIR=$state/server/apps" \
+    printf '%s\n' "TILO_APPS_DATA_DIR=$state/$name/apps" \
       "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$lounge/runtime-publishers.txt" \
       "TILO_LAUNCHER_PATH=$lounge/bin/tilo-launcher"
-    server_env
-  } > "$runs/server.env"
+    [[ ${#ticket[@]} == 0 ]] || printf '%s\n' "${ticket[@]}"
+    server_env "$name"
+  } > "$runs/$name.env"
   # The runtimes the apps execute, where a device keeps the ones it fetched:
   # this server's own data directory, under the names a Tilo program resolves
   # without being told. (`TILO_RUNTIME_BUNDLE_DIR` names another root, and a
   # released program honours it in a developer build alone.)
-  mkdir -p "$runs/server/data"
-  ln -sfn "$lounge/runtimes" "$runs/server/data/tilo-runtime"
-  run_native server "$state/server" sh "$lounge/entrypoint.sh"
+  mkdir -p "$runs/$name/data"
+  ln -sfn "$lounge/runtimes" "$runs/$name/data/tilo-runtime"
+  run_native "$name" "$state/$name" sh "$lounge/entrypoint.sh"
 }
 
 start_native_api() {
@@ -2342,10 +2382,13 @@ up_native() {
     phase=$SECONDS
   fi
   start_native_server
+  start_native_server home
   wait_server
   local workspace
   workspace=$(lounge_up) || die 'the Lounge is not served'
   say "server ready: the Lounge is $workspace ($((SECONDS - phase))s, $((SECONDS - began))s in)"
+  wait_server_up home
+  say "the person's own server is up ($((SECONDS - phase))s)"
   phase=$SECONDS
   start_native_api
   wait_api
@@ -2380,10 +2423,10 @@ restart() {
     native_preflight
     for name in "${names[@]}"; do
       case $name in
-        server|api|discord|releases) build_programs ;;
+        server|home|api|discord|releases) build_programs ;;
         web) build_bundle ;;
         tls) ;;
-        *) die "restart takes server, api, web, tls, discord or releases, not $name" ;;
+        *) die "restart takes server (or home), api, web, tls, discord or releases, not $name" ;;
       esac
     done
     say "built; restarting ${names[*]} on its own once this returns (stack.sh logs restart)"
@@ -2411,12 +2454,16 @@ restart_one() {
   local began=$SECONDS
   if running discord; then discord_api=http://127.0.0.1:$discord_rest_port; fi
   case $name in
-    server)
+    server|home)
+      # The two servers run the one program, laid out once: rebuilding it restarts both.
       build_programs
       stop_native server
+      stop_native home
       lay_out_lounge
       start_native_server
-      wait_server ;;
+      start_native_server home
+      wait_server
+      wait_server_up home ;;
     api)
       build_programs
       stop_native api
@@ -2438,7 +2485,7 @@ restart_one() {
     releases)
       build_programs
       lay_out_releases ;;
-    *) die "restart takes server, api, web, tls, discord or releases, not $name" ;;
+    *) die "restart takes server (or home), api, web, tls, discord or releases, not $name" ;;
   esac
   say "$name restarted in $((SECONDS - began))s"
 }
@@ -2686,7 +2733,7 @@ down() {
   local name
   # Both kinds: the native processes, and the image mode's containers and
   # VM host.
-  for name in web releases api server tls discord models; do
+  for name in web releases api home server tls discord models; do
     stop_native "$name"
   done
   # The VM host's disk and identity outlive a plain down, as the stack's state
@@ -2710,8 +2757,8 @@ down() {
   if [[ -n $wipe ]]; then
     # The volumes belong to the containers' users (10001, 65532) inside this
     # account's user namespace: only that namespace removes them.
-    podman_ unshare rm -rf "$state/server" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" "$state/mail-stand-in" 2>/dev/null \
-      || rm -rf "$state/server" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" "$state/mail-stand-in"
+    podman_ unshare rm -rf "$state/server" "$state/home" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" "$state/mail-stand-in" 2>/dev/null \
+      || rm -rf "$state/server" "$state/home" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" "$state/mail-stand-in"
     rm -rf "${runs:?}" "$state/trust-bundle.pem" "$state/mode" "$state/admission"
     # Whose person the stack was goes with it: a fresh stack's person is made again, and only
     # the act that makes them issues the first tickets its computers join with.
@@ -2785,16 +2832,17 @@ status() {
   local svc url
   printf '%-9s %-8s %s\n' service state address
   for svc in "tls|$server_origin/mode" "server|https://127.0.0.1:$server_web_port/mode" \
-    "api|http://127.0.0.1:$api_port/health" "web|$site_health"; do
+    "home|https://127.0.0.1:$home_web_port/mode" "api|http://127.0.0.1:$api_port/health" "web|$site_health"; do
     local name=${svc%%|*} probe=${svc#*|} shown answer args=()
     case $name in
       tls) shown="$server_origin (server), $live_origin (live session)" ;;
       server) shown="the Lounge itself, on its own listener" ;;
+      home) shown="the person's own server, on its own listener" ;;
       api) shown="$api_origin (MCP: $api_origin/mcp)" ;;
       web) shown="$site_origin" ;;
     esac
     case $name in
-      server) args=(-k) ;;
+      server|home) args=(-k) ;;
       web) args=(-H "$site_host_header") ;;
     esac
     if running "$name" && curl -fsS --max-time 2 "${args[@]}" "$probe" >/dev/null 2>&1; then
@@ -2878,12 +2926,12 @@ supervisor_pid() {
 # when one runs, and the fake model providers, whose sign-in page a person's
 # browser opens.
 forward_tcp() {
-  printf '%s\n' "$server_port,$live_port,$server_web_port,$api_port,$site_port,$web_port,$releases_port,$mail_port,$mail_stand_in_imap_port,$mail_stand_in_smtp_port,$discord_rest_port,$discord_gateway_port,$discord_control_port,$models_port,$control_port"
+  printf '%s\n' "$server_port,$live_port,$server_web_port,$home_web_port,$api_port,$site_port,$web_port,$releases_port,$mail_port,$mail_stand_in_imap_port,$mail_stand_in_smtp_port,$discord_rest_port,$discord_gateway_port,$discord_control_port,$models_port,$control_port"
 }
 
 # The page reaches the server over QUIC (WebTransport, then iroh), which ssh
 # cannot carry: the drop-in serves these through its own datagram channel.
-forward_udp() { printf '%s\n' "$packet_port,$iroh_port,$server_web_port"; }
+forward_udp() { printf '%s\n' "$packet_port,$iroh_port,$server_web_port,$home_iroh_port,$home_web_port"; }
 
 # The sockets of the ssh masters on this machine: an ssh that multiplexes
 # commands names itself `ssh: <socket> [mux]`, and every generation of the
@@ -3101,11 +3149,12 @@ status_remote() {
   local svc name probe shown answer args pid
   printf '%-9s %-8s %s\n' service state address
   for svc in "tls|$server_origin/mode" "server|https://127.0.0.1:$server_web_port/mode" \
-    "api|$api_origin/health" "web|$site_health"; do
+    "home|https://127.0.0.1:$home_web_port/mode" "api|$api_origin/health" "web|$site_health"; do
     name=${svc%%|*} probe=${svc#*|} args=()
     case $name in
       tls) shown="$server_origin (server), $live_origin (live origin)" ;;
       server) shown="the Lounge itself, on its own listener"; args=(-k) ;;
+      home) shown="the person's own server, on its own listener"; args=(-k) ;;
       api) shown="$api_origin (MCP: $api_origin/mcp)" ;;
       web) shown="$site_origin"; args=(-H "$site_host_header") ;;
     esac
@@ -3114,7 +3163,7 @@ status_remote() {
   done
   pid=$(supervisor_pid || true)
   if [[ -n $pid ]]; then
-    printf '%-9s %-8s %s\n' forward up "the stack's ports on 127.0.0.1 from $base (page: $site_origin, API: $api_origin), with the page's UDP ($packet_port,$iroh_port,$server_web_port), from the build server"
+    printf '%-9s %-8s %s\n' forward up "the stack's ports on 127.0.0.1 from $base (page: $site_origin, API: $api_origin), with the page's UDP ($(forward_udp)), from the build server"
   else
     printf '%-9s %-8s %s\n' forward down "nothing serves the stack's ports here: stack.sh up"
   fi
@@ -3141,6 +3190,24 @@ down_any() {
   if remote_here; then down_remote "$@"; else down "$@"; fi
 }
 
+# remove_state: the stack's own state directory, gone. Only a directory a stack made is removed:
+# one that holds its `mode` and no other stack's state. A TILO_SH_STATE that names anything else
+# (the parent several stacks live in, someone's directory, a mistyped path) is refused, kept
+# whole, and named.
+remove_state() {
+  [[ -f $state/mode ]] || {
+    say "not removing $state: it holds no stack's mode, so it is no stack's own state"
+    return 1
+  }
+  local other
+  other=$(find "$state" -mindepth 2 -maxdepth 2 -name mode -type f -print -quit 2>/dev/null)
+  [[ -z $other ]] || {
+    say "not removing $state: it holds another stack's state too (${other%/mode})"
+    return 1
+  }
+  rm -rf "${state:?}"
+}
+
 # down_remote [--wipe]: the services stop where they run, then the forward.
 down_remote() {
   local wipe= stopped=1 via_control=
@@ -3159,13 +3226,19 @@ down_remote() {
   # client that asked for it ends, and the next up would find them in use.
   cancel_forwards "$(forward_tcp)"
   if [[ -n $wipe && -n $via_control ]]; then
-    rm -rf "${state:?}" 2>/dev/null || true
-    say 'stopped; the job it ran in is gone with it, and this machine keeps nothing of it'
+    if remove_state; then
+      say 'stopped; the job it ran in is gone with it, and this machine keeps nothing of it'
+    else
+      say "stopped; the job it ran in is gone with it, and $state is kept (above)"
+    fi
   elif [[ -n $wipe ]]; then
     if ((stopped)) && remote_shell "rm -rf $(printf '%q' "$remote_state")" 2>/dev/null; then
       # This machine keeps what it printed and its connection's log, and nothing else.
-      rm -rf "${state:?}" 2>/dev/null || true
-      say 'stopped; the build server and this machine keep nothing of it'
+      if remove_state; then
+        say 'stopped; the build server and this machine keep nothing of it'
+      else
+        say "stopped; the build server keeps nothing of it, and $state is kept here (above)"
+      fi
     else
       say "stopped here; $remote_state on the build server was not removed: stack.sh down --wipe again once it answers"
       return 1

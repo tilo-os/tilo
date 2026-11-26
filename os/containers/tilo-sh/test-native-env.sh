@@ -8,6 +8,8 @@
 # was written, in front of a tilo-runtime that says what it was told. Held:
 #
 #   - the server starts with the environment the stack wrote for it;
+#   - the person's own server is started the same way, on a state of its own, and joins with
+#     the server ticket the person's founding issued;
 #   - a variable the stack hands a service whose image does not set it stops
 #     the start, instead of being left out without a word;
 #   - the web entry's image sets the two folders its start hands it, so it is
@@ -48,15 +50,26 @@ cat > "$lounge/bin/tilo-runtime" <<'STAND_IN'
 printf 'TILO_WORKSPACES_STATE=%s\n' "${TILO_WORKSPACES_STATE-}"
 STAND_IN
 chmod +x "$lounge/bin/tilo-runtime"
+# The apps the workspace runs are installed by the image's own script, which its own test holds:
+# here it says where it was asked to install them.
+cat > "$lounge/install-apps.sh" <<'STAND_IN'
+#!/bin/sh
+printf 'installed %s into %s\n' "$1" "$2" >&2
+STAND_IN
 
 # The manifest's variables name the stack's own person, whom only a built
 # tilo command makes: the few the entry point does not start without stand in
 # for them.
 server_env() {
-  printf '%s\n' "TILO_WORKSPACES_STATE=$state/server" \
+  local name=${1:-server}
+  mkdir -p "$state/$name"
+  printf '%s\n' "TILO_WORKSPACES_STATE=$state/$name" \
     "TILO_WORKSPACES_WEB_ENTRY=$site_origin/" \
-    "TILO_SERVER_CONFIG=$state/server/server.toml"
+    "TILO_SERVER_CONFIG=$state/$name/server.toml"
+  # The deployment's server is made by the owner root the stack keeps among its secrets.
+  [[ $name != server ]] || printf '%s\n' "TILO_WORKSPACES_ROOT_FILE=$state/secrets/workspace-root-lounge"
 }
+printf '%064d' 0 > "$state/secrets/workspace-root-lounge"
 # The stack's person's founding act issued the tickets its computers join with; the test has no
 # tilo binary, so this is the one the Lounge's first start takes.
 mkdir -p "$state/owner"
@@ -68,7 +81,7 @@ printf 'test-person\n' > "$state/owner/key"
 run_native() {
   local name=$1 dir=$2 envs=()
   shift 2
-  [[ $name == server ]] || return 0
+  [[ $name == server || $name == home ]] || return 0
   mapfile -t envs < "$told/$name.env"
   (cd "$dir" && env -i "${envs[@]}" "$@") > "$work/$name.said" 2>&1
 }
@@ -78,6 +91,17 @@ run_native() {
 (start_native_server) || fault "stack.sh did not start the server: $(cat "$work/server.said" 2>/dev/null)"
 grep -Fqx "TILO_WORKSPACES_STATE=$state/server" "$work/server.said" 2>/dev/null \
   || fault "the program the entry point started was not told its state: $(cat "$work/server.said" 2>/dev/null)"
+
+# -- the person's own server ---------------------------------------------------
+
+(start_native_server home) || fault "stack.sh did not start the person's server: $(cat "$work/home.said" 2>/dev/null)"
+grep -Fqx "TILO_WORKSPACES_STATE=$state/home" "$work/home.said" 2>/dev/null \
+  || fault "the person's server was not told a state of its own: $(cat "$work/home.said" 2>/dev/null)"
+grep -Fqx 'TILO_TICKET=tilo1test' "$told/home.env" \
+  || fault "the person's server was not handed the server ticket their founding issued"
+! grep -q '^TILO_TICKET=' "$told/server.env" \
+  || fault "the deployment's server, which its owner root makes, was handed a person's ticket"
+[[ ! -s $state/owner/tickets ]] || fault "the ticket the person's server took is still offered: $(cat "$state/owner/tickets")"
 
 # -- a variable the image does not set ----------------------------------------
 
