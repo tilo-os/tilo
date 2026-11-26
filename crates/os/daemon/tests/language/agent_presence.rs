@@ -459,7 +459,9 @@ async fn mcp_server(
     )
     .0;
     let shell = DaemonShell::new(Ok(client), tokio::runtime::Handle::current());
-    let read = whole(workspace, mcp_server::RESOURCE, "");
+    // The resource's own name is what the published table keys it by, and the app id it is
+    // served under is its own too (the daemon keeps it, not an app of the person's).
+    let read = whole(workspace, mcp_server::RESOURCE, mcp_server::RESOURCE);
     let answer = shell
         .read(read)
         .await

@@ -269,7 +269,7 @@ async fn an_authenticated_read_is_admitted_with_private_signed_evidence() {
 async fn an_authenticated_dispatch_without_a_host_signer_is_refused() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new_unserved();
             let rig = Rig::new(&env).await;
             publish_receipt_read(&rig).await;
             let paths = tilo_identity::provisioning::collaboration_identity_paths();
@@ -480,7 +480,7 @@ async fn dispatcher_retained_evidence_survives_uncertain_recovery_and_rejects_in
 async fn dispatcher_terminal_without_signer_retains_outcome_without_fabricating_receipt() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new_unserved();
             let rig = Rig::new(&env).await;
             publish_receipt_read(&rig).await;
             let (wire, admitted) = dispatch_receipt_read(&rig).await;

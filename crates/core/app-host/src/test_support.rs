@@ -147,6 +147,11 @@ impl WorkspaceTreeHandle {
     }
     pub fn services(&self) -> crate::services::ProcessServices {
         serve_the_test_signer(self.opened());
+        self.services_unserved()
+    }
+    /// [`Self::services`] for a fixture whose host has opened nothing and names no signer: the
+    /// same services, without serving this tree's workspaces.
+    pub fn services_unserved(&self) -> crate::services::ProcessServices {
         crate::services::ProcessServices {
             journal_root: self.journal_root(),
             // The workspaces' `chat.agent` records, as these fixtures keep

@@ -16,6 +16,8 @@ mod durable_local_matrix {
         origin: crate::policy_clock::PolicyOrigin,
         control: crate::policy_clock::PolicyClockTestControl,
         owner_task: tokio::task::JoinHandle<crate::test_owner::SessionOwner>,
+        /// Whether this host opened its workspaces: a host that opened none signs nothing.
+        served: bool,
     }
     struct ProvisionedEnvironment {
         environment: Environment,
@@ -70,8 +72,18 @@ mod durable_local_matrix {
         fn new() -> ProvisionedEnvironment {
             Self::with_owner_initializer(crate::test_owner::SessionOwner::initialize)
         }
+        /// An environment whose host opened none of its workspaces: its calls sign nothing.
+        fn new_unserved() -> ProvisionedEnvironment {
+            Self::with_owner_initializer_served(crate::test_owner::SessionOwner::initialize, false)
+        }
         fn with_owner_initializer(
             initialize: impl FnOnce(&std::path::Path) -> Result<crate::test_owner::SessionOwner, String>,
+        ) -> ProvisionedEnvironment {
+            Self::with_owner_initializer_served(initialize, true)
+        }
+        fn with_owner_initializer_served(
+            initialize: impl FnOnce(&std::path::Path) -> Result<crate::test_owner::SessionOwner, String>,
+            served: bool,
         ) -> ProvisionedEnvironment {
             let root = tempfile::tempdir().unwrap();
             let mut identity_env = tilo_test_env::ScopedEnv::new();
@@ -93,9 +105,11 @@ mod durable_local_matrix {
             let key = owner.signing_key().clone();
             let person = owner.person_key().clone();
             // The evidence of a call this host admits is signed as its device, as a host that
-            // opened its workspaces names it.
-            tilo_invocation_journal::serve_as(cert.clone(), std::sync::Arc::new(key.clone()));
-            tilo_invocation_journal::opened(owner.peer().workspace_id());
+            // opened its workspaces names it; a fixture whose host opened none names no signer.
+            if served {
+                tilo_invocation_journal::serve_as(cert.clone(), std::sync::Arc::new(key.clone()));
+                tilo_invocation_journal::opened(owner.peer().workspace_id());
+            }
             let start = cert.issued_at_ns + 1_000_000_000;
             let (clock, control) = crate::policy_clock::OwnerPolicyClock::for_test(start);
             let origin = clock.new_origin();
@@ -149,6 +163,7 @@ mod durable_local_matrix {
                     origin,
                     control,
                     owner_task,
+                    served,
                 },
                 _taken_key: taken_key,
                 _identity_env: identity_env,
@@ -198,7 +213,12 @@ mod durable_local_matrix {
     }
     impl Rig {
         async fn new(env: &Environment) -> Self {
-            Self::with_services(env, env.membership.services()).await
+            let services = if env.served {
+                env.membership.services()
+            } else {
+                env.membership.services_unserved()
+            };
+            Self::with_services(env, services).await
         }
         async fn with_services(env: &Environment, services: ProcessServices) -> Self {
             Self::configured(env, services, None).await
@@ -219,11 +239,18 @@ mod durable_local_matrix {
             config: Option<&crate::NativePeerBrokerConfig>,
         ) -> Self {
             let fanout = Arc::new(FanoutState::new());
+            // A host that opened no workspace hands its tree as it is: the authority that
+            // serves a fixture's workspaces is what opens them.
+            let membership = if env.served {
+                Some(env.membership.authority())
+            } else {
+                Some(Arc::new(env.membership.clone()) as crate::services::WorkspaceAuthorityHandle)
+            };
             let (state, bridge_rx) = AppBrokerState::new_configured(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 env.publisher.clone(),
-                Some(env.membership.authority()),
+                membership,
                 None,
                 config,
                 services,

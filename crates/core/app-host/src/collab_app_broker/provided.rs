@@ -1117,11 +1117,18 @@ pub(crate) mod signed_test_support {
                 certificate_authority: authority.clone(),
             };
             let fanout = Arc::new(FanoutState::new());
+            // A fresh fixture's host has opened nothing: its tree is handed as it is, never
+            // through the authority that serves (and so opens) a fixture's workspaces.
+            let membership = if fresh {
+                Some(Arc::new(tree.clone()) as crate::services::WorkspaceAuthorityHandle)
+            } else {
+                Some(tree.authority())
+            };
             let (state, _) = AppBrokerState::new_configured(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 publisher,
-                Some(tree.authority()),
+                membership,
                 None,
                 Some(&config),
                 services,
