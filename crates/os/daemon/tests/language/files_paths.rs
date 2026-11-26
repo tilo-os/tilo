@@ -927,6 +927,23 @@ fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
             }
         };
 
+        // The person's settings give their agent the run of the workspace: an agent does what its
+        // person granted it under Workspace settings → Agents, and nothing more.
+        let daemon = host.daemon();
+        tilo_workspace_service::workspaces::fixtures::record_grants(
+            daemon.workspaces(),
+            &workspace,
+            &[tilo_action_policy::Grant::new(
+                "scout-works-here",
+                tilo_action_policy::Grantee::agent("scout", host.person().to_owned()),
+                tilo_action_policy::TreePath::workspace(workspace.as_str()),
+                tilo_action_policy::KindSet::ALL,
+                tilo_action_policy::Answer::Allow,
+                tilo_action_policy::Grantee::person(host.person().to_owned()),
+            )],
+        )
+        .await;
+
         // An agent nothing narrows: the task's folder, a note put into it, the folder listed and
         // the note read back, all on the turn.
         let made = act(
@@ -953,7 +970,6 @@ fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
 
         // The agent's rules in the workspace refuse it Files: every verb, the put and both reads,
         // and nothing of what it asked for is there.
-        let daemon = host.daemon();
         tilo_workspace_service::workspaces::fixtures::record_grants(
             daemon.workspaces(),
             &workspace,
@@ -1058,11 +1074,12 @@ fn a_file_a_message_carries_is_told_to_the_turn_and_read_as_content_from_outside
             host,
             &channel,
             "What does Bo ask for?",
-            json!({"attachments": [{
+            // A `List<File>` as a tilolang action takes its values: each an encoded file.
+            json!({"attachments": {"list": [{"file": {
                 "content": content,
                 "name": "from Bo.md",
                 "size": CARRIED.len(),
-            }]}),
+            }}]}}),
         )
         .await;
         assert!(

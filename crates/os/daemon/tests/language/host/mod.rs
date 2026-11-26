@@ -55,6 +55,9 @@ pub mod apps;
 
 mod app_actions;
 mod messages_for_agents;
+mod second;
+
+pub use second::Second;
 
 use std::future::Future;
 use std::path::{Path, PathBuf};

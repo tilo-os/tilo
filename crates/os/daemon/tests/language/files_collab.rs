@@ -201,55 +201,82 @@ fn a_file_its_host_is_still_gathering_makes_no_branch_until_it_is_here() {
     });
 }
 
-/// Two keys of a workspace: the writer who wrote a sealed Chat document, and the reader who reads
-/// it cold after the host starts again.
+/// A remote writer's Chat document reaches the host as the member's own write, kept as it was
+/// signed on its exact route, and is read cold after the host starts again.
 #[test]
 fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
+    const CHAT: &str = "so.tilo.chat";
     host::run(|host| async move {
-        let _ = &host;
-        // The flow: a remote writer's Chat document is kept sealed on its exact route; the
-        // message's own record is read cold by another member; the host starts again; and the
-        // reader's catalogue still finds it, the page's origin naming the restarted host.
-        //
-        // Three pieces a device's daemon does not give a test: a member's document write over
-        // the device link (the fixture's Member sends calls, not documents), the retained bodies
-        // a server keeps (`workspace_documents().retained`), and a restart of the daemon whose
-        // origin the page would name.
-        panic!(
-            "a device's daemon gives no member document write, no retained-bodies read, and no \
-             restart: an encrypted document cannot be written remotely and read cold after one"
-        );
-    });
-}
-
-/// A resource's link is minted by the server that serves the workspace: a device's daemon keeps
-/// no server, so the app's `share-link` refuses with the system's own words, which say where to
-/// add one.
-#[test]
-fn a_device_that_keeps_no_server_refuses_a_resources_link_with_the_systems_words() {
-    host::run_with(&[crate::language::hosted_turns::CHAT_PACKAGE], |host| async move {
-        use crate::language::hosted_turns::{chat_action, chat_provider_here, start_chat};
-
-        let host = host.as_ref();
-        start_chat(host, host.workspace()).await;
-        // Chat's record is open, so its root resource publishes the link its app mints.
-        let _ = crate::language::chat::made_channel(&host.agent(), crate::language::chat::CHANNEL)
-            .await;
-        let address = chat_action(host, "share-link")
-            .unwrap_or_else(|| panic!("Chat's record offers its link"));
-        let refused = host::output(
-            host,
-            tilo_actions::remote::RemoteActionTarget {
-                provider: chat_provider_here(host).await,
-                address,
-            },
-            json!({"start": 6, "end": 7, "unit": "chars"}),
+        let workspace = host.workspace().to_owned();
+        // Another person's computer joins and keeps the workspace as a member copy. Its Chat
+        // instance writes there, and what it writes reaches this host over the device link.
+        let second = host::Second::joined(
+            &host,
+            "Bo",
+            "editor",
+            &[crate::language::hosted_turns::CHAT_PACKAGE],
+            &[],
         )
-        .await
-        .expect_err("a device that serves no page makes no link");
+        .await;
+        // The workspace lists them among its people, by the root the invitation named.
+        let (_, people) = host
+            .daemon()
+            .workspaces()
+            .people_of(&workspace)
+            .await
+            .expect("the host keeps the workspace");
+        let person: [u8; 32] = hex::decode(&second.person)
+            .expect("the person is named by their root")
+            .try_into()
+            .expect("a root is 32 bytes");
         assert!(
-            format!("{refused:?}").contains("has no server that serves links"),
-            "the system's own words say where to add one: {refused:?}"
+            people.values().any(|user| *user == person),
+            "the second person is one of the workspace's members: {people:?}"
+        );
+        let made = second.do_in("so.tilo.chat#new_channel", &["name=Shared"]);
+        assert!(made.contains("Shared"), "the other computer's write: {made}");
+        assert!(
+            crate::language::chat::chat_holds_soon(&host, "Shared").await,
+            "the member's write reaches the host's record"
+        );
+
+        // The host keeps the member's own signed write, on Chat's route, beside its own bodies.
+        let id = tilo_server_protocol::WorkspaceId::parse(&workspace).unwrap();
+        let own_device = host.daemon().workspaces().device_cert().device_public_key;
+        let retained = host
+            .daemon()
+            .workspaces()
+            .documents()
+            .retained(id)
+            .await
+            .expect("the host keeps the bodies its members send");
+        assert!(
+            retained.iter().any(|body| body.author != own_device),
+            "the member's write is a body the host kept, signed by the member's device"
+        );
+
+        // The host starts again, and the record reads cold: what the member wrote is still here.
+        host.restart().await;
+        let routes = host
+            .daemon()
+            .workspaces()
+            .document_routes(&workspace)
+            .await
+            .expect("the restarted host lists its records");
+        let (_, record) = routes
+            .iter()
+            .find(|(app, _)| app == CHAT)
+            .unwrap_or_else(|| panic!("the restarted host keeps Chat's record: {routes:?}"));
+        let document = host
+            .daemon()
+            .workspaces()
+            .resource_document(&workspace, CHAT, record)
+            .await
+            .expect("the record reads")
+            .expect("the restarted host holds it");
+        assert!(
+            document.windows(b"Shared".len()).any(|window| window == b"Shared"),
+            "the member's write is in the record the host reads cold after its restart"
         );
     });
 }
