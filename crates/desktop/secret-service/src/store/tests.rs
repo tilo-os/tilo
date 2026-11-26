@@ -40,9 +40,8 @@ impl TestDaemon {
     }
 
     fn seed(&self) -> std::result::Result<Zeroizing<[u8; 32]>, Locked> {
-        let key = self.key.lock().unwrap();
-        let key = key.as_ref().ok_or(Locked::NoIdentity)?;
-        Ok(Zeroizing::new(key.to_bytes()))
+        let bytes = self.key.lock().unwrap().as_ref().map(SigningKey::to_bytes);
+        bytes.map(Zeroizing::new).ok_or(Locked::NoIdentity)
     }
 
     fn salt(&self) -> Zeroizing<[u8; 32]> {

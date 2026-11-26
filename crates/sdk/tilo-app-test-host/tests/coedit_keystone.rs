@@ -17,6 +17,7 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use collab_types::CommitNamed as _;
+use tilo_automerge::ApplyIncoming as _;
 
 use ui_core::collaboration::{CollabEvent, CollabRequest, CollaborationManager, PresencePayload};
 use ui_core::offscreen::OffscreenRenderer;
@@ -24,7 +25,7 @@ use ui_core::permissions::MemberId;
 use ui_core::presence::{PathSegment, PresenceCtx, PresenceKey};
 use ui_core::text_render::TextRenderer;
 use ui_core::theme::Theme;
-use ui_core::widget::{TextInput, Widget};
+use ui_core::widget::{DrawChild as _, TextInput, Widget};
 
 use crate::support_collab::TypedBroker;
 use ui_core::vello::Scene;
@@ -195,13 +196,13 @@ fn render_widget(mut input: TextInput, doc: &AutoCommit, presence: &PresenceCtx)
     (&mut input as &mut dyn Widget).apply_layout(&taffy, child, Point::ORIGIN);
 
     let mut scene = Scene::new();
-    (&mut input as &mut dyn Widget).draw(&mut ui_core::draw::DrawCtx::new(
+    input.draw_child(
         &mut scene,
         Affine::IDENTITY,
         &mut tr,
         &theme,
-        presence.draw_env(),
-    ));
+        &presence.draw_env(),
+    );
     let mut renderer = OffscreenRenderer::new(W, H);
     LocalRender {
         drawn: drawn_of(&scene),
@@ -296,7 +297,7 @@ fn peers_co_edit_converge_share_carets_and_check_signed_edits() {
             ev.document_mutation()
                 .map(|mutation| mutation.data().to_vec())
         });
-        b_doc.load_incremental(&adopted).unwrap();
+        b_doc.load_incoming(&adopted).unwrap();
         assert_eq!(text_of(&b_doc), "SEED", "B adopts A's seed text");
 
         let b_text = text_obj(&b_doc).expect("B's doc has the shared Text object");
@@ -323,7 +324,7 @@ fn peers_co_edit_converge_share_carets_and_check_signed_edits() {
             collab_types::DocumentMutation::Incremental(data) => Some(data.clone()),
             collab_types::DocumentMutation::Snapshot(_) => None,
         });
-        b_doc.load_incremental(&got).unwrap();
+        b_doc.load_incoming(&got).unwrap();
 
         assert_eq!(
             text_of(&b_doc),
@@ -496,7 +497,7 @@ fn peers_co_edit_converge_share_carets_and_check_signed_edits() {
             skew,
         )
         .expect("writer op must validate");
-        peer_doc.load_incremental(&writer_op.payload).unwrap();
+        peer_doc.load_incoming(&writer_op.payload).unwrap();
 
         assert_eq!(
             text_of(&peer_doc),

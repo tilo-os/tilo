@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 
 use collab_types::store::{Cell, Filter, Order, PARENT, Query, Value};
+use tilo_actions::ActionKind;
 use tilo_resource_store::{Change, Commit, CommitHook as _, FieldKind, Index, Schema};
 
 const ISSUE: &str = "Issue";
@@ -793,8 +794,10 @@ fn a_store_keeps_what_each_app_declares_its_actions_as() {
     }));
     store.declare(Schema::of_app("so.tilo.notes", &notes));
     let declared = |app: &str, action: &str| store.schema().declared_kind(app, action);
-    use tilo_actions::ActionKind;
-    assert_eq!(declared("so.tilo.tasks", "rename"), Some(ActionKind::Undoable));
+    assert_eq!(
+        declared("so.tilo.tasks", "rename"),
+        Some(ActionKind::Undoable)
+    );
     assert_eq!(
         declared("so.tilo.notes", "rename"),
         Some(ActionKind::Outside),
@@ -802,7 +805,11 @@ fn a_store_keeps_what_each_app_declares_its_actions_as() {
     );
     assert_eq!(declared("so.tilo.notes", "peek"), Some(ActionKind::Read));
     assert_eq!(declared("so.tilo.notes", "q7k2"), Some(ActionKind::Read));
-    assert_eq!(declared("so.tilo.tasks", "peek"), None, "tasks declares no peek");
+    assert_eq!(
+        declared("so.tilo.tasks", "peek"),
+        None,
+        "tasks declares no peek"
+    );
     assert_eq!(declared("so.tilo.notes", "melt"), None);
     assert_eq!(
         declared("so.tilo.notes", tilo_resource_store::MIGRATE_VERB),
@@ -3258,7 +3265,10 @@ mod store {
         assert_eq!(deliver(&[content(founding)], &mut there, &anyone), []);
         // The derived step is admitted, whoever sends it.
         assert_eq!(deliver(&[content(step.clone())], &mut there, &nobody), []);
-        let chained: Vec<u8> = chain.iter().flat_map(|change| change.raw_bytes().to_vec()).collect();
+        let chained: Vec<u8> = chain
+            .iter()
+            .flat_map(|change| change.raw_bytes().to_vec())
+            .collect();
         let mut held = automerge::AutoCommit::load(&chained).unwrap();
         // A step of another making, though it names the verb and the version, is refused.
         let mut forged = held.fork();

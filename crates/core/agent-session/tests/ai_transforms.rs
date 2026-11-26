@@ -7,6 +7,11 @@
 //! interpreter holds the real answers to them: a step that declares a shape
 //! gets that shape or a typed failure, a step's answer feeds the next step,
 //! and a secret never reaches the model.
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a failed unwrap or a panic in a test is its assertion"
+)]
 
 use std::collections::VecDeque;
 use std::future::Future;

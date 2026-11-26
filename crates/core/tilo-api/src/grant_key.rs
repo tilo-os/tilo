@@ -82,7 +82,7 @@ impl GrantKey {
     pub fn new(
         key: ed25519_dalek::SigningKey,
         cert: DeviceCert,
-        asked: AgentScope,
+        asked: &AgentScope,
         server_key: bool,
         browser_pages: bool,
         now_ns: u64,
@@ -106,7 +106,7 @@ impl GrantKey {
             .capabilities
             .agent
             .as_ref()
-            .filter(|certified| certified.within(&asked))
+            .filter(|certified| certified.within(asked))
             .cloned();
         let Some(scope) = certified else {
             return Err(Refused(
@@ -159,7 +159,7 @@ impl GrantKey {
                 cert.capabilities.server_key,
                 cert.capabilities.browser_pages,
             );
-            return Self::new(key, cert, scope, server_key, browser_pages, now_ns);
+            return Self::new(key, cert, &scope, server_key, browser_pages, now_ns);
         }
         if cert.device_public_key != key.verifying_key().to_bytes() {
             return Err(Refused("the certificate is for another key".into()));

@@ -42,7 +42,7 @@ fn texts(node: &UiNode) -> Vec<String> {
         .into_iter()
         .filter(|node| node.kind == "ui.Text")
         .filter_map(|node| match node.props.get("value") {
-            Some(tilolang_runtime::Value::Text(text)) => Some(text.to_string()),
+            Some(tilolang_runtime::Value::Text(text)) => Some(text.clone()),
             _ => None,
         })
         .collect()
@@ -106,11 +106,11 @@ struct Counted {
 
 impl tilo_resource_store::Port for Counted {
     fn command(&self, command: Command) -> Result<Reply, String> {
-        self.commands.set(self.commands.get() + 1);
+        self.commands.set(self.commands.get().saturating_add(1));
         if let Command::Content { id, .. } = &command
             && id == tilo_resource_store::WORKSPACE_MEMBERS_ID
         {
-            self.members.set(self.members.get() + 1);
+            self.members.set(self.members.get().saturating_add(1));
         }
         tilo_resource_store::Port::command(&self.port, command)
     }
@@ -151,7 +151,7 @@ fn ten_thousand_members_are_read_once_and_a_view_works_only_for_the_page_it_show
         .unwrap();
     // Staging read whether the workspace had a members' resource yet: what follows is the host's.
     port.members.set(0);
-    let host = Host::open(store, me.clone(), None, || None).unwrap();
+    let host = Host::open(store, me, None, || None).unwrap();
     host.load_builtin(ROSTER, "").unwrap();
     host.root_of(APP).unwrap();
     assert_eq!(

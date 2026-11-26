@@ -24,6 +24,7 @@ pub(crate) struct TestHost {
 
 impl TestHost {
     /// The window a launch with `arguments` opens: `--setup`, `--demo`, `--destination`.
+    #[cfg(any(feature = "installation", feature = "destination"))]
     pub(crate) fn launched(arguments: &[&str]) -> Self {
         let has = |flag: &str| arguments.contains(&flag);
         #[allow(
@@ -187,6 +188,7 @@ impl TestHost {
     /// # Errors
     ///
     /// As [`Self::effect`].
+    #[cfg(feature = "destination")]
     pub(crate) fn call_confirmed_on(
         &mut self,
         resource: &str,
@@ -212,6 +214,7 @@ impl TestHost {
     /// # Errors
     ///
     /// As [`Self::effect`].
+    #[cfg(feature = "destination")]
     pub(crate) fn effect_on<E: Effect>(
         &mut self,
         row: &str,

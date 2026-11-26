@@ -45,21 +45,7 @@ pub fn seed_more(host: &Host, app: &str, from: usize, n: usize, at: &str) -> Res
         .iter()
         .find(|schema| schema.id == item_ty)
         .ok_or_else(|| format!("{app}'s item type is not declared"))?;
-    let texts: Vec<&str> = item
-        .fields
-        .iter()
-        .filter(|field| field.kind == MergeKind::Text)
-        .map(|field| field.id.as_str())
-        .collect();
-    let all_flags: Vec<&str> = item
-        .fields
-        .iter()
-        .filter(|field| {
-            field.kind == MergeKind::Register
-                && matches!(field.ty, Some(tilolang_runtime::meta::Ty::Bool))
-        })
-        .map(|field| field.id.as_str())
-        .collect();
+    let mut fields = Fields::of(item);
     // A flag an action settles is set by that action, as every write of it from outside the
     // app's own code is: what the action keeps in step with it (a task's status with its done
     // box) follows, so a seeded item is one the app could have made. The rest are written whole.
@@ -85,7 +71,8 @@ pub fn seed_more(host: &Host, app: &str, from: usize, n: usize, at: &str) -> Res
             .find(|field| field.id == id)
             .map(|field| field.name.as_str())
     };
-    let settled_flags: Vec<&str> = all_flags
+    let settled_flags: Vec<&str> = fields
+        .flags
         .iter()
         .copied()
         .filter(|id| settler_of(id).is_some())
@@ -98,29 +85,13 @@ pub fn seed_more(host: &Host, app: &str, from: usize, n: usize, at: &str) -> Res
     let settled: Vec<String> = if made_set {
         Vec::new()
     } else {
-        all_flags.iter().filter_map(|id| settler_of(id)).collect()
+        fields
+            .flags
+            .iter()
+            .filter_map(|id| settler_of(id))
+            .collect()
     };
-    let flags: Vec<&str> = all_flags
-        .iter()
-        .copied()
-        .filter(|id| settler_of(id).is_none())
-        .collect();
-    let sets: Vec<&str> = item
-        .fields
-        .iter()
-        .filter(|field| field.kind == MergeKind::Set)
-        .map(|field| field.id.as_str())
-        .collect();
-    let days: Vec<&str> = item
-        .fields
-        .iter()
-        .filter(|field| {
-            field.kind == MergeKind::Register
-                && matches!(&field.ty, Some(tilolang_runtime::meta::Ty::Option(inner))
-                    if matches!(**inner, tilolang_runtime::meta::Ty::Date))
-        })
-        .map(|field| field.id.as_str())
-        .collect();
+    fields.flags.retain(|id| settler_of(id).is_none());
     let day = at.get(..10).unwrap_or(at).to_owned();
     let mut written = 0;
     while written < n {
@@ -133,71 +104,88 @@ pub fn seed_more(host: &Host, app: &str, from: usize, n: usize, at: &str) -> Res
         } else {
             (Vec::new(), numbers.clone().collect())
         };
-        let mut made_by_number = std::collections::BTreeMap::new();
-        for (batch, set) in [(plain_numbers, &[][..]), (set_numbers, &settled_flags[..])] {
-            if batch.is_empty() {
-                continue;
-            }
-            let titles = Value::List(
-                batch
-                    .iter()
-                    .map(|i| Value::Text(format!("Item {i}")))
-                    .collect(),
-            );
-            let args = maker_args(&maker, titles, set)
-                .ok_or_else(|| format!("{app}'s {} takes no {set:?}", maker.id))?;
-            let made = match host
-                .runtime()
-                .invoke_action(host.viewer(), (maker.id.as_str(), args))
-                .map_err(|error| error.to_string())?
-            {
-                tilolang_runtime::InvokeOutcome::Done(Value::List(made)) => made,
-                other => return Err(format!("{app}'s {}: {other:?}", maker.id)),
-            };
-            if made.len() != batch.len() {
-                return Err(format!(
-                    "{app}'s {} made {} items of {}",
-                    maker.id,
-                    made.len(),
-                    batch.len()
-                ));
-            }
-            for (i, item) in batch.into_iter().zip(made) {
-                let Value::Ref(item) = item else {
-                    return Err(format!(
-                        "{app}'s {} answered {item:?} for an item",
-                        maker.id
-                    ));
-                };
-                made_by_number.insert(i, (*item.target).clone());
-            }
+        let made = make(
+            host,
+            app,
+            &maker,
+            [(plain_numbers, &[][..]), (set_numbers, &settled_flags[..])],
+        )?;
+        let writes = fields.writes(numbers.clone().zip(&made), &day);
+        host.runtime()
+            .write_edit_for(Some(host.viewer().clone()), Some(at.to_owned()), |change| {
+                change.write(writes)
+            })
+            .map_err(|error| error.to_string())?;
+        if !settled.is_empty() {
+            settle(host, app, &settled, numbers.zip(made))?;
         }
-        let made: Vec<ResourceRef> = made_by_number.into_values().collect();
-        let writes = numbers
-            .clone()
-            .zip(&made)
+        written = end;
+    }
+    Ok(written)
+}
+
+/// The fields of an item type a seed fills past its title, by their ids: its texts, its yes/no
+/// flags, its sets of texts and its optional days.
+struct Fields<'a> {
+    texts: Vec<&'a str>,
+    flags: Vec<&'a str>,
+    sets: Vec<&'a str>,
+    days: Vec<&'a str>,
+}
+
+impl<'a> Fields<'a> {
+    fn of(item: &'a crate::schema::TypeSchema) -> Self {
+        use tilolang_runtime::meta::Ty;
+        let of = |keep: &dyn Fn(&crate::schema::FieldSchema) -> bool| -> Vec<&'a str> {
+            item.fields
+                .iter()
+                .filter(|field| keep(field))
+                .map(|field| field.id.as_str())
+                .collect()
+        };
+        Self {
+            texts: of(&|field| field.kind == MergeKind::Text),
+            flags: of(&|field| {
+                field.kind == MergeKind::Register && matches!(field.ty, Some(Ty::Bool))
+            }),
+            sets: of(&|field| field.kind == MergeKind::Set),
+            days: of(&|field| {
+                field.kind == MergeKind::Register
+                    && matches!(&field.ty, Some(Ty::Option(inner)) if matches!(**inner, Ty::Date))
+            }),
+        }
+    }
+
+    /// The writes that fill the numbered `items` past their title, the even ones dated `day`.
+    fn writes<'b>(
+        &self,
+        items: impl Iterator<Item = (usize, &'b ResourceRef)>,
+        day: &str,
+    ) -> Vec<OriginWrite> {
+        items
             .map(|(i, item)| {
-                let mut fields: Vec<(String, Value)> = texts
+                let mut fields: Vec<(String, Value)> = self
+                    .texts
                     .iter()
                     .skip(1)
                     .map(|id| ((*id).to_owned(), Value::Text(format!("Text of item {i}"))))
                     .collect();
                 fields.extend(
-                    flags
+                    self.flags
                         .iter()
                         .map(|id| ((*id).to_owned(), Value::Bool(i % 3 == 0))),
                 );
-                fields.extend(sets.iter().map(|id| {
+                fields.extend(self.sets.iter().map(|id| {
                     (
                         (*id).to_owned(),
                         Value::List(vec![Value::Text("inbox".to_owned())]),
                     )
                 }));
                 if i % 2 == 0 {
-                    fields.extend(days.iter().map(|id| {
+                    fields.extend(self.days.iter().map(|id| {
                         (
                             (*id).to_owned(),
-                            Value::Opt(Some(Box::new(Value::Text(day.clone())))),
+                            Value::Opt(Some(Box::new(Value::Text(day.to_owned())))),
                         )
                     }));
                 }
@@ -206,33 +194,82 @@ pub fn seed_more(host: &Host, app: &str, from: usize, n: usize, at: &str) -> Res
                     fields,
                 }
             })
-            .collect();
-        host.runtime()
-            .write_edit_for(Some(host.viewer().clone()), Some(at.to_owned()), |change| {
-                change.write(writes)
-            })
-            .map_err(|error| error.to_string())?;
-        if !settled.is_empty() {
-            for (i, item) in numbers.zip(made) {
-                if i % 3 != 0 {
-                    continue;
-                }
-                for settler in &settled {
-                    let args = vec![Value::resource(&item), Value::Bool(true)];
-                    match host
-                        .runtime()
-                        .invoke_action(host.viewer(), (settler.as_str(), args))
-                        .map_err(|error| error.to_string())?
-                    {
-                        tilolang_runtime::InvokeOutcome::Done(_) => {}
-                        other => return Err(format!("{app}'s {settler} on item {i}: {other:?}")),
-                    }
-                }
+            .collect()
+    }
+}
+
+/// Make the items numbered in each batch by the app's `maker`, each batch with the flags it names
+/// set, and answer them in the order of their numbers.
+fn make<const N: usize>(
+    host: &Host,
+    app: &str,
+    maker: &tilolang_runtime::meta::ActionMeta,
+    batches: [(Vec<usize>, &[&str]); N],
+) -> Result<Vec<ResourceRef>, String> {
+    let mut made_by_number = std::collections::BTreeMap::new();
+    for (batch, set) in batches {
+        if batch.is_empty() {
+            continue;
+        }
+        let titles = Value::List(
+            batch
+                .iter()
+                .map(|i| Value::Text(format!("Item {i}")))
+                .collect(),
+        );
+        let args = maker_args(maker, titles, set)
+            .ok_or_else(|| format!("{app}'s {} takes no {set:?}", maker.id))?;
+        let made = match host
+            .runtime()
+            .invoke_action(host.viewer(), (maker.id.as_str(), args))
+            .map_err(|error| error.to_string())?
+        {
+            tilolang_runtime::InvokeOutcome::Done(Value::List(made)) => made,
+            other => return Err(format!("{app}'s {}: {other:?}", maker.id)),
+        };
+        if made.len() != batch.len() {
+            return Err(format!(
+                "{app}'s {} made {} items of {}",
+                maker.id,
+                made.len(),
+                batch.len()
+            ));
+        }
+        for (i, item) in batch.into_iter().zip(made) {
+            let Value::Ref(item) = item else {
+                return Err(format!(
+                    "{app}'s {} answered {item:?} for an item",
+                    maker.id
+                ));
+            };
+            made_by_number.insert(i, (*item.target).clone());
+        }
+    }
+    Ok(made_by_number.into_values().collect())
+}
+
+/// Settle every third of the numbered `items` by each of the app's `settled` actions, one change
+/// each.
+fn settle(
+    host: &Host,
+    app: &str,
+    settled: &[String],
+    items: impl Iterator<Item = (usize, ResourceRef)>,
+) -> Result<(), String> {
+    for (i, item) in items.filter(|(i, _)| i % 3 == 0) {
+        for settler in settled {
+            let args = vec![Value::resource(&item), Value::Bool(true)];
+            match host
+                .runtime()
+                .invoke_action(host.viewer(), (settler.as_str(), args))
+                .map_err(|error| error.to_string())?
+            {
+                tilolang_runtime::InvokeOutcome::Done(_) => {}
+                other => return Err(format!("{app}'s {settler} on item {i}: {other:?}")),
             }
         }
-        written = end;
     }
-    Ok(written)
+    Ok(())
 }
 
 /// The action of the app `meta` that adds many items of the type `item` at once from their
@@ -302,7 +339,9 @@ fn maker_args(
         .iter()
         .rposition(|param| param.default.is_none() || given(&param.name))?;
     let mut titles = Some(titles);
-    maker.params[..=last]
+    maker
+        .params
+        .get(..=last)?
         .iter()
         .map(|param| {
             if param.default.is_none() {
@@ -312,7 +351,7 @@ fn maker_args(
             } else if param
                 .default
                 .as_ref()
-                .is_some_and(|default| default.is_none())
+                .is_some_and(tilolang_runtime::meta::DefaultMeta::is_none)
             {
                 Some(Value::Opt(None))
             } else {

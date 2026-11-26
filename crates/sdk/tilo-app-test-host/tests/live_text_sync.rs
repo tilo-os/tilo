@@ -8,6 +8,7 @@ use crate::support_collab::TypedBroker;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
 use collab_types::CommitNamed as _;
+use tilo_automerge::ApplyIncoming as _;
 use ui_core::collaboration::CollabRequest;
 
 fn text_of(doc: &AutoCommit) -> String {
@@ -41,7 +42,7 @@ fn live_text_edit_propagates_through_broker() {
     tilo_test_env::wait_until("alice's snapshot at bob", || {
         for e in b.poll() {
             if let Some(mutation) = e.document_mutation() {
-                b_doc.load_incremental(mutation.data()).unwrap();
+                b_doc.load_incoming(mutation.data()).unwrap();
                 adopted = true;
             }
         }
@@ -61,7 +62,7 @@ fn live_text_edit_propagates_through_broker() {
     tilo_test_env::wait_until("alice's edit at bob", || {
         for e in b.poll() {
             if let Some(collab_types::DocumentMutation::Incremental(data)) = e.document_mutation() {
-                b_doc.load_incremental(data).unwrap();
+                b_doc.load_incoming(data).unwrap();
                 got_edit = true;
             }
         }

@@ -26,6 +26,7 @@ pub(crate) struct Store(Rc<RefCell<Kept>>);
 impl Store {
     /// Whether this resource is kept on this computer at all: a live run keeps it in the
     /// person's data directory, a shot's or a test's lasts only while the run does.
+    #[cfg(feature = "installation")]
     pub(crate) fn keeps(&self) -> bool {
         self.0.borrow().file.is_some()
     }

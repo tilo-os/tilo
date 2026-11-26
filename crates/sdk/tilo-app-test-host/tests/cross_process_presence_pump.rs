@@ -9,6 +9,10 @@ use ui_core::state::State;
 use ui_core::widget::Container;
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the pointer arrives as the exact numbers sent"
+)]
 fn cross_process_pump_lands_remote_cursor_on_peer_b() {
     let broker = TypedBroker::new();
     let mut app_a = App::with_collaboration_manager(

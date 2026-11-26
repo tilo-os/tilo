@@ -2862,7 +2862,7 @@ fn mint_key(
     GrantKey::new(
         minted_key,
         cert,
-        AgentScope::Workspace(id),
+        &AgentScope::Workspace(id),
         server_key,
         browser_pages,
         now_ns,

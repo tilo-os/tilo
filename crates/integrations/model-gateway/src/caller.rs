@@ -9,7 +9,7 @@ pub fn provider_admin_app(app_id: &str) -> bool {
 }
 
 /// Chat can generate conversation text, not execute tools or replay tool history.
-#[cfg(any(feature = "server", test))]
+#[cfg(feature = "server")]
 pub(crate) fn chat_completion(request: &crate::Request) -> bool {
     use agent_provider_config::protocol::{Content, Role, ToolChoice};
     matches!(request, crate::Request::Complete { request, .. } | crate::Request::CompleteDefault { request, .. }

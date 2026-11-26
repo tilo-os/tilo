@@ -442,6 +442,14 @@ fn initial_native_app_contract_is_certified() {
     assert!(audit.is_certified(), "{audit:#?}");
 }
 
+/// How many of `nodes` and the nodes below them are named `name`.
+fn named(nodes: &[ui::a11y::AccessNode], name: &str) -> usize {
+    nodes
+        .iter()
+        .map(|node| usize::from(node.name.as_deref() == Some(name)) + named(&node.children, name))
+        .sum()
+}
+
 /// The table is the window bar's location; the window draws no title row of its own, and
 /// the blinds sit with the pot.
 #[test]
@@ -456,14 +464,6 @@ fn the_window_bar_names_the_table_and_the_window_draws_no_title() {
     );
     let harness = app.harness();
     // The window's tree carries its bar first; the bar's location is the one name it may hold.
-    fn named(nodes: &[ui::a11y::AccessNode], name: &str) -> usize {
-        nodes
-            .iter()
-            .map(|node| {
-                usize::from(node.name.as_deref() == Some(name)) + named(&node.children, name)
-            })
-            .sum()
-    }
     assert_eq!(
         harness.a11y_nodes_named("Poker table").len(),
         named(&harness.window_parts(), "Poker table"),

@@ -780,7 +780,7 @@ impl Server {
         GrantKey::new(
             key.clone(),
             cert,
-            grant.scope,
+            &grant.scope,
             grant.server_key,
             grant.browser_pages,
             now_ns,

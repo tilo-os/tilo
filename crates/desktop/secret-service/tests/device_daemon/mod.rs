@@ -58,7 +58,7 @@ impl DeviceDaemon {
                     return;
                 }
                 if let Ok(stream) = stream {
-                    answer(&seed, stream);
+                    answer(&seed, &stream);
                 }
             }
         });
@@ -84,32 +84,32 @@ impl Drop for DeviceDaemon {
 }
 
 /// Answer the one call on `stream` with the device key `seed`.
-fn answer(seed: &[u8; 32], stream: UnixStream) {
+fn answer(seed: &[u8; 32], mut stream: &UnixStream) {
     let mut line = String::new();
-    if BufReader::new(&stream).read_line(&mut line).unwrap_or(0) == 0 {
+    if BufReader::new(stream).read_line(&mut line).unwrap_or(0) == 0 {
         return;
     }
     let call: Value = serde_json::from_str(line.trim()).unwrap();
-    let arguments = &call["params"]["arguments"];
+    let arguments = call.pointer("/params/arguments").unwrap_or(&Value::Null);
     let path = arguments["path"].as_str().unwrap_or_default();
     let action = path.rsplit_once('#').map_or(path, |(_, action)| action);
-    let typed = match act(seed, action, &arguments["args"]) {
-        Ok(result) => json!({ "status": "ok", "result": result }),
-        Err((code, message)) => {
-            json!({ "status": "failed", "error": { "code": code, "message": message } })
-        }
+    let (typed, failed) = match act(seed, action, &arguments["args"]) {
+        Ok(result) => (json!({ "status": "ok", "result": result }), false),
+        Err((code, message)) => (
+            json!({ "status": "failed", "error": { "code": code, "message": message } }),
+            true,
+        ),
     };
-    let failed = typed["status"] != "ok";
     let reply = json!({
         "jsonrpc": "2.0",
-        "id": call["id"],
+        "id": call.get("id").cloned().unwrap_or(Value::Null),
         "result": {
             "content": [{ "type": "text", "text": "" }],
             "structuredContent": typed,
             "isError": failed,
         },
     });
-    let _ = writeln!(&stream, "{reply}");
+    let _ = writeln!(stream, "{reply}");
 }
 
 fn hex_arg(args: &Value, name: &str) -> Vec<u8> {

@@ -562,7 +562,8 @@ fn settings_with_files() -> Host {
     let metas = crate::fixtures::settings_packages().expect("the platform's packages read");
     let compiled = tilolang::compile_package_source(&source, &ids, &metas)
         .unwrap_or_else(|diagnostics| panic!("the files package compiles: {diagnostics:#?}"));
-    host.load_compiled(&compiled).expect("the files package loads");
+    host.load_compiled(&compiled)
+        .expect("the files package loads");
     tilolang_tilo::platform_apps::load(&host, &compiled.meta.uses);
     host
 }
@@ -667,8 +668,10 @@ fn the_apps_pane_lists_each_declared_capability_and_turns_one_off() {
     let argument = |name: &str| {
         args.iter()
             .find(|(named, _)| named.as_str() == name)
-            .map(|(_, value)| value.clone())
-            .unwrap_or_else(|| panic!("`{name}` is an argument: {args:?}"))
+            .map_or_else(
+                || panic!("`{name}` is an argument: {args:?}"),
+                |(_, value)| value.clone(),
+            )
     };
     assert_eq!(argument("workspace"), Value::text("w1"));
     assert_eq!(argument("app"), Value::text("so.tilo.mail"));
@@ -697,7 +700,9 @@ fn a_capability_turned_off_elsewhere_shows_off_in_every_open_pane() {
     );
     serve(&host, "workspace/access", "tilo.workspace#Access", &off);
     for shown in [&mut first, &mut second] {
-        shown.poll_patches().expect("the pane draws the new reading");
+        shown
+            .poll_patches()
+            .expect("the pane draws the new reading");
         let said = texts(shown).join(" | ");
         assert!(
             !said.contains("Allowed"),
