@@ -389,11 +389,17 @@ fn own_rows(
     op: &SignedMembershipOp,
 ) -> (WorkspaceGovernance, WorkspaceGovernance) {
     // The changes its author's device wrote, and the one that keeps the operation itself, whoever's
-    // actor wrote it: a host takes a device's signed entry in under its own.
+    // actor wrote it: a host takes a device's signed entry in under its own. A change is written
+    // under the actor the workspace's generation gives that writer, so the actor of the generation
+    // the batch lands in counts as much as the one before any base was made, and both writers'
+    // forms do: the device's own and a host's, which is what this copy is for the device.
     let device = op.author.device_public_key;
+    let generation = super::base::generation(after);
     let actors = [
-        automerge::ActorId::from(device.to_vec()),
-        crate::state::workspace_host_actor(&device),
+        crate::state::workspace_device_actor_at(&device, 0),
+        crate::state::workspace_device_actor_at(&device, generation),
+        crate::state::workspace_host_actor_at(&device, 0),
+        crate::state::workspace_host_actor_at(&device, generation),
     ];
     let key = op.id().ok().map(crate::members::op::op_key);
     let own: Option<Vec<automerge::Change>> = written.map(|written| {
