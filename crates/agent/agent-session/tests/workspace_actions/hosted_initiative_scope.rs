@@ -12,6 +12,153 @@ const LAST_UPDATE: &str = "The private appointment is at Marlow Quay.";
 const SUMMARY: &str = "The private crossing ends at Staveley Pier.";
 const FACT: &str = "They prefer the Alden landing.";
 
+/// Restore the original per-workspace look record and its UUIDv4 native event on disk.
+fn restore_original_look(root: &std::path::Path, keeper: &str, current: &str) -> String {
+    let original = InvocationId::new().0.to_string();
+    let events = root.join("events");
+    let file = events.join(current).join("event.json");
+    let mut event: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(event["personal"], true);
+    assert_eq!(event["person"], keeper);
+    event["definition"]["id"] = serde_json::json!(original);
+    event.as_object_mut().unwrap().remove("personal");
+    let restored = events.join(&original);
+    std::fs::rename(events.join(current), &restored).unwrap();
+    std::fs::write(
+        restored.join("event.json"),
+        serde_json::to_vec(&event).unwrap(),
+    )
+    .unwrap();
+    let private = root.join("initiative").join(keeper).join("initiative.json");
+    let mut state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&private).unwrap()).unwrap();
+    state["person"] = serde_json::json!(keeper);
+    state["event"] = serde_json::json!(original);
+    state.as_object_mut().unwrap().remove("spendingEvent");
+    std::fs::write(
+        root.join("initiative.json"),
+        serde_json::to_vec(&state).unwrap(),
+    )
+    .unwrap();
+    std::fs::remove_file(private).unwrap();
+    original
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unmarked_event_ask_needs_the_persons_ordinary_native_installation() {
+    use tilo_actions::remote::workspace_events;
+
+    let mut hosted = Hosted::start().await;
+    let workspace = &hosted.workspace;
+    let id = WorkspaceId::parse(workspace).unwrap();
+    let person = hosted.person();
+    let keeper = hosted.root.verifying_key().to_bytes();
+    let caller = Caller::authenticated(keeper, hosted.browser.cert.device_public_key)
+        .in_workspace(workspace.clone());
+    let chat_steps: Arc<dyn Steps> = Arc::new(HandsOver {
+        actions: hosted.actions.clone(),
+        person: caller.clone(),
+        conversation: chat::Chat::direct_id([
+            MemberId::person(person.clone()),
+            MemberId::agent(SCOUT),
+        ])
+        .to_string(),
+        handed: Mutex::default(),
+    });
+    let (initiative, events) = Initiative::start_with(
+        hosted.workspaces.clone(),
+        chat_steps.clone(),
+        Arc::new(tilo_server::workspace_bots::installed::EventRunner),
+    );
+    let current = look_round(
+        &initiative,
+        workspace,
+        &caller,
+        workspace_initiative::TURN_ON,
+        serde_json::json!({"when":"every 3600 seconds"}),
+    )
+    .await
+    .event
+    .unwrap();
+    let target = workspace_events::target(workspace_events::SET_UP);
+    let arguments = serde_json::json!({"name":"Check the ferry","when":"every 3600 seconds","instruction":"Check the ferry."});
+    let stored = events.invoking(
+        id,
+        &caller,
+        Authority::Turn,
+        request(
+            &target.provider,
+            target.address,
+            InvokeArgument::Json(arguments.as_object().unwrap().clone()),
+        ),
+    );
+    let receipt = tokio::task::spawn_blocking(move || stored.wait_timeout(Duration::from_secs(60)))
+        .await
+        .unwrap()
+        .ok()
+        .flatten()
+        .expect("the keeper's event was installed");
+    let ReceiptStatus::Completed { output } = receipt.status else {
+        panic!("the keeper's ordinary event was not installed")
+    };
+    let ordinary: workspace_events::EventView =
+        serde_json::from_value(output.value.unwrap()).unwrap();
+    drop((initiative, events));
+    let root = hosted.workspaces.workspace_root(workspace);
+    let original = restore_original_look(&root, &person, &current);
+    let unknown = InvocationId::new().0.to_string();
+    // All three private Chat asks have identical words and labels and omit the grant.
+    // Only the real, member-owned ordinary event has authority to use the renewed grant.
+    for program in [&original, &unknown, &ordinary.id] {
+        fires(&chat_steps, &person, workspace, program)
+            .await
+            .unwrap();
+    }
+    let chat = conversation_part(&hosted.workspaces, workspace).await;
+    assert_eq!(
+        chat.messages
+            .iter()
+            .filter(|(_, message)| message
+                .cause
+                .as_ref()
+                .is_some_and(|cause| cause.look_grant.is_none()))
+            .count(),
+        3
+    );
+    member_grant_action(&mut hosted.page, AgentGrantAction::Revoke).await;
+    member_grant_action(&mut hosted.page, AgentGrantAction::RequestChat).await;
+    approve_member_grant(&hosted.server, &hosted.root, id, &[CHAT]).await;
+    let agents = hosted
+        .agents
+        .clone()
+        .with_events(None)
+        .with_initiative(None);
+    let turns = agents.turns(workspace).await.unwrap();
+    let [allowed] = turns.as_slice() else {
+        panic!("expected only the ordinary native event: {turns:?}")
+    };
+    assert_eq!(allowed.program.as_deref(), Some(ordinary.id.as_str()));
+    hosted.model.then(Reply::text("The ferry check ran."));
+    agents.answer(workspace, allowed).await.unwrap();
+    assert_eq!(hosted.model.asked().len(), 1);
+    assert!(agents.turns(workspace).await.unwrap().is_empty());
+    let part = conversation_part(&hosted.workspaces, workspace).await;
+    let scout = MemberId::agent(SCOUT);
+    for (ask, message) in chat.messages.iter() {
+        let reply = part.messages.get(&chat::chat::reply_id(ask, &scout));
+        if message.author.agent_id() == Some(ordinary.id.as_str()) {
+            assert_eq!(reply.unwrap().text, "The ferry check ran.");
+        } else {
+            assert!(
+                reply.is_none(),
+                "unexpected model reply to {}",
+                message.author
+            );
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_manual_and_a_scheduled_look_use_only_the_assistants_current_grant() {
     let mut hosted = Hosted::start().await;

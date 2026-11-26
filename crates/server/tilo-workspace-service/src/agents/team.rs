@@ -34,16 +34,17 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use tilo_action_policy::{Answer, Context, Grantee, Party, Role, TreePath};
+use tilo_action_policy::{Answer, Context, Grantee, MemberAccess, Party, Role, TreePath};
 use tilo_actions::remote::ActionCallError as NotTaken;
 use tilo_actions::remote::{
     Caller, CatalogueProvider, CatalogueQuery, CatalogueRow, InvokeArgument, InvokeRequest,
-    Pending, RemoteActionTarget,
+    RemoteActionTarget,
 };
 use tilo_actions::{
     ActionContract, ActionDescriptor, ActionFailure, ActionKind, ActionOutput, ActionParam,
     InvocationUpdate, ParamType,
 };
+use tilo_agent_session::AgentSessions;
 use tilo_resource::{Id, Invoke, NonBlank};
 use tilo_workspace_agent::workspace_agents::{NoteSubAgent, StartSubAgent, StopSubAgent};
 use tilo_workspace_agent::{Agent, KIND, NewSubAgent, OWNER, WorkspaceAgents, sub};
@@ -105,21 +106,27 @@ pub(super) fn start_target() -> RemoteActionTarget {
 }
 
 /// Make `scope`'s service answer as well for the team of `turn`'s agent.
-pub(super) async fn join(workspaces: &Workspaces, turn: &Turn, scope: &mut TurnScope) {
-    let team = TurnTeam::for_turn(workspaces, turn, scope).await;
+pub(super) async fn join(agents: &super::ServerAgents, turn: &Turn, scope: &mut TurnScope) {
+    let sessions = match &agents.roster {
+        super::Roster::Hosted(_, sessions) => Some(sessions.clone()),
+        super::Roster::Device(_) => None,
+    };
+    let team = TurnTeam::for_turn(&agents.workspaces, sessions, turn, scope).await;
     let service = &mut scope.provider;
-    *service = service.clone().answering(workspaces, OWNER, team);
+    *service = service.clone().answering(&agents.workspaces, OWNER, team);
 }
 
 /// What one turn does with the team of its agent.
+#[derive(Clone)]
 struct TurnTeam {
     workspaces: Workspaces,
+    sessions: Option<AgentSessions>,
     workspace: String,
     workspace_id: WorkspaceId,
     /// The turn's agent, as the list held it when the turn began.
     agent: Agent,
-    /// What the turn is offered: nothing for a caller that is no turn of this agent.
-    offered: Vec<CatalogueRow>,
+    /// Whether the turn was offered any team actions at setup.
+    offered: bool,
 }
 
 /// The sub-agent a note or a stop names.
@@ -136,26 +143,66 @@ struct Noted {
 
 impl TurnTeam {
     /// What `turn` does with its agent's team, where `scope` holds whom its tools act for.
-    async fn for_turn(workspaces: &Workspaces, turn: &Turn, scope: &TurnScope) -> Arc<Self> {
+    async fn for_turn(
+        workspaces: &Workspaces,
+        sessions: Option<AgentSessions>,
+        turn: &Turn,
+        scope: &TurnScope,
+    ) -> Arc<Self> {
         let mut team = Self {
             workspaces: workspaces.clone(),
+            sessions,
             workspace: scope.workspace.clone(),
             workspace_id: scope.workspace_id,
             agent: turn.agent.clone(),
-            offered: Vec::new(),
+            offered: false,
         };
         let caller = scope.reply(turn).caller;
-        if team.on_turn(&caller).await.is_ok() {
-            team.offered = rows()
-                .into_iter()
-                .filter(|row| {
-                    row.action
-                        .as_ref()
-                        .is_some_and(|action| team.lets(&caller, &action.address.action, None))
-                })
-                .collect();
-        }
+        team.offered = !team.available_rows(&caller).await.is_empty();
         Arc::new(team)
+    }
+
+    /// The verified host session uses the same current membership and per-agent rules as packaged actions.
+    /// A local device has its own grant and applies the rules attached to its agent.
+    async fn current_access(&self, caller: &Caller) -> Result<Option<MemberAccess>, NotTaken> {
+        let Some(sessions) = &self.sessions else {
+            return Ok(None);
+        };
+        let (link, delegation) = sessions
+            .live_roster(self.workspace_id, caller)
+            .ok_or(NotTaken::NotPermitted)?;
+        let document = collab_types::workspace_document_id(KIND);
+        let policy = self
+            .workspaces
+            .roster_action_policy(
+                self.workspace_id,
+                caller,
+                (&link.engine().identity().device_cert, &delegation),
+                Some((OWNER, &document)),
+            )
+            .await
+            .ok_or(NotTaken::NotPermitted)?;
+        policy
+            .agent_member_access(caller)
+            .map(Some)
+            .ok_or(NotTaken::NotPermitted)
+    }
+
+    async fn available_rows(&self, caller: &Caller) -> Vec<CatalogueRow> {
+        if self.on_turn(caller).await.is_err() {
+            return Vec::new();
+        }
+        let Ok(access) = self.current_access(caller).await else {
+            return Vec::new();
+        };
+        rows()
+            .into_iter()
+            .filter(|row| {
+                row.action.as_ref().is_some_and(|action| {
+                    self.lets(caller, access.as_ref(), &action.address.action, None)
+                })
+            })
+            .collect()
     }
 
     /// That `caller` is on a turn of this agent, whichever member asked it: the first check of
@@ -179,7 +226,13 @@ impl TurnTeam {
     /// so what the agent's entry bounds it to holds here, and a sub-agent keeps the verbs of
     /// its own team and no other. Reading a team is part of steering it: it is decided as a
     /// note is.
-    fn lets(&self, caller: &Caller, verb: &str, on: Option<&str>) -> bool {
+    fn lets(
+        &self,
+        caller: &Caller,
+        access: Option<&MemberAccess>,
+        verb: &str,
+        on: Option<&str>,
+    ) -> bool {
         let (Some(agent), Some(person)) = (
             caller.acting().agent_id(),
             caller.acting().acted_for_person(),
@@ -199,6 +252,13 @@ impl TurnTeam {
         };
         // Only a turn this server carries out reaches here ([`Self::asker`]): its agent works
         // for the turn's person as one handed to them, held to what the list keeps for it.
+        if let Some(access) = access {
+            return access.allows(
+                &node,
+                tilo_action_policy::ActionKind::Undoable,
+                tilo_clock::wall(),
+            );
+        }
         let kept = self.agent.turn_rules(&self.workspace);
         let mut grants =
             tilo_action_policy::Acting::handed_agent(agent, person).handed_preset(&self.workspace);
@@ -386,8 +446,9 @@ impl TurnTeam {
             InvokeArgument::Json(given) => given,
             _ => &none,
         };
+        let access = self.current_access(caller).await?;
         let done = if verb == READ {
-            if !self.lets(caller, READ, None) {
+            if !self.lets(caller, access.as_ref(), READ, None) {
                 return Err(NotTaken::NotPermitted);
             }
             self.team().await
@@ -397,7 +458,9 @@ impl TurnTeam {
             } else {
                 Some(read_as::<Named>(given)?.agent)
             };
-            if !self.lets(caller, verb, named.as_deref()) || !self.people_edit(caller).await {
+            if !self.lets(caller, access.as_ref(), verb, named.as_deref())
+                || !self.people_edit(caller).await
+            {
                 return Err(NotTaken::NotPermitted);
             }
             match (verb, named) {
@@ -452,7 +515,7 @@ impl TurnProvider for TurnTeam {
     /// The team's provider, as a listing of everything names it beside the workspace's
     /// resources: to a turn that is offered none of it, not at all.
     fn providers(&self, _caller: &Caller) -> Vec<CatalogueProvider> {
-        if self.offered.is_empty() {
+        if !self.offered {
             return Vec::new();
         }
         vec![CatalogueProvider {
@@ -465,9 +528,16 @@ impl TurnProvider for TurnTeam {
     }
 
     /// The rows `query` asks for, when it asks the team's provider.
-    fn rows(&self, _caller: &Caller, query: &CatalogueQuery) -> Option<Rows> {
-        (query.provider.as_deref() == Some(PROVIDER) && !self.offered.is_empty())
-            .then(|| Pending::ready(Ok(self.offered.clone())))
+    fn rows(&self, caller: &Caller, query: &CatalogueQuery) -> Option<Rows> {
+        if query.provider.as_deref() != Some(PROVIDER) {
+            return None;
+        }
+        let (done, answer) = tilo_actions::remote::pending();
+        let (team, caller) = (self.clone(), caller.clone());
+        tokio::spawn(async move {
+            done.complete(Ok(team.available_rows(&caller).await));
+        });
+        Some(answer)
     }
 
     /// Everything asked of the team's provider is this one's to answer, also what it refuses.

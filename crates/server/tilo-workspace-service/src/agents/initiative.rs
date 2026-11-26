@@ -1455,10 +1455,17 @@ pub(super) async fn may_take_look(
         || Initiative::read_for(workspaces, &owner),
         |service| service.kept(&owner),
     );
-    matches!(
+    if !matches!(
         kept.and_then(|kept| kept.account_for(workspaces, &owner, id, program)),
         Ok(None)
-    )
+    ) {
+        return false;
+    }
+    let Ok(personal) = super::assistant_of(workspaces, workspace, &person).await else {
+        return false;
+    };
+    personal.is_none_or(|personal| personal.id.0 != agent)
+        || super::events::member_event(&workspaces.workspace_root(workspace), id, &person)
 }
 
 /// What the assistant is told at a look: what its person's event says,

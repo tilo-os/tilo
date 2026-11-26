@@ -998,6 +998,16 @@ pub(super) fn stored_person(workspace_root: &Path, id: &str) -> Option<[u8; 32]>
     Some(person)
 }
 
+/// A member's ordinary installed event, positively identified on the service which runs it.
+pub(super) fn member_event(workspace_root: &Path, id: uuid::Uuid, person: &[u8; 32]) -> bool {
+    let id = id.to_string();
+    read_stored(&workspace_root.join(FOLDER).join(&id)).is_ok_and(|event| {
+        event.definition.id == id
+            && event.person.eq_ignore_ascii_case(&hex::encode(person))
+            && event.personal == Some(false)
+    })
+}
+
 /// Earlier releases recorded the id of the active look-round beside the events.
 pub(super) fn old_look_round(workspace_root: &Path) -> Result<Option<String>, String> {
     #[derive(Deserialize)]

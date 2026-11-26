@@ -507,7 +507,7 @@ impl Conversations {
                     &part_record,
                     person,
                     &workspace.members,
-                    &instructions,
+                    (&instructions, agents.as_deref()),
                     learned_for,
                 )
             }
@@ -1165,12 +1165,22 @@ fn turns<'a>(
     part: &chat::parts::ChatMessages,
     person: &str,
     members: &chat::projection::PeopleNames,
-    agent_instructions: &std::collections::HashMap<String, String>,
+    (agent_instructions, roster): (
+        &std::collections::HashMap<String, String>,
+        Option<&tilo_app::tilo_workspace_agent::WorkspaceAgents>,
+    ),
     learned_for: impl Fn(&str) -> Option<&'a Learned>,
 ) -> Vec<AgentTurn> {
     chat::summons::pending_summonses(chat, part)
         .filter_map(|mut pending| {
-            pending.find(|summons| summons.may_run_on_device(workspace, part))
+            pending.find(|summons| {
+                let personal = roster.map(|agents| {
+                    agents
+                        .personal_assistant(&summons.person)
+                        .is_some_and(|agent| agent.id.0 == summons.agent)
+                });
+                summons.may_run_on_device(workspace, part, personal)
+            })
         })
         .filter_map(|summons| {
             let message = part.messages.get(&summons.message)?;
@@ -1309,7 +1319,7 @@ mod tests {
             &head,
             ME,
             &chat::projection::PeopleNames::new(),
-            &told,
+            (&told, None),
             |agent| (agent == AGENT).then_some(&known),
         );
         let [turn] = read.as_slice() else {
@@ -1347,7 +1357,7 @@ mod tests {
             &head,
             ME,
             &chat::projection::PeopleNames::new(),
-            &std::collections::HashMap::new(),
+            (&std::collections::HashMap::new(), None),
             |_| None,
         );
         let request = &plain[0].request;
@@ -1386,7 +1396,7 @@ mod tests {
                 &head,
                 person,
                 &chat::projection::PeopleNames::new(),
-                &std::collections::HashMap::new(),
+                (&std::collections::HashMap::new(), None),
                 |agent| (agent == AGENT).then_some(&known),
             );
             let [turn] = read.as_slice() else {
@@ -1449,7 +1459,7 @@ mod tests {
             head,
             ME,
             &chat::projection::PeopleNames::new(),
-            &std::collections::HashMap::new(),
+            (&std::collections::HashMap::new(), None),
             |_| None,
         )
     }
@@ -1822,7 +1832,7 @@ mod tests {
             &asked,
             ME,
             &chat::projection::PeopleNames::new(),
-            &std::collections::HashMap::new(),
+            (&std::collections::HashMap::new(), None),
             |_| None,
         );
         let sessions = crate::agent_sessions::AgentSessions::new();

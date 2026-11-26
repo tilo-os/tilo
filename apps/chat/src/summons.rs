@@ -73,7 +73,12 @@ impl Summons {
     /// a server grant, a known look installation, or an Assistant team cause
     /// needs the service that validates its authority.
     #[must_use]
-    pub fn may_run_on_device(&self, workspace: &str, part: &ChatMessages) -> bool {
+    pub fn may_run_on_device(
+        &self,
+        workspace: &str,
+        part: &ChatMessages,
+        personal: Option<bool>,
+    ) -> bool {
         let Some(message) = part.messages.get(&self.message) else {
             return false;
         };
@@ -83,14 +88,30 @@ impl Summons {
         if cause.look_grant.is_some() || cause.needs_team(&message.author, &self.agent) {
             return false;
         }
-        cause.by_person()
-            || message.author.agent_id().is_none_or(|author| {
-                author
-                    != tilo_actions::remote::workspace_initiative::personal_event(
-                        workspace,
-                        &self.person,
-                    )
-            })
+        self.personal_program(message).is_none_or(|author| {
+            author
+                != tilo_actions::remote::workspace_initiative::personal_event(
+                    workspace,
+                    &self.person,
+                )
+                && personal == Some(false)
+        })
+    }
+
+    /// An event on the native host asks as its UUID in the original person's
+    /// direct conversation. An older ask there may require the installation's private record.
+    #[must_use]
+    pub fn personal_program<'a>(&self, message: &'a Message) -> Option<&'a str> {
+        let cause = message.cause.as_ref()?;
+        let author = message.author.agent_id()?;
+        (matches!(
+            cause.kind.0.as_str(),
+            crate::cause::EVENT | crate::cause::REMINDER | "brief"
+        ) && cause.person.person_id() == Some(self.person.as_str())
+            && uuid::Uuid::parse_str(author).is_ok()
+            && self.conversation
+                == Chat::direct_id([MemberId::person(&self.person), MemberId::agent(&self.agent)]))
+        .then_some(author)
     }
 
     /// The reply that answers it: the one its id and the agent's derive.
@@ -799,7 +820,7 @@ mod tests {
         part.messages.push(ordinary.clone(), message);
         let available = pending_summonses(&chat, &part)
             .flatten()
-            .filter(|summons| summons.may_run_on_device("workspace", &part))
+            .filter(|summons| summons.may_run_on_device("workspace", &part, Some(true)))
             .map(|summons| summons.message)
             .collect::<Vec<_>>();
         assert_eq!(available, [ordinary]);
@@ -828,6 +849,14 @@ mod tests {
             2,
         );
         part.messages.push(legacy, message);
+        let (unclassified, message) = caused(
+            &direct,
+            MemberId::agent(uuid::Uuid::new_v4().to_string()),
+            ADA,
+            ("event", "older-random"),
+            2,
+        );
+        part.messages.push(unclassified.clone(), message);
         let (ordinary, message) = caused(
             &direct,
             MemberId::agent("ordinary-reminder"),
@@ -840,9 +869,16 @@ mod tests {
         let next = pending_summonses(&chat, &part)
             .next()
             .unwrap()
-            .find(|summons| summons.may_run_on_device("workspace", &part))
+            .find(|summons| summons.may_run_on_device("workspace", &part, Some(true)))
             .unwrap();
         assert_eq!(next.message, ordinary);
+        let candidate = pending_summonses(&chat, &part)
+            .next()
+            .unwrap()
+            .find(|ask| ask.message == unclassified)
+            .unwrap();
+        assert!(!candidate.may_run_on_device("workspace", &part, None));
+        assert!(candidate.may_run_on_device("workspace", &part, Some(false)));
     }
 
     /// Of two messages a person wrote the later one is their newest, whichever way the part

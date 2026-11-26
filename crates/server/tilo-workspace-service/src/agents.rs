@@ -1517,14 +1517,7 @@ impl ServerAgents {
                     if team_news && !team_agents.contains(&agent.id.0) {
                         continue;
                     }
-                    let program = message
-                        .cause
-                        .as_ref()
-                        .filter(|cause| {
-                            !cause.by_person()
-                                && cause.person.person_id() == Some(summons.person.as_str())
-                        })
-                        .and_then(|_| message.author.agent_id());
+                    let program = summons.personal_program(message);
                     let look_grant = message
                         .cause
                         .as_ref()
@@ -1811,7 +1804,7 @@ impl ServerAgents {
             workspace_id,
         };
         if may_manage_team {
-            team::join(&self.workspaces, turn, &mut scope).await;
+            team::join(self, turn, &mut scope).await;
         }
         across::join(&self.workspaces, self.placed.as_ref(), turn, &mut scope).await;
         // What the turn's tools reach beside the workspace's resources, each a provider of the

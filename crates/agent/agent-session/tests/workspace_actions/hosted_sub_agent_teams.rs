@@ -223,6 +223,98 @@ async fn a_chat_turn_needs_the_assistant_grant_to_discover_and_start_a_team() {
     page.peer.close();
 }
 
+/// The keeper can take back team operations while a model is composing its next tool call.
+/// The original signing grant still covers Assistant and Chat for the same lead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn narrowing_a_working_leads_rules_protects_its_team_before_the_next_tool_call() {
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
+    let secret = "The April archive is on the north shelf.";
+    starts(&workspaces, &workspace, &person, ("Existing", secret)).await;
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let hold = Arc::new(Hold::default());
+    let _opens = Opens(Arc::clone(&hold));
+    let model = waits(
+        vec![
+            looks(),
+            does(
+                2,
+                START,
+                &json!({"name": "Researcher", "job": "Find the memo."}),
+            ),
+            reads(TEAM),
+            says("Finished."),
+        ],
+        1,
+        &asked,
+        &hold,
+    );
+    let agents = served
+        .approving_for(&workspace, &[SCOUT], &[CHAT, OWNER])
+        .await
+        .scripted(model);
+    let post = write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        (&root, &browser),
+        "Start a researcher.",
+    )
+    .await;
+    let turn = agents
+        .turns(&workspace)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|turn| turn.cause == post.as_str())
+        .expect("the lead's Chat turn");
+    let (result, ()) = tokio::join!(Box::pin(agents.answer(&workspace, &turn)), async {
+        until(
+            "the lead has listed tools and is composing its team action",
+            || asked.lock().unwrap().len() == 2,
+        )
+        .await;
+        on_roster(
+            &workspaces,
+            &workspace,
+            (None, &person),
+            WorkspaceAgents::SET_AGENT_BOUND.with(workspace_agents::SetAgentBound {
+                agent: Id::from_raw(SCOUT),
+                bound: vec![Bound {
+                    node: tilo_action_policy::TreePath::workspace(&workspace)
+                        .app(OWNER)
+                        .to_string(),
+                    kinds: vec!["read".into(), "undoable".into()],
+                    answer: "deny".into(),
+                }],
+            }),
+        )
+        .await
+        .expect("the keeper narrows the active lead's rules");
+        hold.open();
+    });
+    result.unwrap();
+    assert_eq!(
+        reply_of(&workspaces, &workspace, &post, SCOUT).await.text,
+        "Finished."
+    );
+    let answers = tool_answers(asked.lock().unwrap().last().unwrap());
+    let [(listed, false), (start, true), (read, true)] = answers.as_slice() else {
+        panic!("the original listing succeeds and both team calls are refused: {answers:?}");
+    };
+    assert!(listed.contains("sub-agents"), "{listed}");
+    assert!(
+        !start.contains(secret) && !read.contains(secret),
+        "{answers:?}"
+    );
+    assert_eq!(
+        sub_agents(&workspaces, &workspace, &person).await,
+        ["existing"]
+    );
+    page.peer.close();
+}
+
 /// The person's own agent starts sub-agents from its own turn, through the turn's own tools.
 /// Past the number its person lets work at once the list refuses in its own words, and what
 /// it refused is not kept. The turn stops one and reads how its team stands. Nothing else is

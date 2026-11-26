@@ -1045,16 +1045,18 @@ impl Steps for HandsOver {
             cluster_id: instruction.workspace.clone(),
             document: String::new(),
         };
-        let arguments = serde_json::json!({
+        let mut arguments = serde_json::json!({
             "channel": self.conversation,
             "text": instruction.instruction,
             "cause": {
                 "kind": "event",
                 "label": "Look-round",
                 "key": instruction.cause.invocation.0.to_string(),
-                "lookGrant": instruction.look_grant,
             },
         });
+        if let Some(grant) = instruction.look_grant {
+            arguments["cause"]["lookGrant"] = serde_json::Value::String(grant);
+        }
         tokio::runtime::Handle::current()
             .block_on(invoke_named(
                 &WorkspaceActionProvider::new(self.actions.clone(), workspace),
