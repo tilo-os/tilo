@@ -320,7 +320,16 @@ async fn apply_now(
 ) {
     match reconcile_into(workspaces, requests).await {
         Ok(applied) if applied != Applied::default() => {
-            tracing::info!(?applied, "the servers' document applied");
+            // Finding its own entry changes nothing: every apply finds it, and the document is
+            // applied at each write to it.
+            if applied
+                != (Applied {
+                    offered: applied.offered,
+                    ..Applied::default()
+                })
+            {
+                tracing::info!(?applied, "the servers' document applied");
+            }
             // A retired server stays out of service: the machine does not
             // start its daemon again once it reads this.
             let retired = state_root.join(RETIRED);
