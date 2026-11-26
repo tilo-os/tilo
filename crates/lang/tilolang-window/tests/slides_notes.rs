@@ -9,11 +9,12 @@
     reason = "test assertions"
 )]
 
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
+mod support;
+
+use support::{accessible, settle};
 
 use tilolang_tilo::runtime::{Actor, Value};
-use tilolang_window::{Opening, Packages, Window};
+use tilolang_window::Window;
 
 /// The app's own name, as its package declares it.
 const APP: &str = "so.tilo.slides";
@@ -21,51 +22,14 @@ const APP: &str = "so.tilo.slides";
 /// A wide window, where the rail, the slide and its properties stand side by side.
 const WINDOW: (u32, u32) = (1280, 800);
 
-/// The app compiled from `apps/tl/slides`, as `tilolang build` compiles it, and the platform's
-/// packages it reads.
-fn packages() -> Rc<Packages> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/slides");
-    let search: Vec<PathBuf> = vec![dir.parent().expect("apps/tl").to_path_buf()];
-    let (built, platform) = tilolang_tilo::catalogue::compile(
-        &dir,
-        &search,
-        &mut tilolang_tilo::tilolang::OsEntropy::default(),
-    )
-    .expect("the app compiles");
-    Rc::new(Packages::new(
-        Rc::new(built.into_iter().map(|package| package.compiled).collect()),
-        platform,
-    ))
-}
-
 /// The window at `WINDOW`, laid out and at rest.
 fn open() -> Window {
-    tilo_app_window::i18n::ensure();
-    let mut window = Window::open(APP, &packages(), Opening::new(WINDOW, ui::Theme::light()))
-        .expect("the window opens");
-    settle(&mut window);
-    window
-}
-
-/// Let the window and its instance answer each other and the layouts that follow, as a live
-/// window does after an input.
-fn settle(window: &mut Window) {
-    window.exchange();
-    window.harness.relayout();
-    window.exchange();
-}
-
-/// Every accessible node of the window, as a screen reader reads it.
-fn accessible(window: &Window) -> Vec<ui::a11y::AccessNode> {
-    let snapshot = window.harness.inspection();
-    snapshot
-        .root
-        .nodes()
-        .into_iter()
-        .filter_map(|node| node.semantics.as_ref())
-        .flat_map(ui::a11y::AccessNode::nodes)
-        .cloned()
-        .collect()
+    support::open_app(
+        APP,
+        &support::packages_of("slides"),
+        WINDOW,
+        ui::Theme::light(),
+    )
 }
 
 /// Press the control `name` where it stands, as a person does.

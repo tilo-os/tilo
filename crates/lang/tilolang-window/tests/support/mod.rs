@@ -1,5 +1,5 @@
-//! Settings' window, opened headlessly as a person's device opens it: the app and what it uses
-//! compiled from `apps/tl/settings`, the window laid out at a size, its panes opened through the
+//! An app's window (Settings' unless a test names another), opened headlessly as a person's device
+//! opens it: the app and what it uses compiled from `apps/tl/<app>`, the window laid out at a size, its panes opened through the
 //! app's own `open_pane`, and the words it shows read back as assistive technology reads them.
 
 #![allow(
@@ -25,7 +25,15 @@ pub const PERSON: &str = "ada";
 /// The packages the app uses, compiled from `apps/tl/settings` as `tilolang build` compiles them,
 /// and the platform's the app reads.
 pub fn packages() -> Rc<Packages> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/settings");
+    packages_of("settings")
+}
+
+/// The packages of the app in `apps/tl/<name>` and what it uses, compiled as `tilolang build`
+/// compiles them.
+pub fn packages_of(name: &str) -> Rc<Packages> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../apps/tl")
+        .join(name);
     let search: Vec<PathBuf> = vec![dir.parent().expect("apps/tl").to_path_buf()];
     let (built, platform) = tilolang_tilo::catalogue::compile(
         &dir,
@@ -47,9 +55,14 @@ pub fn open(size: (u32, u32), theme: ui::Theme) -> Window {
 /// [`open`] over packages compiled already: what a test that times opening a window builds first,
 /// so the step is the launch and not the app's compilation.
 pub fn open_with(packages: &Rc<Packages>, size: (u32, u32), theme: ui::Theme) -> Window {
+    open_app(APP, packages, size, theme)
+}
+
+/// The window of `app`, one of `packages`, at `size` in `theme`, laid out and at rest.
+pub fn open_app(app: &str, packages: &Rc<Packages>, size: (u32, u32), theme: ui::Theme) -> Window {
     tilo_app_window::i18n::ensure();
     let mut window =
-        Window::open(APP, packages, Opening::new(size, theme)).expect("the window opens");
+        Window::open(app, packages, Opening::new(size, theme)).expect("the window opens");
     window.exchange();
     window.harness.relayout();
     window.exchange();
