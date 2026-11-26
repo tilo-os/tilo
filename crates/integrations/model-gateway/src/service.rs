@@ -13,6 +13,10 @@
 mod subject;
 
 use std::fs;
+#[cfg(test)]
+use std::io::Read;
+#[cfg(test)]
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -35,6 +39,8 @@ use crate::{
     MAX_STREAM_EVENTS, PlanTrace, RPC_VERSION, Request, Response, TraceEvent, VisionImage,
     is_pinned_revision, is_supervised_loopback,
 };
+#[cfg(test)]
+use crate::{read_frame, write_frame};
 use account_credentials::{Capability, CredentialError, CredentialStore, OAuthIssuer, OAuthUse};
 use accounts::AccountId;
 use agent_provider_config::{
@@ -77,6 +83,8 @@ use tilo_app_id::apps::AGENT as AGENT_APP;
 use tilo_app_id::apps::CANVAS as CANVAS_APP;
 use tilo_app_id::apps::CHAT as CHAT_APP;
 use tilo_app_id::apps::PHOTOS as PHOTOS_APP;
+#[cfg(test)]
+use tilo_app_id::apps::SETTINGS as SETTINGS_APP;
 /// The session's own image model service: a platform package, not an
 /// installed app, so it has no first-party app constant. It asks the fixed
 /// local image and face operations for every app, as Photos once did.
@@ -543,7 +551,7 @@ pub(super) async fn handle_streaming(
         request if crate::caller::provider_admin_app(app_id) => {
             settings_request(http, request).await
         }
-        _ => Err("caller is not authorized for this gateway operation".into()),
+        _ => Err(NOT_AUTHORIZED.into()),
     };
     result.unwrap_or_else(|error| rejected(&error))
 }
@@ -573,7 +581,7 @@ async fn settings_request(http: &reqwest::Client, request: Request) -> Result<Re
                     .map_err(|_| ModelError::new(ErrorKind::InvalidResponse))
             })
             .map_or_else(Response::failure, output)),
-        _ => Err("caller is not authorized for this gateway operation".into()),
+        _ => Err(NOT_AUTHORIZED.into()),
     }
 }
 
@@ -718,13 +726,19 @@ async fn blocking_model<T: Send + 'static>(
         .map_err(|_| ModelError::new(ErrorKind::Unavailable))?
 }
 
+/// What an app hears when it asks for an operation its identity does not grant.
+const NOT_AUTHORIZED: &str = "caller is not authorized for this gateway operation";
+
+/// A refusal in the gateway's words. A caller refused for who it is also hears the
+/// typed [`ErrorKind::PermissionDenied`], so a client tells it from a provider's failure.
 fn rejected(error: &str) -> Response {
     Response {
         ok: false,
         output: None,
         configured: None,
         error: Some(error.into()),
-        model_error: None,
+        model_error: (error == NOT_AUTHORIZED)
+            .then(|| ModelError::new(ErrorKind::PermissionDenied)),
         event: None,
     }
 }
@@ -1645,6 +1659,15 @@ fn classified_error_advice(failure: &crate::openai::Failure) -> &'static str {
     }
 }
 
+#[cfg(test)]
+fn again_after(status: u16, retry_after: Option<&str>) -> Again {
+    let soon = || Again::Soon(retry_after.and_then(after_seconds));
+    match status {
+        408 | 429 | 500 | 502 | 503 | 504 | 529 => soon(),
+        _ => Again::Never,
+    }
+}
+
 /// Whether an unsuccessful answer says the provider did no work for the
 /// request: rate-limited (429) or overloaded (529), classified as the
 /// agent's own OpenAI-compatible client classifies them, so an exhausted
@@ -1654,6 +1677,11 @@ fn classified_error_advice(failure: &crate::openai::Failure) -> &'static str {
 fn refused_unprocessed(status: u16, body: &[u8]) -> bool {
     crate::openai::Failure::from_http(status, &String::from_utf8_lossy(body), None)
         .refused_unprocessed(status)
+}
+
+#[cfg(test)]
+fn after_seconds(value: &str) -> Option<Duration> {
+    Duration::try_from_secs_f64(value.trim().parse::<f64>().ok()?).ok()
 }
 
 fn retry_wait(retry: u32, asked_for: Option<Duration>) -> Duration {
@@ -1806,8 +1834,436 @@ fn provider_url(profile: &ProviderProfile) -> String {
 }
 
 #[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use super::*;
+
+    /// The session's history may ask what a change was: a completion without
+    /// tools, and nothing more. An app the gateway does not know may ask
+    /// nothing.
+    #[tokio::test]
+    async fn the_history_completes_text_and_is_refused_tools() {
+        use agent_provider_config::protocol::{
+            Message, ModelRequest, Role, ToolChoice, ToolDefinition,
+        };
+        let http = provider_client().unwrap();
+        let ask = |tools: Vec<ToolDefinition>| Request::CompleteDefault {
+            request: ModelRequest {
+                messages: vec![Message::text(Role::User, "[0] Thanks Ada")],
+                tool_choice: if tools.is_empty() {
+                    ToolChoice::None
+                } else {
+                    ToolChoice::Auto
+                },
+                tools,
+                max_output_tokens: 64,
+            },
+            timeout_ms: 1_000,
+            stream: false,
+        };
+        let tool = ToolDefinition {
+            name: "send_mail".into(),
+            description: "Send mail".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        };
+        let refused = handle(ACTIVITY_APP, ask(vec![tool]), &http).await;
+        assert_eq!(
+            refused.model_error.map(|error| error.kind),
+            Some(ErrorKind::PermissionDenied)
+        );
+        let other = handle("so.tilo.files", ask(Vec::new()), &http).await;
+        assert_eq!(
+            other.model_error.map(|error| error.kind),
+            Some(ErrorKind::PermissionDenied)
+        );
+        let titled = handle(
+            ACTIVITY_APP,
+            ask(vec![ToolDefinition {
+                name: "send_mail".into(),
+                description: "Send mail".into(),
+                input_schema: serde_json::json!({"type": "object"}),
+            }]),
+            &http,
+        )
+        .await;
+        assert_eq!(
+            titled.model_error.map(|error| error.kind),
+            Some(ErrorKind::PermissionDenied),
+            "the history names runs, never calls tools"
+        );
+    }
+
+    #[tokio::test]
+    async fn subject_requests_observe_the_build_capability_and_caller_boundary() {
+        let http = provider_client().unwrap();
+        for caller in [CANVAS_APP, PHOTOS_APP, AGENT_APP] {
+            let response = handle(
+                caller,
+                Request::SegmentSubject {
+                    image: VisionImage {
+                        media_type: "image/png".into(),
+                        data_base64: base64::engine::general_purpose::STANDARD
+                            .encode(b"not a picture"),
+                        source_content_hash: "0".repeat(64),
+                    },
+                },
+                &http,
+            )
+            .await;
+            assert!(!response.ok);
+            let expected = if caller == AGENT_APP {
+                "only Canvas and Photos may find a picture's subject"
+            } else if cfg!(feature = "local-models") {
+                "the picture cannot be decoded"
+            } else {
+                "on-device subject segmentation is unavailable in this gateway build"
+            };
+            assert_eq!(response.error.as_deref(), Some(expected));
+        }
+    }
+
+    fn vision_image() -> VisionImage {
+        VisionImage {
+            media_type: "image/jpeg".into(),
+            data_base64: base64::engine::general_purpose::STANDARD.encode(b"preview"),
+            source_content_hash: "a".repeat(64),
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// The launcher handoff bytes are pinned; local vision input is closed and bounded, never
+        /// routes to a LAN or hosted endpoint, requires an immutable model revision, and uses a
+        /// fixed prompt with no identity request; local face input is bounded and never requests
+        /// identity.
+        fn local_vision_is_pinned_bounded_local_and_never_asks_identity;
+
+        phase launcher_handoff_bytes_are_pinned;
+        // The launcher's handoff: a little-endian `u32` length, then JSON.
+        {
+            use std::io::Write as _;
+            let (mut launcher, gateway) = std::os::unix::net::UnixStream::pair().unwrap();
+            launcher.write_all(&[39, 0, 0, 0]).unwrap();
+            launcher
+                .write_all(br#"{"protocol":1,"app_id":"so.tilo.agent"}"#)
+                .unwrap();
+            gateway.set_nonblocking(true).unwrap();
+            let runtime = tilo_rt::daemon("gateway-test").workers(1).build().unwrap();
+            let handoff = runtime.block_on(async {
+                let mut gateway = tokio::net::UnixStream::from_std(gateway).unwrap();
+                read_handoff(&mut gateway).await
+            });
+            assert_eq!(handoff.unwrap().app_id, AGENT_APP);
+        }
+
+        phase local_vision_input_is_closed_and_bounded;
+        {
+            assert!(validate_vision_image(&vision_image()).is_ok());
+            let mut foreign = vision_image();
+            foreign.media_type = "image/svg+xml".into();
+            assert!(validate_vision_image(&foreign).is_err());
+            let mut corrupt = vision_image();
+            corrupt.data_base64 = "not base64".into();
+            assert!(validate_vision_image(&corrupt).is_err());
+            let mut bad_hash = vision_image();
+            bad_hash.source_content_hash = "x".repeat(64);
+            assert!(validate_vision_image(&bad_hash).is_err());
+        }
+
+        phase local_vision_prompt_is_fixed_and_contains_no_identity_request;
+        {
+            let body = local_vision_body("vision-model", &vision_image());
+            let encoded = body.to_string();
+            assert!(encoded.contains("device-local image indexing component"));
+            assert!(encoded.contains("Do not name people"));
+            assert!(!encoded.contains("ignore previous"));
+            assert_eq!(body["model"], "vision-model");
+        }
+
+        phase local_face_input_is_bounded_and_prompt_never_requests_identity;
+        {
+            let face = FaceImage {
+                photo_id: "photos.photo:one".into(),
+                media_type: "image/jpeg".into(),
+                data_base64: base64::engine::general_purpose::STANDARD.encode(b"preview"),
+                source_content_hash: "a".repeat(64),
+            };
+            assert!(validate_face_images(std::slice::from_ref(&face)).is_ok());
+            let mut duplicate = face.clone();
+            duplicate.photo_id = face.photo_id.clone();
+            assert!(validate_face_images(&[face.clone(), duplicate]).is_err());
+            let body = local_face_body("face-model", &[face]);
+            let encoded = body.to_string();
+            assert!(encoded.contains("face detection and clustering"));
+            assert!(encoded.contains("Never output a person's name"));
+            assert!(!encoded.contains("identify the person"));
+        }
+    }
+
+    struct Fake {
+        left: Duration,
+        waits: Vec<Duration>,
+        calls: usize,
+    }
+
+    fn run_retries(
+        left: Duration,
+        outcomes: &[Result<&str, (u16, Option<&str>)>],
+    ) -> (Result<String, String>, Fake) {
+        let fake = RefCell::new(Fake {
+            left,
+            waits: Vec::new(),
+            calls: 0,
+        });
+        let result = tilo_rt::block_on(while_busy(
+            || {
+                let fake = fake.borrow();
+                (!fake.left.is_zero()).then_some(fake.left)
+            },
+            |duration| {
+                let mut fake = fake.borrow_mut();
+                fake.waits.push(duration);
+                fake.left = fake.left.saturating_sub(duration);
+                std::future::ready(())
+            },
+            |_budget| {
+                let mut fake = fake.borrow_mut();
+                let index = fake.calls.min(outcomes.len().saturating_sub(1));
+                fake.calls = fake.calls.saturating_add(1);
+                fake.left = fake.left.saturating_sub(Duration::from_millis(200));
+                std::future::ready(match outcomes[index] {
+                    Ok(output) => Ok(output.to_string()),
+                    Err((status, retry_after)) => Err(ProviderFailure {
+                        model_error: crate::openai::Failure::from_http(status, "", retry_after)
+                            .model_error(),
+                        why: format!("provider returned HTTP {status}"),
+                        again: again_after(status, retry_after),
+                        outcome_unknown: true,
+                        unprocessed: false,
+                        status: Some(status),
+                    }),
+                })
+            },
+        ))
+        .unwrap();
+        (result, fake.into_inner())
+    }
+
+    tilo_test_env::scenario! {
+        /// Transient provider failures are retried at the gateway, settled ones are not,
+        /// Retry-After and transient statuses are classified on the HTTP side, and retries never
+        /// consume room needed for an answer.
+        fn the_gateway_retries_only_transient_failures_within_the_answer_budget;
+
+        phase transient_provider_failures_are_retried_at_the_gateway;
+        {
+            let (result, fake) = run_retries(
+                Duration::from_secs(20),
+                &[Err((529, None)), Err((503, None)), Ok("answer")],
+            );
+            assert_eq!(result.as_deref(), Ok("answer"));
+            assert_eq!(fake.calls, 3);
+            assert_eq!(
+                fake.waits,
+                [Duration::from_millis(500), Duration::from_secs(1)]
+            );
+        }
+
+        phase settled_provider_failures_are_not_retried;
+        {
+            for status in [400, 401, 403, 404, 422] {
+                let (result, fake) = run_retries(Duration::from_secs(20), &[Err((status, None))]);
+                assert!(result.unwrap_err().contains(&status.to_string()));
+                assert_eq!(fake.calls, 1, "HTTP {status}");
+                assert!(fake.waits.is_empty(), "HTTP {status}");
+            }
+        }
+
+        phase retry_after_and_transient_statuses_are_classified_on_the_http_side;
+        {
+            for status in [408, 429, 500, 502, 503, 504, 529] {
+                assert_eq!(again_after(status, None), Again::Soon(None));
+            }
+            assert_eq!(
+                again_after(429, Some("0.25")),
+                Again::Soon(Some(Duration::from_millis(250)))
+            );
+            assert_eq!(again_after(401, Some("1")), Again::Never);
+        }
+
+        phase retries_never_consume_room_needed_for_an_answer;
+        {
+            let (result, fake) = run_retries(Duration::from_secs(3), &[Err((529, Some("1")))]);
+            assert!(result.is_err());
+            assert_eq!(fake.calls, 1);
+            assert!(fake.waits.is_empty());
+        }
+    }
+
+    /// The real accept loop on its own runtime, serving `listener` (peer
+    /// check stubbed: the client is this process's own, and the production
+    /// check is [`tilo_socket::tokio::peer_is_this_login`]). `workers` of one
+    /// proves concurrency comes from serving clients as tasks, not from a
+    /// thread each.
+    fn serve_in_background(listener: tilo_socket::Listener, workers: usize) {
+        serve_in_background_within(listener, workers, HANDOFF_TIMEOUT);
+    }
+
+    /// [`serve_in_background`], closing connections whose handoff has not
+    /// arrived within `handoff`.
+    fn serve_in_background_within(
+        listener: tilo_socket::Listener,
+        workers: usize,
+        handoff: Duration,
+    ) {
+        let http = Arc::new(provider_client().unwrap());
+        std::thread::spawn(move || {
+            let runtime = tilo_rt::daemon("gateway-test")
+                .workers(workers)
+                .build()
+                .unwrap();
+            runtime.block_on(async move {
+                let listener = tilo_socket::tokio::listener(listener).unwrap();
+                serve_on(listener, http, MAX_CLIENTS, handoff, |_| true).await
+            })
+        });
+    }
+
+    fn serve_test_socket(handoff: Duration) -> PathBuf {
+        let nonce = tilo_clock::unix_now_ns();
+        let path = std::env::temp_dir().join(format!("gw-{}-{nonce}.sock", std::process::id()));
+        serve_in_background_within(tilo_socket::bind(&path).unwrap(), 2, handoff);
+        path
+    }
+
+    fn settings_client(path: &Path) -> UnixStream {
+        let mut stream = UnixStream::connect(path).unwrap();
+        stream
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .unwrap();
+        write_frame(
+            &mut stream,
+            &serde_json::json!({"protocol": 1, "app_id": AGENT_APP}),
+        )
+        .unwrap();
+        stream
+    }
+
+    fn unauthorized_round_trip(stream: &mut UnixStream) {
+        // Answered without configuration or network: Agent may not list a
+        // provider's models.
+        write_frame(
+            stream,
+            &serde_json::json!({"version": RPC_VERSION, "verb": "list_models", "profile_id": "p"}),
+        )
+        .unwrap();
+        let response: Response = read_frame(stream).unwrap();
+        assert!(!response.ok);
+        assert_eq!(
+            response.error.as_deref(),
+            Some("caller is not authorized for this gateway operation")
+        );
+    }
+
+    tilo_test_env::scenario! {
+        /// The accept loop beside a client that says nothing, each case on a socket and server of its own.
+        fn a_silent_or_stalled_client_never_holds_up_another;
+
+        phase one_idle_or_stalled_client_never_blocks_another;
+        {
+            // A handoff no test outlives: the silent connection stays pending
+            // for the whole test, so the others are answered beside it.
+            let path = serve_test_socket(tilo_test_env::hang_bound().saturating_mul(2));
+            // A connection that never sends its handoff, and one that sent it and
+            // then went idle (the agent's normal, process-long channel).
+            let silent = UnixStream::connect(&path).unwrap();
+            let mut idle = settings_client(&path);
+            let mut active = settings_client(&path);
+            for _ in 0..3 {
+                unauthorized_round_trip(&mut active);
+            }
+            // ...while the idle authenticated channel stays usable.
+            unauthorized_round_trip(&mut idle);
+            silent.set_nonblocking(true).unwrap();
+            assert_eq!(
+                (&silent).read(&mut [0_u8; 1]).unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock,
+                "the silent connection was still waiting for its handoff"
+            );
+            let _ = fs::remove_file(&path);
+        }
+
+        phase a_stalled_client_does_not_hold_up_another;
+        {
+            use std::io::Write as _;
+
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("gateway.sock");
+            serve_in_background(tilo_socket::bind(&path).unwrap(), 1);
+
+            // Connected first, then silent partway through its authentication.
+            let mut stalled = UnixStream::connect(&path).unwrap();
+            stalled.write_all(&[0x20]).unwrap();
+
+            let mut client = UnixStream::connect(&path).unwrap();
+            client
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            let handoff =
+                serde_json::to_vec(&serde_json::json!({ "protocol": 1, "app_id": AGENT_APP })).unwrap();
+            client
+                .write_all(&u32::try_from(handoff.len()).unwrap().to_le_bytes())
+                .unwrap();
+            client.write_all(&handoff).unwrap();
+            write_frame(
+                &mut client,
+                &Frame {
+                    version: RPC_VERSION,
+                    value: Request::ListModels {
+                        profile_id: "hosted".into(),
+                    },
+                },
+            )
+            .unwrap();
+            let response: Response = read_frame(&mut client).unwrap();
+            assert!(!response.ok);
+            assert_eq!(
+                response.error.as_deref(),
+                Some("caller is not authorized for this gateway operation")
+            );
+            drop(stalled);
+        }
+    }
+
+    #[test]
+    fn a_connection_without_its_handoff_is_closed() {
+        let path = serve_test_socket(HANDOFF_TIMEOUT);
+        let began = Instant::now();
+        let mut silent = UnixStream::connect(&path).unwrap();
+        silent
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .unwrap();
+        let mut byte = [0_u8; 1];
+        assert_eq!(silent.read(&mut byte).unwrap(), 0, "closed, not answered");
+        assert!(
+            began.elapsed() >= HANDOFF_TIMEOUT,
+            "closed before its handoff time"
+        );
+        let _ = fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
 #[path = "service_error_tests.rs"]
 mod service_error_tests;
+
+#[cfg(test)]
+#[path = "road_tests.rs"]
+mod road_tests;
+
+#[cfg(test)]
+#[path = "stream_policy_tests.rs"]
+mod stream_policy_tests;
 
 #[cfg(test)]
 #[path = "cancellation_tests.rs"]
@@ -1816,3 +2272,7 @@ mod cancellation_tests;
 #[cfg(test)]
 #[path = "server_ask_tests.rs"]
 mod server_ask_tests;
+
+#[cfg(test)]
+#[path = "administration_tests.rs"]
+mod administration_tests;
