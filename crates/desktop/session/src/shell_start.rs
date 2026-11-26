@@ -24,6 +24,18 @@ const FORWARDED: [libc::c_int; 4] = [libc::SIGTERM, libc::SIGINT, libc::SIGHUP, 
 /// desktop is handed, and hands on when the service starts it.
 const WAYLAND_SOCKET: &str = "WAYLAND_SOCKET";
 
+/// What this session was started with: its link, the founding link of a computer whose person
+/// this account makes, or nothing.
+pub enum Launch {
+    /// No link: the service did not start this session as a shell.
+    None,
+    /// The shell's link, which the session reads and writes its person's workspaces on.
+    Shell(std::os::fd::OwnedFd),
+    /// The sign-in's founding link: this account has no person yet, and this session may make one
+    /// or join one, and asks again for its person's link once it has.
+    Founding,
+}
+
 /// The link this session is the shell of this computer's service by: the one-use secret the
 /// service gave it when it started it (`runtime_collab::wire::shell::SHELL_TOKEN_ENV`), redeemed
 /// at once for the link with the one request that establishes one (`shells#link`), taken before
@@ -31,14 +43,17 @@ const WAYLAND_SOCKET: &str = "WAYLAND_SOCKET";
 /// process's own exec alone, so no program the session starts redeems it — a session started
 /// beside this one asks the service for a shell of its own instead.
 ///
-/// `None` in a process the service did not start as the shell, which is every other one.
+/// [`Launch::None`] in a process the service did not start as the shell, which is every other
+/// one.
 #[must_use]
 #[allow(
     clippy::disallowed_methods,
     reason = "the variable names this process's own secret for its own exec; no other thread reads it yet and nothing else in the process uses it again"
 )]
-pub fn take_launch_link() -> Option<std::os::fd::OwnedFd> {
-    let token = std::env::var(runtime_collab::wire::shell::SHELL_TOKEN_ENV).ok()?;
+pub fn take_launch_link() -> Launch {
+    let Ok(token) = std::env::var(runtime_collab::wire::shell::SHELL_TOKEN_ENV) else {
+        return Launch::None;
+    };
     // SAFETY: the session takes its link before it starts any thread of its own; the variable
     // named a secret for this process's own exec, and nothing reads the name again.
     unsafe { std::env::remove_var(runtime_collab::wire::shell::SHELL_TOKEN_ENV) };
@@ -47,14 +62,50 @@ pub fn take_launch_link() -> Option<std::os::fd::OwnedFd> {
         .map(|place| place.native())
     else {
         eprintln!("tilo-session: this computer's service is not placed, so its shell has no link");
-        return None;
+        return Launch::None;
     };
-    match tilo_session_client::daemon_documents::link_from_token(&socket, &token) {
-        Ok(link) => Some(link),
+    match tilo_session_client::daemon_documents::link_with(&socket, Some(&token)) {
+        Ok(tilo_session_client::daemon_documents::ShellLinkAnswer::Shell(link)) => {
+            Launch::Shell(link)
+        }
+        Ok(tilo_session_client::daemon_documents::ShellLinkAnswer::Founding) => Launch::Founding,
         Err(error) => {
             eprintln!("tilo-session: the link this computer's service gave this session: {error}");
-            None
+            Launch::None
         }
+    }
+}
+
+/// How long a session whose sign-in founded or joined a person waits for the person's services to
+/// answer its link, and how often it asks.
+const PERSON_LINK_WITHIN: Duration = Duration::from_secs(120);
+const PERSON_LINK_EVERY: Duration = Duration::from_millis(250);
+
+/// The person's link for the session a sign-in answered a founding link: asked of this computer's
+/// service once the person exists, and again while their services start. `None` when they never
+/// answer, and the session then reads no workspace, as any session the daemon did not start.
+#[must_use]
+pub fn founding_link() -> Option<std::os::fd::OwnedFd> {
+    let socket = tilo_api::daemon::this_computer()
+        .ok()
+        .map(|place| place.native())?;
+    let deadline = std::time::Instant::now() + PERSON_LINK_WITHIN;
+    let mut last = String::new();
+    loop {
+        match tilo_session_client::daemon_documents::link_with(&socket, None) {
+            Ok(tilo_session_client::daemon_documents::ShellLinkAnswer::Shell(link)) => {
+                return Some(link);
+            }
+            Ok(tilo_session_client::daemon_documents::ShellLinkAnswer::Founding) => {
+                last = "this computer is still setting its person up".to_owned();
+            }
+            Err(error) => last = error,
+        }
+        if std::time::Instant::now() >= deadline {
+            eprintln!("tilo-session: this session's person's link: {last}");
+            return None;
+        }
+        std::thread::sleep(PERSON_LINK_EVERY);
     }
 }
 

@@ -34,12 +34,23 @@ pub enum Admitted {
         /// The key the account acts as.
         key: [u8; 32],
     },
+    /// The account whose session the daemon admitted by the founding link its sign-in answered:
+    /// it may make a person on this computer or join one, and reads what that setup draws, and
+    /// nothing of a person's. Tied to the one process the link was redeemed from, never to the
+    /// account at large: an app, an agent or any other program of the account is no founding
+    /// link.
+    Founding {
+        /// The key the daemon made the account on this computer, which its founded person acts as
+        /// once it certified it.
+        key: [u8; 32],
+    },
     /// Any other account: only what a device answers before it has a person.
     Stranger,
 }
 
 impl Admitted {
-    /// Whether it acts as the device or a person, rather than only asking what the device is.
+    /// Whether it is admitted to more than asking what the device is: the device's own account,
+    /// a person, a key of a person, or the founding link a sign-in answered.
     #[must_use]
     pub const fn served(self) -> bool {
         !matches!(self, Self::Stranger)

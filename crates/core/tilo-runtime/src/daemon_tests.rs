@@ -3026,7 +3026,11 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
         tilo_api::daemon::admission::Admission::new(DAEMON, true),
     ));
     let answers = crate::device::unclaimed::DeviceOnly::at(key, place, root.clone(), DAEMON);
-    let native = std::sync::Arc::new(super::Native::new(answers, founding_peer, admission));
+    let native = std::sync::Arc::new(super::Native::new(
+        answers.clone(),
+        founding_peer,
+        admission,
+    ));
     let sockets = root.join("sockets");
     std::fs::create_dir_all(&sockets).unwrap();
     let listener =
@@ -3080,17 +3084,84 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
     );
 
     // Root says the account signed in, as `pam_tilo` says it: one typed action over the native
-    // endpoint, answered the same way by every caller.
+    // endpoint, answered the same way by every caller. The account has no identity yet, so its
+    // session is answered the one-use secret of a founding link.
     let (failed, said) = call(0, "seats#signed-in", json!({"uid": ADA}));
     assert!(!failed, "{said}");
     assert!(
         said.contains("\"founding\":true"),
         "a person is to be made: {said}"
     );
+    assert!(
+        said.contains("\"shell\":true"),
+        "the account's session is handed its link: {said}"
+    );
+    let token = said
+        .split("\"token\":\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("the sign-in answers the founding link's secret")
+        .to_owned();
+    assert_eq!(token.len(), 64, "a one-use secret: {token}");
 
-    // The account's first command founds its person through the same endpoint.
+    // The account's session redeems it: the daemon ties the secret to this process, and answers
+    // no link yet, as the person's services do not run.
+    let answer = ask(
+        ADA,
+        json!({"native": "shells#link", "token": token}),
+    );
+    assert_eq!(answer["founding"], true, "{answer}");
+    assert_eq!(answer["shell"], false, "{answer}");
+
+    // A founding link reaches what makes or joins its person, and nothing else of the computer:
+    // another action is refused, saying what this session may do until it has one.
+    let (refused, why) = call(ADA, "devices#identities", json!({}));
+    assert!(refused, "a founding link asked beyond its setup: {why}");
+    assert!(
+        why.contains("may make one or join one"),
+        "the refusal says what a founding session does: {why}"
+    );
+
+    // The account's session founds its person through the same endpoint.
     let (failed, said) = call(ADA, "devices#found", json!({}));
     assert!(!failed, "the account founded its person: {said}");
+
+    // The person's services run, as the daemon starts them behind the founding call.
+    let frames = crate::device::local::Frames::of_the_device(answers.clone());
+    native.serve_the_person(super::Endpoint {
+        session_factory: std::sync::Arc::new(move || {
+            Ok(tilo_mcp::McpServer::for_agent(
+                answers.clone(),
+                String::new(),
+                "agent",
+                "",
+            ))
+        }),
+        status: std::sync::Arc::new(|| super::Status {
+            version: 1,
+            pid: std::process::id(),
+            workspace: "home".into(),
+        }),
+        search: std::sync::Arc::new(std::sync::OnceLock::new()),
+        media: None,
+        other_devices: None,
+        agents: None,
+        frames,
+        to_agents: None,
+        launch: None,
+        connections: None,
+    });
+    // The same seat certifies the key its person's root made it, with no new sign-in: the seat
+    // is that person's from now on.
+    let (failed, said) = call(ADA, "seats#certified", json!({}));
+    assert!(!failed, "the session certified its person's key: {said}");
+    let who = ask(ADA, json!({"native": "account#who"}));
+    assert_eq!(
+        who["person"].as_str().map(str::len),
+        Some(64),
+        "the session that made the person acts as them: {who}"
+    );
+    assert_eq!(who["claimed"], true, "{who}");
 
     // Root says it signed in again, and the daemon answers the person, not a second founding.
     let (failed, said) = call(0, "seats#signed-in", json!({"uid": ADA}));
@@ -3103,6 +3174,138 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
         !said.contains("\"founding\":true"),
         "the person is made already: {said}"
     );
+}
+
+/// The session a sign-in answered a founding link is the one process the daemon tied the link to:
+/// an app the account runs, and any other program of theirs, is not that session. Neither redeems
+/// the secret, and neither makes a person.
+#[test]
+fn a_founding_link_is_never_an_apps_or_another_programs() {
+    use io::{BufRead as _, Write as _};
+    use serde_json::{Value, json};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use tilo_api::daemon::admission::Admission;
+
+    /// The account the next connection comes from.
+    static UID: AtomicU32 = AtomicU32::new(0);
+    /// The process the next connection comes from.
+    static PID: AtomicU32 = AtomicU32::new(0);
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "it stands in for the kernel's answer, which can fail"
+    )]
+    fn peer(_: &std::os::unix::net::UnixStream) -> io::Result<crate::seats::Peer> {
+        Ok(crate::seats::Peer {
+            uid: UID.load(Ordering::SeqCst),
+            pid: Some(PID.load(Ordering::SeqCst)),
+        })
+    }
+    const ROOT: u32 = 0;
+    const DAEMON: u32 = 990;
+    const ADA: u32 = 1000;
+    const SESSION: u32 = 40_001;
+    const APP: u32 = 40_002;
+    const PROGRAM: u32 = 40_003;
+
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    home.env()
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    let root = home.root().to_owned();
+    let keys = tilo_api::calls::device_keys();
+    let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+    let place = tilo_device_identity::login::Place::at(root.join("login"), keys);
+    let admission: &'static Admission = Box::leak(Box::new(Admission::new(DAEMON, true)));
+    let answers = crate::device::unclaimed::DeviceOnly::at(key, place, root.clone(), DAEMON);
+    let native = std::sync::Arc::new(super::Native::new(answers, peer, admission));
+    // The process at `APP` is one the daemon started, as an app of Ada's.
+    native.seats.follow_launches(std::sync::Arc::new(|pid| {
+        (pid == APP).then(|| ("so.tilo.notes".to_owned(), "a-workspace".to_owned()))
+    }));
+    let sockets = root.join("sockets");
+    std::fs::create_dir_all(&sockets).unwrap();
+    let listener =
+        tilo_files::native::private::bind_socket(&sockets.join(tilo_paths::machine::DAEMON_NATIVE))
+            .unwrap();
+    {
+        let native = std::sync::Arc::clone(&native);
+        std::thread::spawn(move || native.accept(&listener));
+    }
+    let native_socket = sockets.join(tilo_paths::machine::DAEMON_NATIVE);
+    let ask = |uid: u32, pid: u32, request: Value| {
+        UID.store(uid, Ordering::SeqCst);
+        PID.store(pid, Ordering::SeqCst);
+        let stream = std::os::unix::net::UnixStream::connect(&native_socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        writeln!(writer, "{request}").unwrap();
+        let mut line = String::new();
+        io::BufReader::new(stream)
+            .read_line(&mut line)
+            .expect("the daemon answers");
+        serde_json::from_str::<Value>(&line).unwrap()
+    };
+    let call = |uid: u32, pid: u32, path: &str| {
+        let answer = ask(
+            uid,
+            pid,
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "tilo_do", "arguments": {"path": path, "args": {}}}}),
+        );
+        let text = answer["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        (answer["result"]["isError"] == true, text)
+    };
+
+    // Root says Ada signed in with no identity yet: her session is answered the founding secret.
+    let signed_in = ask(ROOT, SESSION, json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "tilo_do", "arguments": {"path": "seats#signed-in",
+            "args": {"uid": ADA}}}}));
+    let text = signed_in["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    let token = text
+        .split("\"token\":\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("the sign-in answers the founding link's secret")
+        .to_owned();
+
+    // An app of the account's gets no founding link with the secret, and makes no person.
+    let theirs = ask(
+        ADA,
+        APP,
+        json!({"native": "shells#link", "token": token.clone()}),
+    );
+    assert!(
+        theirs["error"]
+            .as_str()
+            .is_some_and(|why| why.contains("an app is no session")),
+        "an app redeems no founding link: {theirs}"
+    );
+    let (refused, why) = call(ADA, APP, "devices#found");
+    assert!(refused, "an app made a person: {why}");
+
+    // The session redeems the secret the app could not spend, from the process the sign-in
+    // named.
+    let linked = ask(
+        ADA,
+        SESSION,
+        json!({"native": "shells#link", "token": token.clone()}),
+    );
+    assert_eq!(linked["founding"], true, "{linked}");
+
+    // Another program of the account has no link, and makes no person.
+    let theirs = ask(ADA, PROGRAM, json!({"native": "shells#link"}));
+    assert!(
+        theirs["error"].is_string(),
+        "another program is no seat a link was admitted for: {theirs}"
+    );
+    let (refused, why) = call(ADA, PROGRAM, "devices#found");
+    assert!(refused, "another program made a person: {why}");
 }
 
 /// A call a person's program made over the action wire, still running as the person's part

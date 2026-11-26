@@ -1597,7 +1597,12 @@ impl Native {
         // Under the system unit root acts as the device, saying who signed in and who left:
         // answered at once, never held while the person's services start. A person's own daemon
         // that runs as root (a container's, a sandbox's) serves root as its own account.
-        if !seated.seat.admitted.served() || (seated.seat.uid == ROOT && self.seats.system()) {
+        // The session a sign-in answered a founding link reaches the device's own actions about
+        // the person it makes or joins, and nothing of a person's.
+        if !seated.seat.admitted.served()
+            || matches!(seated.seat.admitted, Admitted::Founding { .. })
+            || (seated.seat.uid == ROOT && self.seats.system())
+        {
             return self.device_only(stream, slot, seated);
         }
         // A process the daemon started is the app it runs, and reaches that app's own actions
@@ -1655,7 +1660,9 @@ impl Native {
         slot: ConnectionSlot,
         seated: Seated,
     ) {
-        let served = if asks_the_device_key(&stream) {
+        let served = if asks_the_device_key(&stream)
+            || (seated.seat.founding && asks_the_founding(&stream))
+        {
             self.device_only(stream, slot, seated)
         } else {
             person(stream, Vec::new(), slot, seated)
@@ -2843,6 +2850,44 @@ fn follows_a_call(_stream: &Stream) -> bool {
 /// Whether `stream`'s first line asks what the device key does ([`crate::device::key_use`]): one
 /// the device's own actions answer. Looked at without being read, so whoever serves the
 /// connection reads it, descriptors and all, as it always has.
+/// Whether a connection from the session a sign-in answered a founding link asks one of the
+/// device's actions that session makes or joins its person with, even once it is the person's:
+/// the setup's way into a device whose services answer as them.
+fn asks_the_founding(stream: &Stream) -> bool {
+    /// How long a request has to say itself on the connection it opens.
+    const SAYS_WITHIN: Duration = Duration::from_secs(1);
+    let mut line = vec![0_u8; 64 * 1024];
+    let read = tilo_socket::peek(stream, &mut line, SAYS_WITHIN).unwrap_or(0);
+    let Some(line) = line
+        .get(..read)
+        .and_then(|read| read.split(|byte| *byte == b'\n').next())
+    else {
+        return false;
+    };
+    let Ok(request) = serde_json::from_slice::<Value>(line) else {
+        return false;
+    };
+    let params = request.get("params");
+    request.get("method").and_then(Value::as_str) == Some("tools/call")
+        && params
+            .and_then(|params| params.get("name"))
+            .and_then(Value::as_str)
+            == Some("tilo_do")
+        && params
+            .and_then(|params| params.get("arguments"))
+            .and_then(|arguments| arguments.get("path"))
+            .and_then(Value::as_str)
+            .is_some_and(|path| {
+                use tilo_device_identity::login::{FOUND, LOG_IN, RESTORE};
+                path.strip_prefix(tilo_device_identity::login::RESOURCE)
+                    .and_then(|action| action.strip_prefix('#'))
+                    .is_some_and(|action| {
+                        matches!(action, FOUND | RESTORE | LOG_IN)
+                            || action == crate::device::ticket::INFO
+                    })
+            })
+}
+
 fn asks_the_device_key(stream: &Stream) -> bool {
     // A program asking the key writes its whole request as it connects: one that says nothing
     // within this is no such request, and is served as any other.

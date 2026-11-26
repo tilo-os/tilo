@@ -64,7 +64,7 @@ const SIGNED_IN: &str = "signed-in";
 const LEFT: &str = "left";
 /// Hand the certificate of the key an account acts as: `{cert}`, its canonical bytes as hex.
 /// The account's own to call.
-const CERTIFIED: &str = "certified";
+pub(crate) const CERTIFIED: &str = "certified";
 /// Who this connection is: `{person?, device, label?, claimed}`.
 const WHO: &str = "account#who";
 /// Start the person's shell: `{args, env}`, the shell's arguments and environment, answered
@@ -302,6 +302,9 @@ pub(crate) struct Seat {
     pub(crate) admitted: Admitted,
     /// The app the process was started as, when it is one the daemon started.
     pub(crate) app: Option<AppAt>,
+    /// Whether this process is the session the daemon answered a founding link: it asks this
+    /// device's own actions about the person it made or joined, and nothing of a person's.
+    pub(crate) founding: bool,
 }
 
 /// What the daemon does for the person its seats admit, once their services run.
@@ -351,6 +354,18 @@ pub(crate) trait Shells: Send + Sync {
     ) -> io::Result<Child>;
 }
 
+/// What a seat's link was admitted for, kept here for as long as the daemon runs: the process a
+/// sign-in's founding link was redeemed from, or the process whose shell link became a person's.
+#[derive(Clone, Copy)]
+enum SeatLink {
+    /// A sign-in with no person yet answered this process a founding link: it may make a person
+    /// or join one until it is the person's.
+    Founding,
+    /// The process acts for `person`: its connections may reach them, and its shell asks for
+    /// their link again after a restart.
+    Person([u8; 32]),
+}
+
 /// The daemon's seats: its admission, and the device it answers for.
 #[derive(Clone)]
 pub(crate) struct Seats {
@@ -367,6 +382,12 @@ pub(crate) struct Seats {
     /// The key each account signed in as another person than the device's acts as, by uid,
     /// until it left.
     keys: Arc<Mutex<HashMap<u32, SigningKey>>>,
+    /// The one-use secrets a founding sign-in answers, each for the account that may redeem it,
+    /// until a process redeems it as its link.
+    founding: Arc<Mutex<HashMap<[u8; 32], u32>>>,
+    /// The seats whose links were admitted, by account and process, for as long as this daemon
+    /// runs.
+    links: Arc<Mutex<HashMap<(u32, u32), SeatLink>>>,
 }
 
 impl Seats {
@@ -379,6 +400,8 @@ impl Seats {
             shells: Arc::new(tokio::sync::watch::channel(None).0),
             started: Arc::default(),
             keys: Arc::default(),
+            founding: Arc::default(),
+            links: Arc::default(),
         }
     }
 
@@ -405,15 +428,19 @@ impl Seats {
 
     /// Whether the account `seat` may make a person ([`FOUND`]) and has none yet: `Ok(false)`
     /// when it has one already, and refused when it is no account that makes one. Under the
-    /// system unit any account signed in on the computer makes its own person; a person's own
-    /// daemon makes one for its own account while the device has none. Root under the system
-    /// unit, an account nobody signed in and a stranger to a person's own daemon make none.
+    /// system unit the account's session makes its person by the founding link its sign-in
+    /// answered; a person's own daemon makes one for its own account while the device has none.
+    /// Root under the system unit, an account nobody signed in, a program of the account and a
+    /// stranger to a person's own daemon make none.
     ///
     /// [`FOUND`]: tilo_device_identity::login::FOUND
     pub(crate) fn may_found(&self, seat: &Seat) -> Result<bool, &'static str> {
         const NOT_SIGNED_IN: &str =
             "only an account signed in on this computer starts a person on it";
-        if seat.uid == u32::MAX {
+        const NOT_THE_LINK: &str =
+            "only the session this computer signed in, with the link its sign-in answered, \
+             starts a person on it";
+        if seat.uid == u32::MAX || seat.app.is_some() {
             return Err(NOT_SIGNED_IN);
         }
         if !self.admission.system() {
@@ -423,10 +450,14 @@ impl Seats {
                 Err(NOT_SIGNED_IN)
             };
         }
+        // The account's session reaches the daemon by the founding link its sign-in answered:
+        // nothing else of the account makes a person, as no shell program and no app is that
+        // session.
         if seat.uid == ROOT
-            || seat.admitted != Admitted::Device && !self.admission.signed_in_now(seat.uid)
+            || seat.admitted != Admitted::Device
+                && !matches!(seat.admitted, Admitted::Founding { .. })
         {
-            return Err(NOT_SIGNED_IN);
+            return Err(NOT_THE_LINK);
         }
         Ok(!self.admission.has_person(seat.uid))
     }
@@ -442,6 +473,51 @@ impl Seats {
         self.admission.founded_by(seat.uid, person)?;
         // The key the account signed in with acts for it from now on, as its certificate comes.
         self.admission.founded(seat.uid, person)
+    }
+
+    /// A one-use secret the sign-in of the account `uid` answers for its session's founding
+    /// link: the process that redeems it may make a person or join one, and reaches nothing else
+    /// of a person's until it does.
+    pub(crate) fn founding_token(&self, uid: u32) -> [u8; 32] {
+        let token: [u8; 32] = rand::random();
+        self.founding.lock_recover().insert(token, uid);
+        token
+    }
+
+    /// The account `token`, a founding one-use secret, was made for, without taking it.
+    fn founding_holder(&self, token: &[u8; 32]) -> Option<u32> {
+        self.founding.lock_recover().get(token).copied()
+    }
+
+    /// The account `token`, a founding one-use secret, was made for, once: the secret admits one
+    /// founding link and no other.
+    fn redeem_founding(&self, token: &[u8; 32]) -> Option<u32> {
+        self.founding.lock_recover().remove(token)
+    }
+
+    /// Keep that the seat `(uid, pid)` redeems a founding link: the process this daemon admits
+    /// as the account's session.
+    fn record_founding(&self, uid: u32, pid: u32) {
+        self.links
+            .lock_recover()
+            .insert((uid, pid), SeatLink::Founding);
+    }
+
+    /// Keep that the seat `(uid, pid)` acts for `person` from now on: the session its founding
+    /// link made.
+    fn record_person(&self, uid: u32, pid: u32, person: [u8; 32]) {
+        self.links
+            .lock_recover()
+            .insert((uid, pid), SeatLink::Person(person));
+    }
+
+    /// The person the seat `(uid, pid)` acts for, when a founding link or a person's link was
+    /// admitted for it here.
+    pub(crate) fn seated_person(&self, uid: u32, pid: u32) -> Option<[u8; 32]> {
+        match self.links.lock_recover().get(&(uid, pid)) {
+            Some(SeatLink::Person(person)) => Some(*person),
+            Some(SeatLink::Founding) | None => None,
+        }
     }
 
     /// Serve the person's shells with `shells` from now on: what a sign-in and a shell's start do.
@@ -466,16 +542,15 @@ impl Seats {
                     pid: None,
                     admitted: Admitted::Stranger,
                     app: None,
+                    founding: false,
                 };
             }
         };
-        let admitted = self.admission.admit(peer.uid);
+        let mut admitted = self.admission.admit(peer.uid);
         // A process the daemon started is the app it runs, with that app's grants and no more:
         // never the account it runs as. Any other process of the account is that account alone.
-        let app = admitted
-            .served()
-            .then_some(peer.pid)
-            .flatten()
+        let app = peer
+            .pid
             .and_then(|pid| {
                 let app_of = self
                     .app_of
@@ -492,11 +567,34 @@ impl Seats {
                 workspace,
                 pid,
             });
+        // The session a sign-in answered a founding link is its own connection, never an app's
+        // or another program's of the account: it reaches the device's actions about the person
+        // it made or joined, and once it is that person, theirs.
+        let mut founding = false;
+        if let Some(pid) = peer.pid.filter(|_| app.is_none()) {
+            match self.links.lock_recover().get(&(peer.uid, pid)).cloned() {
+                Some(SeatLink::Founding) => {
+                    let key = self
+                        .admission
+                        .founding(peer.uid)
+                        .or_else(|| self.admission.awaiting(peer.uid).map(|(_, key)| key))
+                        .unwrap_or_default();
+                    admitted = Admitted::Founding { key };
+                    founding = true;
+                }
+                Some(SeatLink::Person(person)) if self.device.person() == Some(person) => {
+                    admitted = Admitted::Person(person);
+                    founding = true;
+                }
+                Some(SeatLink::Person(_)) | None => {}
+            }
+        }
         Seat {
             uid: peer.uid,
             pid: peer.pid,
             admitted,
             app,
+            founding,
         }
     }
 
@@ -613,6 +711,7 @@ impl Seats {
             .and_then(|token| <[u8; 32]>::try_from(token).ok());
         let seats = self.clone();
         let (uid, pid, admitted) = (seat.uid, seat.pid, seat.admitted);
+        let is_app = seat.app.is_some();
         Answer::InOrder(Box::pin(async move {
             let refusal = |why: String| Ok(Some(json!({"error": why})));
             let Some(pid) = pid else {
@@ -622,6 +721,28 @@ impl Seats {
                 );
             };
             let seat_id = seat_id(uid, pid);
+            // A founding link is the sign-in's, not a shell's: the session that redeems it is
+            // tied to the account that signed in, and it reaches the device's own actions about
+            // the person it makes or joins. An app is never that session, and never spends its
+            // secret.
+            if let Some(token) = token
+                && let Some(holder) = seats.founding_holder(&token)
+            {
+                if is_app {
+                    return refusal(
+                        "an app is no session this computer signed in: it gets no founding link"
+                            .to_owned(),
+                    );
+                }
+                if holder != uid {
+                    return refusal(
+                        "this founding link was made for another account's sign-in".to_owned(),
+                    );
+                }
+                let _ = seats.redeem_founding(&token);
+                seats.record_founding(uid, pid);
+                return Ok(Some(json!({"founding": true, "shell": false})));
+            }
             // The person's services answer at once when they run, and a shell asks again shortly
             // while they start: no link request waits on them here.
             let Some(shells) = seats.shells.borrow().clone() else {
@@ -647,7 +768,10 @@ impl Seats {
                 }
                 holder
             } else {
-                let Some(person) = seats.recorded_seat(uid, pid) else {
+                let Some(person) = seats
+                    .seated_person(uid, pid)
+                    .or_else(|| seats.recorded_seat(uid, pid))
+                else {
                     return refusal(
                         "this process is no seat a shell link was admitted for: ask for one with the token the daemon gave it"
                             .to_owned(),
@@ -674,6 +798,7 @@ impl Seats {
             if let Err(error) = seats.remember_seat(uid, pid, person) {
                 tracing::warn!(%error, "a seat's shell link is admitted but not kept");
             }
+            seats.record_person(uid, pid, person);
             *handed.lock_recover() = Some(runtime_portal::packet::descriptor_of(stream));
             Ok(Some(json!({"shell": true, "pid": pid})))
         }))
@@ -688,7 +813,9 @@ impl Seats {
             // The daemon's own account, and root, are the device: it acts as the person its own
             // services run for, which is the person it made the token for.
             Admitted::Device => shells.serves(person),
-            Admitted::Stranger => false,
+            // A founding link reaches the person only once it is theirs, by their account's
+            // certified key: the same connection asks again for its person's link then.
+            Admitted::Founding { .. } | Admitted::Stranger => false,
         }
     }
 
@@ -818,7 +945,18 @@ impl Seats {
             ));
         }
         let key = cert.device_public_key;
+        let person = cert.user_public_key;
         self.admission.certified(seat.uid, cert)?;
+        // The session whose founding link this was is the person's from now on: its next
+        // connections, and the link it asks for, reach them with no restart.
+        if let Some(pid) = seat.pid
+            && matches!(
+                self.links.lock_recover().get(&(seat.uid, pid)),
+                Some(SeatLink::Founding)
+            )
+        {
+            self.record_person(seat.uid, pid, person);
+        }
         Ok(json!({"key": hex::encode(key)}))
     }
 
@@ -882,12 +1020,18 @@ impl Seats {
             held
         } else {
             let Some(named) = named else {
-                // No identity yet: the account may make one here, then certify its key.
+                // No identity yet: the account may make one here, then certify its key. Its
+                // session is given the founding link that lets it do so and nothing more.
                 let key = SigningKey::from_bytes(&rand::random());
                 self.admission
                     .signed_in_founding(seat.uid, uid, key.verifying_key().to_bytes())?;
                 self.keys.lock_recover().insert(uid, key);
-                return Ok(json!({"founding": true, "shell": false}));
+                let token = self.founding_token(uid);
+                return Ok(json!({
+                    "founding": true,
+                    "shell": true,
+                    "token": hex::encode(token),
+                }));
             };
             // The device's own person is the account recorded as having set them up here, never
             // one that only names them: naming them would act as them.
@@ -958,7 +1102,7 @@ impl Seats {
             Admitted::Person(person) | Admitted::Key { person, .. } => Some(person),
             // A person's own service is that person's; the system's daemon and root are none.
             Admitted::Device if !self.admission.system() => self.device.person(),
-            Admitted::Device | Admitted::Stranger => None,
+            Admitted::Device | Admitted::Founding { .. } | Admitted::Stranger => None,
         };
         // The person and the label only where there is one: a computer nobody set up is its
         // device alone.
@@ -986,6 +1130,19 @@ impl Seats {
             Admitted::Key { key, .. } => {
                 who.insert("key".into(), json!(hex::encode(key)));
             }
+            // The session a sign-in answered a founding link: it may make its person, and once
+            // it has, certifies the key this computer made it.
+            Admitted::Founding { key } => {
+                if let Some((person, key)) = self.admission.awaiting(seat.uid) {
+                    who.insert(
+                        "certify".into(),
+                        json!({"person": hex::encode(person), "key": hex::encode(key)}),
+                    );
+                } else {
+                    who.insert("founding".into(), json!(true));
+                    who.insert("key".into(), json!(hex::encode(key)));
+                }
+            }
             // An account that signed in as another person, and has yet to certify its key.
             Admitted::Stranger => {
                 if let Some((person, key)) = self.admission.awaiting(seat.uid) {
@@ -1012,7 +1169,7 @@ impl Seats {
         let own_account = match seat.admitted {
             Admitted::Person(_) => true,
             Admitted::Device => !self.admission.system() && self.device.person().is_some(),
-            Admitted::Key { .. } | Admitted::Stranger => false,
+            Admitted::Key { .. } | Admitted::Founding { .. } | Admitted::Stranger => false,
         };
         if own_account && let Some(home) = crate::device::home() {
             who.insert("home".into(), tilo_api::daemon::who::home_answer(&home));

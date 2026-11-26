@@ -136,7 +136,10 @@ fn main() -> std::process::ExitCode {
     // distribution Tilo was added to, a development session beside the service it started) is
     // started as the person's shell by that service, which hands it the link it is admitted by;
     // this process only stands in for it.
-    if tilo_session::shell_start::asks_the_service(host_desktop, launch_link.is_some()) {
+    if tilo_session::shell_start::asks_the_service(
+        host_desktop,
+        !matches!(&launch_link, tilo_session::shell_start::Launch::None),
+    ) {
         return tilo_session::shell_start::through_the_service(&args);
     }
     // The shell placing, drawing and answering a window is what a person waits
@@ -171,6 +174,15 @@ fn main() -> std::process::ExitCode {
     tilo_app_launch::name_installed_surfaces();
     let Some(line) = command_line(ours) else {
         return ExitCode::FAILURE;
+    };
+    // The sign-in answered this session a founding link, not a shell's: the person it made or
+    // joined is here now, so the session asks its service for their link before it starts. A
+    // service that never answers leaves the session reading no workspace, as any other the
+    // daemon did not start.
+    let launch_link = match launch_link {
+        tilo_session::shell_start::Launch::Founding => tilo_session::shell_start::founding_link(),
+        tilo_session::shell_start::Launch::Shell(link) => Some(link),
+        tilo_session::shell_start::Launch::None => None,
     };
     start(ours, command, line, host_desktop, &identity, launch_link)
 }

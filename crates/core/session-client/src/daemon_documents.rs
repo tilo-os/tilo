@@ -48,21 +48,36 @@ pub fn inherited_link(
     Ok(ShellClient::open(link))
 }
 
-/// Ask the daemon at `socket` for a shell link, handing `token` when the daemon started this
-/// session with one: the same typed request a desktop makes when its link ended, made once to
-/// get the first.
+/// What asking the daemon for a link with a one-use secret answered: the shell's link, or that
+/// the secret admits a founding link, which is no shell's.
+pub enum ShellLinkAnswer {
+    /// The descriptor of the link the secret admits.
+    Shell(std::os::fd::OwnedFd),
+    /// The secret is the sign-in's founding one: this process may make or join this computer's
+    /// person, and asks again for a person's link once it has.
+    Founding,
+}
+
+/// Ask the daemon at `socket` for a link, handing `token` when the daemon started this session
+/// with one: the same typed request a desktop makes when its link ended, made once to get the
+/// first.
 ///
 /// # Errors
 /// The daemon did not answer, refused the token, or answered no link.
-pub fn link_from_token(
+pub fn link_with(
     socket: &std::path::Path,
-    token: &str,
-) -> Result<std::os::fd::OwnedFd, String> {
+    token: Option<&str>,
+) -> Result<ShellLinkAnswer, String> {
     use std::io::Write as _;
     let mut stream = tilo_socket::connect(socket)
         .map_err(|error| format!("this device's daemon at {}: {error}", socket.display()))?;
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
-    let request = serde_json::json!({"native": "shells#link", "token": token}).to_string() + "\n";
+    let request = match token {
+        Some(token) => serde_json::json!({"native": "shells#link", "token": token}),
+        None => serde_json::json!({"native": "shells#link"}),
+    }
+    .to_string()
+        + "\n";
     stream
         .write_all(request.as_bytes())
         .map_err(|error| format!("this device's daemon at {}: {error}", socket.display()))?;
@@ -75,10 +90,31 @@ pub fn link_from_token(
             "this device's daemon refused the shell's link: {why}"
         ));
     }
-    descriptors
-        .into_iter()
-        .next()
-        .ok_or_else(|| format!("this device's daemon answered no link: {answer}"))
+    match descriptors.into_iter().next() {
+        Some(link) => Ok(ShellLinkAnswer::Shell(link)),
+        None if answer.get("founding").and_then(serde_json::Value::as_bool) == Some(true) => {
+            Ok(ShellLinkAnswer::Founding)
+        }
+        None => Err(format!("this device's daemon answered no link: {answer}")),
+    }
+}
+
+/// [`link_with`] with the one-use secret the daemon gave this session, answering the descriptor
+/// of the shell's link.
+///
+/// # Errors
+/// The daemon did not answer, refused the token, or answered no link — a founding link, which
+/// is no shell's, among them.
+pub fn link_from_token(
+    socket: &std::path::Path,
+    token: &str,
+) -> Result<std::os::fd::OwnedFd, String> {
+    match link_with(socket, Some(token))? {
+        ShellLinkAnswer::Shell(link) => Ok(link),
+        ShellLinkAnswer::Founding => Err(
+            "this device's daemon answered the sign-in's founding link, not a shell's".to_owned(),
+        ),
+    }
 }
 
 /// How long a blocking ask may wait before it says where it waits from, and again each time it

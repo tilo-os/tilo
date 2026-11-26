@@ -24,6 +24,7 @@ use tilo_actions::remote::{
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
+use tilo_api::daemon::admission::Admitted;
 use tilo_device_identity::login::{
     ALREADY_A_PERSONS, ANOTHER_PERSONS_WORDS, Device, FOUND, LOG_IN, PROVIDER, Place, RESOURCE,
     RESTORE, SET_UP_UNLOCK,
@@ -53,6 +54,21 @@ const STILL_STARTING: &str =
 const NO_PERSON: &str = "this device has no person yet: set it up with `tilo login \
                          --new-identity`, or log it in with a ticket from one of your devices \
                          (`tilo login <ticket>`) first";
+/// What the session a sign-in answered a founding link is told when it asks this device anything
+/// making or joining a person does not: it reaches no more of the computer than that.
+pub(crate) const FOUNDING_SETUP_ONLY: &str = "this computer is setting up its person: the \
+    session this sign-in started may make one or join one, and asks nothing else of the device \
+    until it has";
+/// Whether `action` of the provider `provider` is one a session making or joining a person asks:
+/// making one, bringing one back, logging in with a ticket, what the device is, and the seats'
+/// own action certifying the key this computer made the account.
+fn answers_a_founding_setup(provider: &str, action: &str) -> bool {
+    use tilo_device_identity::login::{FOUND, LOG_IN, RESTORE};
+    if provider == crate::seats::PROVIDER {
+        return action == crate::seats::CERTIFIED;
+    }
+    provider == PROVIDER && matches!(action, FOUND | RESTORE | LOG_IN | INFO)
+}
 /// What a founding call reports as it makes the person and starts their part.
 pub(crate) const FOUNDING_STARTING: &str = "starting the person part";
 /// What it reports while it waits for them to found their own workspace here.
@@ -1003,6 +1019,17 @@ impl ActionProvider for DeviceOnly {
         let invocation = request.invocation;
         if let Some(state) = self.0.founding.calls().lock_recover().get(&invocation) {
             return Pending::ready(Ok(state.receipt()));
+        }
+        // The session the sign-in answered a founding link asks only what makes or joins its
+        // person: the device's own actions about the person, and nothing else until it has one.
+        if let Some(seated) = &self.1
+            && (seated.seat.founding
+                || matches!(seated.seat.admitted, Admitted::Founding { .. }))
+            && !answers_a_founding_setup(&request.target.provider, &request.target.address.action)
+        {
+            return Pending::ready(Err(ActionCallError::Refused {
+                reason: FOUNDING_SETUP_ONLY.into(),
+            }));
         }
         if let Some(cache) = self.packages()
             && cache.serves(&request.target.provider)
