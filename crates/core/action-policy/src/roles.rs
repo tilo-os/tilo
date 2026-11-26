@@ -328,6 +328,11 @@ pub fn administrator_grant_id(person: &str) -> GrantId {
 /// what they hold ([`crate::Refusal::AboveActorGrant`]). A ban or a live
 /// restriction on them stops their governance with the rest of their
 /// changes ([`crate::WorkspacePolicy::check_action`]).
+///
+/// Workspaces written before this grant took [`governance_actions`] held it on
+/// [`workspace_resource`], where the Editor's own Deny at the same node
+/// outranked it; [`is_legacy_administrator_grant`] finds those and
+/// [`current_administrator_grant`] reads them as this grant.
 #[must_use]
 pub fn administrator_grant(workspace: &str, person: &str, granted_by: Grantee) -> Grant {
     Grant {
@@ -338,6 +343,38 @@ pub fn administrator_grant(workspace: &str, person: &str, granted_by: Grantee) -
         answer: Answer::Allow,
         lifetime: Lifetime::UntilRevoked,
         granted_by,
+    }
+}
+
+/// Whether `grant` is an administrator's grant of `workspace` in the shape
+/// workspaces held before [`administrator_grant`]: the owner's lasting Allow on
+/// the workspace's resource, where the Editor's own Deny at the same node
+/// outranked it. Anything else under the id (a Deny, an expiring grant) is not
+/// one, so reading it as [`administrator_grant`] never widens it.
+#[must_use]
+pub fn is_legacy_administrator_grant(workspace: &str, grant: &Grant) -> bool {
+    grant
+        .grantee
+        .person_id()
+        .is_some_and(|person| grant.id == administrator_grant_id(person))
+        && grant.node == workspace_resource(workspace)
+        && grant.answer == Answer::Allow
+        && grant.lifetime == Lifetime::UntilRevoked
+}
+
+/// `grant` as the workspace's policy holds it: an administrator's grant of the
+/// shape workspaces held before [`administrator_grant`] becomes that grant,
+/// keeping its id and giver, so whom it makes an administrator is one on every
+/// device that reads the change ([`is_legacy_administrator_grant`]). Every
+/// other grant is itself.
+#[must_use]
+pub fn current_administrator_grant(workspace: &str, grant: Grant) -> Grant {
+    let person = grant.grantee.person_id().map(str::to_owned);
+    match person {
+        Some(person) if is_legacy_administrator_grant(workspace, &grant) => {
+            administrator_grant(workspace, &person, grant.granted_by)
+        }
+        _ => grant,
     }
 }
 

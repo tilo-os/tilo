@@ -1199,6 +1199,15 @@ impl WorkspacePolicy {
                 // share), and the share stays whose it is. Nothing here reads
                 // this device's own state, so every device reads the same
                 // change the same way.
+                //
+                // An administrator's grant from before it named every
+                // governance action sits on the workspace's resource, where
+                // the Editor's own Deny outranks it. Its person was given
+                // every governance action then too, so the grant is read as
+                // the one that says so: no administrator loses their
+                // governance, and every device reads the change alike
+                // ([`roles::current_administrator_grant`]).
+                let grant = roles::current_administrator_grant(&self.workspace, grant);
                 self.grants.push(grant);
             }
             Change::Revoke(id) => self.grants.retain(|grant| grant.id != id),
