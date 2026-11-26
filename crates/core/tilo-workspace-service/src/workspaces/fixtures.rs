@@ -85,7 +85,8 @@ pub fn guest_device() -> (SigningKey, DeviceCert) {
 }
 
 /// A new device of `root`'s person, labelled `label` and certified with
-/// `capabilities`: the key it signs with and its certificate.
+/// `capabilities`: the key it signs with and its certificate. An agent's grant
+/// always ends, so a certificate carrying one is valid for the hour around now.
 ///
 /// # Panics
 ///
@@ -97,13 +98,23 @@ pub fn device_cert(
     capabilities: DeviceCapabilities,
 ) -> (SigningKey, DeviceCert) {
     let key = SigningKey::from_bytes(&rand::random());
+    let (issued_at_ns, expires_at_ns) = if capabilities.agent.is_some() && !capabilities.server_key
+    {
+        let now = tilo_clock::unix_now_ns();
+        (
+            now.saturating_sub(1_800_000_000_000),
+            Some(now.saturating_add(1_800_000_000_000)),
+        )
+    } else {
+        (1, None)
+    };
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: key.verifying_key().to_bytes(),
         device_label: label.into(),
         capabilities,
-        issued_at_ns: 1,
-        expires_at_ns: None,
+        issued_at_ns,
+        expires_at_ns,
         signature: [0; 64],
         issuer: None,
     };

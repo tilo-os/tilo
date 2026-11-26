@@ -1037,19 +1037,7 @@ fn keyed_device_of(
     label: &str,
     capabilities: DeviceCapabilities,
 ) -> (SigningKey, DeviceCert) {
-    let key = SigningKey::from_bytes(&rand::random());
-    let mut cert = DeviceCert {
-        user_public_key: person.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.into(),
-        capabilities,
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, person).unwrap();
-    (key, cert)
+    crate::workspaces::fixtures::device_cert(person, label, capabilities)
 }
 
 /// Someone a deployment's operator declares an owner of a workspace nobody is
