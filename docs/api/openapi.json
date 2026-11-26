@@ -9071,12 +9071,6 @@
               },
               "label": {
                 "type": "string"
-              },
-              "lookGrant": {
-                "type": [
-                  "string",
-                  "null"
-                ]
               }
             },
             "required": [
@@ -9132,6 +9126,12 @@
             ]
           },
           "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "look_grant": {
             "type": [
               "string",
               "null"

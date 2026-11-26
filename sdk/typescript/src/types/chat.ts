@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@cade1d94f7591781";
+export const SURFACE = "so.tilo.chat@073d1a40a84e8db1";
 
 export interface Category {
   name: string;
@@ -382,7 +382,6 @@ export interface Starting {
   kind: string;
   label: string;
   key: string;
-  lookGrant: string | null;
 }
 
 export interface Step {
@@ -781,6 +780,7 @@ export interface AskAgentArgs {
   cause: Starting;
   members?: unknown[];
   message?: string;
+  look_grant?: string;
 }
 
 /** The arguments of `stop-agent`. */
@@ -1209,6 +1209,7 @@ export interface Messages extends tilo.Resource {
     cause: Starting;
     members?: unknown[];
     message?: string;
+    look_grant?: string;
   }): Promise<void>;
   /** Runs `ask-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   askAgentMany(items: AskAgentArgs[]): Promise<tilo.ActionAnswer[]>;

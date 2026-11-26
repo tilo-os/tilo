@@ -469,7 +469,6 @@ class Starting(TypedDict):
     kind: str
     label: str
     key: str
-    lookGrant: str | None
 
 class Step(TypedDict):
     id: str
@@ -849,6 +848,7 @@ AskAgentArgs = TypedDict("AskAgentArgs", {
     "cause": "Starting",
     "members": NotRequired["list[Any] | None"],
     "message": NotRequired["str | None"],
+    "look_grant": NotRequired["str | None"],
 })
 """The arguments of `ask-agent`."""
 
@@ -989,7 +989,7 @@ ForgetSkillArgs = TypedDict("ForgetSkillArgs", {
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@cade1d94f7591781"
+    __surface__ = "so.tilo.chat@073d1a40a84e8db1"
     @property
     def categories(self) -> list[Entry[Category]]:
         """Read only."""
@@ -1272,7 +1272,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@cade1d94f7591781"
+    __surface__ = "so.tilo.chat@073d1a40a84e8db1"
     @property
     def messages(self) -> list[Entry[Message]]:
         """Read only."""
@@ -1632,6 +1632,7 @@ class Messages(Resource):
         cause: Starting,
         members: list[Any] | None = None,
         message: str | None = None,
+        look_grant: str | None = None,
     ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
@@ -1642,6 +1643,8 @@ class Messages(Resource):
             args["members"] = members
         if message is not None:
             args["message"] = message
+        if look_grant is not None:
+            args["look_grant"] = look_grant
         return self.action("ask-agent", **args)
 
     def ask_agent_many(self, items: list[AskAgentArgs]) -> list[dict[str, Any]]:
@@ -1746,7 +1749,7 @@ class Messages(Resource):
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@cade1d94f7591781"
+    __surface__ = "so.tilo.chat@073d1a40a84e8db1"
     drafts: dict[str, str]
     @property
     def imported(self) -> list[str]:
@@ -1781,7 +1784,7 @@ class Drafts(Resource):
 
 class Moderation(Resource):
     """Moderation — `tilo.moderation`."""
-    __surface__ = "so.tilo.chat@cade1d94f7591781"
+    __surface__ = "so.tilo.chat@073d1a40a84e8db1"
     @property
     def reports(self) -> list[Entry[Report]]:
         """Read only."""
@@ -1849,7 +1852,7 @@ class Moderation(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@cade1d94f7591781"
+    __surface__ = "so.tilo.chat@073d1a40a84e8db1"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -1887,7 +1890,7 @@ class WorkspaceEmoji(Resource):
 
 class Skills(Resource):
     """Workspace Skills — `chat.skills`."""
-    __surface__ = "so.tilo.chat@cade1d94f7591781"
+    __surface__ = "so.tilo.chat@073d1a40a84e8db1"
     @property
     def skills(self) -> list[Entry[Skill]]:
         """Read only."""

@@ -784,9 +784,10 @@ kind = "undoable"
 params = [
   { name = "text", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
   { name = "channel", type = "text", required = true, schema = { type = "string" } },
-  { name = "cause", type = { named = "Starting" }, required = true, schema = { type = "object", additionalProperties = false, properties = { key = { type = "string" }, kind = { type = "string" }, label = { type = "string" }, lookGrant = { type = ["string", "null"] } }, required = ["kind", "key"] } },
+  { name = "cause", type = { named = "Starting" }, required = true, schema = { type = "object", additionalProperties = false, properties = { key = { type = "string" }, kind = { type = "string" }, label = { type = "string" } }, required = ["kind", "key"] } },
   { name = "members", type = { option = { list = "any" } }, required = false, schema = { type = ["array", "null"], items = { oneOf = [{ type = "object", additionalProperties = false, properties = { person = { type = "string" } }, required = ["person"] }, { type = "object", additionalProperties = false, properties = { agent = { type = "string" } }, required = ["agent"] }, { type = "object", additionalProperties = false, properties = { bot = { type = "string" } }, required = ["bot"] }] } } },
   { name = "message", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "look_grant", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -1145,7 +1146,6 @@ fields = [
   { name = "kind", type = "text" },
   { name = "label", type = "text" },
   { name = "key", type = "text" },
-  { name = "lookGrant", type = { option = "text" } },
 ]
 
 [[resources.types]]
