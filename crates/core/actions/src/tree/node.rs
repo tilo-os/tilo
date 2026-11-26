@@ -433,13 +433,16 @@ impl Level {
     }
 
     /// The provider's cursor for the row the resource at `child` among the
-    /// level's rows starts at, and the revision it was read at: where a
-    /// listing's next page asks for its first resource, so that page reads
-    /// from there and not from the level's first one. A resource past the
-    /// rows read starts at the page the level goes on from; `None` only when
-    /// the rows read cover the directory whole, so there is nowhere to go on
-    /// from.
-    pub fn row_mark(&self, parent: &str, child: usize) -> Option<(Vec<u8>, String)> {
+    /// level's rows starts at, the revision it was read at, and how many
+    /// resources that cursor's page holds before it: where a listing's next
+    /// page asks for its first resource, so that page reads from there and not
+    /// from the level's first one. A provider that names its rows by offset is
+    /// asked at the row itself, so nothing of its page comes before it; one
+    /// whose cursors are its own names the page the row is in, and the
+    /// resources before it that page holds. A resource past the rows read
+    /// starts at the page the level goes on from; `None` only when the rows
+    /// read cover the directory whole, so there is nowhere to go on from.
+    pub fn row_mark(&self, parent: &str, child: usize) -> Option<(Vec<u8>, String, usize)> {
         let rows = &self.pages.rows;
         let mut seen: HashSet<&str> = HashSet::new();
         let mut at = None;
@@ -453,12 +456,19 @@ impl Level {
                 break;
             }
         }
+        let by_offset = self.pages_by_offset();
         let Some(at) = at else {
             // The page asks for a resource past those read: it stands on the
             // page the directory goes on from, if it does, and else after
             // every row read, where the directory holds nothing more.
             if let Some(rest) = self.pages.rest.as_ref() {
-                return Some((rest.cursor.clone(), rest.revision.clone()));
+                return Some((rest.cursor.clone(), rest.revision.clone(), 0));
+            }
+            if !by_offset {
+                // A provider whose cursor is its own cannot be asked for a row
+                // past the page it last handed out: the page after reads the
+                // level again from its first page.
+                return None;
             }
             let mark = self.pages.marks.last()?;
             let offset = row_offset(&mark.cursor)
@@ -469,30 +479,46 @@ impl Level {
                     .to_le_bytes()
                     .to_vec(),
                 mark.revision.clone(),
+                0,
             ));
         };
         // The marks a level leaves are pages of it, each with the provider's
-        // row cursor it started at: the rows since move that on by as many as each stands
-        // for. A row of the first page, which leaves no mark, is that many rows from the
-        // directory's start, at the revision the level was read at, where the provider's
-        // cursors are row offsets.
-        let (offset, revision) = match self.pages.marks.iter().rev().find(|mark| mark.row <= at) {
-            Some(mark) => (
-                row_offset(&mark.cursor)
-                    .saturating_add(spanned(rows.get(mark.row..at).unwrap_or_default())),
-                &mark.revision,
-            ),
-            None if !self.revision.is_empty() && self.pages_by_offset() => {
-                (spanned(rows.get(..at).unwrap_or_default()), &self.revision)
+        // cursor it started at. A provider counting rows by offset is asked at
+        // the wanted row itself: the rows since the mark move that on by as many as each
+        // stands for. One whose cursors are its own names the page the row is in, and the
+        // resources before it that page holds. A row of the first page, which leaves no
+        // mark, is that many rows from the directory's start, at the revision the level was
+        // read at, where the provider's cursors are row offsets.
+        let Some(mark) = self.pages.marks.iter().rev().find(|mark| mark.row <= at) else {
+            if self.revision.is_empty() || !by_offset {
+                return None;
             }
-            None => return None,
+            let offset = spanned(rows.get(..at).unwrap_or_default());
+            return Some((
+                u64::try_from(offset)
+                    .unwrap_or(u64::MAX)
+                    .to_le_bytes()
+                    .to_vec(),
+                self.revision.clone(),
+                0,
+            ));
         };
+        if !by_offset {
+            return Some((
+                mark.cursor.clone(),
+                mark.revision.clone(),
+                distinct_children(rows.get(mark.row..at).unwrap_or_default(), parent),
+            ));
+        }
+        let offset = row_offset(&mark.cursor)
+            .saturating_add(spanned(rows.get(mark.row..at).unwrap_or_default()));
         Some((
             u64::try_from(offset)
                 .unwrap_or(u64::MAX)
                 .to_le_bytes()
                 .to_vec(),
-            revision.clone(),
+            mark.revision.clone(),
+            0,
         ))
     }
 }

@@ -1018,18 +1018,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let next = (page_end < total || unread).then(|| {
             let resume = read.as_ref().and_then(|(level, first)| {
                 let node = resolved.node.as_ref()?;
-                level
-                    .row_mark(&node.id, page_end.checked_sub(*first)?)
-                    .map(|(cursor, revision)| {
+                level.row_mark(&node.id, page_end.checked_sub(*first)?).map(
+                    |(cursor, revision, skip)| {
                         (
                             PageMark {
                                 row: 0,
                                 cursor,
                                 revision,
                             },
-                            0,
+                            skip,
                         )
-                    })
+                    },
+                )
             });
             // The resource this page ends at, when it ends in the directory read.
             let after = read.as_ref().and_then(|(level, first)| {
