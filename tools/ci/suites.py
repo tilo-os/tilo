@@ -570,6 +570,10 @@ _WORD = re.compile(r"\w")
 # An include whose path a concat! builds (a macro's `concat!("../../apps/tl/", $name, "/app.tl")`):
 # the leading literal names the directory it reads under.
 _CONCAT_INCLUDE = re.compile(r'include(?:_str|_bytes)?!\s*\(\s*concat!\s*\(\s*"([^"\\]*/)')
+# `bindings!` reads its `surface` file at build time and compiles its bytes in, so it is a
+# literal include the engine cannot see in the source: the attribute names the path.
+BINDINGS = re.compile(r'\bbindings!\s*\(([^)]*)\)')
+SURFACE_ATTRIBUTE = re.compile(r'\bsurface\s*=\s*"([^"\\]+)"')
 
 
 def rust_includes(text: str) -> list[tuple[int, str]]:
@@ -754,9 +758,22 @@ def cross_package_reads(root: Path, tracked: list[str],
         if directory is None:
             continue
         text = (root / path).read_text(encoding="utf-8", errors="replace")
-        if "include" not in text and "path" not in text and "CARGO_MANIFEST_DIR" not in text:
+        if ("include" not in text and "path" not in text and "CARGO_MANIFEST_DIR" not in text
+                and "bindings!" not in text):
             continue
         reads: list[CrossRead] = []
+        for match in BINDINGS.finditer(text):
+            # A doc comment shows the macro with the paths of an example, not this crate's.
+            line_start = text.rfind("\n", 0, match.start()) + 1
+            if "//" in text[line_start:match.start()]:
+                continue
+            surface = SURFACE_ATTRIBUTE.search(match[1])
+            if surface is None:
+                continue
+            target = os.path.normpath(os.path.join(directory, surface[1]))
+            inside = (target + "/").startswith(directory + "/") if directory else False
+            if not inside:
+                reads.append(CrossRead(text.count("\n", 0, match.start()) + 1, target))
         for start, literal in rust_includes(text):
             target = os.path.normpath(os.path.join(path.rpartition("/")[0], literal))
             inside = (target + "/").startswith(directory + "/") if directory else not target.startswith("..")
@@ -772,12 +789,20 @@ def cross_package_reads(root: Path, tracked: list[str],
                 reads.append(CrossRead(text.count("\n", 0, match.start()) + 1, target, runtime=True))
         for match in MANIFEST_DIR.finditer(text):
             statement = STATEMENT_END.split(text[match.end():match.end() + 800], maxsplit=1)[0]
-            if CLIMB.search(statement) and not BUILD_OUTPUT.search(statement):
+            if BUILD_OUTPUT.search(statement):
+                continue
+            # A climb in this statement reads at once; a name the statement binds can carry the
+            # root to a climb in a later one, which runtime_reads follows.
+            followed = runtime_reads(text, directory, match)
+            climbs = CLIMB.search(statement) is not None
+            if not climbs and not followed:
+                continue
+            if climbs:
                 reads.append(CrossRead(text.count("\n", 0, match.start()) + 1, None))
-                for offset, target, each in runtime_reads(text, directory, match):
-                    inside = (target + "/").startswith(directory + "/") if directory else True
-                    if target and not inside and target.split("/")[0] != "target":
-                        reads.append(CrossRead(text.count("\n", 0, offset) + 1, target, each, runtime=True))
+            for offset, target, each in followed:
+                inside = (target + "/").startswith(directory + "/") if directory else True
+                if target and not inside and target.split("/")[0] != "target":
+                    reads.append(CrossRead(text.count("\n", 0, offset) + 1, target, each, runtime=True))
         if reads:
             found[path] = reads
     return found

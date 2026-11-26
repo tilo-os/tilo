@@ -710,8 +710,12 @@ inputs = [
   # The base's catalogue and finish fixtures, which the widgets' tests read.
   "crates/ui/ui-base/locales/",
   "crates/ui/ui-base/tests/fixtures/finishes/",
+  # The shared test support the library's tests compile as a module.
+  "crates/ui/ui-app/tests/support/application.rs",
 ]
 readers = [
+  "crates/ui/ui-core/src/lib.rs",
+  "crates/ui/ui-core/src/activity_wire.rs",
   "crates/ui/ui-core/src/app/close_admission.rs",
   "crates/ui/ui-core/src/webview/paint.rs",
   "crates/ui/ui-core/src/theme_bundle/tests.rs",
@@ -745,14 +749,17 @@ readers = [
 
 [[cargo]]
 package = "tilo-ui-base"
-# The shader tests paint with the Liquid Glass themes.
+# The shader tests paint with the Liquid Glass themes, and the toolkit-source test reads the
+# toolkit's sources.
 inputs = [
   "crates/ui/themes/liquid-glass/theme.json",
   "crates/ui/themes/liquid-glass-light/theme.json",
+  "crates/ui/ui-core/src/",
 ]
 readers = [
   "crates/ui/ui-base/src/part_paint/shader/tests.rs",
   "crates/ui/ui-base/src/tokens/shader.rs",
+  "crates/ui/ui-base/src/host_appearance.rs",
 ]
 
 
@@ -770,7 +777,6 @@ inputs = [
 readers = [
   "crates/core/tilo-app-package/tests/app_manifests.rs",
   "crates/core/tilo-app-package/src/validate.rs",
-  "crates/core/tilo-app-package/src/view.rs",
 ]
 
 [[cargo]]
@@ -782,13 +788,18 @@ readers = ["crates/os/app-cli/tests/runtime_fetch.rs"]
 [[cargo]]
 package = "tilo-api"
 # The sign-in tests build a host's answers from the fixture file the API's image ships, so a
-# change to either checks and tests the other. Its calls of the workspace's vault bind to the
-# surface their service publishes.
+# change to either checks and tests the other. Its calls of the workspace's vault and model
+# providers bind to the surfaces their service publishes.
 inputs = [
   "os/containers/tilo-api/host-info.json",
   "crates/core/workspace-records/vault-surface.json",
+  "crates/core/workspace-records/models-surface.json",
 ]
-readers = ["crates/core/tilo-api/src/tests.rs"]
+readers = [
+  "crates/core/tilo-api/src/tests.rs",
+  "crates/core/tilo-api/src/account.rs",
+  "crates/core/tilo-api/src/calls.rs",
+]
 
 [[cargo]]
 package = "tilolang"
@@ -846,11 +857,25 @@ inputs = ["apps/tl/chat/app.ids"]
 readers = ["crates/core/tilo-app-id/src/chat.rs"]
 
 [[cargo]]
+package = "tilo-fleet-catalogue"
+# The build script compiles each app's catalogue entry and surface from the apps' sources.
+inputs = ["apps/"]
+readers = ["crates/core/fleet-catalogue/build.rs"]
+
+[[cargo]]
+package = "tilo-app-fleet"
+# The build script reads each app's committed fleet entry from its sources.
+inputs = ["apps/"]
+readers = ["crates/desktop/app-fleet/build.rs"]
+
+[[cargo]]
 package = "tilo-runtime"
-# The app listing test builds Notes from its sources.
+# The app listing test builds Notes from its sources, and the environment directory test reads
+# Terminal's surface.
 inputs = ["apps/"]
 readers = [
   "crates/core/tilo-runtime/src/device/app_listing_tests.rs",
+  "crates/core/tilo-runtime/src/device/environment_directory_tests.rs",
 ]
 
 [[cargo]]
@@ -955,6 +980,7 @@ inputs = [
   "crates/sdk/tilo-app-window/locales/en-US.ftl",
   "crates/core/tilo-contact-directory/surface.json",
   "crates/core/tilo-workspace-service/workspace-surface.json",
+  "crates/vm/environment/surface.json",
   # The runtime's version is keyed alike by the packing's shell helper and by the crate.
   "tools/apps/tilolang_packages.sh",
   "crates/lang/tilolang-process/tilo-runtime.toml",
@@ -963,7 +989,8 @@ readers = [
   "crates/lang/tilolang-tilo/examples/write_rate.rs",
   "crates/lang/tilolang-tilo/src/keyboard.rs",
   "crates/lang/tilolang-tilo/src/lib.rs",
-  "crates/lang/tilolang-tilo/src/platform_apps.rs",
+  "crates/lang/tilolang-tilo/src/onboarding.rs",
+  "crates/lang/tilolang-tilo/src/platform.rs",
   "crates/lang/tilolang-tilo/src/shell.rs",
   "crates/lang/tilolang-tilo/src/surface.rs",
   "crates/lang/tilolang-tilo/tests/agent_queries.rs",
@@ -999,21 +1026,18 @@ readers = [
   "crates/lang/tilolang-tilo/tests/monitor.rs",
   "crates/lang/tilolang-tilo/tests/naming.rs",
   "crates/lang/tilolang-tilo/tests/note_import.rs",
-  "crates/lang/tilolang-tilo/tests/settings_about.rs",
   "crates/lang/tilolang-tilo/tests/settings_billing.rs",
   "crates/lang/tilolang-tilo/tests/settings_displays.rs",
-  "crates/lang/tilolang-tilo/tests/settings_input.rs",
-  "crates/lang/tilolang-tilo/tests/settings_input_tablets.rs",
   "crates/lang/tilolang-tilo/tests/settings_panes.rs",
   "crates/lang/tilolang-tilo/tests/settings_permissions.rs",
   "crates/lang/tilolang-tilo/tests/settings_network.rs",
   "crates/lang/tilolang-tilo/tests/settings_shell.rs",
-  "crates/lang/tilolang-tilo/tests/settings_sound.rs",
-  "crates/lang/tilolang-tilo/tests/settings_windows.rs",
   "crates/lang/tilolang-tilo/tests/notebook_order.rs",
   "crates/lang/tilolang-tilo/tests/passwords_vault.rs",
   "crates/lang/tilolang-tilo/tests/notes.rs",
   "crates/lang/tilolang-tilo/tests/notes_checklist.rs",
+  "crates/lang/tilolang-tilo/tests/notes_export.rs",
+  "crates/lang/tilolang-tilo/tests/support/export_probe.rs",
   "crates/lang/tilolang-tilo/tests/effects.rs",
   "crates/lang/tilolang-tilo/tests/policy.rs",
   "crates/lang/tilolang-tilo/tests/print_centre.rs",
@@ -1064,14 +1088,9 @@ readers = ["crates/lang/tilolang-web/tests/apps.rs"]
 
 [[cargo]]
 package = "tilolang-window"
-# The window's test support compiles Settings from its sources, and reads its ids lock; the
-# Slides notes test compiles Slides from its sources.
+# The window's test support compiles Settings from its sources, and reads its ids lock.
 inputs = ["apps/tl/settings/", "apps/tl/slides/"]
-readers = [
-  "crates/lang/tilolang-window/tests/support/mod.rs",
-  "crates/lang/tilolang-window/tests/slides_notes.rs",
-  "crates/lang/tilolang-window/tests/slides_present.rs",
-]
+readers = ["crates/lang/tilolang-window/tests/support/mod.rs"]
 
 [[cargo]]
 package = "tilolang-youtube"
@@ -1081,6 +1100,7 @@ inputs = ["apps/tl/tube/", "apps/tl/playback/"]
 readers = [
   "crates/integrations/tilolang-youtube/tests/origin.rs",
   "crates/integrations/tilolang-youtube/tests/recorded_answer.rs",
+  "crates/integrations/tilolang-youtube/tests/answers_reach_their_questions.rs",
 ]
 
 [[cargo]]
@@ -1096,15 +1116,19 @@ inputs = [
   "crates/lang/tilolang-tilo/tests/native-tasks/surface.json",
   "crates/sdk/tilo-app-window/locales/",
   "crates/ui/ui-base/locales/",
+  "scripts/headless-examples/agent-tilolang/release.json",
+  "crates/core/workspace-records/accounts-surface.json",
 ]
 readers = [
   "crates/lang/tilolang-process/examples/process_cost.rs",
+  "crates/lang/tilolang-process/src/main.rs",
   "crates/lang/tilolang-process/src/task.rs",
   "crates/lang/tilolang-process/src/phrases.rs",
   "crates/lang/tilolang-process/tests/process.rs",
   "crates/lang/tilolang-process/tests/workspace_mail.rs",
   "crates/lang/tilolang-process/tests/window/hosted/tasks_board.rs",
   "crates/lang/tilolang-process/tests/window/support.rs",
+  "crates/lang/tilolang-process/tests/window/views.rs",
 ]
 
 
@@ -1342,7 +1366,7 @@ inputs = [
   "os/dev-image/usr/lib/systemd/system/tilo-vm-lan.service",
   "os/dev-image/usr/lib/NetworkManager/conf.d/40-tilo-vm-lan.conf",
 ]
-readers = ["tools/tilo-vm/src/build.rs", "tools/tilo-vm/src/app/branch_tests.rs"]
+readers = ["tools/tilo-vm/src/app/branch_tests.rs"]
 
 [[cargo]]
 package = "tilo-device-protocol"
@@ -1362,7 +1386,7 @@ inputs = [
   "os/usr/share/wayland-sessions/tilo-session.desktop",
 ]
 readers = [
-  "crates/os/tilo-device-steps/tests/jobs.rs", "crates/os/tilo-device-steps/src/systemd.rs",
+  "crates/os/tilo-device-steps/tests/jobs.rs",
   "crates/os/tilo-device-steps/src/daemon/userspace.rs",
 ]
 
@@ -1498,6 +1522,7 @@ inputs = [
 ]
 readers = [
   "crates/core/fs/src/main.rs",
+  "crates/core/fs/src/cloud/account_source.rs",
   "crates/core/fs/tests/cloud_mount.rs",
 ]
 
@@ -1506,12 +1531,14 @@ package = "tilolang-mail"
 # The connector binds its calls of the workspace's accounts to the surface their service
 # publishes.
 inputs = ["crates/core/workspace-records/accounts-surface.json"]
+readers = ["crates/integrations/tilolang-mail/src/sign_ins.rs"]
 
 [[cargo]]
 package = "tilolang-calendar"
 # The connector binds its calls of the workspace's accounts to the surface their service
 # publishes.
 inputs = ["crates/core/workspace-records/accounts-surface.json"]
+readers = ["crates/integrations/tilolang-calendar/src/sign_ins.rs"]
 
 [[cargo]]
 package = "tilo-session-core"
@@ -1521,7 +1548,9 @@ inputs = [
   "crates/core/workspace-records/accounts-surface.json",
   "crates/core/workspace-records/models-surface.json",
   "crates/core/workspace-records/vault-surface.json",
+  "crates/core/person-services/telling-surface.json",
 ]
+readers = ["crates/desktop/session-core/src/desktop/session/mcp_server_tests.rs"]
 
 [[cargo]]
 package = "compat-service"
@@ -1606,8 +1635,12 @@ package = "local-model-service"
 inputs = [
   "os/usr/share/tilo/system-extensions/local-model-catalog.json",
   "os/usr/share/tilo/system-extensions/local-model-keys.json",
+  "crates/core/workspace-records/models-surface.json",
 ]
-readers = ["crates/engines/local-model-service/src/main.rs"]
+readers = [
+  "crates/engines/local-model-service/src/main.rs",
+  "crates/engines/local-model-service/src/hub_client.rs",
+]
 
 [[cargo]]
 package = "tilo-font-catalog"
@@ -1636,6 +1669,7 @@ inputs = [
 ]
 readers = [
   "crates/core/app-host/src/vault_actions.rs",
+  "crates/core/app-host/src/collab_app_broker/action_provider/app_admission.rs",
   "crates/core/app-host/src/collab_app_broker/web_search_tests.rs",
   "crates/core/app-host/src/nearby_send/airdrop.rs",
 ]
@@ -1734,6 +1768,8 @@ inputs = [
   "crates/desktop/session/host-account-surface.json",
   # The example Rust app a test installs beside its built binary.
   "examples/apps/shared-checklist/",
+  # The theme package the installs tests lay out, built from the Bauhaus theme.
+  "crates/ui/themes/bauhaus/theme.json",
 ]
 readers = [
   "crates/desktop/session/examples/session_perf.rs",
@@ -1743,7 +1779,6 @@ readers = [
   "crates/desktop/session/src/window_share/tests/page.rs",
   "crates/desktop/session/src/window_share/tests/watching.rs",
   "crates/desktop/session/src/services/mod.rs",
-  "crates/desktop/session/src/app_wire.rs",
   "crates/desktop/session/src/shell/mod.rs",
   "crates/desktop/session/src/shell/part/places_tests.rs",
   "crates/desktop/session/src/shell/part/tests.rs",
@@ -1752,6 +1787,8 @@ readers = [
   "crates/desktop/session/tests/common/people.rs",
   "crates/desktop/session/tests/firstboot.rs",
   "crates/desktop/session/tests/session_package.rs",
+  "crates/desktop/session/tests/theme_package.rs",
+  "crates/desktop/session/tests/theme_package_process.rs",
 ]
 
 [[cargo]]
@@ -1766,7 +1803,7 @@ package = "tilo-session-client"
 # script the CI setup uses, so that script and the build it runs are read too.
 # The store's test reads an app's committed surface to check the types and verbs
 # it declares.
-inputs = ["crates/core/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/web/page-bundle.mjs", "tools/with-headless-audio.sh", "crates/core/actions/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/core/tilo-browser-runtime/scripts/build.sh", "crates/desktop/phone/tests/support/"]
+inputs = ["crates/core/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/web/page-bundle.mjs", "tools/with-headless-audio.sh", "crates/core/action-services/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/core/tilo-browser-runtime/scripts/build.sh", "crates/desktop/phone/tests/support/"]
 readers = ["crates/core/session-client/tests/voice_browsers.rs", "crates/core/session-client/tests/headless_audio_lifetime.rs", "crates/core/session-client/src/device.rs", "crates/core/session-client/tests/support/mod.rs", "crates/core/session-client/tests/flow_laptop_phone_server.rs"]
 scope = { inputs = ["crates/core/tilo-browser-runtime/web/", "tools/web/chrome.mjs"], test = "it", filter = "test(voice_browsers::)" }
 
@@ -1797,10 +1834,13 @@ readers = ["apps/staging-handoff-model/src/sizes.rs"]
 
 [[cargo]]
 package = "settings-sections"
-# The own-themes tests load the finish fixtures the toolkit's tests keep and the
-# built-in Liquid theme's document.
-inputs = ["crates/ui/ui-base/tests/fixtures/finishes/", "crates/ui/themes/liquid-glass/theme.json"]
-readers = ["crates/desktop/settings-sections/src/own_themes_tests.rs"]
+# The own-themes tests load the finish fixtures the toolkit's tests keep, the built-in Liquid
+# theme's document, and the Bauhaus theme the service test installs.
+inputs = ["crates/ui/ui-base/tests/fixtures/finishes/", "crates/ui/themes/liquid-glass/theme.json", "crates/ui/themes/bauhaus/theme.json"]
+readers = [
+  "crates/desktop/settings-sections/src/own_themes_tests.rs",
+  "crates/desktop/settings-sections/src/service/tests.rs",
+]
 
 # Exercised by a suite that is already guarded.
 
