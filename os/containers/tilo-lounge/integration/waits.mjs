@@ -57,6 +57,59 @@ export const shellMetrics = {width: SHELL.width, height: SHELL.height, deviceSca
  * joining (6), an answer crossing to another person's page (4). */
 export const stepLimit = n => n * STEP_MS;
 
+/** Keep the setup lines seen in the browser from before the installer starts.
+ * CDP delivers their text to this driver, which survives document replacement.
+ * The browser's existing completion deadline begins once the installer returns. */
+export async function observeSetupLogin(browser, tab, agent, login, timeout = stepLimit(4)) {
+  const binding = '__tiloObservedSetupLine';
+  const lines = new Set();
+  const unlisten = browser.on(({sessionId, method, params}) => {
+    if (sessionId === tab.sessionId && method === 'Runtime.bindingCalled' && params.name === binding) {
+      lines.add(params.payload);
+    }
+  });
+  const observe = String(() => {
+    globalThis.__tiloSetupObserver?.disconnect();
+    const shown = new Set();
+    const read = () => {
+      for (const item of document.querySelectorAll('#first-screen-steps li')) {
+        const line = item.textContent.trim();
+        if (line && !shown.has(line)) {
+          shown.add(line);
+          globalThis.__tiloObservedSetupLine(line);
+        }
+      }
+    };
+    globalThis.__tiloSetupObserver = new MutationObserver(read);
+    globalThis.__tiloSetupObserver.observe(document, {subtree: true, childList: true, characterData: true});
+    read();
+  });
+  const source = '(' + observe + ')()';
+  let script;
+  try {
+    const attached = await tab.send('Runtime.addBinding', {name: binding});
+    if (attached.error) throw new Error(attached.error.message);
+    const future = await tab.send('Page.addScriptToEvaluateOnNewDocument', {source});
+    script = future.result?.identifier;
+    if (!script) throw new Error(future.error?.message ?? 'The browser did not install its setup observer.');
+    await tab.evaluate(source);
+    const result = await login();
+    if (result.code === 0) {
+      await tab.waitFor("document.documentElement.dataset.firstScreen === undefined || document.documentElement.dataset.firstScreen === 'connected'", {timeout}).catch(() => {});
+    }
+    const steps = [...lines];
+    const required = ['Waiting for your agent', 'Tilo is installed', agent + ' logged in as you',
+      'Tilo’s tools are added to ' + agent, agent + ' is in your workspace'];
+    const confirmed = steps.filter(line => required.includes(line));
+    return {result, steps, missing: required.find((line, index) => confirmed[index] !== line)};
+  } finally {
+    unlisten();
+    if (script) await tab.send('Page.removeScriptToEvaluateOnNewDocument', {identifier: script}).catch(() => {});
+    await tab.evaluate('globalThis.__tiloSetupObserver?.disconnect(); delete globalThis.__tiloSetupObserver').catch(() => {});
+    await tab.send('Runtime.removeBinding', {name: binding}).catch(() => {});
+  }
+}
+
 /** One look at the entry's 24 recovery words card, as a person meets it right
  * after a browser's person is first let in: `{state, words}` where `state` is
  * `kept` (it pressed "I've written them down"), `waiting` (the card is up but

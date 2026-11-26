@@ -5,9 +5,61 @@ import {createServer} from 'node:http';
 import {createServer as createSocketServer} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {reloaded} from './waits.mjs';
+import {runInNewContext} from 'node:vm';
+import {observeSetupLogin, reloaded} from './waits.mjs';
 import {agentCommand, computerEnv, hostedTiloPath, runSetupPrompt} from './shell.mjs';
 import {HOSTED_CLI_VERSION, setupPrompt, signInPrompt} from '../../../../crates/browser/tilo-browser-runtime/web/first-screen.mjs';
+
+test('setup observation outlives a delayed login and navigation, and only confirms real rows', async () => {
+  for (const outcome of ['complete', 'missing tools', 'login failed']) {
+    const tool = 'Tilo’s tools are added to Reviewer';
+    const confirmed = ['Waiting for your agent', 'Tilo is installed', 'Reviewer logged in as you', tool, 'Reviewer is in your workspace'];
+    let listener, source, binding, read, rows, world;
+    const seenWaits = [];
+    const navigate = () => {
+      rows = []; read = null;
+      world = {document: {querySelectorAll: () => rows.map(textContent => ({textContent}))},
+        MutationObserver: class {
+          constructor(callback) { this.read = callback; }
+          observe() { read = this.read; }
+          disconnect() { read = null; }
+        }};
+      if (binding) world[binding] = payload => listener?.({sessionId: 'test', method: 'Runtime.bindingCalled', params: {name: binding, payload}});
+      if (source) runInNewContext(source, world);
+    };
+    navigate();
+    const browser = {on(fn) { listener = fn; return () => { listener = null; }; }};
+    const tab = {
+      sessionId: 'test',
+      async send(method, args) {
+        if (method === 'Runtime.addBinding') {
+          binding = args.name;
+          world[binding] = payload => listener({sessionId: 'test', method: 'Runtime.bindingCalled', params: {name: binding, payload}});
+        }
+        if (method === 'Page.addScriptToEvaluateOnNewDocument') { source = args.source; return {result: {identifier: 'script'}}; }
+        if (method === 'Page.removeScriptToEvaluateOnNewDocument') source = null;
+        if (method === 'Runtime.removeBinding') binding = null;
+        return {};
+      },
+      async evaluate(js) { return runInNewContext(js, world); },
+      async waitFor(_expression, {timeout}) { seenWaits.push(timeout); },
+    };
+    const result = await observeSetupLogin(browser, tab, 'Reviewer', async () => {
+      rows = confirmed.slice(0, 2); read();
+      // The installer is still running after the browser's own wait would have ended.
+      await new Promise(resolve => setTimeout(resolve, 20));
+      assert.deepEqual(seenWaits, []);
+      navigate();
+      rows = confirmed.slice(2).filter(line => outcome !== 'missing tools' || line !== tool); read();
+      navigate(); // The new workspace document cannot supply the old rows.
+      return {code: outcome === 'login failed' ? 1 : 0};
+    }, 5);
+    assert.deepEqual(result.steps, confirmed.filter(line => outcome !== 'missing tools' || line !== tool));
+    assert.equal(result.missing, outcome === 'missing tools' ? tool : undefined);
+    assert.deepEqual(seenWaits, outcome === 'login failed' ? [] : [5]);
+    assert.equal(listener, null); assert.equal(source, null); assert.equal(binding, null); assert.equal(read, null);
+  }
+});
 
 test('two simulated computers can hold independent local daemon sockets', async t => {
   // A short path fits the kernel's Unix socket name on Linux and macOS.

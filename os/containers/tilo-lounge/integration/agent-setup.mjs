@@ -28,7 +28,7 @@ import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {HOSTED_CLI_VERSION} from '../../../../crates/browser/tilo-browser-runtime/web/first-screen.mjs';
 import {agentCommand, computerEnv, hostedTiloPath, runSetupPrompt} from './shell.mjs';
-import {stepLimit, shellMetrics, machine, browserMemory, reloaded, keepRecoveryWords} from './waits.mjs';
+import {stepLimit, shellMetrics, machine, browserMemory, reloaded, keepRecoveryWords, observeSetupLogin} from './waits.mjs';
 
 const [site, server, out] = process.argv.slice(2);
 if (!site || !server || !out) {
@@ -223,7 +223,7 @@ const visit = async name => {
   await keepRecoveryWords(tab, `${name}: founded`);
   await until(tab, `document.documentElement.dataset.firstScreen !== undefined && !!document.getElementById('first-screen-agent')`,
     `${name}: the first screen`);
-  return tab;
+  return {tab, browser};
 };
 // A person's click on the button `id`: a real pointer press at its centre,
 // so the page copies inside a user gesture, as it must. The button must be
@@ -265,29 +265,6 @@ const copied = async (tab, what, before) => {
   }
   await fail(`${what} never reached the clipboard`);
 };
-// The steps the tab shows, as it shows them: each line the list ever held,
-// kept in the page the moment the list changes. Read by polling, a step the
-// page drew and replaced (or the screen left with) between two reads was
-// never seen; and the list, hidden once the screen says the agent is in,
-// reads as one run-together line.
-const followSteps = async (tab, done) => {
-  await tab.evaluate(`(() => {
-    const seen = globalThis.__checkSteps ??= [];
-    const read = () => {
-      for (const item of document.querySelectorAll('#first-screen-steps li')) {
-        const line = item.textContent.trim();
-        if (line && !seen.includes(line)) seen.push(line);
-      }
-    };
-    globalThis.__checkStepsWatch ??= new MutationObserver(read);
-    globalThis.__checkStepsWatch.observe(document.documentElement, {subtree: true, childList: true, characterData: true});
-    read();
-  })()`).catch(error => fail(`the tab's steps could not be followed: ${error.message}`));
-  // The watch above keeps every line the list held; the wait ends when the
-  // screen says it is done, or a step's worth of steps has gone by.
-  await tab.waitFor(`!!(${done})`, {timeout: stepLimit(4)}).catch(() => {});
-  return tab.evaluate('globalThis.__checkSteps ?? []').catch(() => []);
-};
 // The person the page is, by their root, and the workspace in front.
 /** Everyone the page shows as being here, read where the page shows them: a
  * desktop's mount, or the people view the server renders, which lists each
@@ -310,7 +287,7 @@ const person = tab => tab.evaluate(`JSON.stringify({
 })`).then(JSON.parse).catch(() => ({}));
 
 // 1. Set up through the agent.
-const first = await visit('setup');
+const {tab: first, browser: setupBrowser} = await visit('setup');
 mark('the first browser opened the site');
 // A browser the site knows nothing of makes nothing for the person while
 // they are still deciding: its button offers the prompt, and the press makes
@@ -330,11 +307,9 @@ const prompt = await copied(first, 'the setup prompt', beforeSetup);
 if (prompt !== shown) await fail(`the click copied something else than the prompt shown: ${prompt} / ${shown}`);
 report.prompt = prompt;
 mark('the page copied its setup prompt');
-const login = runSetupPrompt(prompt, {site: new URL(site).origin, version: HOSTED_CLI_VERSION, env, agent: agentName});
-// The tab's steps are followed while the agent goes: the screen leaves only
-// once the agent has confirmed Tilo's tools in its own configuration.
-const following = followSteps(first, `document.documentElement.dataset.firstScreen === undefined || document.documentElement.dataset.firstScreen === 'connected'`);
-const loggedIn = await login;
+const {result: loggedIn, steps, missing} = await observeSetupLogin(setupBrowser, first, agentName,
+  () => runSetupPrompt(prompt, {site: new URL(site).origin, version: HOSTED_CLI_VERSION, env, agent: agentName}));
+report.steps = steps;
 report.login = loggedIn;
 if (loggedIn.code !== 0) await fail(`tilo login failed (${loggedIn.code}): ${loggedIn.stderr}${loggedIn.stdout}`);
 if (!/restart/i.test(loggedIn.stdout) || !/\btilo_[a-z]+\b/.test(loggedIn.stdout)) {
@@ -356,13 +331,8 @@ report.claudeConfig = kept;
 if (JSON.parse(kept)?.mcpServers?.tilo?.command !== tiloBin) {
   await fail('the agent did not register the CLI installed by the hosted setup prompt');
 }
-const steps = await following;
-report.steps = steps;
-if (steps.length < 2) await fail(`the tab showed no steps as the agent went: ${JSON.stringify(steps)}`);
-// The tools the tab says are added are the ones the agent's check found in
-// its own configuration; a step the command did not report is never claimed.
-if (!steps.some(line => line.includes(`Tilo’s tools are added to ${agentName}`))) {
-  await fail(`the tab never showed Tilo's tools added, though the agent's check confirmed them: ${JSON.stringify(steps)}`);
+if (missing) {
+  await fail(`the tab never showed the setup step "${missing}" in order: ${JSON.stringify(steps)}`);
 }
 
 // The screen leaves for the person's own workspace.
@@ -509,7 +479,7 @@ if (!await first.waitFor(issueShown, {timeout: stepLimit(4)}).catch(() => false)
 mark('the reloaded tab still shows the issue the second agent created');
 
 // 2. Back on a browser that keeps nothing: signed in through the agent.
-const second = await visit('returning');
+const {tab: second} = await visit('returning');
 mark('a browser that keeps nothing opened the site');
 await until(second, `document.getElementById('first-screen')?.dataset.signIn === 'ready'`, 'the sign-in prompt made');
 const beforeSignIn = await clipboardNow(second);
