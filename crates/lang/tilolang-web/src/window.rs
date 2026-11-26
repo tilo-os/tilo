@@ -109,8 +109,10 @@ impl AppPage {
         if let PageAction::Resize { width, height } = action {
             return self.resize((width, height));
         }
-        self.page
-            .act(&mut self.window.harness, id, target, action)?;
+        let (widget, action) = self.page.semantic_target(id, action)?;
+        self.window
+            .harness
+            .perform_semantic_named(widget, target, &action)?;
         self.window.exchange();
         Ok(self.patch())
     }
