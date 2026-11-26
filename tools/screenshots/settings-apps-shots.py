@@ -48,6 +48,20 @@ if tool.is_file() and not dest.exists():
 prepare(STATE, apps="terminal", built="--build" in sys.argv[1:])
 tapps = tl_packages(STATE, OUT, ["settings", "mail"])
 
+# A cold profile founds the person through the device daemon before the session answers ready,
+# which a loaded build node can take minutes over.
+answered_until = real_apps.until
+
+
+def patient_until(what: str, check, deadline: float = 60.0, step: float = 0.25):
+    if what == "the session to start":
+        deadline = 900
+    return answered_until(what, check, deadline, step)
+
+
+real_apps.until = patient_until
+until = patient_until
+
 session = Session(STATE).start(apps="terminal", fresh=True, tapps=tapps)
 try:
     # A headless session rasterizes frames as it draws, so its control answers can wait behind a
