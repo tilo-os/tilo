@@ -40,6 +40,9 @@ pub struct Wells {
     /// whose new well reported the place before the old one was let go, keeps the new one.
     reporters: Rc<RefCell<BTreeMap<WellKey, u64>>>,
     generation: Rc<std::cell::Cell<u64>>,
+    /// The places whose own window has mapped here ([`Self::note_mapped`]): a well shows the
+    /// skeleton until then, and fades it out after.
+    mapped: Rc<RefCell<std::collections::BTreeSet<String>>>,
     /// The part this handle's wells belong to (a display's id, as the shell names its parts):
     /// empty for a handle that is not a part's.
     part: Rc<String>,
@@ -63,8 +66,26 @@ impl Wells {
             placed: Rc::clone(&self.placed),
             reporters: Rc::clone(&self.reporters),
             generation: Rc::clone(&self.generation),
+            mapped: Rc::clone(&self.mapped),
             part: Rc::new(part.into()),
         }
+    }
+
+    /// Say place `place`'s own window mapped here: its well stops showing the skeleton and fades
+    /// it out under the window.
+    pub fn note_mapped(&self, place: &str) {
+        self.mapped.borrow_mut().insert(place.to_owned());
+    }
+
+    /// Forget that place `place`'s window mapped: its well shows the skeleton again.
+    pub fn note_unmapped(&self, place: &str) {
+        self.mapped.borrow_mut().remove(place);
+    }
+
+    /// Whether place `place`'s own window has mapped here.
+    #[must_use]
+    pub fn is_mapped(&self, place: &str) -> bool {
+        self.mapped.borrow().contains(place)
     }
 
     /// The part this handle's wells belong to.
@@ -226,6 +247,16 @@ fn report(place: &str, rect: Rect, well: u64) {
     });
 }
 
+/// Whether place `place`'s own window has mapped here, as the wells installed on this thread say.
+fn mapped_here(place: &str) -> bool {
+    CURRENT.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .is_some_and(|wells| wells.is_mapped(place))
+    })
+}
+
 /// Forget the well of `place` the well numbered `well` reported, on the wells installed on this
 /// thread, if any: it left the screen.
 fn forget(place: &str, well: u64) {
@@ -273,6 +304,9 @@ pub struct WindowWell {
     /// so a host that installs another handle (a new policy, a test) sees it at once, and
     /// reports its leave when it goes.
     on_screen: bool,
+    /// What the well shows: the skeleton while the place's window has not mapped, fading out
+    /// under the window once it does.
+    arrival: tilo_ui_base::motion::CrossFade<bool>,
 }
 
 impl WindowWell {
@@ -289,6 +323,7 @@ impl WindowWell {
             id,
             rect: Rect::ZERO,
             on_screen: false,
+            arrival: tilo_ui_base::motion::CrossFade::new(false),
         }
     }
 
@@ -322,6 +357,8 @@ impl Described for WindowWell {
             forget(&self.place, self.id);
         }
         self.place = props.place;
+        // The well stands for another window now: it shows what is coming for that one.
+        self.arrival = tilo_ui_base::motion::CrossFade::new(mapped_here(&self.place));
         true
     }
 }
@@ -365,17 +402,42 @@ impl Widget for WindowWell {
     }
 
     fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
-        #[allow(
-            unused_variables,
-            unused_mut,
-            reason = "a draw binds only the parts it uses"
-        )]
-        let (_scene, _transform, _text, _theme, mut env) = ctx.parts();
+        let (scene, transform, text, theme, _env) = ctx.parts();
+        let now = tilo_ui_base::motion::frame_now();
+        // The window's own frame is composited over the well: until it maps, the well shows the
+        // skeleton of what is coming; once it does, the skeleton fades out under it.
+        self.arrival
+            .arrive(mapped_here(&self.place), theme.motion(), now);
+        let skeleton = if *self.arrival.shown() {
+            self.arrival
+                .outgoing(now)
+                .and_then(|(was, opacity)| (!*was).then_some(opacity))
+        } else {
+            Some(self.arrival.incoming(now))
+        };
+        let Some(opacity) = skeleton.filter(|opacity| *opacity > 0.0) else {
+            return;
+        };
+        let mut paint = tilo_ui_base::paint::PaintCtx::new(scene, transform, text, theme);
+        if opacity < 1.0 {
+            paint.scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                opacity,
+                paint.transform,
+                &self.rect.inflate(1.0, 1.0),
+            );
+        }
+        crate::widget::SkeletonFace::new(tilo_ui_base::widget::SkeletonShape::Page)
+            .paint(&mut paint, self.rect);
+        if opacity < 1.0 {
+            paint.scene.pop_layer();
+        }
     }
 
-    /// A well paints nothing, so it is never dirty.
+    /// While the skeleton fades out, the well is dirty; while unmapped its skeleton is still.
     fn needs_redraw(&self) -> bool {
-        false
+        self.arrival.is_moving(tilo_ui_base::motion::frame_now())
     }
 
     /// Placement is the only layout the well takes.
@@ -485,5 +547,53 @@ mod tests {
                 "the well fills its frame: {height}"
             );
         }
+    }
+
+    /// A well shows what is coming until its window maps, then the skeleton fades out under the
+    /// window; a window that goes brings the skeleton back.
+    #[test]
+    fn a_well_shows_a_skeleton_until_its_window_maps_then_fades_it() {
+        let wells = super::Wells::new();
+        let _installed = super::install(wells.clone());
+        let mut well = super::WindowWell::new("place");
+        well.rect = vello::kurbo::Rect::new(0.0, 0.0, 320.0, 200.0);
+        let painted = |well: &mut super::WindowWell| {
+            let mut scene = vello::Scene::new();
+            let mut text = tilo_ui_base::text_render::TextRenderer::new();
+            let theme = tilo_ui_base::theme::Theme::dark();
+            tilo_ui_base::widget::Widget::draw(
+                well,
+                &mut tilo_ui_base::draw::DrawCtx::new(
+                    &mut scene,
+                    vello::kurbo::Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    tilo_ui_base::presence::PresenceCtx::default().draw_env(),
+                ),
+            );
+            scene.encoding().draw_tags.len()
+        };
+        assert!(
+            painted(&mut well) > 0,
+            "a window that has not mapped shows the skeleton of what is coming"
+        );
+        wells.note_mapped("place");
+        assert!(
+            painted(&mut well) > 0,
+            "the skeleton is still drawn on the frame its window maps"
+        );
+        {
+            let _settled = tilo_ui_base::motion::testing::settled();
+            assert_eq!(
+                painted(&mut well),
+                0,
+                "once faded, the well paints nothing: the window itself is there"
+            );
+        }
+        wells.note_unmapped("place");
+        assert!(
+            painted(&mut well) > 0,
+            "a window that goes shows the skeleton again"
+        );
     }
 }

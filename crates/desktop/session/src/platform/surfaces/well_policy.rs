@@ -227,6 +227,11 @@ impl WellPolicy {
             return;
         }
         self.mapped.push(window.id);
+        // Its place has its window now: the well there stops showing the skeleton and fades it
+        // out under the window.
+        if let Some(tab) = self.desktop.policy().tab_of(window.id) {
+            self.wells.note_mapped(&tab.to_string());
+        }
         // The desktop makes the window's tab on its pass: run it now, so the size and place the
         // compositor asks for in this same call are its well's, never a guess configured again a
         // frame later. Whatever that pass changed is drawn in the next frame.
@@ -311,6 +316,10 @@ impl WindowPolicy for WellPolicy {
             .collect();
         if !gone.is_empty() {
             for id in &gone {
+                // Its place has no window now: its well shows what is coming again.
+                if let Some(tab) = self.desktop.policy().tab_of(*id) {
+                    self.wells.note_unmapped(&tab.to_string());
+                }
                 self.desktop.policy().unmap(*id);
                 self.followers.gone(*id);
             }
@@ -391,6 +400,9 @@ impl WindowPolicy for WellPolicy {
         self.mapped.retain(|id| *id != window.id);
         self.configured.remove(&window.id);
         self.followers.gone(window.id);
+        if let Some(tab) = self.desktop.policy().tab_of(window.id) {
+            self.wells.note_unmapped(&tab.to_string());
+        }
         self.desktop.policy().unmap(window.id);
         self.desktop.ask();
     }
