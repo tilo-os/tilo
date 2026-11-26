@@ -865,6 +865,16 @@ impl super::Decorator for ContextMenuArea {
         self.content.as_mut()
     }
 
+    /// The area's node is its content's, which it does not rewrite: read as the content reads
+    /// its own, without its children (a list's rows).
+    fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
+        self.content.accessibility_root()
+    }
+
+    fn accessibility_hidden(&self) -> bool {
+        self.content.accessibility_hidden()
+    }
+
     // The area answers operations and controls itself, so one addressed to a
     // row of its open menu reaches the menu even when the content answers its
     // own, and a row chosen from it hands over its action after the menu

@@ -391,7 +391,14 @@ impl VirtualRows {
                     children.push(Arc::new(self.heading_node(band, enabled)));
                 }
             }
-            let inputs = self.row_access_inputs(row, enabled, count);
+            // Whether a row offers a menu is read off its model row, which a row built since
+            // changed: a row built as it was when it was kept offers what it offered then.
+            let menu = kept
+                .rows
+                .get(&row.key)
+                .filter(|kept_row| kept_row.inputs.stamp == row.stamp)
+                .map(|kept_row| kept_row.inputs.menu);
+            let inputs = self.row_access_inputs(row, enabled, count, menu);
             reached = reached.saturating_add(1);
             if let Some(kept_row) = kept
                 .rows
@@ -435,6 +442,7 @@ impl VirtualRows {
         row: &MountedRow<ListKey>,
         enabled: bool,
         count: usize,
+        menu: Option<bool>,
     ) -> RowAccessInputs {
         let (level, folded) = match &self.tree {
             Some(marks) => (
@@ -458,7 +466,7 @@ impl VirtualRows {
             placed: row.widget.get_rect(),
             focused: self.is_focused && self.focused_key.as_ref() == Some(&row.key),
             selected: self.selection.is_selected(&row.key),
-            menu: self.menus.row_offers(&*self.model, &row.key),
+            menu: menu.unwrap_or_else(|| self.menus.row_offers(&*self.model, &row.key)),
             disabled: !enabled,
             level,
             expanded,

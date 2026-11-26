@@ -2843,6 +2843,16 @@ impl Widget for VirtualRows {
         )
     }
 
+    /// The list's own node, without reading a row: what a walk asking whether the list takes
+    /// focus or hides from assistive technology needs of it.
+    fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
+        Some(self.access_root(self.is_enabled()))
+    }
+
+    fn accessibility_hidden(&self) -> bool {
+        self.access_root(self.is_enabled()).state.hidden
+    }
+
     fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
         let enabled = self.is_enabled();
         Some(crate::a11y::SharedAccessNode {

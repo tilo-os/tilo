@@ -2063,6 +2063,15 @@ impl Decorator for DescribedList {
         }
     }
 
+    /// The list's node is its body's, which it does not rewrite: read without its rows.
+    fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
+        self.inner().accessibility_root()
+    }
+
+    fn accessibility_hidden(&self) -> bool {
+        self.inner().accessibility_hidden()
+    }
+
     fn name(&self) -> &'static str {
         "DescribedList"
     }
