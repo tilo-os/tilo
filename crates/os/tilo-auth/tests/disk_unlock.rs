@@ -560,8 +560,9 @@ fn sets_up_and_opens(profile: &Path, root: &SigningIdentity) {
         import(dir.path(), &device, id, &tampered);
         assert!(enrol::status(&runner, &device).is_err(), "{tampered}");
     }
+    let another = id.checked_add(5).expect("a second token id");
     import(dir.path(), &device, id, &good);
-    import(dir.path(), &device, id + 5, &good);
+    import(dir.path(), &device, another, &good);
     assert!(
         luks::sibling(&runner, &device).is_err(),
         "two tokens fail closed"
@@ -569,7 +570,7 @@ fn sets_up_and_opens(profile: &Path, root: &SigningIdentity) {
     assert!(
         Command::new("cryptsetup")
             .args(["token", "remove", "--token-id"])
-            .arg((id + 5).to_string())
+            .arg(another.to_string())
             .arg(&device)
             .status_locked()
             .unwrap()
@@ -602,7 +603,7 @@ fn sets_up_and_opens(profile: &Path, root: &SigningIdentity) {
         volume_uuid: luks::uuid(&runner, &device).unwrap(),
         keyslot: 1,
     };
-    let kept = carried_half(&here, &root, &cert, slot);
+    let kept = carried_half(&here, root, &cert, slot);
     let boot = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
