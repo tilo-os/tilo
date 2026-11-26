@@ -2184,6 +2184,9 @@ name = "files-at-disk-speed"
 # within twice the time a plain copy of the same files over loopback takes, both measured in the
 # run. The suite leaves it out until the content path meets that bound.
 run = "TILO_FILES_SPEED=full cargo test --locked --release -p tilo-server --test it files_at_disk_speed -- --ignored --nocapture"
+# The server carries the toolkit, which reads its font catalog at build time.
+needs = ["font-seed"]
+env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1" }
 requires = ["arch=x86_64"]
 timeout_secs = 3600
 on = ["dispatch", "idle", "stable"]
@@ -2197,6 +2200,9 @@ name = "kept-content-3gib"
 # reaches the server.
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo test --locked --release -p tilo-server --test it kept_limits::a_three_gib_folder_reaches_its_own_server_whole -- --ignored --nocapture"
+# The server carries the toolkit, which reads its font catalog at build time.
+needs = ["font-seed"]
+env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1" }
 timeout_secs = 3600
 on = ["dispatch"]
 
