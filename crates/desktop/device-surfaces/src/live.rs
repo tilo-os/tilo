@@ -26,6 +26,10 @@ pub struct Live {
     serde::Deserialize,
     tilo_resource::JsonSchema,
 )]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "a live row's facts are independent — where it is live, whether it plays, and how the shell draws it — and each is read by name from the resource"
+)]
 pub struct LiveItem {
     /// What names the row while it is live: the resource's address, or the app and its activity.
     pub key: String,

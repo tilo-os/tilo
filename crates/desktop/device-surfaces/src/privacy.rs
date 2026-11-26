@@ -80,6 +80,10 @@ pub enum Standing {
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
 )]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "a device's posture is several independent facts — present, its switch, muted and whether that is known, and whether a session sees its uses — and the shell reads each by name"
+)]
 pub struct Posture {
     /// Which device it is about.
     pub capability: Capability,

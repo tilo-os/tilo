@@ -421,8 +421,16 @@ impl Mode {
     /// How a person reads it: `1920 × 1080 at 60 Hz`.
     #[must_use]
     pub fn label(self) -> String {
-        let hz = format!("{:.2}", self.refresh_mhz as f64 / 1000.0);
-        let hz = hz.trim_end_matches('0').trim_end_matches('.');
+        // Hundredths of a hertz from millihertz, read as digits and trimmed: 59.94, 60.
+        let whole = self.refresh_mhz.checked_div(1000).unwrap_or_default();
+        let frac = self.refresh_mhz.checked_rem(1000).unwrap_or_default();
+        let mut hz = whole.to_string();
+        let frac = format!("{frac:03}");
+        let frac = frac.trim_end_matches('0');
+        if !frac.is_empty() {
+            hz.push('.');
+            hz.push_str(frac);
+        }
         format!("{} × {} at {hz} Hz", self.width, self.height)
     }
 }

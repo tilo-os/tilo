@@ -22,6 +22,10 @@ pub struct WindowDisplay {
 }
 
 /// A window of the layout: a tab of a strip of one of its workspaces.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "a window's facts are independent of one another — where it is, whether it is focused, fullscreen, floating, and what it can do — and the shell reads each by name from the resource"
+)]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Window {
     pub key: String,
@@ -141,6 +145,10 @@ pub struct Author {
 }
 
 /// The parts an app declares for its window's bar, as the shell's views draw them.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the bar's controls are independent — going back, going forward, and its sidebar toggle with whether the sidebar shows — and the shell reads each by name"
+)]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Bar {
     /// Its controls before the location: the app's own.
@@ -162,6 +170,10 @@ pub struct Bar {
 }
 
 /// One control of a window's bar.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "a bar action's facts are independent — enabled, a toggle and whether it is set, shown in the menu only — and the shell reads each by name"
+)]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct BarAction {
     /// The action id its app knows it by.
