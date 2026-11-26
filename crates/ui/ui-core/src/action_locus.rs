@@ -220,6 +220,50 @@ fn visit_action_ui_routes<'tree>(
             visit(binding, path, node);
         }
     }
+    // A control whose press is a plain closure publishes a semantic action with no bound action
+    // of its own: the node itself is the control, so `ui:<node>` is where that action stands.
+    let Some(encoded) = address.resource.strip_prefix("ui:") else {
+        return;
+    };
+    let Ok(decoded) = percent_encoding::percent_decode_str(encoded).decode_utf8() else {
+        return;
+    };
+    let id = tilo_ui_base::a11y::SemanticId(decoded.into_owned());
+    let Some(control_id) = id.control_key() else {
+        return;
+    };
+    if unique
+        .iter()
+        .any(|binding| binding.control_id == control_id)
+    {
+        return;
+    }
+    // Labels and positional wire ids cannot establish resource identity: only a durable id the
+    // tree holds once names the control an agent's step stands on.
+    let Some(node) = tree.node(&id).filter(|node| node.durable_identity) else {
+        return;
+    };
+    if tree.action(&id, &address.action).is_none() {
+        return;
+    }
+    let paths = tree.control_paths_unranked(control_id);
+    let leaves = paths
+        .iter()
+        .filter(|path| {
+            !paths
+                .iter()
+                .any(|child| child.len() > path.len() && child.starts_with(path))
+        })
+        .collect::<Vec<_>>();
+    if leaves.len() != 1 {
+        return;
+    }
+    let path: &[tilo_ui_base::a11y::SemanticId] = leaves[0];
+    if path.last() != Some(&id) {
+        return;
+    }
+    let binding = tilo_ui_base::widget::ControlBindingMetadata::semantic(control_id);
+    visit(&binding, path, node);
 }
 
 fn interaction_address(
