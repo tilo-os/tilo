@@ -170,6 +170,8 @@ pub mod connectors;
 #[cfg(target_os = "linux")]
 mod contacts;
 #[cfg(target_os = "linux")]
+pub mod continuity;
+#[cfg(target_os = "linux")]
 pub mod controller_nav;
 #[cfg(target_os = "linux")]
 pub mod controllers;

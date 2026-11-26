@@ -214,6 +214,10 @@ pub(crate) struct Shared {
     /// The person's devices as the panel was last fed them.
     #[cfg(target_os = "linux")]
     pub(crate) devices: crate::devices::press::Devices,
+    /// What app each of the person's devices has in front, as their record carries it: what this
+    /// device offers of its own, and what the bar's chip offers to continue.
+    #[cfg(target_os = "linux")]
+    pub(crate) continuity: crate::continuity::Shared,
     /// Moving a Bluetooth accessory between the person's devices: what the
     /// panel asked for, what their other devices said, and the Bluetooth
     /// work the move needs.

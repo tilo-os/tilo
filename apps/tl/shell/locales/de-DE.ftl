@@ -2455,3 +2455,7 @@ d-pou22ylc = Agentenmenü
     .w-remove-it-was-lost = { $label } entfernen — verloren
     .w-remove-it-was-stolen = { $label } entfernen — gestohlen
     .w-remove-someone-knows-its-key = { $label } entfernen — jemand kennt den Schlüssel
+
+d-zmfop5wt = Fortsetzen-Angebot
+    .w-continue-from = { $running } von { $elsewhere } fortsetzen
+    .w-dismiss-from = { $running } von { $elsewhere } wegwischen

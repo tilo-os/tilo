@@ -197,9 +197,11 @@ pub struct ContinuityOffer {
     pub app_id: String,
     /// The app's name, as the person at that device reads it.
     pub app_name: String,
-    /// The resource the app showed, by its address.
+    /// The resource the app showed, by its address; empty for an app opened on nothing of its
+    /// own, which the taking device opens as an app.
     pub resource: String,
-    /// The view it showed it through; empty for the app's primary one.
+    /// The view it showed it through; empty for the app's primary one, and for a window that
+    /// showed no resource.
     pub view: String,
     /// When it was in front there, ms since the epoch.
     pub shown_ms: i64,
@@ -883,9 +885,11 @@ pub struct OfferShown {
     pub app_id: String,
     /// The app's name, as the person at that device reads it.
     pub app_name: String,
-    /// The resource the app showed, by its address.
+    /// The resource the app showed, by its address; empty for an app opened on nothing of its
+    /// own, which the taking device opens as an app.
     pub resource: String,
-    /// The view it showed it through; empty for the app's primary one.
+    /// The view it showed it through; empty for the app's primary one, and for a window that
+    /// showed no resource.
     pub view: String,
     /// When it was in front there, ms since the epoch.
     pub shown_ms: i64,
@@ -1731,9 +1735,9 @@ impl Devices {
                 "an app is named by up to 160 letters, digits, dots, dashes and underscores, and its name",
             ));
         }
-        if resource.is_empty()
-            || resource.len() > 512
+        if resource.len() > 512
             || view.len() > 160
+            || (resource.is_empty() && !view.is_empty())
             || [&resource, &view]
                 .into_iter()
                 .any(|value| value.chars().any(char::is_control))
@@ -2669,6 +2673,10 @@ mod tests {
     /// What one device has in front is offered to the person's others there, taken or put away
     /// once on each of them, and a newer offer is a new one to answer.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario keeps the refusals, the answer and the newer offer visible together"
+    )]
     fn an_app_in_front_is_offered_to_the_other_devices_once() {
         let (laptop, phone, other) = ([1; 32], [2; 32], [9; 32]);
         let (laptop_key, phone_key) = (hex::encode(laptop), hex::encode(phone));
@@ -2700,7 +2708,7 @@ mod tests {
                 ..offer(1_000)
             },
             ContinuityOffer {
-                resource: String::new(),
+                view: "a view".into(),
                 ..offer(1_000)
             },
             ContinuityOffer {

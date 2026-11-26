@@ -149,6 +149,41 @@ view bar() {
     }
 }
 
+/// Another of the person's devices has an app in front: the app and that device, and a press
+/// continues it here, at the resource it shows there and through the same view. Putting it away
+/// hides it here until that device's front window moves again, so a person who said no is not
+/// asked twice; the offer and the two answers are the resource's own (`device.continuity`).
+view continuity_offer() {
+    let c = device.continuity
+    if c.offer != "" {
+        let running = c.app
+        let elsewhere = c.device
+        row(gap: .tight, align: .center) {
+            ui.BarChip(
+                std.say("Continue {running} from {elsewhere}"),
+                label: std.say("Continue {running} from {elsewhere}"),
+                icon: .arrow_right,
+                label_width: 280.0,
+            ) {
+                on press: device.take(device.continuity, offer: c.offer)
+            }
+            // Putting it away is its own target beside the chip, said in the app's and the
+            // device's words so it is never confused with another dismiss on the bar.
+            ui.Button(
+                std.say("Dismiss {running} from {elsewhere}"),
+                icon: .x,
+                icon_only: true,
+                role: .bar,
+                size: if shell.bar_size == .small {
+                    .small
+                } else if shell.bar_size == .large { .large } else { .regular },
+            ) {
+                on press: device.dismiss(device.continuity, offer: c.offer)
+            }
+        }
+    }
+}
+
 /// Whether the part draws the display in use: the one the person made primary. A view drawn
 /// with no display reading (a shot, a test) is the display in use, so a shell that is not told
 /// which display it stands on draws the whole bar rather than a compact one.
@@ -278,6 +313,7 @@ view bar_part(part: BarPart, narrow: Bool, compact: Bool, wide: Bool) {
             wave_notice()
             arrival_notice()
             sharing_indicator()
+            continuity_offer()
         }
     } else if part.kind == .agent {
         for a in device.agents.sessions {

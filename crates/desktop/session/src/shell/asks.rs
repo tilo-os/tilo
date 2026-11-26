@@ -89,6 +89,11 @@ impl Shared {
         // A press on one of the person's devices is one of the session's own verbs: the queue it
         // lands in is carried out here, with the asks.
         self.carry_out_presses();
+        // What this device has in front is offered to the person's other devices, as their record
+        // of devices carries it.
+        self.offer_front();
+        // A chip the person pressed opens what the other device showed here.
+        self.carry_out_continuity();
         self.follow_people_asks();
         let asks = std::mem::take(&mut *self.asks.borrow_mut());
         for ask in asks {

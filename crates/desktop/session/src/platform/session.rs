@@ -823,6 +823,15 @@ impl Session {
                 .borrow()
                 .attach_record(record, devices.cert(), continuity.clone());
         }
+        // What app each of the person's devices has in front is offered to the others through the
+        // record of them too: this device's own front, and what the bar's chip offers to continue.
+        let continuity_offers = Rc::new(RefCell::new(crate::continuity::Across::default()));
+        if let Some(devices) = &owner_devices {
+            let (record, _) = devices.record();
+            continuity_offers
+                .borrow_mut()
+                .attach(record, devices.cert(), continuity.clone());
+        }
         // The person's one keyboard and pointer, across the screens of their devices.
         let shared_input = fabric.as_ref().map(|link| {
             Arc::new(crate::shared_input::SharedInput::new(
@@ -1889,6 +1898,7 @@ impl Session {
             workspace_sync: Some(workspace_sync),
             vpn,
             devices: crate::devices::press::Devices::default(),
+            continuity: continuity_offers,
             bluetooth: crate::bluetooth_handoff::Handoffs::default(),
             handoff: Rc::new(std::cell::RefCell::new(None)),
             waking: crate::wake::Wake::new(),
@@ -2090,6 +2100,14 @@ impl Session {
                         refused: std::sync::Arc::new(std::sync::Mutex::default()),
                         tools: backup_tools,
                     },
+                )));
+            // What another of their devices has in front, offered here to continue: the bar's
+            // chip, and the two verbs that answer it.
+            shared
+                .services
+                .borrow_mut()
+                .add(Box::new(crate::continuity::Served::new(
+                    std::rc::Rc::clone(&shared.continuity),
                 )));
         }
         // What the portal brings comes from any thread, and wakes the loop

@@ -16,6 +16,7 @@ use tilo_resource::surface::Surface;
 pub mod agents;
 pub mod clipboard;
 pub mod clock;
+pub mod continuity;
 pub mod controls;
 pub mod devices;
 pub mod displays;
@@ -105,6 +106,8 @@ pub fn device_surfaces() -> Vec<Surface> {
         overlays::power_menu_surface(),
         tilo_app_host::nearby_send::surface(),
         devices::surface(),
+        // What another of the person's devices has in front, offered here to continue.
+        continuity::surface(),
         clipboard::surface(),
         // The person's speakers, which the speaker service publishes outside the session.
         tilo_speaker_service::published::surface(),

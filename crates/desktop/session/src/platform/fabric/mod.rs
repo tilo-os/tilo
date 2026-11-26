@@ -43,6 +43,7 @@ pub struct Continuity {
     media: Arc<AtomicBool>,
     file_transfer: Arc<AtomicBool>,
     notifications: Arc<AtomicBool>,
+    apps: Arc<AtomicBool>,
     display_input: Arc<AtomicBool>,
 }
 
@@ -64,6 +65,7 @@ impl Continuity {
             (&self.media, ContinuityCapability::Media),
             (&self.file_transfer, ContinuityCapability::FileTransfer),
             (&self.notifications, ContinuityCapability::Notifications),
+            (&self.apps, ContinuityCapability::AppContinuations),
         ] {
             switch.store(enabled && on(facet.key()), Ordering::Relaxed);
         }
@@ -85,6 +87,11 @@ impl Continuity {
     /// Whether the person lets notifications continue on their other devices.
     pub(crate) fn notifications_permitted(&self) -> bool {
         self.notifications.load(Ordering::Relaxed)
+    }
+
+    /// Whether the person lets the app each of their devices has in front continue here.
+    pub(crate) fn apps_permitted(&self) -> bool {
+        self.apps.load(Ordering::Relaxed)
     }
 
     /// Whether the person's other devices may drive this one's keyboard and pointer.
