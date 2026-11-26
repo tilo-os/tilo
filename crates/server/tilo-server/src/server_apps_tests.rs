@@ -20,7 +20,7 @@ fn renamed_package(id: &str, previously: &[&str], identity: &SigningIdentity) ->
     std::fs::write(payload.join("app.wasm"), MODULE).unwrap();
     std::fs::write(payload.join("app.ids"), b"# fixture ids\n").unwrap();
     std::fs::write(
-        payload.join(package_store::SURFACE_FILE),
+        payload.join(package_store::integrity::SURFACE_FILE),
         b"format = 2\n\n[[resources]]\nkind = \"fixture.page\"\nlabel = \"Fixture\"\nversion = 1\n",
     )
     .unwrap();
