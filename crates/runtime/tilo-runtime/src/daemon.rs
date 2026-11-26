@@ -18,6 +18,8 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use tilo_api::daemon::startup::StageJournal;
+pub(crate) use tilo_api::daemon::startup::{STAGES_FILE, STARTUP, StartupLimits};
 use tilo_lock::MutexRecover as _;
 use tilo_mcp::McpServer;
 use tilo_mcp::lines::{Answer, Frame, mcp_answer, read_frame, serve_lines, spawn_reader};
@@ -74,21 +76,7 @@ pub fn validate_profile(profile: &Path) -> io::Result<()> {
 
 /// The same persistent profile is used by daemon, app attachment and MCP proxy.
 pub fn default_profile() -> io::Result<PathBuf> {
-    let path = if let Some(value) = std::env::var_os("TILO_RUNTIME_PROFILE") {
-        PathBuf::from(value)
-    } else {
-        let home = tilo_paths::home()
-            .ok_or_else(|| invalid("HOME is missing; set TILO_RUNTIME_PROFILE"))?;
-        #[cfg(target_os = "macos")]
-        let suffix = "Library/Application Support/Tilo/runtime";
-        #[cfg(not(target_os = "macos"))]
-        let suffix = ".local/state/tilo/runtime";
-        home.join(suffix)
-    };
-    if !path.is_absolute() {
-        return Err(invalid("runtime profile must be absolute"));
-    }
-    Ok(path)
+    tilo_api::daemon::startup_profile()
 }
 
 /// Parse native modes while preserving opaque application arguments.
@@ -270,24 +258,6 @@ fn probe(profile: &Path) -> io::Result<Status> {
     Ok(status)
 }
 
-/// How long a starting daemon may take. Startup is not bounded by a fixed
-/// deadline: a loaded machine can take far longer than usual to start a
-/// session that is still working. It keeps waiting while the process is
-/// alive and making progress, and gives up once progress stops for `stall`
-/// or the whole start exceeds `cap`.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct StartupLimits {
-    pub(crate) stall: Duration,
-    pub(crate) cap: Duration,
-    pub(crate) poll: Duration,
-}
-
-pub(crate) const STARTUP: StartupLimits = StartupLimits {
-    stall: Duration::from_secs(15),
-    cap: Duration::from_secs(120),
-    poll: Duration::from_millis(25),
-};
-
 /// What a starting process looks like from outside at one instant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Observation {
@@ -401,9 +371,6 @@ pub(crate) fn wait_until_ready<P: StartingProcess>(
     }
 }
 
-/// The file a starting daemon names each startup step in, one line per step,
-/// before taking it.
-const STAGES_FILE: &str = "startup.stages";
 /// What a daemon does before it names its first step: the executable loads
 /// and prepares its profile environment.
 const FIRST_STAGE: &str = "loading the runtime";
@@ -630,19 +597,19 @@ impl StartingProcess for DaemonStart {
         Ok(self.child.try_wait()?.map(|status| status.to_string()))
     }
     fn observe(&mut self) -> Observation {
-        let stages = std::fs::read(&self.stages).ok();
+        let journal = std::fs::File::open(&self.stages)
+            .ok()
+            .and_then(StageJournal::read);
+        let stages = journal.as_ref().map(StageJournal::bytes);
         let tree = sample_tree(self.child.id(), false);
         if tree.as_ref().is_some_and(|tree| tree.held_by_machine) {
             self.held_samples = self.held_samples.saturating_add(1);
         }
         let length = |bytes: usize| u64::try_from(bytes).unwrap_or(u64::MAX);
         Observation {
-            stage: current_stage(stages.as_deref().unwrap_or_default()),
+            stage: current_stage(stages.unwrap_or_default()),
             signals: vec![
-                (
-                    "startup step",
-                    stages.as_ref().map(|stages| length(stages.len())),
-                ),
+                ("startup step", stages.map(|stages| length(stages.len()))),
                 (
                     "output",
                     std::fs::metadata(&self.log)

@@ -10,15 +10,17 @@
 
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use serde_json::{Value, json};
+use tilo_api::daemon::startup::{STAGES_FILE, STARTUP, StageJournal, StartupLimits};
 use tilo_api::daemon::{DaemonPlace, naming};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
-/// How long a connection waits for a daemon to listen.
+/// How long to wait before requiring progress from the child this command started.
 const REACHING: Duration = Duration::from_secs(10);
 /// How long a connection waits for the user service it asked to start a daemon that listens,
 /// before it starts one itself.
@@ -37,7 +39,27 @@ pub(crate) fn ensure(place: &DaemonPlace) -> Result<(), String> {
 
 /// A connection to this computer's daemon, starting it when none listens.
 pub(crate) fn reach(place: &DaemonPlace) -> Result<UnixStream, String> {
-    reach_starting(place, |via_service| start_daemon(place, via_service))
+    let profile = tilo_api::daemon::startup_profile().ok();
+    reach_with_limits(
+        place,
+        |via_service| start_daemon(place, via_service),
+        profile.as_deref(),
+        ReachLimits {
+            first: REACHING,
+            service: SERVICE_STARTING,
+            startup: StartupLimits {
+                poll: POLL,
+                ..STARTUP
+            },
+        },
+    )
+}
+
+#[derive(Clone, Copy)]
+struct ReachLimits {
+    first: Duration,
+    service: Duration,
+    startup: StartupLimits,
 }
 
 /// How a daemon was started.
@@ -48,49 +70,126 @@ enum Started {
     Service(Instant),
 }
 
-/// [`reach`], with `start` starting a daemon (through the user service where it may); what it
-/// started is waited for, and started again if it ended without listening (one that was leaving
-/// held the lock). A service that started no daemon listening within half the wait is not asked
-/// again: this command starts one itself.
-fn reach_starting(
+/// Open the same kind of account-private regular file the runtime uses for its lock and
+/// startup steps. Opening never follows a link or waits for a writer.
+fn read_startup_file(path: &Path) -> Option<std::fs::File> {
+    use rustix::fs::{Mode, OFlags};
+    use std::os::unix::fs::MetadataExt as _;
+    let fd = rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .ok()?;
+    let file = std::fs::File::from(fd);
+    let meta = file.metadata().ok()?;
+    (meta.is_file() && meta.uid() == rustix::process::getuid().as_raw() && meta.mode() & 0o077 == 0)
+        .then_some(file)
+}
+
+/// Match the live child to the PID the runtime wrote under its exclusive lock, reading and
+/// testing that same open file even if the path is replaced concurrently.
+fn holds_startup_lock(place: &DaemonPlace, pid: u32) -> bool {
+    use advisory_lock::{FileLock, TryLockError};
+    use std::io::Read as _;
+    let Some(file) = read_startup_file(place.lock()) else {
+        return false;
+    };
+    let mut owner = String::new();
+    (&file).take(32).read_to_string(&mut owner).is_ok()
+        && owner.trim().parse::<u32>() == Ok(pid)
+        && matches!(FileLock::try_exclusive(file), Err(TryLockError::WouldBlock))
+}
+
+#[derive(Default)]
+struct StartupProgress {
+    seen: Option<StageJournal>,
+    advanced_at: Option<Instant>,
+    replaced: bool,
+}
+
+impl StartupProgress {
+    /// Only the child we launched, while it holds this device's lock, can earn more time.
+    /// A stale step already on disk when the waiter first saw that holder earns none.
+    fn last_advance(&mut self, place: &DaemonPlace, profile: &Path, pid: u32) -> Option<Instant> {
+        if self.replaced {
+            return None;
+        }
+        if !holds_startup_lock(place, pid) {
+            self.replaced = self.seen.is_some();
+            return None;
+        }
+        let file = read_startup_file(&profile.join(STAGES_FILE))?;
+        let stages = StageJournal::read(file)?;
+        if !stages.complete() {
+            return None;
+        }
+        if let Some(prior) = &self.seen {
+            match stages.advanced_from(prior) {
+                Some(true) => self.advanced_at = Some(Instant::now()),
+                Some(false) => {}
+                None => {
+                    self.replaced = true;
+                    return None;
+                }
+            }
+        }
+        self.seen = Some(stages);
+        self.advanced_at
+    }
+}
+
+/// Wait for the exact socket, allowing the live child to finish a cold startup while its
+/// own profile keeps recording new steps. The service keeps its ordinary fallback deadline.
+fn reach_with_limits(
     place: &DaemonPlace,
     start: impl Fn(bool) -> std::io::Result<Started>,
+    profile: Option<&Path>,
+    limits: ReachLimits,
 ) -> Result<UnixStream, String> {
-    let deadline = Instant::now()
-        .checked_add(REACHING)
-        .unwrap_or_else(Instant::now);
+    let began = Instant::now();
     let mut started: Option<Started> = None;
+    let mut progress = StartupProgress::default();
     let mut via_service = true;
     loop {
-        match tilo_files::native::socket::connect(place.socket()) {
+        let error = match tilo_files::native::socket::connect(place.socket()) {
             Ok(stream) => return Ok(stream),
-            Err(error) if Instant::now() >= deadline => {
-                // Where it listens and what it logged: for whoever keeps this
-                // computer's logs, not for the agent's sentence.
-                tracing::debug!(
-                    socket = %place.socket().display(),
-                    log = %place.log().display(),
-                    %error,
-                    "Tilo's background sync did not answer"
-                );
-                return Err(
-                    "Tilo's background sync isn't answering on this computer. Run `tilo status` \
-                     to see how it stands, then try again."
-                        .to_owned(),
-                );
-            }
-            Err(_) => {}
-        }
+            Err(error) => error,
+        };
+        let mut advanced = None;
         let ended = match started.as_mut() {
             None => true,
-            Some(Started::Process(child)) => child.try_wait().ok().flatten().is_some(),
+            Some(Started::Process(child)) => match child.try_wait() {
+                Ok(None) => {
+                    advanced =
+                        profile.and_then(|path| progress.last_advance(place, path, child.id()));
+                    false
+                }
+                Ok(Some(_)) => true,
+                Err(_) => false,
+            },
             Some(Started::Service(asked)) => {
-                let given_up = asked.elapsed() >= SERVICE_STARTING;
+                let given_up = asked.elapsed() >= limits.service;
                 via_service &= !given_up;
                 given_up
             }
         };
+        if began.elapsed() >= limits.startup.cap
+            || (began.elapsed() >= limits.first
+                && advanced.is_none_or(|at| at.elapsed() >= limits.startup.stall))
+        {
+            tracing::debug!(
+                socket = %place.socket().display(), log = %place.log().display(), %error,
+                "Tilo's background sync did not answer"
+            );
+            return Err(
+                "Tilo's background sync isn't answering on this computer. Run `tilo status` \
+                 to see how it stands, then try again."
+                    .to_owned(),
+            );
+        }
         if ended {
+            progress = StartupProgress::default();
             started = Some(start(via_service).map_err(|error| {
                 tracing::debug!(%error, "Tilo's background sync did not start");
                 "Tilo's background sync didn't start on this computer. Run `tilo status` to see \
@@ -98,7 +197,7 @@ fn reach_starting(
                     .to_owned()
             })?);
         }
-        std::thread::sleep(POLL);
+        std::thread::sleep(limits.startup.poll);
     }
 }
 
@@ -310,6 +409,9 @@ impl Opening {
         })
     }
 }
+
+#[cfg(test)]
+mod startup_tests;
 
 #[cfg(test)]
 mod tests {

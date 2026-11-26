@@ -9,7 +9,9 @@
 
 pub mod enter;
 pub mod folders;
+pub mod startup;
 
+use std::io;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -36,6 +38,35 @@ pub const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 #[must_use]
 pub fn running_as_service() -> bool {
     std::env::var_os(SERVICE_ENV).is_some_and(|value| value == "1")
+}
+
+/// The persistent profile shared by the daemon and clients waiting for it to start.
+///
+/// # Errors
+/// The profile is relative, or no home is available for the default.
+pub fn startup_profile() -> io::Result<PathBuf> {
+    let path = if let Some(value) = std::env::var_os("TILO_RUNTIME_PROFILE") {
+        PathBuf::from(value)
+    } else {
+        let home = tilo_paths::home().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "HOME is missing; set TILO_RUNTIME_PROFILE",
+            )
+        })?;
+        #[cfg(target_os = "macos")]
+        let suffix = "Library/Application Support/Tilo/runtime";
+        #[cfg(not(target_os = "macos"))]
+        let suffix = ".local/state/tilo/runtime";
+        home.join(suffix)
+    };
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "runtime profile must be absolute",
+        ));
+    }
+    Ok(path)
 }
 
 /// Where one device's daemon listens, the lock that keeps it one, and its log.
@@ -230,24 +261,23 @@ impl DaemonPlace {
     /// `start` when none answers: what a client of this daemon needs before its first call.
     ///
     /// # Errors
-    /// No daemon answered in `within`, or starting one failed.
+    /// Starting the daemon failed, or its API did not answer within `within` after startup.
     pub fn wait_for_api(
         &self,
         within: Duration,
         start: impl FnOnce() -> std::io::Result<()>,
     ) -> Result<(), String> {
-        let deadline = Instant::now()
-            .checked_add(within)
-            .unwrap_or_else(Instant::now);
-        let mut start = Some(start);
+        if tilo_files::native::socket::connect(&self.api).is_ok() {
+            return Ok(());
+        }
+        start().map_err(|error| error.to_string())?;
+        let started = Instant::now();
         loop {
             if tilo_files::native::socket::connect(&self.api).is_ok() {
                 return Ok(());
             }
-            if let Some(start) = start.take() {
-                start().map_err(|error| error.to_string())?;
-            }
-            if Instant::now() >= deadline {
+            let remaining = within.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
                 return Err(format!(
                     "this computer's daemon did not answer at {} in time: run `tilo status` to \
                      see how it stands, then try again (its log is {})",
@@ -255,7 +285,7 @@ impl DaemonPlace {
                     self.log.display()
                 ));
             }
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(remaining.min(Duration::from_millis(50)));
         }
     }
 
@@ -450,6 +480,53 @@ mod tests {
     use super::DaemonPlace;
     use crate::tests::Person;
     use tilo_device_identity::login::{self, Device, Place, ServerAddress};
+
+    #[test]
+    fn a_daemon_gets_its_api_bind_time_after_startup_returns() {
+        use std::os::unix::net::UnixListener;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let place = DaemonPlace::at(dir.path(), dir.path(), &[5; 32]);
+        let within = Duration::from_millis(200);
+        let (started, starting) = std::sync::mpsc::channel();
+        let listener = std::thread::scope(|scope| {
+            let api = place.api();
+            let bind = scope.spawn(move || {
+                starting.recv().unwrap();
+                std::thread::sleep(Duration::from_millis(10));
+                UnixListener::bind(api).unwrap()
+            });
+            place
+                .wait_for_api(within, move || {
+                    std::thread::sleep(Duration::from_millis(250));
+                    started.send(()).unwrap();
+                    Ok(())
+                })
+                .unwrap();
+            bind.join().unwrap()
+        });
+        place
+            .wait_for_api(Duration::ZERO, || panic!("an existing API needs no start"))
+            .unwrap();
+        drop(listener);
+        assert!(
+            place.wait_for_api(Duration::ZERO, || Ok(())).is_err(),
+            "a leftover socket file is not a listener"
+        );
+    }
+
+    #[test]
+    fn a_refused_start_is_returned_to_the_api_caller() {
+        let dir = tempfile::tempdir().unwrap();
+        let place = DaemonPlace::at(dir.path(), dir.path(), &[5; 32]);
+        let refusal = place
+            .wait_for_api(std::time::Duration::ZERO, || {
+                Err(std::io::Error::other("the device is unavailable"))
+            })
+            .unwrap_err();
+        assert_eq!(refusal, "the device is unavailable");
+    }
 
     fn address(public_key: &[u8; 32]) -> ServerAddress {
         ServerAddress {
