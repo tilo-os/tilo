@@ -1439,10 +1439,18 @@ impl Workspaces {
                     .collect()
             })
             .unwrap_or_default();
-        Ok(json!({
-            "mails": listed.get("mails").and_then(Value::as_bool).unwrap_or(false),
-            "entries": entries,
-        }))
+        let answer = tilo_server_protocol::page::PageActionAnswer::WaitList {
+            mails: listed
+                .get("mails")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            entries,
+        };
+        // The page reads what a page action answered as that answer, so the
+        // card it opens carries the kind it opens with.
+        serde_json::to_value(answer).map_err(|error| ActionCallError::Unavailable {
+            reason: format!("the addresses waiting cannot be read: {error}"),
+        })
     }
 
     /// Invite the address `entry` waiting at the workspace `workspace_id`'s

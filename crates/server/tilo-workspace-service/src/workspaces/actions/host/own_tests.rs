@@ -2341,3 +2341,44 @@ async fn a_member_let_in_at_the_entry_is_offered_the_hosts_own_actions_on_a_page
         "the page offers the host's own actions: {labels:?}"
     );
 }
+
+/// What a page's "Waiting to join" row asks answers as the page reads it: the
+/// addresses waiting at the entry, under the kind of answer its card opens
+/// with.
+#[tokio::test]
+async fn a_pages_waiting_to_join_answers_the_addresses_its_card_reads() {
+    use tilo_server_protocol::page::PageActionAnswer;
+
+    let (_host, workspaces, lounge, _stranger, _dir) = held_host().await;
+    // An address that leaves itself at the entry with nothing to confirm is
+    // waiting at once, as a person who has confirmed the entry's mail is.
+    workspaces
+        .wait(
+            &lounge,
+            "guest@example.org",
+            WaitListSecrets {
+                removal: [9; 32],
+                confirm: None,
+            },
+            "en",
+            10,
+        )
+        .await
+        .expect("the entry keeps the address");
+    let id = tilo_server_protocol::WorkspaceId::parse(&lounge).unwrap();
+    let answered = workspaces
+        .page_waiting_to_join(id, &caller(workspaces.serving_certificate()))
+        .await
+        .unwrap();
+    let answer: PageActionAnswer = serde_json::from_value(answered.clone())
+        .unwrap_or_else(|error| panic!("the page reads the answer: {error}: {answered}"));
+    let PageActionAnswer::WaitList { entries, .. } = answer else {
+        panic!("the row opens the wait list: {answer:?}");
+    };
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.contact == "guest@example.org"),
+        "the address left at the entry is listed: {entries:?}"
+    );
+}
