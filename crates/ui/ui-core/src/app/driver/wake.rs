@@ -252,4 +252,110 @@ mod tests {
             "{case}: it synced to take it in"
         );
     }
+
+    /// A root that, once armed, asks a worker for a value on its next sync and owes the window the
+    /// reply, as a view looks up what an action asked for off the UI thread.
+    struct Asker {
+        armed: std::cell::Cell<bool>,
+        rect: vello::kurbo::Rect,
+        release: std::cell::RefCell<Option<mpsc::Sender<()>>>,
+        landed: Option<mpsc::Receiver<u32>>,
+        value: Option<u32>,
+        dirty: bool,
+        layout_dirty: bool,
+    }
+
+    impl Widget for Asker {
+        fn sync(
+            &mut self,
+            _state: &tilo_ui_base::widget::AppModel,
+            _path: &tilo_ui_base::widget::ModelPath,
+        ) {
+            if let Some(landed) = &self.landed
+                && let Ok(value) = landed.try_recv()
+            {
+                self.value = Some(value);
+                self.landed = None;
+            }
+            if !self.armed.take() {
+                return;
+            }
+            let (release, check) = mpsc::channel::<()>();
+            let (answer, landed) = crate::wake::waking_channel();
+            let owed = crate::wake::WakeHandle::new().owe();
+            std::thread::spawn(move || {
+                let _ = check.recv();
+                let _ = answer.send(7);
+                drop(owed);
+            });
+            self.release.replace(Some(release));
+            self.landed = Some(landed);
+        }
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let style = Style {
+                size: Size::from_lengths(80.0, 40.0),
+                ..Default::default()
+            };
+            taffy.widget_leaf(style, node_map, self)
+        }
+
+        tilo_ui_base::rect_geometry!(measured);
+        tilo_ui_base::redraw_flag!();
+
+        fn name(&self) -> &'static str {
+            "Asker"
+        }
+    }
+
+    /// Work a sync starts owes the window its reply, whoever asked for the sync: a host that lays
+    /// the window out ([`Driver::relayout`] syncs before its frame) and then settles what is owed
+    /// waits for the reply and takes it in, however late it lands.
+    #[test]
+    fn a_reply_asked_for_in_a_hosts_sync_is_owed_and_taken_in() {
+        let asker = Asker {
+            armed: std::cell::Cell::new(false),
+            rect: vello::kurbo::Rect::ZERO,
+            release: std::cell::RefCell::new(None),
+            landed: None,
+            value: None,
+            dirty: true,
+            layout_dirty: true,
+        };
+        let mut driver = Driver::for_root(State::new(), asker, (200, 100), Theme::dark());
+        driver.relayout();
+        driver.root::<Asker>().armed.set(true);
+        driver.relayout();
+        assert!(
+            driver.root::<Asker>().landed.is_some(),
+            "the host's sync asked the worker"
+        );
+        assert!(
+            driver.wake_handle().owes(),
+            "the window is owed the reply its sync asked for"
+        );
+        // The reply lands only once the host settles, after every frame it ran.
+        let release = driver
+            .root::<Asker>()
+            .release
+            .borrow_mut()
+            .take()
+            .expect("the worker waits");
+        let waiting = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            release.send(()).unwrap();
+        });
+        driver.settle_owed();
+        waiting.join().unwrap();
+        assert_eq!(
+            driver.root::<Asker>().value,
+            Some(7),
+            "settling waited for the late reply and took it in"
+        );
+    }
 }

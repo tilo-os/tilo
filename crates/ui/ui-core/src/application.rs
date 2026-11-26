@@ -1640,6 +1640,11 @@ impl AppComponent {
     pub fn content(&self) -> Option<tilo_content::ContentStore> {
         self.context.content().cloned()
     }
+    /// The component runs inside the window `host` names: what its work owes it, the window is
+    /// owed too, so a host settling the window's replies waits for the component's.
+    pub fn run_inside(&self, host: &WakeHandle) {
+        self.context.wake_scope.run_inside(host);
+    }
     pub fn mount(
         &mut self,
         sink: impl Fn(WakeEvent) + Send + Sync + 'static,

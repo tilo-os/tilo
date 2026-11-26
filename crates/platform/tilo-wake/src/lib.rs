@@ -37,6 +37,9 @@ struct Route {
     thread: std::thread::ThreadId,
     /// The scope this one was made inside, whose revision it moves as well.
     parent: Option<Weak<Route>>,
+    /// The scope of the host that runs this one ([`WakeScope::run_inside`]): it is owed what
+    /// this one is owed.
+    host: std::sync::OnceLock<Weak<Route>>,
 }
 
 impl Route {
@@ -48,6 +51,30 @@ impl Route {
             route.bump(crossed);
             parent = route.parent.as_ref().and_then(Weak::upgrade);
         }
+    }
+
+    fn host(&self) -> Option<Arc<Route>> {
+        self.host.get().and_then(Weak::upgrade)
+    }
+
+    /// Count a reply owed, when the route is open.
+    fn owe(&self) -> bool {
+        let mut destination = self.destination.lock_recover();
+        let open = self.open.load(Ordering::Acquire);
+        if open {
+            destination.settling.owed = destination.settling.owed.saturating_add(1);
+        }
+        open
+    }
+
+    /// A reply owed landed.
+    fn replied(&self) {
+        {
+            let mut destination = self.destination.lock_recover();
+            destination.settling.owed = destination.settling.owed.saturating_sub(1);
+            destination.settling.replied = true;
+        }
+        self.changed.notify_all();
     }
 
     fn bump(&self, crossed: bool) {
@@ -112,6 +139,7 @@ impl WakeScope {
                 crossed: AtomicU64::new(0),
                 thread: std::thread::current().id(),
                 parent: CURRENT.with(|current| current.borrow().clone()),
+                host: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -123,6 +151,17 @@ impl WakeScope {
     pub fn handle(&self) -> WakeHandle {
         WakeHandle {
             route: Some(Arc::downgrade(&self.route)),
+        }
+    }
+
+    /// This scope runs inside `host`'s, as a component runs inside the window that hosts it:
+    /// a reply this scope is owed, the host is owed too, so a host settling what it is owed
+    /// ([`WakeHandle::settle`]) waits for the replies of the work it runs. A scope runs inside
+    /// one host.
+    pub fn run_inside(&self, host: &WakeHandle) {
+        if let Some(host) = &host.route {
+            let placed = self.route.host.get_or_init(|| host.clone());
+            debug_assert!(Weak::ptr_eq(placed, host), "a scope runs inside one host");
         }
     }
 
@@ -421,19 +460,24 @@ impl WakeHandle {
 
     /// Owe the owner a reply: the work holds the [`Owed`] and drops it once its
     /// answer is queued.
+    ///
+    /// The host this scope runs inside is owed the reply as well, and so is its host.
     pub fn owe(&self) -> Owed {
-        let route = self.route.as_ref().filter(|route| {
-            route.upgrade().is_some_and(|route| {
-                let mut destination = route.destination.lock_recover();
-                let open = route.open.load(Ordering::Acquire);
-                if open {
-                    destination.settling.owed = destination.settling.owed.saturating_add(1);
-                }
-                open
-            })
-        });
+        let route = self
+            .route
+            .as_ref()
+            .filter(|route| route.upgrade().is_some_and(|route| route.owe()));
+        let mut hosts = Vec::new();
+        let mut host = route.and_then(Weak::upgrade).and_then(|route| route.host());
+        while let Some(route) = host {
+            if route.owe() {
+                hosts.push(Arc::downgrade(&route));
+            }
+            host = route.host();
+        }
         Owed {
             route: route.cloned(),
+            hosts,
         }
     }
 
@@ -536,6 +580,8 @@ impl WakeHandle {
 #[must_use = "dropping it at once says the reply already landed"]
 pub struct Owed {
     route: Option<Weak<Route>>,
+    /// The hosts the owing scope runs inside, each owed the reply too.
+    hosts: Vec<Weak<Route>>,
 }
 
 impl std::fmt::Debug for Owed {
@@ -546,19 +592,18 @@ impl std::fmt::Debug for Owed {
 
 impl Drop for Owed {
     fn drop(&mut self) {
-        let Some(weak) = self.route.take() else {
-            return;
-        };
-        let Some(route) = weak.upgrade() else {
-            return;
-        };
+        // The hosts hear of the reply after the scope that asked: its wake reaches them through
+        // the owner it is forwarded to, and a host's settling pass then finds the reply landed.
+        let hosts = std::mem::take(&mut self.hosts);
+        if let Some(weak) = self.route.take()
+            && let Some(route) = weak.upgrade()
         {
-            let mut destination = route.destination.lock_recover();
-            destination.settling.owed = destination.settling.owed.saturating_sub(1);
-            destination.settling.replied = true;
+            route.replied();
+            WakeHandle { route: Some(weak) }.wake();
         }
-        route.changed.notify_all();
-        WakeHandle { route: Some(weak) }.wake();
+        for host in hosts.iter().filter_map(Weak::upgrade) {
+            host.replied();
+        }
     }
 }
 
@@ -1293,6 +1338,36 @@ mod tests {
         );
         handle.begin_pass();
         assert!(handle.settled());
+    }
+
+    #[test]
+    fn a_host_is_owed_what_the_scope_it_runs_is_owed_and_waits_for_it() {
+        let (host, _host_wakes) = bound_scope();
+        let (inner, _inner_wakes) = bound_scope();
+        let host_handle = host.handle();
+        inner.run_inside(&host_handle);
+        let (release, check) = std::sync::mpsc::channel::<()>();
+        let owed = inner.handle().owe();
+        assert!(inner.handle().owes());
+        assert!(
+            host_handle.owes(),
+            "the host is owed the reply its component asked for"
+        );
+        let worker = std::thread::spawn(move || {
+            check.recv().unwrap();
+            drop(owed);
+        });
+        let mut passes = 0;
+        host_handle.settle(|| {
+            passes += 1;
+            if passes == 1 {
+                release.send(()).unwrap();
+            }
+        });
+        worker.join().unwrap();
+        assert_eq!(passes, 2, "the host ran a pass after the reply landed");
+        assert!(!host_handle.owes());
+        assert!(!inner.handle().owes());
     }
 
     #[test]

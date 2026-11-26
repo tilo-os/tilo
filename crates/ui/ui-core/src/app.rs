@@ -976,6 +976,7 @@ impl App {
         let component = assembly.component.insert(component);
         let _entry = scope.enter();
         let handle = scope.handle();
+        component.run_inside(&handle);
         if let Err(error) = component.mount(move |event| forward_component_wake(&handle, &event)) {
             return Err(component.setup_error(error));
         }

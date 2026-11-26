@@ -402,6 +402,10 @@ impl super::App {
             return false;
         }
         let _phase = tilo_actions::profiling::Phase::start("ui.frame_sync");
+        // What a sync starts (a reply a widget asks a worker for) is owed to this window, whoever
+        // asked for the sync: a host that syncs before its frame, as a frame's own pump does,
+        // waits for that reply when it settles, rather than the reply waking no one.
+        let _entry = self.enter_wake_scope();
         // What the widgets took up since the last frame (an edit a child
         // made on its own) is written before the document is read again.
         self.root_widget.settle(
