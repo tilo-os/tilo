@@ -5172,4 +5172,65 @@ mod outside_effects {
             "its author alone reads it, in a document of its own: {alone:?}"
         );
     }
+
+    /// The entry `store` wrote as `entry(...)`, written again with the fields a settlement adds:
+    /// the effect taken back before it went.
+    fn settled(store: &mut Store, outcome: &str) -> Vec<Written> {
+        store
+            .put(
+                EFFECT,
+                "e",
+                Resource {
+                    readers: "ada".to_owned(),
+                    parent: Some("i".to_owned()),
+                    order: None,
+                    fields: BTreeMap::from([
+                        ("doc".to_owned(), Cell::One("d".into())),
+                        ("entry".to_owned(), Cell::One("e".into())),
+                        ("app".to_owned(), Cell::One("so.example".into())),
+                        ("capability".to_owned(), Cell::One("smtp.send".into())),
+                        ("payload".to_owned(), Cell::One("{}".into())),
+                        ("owner".to_owned(), Cell::One("dev".into())),
+                        ("settled".to_owned(), Cell::One(true.into())),
+                        ("outcome".to_owned(), Cell::One(outcome.into())),
+                        (
+                            "reason".to_owned(),
+                            Cell::One("Taken back before it went".into()),
+                        ),
+                    ]),
+                },
+                &stamp("send", "i3"),
+            )
+            .unwrap()
+    }
+
+    /// Taking back the effect it queued is the action's own change: the entry settles as
+    /// withdrawn, and admission takes it. An action says that and nothing else of how an effect
+    /// went.
+    #[test]
+    fn an_action_takes_back_the_effect_it_queued() {
+        let declared = schema(&[("tl.so.example", &["smtp.send"])]);
+        let mut writer = store(declared.clone());
+        let mut there = store(declared);
+        deliver(&item(&mut writer), &mut there);
+        deliver(&entry(&mut writer, "so.example", "smtp.send"), &mut there);
+        let taken_back = deliver(&settled(&mut writer, "withdrawn"), &mut there);
+        assert!(
+            taken_back.is_empty(),
+            "taking the effect back is admitted: {taken_back:?}"
+        );
+    }
+
+    /// An action saying its effect went — anything but that it was taken back — is refused: only
+    /// the device that carried it out says how it went.
+    #[test]
+    fn an_action_says_no_other_word_of_how_its_effect_went() {
+        let declared = schema(&[("tl.so.example", &["smtp.send"])]);
+        let mut writer = store(declared.clone());
+        let mut there = store(declared);
+        deliver(&item(&mut writer), &mut there);
+        deliver(&entry(&mut writer, "so.example", "smtp.send"), &mut there);
+        let why = refused(&settled(&mut writer, "sent"), &mut there);
+        assert!(why.contains("may not change a queued effect"), "{why}");
+    }
 }
