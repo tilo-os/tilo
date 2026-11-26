@@ -2111,19 +2111,20 @@ impl crate::Session {
         // What the person changed of the shell's own records: their calls of its actions where
         // their workspace keeps them.
         shell.own_calls(&self.shared.daemon, &workspace);
-        if !shell.has_asks() {
-            return Ok(());
-        }
-        serve_shell(&self.shared, shell, &workspace);
-        // What ran may have asked the session in turn (a menu, a sheet).
-        self.settle()?;
-        if let Some(shell) = self.shell.as_mut() {
-            shell.follow_deadline(self.numbers.deadline());
+        let asks = shell.has_asks();
+        if asks {
+            serve_shell(&self.shared, shell, &workspace);
+            // What ran may have asked the session in turn (a menu, a sheet).
+            self.settle()?;
+            if let Some(shell) = self.shell.as_mut() {
+                shell.follow_deadline(self.numbers.deadline());
+            }
         }
         // The shell's places are what the outside services keeping its records in step are due
         // for: each workspace with a place of an app's records has that app's connector, and one
-        // that no longer shows any ends. Read every pass, so a place made, moved between
-        // workspaces or closed is followed on the pass it happened on, in every workspace of
+        // that no longer shows any ends. Read every pass, whether or not the shell asked anything,
+        // so a place made, moved between workspaces or closed, or the workspace in front becoming
+        // the one the daemon holds, is followed on the pass it happened on, in every workspace of
         // the shell, not only the one in front (`docs/architecture/apps.md` §1, §8).
         crate::connectors::reconcile(self);
         Ok(())
