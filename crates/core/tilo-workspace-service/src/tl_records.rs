@@ -158,6 +158,22 @@ pub trait Records: Send + Sync {
         call: (ActionInvoker, ActionContext),
     ) -> Result<ActionOutput, ApiError>;
 
+    /// Make `app`'s root in `record` where it has none yet, empty, as `person`, through
+    /// `package`, the app's package as this device has it (`None` for the one this build
+    /// carries): what the app's actions on its whole are invoked on, so its record offers them
+    /// before anyone opened the app.
+    ///
+    /// # Errors
+    /// The record does not open, or the workspace refused the root.
+    fn root(
+        &self,
+        record: Record,
+        policy: Option<Arc<WorkspacePolicy>>,
+        person: &str,
+        app: &str,
+        package: Option<&Package>,
+    ) -> Result<(), String>;
+
     /// The notices `app` wrote in `record` that `person` has not seen, read through `package`,
     /// the app's package as this device has it: what a device of theirs shows them.
     ///
@@ -738,6 +754,42 @@ impl Workspaces {
         })
         .await
         .map_err(|error| ApiError::Failed(error.to_string()))?
+    }
+
+    /// Make `app`'s root in `workspace`'s record of it where it has none yet, empty, as
+    /// `person`, through `package`, the app's package as this device has it (`None` for the one
+    /// this build carries): what the app's actions on its whole are invoked on. A record no
+    /// device wrote yet has its channel founded here first, as a window opening it would.
+    ///
+    /// # Errors
+    /// The app is neither built in nor installed here, its package does not load, or the record
+    /// could not be opened or written.
+    pub async fn root_app(
+        &self,
+        workspace: &str,
+        app: &str,
+        package: Option<&Package>,
+        person: &str,
+    ) -> Result<(), String> {
+        let records = self.running(app)?;
+        let route = tilo_peer_state::document_frame::DocumentRoute {
+            app_id: app.to_owned(),
+            cluster_id: workspace.to_owned(),
+            document: String::new(),
+        };
+        // One this device may not found is founded elsewhere, and the write says so if it
+        // still has none.
+        if let Some(Err(error)) = self.own_route_keys(&route, true).await {
+            tracing::debug!(%error, app, "the record's channel is not founded here");
+        }
+        let record = self.tl_record(workspace, app, person)?;
+        let policy = self.policy_of(workspace).await.map(Arc::new);
+        let (person, app, package) = (person.to_owned(), app.to_owned(), package.cloned());
+        tokio::task::spawn_blocking(move || {
+            records.root(record, policy, &person, &app, package.as_ref())
+        })
+        .await
+        .map_err(|error| error.to_string())?
     }
 
     /// The notices `app` raised in `workspace` that `person` has not seen, read through

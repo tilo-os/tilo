@@ -24,7 +24,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionContext, ActionFailure, ActionInvoker, OperationKind};
 
-use super::{RecordCall, built_in, built_in_apps, member, runs_elsewhere, with_tl_record};
+use super::{RecordCall, built_in_apps, member};
 use tilo_workspace_service::workspaces::DocumentRoute;
 use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::providers::Reach;
@@ -203,33 +203,9 @@ impl BuiltInRecords {
         if self.rooted.lock_recover().contains(workspace) {
             return Ok(());
         }
-        let packages = built_in(self.app)?.ok_or_else(|| runs_elsewhere(self.app))?;
-        let app = self.app;
-        // A record no device wrote yet has no channel to seal its first write for: this device
-        // founds it, as a window opening the record would. One it may not found is founded
-        // elsewhere, and the write says so if it still has none.
-        if let Some(Err(error)) = self
-            .workspaces
-            .own_route_keys(&self.route(workspace), true)
-            .await
-        {
-            tracing::debug!(%error, app, "the record's channel is not founded here");
-        }
-        let viewer = member(tilo_actions::MemberId::person(person.to_owned()));
-        with_tl_record(
-            &self.workspaces,
-            workspace,
-            &packages,
-            (viewer, person),
-            move |opened| {
-                opened
-                    .host()
-                    .root_of(app)
-                    .map(drop)
-                    .map_err(|error| format!("{app}'s root is not made: {error}"))
-            },
-        )
-        .await?;
+        self.workspaces
+            .root_app(workspace, self.app, None, person)
+            .await?;
         self.rooted.lock_recover().insert(workspace.to_owned());
         Ok(())
     }
@@ -416,6 +392,7 @@ mod tests {
     )]
 
     use super::*;
+    use crate::records::{built_in, with_tl_record};
     use tilo_action_policy::{Answer, KindSet, TreePath};
     use tilo_actions::remote::ReceiptStatus;
     use tilo_workspace_service::workspaces::fixtures::{hosting_device, test_host};
@@ -575,6 +552,149 @@ mod tests {
             )],
         )
         .await;
+    }
+
+    /// Every app built in is served under its own provider, the ones compiled before another of
+    /// their group (Discussion, Notes and Contacts, before Tasks) as much as the last; and
+    /// installing one in a fresh workspace makes its root, empty, so what it offers on its whole
+    /// is offered before anyone opened it: Discussion's `comment` at
+    /// `record:so.tilo.lang.discussion:`, where a first comment made from a task lands.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_installed_apps_root_actions_are_offered_and_a_first_comment_on_a_task_lands() {
+        const DISCUSSION: &str = "so.tilo.lang.discussion";
+        const TASKS: &str = "so.tilo.tasks";
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = hosting_device();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces().clone();
+        workspaces
+            .provide_tilolang(crate::host())
+            .expect("the build's tilolang apps declare their surfaces");
+        let workspace = workspaces.create("Team").await.unwrap().workspace;
+        register(&workspaces);
+        for app in [
+            "so.tilo.chat",
+            "so.tilo.discord.preview",
+            "so.tilo.clocks",
+            DISCUSSION,
+            "so.tilo.notes",
+            "so.tilo.contacts",
+            TASKS,
+        ] {
+            assert!(
+                workspaces
+                    .providers()
+                    .get(&format!("{RESOURCE_PROVIDER}:{app}:"))
+                    .is_some(),
+                "{app}'s records are served on this device"
+            );
+        }
+
+        // The person installs Discussion in the workspace, through its governance.
+        let caller = Caller::authenticated(owner.user_public_key, owner.device_public_key)
+            .in_workspace(workspace.clone());
+        let installed = workspaces
+            .device_actions()
+            .invoke(
+                &tilo_workspace_service::service::local_caller(&owner)
+                    .in_workspace(workspace.clone()),
+                InvokeRequest {
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: tilo_actions::remote::RemoteActionTarget::workspace_governance(
+                        &workspace,
+                        "install-app",
+                    ),
+                    argument: InvokeArgument::Json(
+                        serde_json::json!({
+                            "app": DISCUSSION,
+                            "version": "0.1.0",
+                            "surface": "00".repeat(32),
+                            "package": "00".repeat(32),
+                            "publisher": "00".repeat(32),
+                            "dev": true,
+                        })
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    ),
+                    context: None,
+                    confirmation: None,
+                    revision: None,
+                    on_behalf_of: None,
+                    wait_ms: None,
+                    appearance: None,
+                    signed: None,
+                },
+            )
+            .await
+            .expect("the install is answered")
+            .expect("the workspace installs Discussion");
+        assert!(
+            matches!(installed.status, ReceiptStatus::Completed { .. }),
+            "the workspace runs Discussion: {installed:?}"
+        );
+
+        // Its root is there from the install on: what it publishes is read without making one.
+        let discussion = BuiltInRecords {
+            workspaces: workspaces.clone(),
+            app: DISCUSSION,
+            runtime: tokio::runtime::Handle::current(),
+            rooted: Arc::default(),
+        };
+        let offered = {
+            let caller = caller.clone();
+            tokio::task::spawn_blocking(move || discussion.rows(&caller))
+                .await
+                .unwrap()
+        };
+        assert!(
+            offered
+                .iter()
+                .filter_map(|row| row.action.as_ref())
+                .any(|action| action.address.action == "comment"),
+            "Discussion offers comment on its whole from its install: {offered:?}"
+        );
+
+        // A first comment, made from a task, goes through Discussion's own provider.
+        let made = calls::call(
+            &workspaces,
+            &caller,
+            TASKS,
+            "new_task",
+            serde_json::json!({ "title": "Water the plants" }),
+        )
+        .await
+        .expect("a task is made");
+        let task = made
+            .resources
+            .iter()
+            .find_map(|made| made.strip_prefix(&format!("tl:{TASKS}:")))
+            .unwrap_or_else(|| panic!("the task made is named: {made:?}"))
+            .to_owned();
+        let about = tilo_actions::params::MadeFrom {
+            resource: task,
+            kind: "tl.so.tilo.tasks.Task".to_owned(),
+        };
+        let comment = calls::call(
+            &workspaces,
+            &caller,
+            DISCUSSION,
+            "comment",
+            serde_json::json!({
+                "text": "Looks good",
+                (tilo_actions::params::FROM_ARGUMENT): about.to_json(),
+            }),
+        )
+        .await
+        .expect("the first comment on the task lands");
+        assert!(
+            comment
+                .resources
+                .iter()
+                .any(|made| made.starts_with(&format!("tl:{DISCUSSION}:"))),
+            "the comment it made is named: {comment:?}"
+        );
+        server.shutdown().await;
     }
 
     /// tl Chat's record, which no window holds open on a server, is offered to its person and

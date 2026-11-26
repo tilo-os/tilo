@@ -95,15 +95,37 @@ impl Packages {
                 })?;
             compiled.push(package);
         }
+        Ok(Self::of(compiled, &platform))
+    }
+
+    /// `compiled`, each package after those it uses, with the platform's packages any of them
+    /// uses.
+    fn of(
+        compiled: Vec<tilolang_tilo::tilolang::Compiled>,
+        platform: &[tilolang_tilo::tilolang::PackageMeta],
+    ) -> Self {
         let used: Vec<_> = platform
-            .into_iter()
+            .iter()
             .filter(|meta| {
                 compiled
                     .iter()
                     .any(|package| package.meta.uses.contains(&meta.app))
             })
+            .cloned()
             .collect();
-        Ok(Self(Arc::new(compiled), Arc::new(used)))
+        Self(Arc::new(compiled), Arc::new(used))
+    }
+
+    /// The packages of each app among these, each with those before it: every app of a group
+    /// compiled together has a record of its own, read through its own package and the ones it
+    /// was compiled after, as much as the group's last app does.
+    fn each_app(&self) -> impl Iterator<Item = Self> + '_ {
+        (1..=self.0.len()).map(|count| {
+            Self::of(
+                self.0.iter().take(count).cloned().collect(),
+                self.1.as_slice(),
+            )
+        })
     }
 
     /// The app the record is of: the last package's.
@@ -287,7 +309,7 @@ pub fn built_in(app: &str) -> Result<Option<Packages>, String> {
         .cloned())
 }
 
-/// The apps whose records this build runs from its own packages: each group's own app, after
+/// The apps whose records this build runs from its own packages: every app built in, each after
 /// those it uses.
 ///
 /// # Panics
@@ -306,14 +328,16 @@ pub fn built_in_apps() -> Vec<String> {
         .collect()
 }
 
-/// The packages built into this build, compiled once.
+/// The packages of each app built into this build, compiled once: an app compiled before others
+/// in its group is read through its own packages, never through the group's last app.
 fn compiled() -> &'static Result<Vec<Packages>, String> {
     static COMPILED: OnceLock<Result<Vec<Packages>, String>> = OnceLock::new();
     COMPILED.get_or_init(|| {
-        BUILT_IN
-            .iter()
-            .map(|sources| Packages::compile(sources))
-            .collect()
+        let mut each = Vec::new();
+        for sources in BUILT_IN {
+            each.extend(Packages::compile(sources)?.each_app());
+        }
+        Ok(each)
     })
 }
 
@@ -832,7 +856,9 @@ impl Records for crate::Service {
             .as_ref()
             .expect("the packages built into this build compile")
             .iter()
-            .flat_map(Packages::surfaces)
+            .filter_map(|packages| {
+                Some((packages.app().to_owned(), packages.surface(packages.app())?))
+            })
             .collect()
     }
 
@@ -1051,6 +1077,22 @@ impl Records for crate::Service {
 
     fn serve(&self, workspaces: &Workspaces) {
         provided::register(workspaces);
+    }
+
+    fn root(
+        &self,
+        record: Record,
+        policy: Option<Arc<WorkspacePolicy>>,
+        person: &str,
+        app: &str,
+        package: Option<&Package>,
+    ) -> Result<(), String> {
+        let opened = crate::notices::open(record, policy, person, app, package.cloned())?;
+        opened
+            .host()
+            .root_of(app)
+            .map(drop)
+            .map_err(|error| format!("{app}'s root is not made: {error}"))
     }
 
     fn notices(

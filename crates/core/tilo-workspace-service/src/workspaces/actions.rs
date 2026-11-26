@@ -2938,6 +2938,9 @@ impl Workspaces {
             .govern_app(workspace, device, request_id, command)
             .await
             .map_err(|error| ActionCallError::refused(error.to_string()))?;
+        if action == governance::INSTALL_APP {
+            self.root_installed(workspace, &app, device).await;
+        }
         let running = self
             .app_versions(workspace)
             .await
@@ -2945,6 +2948,23 @@ impl Workspaces {
             .into_iter()
             .find(|installed| installed.release.app == app);
         Ok(json!({ "generation": done.generation, "running": running }))
+    }
+
+    /// Make the root of `app`, just installed in `workspace`, empty, as the person whose
+    /// `device` installed it: the app's actions on its whole are offered from then on, before
+    /// anyone opened it, and a record nobody wrote yet holds nothing but that root. An app this
+    /// build carries no package of is rooted where it runs, when a window of it opens.
+    async fn root_installed(&self, workspace: &str, app: &str, device: &DeviceCert) {
+        if !self
+            .tilolang()
+            .is_some_and(|tilolang| tilolang.records.built_in(app))
+        {
+            return;
+        }
+        let person = hex::encode(device.user_public_key);
+        if let Err(error) = self.root_app(workspace, app, None, &person).await {
+            tracing::warn!(%workspace, app, %error, "an installed app's root is not made");
+        }
     }
 
     /// The trust the workspace keeps for packages: adding or replacing an

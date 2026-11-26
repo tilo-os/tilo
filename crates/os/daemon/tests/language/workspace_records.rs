@@ -272,7 +272,7 @@ fn a_members_content_steps_answer_and_the_workspace_keeps_what_they_put() {
 /// made from that issue.
 #[test]
 fn a_commenter_comments_and_a_moderator_makes_a_channel() {
-    host::run_with(&["tasks", "discussion"], |host| async move {
+    host::run_with(&["tasks"], |host| async move {
         let workspace = host.workspace().to_owned();
         let owner_device = host.member("its owner's computer", &workspace).await;
         let owner = host.agent();
@@ -291,34 +291,42 @@ fn a_commenter_comments_and_a_moderator_makes_a_channel() {
 
         // A commenter's comment on it, through the device link as the guest their person is: a
         // comment on a task is the system's discussion, not Tasks' own, so it is Discussion's
-        // `comment`, made from the task it is about.
-        let commenter = guest(&host, &owner_device, "commenter", "Cyd").await;
-        host::start_app(host.as_ref(), DISCUSSION)
-            .await
-            .unwrap_or_else(|refused| panic!("Discussion starts with no window: {refused:?}"));
-        let page = host::listed(host.as_ref(), DISCUSSION)
-            .await
-            .expect("Discussion lists what it publishes");
-        let says = page
-            .rows
-            .iter()
-            .filter_map(|row| row.action.as_ref())
-            .find(|action| action.address.action == "comment")
-            .unwrap_or_else(|| panic!("Discussion publishes comment: {page:?}"));
-        let discussion = host::app_action(
-            host.as_ref(),
-            DISCUSSION,
-            &says.address.resource,
-            &says.address.action,
+        // `comment`, made from the task it is about. The owner's device installs Discussion in
+        // the workspace, which makes its root, so its record offers `comment` on its whole with
+        // no window of it open anywhere: the record's provider is what the commenter reaches.
+        let installed = owner_device
+            .call(
+                tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER,
+                tilo_actions::remote::workspace_governance_address(&workspace, "install-app"),
+                &json!({
+                    "app": DISCUSSION,
+                    "version": "0.1.0",
+                    "surface": "00".repeat(32),
+                    "package": "00".repeat(32),
+                    "publisher": "00".repeat(32),
+                    "dev": true,
+                }),
+            )
+            .await;
+        assert!(
+            matches!(installed, Ok(InvocationUpdate::Succeeded { .. })),
+            "the workspace runs Discussion: {installed:?}"
         );
+        let commenter = guest(&host, &owner_device, "commenter", "Cyd").await;
+        let discussion = workspace_record(DISCUSSION);
+        let listed = commenter.listed(&discussion).await;
+        let says = listed
+            .iter()
+            .find(|action| action.address.action == "comment")
+            .unwrap_or_else(|| panic!("Discussion's record offers comment: {listed:?}"));
         let about = tilo_actions::params::MadeFrom {
             resource: issue,
             kind: "tl.so.tilo.tasks.Task".to_owned(),
         };
         let comment = commenter
             .call(
-                &discussion.provider,
-                discussion.address.clone(),
+                &discussion,
+                says.address.clone(),
                 &json!({
                     "text": "Looks good",
                     (tilo_actions::params::FROM_ARGUMENT): about.to_json(),
