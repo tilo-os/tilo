@@ -314,8 +314,7 @@ fn the_desktop_reads_and_writes_its_workspaces_through_the_daemon() {
                 record: DESKTOP_DOCUMENT,
             },
         ))
-        .err()
-        .expect("the daemon refused the write");
+        .expect_err("the daemon refused the write");
     assert_eq!(
         refused,
         WriteRefusal::HistoryFull {
@@ -414,8 +413,7 @@ fn a_desktop_the_daemon_did_not_start_frames_no_write_of_its_own() {
                 record: "layout",
             },
         ))
-        .err()
-        .expect("no daemon, no write");
+        .expect_err("no daemon, no write");
     assert_eq!(
         refused,
         WriteRefusal::Refused(NOT_STARTED_BY_THE_DAEMON.to_owned())

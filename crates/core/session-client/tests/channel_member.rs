@@ -149,7 +149,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     // The laptop joins the group the host founded, announces itself and
     // writes a sealed edit of the note before the browser arrives.
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
-    let mut laptop = Laptop::start(&host, &root, laptop).await;
+    let mut laptop = Box::pin(Laptop::start(&host, &root, laptop)).await;
     laptop.native.join().await;
     laptop.write("from the laptop", false);
 
@@ -321,7 +321,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
 
     let host = restart_host(&root, &host_device, state.path()).await;
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
-    let mut laptop = Laptop::start(&host, &root, laptop).await;
+    let mut laptop = Box::pin(Laptop::start(&host, &root, laptop)).await;
     laptop.native.join().await;
     let reloaded = start(host.iroh());
     reloaded
@@ -352,7 +352,7 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
     )
     .await;
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
-    let mut laptop = Laptop::start(&host, &root, laptop).await;
+    let mut laptop = Box::pin(Laptop::start(&host, &root, laptop)).await;
 
     let peer = start_peer(
         host.iroh(),

@@ -130,6 +130,8 @@ tilo-automerge-isolate.workspace = true
 # beside the wire's.
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
+# Where the phone keeps the daemon's profile, as the phone's test support reads it.
+tilo-machine.workspace = true
 # The model providers a flow is answered through, on loopback: OpenAI with a key and signed
 # in, and Anthropic.
 fake-model-providers = { path = "../../../tools/fake-model-providers" }
