@@ -15,10 +15,12 @@ use super::{
     SpeakerState, SpeakerWrite,
 };
 use tilo_network_actor::fabric::DeviceId;
+use tilo_network_actor::fabric::PersonalFabricAction;
 use tilo_network_actor::fabric::speaker_group::{
     EndpointSelector, SpeakerGroup, SpeakerGroupId, SpeakerListener,
 };
-use tilo_network_actor::fabric::{PersonDevices, PersonalFabricAction};
+
+use crate::devices::Listing;
 
 /// One live ask to a device to let this one listen while calibrating.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,7 +73,7 @@ impl SpeakerGroupCore {
     pub fn listener_candidates(
         &self,
         state: &SpeakerState,
-        fabric: &PersonDevices,
+        fabric: &Listing,
         local: &DeviceId,
         group: &SpeakerGroup,
         now: Instant,
@@ -228,7 +230,7 @@ impl SpeakerGroupCore {
     pub fn may_listen(
         &self,
         state: &SpeakerState,
-        fabric: &PersonDevices,
+        fabric: &Listing,
         local: &DeviceId,
         source: &DeviceId,
         group: SpeakerGroupId,
@@ -315,7 +317,7 @@ impl SpeakerGroupCore {
     pub fn pump_listening(
         &mut self,
         state: &SpeakerState,
-        fabric: &PersonDevices,
+        fabric: &Listing,
         local: &DeviceId,
         enabled: bool,
         now: Instant,
@@ -351,7 +353,7 @@ impl SpeakerGroupCore {
     pub fn listen_consent_views(
         &self,
         state: &SpeakerState,
-        fabric: &PersonDevices,
+        fabric: &Listing,
         local: &DeviceId,
     ) -> Vec<SpeakerConsentView> {
         let microphone_label = |microphone| {
@@ -379,7 +381,7 @@ impl SpeakerGroupCore {
     pub fn listener_views(
         &self,
         state: &SpeakerState,
-        fabric: &PersonDevices,
+        fabric: &Listing,
         local: &DeviceId,
     ) -> Vec<super::SpeakerMembershipView> {
         state
@@ -397,7 +399,7 @@ impl SpeakerGroupCore {
     }
 }
 
-fn device_label(fabric: &PersonDevices, device: &DeviceId) -> String {
+fn device_label(fabric: &Listing, device: &DeviceId) -> String {
     fabric.get(device).map_or_else(
         || device.as_str().to_string(),
         |known| known.about.label.clone(),

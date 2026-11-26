@@ -1,14 +1,14 @@
-//! What a service on the person's devices needs from the session that reaches
-//! them: the devices as this one knows them, who is online, and a way to send
-//! one device an action.
+//! What the services that reach the person's other devices need of the transport: who is online,
+//! which of them are nearby, which device this is, and a way to send one of them an action.
+//!
+//! The transport is the device's daemon's: it holds the endpoint and the key. A service that also
+//! reads the person's record of their devices reaches that through the record itself, never
+//! through this.
 
 use std::collections::BTreeSet;
 
-use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
-
 use crate::fabric::DeviceId;
-
-use crate::fabric::{PersonDevices, PersonalFabricAction};
+use crate::fabric::PersonalFabricAction;
 
 /// Why a personal fabric action did not reach the transport.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,25 +30,8 @@ impl std::fmt::Display for PersonalFabricSendError {
     }
 }
 
-/// The person's device fabric, as a service on it sees it.
+/// The person's devices, as the services on them reach each other.
 pub trait FabricLink {
-    /// The person's devices as this one knows them: what each keeps in their store and what
-    /// each said live.
-    fn devices(&self) -> PersonDevices;
-    /// The record of the person's devices in their own workspace, as this device's daemon last
-    /// read it: what every device of theirs keeps, and reads, of their speaker groups.
-    fn person_devices(&self) -> Option<Devices> {
-        None
-    }
-    /// Apply `action`, a typed action on the person's devices record, through this device's
-    /// daemon, as this device.
-    ///
-    /// # Errors
-    /// This session holds no copy of the person's workspace, or the daemon refused the action.
-    fn apply_person_devices(&self, action: tilo_resource::Invoke<Devices>) -> Result<(), String> {
-        let _ = action;
-        Err("this device holds no record of the person's devices".to_owned())
-    }
     /// The devices with a live session right now.
     fn online_device_ids(&self) -> BTreeSet<DeviceId>;
     /// The person's other devices heard on this device's local network now,
@@ -80,22 +63,7 @@ pub trait FabricLink {
     fn require_media(&self) -> Result<(), String>;
 }
 
-/// A link a service keeps beyond one call, for work it finishes later.
-pub type SharedLink = std::sync::Arc<dyn FabricLink + Send + Sync>;
-
 impl<T: FabricLink + ?Sized> FabricLink for std::sync::Arc<T> {
-    fn devices(&self) -> PersonDevices {
-        (**self).devices()
-    }
-
-    fn person_devices(&self) -> Option<Devices> {
-        (**self).person_devices()
-    }
-
-    fn apply_person_devices(&self, action: tilo_resource::Invoke<Devices>) -> Result<(), String> {
-        (**self).apply_person_devices(action)
-    }
-
     fn online_device_ids(&self) -> BTreeSet<DeviceId> {
         (**self).online_device_ids()
     }

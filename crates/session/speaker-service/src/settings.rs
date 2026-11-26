@@ -12,11 +12,11 @@
 //! revision when it differs; the wait resolves on that revision, which names
 //! nothing, and Settings then asks for one snapshot.
 
+use crate::devices::Speakers;
 use std::collections::BTreeMap;
 use std::hash::{Hash as _, Hasher as _};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tilo_network_actor::fabric::link::FabricLink;
 
 use tokio::sync::watch;
 
@@ -32,12 +32,12 @@ use crate::calibration::{
     CalibrationPhase, CalibrationRun, MemberProgress, MicrophoneConsent, MicrophoneProgress,
     RunMicrophone,
 };
+use crate::devices::Listing;
 use crate::groups::{
     ListenerCandidate, ListenerState, MemberSpec, SpeakerGroupsView, SpeakerSessionStatus,
     SpeakerState,
 };
 use tilo_network_actor::fabric::DeviceId;
-use tilo_network_actor::fabric::PersonDevices;
 use tilo_network_actor::fabric::speaker_group::{
     AudioEndpointKind, EndpointSelector, RoomPoint, SpeakerGroupId, SpeakerRole, SpeakerTrim,
     StereoSide, SurroundChannel,
@@ -139,11 +139,7 @@ pub fn playback_info(
 
 /// Every device's endpoints as Settings shows them.
 #[must_use]
-pub fn devices(
-    state: &SpeakerState,
-    fabric: &PersonDevices,
-    local: &DeviceId,
-) -> Vec<SpeakerDeviceInfo> {
+pub fn devices(state: &SpeakerState, fabric: &Listing, local: &DeviceId) -> Vec<SpeakerDeviceInfo> {
     fabric
         .devices()
         .values()
@@ -209,7 +205,7 @@ impl Calibrations {
     pub fn pump(
         &mut self,
         state: &SpeakerState,
-        _fabric: &PersonDevices,
+        _fabric: &Listing,
         consent: &BTreeMap<SpeakerGroupId, Vec<ListenerCandidate>>,
         now: Instant,
     ) {
@@ -384,8 +380,8 @@ pub fn admit_identify(now: Instant) -> bool {
 }
 
 /// Advance calibration runs; called from the fabric runtime's pump.
-pub fn pump(network: &dyn FabricLink) {
-    let fabric = network.devices();
+pub fn pump(network: &dyn Speakers) {
+    let fabric = network.known();
     let speaker = crate::groups::speaker_state(network);
     let waiting = state()
         .lock()
@@ -411,11 +407,11 @@ pub fn pump(network: &dyn FabricLink) {
 /// The speakers as they stand now: the reading the resource publishes to a view
 /// ([`crate::published`]), the same one this module answers Settings' snapshot with.
 #[must_use]
-pub fn snapshot_of(network: &dyn FabricLink) -> SpeakerSnapshot {
+pub fn snapshot_of(network: &dyn Speakers) -> SpeakerSnapshot {
     snapshot(network)
 }
 
-fn snapshot(network: &dyn FabricLink) -> SpeakerSnapshot {
+fn snapshot(network: &dyn Speakers) -> SpeakerSnapshot {
     let media_enabled = network.require_media().is_ok();
     let Some((local, _)) = network.local_device_fabric_identity() else {
         return SpeakerSnapshot {
@@ -426,7 +422,7 @@ fn snapshot(network: &dyn FabricLink) -> SpeakerSnapshot {
     if !media_enabled {
         return SpeakerSnapshot::default();
     }
-    let fabric = network.devices();
+    let fabric = network.known();
     let speaker = crate::groups::speaker_state(network);
     let view = crate::groups::view(network);
     let output = output_group(&view);
@@ -564,7 +560,7 @@ fn view_digest(snapshot: &SpeakerSnapshot) -> u64 {
 /// announce a change when it differs. Only while Settings waits: with no
 /// wait pending nobody would hear, and the snapshot is not built at all.
 /// Called from each fabric pump run and after each speaker command.
-pub fn observe(network: &dyn FabricLink) {
+pub fn observe(network: &dyn Speakers) {
     if revision().waited() {
         revision().note(&snapshot(network));
     }
@@ -574,7 +570,7 @@ pub fn observe(network: &dyn FabricLink) {
 /// with the revision to wait from next. With speaker groups off and no
 /// device changing it stays pending and costs no wakeup.
 pub fn changed(
-    network: &dyn FabricLink,
+    network: &dyn Speakers,
     after: u64,
 ) -> impl std::future::Future<Output = u64> + Send + 'static {
     let wait = revision().wait(after);
@@ -584,10 +580,7 @@ pub fn changed(
 }
 
 #[must_use]
-pub fn handle(
-    network: &tilo_network_actor::fabric::link::SharedLink,
-    command: SpeakerCommand,
-) -> SpeakerReply {
+pub fn handle(network: &crate::devices::SharedLink, command: SpeakerCommand) -> SpeakerReply {
     let result = match command {
         SpeakerCommand::Snapshot => {
             let snapshot = snapshot(network);
@@ -626,7 +619,7 @@ fn bounded_reason(mut reason: String) -> String {
 }
 
 fn run_command(
-    network: &tilo_network_actor::fabric::link::SharedLink,
+    network: &crate::devices::SharedLink,
     command: SpeakerCommand,
 ) -> Result<Option<String>, String> {
     use crate::groups;
@@ -737,7 +730,7 @@ fn output_group(view: &SpeakerGroupsView) -> Option<SpeakerGroupId> {
 /// Play everything this device plays on `group`, as an output chosen in
 /// Sound: one such group at a time, so choosing another ends the first.
 fn use_as_output(
-    network: &tilo_network_actor::fabric::link::SharedLink,
+    network: &crate::devices::SharedLink,
     group: SpeakerGroupId,
 ) -> Result<(), String> {
     use crate::groups;
@@ -754,7 +747,7 @@ fn use_as_output(
 }
 
 /// End the session playing everything here on a group, if there is one.
-fn stop_output(network: &dyn FabricLink) {
+fn stop_output(network: &dyn Speakers) {
     let previous = state()
         .lock()
         .ok()
@@ -784,7 +777,7 @@ fn with_run<T>(
 /// Measure with the timed audio path; remote members and listening devices
 /// are asked over the fabric.
 fn timed_source(
-    network: &tilo_network_actor::fabric::link::SharedLink,
+    network: &crate::devices::SharedLink,
     local: DeviceId,
     peers: &[DeviceId],
 ) -> Box<dyn crate::calibration::MeasurementSource> {
@@ -862,7 +855,7 @@ fn parse_device(value: &str) -> Result<DeviceId, String> {
 }
 
 fn start_calibration(
-    network: &tilo_network_actor::fabric::link::SharedLink,
+    network: &crate::devices::SharedLink,
     group: &str,
     excluded: &[String],
     listening: Option<&str>,
@@ -876,7 +869,7 @@ fn start_calibration(
     let (local, _) = network
         .local_device_fabric_identity()
         .ok_or_else(|| crate::i18n::t("device-fabric-error-no-identity"))?;
-    let fabric = network.devices();
+    let fabric = network.known();
     let speaker = crate::groups::speaker_state(network);
     let published = speaker
         .group(id)

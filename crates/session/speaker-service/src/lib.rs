@@ -5,9 +5,11 @@
 //! ([`calibration`]); remote audio carries a device's playback or
 //! microphone to another ([`remote_audio`]); Settings reaches all of it
 //! through [`settings`]. Everything goes over the person's device fabric,
-//! which the service reaches through a [`tilo_network_actor::fabric::link::FabricLink`].
+//! which the service reaches through a [`devices::Speakers`]: the transport between the
+//! person's devices, and the record of them in their own workspace.
 
 pub mod calibration;
+pub mod devices;
 pub mod groups;
 pub mod published;
 pub mod remote_audio;

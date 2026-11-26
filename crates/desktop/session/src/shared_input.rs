@@ -1560,11 +1560,7 @@ mod tests {
         }
     }
 
-    impl crate::platform::fabric::FabricLink for Recorded {
-        fn devices(&self) -> crate::platform::fabric::PersonDevices {
-            crate::platform::fabric::PersonDevices::default()
-        }
-
+    impl crate::platform::fabric::PeerLink for Recorded {
         fn online_device_ids(&self) -> BTreeSet<DeviceId> {
             BTreeSet::new()
         }
@@ -1585,6 +1581,34 @@ mod tests {
 
         fn require_media(&self) -> Result<(), String> {
             Ok(())
+        }
+    }
+
+    impl tilo_speaker_service::devices::Record for Recorded {
+        fn record(
+            &self,
+        ) -> Option<tilo_workspace_service::workspaces::person_workspace::devices::Devices>
+        {
+            None
+        }
+
+        fn apply(
+            &self,
+            _: tilo_resource::Invoke<
+                tilo_workspace_service::workspaces::person_workspace::devices::Devices,
+            >,
+        ) -> Result<(), String> {
+            Err("the laptop has read no record of the person's devices".to_owned())
+        }
+
+        fn person(&self) -> [u8; 32] {
+            [0; 32]
+        }
+    }
+
+    impl tilo_speaker_service::devices::Speakers for Recorded {
+        fn known(&self) -> tilo_speaker_service::devices::Listing {
+            tilo_speaker_service::devices::Listing::default()
         }
     }
 

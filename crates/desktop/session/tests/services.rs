@@ -29,12 +29,13 @@ use tilo_connectivity_service::device::{Change, Device, Readings};
 use tilo_service::lines::{self, Remote};
 use tilo_session::platform::fabric::EndpointSelector;
 use tilo_session::platform::fabric::{
-    DeviceAbout, DeviceId, DeviceKind, FabricCapabilities, PersonDevice, PersonDevices,
-    PersonalFabricAction,
+    DeviceAbout, DeviceId, DeviceKind, FabricCapabilities, PersonalFabricAction,
 };
-use tilo_session::platform::fabric::{FabricLink, PersonalFabricSendError};
+use tilo_session::platform::fabric::{PeerLink, PersonalFabricSendError};
 use tilo_session::{Options, Service, Session};
+use tilo_speaker_service::devices::{Listing, Record, Speakers, known_from};
 use tilo_ui_base::host_operation::ResourceOperationStart;
+use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
 use tilo_workspace_service::workspaces::person_workspace::speaker::SpeakerEndpoint;
 
@@ -217,6 +218,13 @@ fn choosing_headphones_is_an_action_of_the_published_sound() {
     ));
 }
 
+/// The 32 bytes that name `device` in the record of the person's devices.
+fn owner_id(device: &str) -> [u8; 32] {
+    let mut raw = [0; 32];
+    raw[..device.len()].copy_from_slice(device.as_bytes());
+    raw
+}
+
 /// The 32 bytes in hex that name `device` in the record of the person's devices.
 fn key(device: &str) -> String {
     let mut raw = [0; 32];
@@ -228,21 +236,23 @@ fn key(device: &str) -> String {
 /// offering one output speaker groups can be made of.
 #[derive(Clone)]
 struct Fabric {
-    converged: Arc<Mutex<PersonDevices>>,
     record: Arc<Mutex<automerge::AutoCommit>>,
     local: DeviceId,
+    root: Arc<ed25519_dalek::SigningKey>,
+    online: Arc<Mutex<std::collections::BTreeSet<DeviceId>>>,
 }
 
 impl Fabric {
     /// This laptop, alone among the person's devices.
     fn laptop() -> Self {
         let fabric = Self {
-            converged: Arc::new(Mutex::new(PersonDevices::default())),
             record: Arc::new(Mutex::new(
                 tilo_workspace_service::workspaces::person_workspace::genesis::<Devices>("")
                     .expect("the record's first state"),
             )),
             local: DeviceId::new(key("this-laptop")).expect("a device id"),
+            root: Arc::new(ed25519_dalek::SigningKey::from_bytes(&[21; 32])),
+            online: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
         };
         fabric.publish("this-laptop", "This laptop");
         fabric
@@ -256,28 +266,46 @@ impl Fabric {
         )
     }
 
-    /// Offer `device` among the person's devices as it stands now.
+    /// Offer `device` among the person's devices as it stands now, online: what it says of
+    /// itself goes into the record, which is the only copy.
     fn publish(&self, device: &str, label: &str) {
         let owner = DeviceId::new(key(device)).expect("a device id");
-        let mut known = PersonDevice::new(
-            owner,
-            DeviceAbout {
-                label: label.into(),
-                kind: DeviceKind::Laptop,
-                capabilities: FabricCapabilities {
-                    audio_output: true,
-                    audio_group: true,
-                    ..FabricCapabilities::default()
-                },
-            },
-        );
-        known.online = true;
-        known.last_seen_unix_ms = 1;
+        let mut cert = DeviceCert {
+            user_public_key: self.root.verifying_key().to_bytes(),
+            device_public_key: owner_id(device),
+            device_label: label.into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, self.root.as_ref())
+            .expect("the certificate signs");
         apply_record(
             &self.record,
-            Devices::KEEP_DEVICE.with((key(device), "00".to_owned())),
+            Devices::keeping(&cert).expect("the device certificate encodes"),
         )
         .expect("the device is kept");
+        let about = DeviceAbout {
+            label: label.into(),
+            kind: DeviceKind::Laptop,
+            capabilities: FabricCapabilities {
+                audio_output: true,
+                audio_group: true,
+                ..FabricCapabilities::default()
+            },
+        };
+        apply_record(
+            &self.record,
+            Devices::KEEP_FACT.with((
+                key(device),
+                hex::encode(postcard::to_allocvec(&cert).expect("the certificate encodes")),
+                tilo_network_actor::fabric::ABOUT_FACT.to_owned(),
+                hex::encode(postcard::to_allocvec(&about).expect("what it is encodes")),
+            )),
+        )
+        .expect("the device says what it is");
         let endpoints = vec![SpeakerEndpoint {
             selector: Self::output(device).to_hex(),
             microphone: false,
@@ -292,7 +320,7 @@ impl Fabric {
             )),
         )
         .expect("the device offers its output");
-        self.converged.lock().unwrap().insert(known);
+        self.online.lock().unwrap().insert(owner);
     }
 
     /// Another of the person's devices joins the fabric, online.
@@ -333,21 +361,9 @@ impl Fabric {
     }
 }
 
-impl FabricLink for Fabric {
-    fn devices(&self) -> PersonDevices {
-        self.converged.lock().unwrap().clone()
-    }
-
-    fn person_devices(&self) -> Option<Devices> {
-        read_record(&self.record)
-    }
-
-    fn apply_person_devices(&self, action: tilo_resource::Invoke<Devices>) -> Result<(), String> {
-        apply_record(&self.record, action)
-    }
-
+impl PeerLink for Fabric {
     fn online_device_ids(&self) -> std::collections::BTreeSet<DeviceId> {
-        std::collections::BTreeSet::from([self.local.clone()])
+        self.online.lock().unwrap().clone()
     }
 
     fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
@@ -364,6 +380,31 @@ impl FabricLink for Fabric {
 
     fn require_media(&self) -> Result<(), String> {
         Ok(())
+    }
+}
+
+impl Record for Fabric {
+    fn record(&self) -> Option<Devices> {
+        read_record(&self.record)
+    }
+
+    fn apply(&self, action: tilo_resource::Invoke<Devices>) -> Result<(), String> {
+        apply_record(&self.record, action)
+    }
+
+    fn person(&self) -> [u8; 32] {
+        self.root.verifying_key().to_bytes()
+    }
+}
+
+impl Speakers for Fabric {
+    fn known(&self) -> Listing {
+        known_from(
+            &read_record(&self.record).unwrap_or_default(),
+            &self.person(),
+            Some(&self.local),
+            &self.online_device_ids(),
+        )
     }
 }
 

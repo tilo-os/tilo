@@ -36,6 +36,7 @@ use media::sync_playout::{
 };
 use rand_core::Rng;
 
+use crate::devices::Speakers;
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::fabric::DeviceId;
 use tilo_network_actor::fabric::PhysicalGamepadBinding;
@@ -43,7 +44,7 @@ use tilo_network_actor::fabric::clock::{ClockSyncFailure, ClockSyncState, PeerPl
 use tilo_network_actor::fabric::clock::{
     FabricClockSync, fabric_peer_clock, hold_fabric_clock_sync,
 };
-use tilo_network_actor::fabric::link::{FabricLink, PersonalFabricSendError};
+use tilo_network_actor::fabric::link::PersonalFabricSendError;
 use tilo_network_actor::fabric::{
     MAX_REMOTE_AUDIO_FRAME_BYTES, MAX_REMOTE_AUDIO_SESSIONS, PersonalFabricAction,
     PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS, REMOTE_AUDIO_FRAME_SAMPLES,
@@ -1168,7 +1169,7 @@ pub fn snapshot(focus: Option<&PhysicalGamepadBinding>) -> RemoteAudioView {
 /// source picker entry expired, the service is unavailable, or the offer
 /// cannot be sent.
 pub fn request(
-    network: &dyn FabricLink,
+    network: &dyn Speakers,
     source_token: u64,
     target: &DeviceId,
 ) -> Result<[u8; 16], String> {
@@ -1176,7 +1177,7 @@ pub fn request(
         .local_device_fabric_identity()
         .map(|(device, _)| device)
         .ok_or_else(|| crate::i18n::t("device-fabric-error-no-identity"))?;
-    let fabric = network.devices();
+    let fabric = network.known();
     let target_device = fabric
         .get(target)
         .ok_or_else(|| crate::i18n::t("device-fabric-error-target-not-enrolled"))?;
@@ -1254,7 +1255,7 @@ pub fn request(
 /// the local sink cannot start, too many routes are active, or the decision
 /// cannot be sent.
 pub fn authorize(
-    network: &dyn FabricLink,
+    network: &dyn Speakers,
     session_id: [u8; 16],
     approved: bool,
 ) -> Result<(), String> {
@@ -1639,7 +1640,7 @@ fn pump_local_group_routes(state: &mut RemoteAudioState) {
 /// Returns a message when the service is unavailable, the route is no longer
 /// active, or the peer cannot be notified. Stopping an interrupted route only
 /// dismisses its notice; its peer was already told when it ended.
-pub fn stop(network: &dyn FabricLink, session_id: [u8; 16]) -> Result<(), String> {
+pub fn stop(network: &dyn Speakers, session_id: [u8; 16]) -> Result<(), String> {
     let stopped = {
         let mut state = state()
             .lock()
@@ -1683,7 +1684,7 @@ pub fn stop(network: &dyn FabricLink, session_id: [u8; 16]) -> Result<(), String
     clippy::too_many_lines,
     reason = "one exhaustive handler validates each remote-audio action beside its state change"
 )]
-pub fn handle_action(network: &dyn FabricLink, envelope: &PersonalFabricActionEnvelope) -> bool {
+pub fn handle_action(network: &dyn Speakers, envelope: &PersonalFabricActionEnvelope) -> bool {
     match &envelope.action {
         PersonalFabricAction::RemoteAudioOffer {
             session_id, label, ..
@@ -1917,7 +1918,7 @@ pub fn handle_action(network: &dyn FabricLink, envelope: &PersonalFabricActionEn
 }
 
 /// Drive capture, bounded frame transmission, and all lifecycle revocations.
-pub fn pump(network: &dyn FabricLink, enabled: bool, focus: Option<&PhysicalGamepadBinding>) {
+pub fn pump(network: &dyn Speakers, enabled: bool, focus: Option<&PhysicalGamepadBinding>) {
     pump_state(state(), network, enabled, focus);
 }
 
@@ -1926,7 +1927,7 @@ pub fn pump(network: &dyn FabricLink, enabled: bool, focus: Option<&PhysicalGame
 /// otherwise reads the fabric in place rather than cloning it.
 fn pump_state(
     state: &Mutex<RemoteAudioState>,
-    network: &dyn FabricLink,
+    network: &dyn Speakers,
     enabled: bool,
     focus: Option<&PhysicalGamepadBinding>,
 ) {
@@ -2088,6 +2089,7 @@ impl PcmCapture {
 mod tests {
     use super::*;
     use tilo_network_actor::fabric::clock::{fabric_monotonic_us, with_fabric_clock};
+    use tilo_network_actor::fabric::link::FabricLink;
 
     fn binding(session: &str) -> PhysicalGamepadBinding {
         PhysicalGamepadBinding {
@@ -2141,24 +2143,50 @@ mod tests {
     /// A link that counts how often the fabric is read and sends nothing.
     #[derive(Default)]
     struct CountingLink {
-        cloned: std::cell::Cell<usize>,
-        borrowed: std::cell::Cell<usize>,
-        sent: std::cell::Cell<usize>,
+        cloned: std::sync::atomic::AtomicUsize,
+        borrowed: std::sync::atomic::AtomicUsize,
+        sent: std::sync::atomic::AtomicUsize,
     }
 
     impl CountingLink {
         fn reads(&self) -> (usize, usize) {
-            (self.cloned.get(), self.borrowed.get())
+            use std::sync::atomic::Ordering::Relaxed;
+            (self.cloned.load(Relaxed), self.borrowed.load(Relaxed))
+        }
+    }
+
+    impl crate::devices::Record for CountingLink {
+        fn record(
+            &self,
+        ) -> Option<tilo_workspace_service::workspaces::person_workspace::devices::Devices>
+        {
+            None
+        }
+        fn apply(
+            &self,
+            _: tilo_resource::Invoke<
+                tilo_workspace_service::workspaces::person_workspace::devices::Devices,
+            >,
+        ) -> Result<(), String> {
+            Err("offline".to_owned())
+        }
+        fn person(&self) -> [u8; 32] {
+            [0; 32]
+        }
+    }
+
+    impl crate::devices::Speakers for CountingLink {
+        fn known(&self) -> crate::devices::Listing {
+            self.cloned
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            crate::devices::Listing::default()
         }
     }
 
     impl FabricLink for CountingLink {
-        fn devices(&self) -> tilo_network_actor::fabric::PersonDevices {
-            self.cloned.set(self.cloned.get() + 1);
-            tilo_network_actor::fabric::PersonDevices::default()
-        }
         fn online_device_ids(&self) -> BTreeSet<DeviceId> {
-            self.borrowed.set(self.borrowed.get() + 1);
+            self.borrowed
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             BTreeSet::new()
         }
         fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
@@ -2169,7 +2197,7 @@ mod tests {
             _: &DeviceId,
             _: tilo_network_actor::fabric::PersonalFabricAction,
         ) -> Result<[u8; 16], PersonalFabricSendError> {
-            self.sent.set(self.sent.get() + 1);
+            self.sent.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Err(PersonalFabricSendError::Rejected("offline".into()))
         }
         fn require_media(&self) -> Result<(), String> {
@@ -2192,7 +2220,7 @@ mod tests {
                 (0, 0),
                 "an idle pump does not look at the fabric"
             );
-            assert_eq!(network.sent.get(), 0, "an idle pump sends nothing");
+            assert_eq!(network.sent.load(std::sync::atomic::Ordering::Relaxed), 0, "an idle pump sends nothing");
 
             // A live notice needs the online set, read in place.
             state.lock().unwrap().interrupted.insert(

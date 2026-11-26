@@ -6,8 +6,8 @@
 //! the shell or an agent — reads one resource and calls its own published actions. What a call
 //! changes is the fabric's speaker groups, so no view holds a copy of it.
 
+use crate::devices::Speakers as SpeakersLink;
 use serde::{Deserialize, Serialize};
-use tilo_network_actor::fabric::link::FabricLink;
 
 use runtime_collab::{
     CalibrationInfo, CalibrationMemberInfo, CalibrationMicrophoneRun, CalibrationPhaseInfo,
@@ -710,6 +710,6 @@ pub fn surface() -> tilo_actions::surface::Surface {
 
 /// The speakers as they stand now, as the resource shows them.
 #[must_use]
-pub fn reading(network: &dyn FabricLink) -> Speakers {
+pub fn reading(network: &dyn SpeakersLink) -> Speakers {
     Speakers::of(&crate::settings::snapshot_of(network))
 }

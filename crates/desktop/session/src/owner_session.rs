@@ -479,16 +479,18 @@ impl Session {
         let in_use = self.compositor.in_use();
         // Which of the devices are online is live, from the fabric: without it none is, and only a
         // lock is followed. Which are on a network with this one is what each keeps in the record.
-        let fabric = self.shared.fabric.as_ref().map(|fabric| fabric.devices());
+        let online = self
+            .shared
+            .fabric
+            .as_ref()
+            .map(|fabric| fabric.online_device_ids())
+            .unwrap_or_default();
         let own = devices.own_routes();
         let others: Vec<Other> = devices
             .others()
             .into_iter()
             .map(|(id, session, routes)| {
-                let online = fabric
-                    .as_ref()
-                    .and_then(|fabric| fabric.get(&id))
-                    .is_some_and(|device| device.online);
+                let online = online.contains(&id);
                 Other {
                     session,
                     online,

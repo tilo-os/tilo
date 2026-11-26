@@ -109,49 +109,67 @@ impl Service for Served {
 mod tests {
     use super::*;
     use crate::platform::fabric::{
-        DeviceAbout, DeviceId, DeviceKind, EndpointSelector, FabricCapabilities, FabricLink,
-        PersonDevice, PersonDevices, PersonalFabricAction, PersonalFabricSendError,
+        DeviceAbout, DeviceId, DeviceKind, EndpointSelector, FabricCapabilities, PeerLink,
+        PersonalFabricAction, PersonalFabricSendError,
     };
+    use tilo_speaker_service::devices::Record;
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert};
     use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
     use tilo_workspace_service::workspaces::person_workspace::speaker::SpeakerEndpoint;
 
-    /// The 32 bytes in hex that name `device` in the record of the person's devices.
-    fn key(device: &str) -> String {
-        let mut raw = [0; 32];
-        raw[..device.len()].copy_from_slice(device.as_bytes());
-        hex::encode(raw)
+    /// This laptop's person and device key, as the record keeps them.
+    fn laptop() -> ([u8; 32], ed25519_dalek::SigningKey, DeviceCert) {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[21; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "This laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root).expect("the certificate signs");
+        (root.verifying_key().to_bytes(), key, cert)
     }
 
-    /// This laptop's devices, with the one output it publishes.
+    /// This laptop's devices, with the one output it publishes: the record's, and no copy beside
+    /// it.
     struct Fabric {
         local: DeviceId,
-        converged: PersonDevices,
+        person: [u8; 32],
         record: Devices,
     }
 
     impl Fabric {
         fn laptop() -> Self {
-            let local = DeviceId::new(key("this-laptop")).expect("a device id");
-            let mut device = PersonDevice::new(
-                local.clone(),
-                DeviceAbout {
-                    label: "This laptop".into(),
-                    kind: DeviceKind::Laptop,
-                    capabilities: FabricCapabilities {
-                        audio_output: true,
-                        audio_group: true,
-                        ..FabricCapabilities::default()
-                    },
-                },
-            );
-            device.online = true;
-            device.last_seen_unix_ms = 1;
-            let converged = PersonDevices::new([device]);
+            let (person, key, cert) = laptop();
+            let local =
+                DeviceId::new(hex::encode(key.verifying_key().to_bytes())).expect("a device id");
             let mut record =
                 tilo_resource::Replica::<Devices>::new().in_app("so.tilo.model", "Model");
             record
-                .apply(Devices::KEEP_DEVICE.with((local.as_str().to_owned(), "00".to_owned())))
+                .apply(Devices::keeping(&cert).expect("the device certificate encodes"))
                 .expect("the device is kept");
+            let about = DeviceAbout {
+                label: "This laptop".into(),
+                kind: DeviceKind::Laptop,
+                capabilities: FabricCapabilities {
+                    audio_output: true,
+                    audio_group: true,
+                    ..FabricCapabilities::default()
+                },
+            };
+            record
+                .apply(Devices::KEEP_FACT.with((
+                    local.as_str().to_owned(),
+                    hex::encode(postcard::to_allocvec(&cert).expect("the certificate encodes")),
+                    tilo_network_actor::fabric::ABOUT_FACT.to_owned(),
+                    hex::encode(postcard::to_allocvec(&about).expect("what it is encodes")),
+                )))
+                .expect("the device says what it is");
             let endpoints = vec![SpeakerEndpoint {
                 selector: EndpointSelector::mint(&local, "alsa_output.analog-stereo").to_hex(),
                 microphone: false,
@@ -166,25 +184,13 @@ mod tests {
                 .expect("the device offers its output");
             Self {
                 local,
-                converged,
+                person,
                 record: record.state().expect("the record reads"),
             }
         }
     }
 
-    impl FabricLink for Fabric {
-        fn devices(&self) -> PersonDevices {
-            self.converged.clone()
-        }
-
-        fn person_devices(&self) -> Option<Devices> {
-            Some(self.record.clone())
-        }
-
-        fn apply_person_devices(&self, _: tilo_resource::Invoke<Devices>) -> Result<(), String> {
-            Ok(())
-        }
-
+    impl crate::platform::fabric::PeerLink for Fabric {
         fn online_device_ids(&self) -> std::collections::BTreeSet<DeviceId> {
             std::collections::BTreeSet::from([self.local.clone()])
         }
@@ -206,6 +212,32 @@ mod tests {
         }
     }
 
+    impl Record for Fabric {
+        fn record(&self) -> Option<Devices> {
+            Some(self.record.clone())
+        }
+
+        fn apply(&self, _: tilo_resource::Invoke<Devices>) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn person(&self) -> [u8; 32] {
+            self.person
+        }
+    }
+
+    impl tilo_speaker_service::devices::Speakers for Fabric {
+        fn known(&self) -> tilo_speaker_service::devices::Listing {
+            let online = self.online_device_ids();
+            tilo_speaker_service::devices::known_from(
+                &self.record,
+                &self.person,
+                Some(&self.local),
+                &online,
+            )
+        }
+    }
+
     #[test]
     fn the_speakers_are_the_devices_reading_and_its_verbs_refuse_what_cannot_be_a_group() {
         let mut served = Served::new(std::sync::Arc::new(Fabric::laptop()));
@@ -220,7 +252,7 @@ mod tests {
         assert!(!served.poll(), "a pass that changed nothing is no revision");
 
         let mut identify = Map::new();
-        identify.insert("device".into(), Value::from(key("this-laptop")));
+        identify.insert("device".into(), Value::from(hex::encode([9; 32])));
         identify.insert("output".into(), Value::from("not an output"));
         let refused = served.invoke(RESOURCE, "identify", &identify).err();
         assert!(

@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex};
 use crate::followed_resource::FollowedResource;
 use crate::hosted::{DevicesReading, MediaOffer, PersonalDevice};
 use crate::platform::fabric::DeviceId;
-use crate::platform::fabric::SharedLink;
+use crate::platform::fabric::{FabricLink, SharedLink};
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_lock::MutexRecover as _;
@@ -160,7 +160,7 @@ fn read(
     let local = fabric
         .local_device_fabric_identity()
         .map(|(device, _)| device);
-    let converged = fabric.devices();
+    let converged = fabric.known();
     let nearby = fabric.nearby_device_ids();
     let mut devices: Vec<PersonalDevice> = converged
         .devices()

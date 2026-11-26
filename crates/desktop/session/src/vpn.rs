@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::platform::fabric::SharedLink;
+use crate::platform::fabric::{FabricLink, SharedLink};
 use device_vpn::controller::{self, AfterEnd, Want};
 use device_vpn::link::{self, Control, Frame};
 use device_vpn::net::{CLIENT_INTERFACE, MAX_MTU};
@@ -161,7 +161,7 @@ impl Routes {
 
         // The person's devices as their fabric names them: whose name to show beside the route,
         // which of them could carry it, and which of them may route through this one.
-        let devices = fabric.devices();
+        let devices = fabric.known();
         let mut labels = BTreeMap::new();
         let mut online = BTreeSet::new();
         for device in devices.devices().values() {
@@ -457,8 +457,12 @@ type Reader = ReadHalf<tokio::net::UnixStream>;
 type Writer = WriteHalf<tokio::net::UnixStream>;
 
 /// Opens a link to this device's daemon: the daemon's own, or a test's.
-type Open =
-    Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<tokio::net::UnixStream>> + Send>> + Send + Sync>;
+type Open = Arc<
+    dyn Fn() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<tokio::net::UnixStream>> + Send>,
+        > + Send
+        + Sync,
+>;
 
 /// How the session opens a link to this device's daemon: the daemon's own, or a test's.
 #[derive(Clone)]
@@ -1231,7 +1235,9 @@ mod tests {
 
         let inward = packet::udp_packet(web, SocketAddrV4::new(address, 50_000), b"hello back")
             .expect("a packet to receive");
-        to_session.send(inward.clone()).expect("the daemon writes it");
+        to_session
+            .send(inward.clone())
+            .expect("the daemon writes it");
         let tun = tuns
             .lock()
             .unwrap()

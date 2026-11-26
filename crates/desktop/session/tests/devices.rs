@@ -27,13 +27,14 @@ use tilo_compositor::OutputConfig;
 use tilo_desktop_search::providers::AppEntry;
 use tilo_session::hosted::{ASK_KEY, DevicesReading, HostedActions, ROUTE_KEY, RowPart, SOUND_KEY};
 use tilo_session::platform::fabric::{
-    DeviceAbout, DeviceId, DeviceKind, FabricCapabilities, MediaSourceLocator, PersonDevice,
-    PersonDevices, PersonalFabricAction, PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS,
+    DeviceAbout, DeviceId, DeviceKind, FabricCapabilities, MediaSourceLocator,
+    PersonalFabricAction, PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS,
     REMOTE_AUDIO_FRAME_SAMPLES, REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ,
 };
-use tilo_session::platform::fabric::{FabricLink, PersonalFabricSendError, SharedLink};
+use tilo_session::platform::fabric::{FabricLink, PeerLink, PersonalFabricSendError, SharedLink};
 use tilo_session::surfaces::Surface;
 use tilo_session::{AppActions, AppLists, Lists, Options, Session};
+use tilo_speaker_service::devices::{ListedDevice, Listing, Record, Speakers};
 
 type Arguments = serde_json::Map<String, serde_json::Value>;
 
@@ -58,7 +59,7 @@ fn sleeping() -> DeviceId {
 /// The person's devices as a stand-in transport keeps them, and what the session sent through it.
 #[derive(Default)]
 struct Fabric {
-    converged: PersonDevices,
+    converged: Listing,
     sent: Vec<(DeviceId, PersonalFabricAction)>,
 }
 
@@ -94,7 +95,7 @@ impl FakeLink {
                 .expect("the online devices")
                 .insert(device.clone());
         }
-        let mut known = PersonDevice::new(
+        let mut known = ListedDevice::new(
             device,
             DeviceAbout {
                 label: label.to_owned(),
@@ -124,11 +125,7 @@ impl FakeLink {
     }
 }
 
-impl FabricLink for FakeLink {
-    fn devices(&self) -> PersonDevices {
-        self.fabric.lock().expect("the fabric").converged.clone()
-    }
-
+impl PeerLink for FakeLink {
     fn online_device_ids(&self) -> BTreeSet<DeviceId> {
         self.online.lock().expect("the online devices").clone()
     }
@@ -162,6 +159,33 @@ impl FabricLink for FakeLink {
         (*self.media.lock().expect("the media switch"))
             .then_some(())
             .ok_or_else(|| "media continuity is off".to_owned())
+    }
+}
+
+impl Record for FakeLink {
+    fn record(
+        &self,
+    ) -> Option<tilo_workspace_service::workspaces::person_workspace::devices::Devices> {
+        None
+    }
+
+    fn apply(
+        &self,
+        _: tilo_resource::Invoke<
+            tilo_workspace_service::workspaces::person_workspace::devices::Devices,
+        >,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn person(&self) -> [u8; 32] {
+        [0; 32]
+    }
+}
+
+impl Speakers for FakeLink {
+    fn known(&self) -> Listing {
+        self.fabric.lock().expect("the fabric").converged.clone()
     }
 }
 

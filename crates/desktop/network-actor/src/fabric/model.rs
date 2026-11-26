@@ -575,6 +575,37 @@ pub enum FabricError {
     IneligibleSpeakerMember,
 }
 
+/// What a device says it is, in its own part of the person's record of their devices: the name the
+/// person knows it by, what kind of device it is, and what it does for their other devices.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceAbout {
+    pub label: String,
+    pub kind: DeviceKind,
+    pub capabilities: FabricCapabilities,
+}
+
+impl DeviceAbout {
+    /// A device of the person's that wrote nothing of itself yet: named as its certificate names
+    /// it, and offering nothing.
+    #[must_use]
+    pub fn named(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            kind: DeviceKind::Desktop,
+            capabilities: FabricCapabilities::default(),
+        }
+    }
+
+    /// # Errors
+    /// [`FabricError::InvalidLabel`] for a name no one could read.
+    pub fn validate(&self) -> Result<(), FabricError> {
+        if self.label.len() > 128 || self.label.chars().any(char::is_control) {
+            return Err(FabricError::InvalidLabel);
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 #[path = "model_tests.rs"]
 mod tests;

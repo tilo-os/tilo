@@ -5,9 +5,9 @@ use media::sync_playout::ChannelRole;
 
 use super::*;
 use tilo_network_actor::fabric::speaker_group::{RoomPoint, StereoSide};
-use tilo_network_actor::fabric::{
-    DeviceAbout, DeviceKind, FabricCapabilities, PersonDevice, PersonDevices,
-};
+use tilo_network_actor::fabric::{DeviceAbout, DeviceKind, FabricCapabilities};
+
+use crate::devices::{ListedDevice, Listing};
 use tilo_resource::AppNamed;
 use tilo_resource::Replica;
 use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
@@ -42,14 +42,14 @@ fn group_id(value: u8) -> SpeakerGroupId {
 /// The person's devices: the record of their devices and what each says live.
 struct World {
     record: Replica<Devices, AppNamed>,
-    fabric: PersonDevices,
+    fabric: Listing,
 }
 
 impl World {
     fn new() -> Self {
         Self {
             record: Replica::new().in_app("so.tilo.model", "Model"),
-            fabric: PersonDevices::default(),
+            fabric: Listing::default(),
         }
     }
 
@@ -79,7 +79,7 @@ impl World {
                 hex::encode(postcard::to_allocvec(&endpoints).expect("endpoints encode")),
             )))
             .expect("the device offers its endpoints");
-        let mut known = PersonDevice::new(
+        let mut known = ListedDevice::new(
             local,
             DeviceAbout {
                 label: device.into(),

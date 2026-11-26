@@ -2338,9 +2338,9 @@ impl Session {
                 .as_ref()
                 .map(|fabric| {
                     fabric
-                        .devices()
-                        .online_devices()
-                        .map(|device| device.device.as_str().to_owned())
+                        .online_device_ids()
+                        .into_iter()
+                        .map(|device| device.as_str().to_owned())
                         .collect()
                 })
                 .unwrap_or_default();

@@ -5,11 +5,12 @@
 //! each other.
 //!
 //! Who a device is, the stamp a fact carries and the fresh ids that name an exchange are portable
-//! ([`tilo_network_actor::fabric`]); what the fabric converges is the desktop's until the settings schema it
-//! merges with is portable too.
+//! ([`tilo_network_actor::fabric`]); what a device says of itself is kept in the person's record of
+//! their devices, which their daemon holds, and is read from there
+//! ([`tilo_speaker_service::devices`]).
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use settings_store::continuity_privacy::ContinuityCapability;
 
@@ -17,19 +18,21 @@ pub use tilo_network_actor::fabric::{DeviceId, FabricStamp, nonzero};
 
 /// What a device is: its [`DeviceAbout`], the fact it keeps under its own key in the person's
 /// record of their devices.
-pub(crate) const ABOUT: &str = "about";
+pub(crate) const ABOUT: &str = tilo_network_actor::fabric::ABOUT_FACT;
 
 pub use tilo_network_actor::fabric::clock;
-pub use tilo_network_actor::fabric::link::{FabricLink, PersonalFabricSendError, SharedLink};
+pub use tilo_network_actor::fabric::link::FabricLink as PeerLink;
+pub use tilo_network_actor::fabric::link::PersonalFabricSendError;
 pub use tilo_network_actor::fabric::speaker_group::{
     AudioEndpoint, AudioEndpointKind, EndpointSelector,
 };
 pub use tilo_network_actor::fabric::{
     DeviceAbout, DeviceKind, FabricCapabilities, FabricError, MAX_FABRIC_ACTION_AGE_MS,
-    MediaSourceLocator, PersonDevice, PersonDevices, PersonalFabricAction,
-    PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS, REMOTE_AUDIO_FRAME_SAMPLES,
-    REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ,
+    MediaSourceLocator, PersonalFabricAction, PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS,
+    REMOTE_AUDIO_FRAME_SAMPLES, REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ,
 };
+pub use tilo_speaker_service::devices::SharedLink;
+pub use tilo_speaker_service::devices::Speakers as FabricLink;
 
 /// What the person lets of this device continue on their other devices: each
 /// facet's switch of their `continuity` settings, under the master switch,
@@ -115,4 +118,3 @@ pub(crate) fn decoded<T: serde::de::DeserializeOwned>(hex: &str) -> Option<T> {
         postcard::from_bytes(&hex::decode(hex).ok()?).ok()
     )
 }
-

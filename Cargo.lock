@@ -20910,6 +20910,7 @@ name = "tilo-speaker-service"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
  "postcard",
@@ -20926,6 +20927,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-ui",
  "tilo-ui-base",
+ "tilo-user-identity",
  "tilo-workspace-service",
  "tokio",
  "tracing",

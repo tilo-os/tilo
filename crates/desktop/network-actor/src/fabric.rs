@@ -2,17 +2,19 @@
 //! that name one exchange, and where its screens are: the display facts the actor carries.
 
 pub mod clock;
-pub mod devices;
 pub mod link;
 mod model;
 pub mod speaker_group;
 
-pub use devices::{DeviceAbout, PersonDevice, PersonDevices};
 pub use model::*;
 
 use getrandom::SysRng;
 use getrandom::rand_core::{Rng as _, UnwrapErr};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::Error as _};
+
+/// The fact under which a device keeps what it says of itself ([`DeviceAbout`]) in the person's
+/// record of their devices.
+pub const ABOUT_FACT: &str = "about";
 
 /// The largest frame between two of the person's devices: what a device says of itself and the
 /// copies it offers, never media data.

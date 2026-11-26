@@ -38,8 +38,10 @@ tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features 
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model"] }
 
 [dev-dependencies]
+ed25519-dalek.workspace = true
 media = { package = "tilo-media", path = "../../engines/tilo-media", features = ["test-support"] }
 tilo-test-env = { path = "../../../tools/test-env" }
+tilo-user-identity = { path = "../../core/tilo-user-identity" }
 
 [lints]
 workspace = true
