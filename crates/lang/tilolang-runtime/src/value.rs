@@ -55,8 +55,9 @@ impl ResourceRef {
         }
     }
 
-    /// Parse the text produced by [`ResourceRef::id_string`]. The caller supplies the type
-    /// and is responsible for checking it against the stored one.
+    /// Parse the text produced by [`ResourceRef::id_string`], or the published address an action's
+    /// answer names it by (`tl:<app>:<id>`). The caller supplies the type and is responsible for
+    /// checking it against the stored one.
     ///
     /// A reference written before items were stored by id names the path down to the item
     /// (`doc/field:item/field:item`); it reads as the item its last step names.
@@ -78,10 +79,19 @@ impl ResourceRef {
     }
 }
 
-/// The document and the item (if any) of a resource written as [`ResourceRef::id_string`], or
-/// as the path a reference held before items were stored by id (its last step's item).
+/// The document and the item (if any) of a resource written as [`ResourceRef::id_string`], as the
+/// published address an action's answer names it by (`tl:<app>:<id>`), or as the path a reference
+/// held before items were stored by id (its last step's item).
 #[must_use]
 pub fn split_id(text: &str) -> Option<(&str, Option<&str>)> {
+    // A published address names the id inside it: the app is the address's, never the resource's.
+    let text = match text.strip_prefix("tl:") {
+        Some(rest) => match rest.split_once(':') {
+            Some((app, id)) if !app.is_empty() && !id.is_empty() => id,
+            _ => text,
+        },
+        None => text,
+    };
     // A device's resource is kept under the device (`devices/<device>/<app>/…`), so its document
     // is every step up to its last: an item of it follows that. Any other document is one step.
     if text.starts_with("devices/") {
@@ -1120,6 +1130,20 @@ mod tests {
             assert_eq!(
                 flat_id("settings/appearance"),
                 "settings/appearance"
+            );
+        }
+
+        phase a_published_address_names_the_resource_inside_it;
+        {
+            // An action's answer names what it made by its published address
+            // (`tl:<app>:<id>`): a caller that parses it reads the resource the address names.
+            assert_eq!(
+                ResourceRef::parse_id("tl:so.tilo.notes:root-abc/i-1", "U"),
+                Some(ResourceRef::root("root-abc", "T").item("i-1", "U"))
+            );
+            assert_eq!(
+                ResourceRef::parse_id("tl:so.tilo.notes:root-abc", "T"),
+                Some(ResourceRef::root("root-abc", "T"))
             );
         }
     }
