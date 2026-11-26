@@ -156,6 +156,11 @@ pub(crate) struct Shared {
     /// shell's row was scrolled by already.
     #[cfg(target_os = "linux")]
     pub(crate) carried: std::cell::Cell<f64>,
+    /// How far the fingers moved in their last report of the gesture: the lift carries it with
+    /// the throw, so the row has the speed the hand let go at even where the frame that brings
+    /// the lift came slow.
+    #[cfg(target_os = "linux")]
+    pub(crate) last_step: std::cell::Cell<f64>,
     /// The system services, reached for their readings.
     pub(crate) services: Rc<RefCell<tilo_service::Services>>,
     /// What the device's dispatch asks of those services: a press of one of their actions, and

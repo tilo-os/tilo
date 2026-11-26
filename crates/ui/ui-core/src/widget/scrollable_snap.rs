@@ -33,7 +33,12 @@ impl Scrollable {
                 rect.y0 - viewport.y0 + f64::from(self.offset_y),
             );
             if self.axis_has_horizontal() {
-                child.snap_points(tilo_ui_base::widget::ScrollAxis::Horizontal, &mut across);
+                offered(
+                    child.as_ref(),
+                    tilo_ui_base::widget::ScrollAxis::Horizontal,
+                    child.as_ref().get_rect().x0,
+                    &mut across,
+                );
                 placed(
                     &mut across,
                     tilo_ui_base::num::f32_of_f64(lead.x),
@@ -41,7 +46,12 @@ impl Scrollable {
                 );
             }
             if self.axis_has_vertical() {
-                child.snap_points(tilo_ui_base::widget::ScrollAxis::Vertical, &mut down);
+                offered(
+                    child.as_ref(),
+                    tilo_ui_base::widget::ScrollAxis::Vertical,
+                    child.as_ref().get_rect().y0,
+                    &mut down,
+                );
                 placed(
                     &mut down,
                     tilo_ui_base::num::f32_of_f64(lead.y),
@@ -150,6 +160,31 @@ impl Scrollable {
             self.scroll_dirty = true;
         }
         self.wake();
+    }
+}
+
+/// Every detent `widget` and what it holds offer along `axis`, each measured from `widget`'s own
+/// leading edge: a row of windows settles on one window's edge, however deeply each frame nests
+/// in its row's cells.
+fn offered(
+    widget: &dyn crate::widget::Widget,
+    axis: tilo_ui_base::widget::ScrollAxis,
+    origin: f64,
+    out: &mut Vec<f32>,
+) {
+    let mut own = Vec::new();
+    widget.snap_points(axis, &mut own);
+    let rect = widget.get_rect();
+    let at = match axis {
+        tilo_ui_base::widget::ScrollAxis::Horizontal => rect.x0,
+        _ => rect.y0,
+    } - origin;
+    out.extend(
+        own.into_iter()
+            .map(|point| point + tilo_ui_base::num::f32_of_f64(at)),
+    );
+    for child in widget.children() {
+        offered(child, axis, origin, out);
     }
 }
 

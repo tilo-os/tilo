@@ -459,11 +459,20 @@ impl Shared {
                 ShellGesture::StripDrag { travel, began } => {
                     let before = if began { 0.0 } else { self.carried.get() };
                     self.carried.set(travel);
-                    carried.push(Scroll::Pixels(travel - before, 0.0));
+                    let step = travel - before;
+                    self.last_step.set(step);
+                    carried.push(Scroll::Pixels(step, 0.0));
                     continue;
                 }
                 ShellGesture::StripDragEnd { .. } => {
                     self.carried.set(0.0);
+                    // The lift comes with the hand's last movement on it: the row hears the speed
+                    // it let go at in the frame it lifts, where a slow frame between the two
+                    // would otherwise read as the hand having stopped.
+                    let step = self.last_step.take();
+                    if step != 0.0 {
+                        carried.push(Scroll::Pixels(step, 0.0));
+                    }
                     carried.push(Scroll::Lifted);
                     continue;
                 }

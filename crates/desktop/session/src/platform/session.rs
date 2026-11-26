@@ -1889,6 +1889,7 @@ impl Session {
             #[cfg(unix)]
             link: daemon_link.ok(),
             carried: std::cell::Cell::new(0.0),
+            last_step: std::cell::Cell::new(0.0),
             services,
             sends,
             nearby_shares,
