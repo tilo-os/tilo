@@ -1,11 +1,11 @@
 //! What the person's devices keep of themselves in the person's own workspace.
 //!
 //! Each device writes what lasts of it under its own key
-//! ([`tilo_workspace_service::workspaces::person_workspace::devices`]): what it is ([`ABOUT`])
-//! and, from its daemon, its disk-unlock enrolments, which the session's disk unlock reads
-//! ([`crate::network::kept_unlock`]). Its speaker groups are typed actions on the same record
-//! ([`tilo_workspace_service::workspaces::person_workspace::speaker`]). The workspace carries all
-//! of it between the person's devices, a device that comes up later included.
+//! ([`tilo_workspace_service::workspaces::person_workspace::devices`]): what it is ([`ABOUT`]).
+//! Its speaker groups are typed actions on the same record
+//! ([`tilo_workspace_service::workspaces::person_workspace::speaker`]), and its daemon answers
+//! another device's disk unlock from the record itself. The workspace carries all of it between
+//! the person's devices, a device that comes up later included.
 //!
 //! Every value is the postcard bytes of its type, written only when it changed; a value that does
 //! not read, or is not true of the device it is under, is left out, and so is a device whose
@@ -49,10 +49,7 @@ pub(crate) fn kept(resources: &PersonResources, person: &[u8; 32]) -> Vec<Person
                         tilo_user_identity::device_name(&cert.device_label).unwrap_or_default(),
                     )
                 });
-            let mut person_device = PersonDevice::new(device, about);
-            person_device.unlock =
-                crate::network::kept_unlock(&state, kept, &cert.device_public_key);
-            Some(person_device)
+            Some(PersonDevice::new(device, about))
         })
         .collect()
 }

@@ -357,7 +357,6 @@ pub(crate) fn start_collaboration(
                 .unwrap_or_else(tilo_endpoint_reachability::relays),
             live: Some(live),
         },
-        options.asks.as_ref().map(|(asks, _)| asks.clone()),
         beside,
     ) {
         Ok(sync) => {

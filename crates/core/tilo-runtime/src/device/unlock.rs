@@ -53,11 +53,6 @@ use tilo_workspace_service::workspaces::person_workspace::{self, devices};
 use super::services::{holds_root_for_person, root_record_for_person};
 use super::workspaces::ServiceWorkspaces;
 
-/// The fact under which a device keeps its enrolments and the auto-approvals the person set on it,
-/// in its entry of the record of their devices: its [`UnlockFabricState`] without the answers,
-/// which are the record's own ([`UnlockAnswer`]).
-const UNLOCK: &str = "unlock";
-
 /// The name this device raises the boot's question under, in the store of the calls that wait for
 /// the person: an approve of one of its records comes back here.
 const DISPATCH: &str = "device-unlock";
@@ -469,16 +464,7 @@ impl Unlock {
                 provider: PROVIDER.to_owned(),
                 address: ActionAddress::new(RESOURCE, RELEASE_HALF),
             },
-            argument: InvokeArgument::Json(
-                json!({
-                    "boot": hex::encode(request.boot_id.0),
-                    "device": hex::encode(device),
-                    "slot": slot_name(&request.slot),
-                })
-                .as_object()
-                .cloned()
-                .unwrap_or_default(),
-            ),
+            argument: InvokeArgument::None,
             context: None,
             confirmation: None,
             revision: None,
@@ -690,7 +676,7 @@ fn kept_unlock(record: &Devices, kept: &Device, key: &[u8; 32]) -> UnlockFabricS
     let device = hex::encode(key);
     let mut state = kept
         .facts
-        .get(UNLOCK)
+        .get(super::boot_unlock::UNLOCK_FACT)
         .and_then(|value| decoded::<UnlockFabricState>(value))
         .unwrap_or_default();
     let mut answers = record

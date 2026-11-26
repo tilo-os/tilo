@@ -1129,7 +1129,6 @@ impl Client {
     #[cfg(target_os = "linux")]
     pub fn start(
         entry: Entry,
-        _questions: Option<tilo_service::AskSender>,
         beside: tilo_network_actor::own_service::Protocols,
     ) -> std::io::Result<Self> {
         let (identity, wake) = (entry.identity, entry.wake);

@@ -737,20 +737,6 @@ pub enum FabricError {
     InvalidSpeakerGroup,
     #[error("that device cannot play in this speaker group")]
     IneligibleSpeakerMember,
-    #[error("invalid disk-unlock enrolment or setting")]
-    InvalidUnlockEnrolment,
-}
-
-impl From<tilo_unlock_protocol::published::PublishedError> for FabricError {
-    fn from(error: tilo_unlock_protocol::published::PublishedError) -> Self {
-        use tilo_unlock_protocol::published::PublishedError;
-        match error {
-            PublishedError::TooLarge => Self::TooLarge,
-            PublishedError::ForeignAuthorship => Self::ForeignAuthorship,
-            PublishedError::DuplicateItem => Self::DuplicateItem,
-            PublishedError::InvalidUnlockEnrolment => Self::InvalidUnlockEnrolment,
-        }
-    }
 }
 
 #[cfg(test)]

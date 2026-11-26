@@ -9,11 +9,6 @@ use std::sync::{Arc, Mutex};
 
 use crate::platform::fabric::SharedLink;
 use tilo_network_actor::services::PeerVersion;
-use tilo_unlock_protocol::published::{
-    DecisionOutcome, MAX_UNLOCK_DECISIONS, UnlockDecisionEntry, UnlockFabricState,
-};
-use tilo_unlock_protocol::{BootId, SlotId};
-use tilo_workspace_service::workspaces::person_workspace::devices::{Device, Devices};
 
 /// A member's device heard at another peer protocol version: one of the two devices must
 /// update before the two work together again.
@@ -95,65 +90,6 @@ pub(crate) fn device_at(fabric: Option<&SharedLink>, endpoint: &str) -> Option<S
     let device = fabric.device_behind(endpoint)?;
     let label = fabric.devices().get(&device)?.about.label.trim().to_owned();
     (!label.is_empty()).then_some(label)
-}
-
-/// What the device `key`, whose entry of the person's devices `kept` is, keeps about disk unlock:
-/// its enrolments and auto-approvals, and the newest answers the person gave on it that the record
-/// keeps. Nothing where that is not true of the device. The fabric lists it beside each device,
-/// though the unlock exchange itself is the device daemon's.
-pub(crate) fn kept_unlock(record: &Devices, kept: &Device, key: &[u8; 32]) -> UnlockFabricState {
-    /// The fact under which a device keeps what it says of disk unlock.
-    const UNLOCK: &str = "unlock";
-    let device = hex::encode(key);
-    let mut state = kept
-        .facts
-        .get(UNLOCK)
-        .and_then(|value| crate::platform::fabric::decoded::<UnlockFabricState>(value))
-        .unwrap_or_default();
-    let mut answers = record
-        .unlocks
-        .values()
-        .filter(|answer| answer.device == device)
-        .filter_map(decision_of)
-        .collect::<Vec<_>>();
-    answers.sort_by_key(|answer| answer.decided_at_ns);
-    let over = answers.len().saturating_sub(MAX_UNLOCK_DECISIONS);
-    answers.drain(..over);
-    state.decisions = answers;
-    if state.validate(key).is_err() {
-        return UnlockFabricState::default();
-    }
-    state
-}
-
-/// The answer the record keeps as `answer`; `None` for one no device of this build wrote.
-fn decision_of(
-    answer: &tilo_workspace_service::workspaces::person_workspace::devices::UnlockAnswer,
-) -> Option<UnlockDecisionEntry> {
-    let (volume, keyslot) = answer.slot.split_once(':')?;
-    Some(UnlockDecisionEntry {
-        boot_cert_digest: bytes(&answer.enrolment)?,
-        boot_id: BootId(bytes(&answer.boot)?),
-        slot: SlotId {
-            volume_uuid: bytes(volume)?,
-            keyslot: keyslot.parse().ok()?,
-        },
-        outcome: if answer.allowed {
-            DecisionOutcome::Approve
-        } else {
-            DecisionOutcome::Deny
-        },
-        decided_by: bytes(&answer.device)?,
-        decided_at_ns: u64::try_from(answer.at_ns).ok()?,
-        valid_until_ns: u64::try_from(answer.until_ns).ok()?,
-    })
-}
-
-/// The `N` bytes `text` holds in hex.
-fn bytes<const N: usize>(text: &str) -> Option<[u8; N]> {
-    let mut out = [0; N];
-    hex::decode_to_slice(text, &mut out).ok()?;
-    Some(out)
 }
 
 #[cfg(test)]

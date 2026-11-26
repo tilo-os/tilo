@@ -15,11 +15,6 @@ pub use tilo_network_actor::fabric::link::{FabricLink, PersonalFabricSendError, 
 pub use tilo_network_actor::fabric::speaker_group::{
     AudioEndpoint, AudioEndpointKind, EndpointSelector,
 };
-pub use tilo_network_actor::fabric::unlock::{
-    AutoApproval, Decided, DecisionOutcome, MAX_UNLOCK_DECISIONS, MergedUnlock, UnlockDecision,
-    UnlockDecisionEntry, UnlockEnrolment, UnlockFabricState, UnlockSibling, UnlockView,
-    decision_for, merged_unlock_state,
-};
 pub use tilo_network_actor::fabric::{
     ClipboardEntry, ClipboardPayload, DeviceAbout, DeviceKind, FabricCapabilities, FabricError,
     MAX_CLIPBOARD_ITEMS, MAX_FABRIC_ACTION_AGE_MS, MediaSourceLocator, PersonDevice, PersonDevices,

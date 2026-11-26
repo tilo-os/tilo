@@ -1,9 +1,9 @@
 //! The person's devices as one of them knows them.
 //!
 //! What lasts is in the person's own store, each device's in its own part, which that device alone
-//! writes: what it is ([`DeviceAbout`]) and its disk-unlock enrolments
-//! ([`UnlockFabricState`]). Its speaker groups are in the same record
-//! ([`tilo_workspace_service::workspaces::person_workspace::speaker`]).
+//! writes: what it is ([`DeviceAbout`]), its speaker groups
+//! ([`tilo_workspace_service::workspaces::person_workspace::speaker`]), and what its daemon keeps
+//! of its disk unlock.
 //! What holds only while a device is there is said on its session with each of the others and kept
 //! nowhere: that it is there, and what was copied on it.
 //!
@@ -14,7 +14,6 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::fabric::unlock::UnlockFabricState;
 use crate::fabric::{
     ClipboardEntry, ClipboardHistory, DeviceId, DeviceKind, FabricCapabilities, FabricError,
 };
@@ -62,8 +61,6 @@ pub struct PersonDevice {
     pub last_seen_unix_ms: u64,
     /// The copies it offers, as it last offered them.
     pub clipboard: Vec<ClipboardEntry>,
-    /// Its disk-unlock enrolments, the auto-approvals made on it and its answers to boots.
-    pub unlock: UnlockFabricState,
 }
 
 impl PersonDevice {
@@ -76,7 +73,6 @@ impl PersonDevice {
             online: false,
             last_seen_unix_ms: 0,
             clipboard: Vec::new(),
-            unlock: UnlockFabricState::default(),
         }
     }
 }

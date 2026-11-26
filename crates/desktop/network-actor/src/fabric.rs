@@ -6,7 +6,6 @@ pub mod devices;
 pub mod link;
 mod model;
 pub mod speaker_group;
-pub mod unlock;
 
 pub use devices::{DeviceAbout, PersonDevice, PersonDevices};
 pub use model::*;
