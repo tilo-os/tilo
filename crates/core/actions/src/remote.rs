@@ -2301,6 +2301,17 @@ fn no_call_media_lane() -> ActionCallError {
     }
 }
 
+/// The answer to a shell asked of a provider's connection, which carries none: a shell is the
+/// device's own, on an app's connection.
+fn no_shell(correlation: u64) -> RemoteActionMessage {
+    RemoteActionMessage::ShellOpenResponse {
+        correlation,
+        result: Err(ActionCallError::Unavailable {
+            reason: "this connection carries no shell".into(),
+        }),
+    }
+}
+
 /// A presence lane is its own host's, never a provider's: one asked here says it carries none.
 fn no_presence_lane() -> ActionCallError {
     ActionCallError::Unavailable {
@@ -2448,12 +2459,7 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         // A shell lane is the device's own, on an app's connection: one asked here says it
         // carries none.
         RemoteActionMessage::ShellOpenRequest { correlation, .. } => {
-            Pending::ready(RemoteActionMessage::ShellOpenResponse {
-                correlation,
-                result: Err(ActionCallError::Unavailable {
-                    reason: "this connection carries no shell".into(),
-                }),
-            })
+            Pending::ready(no_shell(correlation))
         }
         // An answer is never a request: `refuse` classified every message before this match and
         // answered `None` for an answer, so none reaches here.
