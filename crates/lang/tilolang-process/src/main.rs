@@ -170,6 +170,15 @@ fn run_held(kind: &str, code: std::sync::Arc<dyn tilolang_tilo::held::Kind>) -> 
     Ok(())
 }
 
+/// The workspace's accounts, as the service that keeps them publishes their actions.
+#[cfg(all(unix, feature = "app-launch"))]
+mod workspace_accounts {
+    tilo_resource::bindings!(
+        provider = "tilo.accounts",
+        surface = "../../core/tilo-workspace-service/accounts-surface.json"
+    );
+}
+
 /// A vault item released into this process over the connection to the device's dispatch: the
 /// login whose entry the item is, released to this process alone.
 #[cfg(all(unix, feature = "app-launch"))]
@@ -183,7 +192,7 @@ impl tilolang_tilo::held::Release for SignInRelease {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let told = signing
-            .sign_ins()
+            .sign_ins::<workspace_accounts::MailSignIns>(workspace_accounts::accounts::sign_ins())
             .map_err(|error| format!("the device's dispatch: {error}"))?;
         // The account that names the item says which one it is: the login the dispatch lists
         // with an account, whose entry is this item.
@@ -198,7 +207,7 @@ impl tilolang_tilo::held::Release for SignInRelease {
             .map(|account| account.id.clone())
             .unwrap_or_default();
         let secret = signing
-            .secret(&account, login)
+            .secret(&account, &login.id)
             .map_err(|error| format!("the device's dispatch: {error}"))?;
         drop(signing);
         let released: tilolang_tilo::held::Released = Box::new(zeroize::Zeroizing::new(secret));
