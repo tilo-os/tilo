@@ -172,3 +172,181 @@ impl Project {
         moved
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{MediaItem, MediaKind};
+    use uuid::Uuid;
+
+    /// Three video tracks, one 20 s source each, all starting at t=0: the
+    /// same ten seconds of two angles, stacked bottom to top.
+    fn two_angles() -> (Project, [ClipId; 3]) {
+        let mut p = Project::new("two angles");
+        let mid = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: mid,
+            name: "angle.mp4".into(),
+            kind: MediaKind::Video,
+            duration: 20.0,
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            ..Default::default()
+        });
+        let mut clips = Vec::new();
+        for index in 1..=3 {
+            let tid = Uuid::new_v4();
+            p.tracks.push(Track {
+                id: tid,
+                name: format!("V{index}"),
+                index,
+                ..Default::default()
+            });
+            clips.push(p.add_clip(tid, mid, 0.0).expect("media exists"));
+        }
+        let [a, b, c] = <[ClipId; 3]>::try_from(clips).expect("three tracks");
+        (p, [a, b, c])
+    }
+
+    #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the placement is a stored literal, compared as the value it was set to"
+    )]
+    fn a_side_puts_a_picture_in_its_half_of_the_frame() {
+        assert!(Side::None.placement().is_none(), "a picture untransformed");
+        let left = Side::Left.placement().expect("a left half");
+        assert_eq!(left.scale_x, 0.5, "half as wide");
+        assert_eq!(left.scale_y, 1.0, "full height, so nothing is squashed");
+        assert_eq!(left.pos_x, -0.25, "its own centre, half a frame left");
+        assert_eq!(left.anchor_x, 0.0, "hung from its frame's left edge");
+        let right = Side::Right.placement().expect("a right half");
+        assert_eq!(right.pos_x, 0.25, "the other half of the frame");
+        assert_eq!(right.anchor_x, 1.0, "hung from its frame's right edge");
+        assert_eq!(left.scale_y, right.scale_y, "both the same height");
+        assert_eq!(Side::from_name(Side::Left.as_str()), Some(Side::Left));
+        assert_eq!(Side::from_name(Side::Right.as_str()), Some(Side::Right));
+        assert_eq!(Side::from_name("none"), Some(Side::None));
+        assert_eq!(Side::from_name("elsewhere"), None, "no side is named that");
+    }
+
+    tilo_test_env::scenario! {
+        fn a_cut_finds_its_two_angles_and_places_them;
+
+        phase a_cut_takes_the_two_bottom_visible_tracks;
+        {
+            let (mut p, [bottom, middle, top]) = two_angles();
+            let sides = p.cut_sides(1.0).expect("two pictures meet");
+            assert_eq!(sides.clip(Side::Left), Some(bottom), "the lowest track");
+            assert_eq!(sides.clip(Side::Right), Some(middle), "the one above it");
+            assert_ne!(
+                sides.clip(Side::Right),
+                Some(top),
+                "a third angle is not in a two-way cut"
+            );
+
+            // A muted track shows nothing, so the next one up takes its side.
+            let track = p.clip(middle).expect("placed").track;
+            p.tracks.iter_mut().find(|t| t.id == track).unwrap().muted = true;
+            let sides = p.cut_sides(1.0).expect("muted tracks are not pictures");
+            assert_eq!(sides.clip(Side::Left), Some(bottom));
+            assert_eq!(sides.clip(Side::Right), Some(top));
+
+            // A solo leaves only its own tracks in the cut: the bottom one and
+            // the one above it are then the only two pictures, in that order.
+            p.tracks.iter_mut().find(|t| t.id == track).unwrap().muted = false;
+            for t in &mut p.tracks {
+                t.solo = t.index <= 2;
+            }
+            let sides = p.cut_sides(1.0).expect("both soloed tracks cover it");
+            assert_eq!(
+                sides.clip(Side::Left),
+                Some(bottom),
+                "the lowest soloed one"
+            );
+            assert_eq!(sides.clip(Side::Right), Some(middle), "and the next");
+
+            // One picture alone is not a cut.
+            for t in &mut p.tracks {
+                t.solo = t.index == 1;
+            }
+            assert_eq!(p.cut_sides(1.0), None, "one picture is not a cut");
+        }
+
+        phase a_cut_needs_two_pictures_meeting_at_one_instant;
+        {
+            let (mut p, [bottom, middle, _]) = two_angles();
+            // The lower angle now covers 10 s to 14 s, so for the first ten
+            // seconds two of the three pictures meet and the lowest of those two
+            // is the one on V2.
+            if let Some(c) = p.clip_mut(bottom) {
+                c.start = 10.0;
+                c.in_point = 4.0;
+                c.out_point = 8.0;
+            }
+            let early = p.cut_sides(1.0).expect("the two upper pictures cover t=1");
+            assert_eq!(
+                early.clip(Side::Left),
+                Some(middle),
+                "the lowest picture left"
+            );
+            assert_ne!(
+                early.clip(Side::Right),
+                Some(bottom),
+                "the lower angle is not there yet"
+            );
+            let sides = p.cut_sides(11.0).expect("both angles cover t=11");
+            assert_eq!(sides.clip(Side::Left), Some(bottom), "the lower angle");
+            assert_eq!(sides.clip(Side::Right), Some(middle), "and the upper");
+            assert_eq!(p.cut_sides(30.0), None, "past the end of both");
+
+            let none = Project::new("empty");
+            assert_eq!(none.cut_sides(0.0), None, "no tracks at all");
+        }
+
+        phase placing_angles_scales_both_to_their_halves_and_undoes_cleanly;
+        {
+            let (mut p, [bottom, middle, _]) = two_angles();
+            let before = p.clone();
+            let placed = p.place_angles(1.0);
+            assert_eq!(placed.len(), 2, "both pictures were placed");
+            assert_eq!(
+                p.clip(bottom).unwrap().transform,
+                Side::Left.placement().unwrap(),
+                "the lower angle on the left"
+            );
+            assert_eq!(
+                p.clip(middle).unwrap().transform,
+                Side::Right.placement().unwrap(),
+                "the upper one on the right"
+            );
+
+            // Pressing it again moves nothing: each picture is already home.
+            assert!(p.place_angles(1.0).is_empty(), "already beside each other");
+
+            p.restore_angles(&placed);
+            assert_eq!(p.clip(bottom).unwrap().transform, Transform::default());
+            assert_eq!(p.clip(middle).unwrap().transform, Transform::default());
+            assert_eq!(p.clip(middle).unwrap(), before.clip(middle).unwrap());
+
+            // A picture the person has since moved elsewhere is left where
+            // they put it.
+            let placed = p.place_angles(1.0);
+            if let Some(c) = p.clip_mut(middle) {
+                c.transform = Transform::pip(0.3, (1.0, -1.0), 0.04);
+            }
+            p.restore_angles(&placed);
+            assert_eq!(
+                p.clip(bottom).unwrap().transform,
+                Transform::default(),
+                "the untouched side comes back"
+            );
+            assert_eq!(
+                p.clip(middle).unwrap().transform,
+                Transform::pip(0.3, (1.0, -1.0), 0.04),
+                "the one placed by hand stays"
+            );
+        }
+    }
+}

@@ -183,6 +183,16 @@ impl PageMonitor {
         }
     }
 
+    /// A monitor playing into `output`.
+    #[cfg(test)]
+    fn with_output(output: Box<dyn Output>) -> Self {
+        Self {
+            output: Some(output),
+            opened: true,
+            ..Self::new()
+        }
+    }
+
     /// Keep the output in step with the transport: called once a frame.
     pub fn pump(&mut self, project: &Project, playhead: f64, playing: bool, meters: &MixMeters) {
         let sources_sig = sources_signature(project);
@@ -252,4 +262,93 @@ fn sources_signature(project: &Project) -> u64 {
         acc = acc.wrapping_add(std::hash::Hasher::finish(&hasher));
     }
     acc
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[derive(Default)]
+    struct Heard {
+        starts: Vec<f64>,
+        blocks: Vec<f64>,
+        stops: usize,
+        position: f64,
+    }
+
+    struct Recording(Rc<RefCell<Heard>>);
+
+    impl Output for Recording {
+        fn start(&mut self, at: f64) -> bool {
+            let mut heard = self.0.borrow_mut();
+            heard.starts.push(at);
+            heard.blocks.clear();
+            heard.position = at;
+            true
+        }
+        fn position(&self) -> f64 {
+            self.0.borrow().position
+        }
+        fn push(&mut self, samples: &[f32], at: f64) {
+            assert_eq!(samples.len(), BLOCK * CHANNELS);
+            self.0.borrow_mut().blocks.push(at);
+        }
+        fn stop(&mut self) {
+            self.0.borrow_mut().stops += 1;
+        }
+    }
+
+    fn monitor() -> (PageMonitor, Rc<RefCell<Heard>>) {
+        let heard = Rc::new(RefCell::new(Heard::default()));
+        (
+            PageMonitor::with_output(Box::new(Recording(heard.clone()))),
+            heard,
+        )
+    }
+
+    #[test]
+    fn playing_mixes_ahead_of_the_playhead_in_consecutive_blocks() {
+        let project = Project::default();
+        let meters = MixMeters::new();
+        let (mut monitor, heard) = monitor();
+        monitor.pump(&project, 2.0, true, &meters);
+        let blocks = heard.borrow().blocks.clone();
+        assert_eq!(heard.borrow().starts, vec![2.0]);
+        assert_eq!(blocks.len(), 3, "three tenths of a second ahead");
+        for (i, at) in blocks.iter().enumerate() {
+            #[expect(clippy::cast_precision_loss, reason = "a handful of blocks")]
+            let want = 2.0 + i as f64 * 0.1;
+            assert!((at - want).abs() < 1e-9, "block {i} at {at}");
+        }
+        // The playhead moves on a frame: only what it now needs is mixed.
+        heard.borrow_mut().position = 2.05;
+        monitor.pump(&project, 2.05, true, &meters);
+        assert_eq!(heard.borrow().blocks.len(), 4);
+        assert_eq!(heard.borrow().starts.len(), 1, "wander is not a jump");
+    }
+
+    #[test]
+    fn a_jump_restarts_from_the_playhead_and_a_pause_silences() {
+        let project = Project::default();
+        let meters = MixMeters::new();
+        let (mut monitor, heard) = monitor();
+        monitor.pump(&project, 1.0, true, &meters);
+        monitor.pump(&project, 7.0, true, &meters);
+        assert_eq!(heard.borrow().starts, vec![1.0, 7.0]);
+        assert!((heard.borrow().blocks[0] - 7.0).abs() < 1e-9);
+        monitor.pump(&project, 7.0, false, &meters);
+        monitor.pump(&project, 7.0, false, &meters);
+        assert_eq!(heard.borrow().stops, 1);
+        monitor.pump(&project, 7.0, true, &meters);
+        assert_eq!(heard.borrow().starts.len(), 3, "playing again starts again");
+    }
+
+    #[test]
+    fn a_source_without_a_kept_copy_mixes_as_silence() {
+        let mut pcm = PagePcm::new(&Project::default());
+        assert!(pcm.settled(), "nothing to decode");
+        assert_eq!(pcm.samples(MediaId::nil(), 0.0, 10), None);
+    }
 }

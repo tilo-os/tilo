@@ -182,3 +182,152 @@ fn quantise(v: f64) -> u8 {
 }
 
 tilo_resource::json_model!(Curve);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    tilo_test_env::scenario! {
+        fn curves_bake_and_interpolate;
+
+        phase curve_bake_shapes_channels_master_and_mix;
+        {
+            {
+                let c = Curve::default();
+                assert!(c.is_identity(), "a fresh curve changes nothing");
+                for t in [0.0, 0.13, 0.5, 0.87, 1.0] {
+                    let (r, g, b) = c.apply(t, t, t);
+                    assert!((r - t).abs() < 1e-9 && (g - t).abs() < 1e-9 && (b - t).abs() < 1e-9);
+                }
+            }
+            {
+                let lut = Curve::default().bake();
+                assert_eq!(lut.len(), LUT_SIZE * 4);
+                for i in 0..LUT_SIZE {
+                    let want = i as u8;
+                    assert_eq!(lut[i * 4], want, "entry {i} red");
+                    assert_eq!(lut[i * 4 + 1], want, "entry {i} green");
+                    assert_eq!(lut[i * 4 + 2], want, "entry {i} blue");
+                }
+            }
+            {
+                let mut c = Curve::default();
+                c.master.set_point(0.5, 0.75);
+                assert!(!c.is_identity());
+                assert!(c.apply(0.0, 0.0, 0.0).0.abs() < 1e-9, "black stays black");
+                assert!(
+                    (c.apply(1.0, 1.0, 1.0).0 - 1.0).abs() < 1e-9,
+                    "white stays white"
+                );
+                let mid = c.apply(0.5, 0.5, 0.5).0;
+                assert!(
+                    (mid - 0.75).abs() < 1e-6,
+                    "the point the user placed is honoured: {mid}"
+                );
+                // It lifts a range, not only the sampled tone.
+                assert!(c.apply(0.3, 0.3, 0.3).0 > 0.35);
+                assert!(c.apply(0.7, 0.7, 0.7).0 > 0.72);
+            }
+            {
+                let mut c = Curve::default();
+                c.red.set_point(0.5, 0.8);
+                let (r, g, b) = c.apply(0.5, 0.5, 0.5);
+                assert!((r - 0.8).abs() < 1e-6, "red was shaped: {r}");
+                assert!((g - 0.5).abs() < 1e-9, "green untouched: {g}");
+                assert!((b - 0.5).abs() < 1e-9, "blue untouched: {b}");
+                assert_eq!(c.shaped_channels(), vec![Channel::Red]);
+            }
+            {
+                // red: 0.5 -> 0.8, master: 0.8 -> 0.2. Composed the other way the
+                // answer is not 0.2, so this pins the order.
+                let mut c = Curve::default();
+                c.red.set_point(0.5, 0.8);
+                c.master.set_point(0.8, 0.2);
+                let r = c.apply(0.5, 0.5, 0.5).0;
+                assert!((r - 0.2).abs() < 1e-6, "master(red(x)), got {r}");
+            }
+            {
+                let mut c = Curve::default();
+                c.master.set_point(0.5, 1.0);
+                c.mix = 0.5;
+                let mid = c.apply(0.5, 0.5, 0.5).0;
+                assert!((mid - 0.75).abs() < 1e-6, "half way from 0.5 to 1.0: {mid}");
+                c.mix = 0.0;
+                assert!(c.is_identity(), "mixed all the way out is a bypass");
+                assert!((c.apply(0.5, 0.5, 0.5).0 - 0.5).abs() < 1e-9);
+            }
+            {
+                let mut c = Curve::default();
+                c.master.set_point(0.5, 1.0);
+                c.mix = 0.5;
+                let lut = c.bake();
+                let mid = f64::from(lut[128 * 4]) / 255.0;
+                let want = c.apply(128.0 / 255.0, 0.0, 0.0).0;
+                assert!(
+                    (mid - want).abs() < 1.0 / 255.0,
+                    "baked {mid} vs computed {want}"
+                );
+                assert!(
+                    mid > 0.6,
+                    "and it really is lifted, not the identity: {mid}"
+                );
+            }
+        }
+
+        phase curve_interpolation_is_monotone_and_exact_on_simple_splines;
+        {
+            {
+                // A steep S is exactly what a Catmull-Rom spline overshoots on: the
+                // segment past the last steep point bulges above 1.0 and clips into
+                // a band the user never drew.
+                let mut c = Curve::default();
+                c.master.set_point(0.25, 0.05);
+                c.master.set_point(0.75, 0.95);
+                for i in 0..=1000 {
+                    let t = f64::from(i) / 1000.0;
+                    let v = c.master.eval(t);
+                    assert!(
+                        (0.0..=1.0).contains(&v),
+                        "eval({t}) = {v} left the unit range"
+                    );
+                }
+                for i in 0..=200 {
+                    let t = 0.25 + 0.5 * f64::from(i) / 200.0;
+                    let v = c.master.eval(t);
+                    assert!(
+                        (0.05 - 1e-9..=0.95 + 1e-9).contains(&v),
+                        "eval({t}) = {v} left the segment"
+                    );
+                }
+            }
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn curve_names_and_json_round_trip;
+
+        phase curve_names_and_json_round_trip_with_absent_field_defaults;
+        {
+            {
+                for c in Channel::ALL {
+                    assert_eq!(Channel::from_name(c.as_str()), c, "{c:?}");
+                }
+            }
+            {
+                let mut c = Curve::default();
+                c.master.set_point(0.4, 0.6);
+                c.blue.set_point(0.7, 0.3);
+                c.mix = 0.4;
+                let json = serde_json::to_string(&c).expect("serialise");
+                let back: Curve = serde_json::from_str(&json).expect("deserialise");
+                assert_eq!(back, c);
+            }
+            {
+                // `mix` defaulting to 0.0 would silently bypass every curve written
+                // before the field existed.
+                let back: Curve = serde_json::from_str(r#"{"master":{"points":[]}}"#).expect("parse");
+                assert!((back.mix - 1.0).abs() < f64::EPSILON, "{}", back.mix);
+            }
+        }
+    }
+}
