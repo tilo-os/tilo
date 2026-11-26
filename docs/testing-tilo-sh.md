@@ -267,8 +267,11 @@ runs a program on its builder and brings files of its target dir back
 
 `TILO_SH_BUNDLE` names a bundle built elsewhere (`build.sh OUT` or t's
 `web-entry-bundle` outputs) for the native stack to serve. `TILO_SH_PROGRAMS`,
-`TILO_SH_LOUNGE`, `TILO_SH_SITE`, `TILO_SH_CADDY` and `TILO_SH_CLI_DIR` name what
-a check built already, so the stack compiles and lays out nothing. With
+`TILO_SH_LOUNGE`, `TILO_SH_APPS`, `TILO_SH_SITE`, `TILO_SH_CADDY` and
+`TILO_SH_CLI_DIR` name what a check built already, so the stack compiles and
+lays out nothing. `TILO_SH_APPS` is the app layer the Lounge's pages open
+(`lounge-check-apps`): the launcher, the runtime bundles and the signed
+packages, which the server installs into its own store as a device does. With
 `--images`,
 `TILO_SH_IMAGE_LOUNGE`, `TILO_SH_IMAGE_API` and `TILO_SH_IMAGE_WEB` each take an
 OCI archive or a registry reference; a release candidate's `sha-<commit>`
