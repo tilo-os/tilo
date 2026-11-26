@@ -376,6 +376,9 @@ struct Inner {
     /// holds: a list sorted by when its rows last changed reads every row's, each time it is
     /// read, and each row that says when its list was made reads that list's first version.
     versions: RefCell<HashMap<String, History>>,
+    /// The page of each document's newest versions last read, by document, and what moved in it
+    /// since ([`NewestPage`]).
+    newest: RefCell<HashMap<DocId, NewestPage>>,
     /// How far this device's changes of each record have gone, as last asked, by record: until
     /// the record moves or this store writes ([`Store::reach`]).
     reach: RefCell<HashMap<DocId, RecordReach>>,
@@ -542,6 +545,26 @@ struct History {
 /// One end of a history, as it was read: its version, or none for a history with no changes.
 struct End(Option<Version>);
 
+/// The newest version of each resource of a page, most recent first, and whether the document
+/// holds more resources than the page.
+type NewestRows = (Vec<(String, Version)>, bool);
+
+/// A page of a document's newest versions, as the store answered it ([`Store::newest_page`]),
+/// and the resources of it that moved since: a window's change mark reads the page whenever it
+/// draws, and between two reads only the resources that moved are read again, each by its newest
+/// version, never the page.
+struct NewestPage {
+    /// How many resources the page holds at most.
+    page: usize,
+    /// The newest version of each resource of the page, most recent first.
+    rows: Vec<(String, Version)>,
+    /// Whether the document holds more resources than the page.
+    more: bool,
+    /// The resources that moved since the page was read, whose newest version it no longer
+    /// knows.
+    moved: BTreeSet<String>,
+}
+
 impl History {
     fn end(&self, last: bool) -> Option<&Option<Version>> {
         if last { &self.last } else { &self.first }
@@ -579,6 +602,26 @@ fn not_found(what: impl Into<String>) -> StoreError {
 
 fn backend(error: impl std::fmt::Display) -> StoreError {
     StoreError::Backend(error.to_string())
+}
+
+/// Forget the versions read of the resource `id` and of what holds it (an item's id is under the
+/// ids of what holds it, `doc/item`), and note `id` as moved in its document's page of newest
+/// versions. What holds it has a version of its own only when a write names it too, as one
+/// that puts an item in names the holder it puts it in.
+fn forget_versions(
+    versions: &mut HashMap<String, History>,
+    newest: &mut HashMap<DocId, NewestPage>,
+    id: &str,
+) {
+    if let Some(page) = newest.get_mut(doc_of(id)) {
+        page.moved.insert(id.to_owned());
+    }
+    let mut held = id;
+    versions.remove(held);
+    while let Some((holder, _)) = held.rsplit_once('/') {
+        versions.remove(holder);
+        held = holder;
+    }
 }
 
 /// The id of the resource `at` names in the store: its document, then `/item` for an item.
@@ -690,6 +733,7 @@ impl ResourceStore {
                 minted: StdCell::new(0),
                 wrote: RefCell::default(),
                 versions: RefCell::default(),
+                newest: RefCell::default(),
                 reach: RefCell::default(),
                 sample: RefCell::default(),
                 refused: RefCell::default(),
@@ -1448,6 +1492,7 @@ impl ResourceStore {
         self.inner.listings.borrow_mut().clear();
         self.inner.versions.borrow_mut().clear();
         self.inner.queried.borrow_mut().clear();
+        self.inner.newest.borrow_mut().clear();
     }
 
     /// Records of the workspace moved on: another window or device wrote them, or this
@@ -1528,6 +1573,10 @@ impl ResourceStore {
         let was = self.inner.cache.borrow_mut().remove(id).flatten();
         self.inner.absent.borrow_mut().retain(|held| held.1 != id);
         self.inner.versions.borrow_mut().remove(id);
+        // The page of its document's newest changes reads it again, and nothing else of it.
+        if let Some(page) = self.inner.newest.borrow_mut().get_mut(doc_of(id)) {
+            page.moved.insert(id.to_owned());
+        }
         self.inner
             .listings
             .borrow_mut()
@@ -1594,6 +1643,10 @@ impl ResourceStore {
             .versions
             .borrow_mut()
             .retain(|id, _| !docs.contains(doc_of(id)));
+        self.inner
+            .newest
+            .borrow_mut()
+            .retain(|doc, _| !docs.contains(doc));
         // A record moves when an answer to one of this device's writes of it comes, too.
         self.inner
             .reach
@@ -1612,18 +1665,122 @@ impl ResourceStore {
     /// it does not name (an undo) forgets them all.
     fn forget_versions_of(&self, command: &Command) {
         let mut versions = self.inner.versions.borrow_mut();
+        let mut newest = self.inner.newest.borrow_mut();
         let Some(moved) = command.moves() else {
             versions.clear();
+            newest.clear();
             return;
         };
         for item in moved {
-            let mut held = item.id.as_str();
-            versions.remove(held);
-            while let Some((holder, _)) = held.rsplit_once('/') {
-                versions.remove(holder);
-                held = holder;
+            forget_versions(&mut versions, &mut newest, &item.id);
+        }
+    }
+
+    /// The page of `doc`'s newest versions read before, brought up to date by reading the newest
+    /// version of each resource that moved since, and nothing else: none when no page of that
+    /// size was read, or when what moved leaves the page unsure (a resource of it went, and
+    /// the document holds more than the page).
+    fn newest_page_since(
+        &self,
+        doc: &DocId,
+        page: usize,
+    ) -> Result<Option<NewestRows>, StoreError> {
+        let (mut rows, mut more, moved) = {
+            let mut held = self.inner.newest.borrow_mut();
+            let Some(read) = held.get_mut(doc).filter(|read| read.page == page) else {
+                return Ok(None);
+            };
+            if read.moved.is_empty() {
+                return Ok(Some((read.rows.clone(), read.more)));
+            }
+            (
+                read.rows.clone(),
+                read.more,
+                std::mem::take(&mut read.moved),
+            )
+        };
+        for id in &moved {
+            let Some(mut at) = ResourceRef::parse_id(id, String::new()) else {
+                self.inner.newest.borrow_mut().remove(doc);
+                return Ok(None);
+            };
+            // A resource the store holds no more, or never held, is read with the page.
+            let Ok(ty) = Store::type_of(self, &at) else {
+                self.inner.newest.borrow_mut().remove(doc);
+                return Ok(None);
+            };
+            at.ty = ty;
+            let Some(last) = self.version_end(&at, true)? else {
+                self.inner.newest.borrow_mut().remove(doc);
+                return Ok(None);
+            };
+            let was = rows.iter().position(|(held, _)| held == id);
+            if let Some(was) = was {
+                rows.remove(was);
+            }
+            // Most recent first, a resource stands where its newest version does. One older
+            // than everything the page holds of a document that holds more is not of the page,
+            // unless it was: then what follows it in the document, which the page never read,
+            // may be newer.
+            let at = rows.partition_point(|(_, held)| held.order() > last.order());
+            if at < rows.len() || !more {
+                rows.insert(at, (id.clone(), last));
+            } else if was.is_some() {
+                self.inner.newest.borrow_mut().remove(doc);
+                return Ok(None);
             }
         }
+        if rows.len() > page {
+            rows.truncate(page);
+            more = true;
+        }
+        if let Some(read) = self.inner.newest.borrow_mut().get_mut(doc) {
+            read.rows.clone_from(&rows);
+            read.more = more;
+        }
+        Ok(Some((rows, more)))
+    }
+
+    /// The page of `doc`'s newest versions, as the store answers it.
+    fn newest_page_read(
+        &self,
+        doc: &DocId,
+        page: usize,
+    ) -> Result<(Vec<(String, Version)>, bool), StoreError> {
+        // The store reads which resources changed last from what each document holds; only the
+        // page of them is read whole, as their versions read here.
+        let Reply::Newest { versions, more } = self.command(Command::Newest {
+            within: doc.clone(),
+            limit: page,
+        })?
+        else {
+            return Err(backend("a read of the newest versions answered none"));
+        };
+        let mut newest: Vec<(String, Version)> = Vec::with_capacity(versions.len());
+        for (kind, id, version) in versions {
+            let Some(entry) = self.entry_of_kind(&kind) else {
+                continue;
+            };
+            let last = if id == *doc {
+                // The document's root holds a version for every item ever made in it, and
+                // each of those is a resource of the page itself: its own newest is the
+                // store's.
+                self.versions_of(&id, vec![version], Some(&entry)).pop()
+            } else {
+                // An item's history is short, and holds what was made from it, as a comment
+                // made from a task is a change of the task.
+                let Some(at) = ResourceRef::parse_id(&id, entry.id.clone()) else {
+                    continue;
+                };
+                Store::versions(self, &at)?.pop()
+            };
+            if let Some(last) = last {
+                newest.push((id, last));
+            }
+        }
+        // Most recent first: versions of one second in the order their changes were made.
+        newest.sort_by(|a, b| b.1.order().cmp(&a.1.order()));
+        Ok((newest, more))
     }
 
     /// The ids of every resource of the type `ty` the person may read, under its kind and the
@@ -2400,17 +2557,14 @@ impl ResourceStore {
         // of the document's.
         {
             let mut versions = self.inner.versions.borrow_mut();
+            let mut newest = self.inner.newest.borrow_mut();
             if summary.fields.is_empty() {
                 let under = format!("{}/", summary.doc);
                 versions.retain(|id, _| *id != summary.doc && !id.starts_with(&under));
+                newest.remove(&summary.doc);
             }
             for key in &summary.fields {
-                let mut held = key.resource.as_str();
-                versions.remove(held);
-                while let Some((holder, _)) = held.rsplit_once('/') {
-                    versions.remove(holder);
-                    held = holder;
-                }
+                forget_versions(&mut versions, &mut newest, &key.resource);
             }
         }
         self.tell_watches(Some(summary));
@@ -6247,40 +6401,23 @@ impl Store for ResourceStore {
         doc: &DocId,
         page: usize,
     ) -> Result<(Vec<(String, Version)>, bool), StoreError> {
-        // The store reads which resources changed last from what each document holds; only the
-        // page of them is read whole, as their versions read here.
-        let Reply::Newest { versions, more } = self.command(Command::Newest {
-            within: doc.clone(),
-            limit: page,
-        })?
-        else {
-            return Err(backend("a read of the newest versions answered none"));
-        };
-        let mut newest: Vec<(String, Version)> = Vec::with_capacity(versions.len());
-        for (kind, id, version) in versions {
-            let Some(entry) = self.entry_of_kind(&kind) else {
-                continue;
-            };
-            let last = if id == *doc {
-                // The document's root holds a version for every item ever made in it, and
-                // each of those is a resource of the page itself: its own newest is the
-                // store's.
-                self.versions_of(&id, vec![version], Some(&entry)).pop()
-            } else {
-                // An item's history is short, and holds what was made from it, as a comment
-                // made from a task is a change of the task.
-                let Some(at) = ResourceRef::parse_id(&id, entry.id.clone()) else {
-                    continue;
-                };
-                Store::versions(self, &at)?.pop()
-            };
-            if let Some(last) = last {
-                newest.push((id, last));
-            }
+        // The page read before stands but for what moved since: each of those is read by its
+        // newest version, as a row's mark reads it. A keystroke moves the one resource it
+        // types into, so a window's mark reads that one version, whatever the document holds.
+        if let Some(read) = self.newest_page_since(doc, page)? {
+            return Ok(read);
         }
-        // Most recent first: versions of one second in the order their changes were made.
-        newest.sort_by(|a, b| b.1.order().cmp(&a.1.order()));
-        Ok((newest, more))
+        let read = self.newest_page_read(doc, page)?;
+        self.inner.newest.borrow_mut().insert(
+            doc.clone(),
+            NewestPage {
+                page,
+                rows: read.0.clone(),
+                more: read.1,
+                moved: BTreeSet::new(),
+            },
+        );
+        Ok(read)
     }
 
     fn versions(&self, at: &ResourceRef) -> Result<Vec<Version>, StoreError> {

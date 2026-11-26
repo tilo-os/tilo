@@ -507,6 +507,7 @@ fn scout() -> Actor {
 struct Away {
     ada: Replica,
     paper: ResourceRef,
+    permit: ResourceRef,
     survey: ResourceRef,
 }
 
@@ -525,7 +526,7 @@ fn a_day_away() -> Away {
         }
     };
     let paper = make(&ada, "Sort the paper mail");
-    let _permit = make(&ada, "Ask the neighbours about the parking permit");
+    let permit = make(&ada, "Ask the neighbours about the parking permit");
     let survey = make(&ada, "Read the survey responses");
     let milk = make(&ada, "Buy oat milk and eggs");
     ada.commit();
@@ -560,7 +561,12 @@ fn a_day_away() -> Away {
         "check",
         vec![Value::resource(&milk)],
     );
-    Away { ada, paper, survey }
+    Away {
+        ada,
+        paper,
+        permit,
+        survey,
+    }
 }
 
 /// Ada's day away, opened at Today, where the mail she was given and the survey her agent moved
@@ -748,6 +754,92 @@ tilo_test_env::scenario! {
             "the row says how many changes it folds: {content:?}"
         );
     }
+}
+
+/// The items a window's catch-up lists, newest first.
+fn caught_up(view: &mut ViewInstance) -> Vec<String> {
+    buttons(&catch_up(&window_mark(view)))
+        .into_iter()
+        .filter_map(|button| match button.props.get("label") {
+            Some(Value::Text(label)) => Some(label.clone()),
+            _ => None,
+        })
+        .filter(|label| label != "Mark all seen")
+        .collect()
+}
+
+/// A window open while changes land keeps its catch-up in order, change by change: what someone
+/// changed comes first, what was changed again moves up, and what the person changed themselves
+/// leaves it. The window reads what moved, never its whole page again, and says what one that
+/// reads the whole page would.
+#[test]
+fn an_open_windows_catch_up_follows_each_change_as_it_lands() {
+    let Away {
+        ada,
+        paper,
+        permit,
+        survey,
+    } = a_day_away();
+    let mut tasks = ada.view(crate::legibility::TASKS_APP);
+    assert_eq!(
+        caught_up(&mut tasks),
+        [
+            "Buy oat milk and eggs",
+            "Read the survey responses",
+            "Sort the paper mail"
+        ],
+        "the day away, newest first"
+    );
+    let app = crate::legibility::TASKS_APP;
+    call(&ada, BO, app, "check", vec![Value::resource(&permit)]);
+    assert_eq!(
+        caught_up(&mut tasks),
+        [
+            "Ask the neighbours about the parking permit",
+            "Buy oat milk and eggs",
+            "Read the survey responses",
+            "Sort the paper mail"
+        ],
+        "what Bo just changed comes first"
+    );
+    call(
+        &ada,
+        &scout(),
+        app,
+        "schedule",
+        vec![
+            Value::resource(&paper),
+            Value::some(Value::text("2026-10-30")),
+        ],
+    );
+    assert_eq!(
+        caught_up(&mut tasks),
+        [
+            "Sort the paper mail",
+            "Ask the neighbours about the parking permit",
+            "Buy oat milk and eggs",
+            "Read the survey responses"
+        ],
+        "what was changed again moves up"
+    );
+    call(&ada, "ada", app, "check", vec![Value::resource(&survey)]);
+    let after = caught_up(&mut tasks);
+    assert_eq!(
+        after,
+        [
+            "Sort the paper mail",
+            "Ask the neighbours about the parking permit",
+            "Buy oat milk and eggs"
+        ],
+        "what Ada changed herself is no longer news to her"
+    );
+    // Read afresh from the store, with nothing kept of what was read before.
+    ada.host.store().moved();
+    assert_eq!(
+        caught_up(&mut ada.view(app)),
+        after,
+        "a window that reads the whole page now says the same"
+    );
 }
 
 /// What it says is history's words: the app's own words for what it did, a person given to the
