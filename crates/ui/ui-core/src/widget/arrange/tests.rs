@@ -469,6 +469,39 @@ tilo_test_env::scenario! {
         assert!(r[2].x0 + 1.0 >= 40.0 + gap(&theme, Rhythm::Tight) + free / 3.0 - 1.0);
     }
 
+    phase a_filled_child_stands_across_as_the_row_says;
+    // A name that takes the rest of a bar's row beside a taller button: where the row says
+    // `align: .center`, the name is centred with the button, not stretched to its height with
+    // its words at the top. A row that says nothing stretches what fills, as a pane beside a
+    // sidebar does.
+    {
+        let theme = Theme::dark();
+        let filled = || Box::new(Stack::stack().push(boxed(10.0))) as tilo_ui_base::widget::Element;
+        let mut said = Row::row()
+            .fill_width()
+            .align(Align::Center)
+            .push_fit(filled(), Fit::fill(1.0))
+            .push(boxed(40.0));
+        solve(&mut said, &theme, 400.0);
+        let r = rects(&said);
+        assert!((r[0].height() - 10.0).abs() < 0.5, "it keeps its own height: {:?}", r[0]);
+        assert!(
+            (r[0].center().y - r[1].center().y).abs() < 0.5,
+            "it is centred with the button: {:?} beside {:?}",
+            r[0],
+            r[1]
+        );
+        assert!(r[0].width() > 300.0, "it still takes the rest of the width: {:?}", r[0]);
+
+        let mut unsaid = Row::row()
+            .fill_width()
+            .push_fit(filled(), Fit::fill(1.0))
+            .push(boxed(40.0));
+        solve(&mut unsaid, &theme, 400.0);
+        let r = rects(&unsaid);
+        assert!((r[0].height() - 40.0).abs() < 0.5, "it stretches to the row: {:?}", r[0]);
+    }
+
     phase a_wrapping_row_flows_onto_the_next_line;
     {
         let theme = Theme::dark();

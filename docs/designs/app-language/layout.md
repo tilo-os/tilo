@@ -27,6 +27,9 @@ aspect ratio and text size. Getting it wrong should take effort. The engine unde
   length), and `aspect:` (e.g. `16/9`). No absolute positions; overlays use `layers`. A layer the
   system places at a point (a surface beside the caret that asked for it) moves from that
   position with `x:` and `y:` in `dp`.
+- In a row, `fill` takes a share of the row's width. Across the row a filled part stretches to
+  the row's height, unless the row says its `align`: then it stands as the row's other parts do
+  (`row(align: .center)` centres a filled name beside a taller button).
 - The fit is the view's, wherever it is put: a view that says `fill` fills the slot it is in,
   for a component with a body slot as for a `stack`, `row`, `grid` or `page`. A card's body, a
   window's content and a nav shell's column hold their child at the fit its node wrote, so a

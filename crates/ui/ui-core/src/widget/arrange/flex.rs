@@ -18,6 +18,9 @@ pub struct FlexLayout {
     direction: Direction,
     full_width: bool,
     full_height: bool,
+    /// The row's `align` was said, not taken by default: it then places every part across the
+    /// row, a filled one too, which otherwise stretches to the row's height.
+    align_said: bool,
 }
 
 impl Layout for FlexLayout {
@@ -89,6 +92,12 @@ impl Layout for FlexLayout {
     fn part(&self, index: usize, part: &Part, resolved: &Resolved) -> Style {
         let mut style = wrapper_style();
         part.fit.apply(&mut style, self.axis, resolved.rem);
+        // A `fill` in a row is a share of the row's width: where the row says how its parts
+        // stand across it, a filled part stands that way too, rather than stretching to the
+        // row's height with what it holds at its top.
+        if self.axis == Axis::Inline && self.align_said && part.fit.align.is_none() {
+            style.align_self = None;
+        }
         let along = match self.axis {
             Axis::Inline => part.fit.width.fill,
             Axis::Block => part.fit.height.fill,
@@ -155,6 +164,7 @@ impl Arranged<FlexLayout> {
             direction: Direction::Ltr,
             full_width: false,
             full_height: false,
+            align_said: false,
         })
     }
 
@@ -170,6 +180,7 @@ impl Arranged<FlexLayout> {
             direction: Direction::Ltr,
             full_width: false,
             full_height: false,
+            align_said: false,
         })
     }
 
@@ -188,6 +199,7 @@ impl Arranged<FlexLayout> {
     #[must_use]
     pub const fn align(mut self, align: Align) -> Self {
         self.layout.align = align;
+        self.layout.align_said = true;
         self
     }
 

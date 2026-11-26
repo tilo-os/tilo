@@ -1225,7 +1225,6 @@ impl Reconciler {
             .fill_width()
             .gap(rhythm(node, "gap", Rhythm::Related))
             .padding(rhythm(node, "padding", Rhythm::None))
-            .align(align(node, Align::Center))
             .distribute(match token(node, "distribute") {
                 Some("center") => Distribute::Center,
                 Some("end") => Distribute::End,
@@ -1235,6 +1234,11 @@ impl Reconciler {
             .with_id(node.key.clone());
         if flag(node, "wrap") {
             row = row.wrap();
+        }
+        // An `align` the view wrote places every part across the row; unwritten, the row
+        // centres what hugs and stretches what fills.
+        if token(node, "align").is_some() {
+            row = row.align(align(node, Align::Center));
         }
         for part in self.parts(node) {
             row = row.push_part(part);
