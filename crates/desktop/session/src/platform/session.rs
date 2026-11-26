@@ -167,8 +167,10 @@ impl Session {
             // On a computer whose system daemon starts every login's shell, a login it did not
             // start keeps nothing the person does: say so in front of everything, rather than open
             // a desktop whose apps refuse to open. A development or test session beside a daemon
-            // of its own carries on without one.
-            if options.machine.is_owned()
+            // of its own carries on without one. A first use still shows its setup, which needs no
+            // link: the person completes it while this computer's daemon brings their services up.
+            if options.setup.is_none()
+                && options.machine.is_owned()
                 && tilo_api::daemon::this_computer().is_ok_and(|place| place.system())
             {
                 options.setup = Some(BeforeShell::NotStarted);
