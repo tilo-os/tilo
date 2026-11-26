@@ -83,7 +83,6 @@ mod file_clipboard;
 #[cfg(feature = "files")]
 mod files_listing;
 #[cfg(feature = "files")]
-mod files_open;
 mod host_workers;
 mod invocations;
 use tilo_actions::remote::invocation_record;

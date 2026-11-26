@@ -2941,22 +2941,6 @@ impl AppBrokerState {
         ) {
             return result;
         }
-        // A `files#open` given content puts the files into the workspace's own folder; one
-        // given none is Files' open, which starts the app.
-        #[cfg(feature = "files")]
-        if let Some(result) =
-            self.start_files_open(caller, origin, request, (&workspace, &policy, now))?
-        {
-            return Ok(result);
-        }
-        // Files' verbs on the workspace's folder by paths in it change the tree this device
-        // holds.
-        #[cfg(feature = "files")]
-        if let Some(result) =
-            self.start_files_change(caller, origin, request, (&workspace, &policy, now))?
-        {
-            return Ok(result);
-        }
         // Files' `list` and `read-text` of the workspace's folder, as its listing offers them,
         // read the tree this device holds.
         #[cfg(feature = "files")]

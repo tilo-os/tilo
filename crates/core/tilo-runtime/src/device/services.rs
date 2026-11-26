@@ -3273,6 +3273,12 @@ fn start_broker(
     // A check's commands are ush's, which runs only on Linux: elsewhere a host approves none.
     #[cfg(target_os = "linux")]
     approved_checks(&parts)?;
+    // The workspace's own folder: a file put into it and Files' verbs on it, carried out where
+    // this device keeps the tree.
+    Arc::new(super::local_files::LocalFiles::new(
+        Arc::clone(parts.workspaces) as Arc<dyn super::local_files::Folders>,
+    ))
+    .register(&parts.workspaces.copies().providers());
     let broker = tilo_app_host::collab_broker::spawn_with_services(
         parts.sockets.collab.clone(),
         Some(Arc::new(parts.workspaces.copies().clone()) as Arc<dyn WorkspaceAuthority>),

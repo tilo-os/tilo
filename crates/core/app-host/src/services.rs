@@ -447,9 +447,9 @@ pub type RecordFounding = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
 #[cfg(unix)]
 pub type DeviceDaemon = Result<runtime_collab::ShellClient, String>;
 
-/// The workspace's own folder, as the dispatch reaches it: where a `files#open` given content
-/// puts its files, and what Files' `list` and `read-text` read. A host that keeps no tree of its
-/// workspaces serves none, and those calls are refused there.
+/// The workspace's own folder, as the listing reaches it: what Files' `list` and `read-text`
+/// read. A host that keeps no tree of its workspaces serves none, and those calls are refused
+/// there.
 pub trait FilesTreePuts: Send + Sync {
     /// Put what `arguments` name into `workspace`'s tree, answering where each file is or how
     /// many went in.
@@ -584,8 +584,8 @@ pub struct ProcessServices {
     /// The resources this session's services publish, which its apps read, watch and invoke;
     /// without it those calls are refused.
     pub published: Option<Arc<dyn PublishedResources>>,
-    /// The workspace's own folder, where a `files#open` given content puts its files; without it
-    /// that open is refused, and Files' open of nothing still starts the app.
+    /// The workspace's own folder, which Files' `list` and `read-text` read; without it those
+    /// reads are refused.
     pub files_open: Option<Arc<dyn FilesTreePuts>>,
     pub workspace_governance: Option<Arc<dyn WorkspaceGovernanceServices>>,
     pub shortcut_library: Option<Arc<dyn ShortcutLibraryServices>>,

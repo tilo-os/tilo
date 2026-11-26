@@ -66,6 +66,7 @@ mod live_call;
 mod live_relay;
 mod live_speaking;
 pub(crate) mod local;
+mod local_files;
 /// Where this device is: the platform's location service, answered as the device's own action
 /// (`devices/<device>/location#locate`), never reached from an app's process.
 pub mod location;
