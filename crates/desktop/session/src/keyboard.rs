@@ -520,7 +520,7 @@ impl crate::Session {
         // field is left, or one is reached, the automatic rule decides again.
         keyboard.forget_ask_when_the_field_moved(entry.wants_typing);
         // Whether it shows: the person's word while it stands, and the automatic rule otherwise.
-        let shows = keyboard
+        let wanted = keyboard
             .asked()
             .unwrap_or_else(|| crate::a11y_settings::keyboard_visible(preference, entry));
         // The lock screen draws its own keyboard over a locked session, and takes every key:
@@ -575,7 +575,7 @@ impl crate::Session {
             })
             .unwrap_or_default();
         let shown = Shown {
-            visible: shows,
+            visible: wanted,
             display: Some(screen.clone()),
             field: field.field,
             purpose: field.purpose.to_owned(),
