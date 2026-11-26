@@ -1288,7 +1288,11 @@ pub const DEVICE_CERT: Format = Format {
     // a test beside the golden bytes keeps this in step with it.
     version: 4,
     oldest: 1,
-    steps: &[layout_one_is_layout_two, layout_two_is_layout_three, layout_three_is_layout_four],
+    steps: &[
+        layout_one_is_layout_two,
+        layout_two_is_layout_three,
+        layout_three_is_layout_four,
+    ],
 };
 
 /// Layout 2 only added a certificate that reaches one workspace alone: what layout 1 wrote is
@@ -1758,7 +1762,13 @@ mod tests {
                     cert.capabilities,
                     DeviceCapabilities::agent_grant(golden_agent_grant())
                 );
-                assert!(cert.capabilities.agent.as_ref().unwrap().is_agent("claude-code-0a1b2c3d4e"));
+                assert!(
+                    cert.capabilities
+                        .agent
+                        .as_ref()
+                        .unwrap()
+                        .is_agent("claude-code-0a1b2c3d4e")
+                );
                 assert_eq!(fs::read(&path).unwrap(), bytes);
                 *read.borrow_mut() = Some(cert);
             },
@@ -1787,7 +1797,10 @@ mod tests {
         let (_, capabilities) =
             postcard::take_from_bytes::<([u8; 32], [u8; 32], String)>(&kept).unwrap();
         let first = capabilities[0];
-        assert!(first > 6, "layout 3 names this certificate a later layout: {first}");
+        assert!(
+            first > 6,
+            "layout 3 names this certificate a later layout: {first}"
+        );
         let stored = 3 + 1;
         let dir = identity_tempdir();
         let path = dir.path().join("cert.bin");
