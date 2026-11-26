@@ -97,6 +97,9 @@ struct Inner {
     saved: Mutex<BTreeMap<(String, String), Vec<u8>>>,
     /// The writes the service did not make yet, oldest first.
     waiting: Mutex<Vec<Write>>,
+    /// Makes the writes one at a time: each reads the record as the store holds it and writes
+    /// the change built on it, so two never start from the same heads.
+    writing: tokio::sync::Mutex<()>,
     /// Counts every change to a resource here.
     changes: tokio::sync::watch::Sender<u64>,
 }
@@ -317,7 +320,12 @@ impl PersonDocuments for PersonResources {
 
 impl Inner {
     /// Make `write`; one this device cannot make until it holds the workspace waits for it.
+    ///
+    /// One at a time: a write reads the record as the store holds it and sends the change built
+    /// on that read, so the next write starts from what the one before it wrote, and one number
+    /// is never given to two changes.
     async fn make(&self, write: Write, store: Arc<dyn PersonStore>) {
+        let _writing = self.writing.lock().await;
         if !store.held().await {
             self.waiting.lock_recover().push(write);
             return;
@@ -337,9 +345,7 @@ impl Inner {
             if waits && store.held().await {
                 let waiting = std::mem::take(&mut *self.waiting.lock_recover());
                 for write in waiting {
-                    if let Err(error) = write(Arc::clone(&store)).await {
-                        tracing::warn!(%error, "a write to the person's own workspace was refused");
-                    }
+                    self.make(write, Arc::clone(&store)).await;
                 }
                 self.reload(store.as_ref(), None).await;
             }

@@ -324,7 +324,28 @@ impl Workspaces {
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let mut hosted = std::sync::Arc::clone(&state).lock_owned().await;
+        let hosted = std::sync::Arc::clone(&state).lock_owned().await;
+        self.keep_record_change_locked(
+            hosted,
+            (workspace, device),
+            (app, kind, record),
+            (parsed, action),
+            founding_refusal,
+        )
+        .await
+    }
+
+    /// [`Self::keep_record_change`], under a hold of the workspace's copy the caller already
+    /// has: what a caller that builds the change itself holds from the read the change is built
+    /// on to keeping it, so two writes of one record never start from the same heads.
+    async fn keep_record_change_locked(
+        &self,
+        mut hosted: tokio::sync::OwnedMutexGuard<HostedWorkspace>,
+        (workspace, device): (&str, std::sync::Arc<super::super::MemberDevice>),
+        (app, kind, record): (&str, Option<&str>, &str),
+        (parsed, action): (Vec<AmChange>, Option<&collab_types::WorkspaceCommit>),
+        founding_refusal: Option<&str>,
+    ) -> Result<(), String> {
         let held = kind_of(
             &self.inner.host.surfaces,
             &self.store_of(&mut hosted),
@@ -654,18 +675,25 @@ impl Workspaces {
     /// # Errors
     /// The workspace is not held here, `change` failed (and nothing was written), or the store
     /// refuses the change.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the hold is the point: it lasts until the change built on the read is kept"
+    )]
     pub async fn author_record<R>(
         &self,
         workspace: &str,
         (app, kind, record): (&str, &str, &str),
         change: impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String>,
     ) -> Result<R, String> {
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        // Read, changed and kept under one hold of the workspace's copy: a second write of the
+        // record from this device waits for the first, so two changes of one record are never
+        // built on the same heads and one number is never given to two changes.
+        let mut hosted = std::sync::Arc::clone(&state).lock_owned().await;
         let (mut doc, heads) = {
-            let state = self
-                .workspace(workspace)
-                .await
-                .map_err(|error| error.to_string())?;
-            let mut hosted = state.lock().await;
             let mut store = self.store_of(&mut hosted);
             let held = match store.index().get(kind, record) {
                 Some(_) => store
@@ -709,7 +737,8 @@ impl Workspaces {
         // Counted before it lands: a list of agents read from here on is known to be behind it
         // until it is read again.
         self.begins_write(workspace, app, record);
-        self.keep_record_change(
+        self.keep_record_change_locked(
+            hosted,
             (workspace, self.signing_device()),
             (app, Some(kind), record),
             (changes, None),

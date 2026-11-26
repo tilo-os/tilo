@@ -646,6 +646,87 @@ async fn a_change_of_the_devices_record_names_the_app_that_keeps_it() {
     drop(desk);
 }
 
+/// Two writes of the person's devices record from one device, made at once, both land: each is
+/// built on what the one before it wrote, so one number is never given to two changes of the
+/// record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_writes_of_one_device_record_at_once_both_land() {
+    let one = tempfile::tempdir().unwrap();
+    let (key, cert) = hosting_device();
+    let desk = test_host_holding(one.path(), &key, &cert, group_keys()).await;
+    let own = person_workspace::found(desk.workspaces())
+        .await
+        .expect("the desktop founds the person's own workspace");
+    apply_on(
+        desk.workspaces(),
+        &own,
+        DEVICES,
+        Devices::keeping(&cert).unwrap(),
+    )
+    .await
+    .expect("the desktop is among the person's devices");
+    let (locked, open) = (
+        OwnerSession {
+            locked: true,
+            changed_ms: 1_700_000_000_000,
+            active_ms: 1_699_999_990_000,
+            using: false,
+        },
+        OwnerSession {
+            locked: false,
+            changed_ms: 1_700_000_000_500,
+            active_ms: 1_700_000_000_000,
+            using: true,
+        },
+    );
+    let (first, second) = tokio::join!(
+        apply_on(
+            desk.workspaces(),
+            &own,
+            DEVICES,
+            Devices::saying_session(&cert.device_public_key, locked),
+        ),
+        apply_on(
+            desk.workspaces(),
+            &own,
+            DEVICES,
+            Devices::saying_session(&cert.device_public_key, open),
+        ),
+    );
+    first.expect("the desktop says it locked");
+    second.expect("the desktop says how its session stands");
+    let bytes = desk
+        .workspaces()
+        .resource_document(&own, DEVICES.0, DEVICES.1)
+        .await
+        .unwrap()
+        .expect("the record is here");
+    let mut doc = automerge::AutoCommit::load(&bytes).unwrap();
+    let mut numbers: Vec<(Vec<u8>, u64)> = Vec::new();
+    for change in doc.get_changes(&[]) {
+        let number = (change.actor_id().to_bytes().to_vec(), change.seq());
+        assert!(
+            !numbers.contains(&number),
+            "one number {number:?} is given to two changes of the devices record"
+        );
+        numbers.push(number);
+    }
+    let desktop = Id::from_raw(hex::encode(cert.device_public_key));
+    let record = read_on::<Devices>(desk.workspaces(), &own, DEVICES)
+        .await
+        .unwrap();
+    let said = record
+        .devices
+        .get(&desktop)
+        .expect("the desktop is kept")
+        .session;
+    assert!(
+        said == locked || said == open,
+        "the record keeps one of the two things the desktop said: {said:?}"
+    );
+    drop(desk);
+}
+
 /// The desktop says where its endpoint answers in the record of the person's devices; the laptop
 /// reads those addresses there, so it dials the desktop directly when no relay and no discovery
 /// find it.
