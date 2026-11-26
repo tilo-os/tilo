@@ -561,6 +561,19 @@ pub trait ContentStoreServices: Send + Sync {
         let _ = (workspace, hash);
         true
     }
+
+    /// Hand `workspace` the content `hash` that `app` keeps there as its own: what an action of
+    /// the app answered its caller, who reads it back from the workspace's put content by its
+    /// reference. Whether the workspace holds it now; `false` when the app keeps no such content
+    /// and the workspace none either. A store that keeps no app's content hands nothing over.
+    ///
+    /// # Errors
+    ///
+    /// The store could not copy content the app keeps.
+    fn hand_over(&self, workspace: &str, app: &str, hash: &str) -> Result<bool, String> {
+        let _ = app;
+        Ok(self.holds(workspace, hash))
+    }
 }
 
 /// One upload into the content store. Dropped unfinished, it stores

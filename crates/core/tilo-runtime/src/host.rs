@@ -42,7 +42,7 @@ pub struct ServiceSockets<'a> {
 /// app holds the descriptor. A host without the service leaves the app on
 /// its process-local store.
 #[cfg(unix)]
-fn connect_blobs(path: &Path, app_id: &str, workspace: &str) -> Option<Stream> {
+pub(crate) fn connect_blobs(path: &Path, app_id: &str, workspace: &str) -> Option<Stream> {
     use runtime_fs::blobs::{BlobActor, BlobScope, write_handoff};
 
     let scope = BlobScope::new(workspace, app_id).ok()?;

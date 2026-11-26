@@ -862,18 +862,7 @@ impl JoinedChannel {
         }
         drop(admission);
         self.state.publishers.streams_changed();
-        // The app the launcher attested, else the one this channel names.
-        let (app, workspace) = self
-            .lease
-            .as_ref()
-            .and_then(|lease| lease.local_media.as_ref())
-            .map_or_else(
-                || {
-                    let route = self.route();
-                    (route.app_id, route.cluster_id)
-                },
-                |app| (app.app_id.clone(), app.workspace_id.clone()),
-            );
+        let (app, workspace) = self.attested_app();
         let delivered = invocation_delivery_notice(&self.state.services, app, workspace);
         Ok((
             InvocationStreamServer {
@@ -882,6 +871,21 @@ impl JoinedChannel {
             },
             end,
         ))
+    }
+
+    /// The app the launcher attested this connection as, else the one its channel names, and
+    /// the workspace it runs in.
+    fn attested_app(&self) -> (String, String) {
+        self.lease
+            .as_ref()
+            .and_then(|lease| lease.local_media.as_ref())
+            .map_or_else(
+                || {
+                    let route = self.route();
+                    (route.app_id, route.cluster_id)
+                },
+                |app| (app.app_id.clone(), app.workspace_id.clone()),
+            )
     }
 
     /// What the app says, or asks, of the invocation `id` it was handed.
@@ -894,10 +898,12 @@ impl JoinedChannel {
                 let state = self.state.clone();
                 let peer_id = self.peer_id;
                 let admission = Some((self.route(), self.verified_identity.clone()));
+                let (app, workspace) = self.attested_app();
                 Box::pin(async move {
                     let update = serde_json::from_str(&update).map_err(|error| {
                         BrokerError::failed(format!("invalid invocation update: {error}"))
                     })?;
+                    let update = state.hand_over_answered(&app, &workspace, update).await;
                     state
                         .apply_invocation_update(peer_id, id, update, admission)
                         .await?;

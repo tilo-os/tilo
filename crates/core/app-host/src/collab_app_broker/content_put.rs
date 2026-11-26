@@ -112,6 +112,85 @@ impl AppBrokerState {
     }
 }
 
+impl AppBrokerState {
+    /// `update`, once the content its answer names is the workspace's to read: an app keeps what
+    /// it makes in its own content, which no one else reads, so a file its action answers is
+    /// copied from there into the workspace's put content, where the caller reads it by its
+    /// reference. Only content that app keeps and its own answer names moves; an answer whose
+    /// content could not be handed over fails, saying why, rather than naming content no one
+    /// can read.
+    pub(super) async fn hand_over_answered(
+        &self,
+        app: &str,
+        workspace: &str,
+        update: tilo_actions::InvocationUpdate,
+    ) -> tilo_actions::InvocationUpdate {
+        let tilo_actions::InvocationUpdate::Succeeded { invocation, output } = &update else {
+            return update;
+        };
+        let mut hashes = Vec::new();
+        if let Some(value) = &output.value {
+            answered_content(value, &mut hashes);
+        }
+        let Some(store) = self
+            .services
+            .content_store
+            .clone()
+            .filter(|_| !hashes.is_empty())
+        else {
+            return update;
+        };
+        let (app, workspace) = (app.to_owned(), workspace.to_owned());
+        // The store reads and writes the disk: off the broker's loop.
+        let handed = tokio::task::spawn_blocking(move || {
+            hashes
+                .iter()
+                .try_for_each(|hash| store.hand_over(&workspace, &app, hash).map(drop))
+        })
+        .await
+        .unwrap_or_else(|error| Err(error.to_string()));
+        match handed {
+            Ok(()) => update,
+            Err(why) => tilo_actions::InvocationUpdate::Failed {
+                invocation: *invocation,
+                error: tilo_actions::ActionFailure {
+                    code: "action_failed".into(),
+                    message: format!(
+                        "the file this action answered did not reach the workspace: {why}"
+                    ),
+                    details: None,
+                    retryable: false,
+                },
+            },
+        }
+    }
+}
+
+/// Each content hash an answer names as a file (`{"content": "tilo.content:<hash>", ...}`),
+/// wherever in the answer it is.
+fn answered_content(value: &serde_json::Value, hashes: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            if let Some(hash) = fields
+                .get("content")
+                .and_then(serde_json::Value::as_str)
+                .and_then(tilo_actions::content_hash)
+                .filter(|hash| is_content_hash(hash))
+                && !hashes.iter().any(|seen| seen == hash)
+            {
+                hashes.push(hash.to_owned());
+            }
+            fields
+                .values()
+                .for_each(|field| answered_content(field, hashes));
+        }
+        serde_json::Value::Array(items) => {
+            items.iter().for_each(|item| answered_content(item, hashes));
+        }
+        _ => {}
+    }
+}
+
 /// The device content store, asked whether a workspace still holds what a put
 /// left there when the attributions are compacted.
 struct StoredContent<'a>(Option<&'a dyn ContentStoreServices>);

@@ -69,6 +69,8 @@ pub(crate) struct Instances {
     /// The daemon's collaboration and identity sockets.
     collab: PathBuf,
     identity: PathBuf,
+    /// The daemon's document-media socket, where an instance keeps the files it makes.
+    blobs: PathBuf,
     /// Finds the platform's launcher.
     launcher: FindsLauncher,
     /// The daemon's launch records: each process started here is written there, so a connection
@@ -305,6 +307,7 @@ impl Instances {
         Self {
             collab: sockets.collab.clone(),
             identity: sockets.identity.clone(),
+            blobs: sockets.blobs.clone(),
             launcher,
             launched: started,
             processes: OnceLock::new(),
@@ -586,7 +589,7 @@ impl Instances {
                 collaboration,
                 identity,
                 origin,
-                content: None,
+                content: self.content(app, workspace),
                 chooser,
                 clipboard: None,
                 tools: None,
@@ -628,6 +631,22 @@ impl Instances {
             ));
         }
         Ok(descriptor_of(stream))
+    }
+
+    /// The instance's content connection: the device's content store for `app` in `workspace`,
+    /// as a window's instance is handed one. A file the instance makes is kept there, not in the
+    /// process alone, so its workspace hands it on to whoever an action answered it to. A daemon
+    /// serving no document media leaves the instance on the process's own store.
+    fn content(&self, app: &str, workspace: &str) -> Option<Descriptor> {
+        #[cfg(unix)]
+        {
+            crate::host::connect_blobs(&self.blobs, app, workspace).map(descriptor_of)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (app, workspace);
+            None
+        }
     }
 
     /// The instance's identity-service connection, opened and named for `app` in `workspace` as

@@ -58,6 +58,30 @@ impl ContentStoreServices for ShelfPuts {
     fn holds(&self, workspace: &str, hash: &str) -> bool {
         self.0.has(&put_scope(workspace), hash)
     }
+
+    /// Copied from the app's own scope, never another's: only what the app keeps reaches the
+    /// workspace this way.
+    fn hand_over(&self, workspace: &str, app: &str, hash: &str) -> Result<bool, String> {
+        let put = put_scope(workspace);
+        let own = ContentScope {
+            workspace: workspace.to_owned(),
+            app: app.to_owned(),
+        };
+        if !put.names_a_store() || !own.names_a_store() {
+            return Err(format!("{app} keeps no content in this workspace"));
+        }
+        if self.0.has(&put, hash) {
+            return Ok(true);
+        }
+        let Some(bytes) = self.0.read(&own, hash) else {
+            return Ok(false);
+        };
+        if bytes.len() as u64 > MAX_CONTENT_BYTES {
+            return Err("content is larger than a record may reference".into());
+        }
+        self.0.keep(&put, hash, &bytes)?;
+        Ok(true)
+    }
 }
 
 /// One upload still arriving.
