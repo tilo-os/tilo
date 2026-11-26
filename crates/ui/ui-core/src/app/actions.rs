@@ -123,14 +123,14 @@ impl App {
             &operation_handlers,
         );
         if !violations.is_empty() {
-            for violation in violations {
+            for violation in &violations {
                 tracing::error!(
                     address = %violation.address,
                     reason = %violation.reason,
-                    "refusing an invalid resource/action surface"
+                    "refusing an invalid resource/action"
                 );
             }
-            complete.clear();
+            drop_refused(&mut complete, &violations);
         }
         trace.finish(CacheResult::NotApplicable);
         if let Some(cache) = self
@@ -3342,4 +3342,152 @@ fn shared_permissions_revision() -> u64 {
     #[cfg(not(feature = "model"))]
     let revision = 0;
     revision
+}
+
+/// `resources` without what `violations` refuse. One declaration the contract refuses leaves the
+/// app's other actions standing: they are still offered, and a control bound to the refused one
+/// fails where it is invoked. An address a surface declares twice keeps its first declaration; a
+/// resource a violation names whole (its id, not one of its actions) is left out.
+#[cfg(feature = "model")]
+fn drop_refused(
+    resources: &mut Vec<tilo_actions::ResourceSpec>,
+    violations: &[tilo_actions::ContractViolation],
+) {
+    use std::collections::{HashMap, HashSet};
+
+    fn count_actions(
+        resources: &[tilo_actions::ResourceSpec],
+        counts: &mut HashMap<String, usize>,
+    ) {
+        for resource in resources {
+            let id = resource.id.as_str();
+            for action in &resource.actions {
+                let address = format!("{id}{}{}", tilo_actions::KEY_SEP, action.id);
+                *counts.entry(address).or_insert(0) += 1;
+            }
+            count_actions(&resource.children, counts);
+        }
+    }
+
+    fn keep(
+        resource: &mut tilo_actions::ResourceSpec,
+        (counts, refused_actions): (&HashMap<String, usize>, &HashSet<&str>),
+        (refused_resources, kept_resources, kept_actions): (
+            &HashSet<&str>,
+            &mut HashSet<String>,
+            &mut HashSet<String>,
+        ),
+    ) {
+        let id = resource.id.as_str().to_owned();
+        resource.actions.retain(|action| {
+            let address = format!("{id}{}{}", tilo_actions::KEY_SEP, action.id);
+            if kept_actions.contains(&address) {
+                return false;
+            }
+            // A declaration refused on its own has nothing to offer; one refused as a repeat
+            // keeps the first copy, which is the declaration.
+            if refused_actions.contains(address.as_str()) && counts.get(&address) == Some(&1) {
+                return false;
+            }
+            kept_actions.insert(address);
+            true
+        });
+        resource.children.retain_mut(|child| {
+            let id = child.id.as_str().to_owned();
+            if !kept_resources.insert(id.clone()) || refused_resources.contains(id.as_str()) {
+                return false;
+            }
+            keep(
+                child,
+                (counts, refused_actions),
+                (refused_resources, kept_resources, kept_actions),
+            );
+            true
+        });
+    }
+
+    let mut counts = HashMap::new();
+    count_actions(resources, &mut counts);
+    let (refused_actions, refused_resources): (HashSet<&str>, HashSet<&str>) = violations
+        .iter()
+        .map(|violation| violation.address.as_str())
+        .partition(|address| address.contains(tilo_actions::KEY_SEP));
+    let mut kept_actions = HashSet::new();
+    let mut kept_resources = HashSet::new();
+    resources.retain_mut(|resource| {
+        let id = resource.id.as_str().to_owned();
+        // A resource id declared twice keeps its first declaration.
+        if !kept_resources.insert(id.clone()) || refused_resources.contains(id.as_str()) {
+            return false;
+        }
+        keep(
+            resource,
+            (&counts, &refused_actions),
+            (&refused_resources, &mut kept_resources, &mut kept_actions),
+        );
+        true
+    });
+}
+
+#[cfg(all(test, feature = "model"))]
+mod refused_declarations {
+    use super::*;
+
+    fn action(id: &str) -> tilo_actions::ActionSpec {
+        tilo_actions::ActionSpec::typed_operation(
+            id,
+            id,
+            "",
+            tilo_actions::OperationKind::Effect,
+            "test.type",
+            Vec::new(),
+            |_| tilo_actions::EncodedAction {
+                type_id: "test.type".into(),
+                payload: Vec::new(),
+            },
+        )
+    }
+
+    fn violation(address: String, reason: &str) -> tilo_actions::ContractViolation {
+        tilo_actions::ContractViolation {
+            address,
+            reason: reason.to_owned(),
+        }
+    }
+
+    /// A declaration the contract refuses is left out; every other action the app declared is
+    /// still offered, so one mistake never hides the app from a person's palette or an agent.
+    #[test]
+    fn one_refused_declaration_keeps_the_rest_of_the_surface() {
+        let mut resources = vec![tilo_actions::ResourceSpec::new(
+            "notes.root",
+            "notes.note",
+            "Notes",
+        )];
+        resources[0].actions.push(action("keep"));
+        resources[0].actions.push(action("bad"));
+        resources[0].actions.push(action("keep"));
+        let refused = vec![
+            violation(
+                format!("notes.root{}{}", tilo_actions::KEY_SEP, "bad"),
+                "effect/view action has no declared operation type",
+            ),
+            violation(
+                format!("notes.root{}{}", tilo_actions::KEY_SEP, "keep"),
+                "duplicate action address",
+            ),
+            violation("notes.empty".to_owned(), "duplicate resource id"),
+        ];
+        drop_refused(&mut resources, &refused);
+        let ids: Vec<&str> = resources[0]
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            ["keep"],
+            "the refused action and the repeat leave the surface, the declaration stays"
+        );
+    }
 }
