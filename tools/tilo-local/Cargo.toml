@@ -6,8 +6,8 @@ publish.workspace = true
 license.workspace = true
 description = "One command for each way to run Tilo from a checkout: the desktop in a window, the session headless, the web desktop on the local hosting stack (cargo desktop, cargo headless, cargo web)"
 
-# Standard library and one std-only leaf, and outside workspace-hack (.config/hakari.toml),
-# so `cargo desktop` compiles this launcher in seconds before the real build.
+# Standard library and two leaves, and outside workspace-hack (.config/hakari.toml), so
+# `cargo desktop` compiles this launcher in seconds before the real build.
 
 [[bin]]
 name = "tilo-local"
@@ -18,6 +18,10 @@ path = "src/main.rs"
 # (`tilo_files::native::socket` re-exports it); a std-only leaf, so taking it keeps
 # this launcher free of the dependency graph the unified set would bring.
 tilo-socket = { version = "0.1.0", path = "../../crates/platform/tilo-socket" }
+# `cargo daemon --stop` finds the daemon by the lock it holds on its profile (a daemon that
+# keeps this computer's device key is undumpable, and says nothing of itself): the tree's one
+# file-lock guard, rather than a lock of this launcher's own.
+tilo-advisory-lock = { version = "0.1.0", path = "../../crates/platform/advisory-lock" }
 
 [lints]
 workspace = true

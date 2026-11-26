@@ -78,6 +78,10 @@ const IDENTITY_DIR: &str = "identity";
 const LOG_FILE: &str = "logs/daemon.log";
 /// The pid of the daemon this state directory started, for `--stop`.
 const PID_FILE: &str = "daemon.pid";
+/// The lock the daemon holds on its profile for as long as it serves it, inside the profile: how
+/// `--stop` finds the daemon while the daemon keeps itself undumpable. Named as
+/// `tilo_runtime::profile::lock` names it.
+const PROFILE_LOCK: &str = "runtime.lock";
 
 /// The line the daemon answers with its status, as `tilo status --daemon` asks it: what says the
 /// daemon answers, not a socket it left behind.
@@ -184,7 +188,11 @@ fn run(repo: &Path, options: &Options) -> Result<ExitCode, String> {
     let state = &options.state;
     let profile = state.join(PROFILE_DIR);
     let socket = native_socket(&profile);
-    if let Some(pid) = live_pid(state, &profile) {
+    // A start over ends the daemon this state started before it wipes what that daemon kept;
+    // without it, a state with a daemon of its own answers where it stands.
+    if options.fresh {
+        end_daemon(state, &profile);
+    } else if let Some(pid) = live_pid(state, &profile) {
         eprintln!(
             "A development daemon already answers from {} (pid {pid}).",
             state.display()
@@ -206,7 +214,6 @@ fn run(repo: &Path, options: &Options) -> Result<ExitCode, String> {
         ));
     }
     if options.fresh {
-        end_daemon(state, &profile);
         fs::remove_dir_all(state)
             .or_else(|error| match error.kind() {
                 std::io::ErrorKind::NotFound => Ok(()),
@@ -631,9 +638,8 @@ fn stop(state: &Path) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Stop the daemon this state started, and whether one was running: only a process whose command
-/// is this checkout's daemon and whose environment names this profile is signalled, never a pid
-/// that was reused or another daemon.
+/// Stop the daemon this state started, and whether one was running: only the daemon that holds
+/// the lock on this state's profile is signalled, never a pid that was reused or another daemon.
 fn end_daemon(state: &Path, profile: &Path) -> bool {
     let pidfile = state.join(PID_FILE);
     let Some(pid) = read_pid(&pidfile) else {
@@ -669,27 +675,32 @@ fn live_pid(state: &Path, profile: &Path) -> Option<u32> {
     is_our_daemon(pid, profile).then_some(pid)
 }
 
-/// Whether process `pid` is this checkout's daemon over `profile`: its command is `tilo-runtime`
-/// and its environment names this profile, so a reused pid or another profile's daemon is not it.
+/// Whether process `pid` is this state's daemon over `profile`: a daemon holds the lock it takes
+/// on the profile for its whole life, and the pid that daemon recorded there is the one this state
+/// wrote down.
+///
+/// A daemon that keeps this computer's device key makes itself undumpable, so neither its
+/// environment nor its command line says anything about it. The lock does: it says a daemon serves
+/// the profile, and which process it is. A pid the system reused, or another profile's daemon, is
+/// not it.
 fn is_our_daemon(pid: u32, profile: &Path) -> bool {
-    let base = format!("/proc/{pid}");
-    if fs::metadata(&base).is_err() {
+    let lock = profile.join(PROFILE_LOCK);
+    if !lock.is_file() {
         return false;
     }
-    let command = fs::read(format!("{base}/cmdline"))
-        .ok()
-        .and_then(|bytes| bytes.split(|byte| *byte == 0).next().map(<[u8]>::to_vec))
-        .is_some_and(|first| {
-            std::str::from_utf8(&first).is_ok_and(|text| text.ends_with("tilo-runtime"))
-        });
-    let mut needle = b"TILO_RUNTIME_PROFILE=".to_vec();
-    needle.extend_from_slice(profile.as_os_str().as_encoded_bytes());
-    let named = fs::read(format!("{base}/environ")).is_ok_and(|environ| {
-        environ
-            .split(|byte| *byte == 0)
-            .any(|entry| entry == needle.as_slice())
-    });
-    command && named
+    match advisory_lock::FileLock::try_open(&lock, advisory_lock::LockMode::Exclusive) {
+        // Free, and so taken here and let go at once: no daemon serves the profile.
+        Ok(free) => {
+            drop(free);
+            false
+        }
+        Err(advisory_lock::TryLockError::WouldBlock) => {
+            // A daemon starting holds the lock a moment before it records its pid; until it does,
+            // the daemon this state started is the one it is.
+            advisory_lock::owner_pid(&lock).is_none_or(|owner| owner == pid)
+        }
+        Err(advisory_lock::TryLockError::Error(_)) => false,
+    }
 }
 
 /// Signal the process group `pid` leads (the daemon sets its own), by signal name.
@@ -862,7 +873,7 @@ fn verdict(
 mod tests {
     use std::path::Path;
 
-    use super::profile_socket_name;
+    use super::{PROFILE_LOCK, is_our_daemon, profile_socket_name};
 
     #[test]
     fn a_profile_is_named_among_the_accounts_sockets_by_its_path() {
@@ -872,5 +883,36 @@ mod tests {
             profile_socket_name(Path::new("/home/u/.local/state/tilo-daemon-dev/profile")),
             "profile-12f6cc287a2860cb"
         );
+    }
+
+    /// The daemon a start leaves behind makes itself undumpable, so its environment and command
+    /// line say nothing a stop can read: the lock it holds on its profile says which process
+    /// serves the profile, and that is the one a stop signals.
+    #[test]
+    fn the_profiles_lock_names_the_daemon_that_serves_it() {
+        let state =
+            std::env::temp_dir().join(format!("tilo-local-stop-test-{}", std::process::id()));
+        let profile = state.join("profile");
+        std::fs::create_dir_all(&profile).unwrap();
+        // A profile no daemon has served: nothing to stop, and no lock file made here.
+        assert!(!is_our_daemon(std::process::id(), &profile));
+        assert!(!profile.join(PROFILE_LOCK).exists());
+
+        // A daemon serving it holds the profile's lock and records the pid it runs as.
+        let serving = advisory_lock::FileLock::open(
+            &profile.join(PROFILE_LOCK),
+            advisory_lock::LockMode::Exclusive,
+        )
+        .unwrap();
+        serving.resource_owner().unwrap();
+        let daemon = std::process::id();
+        assert!(is_our_daemon(daemon, &profile));
+        // A pid the state wrote down that is not the lock holder's is never signalled.
+        assert!(!is_our_daemon(daemon.saturating_add(1), &profile));
+
+        // The daemon ended: the profile is free, and the record it left means nothing.
+        drop(serving);
+        assert!(!is_our_daemon(daemon, &profile));
+        std::fs::remove_dir_all(&state).unwrap();
     }
 }

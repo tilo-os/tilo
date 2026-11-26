@@ -379,6 +379,9 @@ pub fn serve(profile: &Path, dev: bool) -> io::Result<()> {
 /// windows, and may stop it and start it again.
 pub struct Running {
     native: PathBuf,
+    /// The lock on the profile, held for as long as this daemon serves it, which says who serves
+    /// a profile named apart while the daemon keeps itself undumpable.
+    _profile: advisory_lock::FileLock,
     stop: crate::device::serve::Stop,
     /// The native endpoint, which takes no connection once it is closing.
     endpoint: Arc<Native>,
@@ -460,6 +463,10 @@ impl Running {
         tenant: Option<&Tenant>,
     ) -> io::Result<Self> {
         validate_profile(profile)?;
+        // A profile is one daemon's: this holds it for as long as the daemon serves it, and the
+        // pid it records there is how a launcher of the daemon finds it, which a daemon keeping
+        // this computer's device key says no other way of itself.
+        let profile_lock = crate::profile::lock(profile)?;
         let device = crate::device::unclaimed::ThisDevice::lock(profile.to_path_buf())?;
         // Who each connection is: root and this daemon's own account act as the device, and
         // under the system unit the account that made the device's person, kept in the profile,
@@ -532,6 +539,7 @@ impl Running {
         };
         Ok(Self {
             native: path,
+            _profile: profile_lock,
             stop,
             endpoint,
             accepting: Some(accepting),
