@@ -487,7 +487,6 @@ impl PeerGovernance<'_> {
     /// The issuance time of each live grant, from the signed change that wrote it.
     #[must_use]
     pub fn member_grant_times(&self, grants: &[Grant]) -> std::collections::BTreeMap<GrantId, u64> {
-        use crate::members::{self, MembershipOpCommand};
         let mut times = std::collections::BTreeMap::<GrantId, u64>::new();
         if grants.is_empty() {
             return times;
@@ -495,19 +494,10 @@ impl PeerGovernance<'_> {
         let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
             return times;
         };
-        for op in members::ops(doc).values() {
-            let MembershipOpCommand::Project { changes } = &op.command else {
-                continue;
-            };
-            for change in changes {
-                if let Change::Grant(grant) = change
-                    && grants.contains(grant)
-                {
-                    times
-                        .entry(grant.id.clone())
-                        .and_modify(|at| *at = (*at).max(op.at_ns))
-                        .or_insert(op.at_ns);
-                }
+        let held = crate::members::grant_times(doc, &self.peer.core.workspace);
+        for grant in grants {
+            if let Some(at) = held.get(&grant.id) {
+                times.insert(grant.id.clone(), *at);
             }
         }
         times

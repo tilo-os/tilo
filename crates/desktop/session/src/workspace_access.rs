@@ -432,7 +432,7 @@ impl Served {
         }))
     }
 
-    /// The workspace holding a grant with `id`, as the shell reads it.
+    /// The workspace holding a grant or a capability with `id`, as the shell reads it.
     fn find_grant(&self, id: &str) -> Option<String> {
         self.handle.read(|tree| {
             tree.workspaces
@@ -443,6 +443,7 @@ impl Served {
                         .grants
                         .iter()
                         .any(|grant| grant.id.as_str() == id)
+                        || workspace.sandbox.iter().any(|cap| cap.id == id)
                 })
                 .map(|workspace| workspace.id().to_string())
         })
@@ -577,12 +578,22 @@ fn reading_of(
     let apps = crate::workspace_settings::Directory::default();
     let now = tilo_clock::unix_now();
     let mut groups: Vec<(String, String, Vec<Value>)> = Vec::new();
+    let mut shares: Vec<Value> = Vec::new();
     for workspace in &tree.workspaces {
         let grants: Vec<Value> = listed_permissions(workspace, &apps, person)
             .into_iter()
             .filter_map(|grant| entry_of(workspace, &apps, person, &grant, now, paths, mounts))
             .collect();
         groups.push((workspace.id().to_string(), workspace.name.clone(), grants));
+        shares.extend(
+            tilo_workspace_service::workspace_grants::shared_out(
+                workspace,
+                person,
+                now.saturating_mul(1000),
+            )
+            .into_iter()
+            .map(|share| share_of(&share, paths, mounts)),
+        );
     }
     // The files people chose outside any workspace: the device's own record, listed in the
     // workspace it was chosen in.
@@ -613,7 +624,50 @@ fn reading_of(
         "known": !tree.workspaces.is_empty(),
         "workspaces": workspaces,
         "outside": outside,
+        "shares": shares,
     })
+}
+
+/// One part of a workspace shared out, as the overview lists it: the row's own fields, with the
+/// name of a file or folder a grant reaches filled in from the mounts where the node is one of
+/// the files tree's records.
+fn share_of(
+    share: &tilo_workspace_service::workspace_grants::SharedOut,
+    paths: &mut Paths,
+    mounts: u64,
+) -> Value {
+    let mut fields = match serde_json::to_value(share) {
+        Ok(Value::Object(fields)) => fields,
+        _ => serde_json::Map::new(),
+    };
+    if let Some(name) = file_name_of(&share.node, paths, mounts) {
+        fields.insert("what".to_owned(), serde_json::json!(name));
+    }
+    // A capability on a file record names the record, not where it is mounted: a view opens the
+    // file by its path.
+    if share.node.is_empty()
+        && let Ok(record) = uuid::Uuid::parse_str(&share.path)
+        && let Some(path) = paths.of(mounts, *record.as_bytes())
+    {
+        if let Some(name) = path.file_name() {
+            fields.insert("what".to_owned(), serde_json::json!(name.to_string_lossy()));
+        }
+        fields.insert("path".to_owned(), serde_json::json!(path.to_string_lossy()));
+    }
+    Value::Object(fields)
+}
+
+/// The file or folder name `node` is a record of, where it is one of the files tree's: the name
+/// the mount shows it under, which is what a person knows the grant reaches.
+fn file_name_of(node: &str, paths: &mut Paths, mounts: u64) -> Option<String> {
+    let node = node.parse::<tilo_action_policy::TreePath>().ok()?;
+    if node.id_at(tilo_action_policy::Level::App)? != fs_protocol::tree::FILES_APP {
+        return None;
+    }
+    let record = uuid::Uuid::parse_str(node.id_at(tilo_action_policy::Level::Resource)?).ok()?;
+    let path = paths.of(mounts, *record.as_bytes())?;
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
 }
 
 /// One workspace's apps that declare outside capabilities, each capability with whether it goes
@@ -1164,5 +1218,126 @@ mod tests {
             served.read(RESOURCE).expect("the reading")["workspaces"],
             serde_json::json!([])
         );
+    }
+
+    /// A document of an app in the tree of the workspace `tree` names.
+    fn document(tree: &Layout, app: &str, kind: &str, id: &str) -> tilo_action_policy::TreePath {
+        let workspace = tree.workspaces[0].id().to_string();
+        tilo_action_policy::TreePath::workspace(workspace)
+            .app(app)
+            .kind(kind)
+            .resource(id)
+    }
+
+    /// A workspace `ada` owns, sharing a folder with Cleo read-only and a document with Bo
+    /// writable.
+    fn sharing_out() -> Layout {
+        let mut tree = workspace_owned_by("ada");
+        tree.workspaces[0].named_people([("bo", "Bo"), ("cleo", "Cleo")]);
+        tree.workspaces[0].sandbox.push(
+            CapOverride::grant(
+                Grantee::person("cleo"),
+                Scope::FsPath("/var/workspace/brief".into()),
+                Access::Read,
+            )
+            .with_id("cap-brief")
+            .granted_by(tilo_action_policy::MemberId::person("ada")),
+        );
+        let plan = document(&tree, "so.tilo.notes", "notes.notebook", "plan");
+        let grant = tilo_action_policy::Grant::new(
+            "bo-plan",
+            Grantee::person("bo"),
+            plan,
+            tilo_action_policy::KindSet::READ_UNDOABLE,
+            tilo_action_policy::Answer::Allow,
+            Grantee::person("ada"),
+        );
+        tree.workspaces[0]
+            .policy
+            .change_all_as_at(
+                "ada",
+                vec![tilo_action_policy::Change::Grant(grant)],
+                tilo_clock::unix_now(),
+            )
+            .expect("the owner may share");
+        tree
+    }
+
+    /// What a workspace shares out is part of its access reading: the folder given to Cleo and
+    /// the document given to Bo, each with whom holds it and whether they read or write it.
+    #[test]
+    fn a_workspace_lists_what_it_shares_out_with_whom_and_what_they_may_do() {
+        let tree = sharing_out();
+        let read = reading_of(&tree, "ada", &[], &[], &mut paths(), 0);
+        let shares = read["shares"].as_array().expect("the shares are a list");
+        assert_eq!(shares.len(), 2, "{shares:?}");
+        let folder = shares
+            .iter()
+            .find(|share| share["id"] == "cap-brief")
+            .expect("the folder is shared");
+        assert_eq!(folder["what"], serde_json::json!("brief"));
+        assert_eq!(folder["path"], serde_json::json!("/var/workspace/brief"));
+        assert_eq!(folder["holder"], serde_json::json!("Cleo"));
+        assert_eq!(folder["holder_kind"], serde_json::json!("outside"));
+        assert_eq!(folder["access"], serde_json::json!("read"));
+        assert_eq!(folder["can_revoke"], serde_json::json!(true));
+        let plan = shares
+            .iter()
+            .find(|share| share["id"] == "bo-plan")
+            .expect("the document is shared");
+        assert_eq!(plan["what"], serde_json::json!("Notes › Notebook › plan"));
+        assert_eq!(plan["holder"], serde_json::json!("Bo"));
+        assert_eq!(plan["access"], serde_json::json!("write"));
+        assert_eq!(plan["granted_by_you"], serde_json::json!(true));
+    }
+
+    /// A member who may not administer the workspace's grants reads none of what it shares out,
+    /// though the workspace has a reading.
+    #[test]
+    fn a_member_who_may_not_see_the_grants_reads_none() {
+        let mut tree = sharing_out();
+        tree.workspaces[0]
+            .policy
+            .members
+            .insert("vie".to_owned(), tilo_action_policy::Role::Viewer);
+        let read = reading_of(&tree, "vie", &[], &[], &mut paths(), 0);
+        assert_eq!(read["known"], serde_json::json!(true));
+        assert_eq!(read["shares"], serde_json::json!([]));
+    }
+
+    /// Taking a share back through the action that takes grants back drops its row, the other
+    /// one staying: the reading is the workspace's own, never a copy.
+    #[test]
+    fn taking_a_share_back_through_the_action_removes_its_row() {
+        let handle = DesktopHandle::new(sharing_out(), 1);
+        let mut served = Served::new(
+            handle,
+            "ada".into(),
+            None,
+            None,
+            no_outside(),
+            MountMoves::default(),
+        );
+        let shares = |served: &Served| {
+            served.read(RESOURCE).expect("the reading")["shares"]
+                .as_array()
+                .cloned()
+                .expect("the shares are a list")
+        };
+        assert_eq!(shares(&served).len(), 2);
+        served
+            .invoke(
+                RESOURCE,
+                REVOKE,
+                &Map::from_iter([("id".to_owned(), serde_json::json!("cap-brief"))]),
+            )
+            .expect("the owner may take the folder back");
+        assert!(
+            served.poll(),
+            "the change reaches what the session publishes next"
+        );
+        let after = shares(&served);
+        assert_eq!(after.len(), 1, "{after:?}");
+        assert_eq!(after[0]["id"], serde_json::json!("bo-plan"));
     }
 }

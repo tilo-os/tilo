@@ -615,6 +615,12 @@ pub struct Workspace {
     /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
     #[serde(default)]
     pub shared_surfaces: SharedSurfaces,
+    /// When each grant was given, in Unix milliseconds, by the grant's id, as the workspace's
+    /// membership log records it: what a view listing its grants says of when they arrived. The
+    /// device holding the workspace projects it from that log, as it projects the policy, and the
+    /// next projection replaces whatever a stored layout kept.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub grant_times: BTreeMap<String, u64>,
     /// The windows closed here and not reopened, newest last
     /// ([`crate::closed_tabs`]). This device's own history, so it is written
     /// to no document and projected into no workspace: a close is undone where
@@ -647,6 +653,8 @@ struct StoredWorkspace {
     shortcuts: Vec<tilo_automation::SavedShortcut>,
     #[serde(default)]
     shared_surfaces: SharedSurfaces,
+    #[serde(default)]
+    grant_times: BTreeMap<String, u64>,
 }
 
 impl From<StoredWorkspace> for Workspace {
@@ -673,6 +681,7 @@ impl From<StoredWorkspace> for Workspace {
             effect_receipts: stored.effect_receipts,
             shortcuts: stored.shortcuts,
             shared_surfaces: stored.shared_surfaces,
+            grant_times: stored.grant_times,
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
             people_names: BTreeMap::new(),
         }
@@ -873,6 +882,7 @@ impl Workspace {
             effect_receipts: Vec::new(),
             shortcuts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
+            grant_times: BTreeMap::new(),
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
             people_names: BTreeMap::new(),
         }

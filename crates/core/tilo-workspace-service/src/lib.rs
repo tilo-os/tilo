@@ -109,6 +109,7 @@ pub mod workspace_access;
 pub mod workspace_documents;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod workspace_files;
+pub mod workspace_grants;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod workspace_io;

@@ -26,7 +26,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
-use tilo_action_policy::{Change, Context, Grantee, Role, WorkspacePolicy, roles};
+use tilo_action_policy::{Change, Context, GrantId, Grantee, Role, WorkspacePolicy, roles};
 
 use super::op::{MembershipOpCommand, OpId, SignedMembershipOp};
 use crate::workspace::GovernanceRow;
@@ -112,6 +112,9 @@ struct Replayed {
     /// Whether a transfer the state carries moved the owner from the one its
     /// `owner` row names.
     owner_moved: bool,
+    /// When each grant the state's operations write was given, in nanoseconds
+    /// since the Unix epoch, by its id: the latest time an operation wrote it.
+    grant_times: BTreeMap<GrantId, u64>,
 }
 
 /// The document states whose membership was read, by workspace and heads.
@@ -265,7 +268,37 @@ fn read_replay(doc: &AutoCommit, workspace: &str) -> Replayed {
         heads: heads(&held).into_iter().collect(),
         unadmitted,
         owner_moved,
+        grant_times: grant_times_of(&held),
     }
+}
+
+/// When each grant `held`'s operations write was given, in nanoseconds since the Unix epoch, by
+/// its id: the latest time an operation wrote it. A grant revoked and given again is the time it
+/// was last given.
+fn grant_times_of(held: &HeldOps) -> BTreeMap<GrantId, u64> {
+    let mut times: BTreeMap<GrantId, u64> = BTreeMap::new();
+    for op in held.values() {
+        let MembershipOpCommand::Project { changes } = &op.command else {
+            continue;
+        };
+        for change in changes {
+            if let Change::Grant(grant) = change {
+                times
+                    .entry(grant.id.clone())
+                    .and_modify(|at| *at = (*at).max(op.at_ns))
+                    .or_insert(op.at_ns);
+            }
+        }
+    }
+    times
+}
+
+/// When each grant the workspace `doc`'s operations write was given, in nanoseconds since the Unix
+/// epoch, by its id: what [`crate::state::PeerGovernance::member_grant_times`] answers from. Read
+/// from the state the replay keeps, so a write and the lists after it pay for it once.
+#[must_use]
+pub fn grant_times(doc: &AutoCommit, workspace: &str) -> BTreeMap<GrantId, u64> {
+    replayed(doc, workspace).grant_times
 }
 
 /// [`heads`] of `doc`'s operations: those of a state whose membership was

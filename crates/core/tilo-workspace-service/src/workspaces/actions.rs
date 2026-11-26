@@ -5130,6 +5130,11 @@ mod surface_tests {
                 "type": { "list": { "named": "OutsideAccess" } },
                 "readonly": true,
             },
+            {
+                "path": "shares",
+                "type": { "list": { "named": "SharedOut" } },
+                "readonly": true,
+            },
         ]);
         resource["types"] = access_types();
     }
@@ -5148,6 +5153,26 @@ mod surface_tests {
                         "type": { "list": { "named": "AccessEntry" } },
                         "title": "What it gives, in the order its Permissions tab lists them.",
                     },
+                ],
+            },
+            {
+                "name": "SharedOut",
+                "doc": "One part of a workspace shared with someone besides its owner.",
+                "fields": [
+                    { "name": "workspace", "type": "text", "title": "The workspace it is shared out of." },
+                    { "name": "id", "type": "text", "title": "What revoking it names." },
+                    { "name": "node", "type": "text", "title": "The resource's address, empty for a folder outside the tree." },
+                    { "name": "app", "type": "text", "title": "The app the shared part belongs to, empty for a folder." },
+                    { "name": "path", "type": "text", "title": "The host path a folder capability reaches, empty for a resource." },
+                    { "name": "what", "type": "text", "title": "What is shared, as a person reads it." },
+                    { "name": "holder", "type": "text", "title": "Whom it is shared with, by the name the workspace knows them by." },
+                    { "name": "holder_id", "type": "text", "title": "The holder's id, empty for anyone with the link." },
+                    { "name": "holder_kind", "type": "text", "title": "What the holder is: a member, a person outside, an agent, a bot or a link." },
+                    { "name": "access", "type": "text", "title": "What it lets them do: read or write." },
+                    { "name": "granted_by", "type": "text", "title": "Who gave it, by name." },
+                    { "name": "granted_by_you", "type": "bool", "title": "Whether the viewer gave it." },
+                    { "name": "granted_at", "type": "int", "title": "When it was given, in Unix milliseconds; 0 where the log does not know." },
+                    { "name": "can_revoke", "type": "bool", "title": "Whether the viewer may take it back." },
                 ],
             },
             {

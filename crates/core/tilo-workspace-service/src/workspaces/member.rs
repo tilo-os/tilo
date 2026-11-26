@@ -2693,6 +2693,14 @@ pub fn describe(
     let mut described = tilo_desktop_model::Workspace::new(workspace, name.to_owned());
     tilo_peer_state::workspace::adopt_workspace(&mut described, document, &[]);
     described.sandbox = peer.governance().member_sandbox().ok()?;
+    // When each grant was given, from the signed change that wrote it: what a view listing what
+    // the workspace shares out says of when it arrived.
+    described.grant_times = peer
+        .governance()
+        .member_grant_times(&described.policy.grants)
+        .into_iter()
+        .map(|(id, at)| (id.to_string(), at / 1_000_000))
+        .collect();
     // The names the workspace's governance keeps for its people: what every surface showing
     // someone who is not here reads, from the same list the agent worker's members come from.
     if let Ok(people) = peer.governance().member_list(tilo_clock::wall()) {

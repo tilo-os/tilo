@@ -181,6 +181,12 @@ tilo_test_env::scenario! {
         );
         let policy = replay(&holding(&doc, &[&first]), WORKSPACE);
         assert!(policy.grants.contains(&granted));
+        // The operation's time is when the grant was given, which a view listing what the
+        // workspace shares out says.
+        assert_eq!(
+            grant_times(&holding(&doc, &[&first]), WORKSPACE).get(&granted.id),
+            Some(&(AT_NS + 1))
+        );
         let joined = policy.joined.get(&ada_person).copied();
         assert_eq!(joined, Some(AT_NS / 1_000_000));
         // Removing them takes their grants and their admission time with them;
