@@ -39,12 +39,39 @@ pub const READERS_REPORT_ARG: &str = "--readers-report";
 /// first captures from a camera or microphone (macOS).
 pub const CONSENT_HELPER_ARG: &str = "--device-consent";
 
+/// The signed surface of an app this device installed whose address is `hash`, read from the
+/// package store the device keeps. A package another process installed while this daemon ran is
+/// one this daemon never named: every change of that app would wait for a surface no one brings.
+fn installed_surface(hash: &str) -> Option<Vec<u8>> {
+    let catalog = package_store::Catalog::from_env().ok()?;
+    catalog
+        .list()
+        .ok()?
+        .into_iter()
+        .filter_map(|package| package_store::integrity::signed_surface(&package))
+        .find(|surface| blake3::hash(surface).to_hex().as_str() == hash)
+}
+
+/// Keep `bytes`, an installed app's surface, as the content it is, so every later read of that
+/// address in this process finds it where its changes are decided.
+fn keep_content(content: &tilo_content::ContentStore, bytes: &[u8]) {
+    if let Err(error) = content.put_public(bytes) {
+        tracing::warn!(%error, "an installed app's surface could not be kept as content");
+    }
+}
+
 fn run() -> io::Result<()> {
     // The app surfaces changes are decided against live in the content store
-    // the apps this runtime hosts keep their content in.
+    // the apps this runtime hosts keep their content in, and in the store of the apps this device
+    // installed: an app another process of this device installed after the daemon started is one
+    // whose signed surface this process was never handed, and its changes are decided by it.
     {
         let content = tilo_content_device::for_app();
-        tilo_app_host::decide_receipt_against_surfaces(move |_, hash| content.read(hash));
+        tilo_app_host::decide_receipt_against_surfaces(move |_, hash| {
+            content
+                .read(hash)
+                .or_else(|| installed_surface(hash).inspect(|bytes| keep_content(&content, bytes)))
+        });
     }
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     // The tools a hosted workspace offers an agent, without a workspace or a session:
