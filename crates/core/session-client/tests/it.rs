@@ -73,8 +73,6 @@ mod layout_views;
 mod lifecycle_states;
 #[path = "lounge_fresh_page.rs"]
 mod lounge_fresh_page;
-#[path = "mcp_server.rs"]
-mod mcp_server;
 #[path = "message_latency.rs"]
 mod message_latency;
 #[path = "newcomer_channels.rs"]

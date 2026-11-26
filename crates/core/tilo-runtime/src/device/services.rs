@@ -1612,7 +1612,7 @@ impl Daemon {
         let workspace = workspace.unwrap_or(&self.workspace);
         let time = self.policy_origin.capture().map_err(io::Error::other)?;
         let base = self.provider_for(workspace)?;
-        let (provider, _) = base.agent_session(workspace, &self.actor, &time, |person| {
+        let (provider, _, _) = base.agent_session(workspace, &self.actor, &time, |person| {
             (
                 device_agent_id(person, UNNAMED_AGENT),
                 UNNAMED_AGENT.to_owned(),
@@ -1889,7 +1889,7 @@ impl Daemon {
         let admission = host
             .admission()
             .ok_or_else(|| io::Error::other("this dispatch admitted no run to delegate"))?;
-        let (host, caller) = host.agent_session_of(admission, &policy_time, |person| {
+        let (host, caller, _) = host.agent_session_of(admission, &policy_time, |person| {
             (
                 tilo_actions::remote::device_agent_id(person, name),
                 name.to_owned(),
@@ -5673,7 +5673,7 @@ impl RuntimeActionProvider {
             // the person's, and every call the client makes is signed by the agent's key. Each
             // connection is a run of its own, admitted for it: its end retires that run alone,
             // never the one the daemon's other connections go on as.
-            let (mut session_host, caller) =
+            let (mut session_host, caller, agent_cert) =
                 provider.agent_session(&workspace, &actor, &policy_time, |person| {
                     (device_agent_id(person, MCP_CLIENT), MCP_CLIENT.to_owned())
                 })?;
@@ -5684,15 +5684,11 @@ impl RuntimeActionProvider {
             // says what it is when its client does. The device its admission certified is what
             // the person's MCP server lists the run under.
             if let Some(execution) = caller.execution_id() {
-                let cert = provider
-                    .session
-                    .as_ref()
-                    .map(|session| session.admission.certificate().clone());
                 provider.workspaces.copies().agent_opened(
                     &execution.to_string(),
                     &workspace,
                     tilo_mcp::session_api::UNNAMED_CLIENT,
-                    cert.as_ref(),
+                    Some(&agent_cert),
                     &Arc::new(tokio::sync::Notify::new()),
                 );
             }
@@ -5709,7 +5705,7 @@ impl RuntimeActionProvider {
         actor: &str,
         policy_time: &tilo_workspace_service::apps::policy_clock::PolicyTime,
         agent: impl FnOnce(&[u8; 32]) -> (String, String),
-    ) -> io::Result<(Self, Caller)> {
+    ) -> io::Result<(Self, Caller, DeviceCert)> {
         let workspaces = Arc::clone(&self.workspaces);
         let (workspace, actor) = (workspace.to_owned(), actor.to_owned());
         let admission =
@@ -5728,7 +5724,7 @@ impl RuntimeActionProvider {
         admission: Arc<tilo_workspace_service::workspaces::SessionAdmission>,
         policy_time: &tilo_workspace_service::apps::policy_clock::PolicyTime,
         agent: impl FnOnce(&[u8; 32]) -> (String, String),
-    ) -> io::Result<(Self, Caller)> {
+    ) -> io::Result<(Self, Caller, DeviceCert)> {
         let caller = admission.caller().clone();
         let (Some(person), Some(user), Some(workspace)) = (
             caller.acting().person_id(),
@@ -5769,11 +5765,15 @@ impl RuntimeActionProvider {
         // The key enters the workspace as every key of its person's does, by the admission it
         // signs itself, so the workspace reads it as that agent, with its person's grants.
         let (cert, key) = signer.signing().map_err(io::Error::other)?;
-        let (record, named) = (Arc::clone(&self.workspaces), workspace.to_owned());
+        let (record, named, listed) = (
+            Arc::clone(&self.workspaces),
+            workspace.to_owned(),
+            cert.clone(),
+        );
         block_on_owned(async move {
             record
                 .copies()
-                .enter_agent_key((key.as_ref(), &cert), &named, &cert.device_label)
+                .enter_agent_key((key.as_ref(), &listed), &named, &listed.device_label)
                 .await
         })
         .map_err(|why| io::Error::other(format!("the agent can't act in this workspace: {why}")))?;
@@ -5798,7 +5798,7 @@ impl RuntimeActionProvider {
             pressed: None,
             own_shell: false,
         });
-        Ok((run, caller))
+        Ok((run, caller, cert))
     }
 
     /// This device's runtime, answering as `session`: the agent's run keeps the device's

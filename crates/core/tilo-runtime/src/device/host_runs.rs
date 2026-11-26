@@ -194,12 +194,14 @@ fn key_run(
     ),
 ) -> Result<(crate::key_sessions::SessionHost, Caller), String> {
     let (run, caller) = match whose {
-        Whose::Own => provider.agent_session(workspace, actor, policy_time, |_| {
-            (
-                tilo_mcp::devices::agent_id("agent", key),
-                key.device_label.clone(),
-            )
-        }),
+        Whose::Own => provider
+            .agent_session(workspace, actor, policy_time, |_| {
+                (
+                    tilo_mcp::devices::agent_id("agent", key),
+                    key.device_label.clone(),
+                )
+            })
+            .map(|(run, caller, _)| (run, caller)),
         Whose::Member => provider.member_session(workspace, key, policy_time),
     }
     .map_err(|error| error.to_string())?;

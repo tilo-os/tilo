@@ -439,3 +439,103 @@ fn a_stopped_agent_is_cancelled_refused_and_goes_on() {
         assert!(!refused, "a let-go-on agent acts again");
     });
 }
+
+/// The person's MCP server, as the person reads it: every agent it let in, and the runs open now.
+async fn mcp_server(
+    host: &host::Host,
+    caller: &tilo_actions::remote::Caller,
+) -> Option<tilo_actions::remote::mcp_server::Server> {
+    use tilo_actions::remote::{ReadAnswer, RemoteActionMessage, ResourceReadRequest, mcp_server};
+    let reads = host.dispatch().resource_reads()?;
+    let answer = reads
+        .answer_read(
+            caller,
+            0,
+            ResourceReadRequest {
+                workspace: host.workspace().to_owned(),
+                app: mcp_server::RESOURCE.to_owned(),
+                record: String::new(),
+                joined: false,
+                wait_ms: Some(0),
+                after: None,
+                answer: ReadAnswer::Reading,
+            },
+        )
+        .await;
+    let RemoteActionMessage::ResourceReading { result, .. } = answer else {
+        return None;
+    };
+    let Ok(reading) = result else {
+        return None;
+    };
+    let value: Value = serde_json::from_str(&reading).ok()?;
+    serde_json::from_value(value.get("value").cloned().unwrap_or(value)).ok()
+}
+
+/// The MCP server lists the run this device's daemon makes for the person's agent, from the
+/// moment its connection opens; the person stops it and it comes back; nobody else reads or
+/// stops it.
+#[test]
+fn the_persons_mcp_server_lists_stops_and_lists_again_the_agent_this_device_runs() {
+    use tilo_actions::remote::mcp_server;
+
+    host::run(|host| async move {
+        let agent = host.agent();
+        let (_, failed) = ls(&agent, None).await;
+        assert!(!failed, "the agent lists the workspace");
+        let listed = mcp_server(&host, &host.caller())
+            .await
+            .expect("the person reads their MCP server");
+        assert_eq!(listed.grants.len(), 1, "the run is listed: {listed:?}");
+        assert_eq!(listed.grants[0].sessions.len(), 1, "{listed:?}");
+        // The person stops it: the listing keeps the agent, with no run open.
+        let stopped = host
+            .dispatch()
+            .invoke(&host.caller(), stop(mcp_server::STOP))
+            .await
+            .expect("the dispatch answers")
+            .expect("the person stops their agent");
+        assert!(
+            matches!(
+                stopped.status,
+                tilo_actions::remote::ReceiptStatus::Completed { .. }
+            ),
+            "{stopped:?}"
+        );
+        let after = mcp_server(&host, &host.caller())
+            .await
+            .expect("the person reads their MCP server");
+        assert_eq!(after.grants.len(), 1, "the agent stays: {after:?}");
+        assert!(
+            after.grants[0].sessions.is_empty(),
+            "its run is ended: {after:?}"
+        );
+        // It comes back: a new run of the same agent is listed.
+        let again = host.agent();
+        let (_, failed) = ls(&again, None).await;
+        assert!(!failed, "the agent comes back");
+        let back = mcp_server(&host, &host.caller())
+            .await
+            .expect("the person reads their MCP server");
+        assert_eq!(back.grants.len(), 1, "one agent, not two: {back:?}");
+        assert_eq!(back.grants[0].sessions.len(), 1, "{back:?}");
+        // Nobody else reads the server or stops its runs.
+        let stranger = tilo_actions::remote::Caller::local_person("someone else");
+        assert!(
+            mcp_server(&host, &stranger).await.is_none(),
+            "another person reads no server of this device's"
+        );
+        let refused = host
+            .dispatch()
+            .invoke(&stranger, stop(mcp_server::STOP))
+            .await;
+        assert!(
+            refused.as_ref().is_none_or(|answer| answer.is_err()),
+            "another person stops nothing: {refused:?}"
+        );
+        let still = mcp_server(&host, &host.caller())
+            .await
+            .expect("the person reads their MCP server");
+        assert_eq!(still.grants[0].sessions.len(), 1, "{still:?}");
+    });
+}
