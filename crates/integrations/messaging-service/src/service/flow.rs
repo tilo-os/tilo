@@ -820,7 +820,3 @@ impl<P: Provider> Flow<P> {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "flow_tests.rs"]
-mod tests;

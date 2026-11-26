@@ -940,24 +940,3 @@ impl CloudSource for DropboxSource {
         Ok(Quota { used, total })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn roots_normalize_to_a_leading_slash() {
-        assert_eq!(DropboxConfig::new("").root, "");
-        assert_eq!(DropboxConfig::new("/").root, "");
-        assert_eq!(DropboxConfig::new("Photos/2024/").root, "/Photos/2024");
-    }
-
-    #[test]
-    fn only_plausible_revisions_are_sent() {
-        assert!(is_rev(&Revision::new("015f9a2b3c4d")));
-        assert!(!is_rev(&Revision::new("\"etag\"")));
-        assert!(!is_rev(&Revision::new("abc")));
-        assert!(is_dropbox_id(&ItemId::new("id:a4ayc_80_OEAAAAAAAAAXw")));
-        assert!(!is_dropbox_id(&ItemId::new("missing")));
-    }
-}

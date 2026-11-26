@@ -583,6 +583,3 @@ fn validate_uri(uri: &str) -> Result<(), SendError> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

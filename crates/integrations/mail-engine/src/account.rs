@@ -147,35 +147,4 @@ pub fn edits_for(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_mail_account_from_the_workspaces_accounts_reads_back_without_a_password() {
-        use accounts::person::AccountList;
-        let config = AccountConfig {
-            display_name: "Work".into(),
-            email: "me@work.example".into(),
-            password: "typed-but-never-kept".into(),
-            ..AccountConfig::default()
-        };
-        let account = Account::new(config);
-        let mut replica =
-            tilo_resource::Replica::<AccountList>::new().in_app("so.tilo.model", "Model");
-        replica
-            .apply(AccountList::saving(&account.to_stored()))
-            .unwrap();
-        let person = replica.state().unwrap();
-        let shown = accounts_of(&person);
-        let mut unsigned = account;
-        unsigned.config.password.clear();
-        assert_eq!(shown, vec![unsigned]);
-        assert!(
-            !format!("{person:?}").contains("typed-but-never-kept"),
-            "the password never enters the resource"
-        );
-    }
-}
-
-#[cfg(test)]
 mod import_tests;

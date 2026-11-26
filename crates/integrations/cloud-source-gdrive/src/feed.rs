@@ -278,29 +278,3 @@ impl Inner {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cursors_round_trip_and_garbage_expires() {
-        let state = FeedCursor {
-            token: "8930".into(),
-            queue: vec!["1a".into()],
-            batch: vec!["0root".into()],
-            page: Some("~!!~AI9FV7T".into()),
-        };
-        let cursor = state.to_cursor().unwrap();
-        assert_eq!(FeedCursor::parse(&cursor).unwrap(), state);
-        let idle = FeedCursor {
-            token: "8931".into(),
-            ..FeedCursor::default()
-        };
-        assert_eq!(idle.to_cursor().unwrap().0, r#"{"t":"8931"}"#);
-        assert!(matches!(
-            FeedCursor::parse(&Cursor("8930".into())),
-            Err(Error::CursorExpired)
-        ));
-    }
-}

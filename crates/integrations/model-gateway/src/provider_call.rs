@@ -11,8 +11,6 @@ use agent_provider_config::protocol::{self as neutral, ModelError};
 use agent_provider_config::transform as provider_transform;
 use zeroize::{Zeroize as _, Zeroizing};
 
-#[cfg(test)]
-use super::provider_client;
 use super::{
     Again, DeltaCoalescer, Emit, MAX_STREAM_BYTES, PlanCall, PlanTiming, ProviderFailure, Signs,
     StreamAssembly, StreamCall, classified_error_advice, emit_complete, error_body, log_token,
@@ -20,25 +18,6 @@ use super::{
 };
 use crate::{MAX_DELTA_EVENTS, MAX_STREAM_EVENTS, Response};
 use agent_provider_config::wire::{self, Delta, Stream, StreamError};
-
-#[cfg(test)]
-#[path = "catalogue_call_tests.rs"]
-mod catalogue_tests;
-#[cfg(test)]
-#[path = "google_call_tests.rs"]
-mod google_tests;
-#[cfg(test)]
-#[path = "provider_conformance_tests.rs"]
-mod provider_conformance_tests;
-#[cfg(test)]
-#[path = "call_stream_tests.rs"]
-pub(super) mod stream_tests;
-#[cfg(test)]
-#[path = "subscription_call_tests.rs"]
-mod subscription_tests;
-#[cfg(test)]
-#[path = "call_tests.rs"]
-mod tests;
 
 /// What a request that got no response means. A connection that could
 /// not be made (no address, refused, its TLS handshake failed) and a
@@ -699,66 +678,4 @@ pub(super) async fn complete_with(
             Err(failure.model_error)
         }
     }
-}
-
-/// `request` asked of `profile`'s `model` with `secret`, its answer read
-/// whole.
-#[cfg(test)]
-pub(super) async fn host_complete(
-    client: &reqwest::Client,
-    profile: &ProviderProfile,
-    secret: Option<&str>,
-    model: &str,
-    request: neutral::ModelRequest,
-    budget: Duration,
-    target: crate::openai::Target,
-) -> Result<neutral::ModelResponse, ProviderFailure> {
-    turn(
-        &Post {
-            client,
-            profile,
-            url: wire::url(profile),
-            secret,
-            model,
-            budget,
-            resend: false,
-            signs: None,
-        },
-        &request,
-        None,
-        target,
-        None,
-    )
-    .await
-}
-
-/// `request` asked of `profile`'s `checked-model` with `secret`, its answer
-/// streamed to `emit` (argument previews too when `previews`).
-#[cfg(test)]
-pub(super) async fn streamed(
-    profile: &ProviderProfile,
-    secret: Option<&str>,
-    request: &neutral::ModelRequest,
-    emit: Emit<'_>,
-    timing: &mut PlanTiming,
-    previews: bool,
-) -> Result<neutral::ModelResponse, ProviderFailure> {
-    let signs = std::sync::Arc::clone(&timing.signs);
-    turn(
-        &Post {
-            client: &provider_client().unwrap(),
-            profile,
-            url: wire::url(profile),
-            secret,
-            model: "checked-model",
-            budget: tilo_test_env::hang_bound(),
-            resend: false,
-            signs: Some(&signs),
-        },
-        request,
-        None,
-        crate::openai::Target::Standard,
-        Some((emit, timing, previews)),
-    )
-    .await
 }

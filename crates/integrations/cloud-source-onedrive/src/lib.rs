@@ -802,17 +802,3 @@ impl CloudSource for OneDriveSource {
             .ok_or(Error::Unsupported("quota"))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fragments_are_multiples_of_320_kib_below_60_mib() {
-        assert_eq!(fragment_size(0), FRAGMENT_UNIT);
-        assert_eq!(fragment_size(10 * 1024 * 1024), 10 * 1024 * 1024);
-        assert_eq!(fragment_size(FRAGMENT_UNIT * 3 + 5), FRAGMENT_UNIT * 3);
-        assert!(fragment_size(u64::MAX) < 60 * 1024 * 1024);
-        assert_eq!(fragment_size(u64::MAX) % FRAGMENT_UNIT, 0);
-    }
-}

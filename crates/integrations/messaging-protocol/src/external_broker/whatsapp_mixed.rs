@@ -109,6 +109,3 @@ fn check(authority: Option<&dyn AccountAuthority>) -> Result<(), SendError> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

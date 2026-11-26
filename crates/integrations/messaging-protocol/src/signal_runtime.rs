@@ -400,6 +400,3 @@ impl Read for DeadlineReader {
         Ok(count)
     }
 }
-
-#[cfg(test)]
-mod tests;

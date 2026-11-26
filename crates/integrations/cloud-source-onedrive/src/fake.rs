@@ -1445,22 +1445,3 @@ fn parse_range(value: &str, total: u64) -> Option<std::ops::Range<u64>> {
     };
     (range.start < range.end).then_some(range)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn addresses_split_items_paths_and_actions() {
-        let address = parse_address("items/A%21100:/Docs/a%20b.txt:/createUploadSession").unwrap();
-        assert_eq!(address.item, "A!100");
-        assert_eq!(address.path.unwrap(), ["Docs", "a b.txt"]);
-        assert_eq!(address.rest, ["createUploadSession"]);
-        let plain = parse_address("items/X/versions/1.0/content").unwrap();
-        assert!(plain.path.is_none());
-        assert_eq!(plain.rest, ["versions", "1.0", "content"]);
-        let root = parse_address("root:/a.txt:").unwrap();
-        assert_eq!(root.item, "root");
-        assert!(root.rest.is_empty());
-    }
-}

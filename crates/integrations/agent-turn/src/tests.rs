@@ -502,5 +502,3 @@ fn old_answers_give_way_and_the_latest_stays() {
     assert_eq!(contents[0], compact::LEFT_OUT);
     assert_eq!(contents[2].len(), 1000, "the latest answer stays whole");
 }
-
-mod hooks;

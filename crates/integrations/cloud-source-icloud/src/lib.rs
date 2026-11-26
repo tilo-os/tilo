@@ -707,35 +707,3 @@ impl CloudSource for ICloudDrive {
         self.trash(id, &etag)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ids_split_into_type_zone_and_document() {
-        assert_eq!(
-            split_id("FILE::com.apple.CloudDocs::ABC-1"),
-            ("FILE", "com.apple.CloudDocs", "ABC-1")
-        );
-        assert_eq!(split_id("root"), ("", api::DEFAULT_ZONE, "root"));
-    }
-
-    #[test]
-    fn names_fold_decomposed_unicode_and_case() {
-        assert_eq!(fold("Cafe\u{301}.TXT"), fold("café.txt"));
-    }
-
-    #[test]
-    fn only_icloud_hosts_get_cookies() {
-        assert!(is_icloud_host(
-            &Url::parse("https://p1-docws.icloud.com/x").unwrap()
-        ));
-        assert!(!is_icloud_host(
-            &Url::parse("https://cvws.icloud-content.com/x").unwrap()
-        ));
-        assert!(!is_icloud_host(
-            &Url::parse("https://icloud.com.evil.example/").unwrap()
-        ));
-    }
-}

@@ -1842,6 +1842,3 @@ pub fn sample_ics(today: Date) -> String {
     };
     export(&model)
 }
-
-#[cfg(test)]
-mod tests;

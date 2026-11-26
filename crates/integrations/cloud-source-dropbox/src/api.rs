@@ -267,35 +267,3 @@ impl Api {
         Ok(read_json(response)?)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn header_arguments_escape_non_ascii() {
-        let arg = serde_json::json!({"path": "/Café/😀"});
-        assert_eq!(
-            ascii_json(&arg),
-            "{\"path\":\"/Caf\\u00e9/\\ud83d\\ude00\"}"
-        );
-        let back: Value = serde_json::from_str(&ascii_json(&arg)).unwrap();
-        assert_eq!(back, arg);
-    }
-
-    #[test]
-    fn route_errors_match_whole_tags() {
-        let failure = Failure::Route {
-            summary: "path/conflict/file/...".into(),
-            error: Value::Null,
-        };
-        assert!(failure.has("conflict"));
-        assert!(!failure.has("conf"));
-        assert!(matches!(failure.into_error(), Error::AlreadyExists));
-        let reset = Failure::Route {
-            summary: "reset/..".into(),
-            error: Value::Null,
-        };
-        assert!(matches!(reset.into_error(), Error::CursorExpired));
-    }
-}

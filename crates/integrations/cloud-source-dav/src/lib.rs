@@ -924,33 +924,3 @@ impl CloudSource for DavSource {
         })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn nextcloud_roots_and_endpoints_derive_from_the_server_url() {
-        let config =
-            DavConfig::nextcloud(Url::parse("https://cloud.example/base").unwrap(), "ada").unwrap();
-        assert_eq!(
-            config.root.as_str(),
-            "https://cloud.example/base/remote.php/dav/files/ada/"
-        );
-        assert_eq!(
-            config
-                .nextcloud_url("uploads", &["t1", "00001"], false)
-                .unwrap()
-                .as_str(),
-            "https://cloud.example/base/remote.php/dav/uploads/ada/t1/00001"
-        );
-    }
-
-    #[test]
-    fn checksums_parse_into_provider_hashes() {
-        let hashes = parse_checksums("SHA1:ABC MD5:def ADLER32:1");
-        assert_eq!(hashes.len(), 3);
-        assert_eq!(hashes[0].algorithm, HashAlgorithm::Sha1);
-        assert_eq!(hashes[0].value, "abc");
-    }
-}

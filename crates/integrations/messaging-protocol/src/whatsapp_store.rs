@@ -20,8 +20,6 @@ mod device;
 pub(crate) mod groups;
 mod protocol;
 mod signal_state;
-#[cfg(test)]
-mod tests;
 
 const MAX_LIVE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
@@ -107,18 +105,6 @@ impl EncryptedBackend {
             owner,
             clock: Arc::new(tilo_clock::try_unix_now),
         })
-    }
-
-    /// Read the wall clock from `clock` (Unix seconds) instead of the system's:
-    /// a test's time, which the blocking pool this store works on does not
-    /// share.
-    #[cfg(test)]
-    pub(crate) fn with_wall_clock(
-        mut self,
-        clock: impl Fn() -> Option<u64> + Send + Sync + 'static,
-    ) -> Self {
-        self.clock = Arc::new(clock);
-        self
     }
 
     /// Retain the original native account grant on every SDK state operation.

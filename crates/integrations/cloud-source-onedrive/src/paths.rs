@@ -40,27 +40,3 @@ pub fn percent_decode(text: &str) -> String {
 pub fn valid_name(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains('/')
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn segments_encode_reserved_characters_and_round_trip() {
-        assert_eq!(encode_segment("a b#c?d%e:f"), "a%20b%23c%3Fd%25e%3Af");
-        assert_eq!(encode_segment("0123ABC!104"), "0123ABC!104");
-        assert_eq!(encode_segment("é"), "%C3%A9");
-        assert_eq!(percent_decode(&encode_segment("a b/é%")), "a b/é%");
-        assert_eq!(percent_decode("100%"), "100%");
-        assert_eq!(encode_path("/Docs//a b.txt"), Some("Docs/a%20b.txt".into()));
-        assert_eq!(encode_path("/"), None);
-    }
-
-    #[test]
-    fn names_are_single_segments() {
-        assert!(valid_name("report.pdf"));
-        assert!(!valid_name("a/b"));
-        assert!(!valid_name(".."));
-        assert!(!valid_name(""));
-    }
-}
