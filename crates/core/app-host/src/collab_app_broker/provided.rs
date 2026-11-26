@@ -1130,7 +1130,10 @@ pub(crate) mod signed_test_support {
             Self::certified(services, true)
         }
 
-        fn certified(services: ProcessServices, foreign: bool) -> Self {
+        /// The certified fixture, its caller foreign when `foreign`: what
+        /// [`Self::new_certified_foreign`] and [`Self::new_certified`] make for a test that
+        /// iterates both.
+        pub(crate) fn certified(services: ProcessServices, foreign: bool) -> Self {
             let mut fixture = Self::new(services);
             let (key, certificate) =
                 tilo_identity::trusted_device::current(&fixture.workspace).unwrap();
@@ -1544,11 +1547,7 @@ mod identity_admin_tests {
                     providers: Some(providers(service.clone())),
                     ..Default::default()
                 };
-                let f = if foreign {
-                    super::signed_test_support::Fixture::new_certified_foreign(services)
-                } else {
-                    super::signed_test_support::Fixture::new_certified(services)
-                };
+                let f = super::signed_test_support::Fixture::certified(services, foreign);
                 let mut asked = request(device_tickets::REMOVE_IDENTITY, Some(crate::collab_app_broker::person_approved("workspace", tilo_actions::InvocationId::new())));
                 assert_eq!(
                     f.query(&asked.target.provider).rows.is_empty(),

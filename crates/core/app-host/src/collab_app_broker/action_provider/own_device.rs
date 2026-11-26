@@ -274,15 +274,9 @@ mod tests {
                     own_device: Some(network.clone()),
                     ..Default::default()
                 };
-                let f = if foreign {
-                    super::super::super::provided::signed_test_support::Fixture::new_certified_foreign(
-                        services,
-                    )
-                } else {
-                    super::super::super::provided::signed_test_support::Fixture::new_certified(
-                        services,
-                    )
-                };
+                let f = super::super::super::provided::signed_test_support::Fixture::certified(
+                    services, foreign,
+                );
                 let asked = request(&invocation(SETTINGS));
                 if foreign {
                     assert!(f.invoke(&asked).is_err());

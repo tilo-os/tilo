@@ -619,14 +619,7 @@ fn page_query(peer: u64, cursor: &[u8]) -> runtime_collab::ActionDirectoryQuery 
 pub fn local_directory_fixture_with_membership(
     membership: crate::test_support::WorkspaceTreeHandle,
 ) -> LocalDirectoryFixture {
-    local_directory_fixture_with_peer(membership, Some(71))
-}
-
-fn local_directory_fixture_with_peer(
-    membership: crate::test_support::WorkspaceTreeHandle,
-    peer_id: Option<u64>,
-) -> LocalDirectoryFixture {
-    local_directory_fixture_with_devices(membership, peer_id, None)
+    local_directory_fixture_with_devices(membership, Some(71), None)
 }
 
 fn local_directory_fixture_with_devices(
