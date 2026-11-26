@@ -676,6 +676,8 @@ pub mod input_frame;
 #[cfg(feature = "model")]
 pub mod semantic_document_read;
 pub mod semantic_outline;
+#[cfg(feature = "model")]
+pub mod semantic_readers;
 pub mod synthetic_input;
 
 pub mod bound_dispatch;

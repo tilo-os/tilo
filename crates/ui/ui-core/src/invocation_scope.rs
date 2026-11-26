@@ -6,10 +6,7 @@ pub use ::collaboration::invocation_scope::{
     InvokerScope, current_invoker, current_presence, delivered_approval, delivered_invocation,
 };
 
-/// A host moderation receipt, suitable for an existing action worker.
-pub type ExternalModerationFuture = std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<registry_types::ModerationCase, String>> + Send>,
->;
+pub use crate::widget::resource_operation::ExternalModerationFuture;
 
 thread_local! {
     static VIEWERS: std::cell::RefCell<Vec<tilo_actions::PresenceId>> =

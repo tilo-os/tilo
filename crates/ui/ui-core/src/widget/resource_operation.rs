@@ -87,6 +87,11 @@ pub struct OperationRequest<'a> {
 
 /// Inert routing facts captured from the actual resolved record owner.
 /// These are neither a certificate nor permission to execute a host job.
+/// A host moderation receipt, suitable for an existing action worker.
+pub type ExternalModerationFuture = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<registry_types::ModerationCase, String>> + Send>,
+>;
+
 #[cfg(feature = "model")]
 #[derive(Clone, Debug)]
 pub struct OperationTarget {
@@ -117,7 +122,7 @@ impl OperationTarget {
         &self,
         invocation: tilo_actions::InvocationId,
         operation: registry_types::ExternalModerationOperation,
-    ) -> Result<crate::invocation_scope::ExternalModerationFuture, String> {
+    ) -> Result<ExternalModerationFuture, String> {
         runtime_collab::external_moderation::validate_action_operation(
             &self.address.action,
             &operation,
@@ -389,8 +394,8 @@ pub fn poll_resource_operation(
 }
 
 pub(crate) fn local_history_handlers(widget: &(impl Widget + ?Sized)) -> &'static [&'static str] {
-    if crate::undo::has_deferred_local_history(widget) {
-        &[crate::undo::EDIT_OPERATION]
+    if crate::widget::undo_access::has_deferred_local_history(widget) {
+        &[crate::widget::undo_access::EDIT_OPERATION]
     } else {
         &[]
     }
@@ -403,7 +408,7 @@ pub(crate) fn subtree_handlers(widget: &(impl Widget + ?Sized), local: &[&str]) 
         .collect::<HashSet<_>>();
     #[cfg(feature = "model")]
     handlers.extend(
-        crate::semantic_document_read::readers_of(widget)
+        crate::semantic_readers::readers_of(widget)
             .iter()
             .map(|reader| reader.operation_type().to_string()),
     );
@@ -417,7 +422,7 @@ pub(crate) fn start_by_default(
     doc: &mut crate::widget::Edits<'_>,
     path: &ObjId,
 ) -> Result<Option<ResourceOperationStart>, String> {
-    if let Some(started) = crate::undo::start_local_history(widget, op)? {
+    if let Some(started) = crate::widget::undo_access::start_local_history(widget, op)? {
         return Ok(Some(started));
     }
     start_in_children(widget, op, doc, path)
@@ -431,7 +436,7 @@ pub(crate) fn poll_by_default(
     path: &ObjId,
 ) -> Option<tilo_actions::InvocationUpdate> {
     if let Some(update) =
-        crate::undo::poll_local_history(widget, invocation, cancellation_requested)
+        crate::widget::undo_access::poll_local_history(widget, invocation, cancellation_requested)
     {
         return Some(update);
     }
