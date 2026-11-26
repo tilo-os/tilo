@@ -43,9 +43,8 @@ pub enum Refusal {
     Unavailable { reason: String },
     /// The call came from a caller this run was not admitted for.
     Stranger,
-    /// The key the run acts under is one its person's root revoked: it acts no more, whether
-    /// this run was admitted before the revocation or after, and the refusal says so and what
-    /// to do about it.
+    /// The key the run acts under is one its person's root revoked: it acts no more, however
+    /// long ago this run was admitted, and the refusal says so and what to do about it.
     Revoked { reason: String },
 }
 

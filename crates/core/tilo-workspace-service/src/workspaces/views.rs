@@ -59,18 +59,6 @@ impl Governance<'_> {
         self.admitted(caller).is_some()
     }
 
-    /// Whether this workspace keeps `caller`'s key as one its person revoked: nothing it asks
-    /// is a member's until they approve another.
-    fn key_revoked(&self, caller: &Caller) -> bool {
-        let Some(device) = caller.device_public_key() else {
-            return false;
-        };
-        matches!(
-            self.peer.permissions(*device, tilo_clock::wall()),
-            Err(tilo_peer_state::MembershipError::Revoked)
-        )
-    }
-
     /// `caller`'s access across the workspace now and its sandbox: what
     /// every record's policy holds before the record's own read is checked.
     fn workspace_policy(&self, caller: &Caller) -> Option<ViewReadPolicy> {
@@ -123,14 +111,6 @@ impl Workspaces {
     /// not certify a device for.
     pub async fn admits(&self, workspace: WorkspaceId, caller: &Caller) -> bool {
         self.governing(workspace, |runtime| runtime.admits(caller))
-            .await
-            .unwrap_or(false)
-    }
-
-    /// Whether the workspace `workspace` hosts here keeps `caller`'s key as revoked: false
-    /// for a workspace it does not host.
-    pub async fn key_revoked(&self, workspace: WorkspaceId, caller: &Caller) -> bool {
-        self.governing(workspace, |runtime| runtime.key_revoked(caller))
             .await
             .unwrap_or(false)
     }
