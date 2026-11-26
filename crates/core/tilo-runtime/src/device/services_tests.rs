@@ -2491,6 +2491,51 @@ fn a_deployment_is_handed_its_owner_root_once_and_kept_as_that_persons_device() 
     assert!(refused.to_string().contains("64 hexadecimal"), "{refused}");
 }
 
+/// A device a ticket made, a server among them, keeps its person's public record in
+/// its store and no key of theirs: that record opens, but it is no root this device
+/// keeps, so the device is a joined one that founds nothing of its person's. The
+/// root a device is handed opens as their whole key, and is.
+#[test]
+fn a_persons_public_record_is_no_root_this_device_keeps() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let identity = dir.path().join("identity");
+    tilo_files::native::private::directory(&identity).unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_IDENTITY_ROOT", &identity);
+    let keys = tilo_identity::provisioning::collaboration_identity_paths();
+    let _daemon = tilo_identity::provisioning::device_key_taken_as_daemon(&keys).unwrap();
+
+    let seed = [7u8; 32];
+    let person = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+    let joined = identity.join("accounts").join("1000");
+    tilo_files::native::private::directory(&joined).unwrap();
+    let public =
+        tilo_identity::store::public_member_record("Ada", [1, 2, 3], person).expect("encodes");
+    let record = joined.join("primary.json");
+    std::fs::write(&record, public).unwrap();
+    std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(
+        tilo_identity::store::load_from_path(record).is_ok(),
+        "the person's public record opens on the device a ticket made"
+    );
+    assert_eq!(
+        opened_root_in(&joined),
+        None,
+        "a record that holds none of the person's key is no root of theirs kept here"
+    );
+
+    let rooted = identity.join("accounts").join("1001");
+    let root_file = dir.path().join("owner-root");
+    std::fs::write(&root_file, hex::encode(seed)).unwrap();
+    std::fs::set_permissions(&root_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    adopt_root_file(&root_file, &rooted, &keys).expect("the owner root is kept here");
+    assert!(
+        opened_root_in(&rooted).is_some(),
+        "the root this device was handed opens as the person's whole key"
+    );
+}
+
 /// A deployment given its owner's root is that owner's own device: the daemon it
 /// starts founds the workspace its configuration keeps, with the entry the
 /// deployment names, under the root rather than a key of the server's own.

@@ -1054,10 +1054,18 @@ fn device_person_root_record() -> io::Result<std::path::PathBuf> {
 /// the one whose secret is sealed to this device, which no metadata reading alone counts as a
 /// share held.
 fn opened_root_record(uid: u32) -> Option<std::path::PathBuf> {
-    let dir = account_identity_dir(uid).ok()?;
-    let record = tilo_identity::store::resolve_active_identity(&dir)?;
+    opened_root_in(&account_identity_dir(uid).ok()?)
+}
+
+/// [`opened_root_record`] of the account store `dir`. A device a ticket made keeps its person's
+/// public record there, which opens too but holds no key: counted as a root, the device would
+/// take itself for its person's first and found a second copy of their workspace beside the one
+/// their devices hand it. Only a record that opens as the person's whole key is their root.
+fn opened_root_in(dir: &Path) -> Option<std::path::PathBuf> {
+    let record = tilo_identity::store::resolve_active_identity(dir)?;
     tilo_identity::store::load_from_path(record.clone())
         .ok()
+        .filter(tilo_identity::store::SigningIdentity::is_single_device)
         .map(|_| record)
 }
 
