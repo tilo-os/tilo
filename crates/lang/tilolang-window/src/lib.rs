@@ -133,11 +133,10 @@ impl Window {
         // The person the window opens as is called by their name, and everyone else as a window
         // calls them when nobody told it their names: a scenario's sample person (`person("Leo")`)
         // by that name, never by their id.
-        let names = Rc::new(tilolang_tilo::names::Told::new(
-            me.0.into(),
-            Rc::new(tilolang_tilo::names::Installed),
-        ));
-        names.tell(me.1.to_owned(), Vec::new(), Vec::new(), Vec::new());
+        let names = Rc::new(Me {
+            id: me.0.to_owned(),
+            name: me.1.to_owned(),
+        });
         let mut instance = Instance::new(
             Config {
                 app: app.to_owned(),
@@ -374,4 +373,20 @@ fn make_roots(instance: &Instance, app: &str) -> Result<(), String> {
             .map_err(|error| format!("a root could not be made: {error}"))?;
     }
     Ok(())
+}
+
+/// The names a window shows people by before its host reads the workspace's members: the person
+/// it opens as by the name they go by, everyone else as the installed catalogue names them.
+struct Me {
+    id: String,
+    name: String,
+}
+
+impl tilolang_tilo::runtime::NameHost for Me {
+    fn name(&self, who: &Actor) -> String {
+        if who.person_id() == Some(self.id.as_str()) {
+            return self.name.clone();
+        }
+        tilolang_tilo::names::installed(who)
+    }
 }
