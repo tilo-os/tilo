@@ -135,18 +135,13 @@ enum Done {
         reply: Reply,
         not_shown: Option<Failure>,
     },
-    /// The action ran: the host's answer, the action at its resolved path,
-    /// and the app it ran in.
+    /// The action ran: the host's answer and the action at its resolved path.
     Invoked {
         value: Value,
         path: String,
         descriptor: Box<ActionDescriptor>,
-        app: String,
         /// Where it ran: the document whose link a change answers.
         provider: String,
-        /// The nearest resource holding the one it ran on (or that one) that offers the history
-        /// `undo` of its record, where what it changed is taken back.
-        history: Option<String>,
     },
 }
 
@@ -1544,9 +1539,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 value,
                 path,
                 descriptor,
-                app,
                 provider,
-                history,
             } => {
                 let mut reply = outcome(&value);
                 if reply.failed && reply.text.contains("invalid_arguments") {
@@ -1581,9 +1574,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                         }
                     }
                     reply.structured = Some(typed);
-                }
-                if !reply.failed && descriptor.contract.kind != tilo_actions::ActionKind::Read {
-                    self.note_change(&app, history);
                 }
                 Ok(reply)
             }

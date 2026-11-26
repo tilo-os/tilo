@@ -13,8 +13,6 @@ pub(crate) struct ResolvedAction {
     /// The path to the resource it is published on.
     pub(super) path: String,
     pub(super) descriptor: ActionDescriptor,
-    /// Where what it changes is taken back ([`Resolved::history`]).
-    pub(super) history: Option<String>,
 }
 
 /// Paths a session keeps resolved at most: a session naming ever new paths
@@ -129,9 +127,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             value,
             path: known.path,
             descriptor: Box::new(known.descriptor),
-            app: known.app_id,
             provider: known.provider,
-            history: known.history,
         })
     }
 
@@ -341,13 +337,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             }
         };
         self.tree.keep_levels(&resolved.provider, &resolved.levels);
-        let history = resolved.history();
         let known = ResolvedAction {
             app_id: resolved.app_id,
             provider: resolved.provider,
             path: named_at,
             descriptor,
-            history,
         };
         Ok(Resolution::At(Box::new(known), arguments))
     }

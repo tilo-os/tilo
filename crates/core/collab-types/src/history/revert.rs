@@ -385,14 +385,17 @@ fn later_writers(
         };
         // The same writer, or the same authenticated invoker writing from
         // another of their writers (a mount, a device, their undo), builds
-        // on nobody else's work.
-        if by.is_some_and(|b| b.eq_ignore_ascii_case(&v.actor))
-            || invoker.is_some_and(|invoker| {
-                v.context
-                    .as_ref()
-                    .and_then(|context| context.invoker.as_ref())
-                    .is_some_and(|other| other.acting.by == *invoker)
-            })
+        // on nobody else's work. A writer that writes for several members (a
+        // device's store, serving an agent's call and then its person's) is
+        // the same writer only for the invoker the run was made for.
+        let later_invoker = v
+            .context
+            .as_ref()
+            .and_then(|context| context.invoker.as_ref())
+            .map(|other| &other.acting.by);
+        let same_invoker = invoker.is_some_and(|invoker| later_invoker == Some(invoker));
+        let other_invoker = invoker.is_some() && later_invoker.is_some() && !same_invoker;
+        if same_invoker || (!other_invoker && by.is_some_and(|b| b.eq_ignore_ascii_case(&v.actor)))
         {
             continue;
         }

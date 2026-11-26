@@ -93,7 +93,7 @@ impl LayoutActions {
         if address.resource == HISTORY_RESOURCE
             || (address.resource == RESOURCE && matches!(address.action.as_str(), "undo" | "redo"))
         {
-            return self.step(address);
+            return self.step(address, arguments);
         }
         let published = self.layout.borrow().resources();
         let encoded = tilo_actions::api::encode_json(&published, address, arguments)?;
@@ -113,7 +113,7 @@ impl LayoutActions {
             return Ok(completed());
         }
         let Some(mut action) = effect.layout() else {
-            return self.step(address);
+            return self.step(address, arguments);
         };
         // An action that names no one is the person's own input: theirs to take back, and never
         // made to wait for themselves.
@@ -439,11 +439,22 @@ impl LayoutActions {
         Ok(())
     }
 
-    /// Undo or redo the person's last change of the record.
+    /// Undo or redo the person's last change of the record; an undo naming an `invocation` takes
+    /// back every change of that invocation instead, and nothing left of it is no error.
     fn step(
         &self,
         address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, Json>,
     ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
+        if address.action == "undo"
+            && let Some(invocation) = arguments.get("invocation").and_then(Json::as_str)
+        {
+            self.layout
+                .borrow()
+                .take_back(invocation)
+                .map_err(tilo_actions::ApiError::Failed)?;
+            return Ok(completed());
+        }
         let person = self.person();
         let stepped = match address.action.as_str() {
             "undo" => self.layout.borrow_mut().undo(&person),

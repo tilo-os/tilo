@@ -147,78 +147,16 @@ struct Step {
     number: usize,
     /// The apps it changed, by id, in the order it first changed each.
     apps: Vec<String>,
-    /// Where each of them takes a step back: the app's id and its resource the history verbs
-    /// are published on, as the task's host named them.
-    history: Vec<History>,
-    /// The program's first line, as `history task` names the step; a run's name, for the
-    /// steps a client groups by naming an invocation (`_meta` invocation).
+    /// The program's first line, as `history task` names the step.
     program: String,
     changed: u64,
     undone: bool,
     /// Its undo was refused or failed: it stays in effect, and `undo` passes over it to the
     /// step before, so one step that cannot be taken back never holds the others.
     kept: bool,
-    /// The undo step of the run that made it, for the steps a client groups: every call
-    /// naming the same run joins this one.
+    /// The undo step its calls named, by which the workspace's invocations record keeps them:
+    /// taking the step back takes each of them back through its own record.
     gesture: Option<tilo_actions::ActionId>,
-}
-
-/// Where one app a step changed takes it back: by the app's id and its resource, never by a
-/// name, which several apps may answer to.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct History {
-    app: String,
-    resource: String,
-    /// The resource is one the session itself publishes (the layout, the records it keeps
-    /// for a package), taken back at the session's own provider.
-    published: bool,
-    /// The call, as the workspace lists the invocation it was: what takes back a step kept in
-    /// a part of a chain, which the app's own history names by its part.
-    invocation: Option<String>,
-}
-
-impl History {
-    /// Where a call through `app`'s provider takes its step back: the app's own history, or — a
-    /// record the session keeps, published at the session's own provider — the history its
-    /// record offers there on `history` (the nearest resource holding what changed that offers
-    /// `undo`), where no app's process is asked.
-    fn of_call(app: &str, history: Option<String>) -> Self {
-        match history {
-            Some(resource) if app == crate::session_api::SESSION_PROVIDER => Self {
-                app: app.to_owned(),
-                resource,
-                published: true,
-                invocation: None,
-            },
-            _ => Self {
-                app: app.to_owned(),
-                resource: format!("tl:{app}"),
-                published: false,
-                invocation: None,
-            },
-        }
-    }
-}
-
-/// What a program's answer says each app it changed takes a step back on.
-fn history_of(answer: &Value) -> Vec<History> {
-    answer
-        .get("history")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| {
-            Some(History {
-                app: entry.get("app")?.as_str()?.to_owned(),
-                resource: entry.get("resource")?.as_str()?.to_owned(),
-                published: entry.get("published").and_then(Value::as_bool) == Some(true),
-                invocation: entry
-                    .get("invocation")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-            })
-        })
-        .collect()
 }
 
 /// The `tilo` tool's session on one connection.
@@ -233,56 +171,9 @@ pub(crate) struct Programs {
     steps: Vec<Step>,
     /// What the person pointed at when they asked, as a resource literal: what `this` names.
     this: Option<String>,
-    /// The record each tilolang app's changes went to, by the app's id: where its steps are
-    /// taken back.
-    records: BTreeMap<String, String>,
 }
 
 impl Programs {
-    /// Note a change a call of the invocation `gesture` (named `label`, `""` when it has no
-    /// title) made through the app `app`, whose record's history is on `history` when the call
-    /// found one: the calls of one invocation are one step of the task's, taken back in each
-    /// app they changed, as one program is.
-    pub(super) fn note_invocation(
-        &mut self,
-        gesture: tilo_actions::ActionId,
-        label: &str,
-        app: &str,
-        history: Option<String>,
-    ) {
-        let changed = 1;
-        let at = History::of_call(app, history);
-        if let Some(step) = self
-            .steps
-            .iter_mut()
-            .rev()
-            .find(|step| step.gesture == Some(gesture))
-        {
-            step.changed = step.changed.saturating_add(changed);
-            if !step.history.contains(&at) {
-                step.history.push(at);
-            }
-            if !step.apps.iter().any(|known| known == app) {
-                step.apps.push(app.to_owned());
-            }
-            return;
-        }
-        self.steps.push(Step {
-            number: self.steps.len().saturating_add(1),
-            apps: vec![app.to_owned()],
-            history: vec![at],
-            program: if label.is_empty() {
-                "invocation".to_owned()
-            } else {
-                format!("invocation \"{label}\"")
-            },
-            changed,
-            undone: false,
-            kept: false,
-            gesture: Some(gesture),
-        });
-    }
-
     /// The steps of this session's `history task`, typed.
     fn steps_json(&self) -> Vec<Value> {
         self.steps
@@ -1238,7 +1129,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .is_some_and(|apps| !apps.is_empty());
         if failed && changed_apps {
             // One step is all or nothing: what it changed before it failed is taken back.
-            if let Err(why) = self.undo_in(&history_of(&answer)).await {
+            let step = crate::step::STEP.try_with(|step| *step).ok();
+            if let Err(why) = self.take_back_step(step).await {
                 let mut reply = self.answered(program, &answer);
                 let _ = write!(
                     reply.text,
@@ -1681,10 +1573,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // A change of a tilolang app's record goes to the record's origin, which runs the
         // action against the record as it is then; no app's instance is asked.
         if let Some(record) = call.get("record").and_then(Value::as_str) {
-            self.programs
-                .lock_recover()
-                .records
-                .insert(app.to_owned(), record.to_owned());
             return self
                 .task_change(
                     app,
@@ -1960,12 +1848,11 @@ fn answer_text(programs: &mut Programs, program: &str, answer: &Value) -> (Strin
                     programs.steps.push(Step {
                         number,
                         apps,
-                        history: history_of(answer),
                         program: program.lines().next().unwrap_or_default().to_owned(),
                         changed,
                         undone: false,
                         kept: false,
-                        gesture: None,
+                        gesture: crate::step::STEP.try_with(|step| *step).ok(),
                     });
                 }
                 false
@@ -2139,92 +2026,25 @@ fn run_line(run: &Invocation) -> String {
 }
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
-    /// The step of the invocation `invocation` in the record it changed, and the part of a
-    /// chain that record is when it is one: the document the change landed in names it
-    /// (`derived:part.0@…`), which the chain's history verbs take as `part`.
-    async fn changed_step(&self, invocation: &str) -> Option<(String, Option<u64>)> {
-        let listed = self
-            .listed_invocations(&InvocationsQuery {
-                invocation: Some(invocation.to_owned()),
-                ..InvocationsQuery::default()
-            })
-            .await
-            .ok()?;
-        let found = listed.items.into_iter().next()?;
-        let part = found.records.iter().find_map(|change| {
-            collab_types::document::DocumentId::parse(&change.record)
-                .and_then(|id| id.chain_part())
-                .map(|(_, part)| part)
-        });
-        Some((found.step?, part))
-    }
-
-    /// Take back this task's last step in each of `apps` (ids), the last changed first.
-    async fn undo_in(&self, history: &[History]) -> Result<(), String> {
-        let mut providers: Providers = BTreeMap::new();
-        let mut taken: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for at in history.iter().rev() {
-            let name = app_names(std::slice::from_ref(&at.app)).join("");
-            let record = self.programs.lock_recover().records.get(&at.app).cloned();
-            if let Some(record) = record {
-                let mut arguments = Map::new();
-                arguments.insert("steps".to_owned(), json!(1));
-                let answer = self
-                    .task_change(&at.app, &record, &at.resource, "undo", arguments)
-                    .await;
-                if answer.get("ok").is_none() {
-                    let why = ["failed", "refused"]
-                        .iter()
-                        .find_map(|key| answer.get(*key).and_then(Value::as_str))
-                        .unwrap_or("the undo did not run");
-                    return Err(format!("in {name}: {why}"));
-                }
+    /// Take back the calls of the step `step` names, newest first, each through its own record's
+    /// take-back (`<invocation>#undo`): the workspace's invocations record keeps them by the
+    /// step, and what each changed, in every record, is found there.
+    async fn take_back_step(&self, step: Option<tilo_actions::ActionId>) -> Result<(), String> {
+        let Some(step) = step.map(|step| step.0.to_string()) else {
+            return Ok(());
+        };
+        let calls = self.own_invocations().await?;
+        for call in calls.iter().filter(|call| {
+            call.step.as_deref() == Some(step.as_str()) && call.status != InvocationStatus::Undone
+        }) {
+            let Some(id) = &call.id else {
                 continue;
-            }
-            let provider = if at.published {
-                Addressed {
-                    provider: crate::session_api::SESSION_PROVIDER.to_owned(),
-                    app_id: Some(crate::session_api::SESSION_PROVIDER.to_owned()),
-                }
-            } else {
-                self.provider_of(&at.app, &mut providers).await?
             };
-            // An app's history takes a count of steps; the session's own `undo` takes one. A
-            // call the workspace lists as an invocation is taken back by its step, in the part
-            // of a chain its change landed in — named by the document the listing gives.
-            let mut arguments = Map::new();
-            if !at.published {
-                let mut by_step = false;
-                if let Some(invocation) = at.invocation.as_deref()
-                    && let Some((step, part)) = self.changed_step(invocation).await
-                {
-                    // One step is taken back once, however many calls of the task changed it.
-                    if !taken.insert(step) {
-                        continue;
-                    }
-                    if let Some(part) = part {
-                        arguments.insert("part".to_owned(), json!(part));
-                    }
-                    by_step = true;
-                }
-                if !by_step {
-                    arguments.insert("steps".to_owned(), json!(1));
-                }
-            }
-            let value = Box::pin(self.invoke_one(OneCall {
-                provider,
-                workspace: false,
-                revision: None,
-                resource: at.resource.clone(),
-                action: "undo".to_owned(),
-                arguments,
-                invocation_id: None,
-                wait_ms: Some(PROGRAM_WAIT_MS),
-            }))
-            .await
-            .map_err(|why| format!("in {name}: {why}"))?;
-            if value.pointer("/update/state").and_then(Value::as_str) != Some("succeeded") {
-                return Err(format!("in {name}: {}", super::outcome(&value).text));
+            // A call that changed no record (a read) has nothing to take back.
+            if let Err(why) = Box::pin(self.undo_invocation(id, false)).await
+                && !why.message.contains(workspace_invocations::NO_HISTORY)
+            {
+                return Err(why.message);
             }
         }
         Ok(())
@@ -2251,7 +2071,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 }
                 break;
             };
-            if let Err(why) = self.undo_in(&step.history).await {
+            if let Err(why) = self.take_back_step(step.gesture).await {
                 // The step stays as it is; the steps before it are still the task's to take
                 // back, so the next `undo` goes on to them rather than failing here again.
                 let before = {
@@ -2330,12 +2150,11 @@ fn program_answer(action: &str, value: Result<Value, Failure>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_actions::InvocationId;
     use tilo_actions::remote::{
-        ActionCallError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
-        CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeRequest,
-        Pending,
+        ActionCallError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt, InvocationState,
+        InvokeRequest, Pending,
     };
-    use tilo_actions::{InvocationId, InvocationUpdate};
 
     tilo_test_env::scenario! {
         fn a_task_answers_its_programs_and_keeps_its_steps;
@@ -2349,7 +2168,6 @@ mod tests {
             server.programs.lock_recover().steps.push(Step {
                 number: 1,
                 apps: vec!["so.tilo.notes".to_owned()],
-                history: Vec::new(),
                 program: "notes.pin(n1)".to_owned(),
                 changed: 1,
                 undone: false,
@@ -2436,10 +2254,6 @@ mod tests {
                 "output": ["@notes.Note:root-a/n1 \"Q3 plan\""],
                 "changed": 2,
                 "apps": ["so.tilo.notes", "so.tilo.lang.todo"],
-                "history": [
-                    {"app": "so.tilo.notes", "resource": "tl:so.tilo.notes"},
-                    {"app": "so.tilo.lang.todo", "resource": "tl:so.tilo.lang.todo"},
-                ],
                 "lets": [{"name": "plan", "type": "so.tilo.notes.Note"}],
             });
             let (text, failed) =
@@ -2450,24 +2264,6 @@ mod tests {
                 "n1 \"Q3 plan\"\nstep 1: 2 changes in notes and todo; `undo` takes it back"
             );
             assert_eq!(programs.lets, ["plan"]);
-            // Undo goes to each app by its id and resource, never by a name another app may share.
-            assert_eq!(
-                programs.steps.first().map(|step| step.history.clone()),
-                Some(vec![
-                    History {
-                        app: "so.tilo.notes".into(),
-                        resource: "tl:so.tilo.notes".into(),
-                        published: false,
-                        invocation: None,
-                    },
-                    History {
-                        app: "so.tilo.lang.todo".into(),
-                        resource: "tl:so.tilo.lang.todo".into(),
-                        published: false,
-                        invocation: None,
-                    },
-                ])
-            );
             assert_eq!(
                 history_text(&programs),
                 "steps of this task, oldest first\n1  notes and todo  2 changes  notes.pin(n1)"
@@ -2497,153 +2293,15 @@ mod tests {
             assert!(refused(&host(ActionCallError::UnknownAction)));
             assert!(!refused(&crate::Failure::from("the action failed: no such note")));
         }
-
-        phase undoing_a_task_step_starts_the_native_apps_and_takes_their_steps_back;
-        {
-            let host = Native::new();
-            let server = McpServer::for_person(host.clone(), "workspace".to_owned(), "owner");
-            server.programs.lock_recover().steps.push(Step {
-                number: 1,
-                apps: vec!["so.tilo.tasks".to_owned(), "so.tilo.chat".to_owned()],
-                history: vec![
-                    History {
-                        app: "so.tilo.tasks".to_owned(),
-                        resource: "tasks.tracker".to_owned(),
-                        published: false,
-                        invocation: None,
-                    },
-                    History {
-                        app: "so.tilo.chat".to_owned(),
-                        resource: "chat.workspace".to_owned(),
-                        published: false,
-                        invocation: None,
-                    },
-                ],
-                program: "tasks.create(tasks.tracker, \"Ship it\")".to_owned(),
-                changed: 2,
-                undone: false,
-                kept: false,
-                gesture: None,
-            });
-            let reply = run(server.undo_steps(false)).expect("the step is taken back");
-            assert!(!reply.failed, "{}", reply.text);
-            // Neither app ran: the workspace started each without a window, and its undo went to
-            // the instance it started, on the record the app keeps its steps in.
-            assert_eq!(host.opened(), ["so.tilo.chat", "so.tilo.tasks"]);
-            assert_eq!(
-                host.invoked(),
-                [
-                    (
-                        tilo_actions::remote::workspace_provider("workspace"),
-                        format!(
-                            "{}so.tilo.chat",
-                            tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
-                        ),
-                        tilo_actions::remote::APPLICATION_START_ACTION.to_owned(),
-                        json!({}),
-                    ),
-                    (
-                        "11".to_owned(),
-                        "chat.workspace".to_owned(),
-                        "undo".to_owned(),
-                        json!({"steps": 1}),
-                    ),
-                    (
-                        tilo_actions::remote::workspace_provider("workspace"),
-                        format!(
-                            "{}so.tilo.tasks",
-                            tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
-                        ),
-                        tilo_actions::remote::APPLICATION_START_ACTION.to_owned(),
-                        json!({}),
-                    ),
-                    (
-                        "12".to_owned(),
-                        "tasks.tracker".to_owned(),
-                        "undo".to_owned(),
-                        json!({"steps": 1}),
-                    ),
-                ]
-            );
-            assert!(server.programs.lock_recover().steps[0].undone);
-        }
     }
 
-    /// One invocation the workspace was sent: the provider it went to, and its resource, action
-    /// and arguments.
-    type Sent = (String, String, String, Value);
-
-    /// A workspace installing two native apps, which it starts on `open` and whose records it
-    /// takes a step back on. Every invocation it was sent is kept, in order.
+    /// A workspace that offers nothing: what a program's answer is typed against.
     #[derive(Clone)]
-    struct Native {
-        running: std::sync::Arc<std::sync::Mutex<Vec<(u64, String)>>>,
-        invoked: std::sync::Arc<std::sync::Mutex<Vec<Sent>>>,
-        /// Each app the workspace opened, in order.
-        opened: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-        /// The instance each `open` started, by the invocation that started it.
-        started: std::sync::Arc<std::sync::Mutex<Vec<(InvocationId, u64)>>>,
-        peers: std::sync::Arc<std::sync::Mutex<u64>>,
-    }
+    struct Native;
 
     impl Native {
-        fn new() -> Self {
-            Self {
-                running: std::sync::Arc::default(),
-                invoked: std::sync::Arc::default(),
-                opened: std::sync::Arc::default(),
-                started: std::sync::Arc::default(),
-                peers: std::sync::Arc::new(std::sync::Mutex::new(10)),
-            }
-        }
-
-        fn opened(&self) -> Vec<String> {
-            std::mem::take(&mut *self.opened.lock_recover())
-        }
-
-        fn invoked(&self) -> Vec<Sent> {
-            std::mem::take(&mut *self.invoked.lock_recover())
-        }
-    }
-
-    /// A row of a workspace's installable apps, offering to open it.
-    fn offers(app: &str) -> CatalogueRow {
-        let id = format!("{}{app}", tilo_actions::remote::APPLICATION_RESOURCE_PREFIX);
-        CatalogueRow {
-            offered: None,
-            provider: String::new(),
-            app_id: String::new(),
-            parent_resource: String::new(),
-            resource: CatalogueResource {
-                id: id.clone(),
-                kind: tilo_actions::remote::APPLICATION_RESOURCE_KIND.to_owned(),
-                label: app.to_owned(),
-                presentation: None,
-            },
-            action: Some(tilo_actions::ActionDescriptor {
-                did: None,
-                state: tilo_actions::ActionState::default(),
-                semantic_identity: None,
-                address: tilo_actions::ActionAddress::new(
-                    &id,
-                    tilo_actions::remote::APPLICATION_OPEN_ACTION,
-                ),
-                resource_kind: tilo_actions::remote::APPLICATION_RESOURCE_KIND.to_owned(),
-                resource_label: app.to_owned(),
-                action_label: "open".to_owned(),
-                keywords: Vec::new(),
-                icon: None,
-                description: None,
-                locus: tilo_actions::ExecutionLocus::ClientLocal,
-                kind: tilo_actions::OperationKind::Document,
-                contract: tilo_actions::ActionContract::default(),
-                input: tilo_actions::InputSpec::None,
-                params: Vec::new(),
-                view: None,
-            }),
-            has_children: false,
-            visibility: None,
-            surface: None,
+        const fn new() -> Self {
+            Self
         }
     }
 
@@ -2651,99 +2309,21 @@ mod tests {
         fn query(
             &self,
             _caller: &Caller,
-            query: CatalogueQuery,
+            _query: CatalogueQuery,
         ) -> Pending<Result<CataloguePage, ActionCallError>> {
-            let Some(provider) = query.provider else {
-                return Pending::ready(Ok(CataloguePage {
-                    revision: "v1".into(),
-                    providers: self
-                        .running
-                        .lock_recover()
-                        .iter()
-                        .map(|(peer, app)| CatalogueProvider {
-                            provider: peer.to_string(),
-                            app_id: app.clone(),
-                            workspace: "workspace".into(),
-                            document_id: String::new(),
-                            browsable: true,
-                        })
-                        .collect(),
-                    ..CataloguePage::default()
-                }));
-            };
-            let offering = provider == tilo_actions::remote::workspace_provider("workspace");
-            Pending::ready(Ok(CataloguePage {
-                revision: "v1".into(),
-                rows: if offering {
-                    vec![offers("so.tilo.tasks"), offers("so.tilo.chat")]
-                } else {
-                    Vec::new()
-                },
-                exhausted: true,
-                ..CataloguePage::default()
-            }))
+            Pending::ready(Ok(CataloguePage::default()))
         }
 
         fn invoke(
             &self,
             _caller: &Caller,
-            request: InvokeRequest,
+            _request: InvokeRequest,
         ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-            let arguments = match &request.argument {
-                tilo_actions::remote::InvokeArgument::Json(arguments) => {
-                    Value::Object(arguments.clone())
-                }
-                _ => Value::Null,
-            };
-            if request.target.provider == tilo_actions::remote::workspace_provider("workspace") {
-                let app = request
-                    .target
-                    .address
-                    .resource
-                    .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
-                    .unwrap_or_default()
-                    .to_owned();
-                let peer = {
-                    let mut peers = self.peers.lock_recover();
-                    *peers = peers.saturating_add(1);
-                    *peers
-                };
-                self.opened.lock_recover().push(app.clone());
-                self.running.lock_recover().push((peer, app));
-                self.started.lock_recover().push((request.invocation, peer));
-            }
-            self.invoked.lock_recover().push((
-                request.target.provider.clone(),
-                request.target.address.resource.clone(),
-                request.target.address.action.clone(),
-                arguments,
-            ));
-            let invocation = request.invocation;
-            Pending::ready(Ok(InvocationState::new(
-                invocation,
-                InvocationUpdate::Accepted { invocation },
-            )
-            .receipt()))
+            Pending::ready(Err(ActionCallError::UnknownAction))
         }
 
-        fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-            let peer = self
-                .started
-                .lock_recover()
-                .iter()
-                .find(|(started, _)| started == id)
-                .map(|(_, peer)| *peer);
-            let value = peer.map(|peer| json!({"peer_id": peer}));
-            Some(InvocationState::new(
-                *id,
-                InvocationUpdate::Succeeded {
-                    invocation: *id,
-                    output: tilo_actions::ActionOutput {
-                        value,
-                        ..tilo_actions::ActionOutput::default()
-                    },
-                },
-            ))
+        fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+            None
         }
 
         fn cancel(
@@ -2753,14 +2333,6 @@ mod tests {
         ) -> Pending<Result<(), ActionCallError>> {
             Pending::ready(Ok(()))
         }
-    }
-
-    fn run<F: std::future::Future>(future: F) -> F::Output {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("a runtime")
-            .block_on(future)
     }
 
     /// A program that does not compile is answered in the program its writer sent: the compiler

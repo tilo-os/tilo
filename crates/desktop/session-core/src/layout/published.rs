@@ -253,7 +253,11 @@ pub enum LayoutEffect {
     },
     /// Undo the last layout change
     #[effect(kind = "undoable", label = "session-action-undo")]
-    Undo,
+    Undo {
+        /// Every change of this invocation instead
+        #[param("Take back every change this invocation made instead")]
+        invocation: Option<String>,
+    },
     /// Redo the last layout change
     #[effect(kind = "undoable", label = "session-action-redo")]
     Redo,
@@ -581,7 +585,7 @@ impl LayoutEffect {
             Self::RetryQuery { place } => LayoutAction::RetryQuery {
                 place: named(Some(place), Item::Place).unwrap_or_default(),
             },
-            Self::Undo | Self::Redo | Self::ClearRecents { .. } => return None,
+            Self::Undo { .. } | Self::Redo | Self::ClearRecents { .. } => return None,
             Self::Pin { place, pinned } => LayoutAction::Pin {
                 place: key_of(place),
                 pinned: pinned.unwrap_or(true),

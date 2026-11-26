@@ -1522,21 +1522,12 @@ mod tests {
                 ]
             );
             assert_eq!(answer["changed"], 2, "{answer:#}");
-            // Both steps reach the task's history on the documents the apps publish, so `undo task`
-            // takes them back like any tl app's.
-            assert_eq!(
-                answer["history"],
-                json!([
-                    {"app": "so.tilo.chat", "resource": "chat.workspace", "published": false, "invocation": null},
-                    {"app": "so.tilo.tasks", "resource": "tasks.tracker", "published": false, "invocation": null},
-                ])
-            );
         }
 
         phase a_program_invokes_what_a_native_app_keeps_beside_its_document;
         {
             // An issue is made on the issues the tracker keeps beside it, invoked by the id its
-            // directory lists them by; the step is taken back through the tracker.
+            // directory lists them by.
             let (task, _reader, api) = task_with(&[tasks()]);
             let calls = scripted(&api, |message| {
                 if let Some(listing) = message.get("children") {
@@ -1559,11 +1550,6 @@ mod tests {
             assert_eq!(invoked.len(), 1, "{calls:#?}");
             assert_eq!(invoked[0]["resource"], "chain:issues", "{calls:#?}");
             assert_eq!(invoked[0]["action"], "create", "{calls:#?}");
-            assert_eq!(
-                answer["history"],
-                json!([{"app": "so.tilo.tasks", "resource": "chain:issues", "published": false, "invocation": null}]),
-                "{answer:#}"
-            );
         }
 
         phase a_native_action_the_app_refuses_fails_the_program_and_changes_nothing;
@@ -1584,7 +1570,6 @@ mod tests {
             let why = answer["detail"].as_str().unwrap_or_default();
             assert!(why.contains("asks its members before renaming"), "{why}");
             assert_eq!(answer["changed"], 0, "{answer:#}");
-            assert_eq!(answer["history"], json!([]), "{answer:#}");
         }
     }
 

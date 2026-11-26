@@ -36,7 +36,7 @@ use tilo_actions::remote::{
     RemoteActionTarget, ResourceAddress, pending,
 };
 use tilo_actions::{ActionFailure, InvocationId, InvocationUpdate};
-use tilo_invocations::{Invocations, Route, take_back_run};
+use tilo_invocations::{Invocations, Route, TakeBack, take_back_run};
 use tilo_lock::MutexRecover as _;
 use tilo_remote_actions::asked::AskedStore;
 
@@ -698,10 +698,14 @@ impl AskedDispatch for DeviceAsked {
         }
         // What the run wrote before it asked is taken back, keyed by its invocation: the same
         // take-back `<record>#undo` runs, at the provider whose record holds it.
+        let at = TakeBack {
+            at: &waiting.at,
+            root: None,
+            near: None,
+        };
         drop(take_back_run(
             &waiting.route,
-            &waiting.at,
-            None,
+            &at,
             &invocation.0.to_string(),
             None,
         ));

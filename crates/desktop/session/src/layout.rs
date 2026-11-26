@@ -2045,12 +2045,81 @@ impl Layouts {
         } else {
             log.undo_as(&mut doc, Some(&user(person)), None, None)
         };
+        self.held(&key, |layout| layout.undo = Some(log));
         if stepped.is_none() {
-            self.held(&key, |held| held.undo = Some(log));
             return false;
         }
-        // What the step came to is what this device shows, as any other change of the workspace's
-        // records is.
+        self.show_step(workspace_id, handle, key, doc, revision, &before);
+        true
+    }
+
+    /// Take back every change the invocation `invocation` made of the layouts of the workspaces
+    /// `handle` shows and of `person`'s view of each, through each record's own history: what
+    /// taking the invocation back asks of the layout, whichever step of it the layout was. Whether
+    /// any was taken back; nothing left to take back is no error.
+    pub(crate) fn take_back(
+        &self,
+        invocation: &str,
+        person: &str,
+        handle: &DesktopHandle,
+    ) -> Result<bool, String> {
+        let Some(certificate) = self.certificate() else {
+            return Err("the layout cannot be written on this device yet".to_owned());
+        };
+        let scope = collab_types::history::steps::Scope::Session(invocation.to_owned());
+        let workspaces: Vec<WorkspaceId> =
+            handle.read(|tree| tree.workspaces.iter().map(Workspace::id).collect());
+        let mut taken = false;
+        for workspace_id in workspaces {
+            for key in [
+                (workspace_id, Route::layout()),
+                (workspace_id, Route::view(person)),
+            ] {
+                if !self.settle_one(&key) {
+                    return Err("the layout is still being written: ask again".to_owned());
+                }
+                let Some((mut doc, revision)) = self.copy(&key) else {
+                    continue;
+                };
+                doc.set_actor(actor(&certificate, person));
+                let before = doc.get_heads();
+                let undone = collab_types::history::steps::undo(
+                    &mut doc,
+                    &scope,
+                    usize::MAX,
+                    |_, _| Ok(None),
+                    &ui::history_source::ThreadWords,
+                );
+                if undone.is_err() {
+                    doc.rollback();
+                    continue;
+                }
+                shared_resource::commit_change(
+                    &mut doc,
+                    person,
+                    crate::activity::now_seconds(),
+                    None,
+                );
+                // The person's own undo reads the record afresh.
+                self.held(&key, |layout| layout.undo = None);
+                self.show_step(workspace_id, handle, key, doc, revision, &before);
+                taken = true;
+            }
+        }
+        Ok(taken)
+    }
+
+    /// Show what a step through `key`'s history came to on this device, as any other change of
+    /// the workspace's records is, and publish it.
+    fn show_step(
+        &self,
+        workspace_id: WorkspaceId,
+        handle: &DesktopHandle,
+        key: Key,
+        mut doc: automerge::AutoCommit,
+        revision: Option<[u8; 32]>,
+        before: &[ChangeHash],
+    ) {
         let mut tree = handle.read(Clone::clone);
         let written = if key.1 == Route::layout() {
             let device = self.device.borrow().clone();
@@ -2074,10 +2143,8 @@ impl Layouts {
             handle.replace_tree(tree);
             Written::View(view)
         };
-        self.held(&key, |held| held.undo = Some(log));
         self.keep(&key, doc.clone(), revision);
-        self.publish(&key, doc, Some(written), &before, revision);
-        true
+        self.publish(&key, doc, Some(written), before, revision);
     }
 
     /// Make `asked`'s arranging `action` of `tree`'s workspace in front one change of that
@@ -3224,6 +3291,10 @@ impl tilo_session_core::layout::Layouts for Steps {
 
     fn last_step(&self, person: &str) -> Option<(tilo_actions::Actor, String)> {
         self.layouts.last_step(self.workspace_id()?, person)
+    }
+
+    fn take_back(&self, person: &str, invocation: &str) -> Result<bool, String> {
+        self.layouts.take_back(invocation, person, &self.handle)
     }
 
     fn acted(

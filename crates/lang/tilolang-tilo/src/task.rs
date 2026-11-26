@@ -56,7 +56,7 @@ use crate::bundle::Bundle;
 use crate::call::Callees;
 use crate::host::Host;
 use crate::meta::MetaExt as _;
-use crate::naming::{package_resource_id, resource_id};
+use crate::naming::resource_id;
 use crate::native::Native;
 
 /// More resources than this changed by one program are many: it answers with a preview first.
@@ -148,9 +148,6 @@ struct Steps {
     done: usize,
     /// The apps whose resources it changed, in order.
     apps: Vec<String>,
-    /// Where each of them takes the step back (`{app, resource, published}`), in the same
-    /// order.
-    history: Vec<Json>,
 }
 
 /// The task's session: the runtime with every installed app's package, and its `let`s.
@@ -466,7 +463,7 @@ impl TaskSession {
 
     /// Run `source`, written by `author`, as one step of the task, for real: it has its go-ahead.
     /// The program runs as its author: the agent's as the agent, a line its person typed as the
-    /// person. The answer: `{state, output, detail, lets, steps, changed, apps, history}`, `state`
+    /// person. The answer: `{state, output, detail, lets, steps, changed, apps}`, `state`
     /// one of `done`, `rejected`, `failed`.
     pub fn run(&self, source: &str, author: &Actor) -> Json {
         self.run_once(source, false, author).0
@@ -520,10 +517,6 @@ impl TaskSession {
             "steps": steps.planned,
             "changed": steps.done,
             "apps": steps.apps,
-            // Where each app it changed takes a step back: the app's own resource, by its id,
-            // which the history verbs are published on; for a resource the session publishes,
-            // that resource itself, whose own `undo` the session publishes beside its actions.
-            "history": steps.history,
         });
         (answer, steps)
     }
@@ -568,9 +561,6 @@ impl Invoker for ApiInvoker {
         let app = invocation.app();
         let published = self.callees.published.contains(app);
         let native = self.callees.native.is(app);
-        // The document a native app publishes: where its steps are taken back, and what a
-        // program names to invoke it.
-        let record = self.callees.native.record(app);
         let mut call = match self.callees.call(invocation) {
             Ok(call) => call,
             Err(answer) => return self.callees.answered(invocation, answer),
@@ -619,7 +609,7 @@ impl Invoker for ApiInvoker {
         // An action that only reads or shows (`overview`, `search`) changes nothing of the
         // workspace: it is no step, and nothing of it is taken back. What it showed is closed as
         // it was opened, never undone.
-        if let Answered::Done(output) = &answer
+        if let Answered::Done(_) = &answer
             && !reads_only(invocation)
         {
             let mut steps = self.steps.borrow_mut();
@@ -627,62 +617,8 @@ impl Invoker for ApiInvoker {
             if !steps.apps.iter().any(|known| known == app) {
                 steps.apps.push(app.to_owned());
             }
-            let at = self.history_at(app, &call, published, record, output);
-            // One app's change may have gone to more than one of its documents: each is a
-            // place its step is taken back on.
-            if !steps.history.iter().any(|held| held == &at) {
-                steps.history.push(at);
-            }
         }
         self.callees.answered(invocation, answer)
-    }
-}
-
-impl ApiInvoker {
-    /// Where a step of the task takes a change of `app` back: the resource the action was
-    /// invoked on — the one the session published a loose action on, the resource a native
-    /// app's directory lists it by, or the document the task's change of a tilolang app applied
-    /// to — and the call the workspace lists as an invocation. A native app's item is kept in
-    /// the part of its collection, so an action on one is taken back on that collection's
-    /// resource.
-    fn history_at(
-        &self,
-        app: &str,
-        call: &Json,
-        published: bool,
-        record: Option<&str>,
-        output: &Json,
-    ) -> Json {
-        let resource = if published {
-            call.get("resource")
-                .and_then(Json::as_str)
-                .map_or_else(|| package_resource_id(app), str::to_owned)
-        } else if self.callees.native.is(app) {
-            let named = call
-                .get("resource")
-                .and_then(Json::as_str)
-                .unwrap_or_default();
-            match collection_of(named) {
-                Some(collection) => self.api.resource_id(app, &collection).unwrap_or(collection),
-                None => named.to_owned(),
-            }
-        } else if let Some(record) = record {
-            record.to_owned()
-        } else {
-            package_resource_id(app)
-        };
-        // What the API took the change for: an invocation the workspace lists, whose changed
-        // documents tell the part of a chain its step is kept in.
-        let invocation = output
-            .get("invocation")
-            .and_then(Json::as_str)
-            .map(str::to_owned);
-        json!({
-            "app": app,
-            "resource": resource,
-            "published": published,
-            "invocation": invocation,
-        })
     }
 }
 
@@ -696,20 +632,6 @@ fn reads_only(invocation: &Invocation) -> bool {
             ..
         }
     )
-}
-
-/// The collection whose part keeps the item `resource` names (`notes.pages/pages/<id>` is
-/// `notes.pages`, and so is what that item holds), or `None` for a resource that is no item:
-/// the part a step on it is taken back on.
-fn collection_of(resource: &str) -> Option<String> {
-    let mut at = resource;
-    loop {
-        if let Some(kind) = tilo_resource::items::item_kind(at) {
-            return Some(kind);
-        }
-        let (head, _) = at.rsplit_once('/')?;
-        at = head;
-    }
 }
 
 /// Load the package `wasm`, whose metadata is `meta`, into the session: its module, the schemas
@@ -1307,18 +1229,7 @@ mod tests {
             })],
             "the app's own verb, on the document it publishes, without the document among the arguments"
         );
-        let steps = steps.borrow();
-        assert_eq!(steps.done, 1);
-        assert_eq!(
-            steps.history,
-            [json!({
-                "app": "so.tilo.chat",
-                "resource": "chat.workspace",
-                "published": false,
-                "invocation": null,
-            })],
-            "the step is taken back on the document the app keeps it in"
-        );
+        assert_eq!(steps.borrow().done, 1);
     }
 
     #[test]

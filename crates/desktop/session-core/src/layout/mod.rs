@@ -686,6 +686,11 @@ pub trait Layouts {
     fn step(&self, person: &str, redo: bool) -> Stepped;
     /// The last step of the layout `person` can take back, as who made it and what it did.
     fn last_step(&self, person: &str) -> Option<(tilo_actions::Actor, String)>;
+    /// Take back every change the invocation `invocation` made of the layout, for `person`:
+    /// whether any was. A host that keeps no shared history has none to take back.
+    fn take_back(&self, _person: &str, _invocation: &str) -> Result<bool, String> {
+        Ok(false)
+    }
     /// Note that `asked` made `action` of the layout `before`, which made it `tree`, and that the
     /// windows in `shows` show the records they name: what the change the layout now makes is named
     /// by.
@@ -848,7 +853,7 @@ pub struct Layout {
     catalog: Rc<RefCell<Catalog>>,
     /// Actions that arrived under a gesture or while the person typed: they run in order once it
     /// ends.
-    waiting: RefCell<VecDeque<(Actor, LayoutAction)>>,
+    waiting: RefCell<VecDeque<(Actor, LayoutAction, Option<tilo_actions::ActionContext>)>>,
     /// Each turn asked on the canvas, by the message that asked it ([`turn_key`]): where the places
     /// an agent's step in it makes stand. A turn is the session's while it runs, never the
     /// record's: the record holds the places it made.
@@ -1696,9 +1701,12 @@ impl Layout {
     /// Why the action names something the layout does not hold.
     pub fn ask(&mut self, asked: &Actor, action: LayoutAction, busy: Busy) -> Result<bool, String> {
         if busy.holds() {
-            self.waiting
-                .borrow_mut()
-                .push_back((asked.to_owned(), action));
+            // It runs later as the invocation it serves now.
+            self.waiting.borrow_mut().push_back((
+                asked.to_owned(),
+                action,
+                tilo_actions::invoking_context(),
+            ));
             return Ok(false);
         }
         self.write(asked, &action)?;
@@ -1711,10 +1719,10 @@ impl Layout {
     /// # Errors
     /// Why the action could not be made.
     pub fn release(&mut self) -> Result<(), String> {
-        let Some((asked, action)) = self.waiting.borrow_mut().pop_front() else {
+        let Some((asked, action, serving)) = self.waiting.borrow_mut().pop_front() else {
             return Ok(());
         };
-        self.write(&asked, &action)
+        tilo_actions::with_invoking_context(serving, || self.write(&asked, &action))
     }
 
     /// How many actions wait for the person to finish.
@@ -1770,6 +1778,15 @@ impl Layout {
     /// back in the layout it was made in. Whether there was one.
     pub fn undo(&mut self, person: &str) -> bool {
         self.show(self.layouts.step(person, false))
+    }
+
+    /// Take back every change the invocation `invocation` made of the layout, wherever it stands
+    /// in the layout's history. Whether any was.
+    ///
+    /// # Errors
+    /// Why the layout could not be written.
+    pub fn take_back(&self, invocation: &str) -> Result<bool, String> {
+        self.layouts.take_back(&self.person, invocation)
     }
 
     /// Redo `person` 's last undone change of the layout.
@@ -1888,7 +1905,9 @@ impl Layout {
 
 /// What `action`, asked for by `asked`, is: who asked and what they did, as the change of the layout
 /// it makes names it. The layout is `person`'s, so an actor that is not them acts for them: an agent
-/// arranging their layout works for them, and their undo takes its step back.
+/// arranging their layout works for them, and their undo takes its step back. A step of an
+/// invocation ([`tilo_actions::invoking_context`]) names it and its run, so taking that invocation
+/// back takes this step back too.
 ///
 /// The person's own device hands its agent the session it runs, which is the delegation its change
 /// carries: every workspace admits the agent's change by the preset that delegation gives it, as it
@@ -1912,7 +1931,11 @@ pub fn step_context(
         ))),
         // A step of its own, and when it was made beside the person's steps of other records.
         gesture: Some(tilo_actions::ActionId::new()),
-        ..tilo_actions::ActionContext::default()
+        ..tilo_actions::reading_invoking_context(|serving| tilo_actions::ActionContext {
+            source_invocation: serving.and_then(|serving| serving.source_invocation),
+            group: serving.and_then(|serving| serving.group.clone()),
+            ..tilo_actions::ActionContext::default()
+        })
     }
 }
 

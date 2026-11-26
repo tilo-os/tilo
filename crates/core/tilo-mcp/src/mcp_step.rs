@@ -124,15 +124,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         ))
     }
 
-    /// The invocation the call being answered is a step of: its undo step
-    /// and the name it goes by, when the call names one
-    /// (`_meta["so.tilo.mcp"].invocation`).
-    pub(super) fn grouped_invocation() -> Option<(tilo_actions::ActionId, String)> {
-        let label = DeclaredInvocation::current()?.title;
-        let step = STEP.try_with(|step| *step).ok()?;
-        Some((step, label))
-    }
-
     /// The invocation a tool call joins, when its
     /// `_meta["so.tilo.mcp"].invocation` names one: its id, and the name the
     /// changes of the call are attributed to, as history shows them (empty

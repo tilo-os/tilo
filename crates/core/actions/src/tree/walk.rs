@@ -774,31 +774,6 @@ pub fn cannot_be_read_now(page: &crate::remote::CataloguePage) -> bool {
     page.budget_exhausted && !page.exhausted && page.next_cursor.is_empty()
 }
 
-impl Resolved {
-    /// Where a change of the target is taken back: its document's own history, on the nearest
-    /// resource that holds the target (or the target itself) and offers `undo`; for an app
-    /// named itself (a document whose root is the app's), where its root actions offer it.
-    pub fn history(&self) -> Option<String> {
-        let offers = |node: &&Node| {
-            node.actions
-                .iter()
-                .any(|action| action.address.action == "undo")
-        };
-        let nearest = self.node.iter().chain(self.chain.iter().rev()).find(offers);
-        nearest.map(|node| node.id.clone()).or_else(|| {
-            self.node
-                .is_none()
-                .then(|| {
-                    self.actions
-                        .iter()
-                        .find(|action| action.address.action == "undo")
-                        .map(|action| action.address.resource.clone())
-                })
-                .flatten()
-        })
-    }
-}
-
 impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
     /// One directory level: the resources under `parent` and their actions,
     /// over as many pages as a bounded read takes.

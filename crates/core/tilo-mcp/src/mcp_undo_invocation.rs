@@ -9,7 +9,6 @@
 use tilo_action_services::workspace_invocations;
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_actions::{ActionAddress, InvocationId};
-use tilo_lock::MutexRecover as _;
 
 use super::{ActionProvider, Failure, McpServer, Reply, invocation_id, json};
 
@@ -58,16 +57,5 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             }));
         }
         Ok(reply)
-    }
-
-    /// Note that the call changed `app`, whose history verbs `history` offers: a call naming
-    /// the group it is a step of makes that group's step too, which `undo task` takes back in
-    /// every app it changed, as it takes back a program's.
-    pub(super) fn note_change(&self, app: &str, history: Option<String>) {
-        if let Some((gesture, label)) = Self::grouped_invocation() {
-            self.programs
-                .lock_recover()
-                .note_invocation(gesture, &label, app, history);
-        }
     }
 }

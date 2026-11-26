@@ -250,7 +250,12 @@ fn described(recorded: &Recorded, addressed: Option<(&str, &str)>) -> Invocation
         origin: recorded.origin.clone(),
         retries: recorded.retries.map(|original| original.0.to_string()),
         spend: recorded.spend.clone(),
-        step: None,
+        // The undo step its caller's context named: the calls of one tool call share it.
+        step: request
+            .context
+            .as_ref()
+            .and_then(|context| context.gesture)
+            .map(|gesture| gesture.0.to_string()),
         by: by(&recorded.asked),
         group: request
             .context

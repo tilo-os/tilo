@@ -1068,8 +1068,8 @@ struct StepAsked {
     slot: Option<String>,
     /// The place the ask is in, by the resource that place shows.
     beside: String,
-    /// The run the step is one of, as its invocation names it.
-    run: Option<tilo_actions::WorkGroup>,
+    /// The invocation the step serves, and the run it is one of ([`crate::platform::steps::serving`]).
+    serving: tilo_actions::ActionContext,
     done: tilo_actions::remote::Completer<
         Result<Option<tilo_actions::ActionOutput>, ActionCallError>,
     >,
@@ -1203,7 +1203,7 @@ impl crate::platform::steps::SessionSteps for SessionServices {
         address: tilo_actions::ActionAddress,
         slot: Option<String>,
         beside: String,
-        run: Option<tilo_actions::WorkGroup>,
+        serving: tilo_actions::ActionContext,
         done: tilo_actions::remote::Completer<
             Result<Option<tilo_actions::ActionOutput>, ActionCallError>,
         >,
@@ -1213,7 +1213,7 @@ impl crate::platform::steps::SessionSteps for SessionServices {
             address,
             slot,
             beside,
-            run,
+            serving,
             done,
         })));
     }
@@ -1684,7 +1684,7 @@ impl SessionServices {
                         address,
                         slot,
                         beside,
-                        run,
+                        serving,
                         done,
                     } = *step;
                     match arguments_of(slot.as_deref()) {
@@ -1704,7 +1704,7 @@ impl SessionServices {
                             invoke_service_step(
                                 services,
                                 &actor,
-                                run.as_ref(),
+                                serving.group.as_ref(),
                                 &address,
                                 &arguments,
                                 &beside,
@@ -1713,18 +1713,18 @@ impl SessionServices {
                         }
                         // The system's `open` stands a place beside the conversation of the turn that
                         // asked when it names none (`docs/designs/app-language/one-app-model.md` §3).
+                        // What it changes in the layout names the invocation it serves.
                         Ok(arguments) => done.complete(
-                            surfaces
-                                .invoke_as(
+                            tilo_actions::with_invoking_context(Some(serving), || {
+                                surfaces.invoke_as(
                                     &actor,
                                     &address,
                                     &with_turn_beside(&address, &arguments, &beside),
                                     look,
                                 )
-                                .map(
-                                    tilo_ui_base::host_operation::ResourceOperationStart::completed,
-                                )
-                                .map_err(|error| ActionCallError::from_api(&error)),
+                            })
+                            .map(tilo_ui_base::host_operation::ResourceOperationStart::completed)
+                            .map_err(|error| ActionCallError::from_api(&error)),
                         ),
                         Err(why) => done.complete(Err(why)),
                     }
@@ -2087,10 +2087,10 @@ impl Host {
         // place in front. A place the step opens stands beside it
         // (`docs/designs/app-language/one-app-model.md` §3).
         let beside = service_steps::turn_beside(turn);
-        let run = request.context.and_then(|context| context.group);
+        let serving = crate::platform::steps::serving(&request);
         let (done, ran) = tilo_actions::remote::pending();
         self.session
-            .invoke_step(actor, request.target.address, slot, beside, run, done);
+            .invoke_step(actor, request.target.address, slot, beside, serving, done);
         let answered = Arc::clone(&self.answered);
         ran.map(move |ran| {
             use tilo_actions::remote::ReceiptStatus;

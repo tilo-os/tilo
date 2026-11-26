@@ -17,6 +17,8 @@ use crate::language::host;
 const CHAT: &str = ui::apps::CHAT;
 /// Chat's package under the tree's `apps/tl`, which the device installs to run it.
 const CHAT_PACKAGE: &str = "chat";
+/// Tasks' id, as the workspace runs it.
+const TASKS: &str = "so.tilo.tasks";
 
 /// The channel `name` made in the workspace's chat by `agent`: the address its posts go to.
 async fn made_channel(agent: &host::Agent, name: &str) -> String {
@@ -685,6 +687,146 @@ fn an_agents_run_is_taken_back_whole_through_its_record() {
         assert!(
             reason.contains("already taken back"),
             "a person reads what stands: {reason}"
+        );
+    });
+}
+
+/// What `agent`'s `tilo_do` of `path` with `args` answered once it ended, under the invocation
+/// `run` when it names one; a refusal fails the test, saying why.
+async fn done(agent: &host::Agent, path: &str, args: Value, run: Option<&str>) -> Value {
+    let mut call = json!({"path": path, "args": args, "wait_ms": 120_000});
+    if let Some(run) = run {
+        call["invocation_id"] = run.into();
+    }
+    let answer = agent.tool_structured("tilo_do", &call).await;
+    let (text, failed) = said(&answer);
+    assert!(!failed, "{path}: {text}");
+    answer["structuredContent"].clone()
+}
+
+/// The status of the task `id` as the person's copy of the workspace's store holds it, once it
+/// reads `want` (any status with `None`); the last one read when it never comes to `want`.
+async fn status(host: &host::Host, id: &str, want: Option<&str>) -> String {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let read = host
+            .daemon()
+            .workspaces()
+            .read_store_as(
+                host.workspace(),
+                host.person(),
+                &collab_types::store::wire::Command::Get {
+                    kind: "tl.so.tilo.tasks.Task".to_owned(),
+                    id: id.to_owned(),
+                },
+            )
+            .await
+            .expect("the person's copy answers a read");
+        let now = match read {
+            collab_types::store::wire::Reply::Resource(Some(task)) => {
+                format!("{:?}", task.scalar("status"))
+            }
+            _ => String::new(),
+        };
+        if (!now.is_empty() && want.is_none_or(|want| now.contains(want)))
+            || std::time::Instant::now() >= deadline
+        {
+            return now;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
+/// A run is taken back around another member's later change: an agent's run closes a task and
+/// with it both its subtasks, the person moves one subtask on after it, and the run's `undo`
+/// leaves the person's move and puts the other subtask back as it was. Taking back a run that is
+/// taken back already is refused in words.
+#[test]
+fn a_run_is_taken_back_around_a_members_later_change() {
+    host::run_with(&["tasks"], |host| async move {
+        host::start_app(host.as_ref(), TASKS)
+            .await
+            .unwrap_or_else(|refused| panic!("Tasks starts: {refused:?}"));
+        let agent = host.agent();
+        let made = |answer: Value| {
+            answer["made"][0]["id"]
+                .as_str()
+                .unwrap_or_else(|| panic!("the call names what it made: {answer}"))
+                .to_owned()
+        };
+        let plan = made(
+            done(
+                &agent,
+                &format!("{TASKS}#new_task"),
+                json!({"title": "Plan"}),
+                None,
+            )
+            .await,
+        );
+        let add_subtask = format!("{TASKS}/{plan}#add_subtask");
+        let subtask =
+            |title: &'static str| done(&agent, &add_subtask, json!({"title": title}), None);
+        let (moved, untouched) = (made(subtask("Budget").await), made(subtask("Hiring").await));
+        let before = status(host.as_ref(), &untouched, None).await;
+
+        let run = tilo_actions::InvocationId::new().0.to_string();
+        done(
+            &agent,
+            &format!("{TASKS}/{plan}#set_status"),
+            json!({"status": "done"}),
+            Some(&run),
+        )
+        .await;
+        let closed = status(host.as_ref(), &untouched, Some("done")).await;
+        assert!(closed.contains("done"), "the run closed it: {closed}");
+
+        let dispatch = host.dispatch();
+        let person = host.caller();
+        // The person's own move, by the action Tasks publishes on the subtask: on the resource it
+        // publishes the subtask as, `tl:<app>:<id>`.
+        let set_status = host::app_action(
+            host.as_ref(),
+            TASKS,
+            &format!("tl:{TASKS}:{moved}"),
+            "set_status",
+        );
+        host::output(host.as_ref(), set_status, json!({"status": "in_review"}))
+            .await
+            .expect("the person moves the subtask on");
+        let moved_on = status(host.as_ref(), &moved, Some("in_review")).await;
+        assert!(
+            moved_on.contains("in_review"),
+            "the person's move lands: {moved_on}"
+        );
+        let undo = || record_action(&run, workspace_invocations::UNDO);
+        completed(
+            invoked(dispatch.as_ref(), &person, undo())
+                .await
+                .expect("the person takes the run back"),
+        );
+        assert_eq!(
+            status(host.as_ref(), &untouched, Some(&before)).await,
+            before,
+            "the run's change of the other subtask is taken back"
+        );
+        let kept = status(host.as_ref(), &moved, None).await;
+        assert!(
+            kept.contains("in_review"),
+            "the person's later move stays: {kept}"
+        );
+        assert_eq!(
+            one(dispatch.as_ref(), &person, &run).await["status"],
+            "undone"
+        );
+
+        let again = rejected(
+            invoked(dispatch.as_ref(), &person, undo())
+                .await
+                .expect("the record answers"),
+        );
+        assert!(
+            matches!(&again, ActionCallError::Refused { reason } if reason.contains("already taken back")),
+            "a second undo says what stands: {again:?}"
         );
     });
 }

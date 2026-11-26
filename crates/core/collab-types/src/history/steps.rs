@@ -83,10 +83,17 @@ impl Scope {
             .and_then(|context| context.group.as_ref())
             .filter(|group| names_a_session(&group.kind));
         match self {
-            // The person's own scopes below leave every agent session out.
-            Self::Session(id) => context
-                .and_then(|context| context.group.as_ref())
-                .is_some_and(|group| names_a_session(&group.kind) && &group.id == id),
+            // The person's own scopes below leave every agent session out. A session is named by
+            // its group, and one invocation of it by the invocation the action API admitted.
+            Self::Session(id) => context.is_some_and(|context| {
+                context
+                    .group
+                    .as_ref()
+                    .is_some_and(|group| names_a_session(&group.kind) && &group.id == id)
+                    || context
+                        .source_invocation
+                        .is_some_and(|invocation| invocation.to_string() == *id)
+            }),
             Self::Invoker(actor) => {
                 run.is_none()
                     && context

@@ -2080,10 +2080,14 @@ mod run_undo {
             let mut taken = false;
             for (at, root) in candidates(app, record) {
                 let left = until.saturating_duration_since(Instant::now());
-                let pending =
-                    tilo_invocations::take_back_run(&route, &at, root.as_deref(), run, step);
+                let at = tilo_invocations::TakeBack {
+                    at: &at,
+                    root: root.as_deref(),
+                    near: None,
+                };
+                let pending = tilo_invocations::take_back_run(&route, &at, run, step);
                 match pending.wait_timeout(left.max(ANSWER)) {
-                    Ok(Some(Ok(()))) => {
+                    Ok(Some(Ok(_))) => {
                         taken = true;
                         break;
                     }

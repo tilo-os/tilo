@@ -45,8 +45,7 @@ const KEPT: usize = 4096;
 /// that may be secret.
 pub const NOT_KEPT: &str = "what it was asked with is not kept with its record: ask for it again";
 
-/// Why an invocation is not taken back at a provider: the record there offers no history.
-pub const NO_HISTORY: &str = "the record it changed offers no history to take back";
+pub use tilo_action_services::workspace_invocations::NO_HISTORY;
 
 /// `state`, with what a secret answer said replaced by the word that it was given.
 fn given(mut state: InvocationState) -> InvocationState {
@@ -655,10 +654,13 @@ impl Invocations {
             let (complete, answer) = pending();
             taken.then(move |done| {
                 complete.complete(match done {
-                    Some(Ok(())) => Ok(InvocationReceipt {
+                    Some(Ok(value)) => Ok(InvocationReceipt {
                         invocation: asked,
                         status: ReceiptStatus::Completed {
-                            output: tilo_actions::ActionOutput::default(),
+                            output: tilo_actions::ActionOutput {
+                                value,
+                                ..tilo_actions::ActionOutput::default()
+                            },
                         },
                     }),
                     Some(Err(error)) => Err(error),
@@ -681,33 +683,61 @@ impl Invocations {
         }))
     }
 
-    /// Take back what one record's invocation changed, and say so of the record.
+    /// Take back what one record's invocation changed, and say so of the record: its own
+    /// changes and those of every call made on its behalf ([`Self::steps_of`]), each through the
+    /// history of the record that call changed. It is taken back only when every one of them
+    /// was; otherwise the answer says which were and which were not, and why, and asking again
+    /// takes back what is left. The answer names what someone else changed since and stays.
     fn take_back_recorded(
         records: &Arc<Self>,
         recorded: &Recorded,
-    ) -> Pending<Result<(), ActionCallError>> {
+    ) -> Pending<Result<Option<serde_json::Value>, ActionCallError>> {
         if recorded.undone {
             return Pending::ready(Err(already_taken_back()));
         }
         let id = recorded.request.invocation;
-        let at = recorded.request.target.provider.clone();
-        let run = id.0.to_string();
         let (complete, answer) = pending();
         let records = Arc::clone(records);
-        take_back_run(&recorded.route, &at, None, &run, None).then(move |done| {
-            let result = match done {
-                None => Err(ActionCallError::Unavailable {
-                    reason: "the record did not answer".into(),
-                }),
-                Some(Err(error)) => Err(error),
-                Some(Ok(())) => {
-                    records.mark_undone(&id);
-                    Ok(())
-                }
-            };
-            complete.complete(result);
+        let shares = records.steps_of(id);
+        taken_in_turn(shares, Vec::new(), move |outcomes| {
+            complete.complete(settled(&outcomes).inspect(|_| records.mark_undone(&id)));
         });
         answer
+    }
+
+    /// The calls whose changes taking `id` back takes back, newest first: `id` itself, and every
+    /// call made on its behalf ([`InvokeRequest::on_behalf_of`]), and on theirs, as the device
+    /// recorded them. Each is taken back where it ran, by its own invocation id.
+    fn steps_of(&self, id: InvocationId) -> Vec<Share> {
+        let kept = self.kept();
+        let mut serving = std::collections::HashSet::from([id]);
+        loop {
+            let before = serving.len();
+            for recorded in kept.by_id.values() {
+                if recorded
+                    .request
+                    .on_behalf_of
+                    .is_some_and(|served| serving.contains(&served))
+                {
+                    serving.insert(recorded.request.invocation);
+                }
+            }
+            if serving.len() == before {
+                break;
+            }
+        }
+        kept.order
+            .iter()
+            .rev()
+            .filter(|id| serving.contains(id))
+            .filter_map(|id| kept.by_id.get(id))
+            .map(|recorded| Share {
+                invocation: recorded.request.invocation.0.to_string(),
+                at: recorded.request.target.provider.clone(),
+                resource: recorded.request.target.address.resource.clone(),
+                route: recorded.route.clone(),
+            })
+            .collect()
     }
 
     /// Note that what `id` changed was taken back.
@@ -870,11 +900,108 @@ impl Invocations {
     }
 }
 
-/// Take back what the run `run` changed, through the record's own history: `at` is the provider
-/// whose record holds the changes, and `root` the address prefix of the history action there
-/// when the provider keeps many records (a session's own services), `None` when it keeps one.
+/// One call whose changes an invocation's take-back takes back: its invocation id, the provider
+/// it ran at and the resource it acted on, and the route it runs at.
+struct Share {
+    invocation: String,
+    at: String,
+    resource: String,
+    route: Route,
+}
+
+/// How taking back one share went: the share, and what its record answered or why it refused.
+type Outcome = (Share, Result<Option<serde_json::Value>, ActionCallError>);
+
+/// Take back `shares` one after the other, from the first, and call `done` with how each went.
+fn taken_in_turn(
+    mut shares: Vec<Share>,
+    mut outcomes: Vec<Outcome>,
+    done: impl FnOnce(Vec<Outcome>) + Send + 'static,
+) {
+    if shares.is_empty() {
+        done(outcomes);
+        return;
+    }
+    let share = shares.remove(0);
+    let at = TakeBack {
+        at: &share.at,
+        root: None,
+        near: Some(&share.resource),
+    };
+    take_back_run(&share.route, &at, &share.invocation, None).then(move |taken| {
+        let taken = taken.unwrap_or_else(|| {
+            Err(ActionCallError::Unavailable {
+                reason: "the record did not answer".into(),
+            })
+        });
+        outcomes.push((share, taken));
+        taken_in_turn(shares, outcomes, done);
+    });
+}
+
+/// The answer to an invocation's take-back from how each of its `outcomes` went: what the records
+/// say someone else changed since and stays, by record, once every one was taken back; else
+/// which records were taken back and which were not, and why. A record that offers no history
+/// changed nothing to take back, unless none does.
+fn settled(outcomes: &[Outcome]) -> Result<Option<serde_json::Value>, ActionCallError> {
+    let none_kept = |error: &ActionCallError| matches!(error, ActionCallError::Refused { reason } if reason == NO_HISTORY);
+    if outcomes
+        .iter()
+        .all(|(_, taken)| taken.as_ref().is_err_and(none_kept))
+    {
+        return Err(ActionCallError::Refused {
+            reason: NO_HISTORY.to_owned(),
+        });
+    }
+    let named = |share: &Share| match tilo_actions::remote::resource_parts(&share.at) {
+        Some((app, record)) if !record.is_empty() => format!("{app} {record}"),
+        Some((app, _)) => app.to_owned(),
+        None => share.at.clone(),
+    };
+    let mut kept = serde_json::Map::new();
+    let (mut taken, mut refused) = (Vec::new(), Vec::new());
+    for (share, outcome) in outcomes {
+        match outcome {
+            Ok(value) => {
+                taken.push(named(share));
+                if let Some(stays) = value.as_ref().and_then(|value| value.get("kept")) {
+                    kept.insert(named(share), stays.clone());
+                }
+            }
+            Err(error) if none_kept(error) => {}
+            Err(error) => refused.push(format!("{}: {error}", named(share))),
+        }
+    }
+    if refused.is_empty() {
+        return Ok((!kept.is_empty()).then(|| serde_json::json!({ "kept": kept })));
+    }
+    let taken = if taken.is_empty() {
+        "nothing was taken back".to_owned()
+    } else {
+        format!("taken back in {}", taken.join(", "))
+    };
+    Err(ActionCallError::Refused {
+        reason: format!(
+            "{taken}; not taken back in {}. Ask again to take back the rest",
+            refused.join("; ")
+        ),
+    })
+}
+
+/// Where a run is taken back: `at` is the provider whose record holds the changes, `root` the
+/// address prefix of the history action there when the provider keeps many records (a session's
+/// own services), and `near` the resource the call acted on, whose own history (or the one
+/// nearest it) is asked when the provider offers several.
+pub struct TakeBack<'a> {
+    pub at: &'a str,
+    pub root: Option<&'a str>,
+    pub near: Option<&'a str>,
+}
+
+/// Take back what the run `run` changed, through the record's own history, where `at` says.
 /// `step` names the one change of that record to take back, as the record's own history names
-/// it; absent to take back the run's whole share of the record.
+/// it; absent to take back the run's whole share of the record. The answer is what the record
+/// said it did.
 ///
 /// The store's change history knows which changes a run made, so nothing is rebuilt here: the
 /// record publishes the history verb `undo` with an `invocation` argument, and this runs it as
@@ -883,34 +1010,34 @@ impl Invocations {
 /// is followed until it ends.
 pub fn take_back_run(
     route: &Route,
-    at: &str,
-    root: Option<&str>,
+    at: &TakeBack<'_>,
     run: &str,
     step: Option<&str>,
-) -> Pending<Result<(), ActionCallError>> {
+) -> Pending<Result<Option<serde_json::Value>, ActionCallError>> {
     let (provider, runs_as) = route.clone();
     let query = CatalogueQuery {
-        provider: Some(at.to_owned()),
+        provider: Some(at.at.to_owned()),
         needle: UNDO.to_owned(),
         max_results: MAX_CATALOGUE_PAGE,
         ..CatalogueQuery::default()
     };
     let run = run.to_owned();
     let step = step.map(str::to_owned);
-    let root = root.map(str::to_owned);
+    let root = at.root.map(str::to_owned);
+    let near = at.near.map(str::to_owned);
     let (complete, answer) = pending();
     provider.query(&runs_as, query).then(move |page| {
-        let found = match page {
-            None => Err(ActionCallError::Unavailable {
-                reason: "the record did not answer".into(),
-            }),
-            Some(Err(error)) => Err(error),
-            Some(Ok(page)) => {
-                undo_action(&page.rows, root.as_deref()).ok_or_else(|| ActionCallError::Refused {
-                    reason: NO_HISTORY.to_owned(),
-                })
-            }
-        };
+        let found =
+            match page {
+                None => Err(ActionCallError::Unavailable {
+                    reason: "the record did not answer".into(),
+                }),
+                Some(Err(error)) => Err(error),
+                Some(Ok(page)) => undo_action(&page.rows, root.as_deref(), near.as_deref())
+                    .ok_or_else(|| ActionCallError::Refused {
+                        reason: NO_HISTORY.to_owned(),
+                    }),
+            };
         let (token, address) = match found {
             Ok(found) => found,
             Err(error) => {
@@ -963,7 +1090,7 @@ fn followed(
     provider: Arc<dyn ActionProvider + Send + Sync>,
     runs_as: Caller,
     receipt: InvocationReceipt,
-    done: Completer<Result<(), ActionCallError>>,
+    done: Completer<Result<Option<serde_json::Value>, ActionCallError>>,
 ) {
     if !matches!(receipt.status, ReceiptStatus::Accepted) || done.is_abandoned() {
         done.complete(taken(receipt.status));
@@ -985,34 +1112,46 @@ fn followed(
 
 /// The `undo` action `rows` offer that takes an invocation back, its provider and address:
 /// the one whose history lies at `root` when `root` names a prefix, preferring a verb that
-/// names the invocation it takes.
+/// names the invocation it takes, and of those the one on the resource nearest `near` (the
+/// longest start the two ids share).
 fn undo_action(
     rows: &[tilo_actions::remote::CatalogueRow],
     root: Option<&str>,
+    near: Option<&str>,
 ) -> Option<(String, tilo_actions::ActionAddress)> {
-    let mut fallback = None;
+    let shared = |resource: &str| {
+        near.map_or(0, |near| {
+            near.bytes()
+                .zip(resource.bytes())
+                .take_while(|(a, b)| a == b)
+                .count()
+        })
+    };
+    let mut found: Option<(bool, usize, &tilo_actions::remote::CatalogueRow)> = None;
     for row in rows {
         let Some(action) = &row.action else {
             continue;
         };
-        if action.address.action != UNDO {
+        if action.address.action != UNDO
+            || root.is_some_and(|root| !action.address.resource.starts_with(root))
+        {
             continue;
         }
-        if root.is_some_and(|root| !action.address.resource.starts_with(root)) {
-            continue;
+        let named = action.params.iter().any(|param| param.name == "invocation");
+        let rank = (named, shared(&action.address.resource));
+        if found.is_none_or(|(named, shared, _)| rank > (named, shared)) {
+            found = Some((rank.0, rank.1, row));
         }
-        if action.params.iter().any(|param| param.name == "invocation") {
-            return Some((row.provider.clone(), action.address.clone()));
-        }
-        fallback.get_or_insert_with(|| (row.provider.clone(), action.address.clone()));
     }
-    fallback
+    let (_, _, row) = found?;
+    let action = row.action.as_ref()?;
+    Some((row.provider.clone(), action.address.clone()))
 }
 
-/// How taking back ended.
-fn taken(status: ReceiptStatus) -> Result<(), ActionCallError> {
+/// How taking back ended, and what the record said it did.
+fn taken(status: ReceiptStatus) -> Result<Option<serde_json::Value>, ActionCallError> {
     match status {
-        ReceiptStatus::Completed { .. } => Ok(()),
+        ReceiptStatus::Completed { output } => Ok(output.value),
         ReceiptStatus::Failed { error } => Err(ActionCallError::Refused {
             reason: error.message,
         }),

@@ -1861,6 +1861,12 @@ pub fn result(
     Some(value)
 }
 
+/// Whether nothing `scope` names is left in effect in `doc`: an invocation of it is taken back
+/// already there.
+fn spent(doc: &tilo_actions::Doc, scope: &steps::Scope) -> bool {
+    steps::undo_preview(doc, scope, 1).is_empty()
+}
+
 impl HistoryEdit {
     /// Apply the edit, decoding recorded actions with the registry
     /// `register` fills: one compiled copy for every resource.
@@ -1913,6 +1919,7 @@ impl HistoryEdit {
                     (Some(to), None) => steps::resolve(doc, to).and_then(|heads| {
                         steps::undo_since(doc, &scope, &heads, compensate, words)
                     }),
+                    (None, None) if invocation.is_some() && spent(doc, &scope) => Ok(Vec::new()),
                     (None, None) => {
                         steps::undo(doc, &scope, limit(*steps, default), compensate, words)
                     }

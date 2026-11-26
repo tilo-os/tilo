@@ -11,7 +11,7 @@ use tilo_actions::remote::{ActionCallError, Completer};
 /// A step of the session's own actions, answered on its pass.
 pub(crate) trait SessionSteps: Send + Sync {
     /// Run `address` as `actor` with `slot` (its arguments in the slot form the broker carries),
-    /// as a step of `run` when its invocation names one:
+    /// serving the invocation `serving` names, a step of the run it names ([`serving`]):
     /// completed on the session's pass, which is where the layout and the windows are. The
     /// answer is `None` for a step the session accepted and carries on with.
     ///
@@ -24,7 +24,23 @@ pub(crate) trait SessionSteps: Send + Sync {
         address: ActionAddress,
         slot: Option<String>,
         beside: String,
-        run: Option<tilo_actions::WorkGroup>,
+        serving: tilo_actions::ActionContext,
         done: Completer<Result<Option<tilo_actions::ActionOutput>, ActionCallError>>,
     );
+}
+
+/// What a step of the session's own actions serves: the invocation `request` is, and the run it
+/// is a step of. What it changes in the layout names both, so taking the invocation back takes
+/// the step back with it.
+pub(crate) fn serving(
+    request: &tilo_actions::remote::InvokeRequest,
+) -> tilo_actions::ActionContext {
+    tilo_actions::ActionContext {
+        group: request
+            .context
+            .as_ref()
+            .and_then(|context| context.group.clone()),
+        source_invocation: Some(request.invocation),
+        ..tilo_actions::ActionContext::default()
+    }
 }

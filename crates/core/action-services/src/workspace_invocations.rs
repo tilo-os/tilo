@@ -39,6 +39,10 @@ pub const RETRY: &str = "retry";
 /// Take back what one invocation changed, through its record's own history.
 pub const UNDO: &str = "undo";
 
+/// Why an invocation is not taken back at a provider: the record there offers no history, so the
+/// call changed nothing there to take back.
+pub const NO_HISTORY: &str = "the record it changed offers no history to take back";
+
 /// How many invocations a page holds when the query asks for no number.
 pub const PAGE: usize = 50;
 /// The most invocations one page holds.

@@ -279,10 +279,7 @@ impl tilo_actions::remote::Admits for SessionActions {
             request.target.address.clone(),
             argument,
             beside,
-            request
-                .context
-                .as_ref()
-                .and_then(|context| context.group.clone()),
+            crate::platform::steps::serving(request),
             done,
         );
         Ok(asked.map(|ran| {
