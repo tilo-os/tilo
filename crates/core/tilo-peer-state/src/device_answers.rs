@@ -63,8 +63,11 @@ pub struct AnswersRecord {
     /// Keep an answer, now or once this device holds the person's workspace.
     pub answer: Arc<dyn Fn(DeviceAnswer) + Send + Sync>,
     /// Take back what `(device, app, cap)` was answered, now or once this device holds it.
-    pub take_back: Arc<dyn Fn(&str, &str, DeviceCap) + Send + Sync>,
+    pub take_back: Arc<TakeBack>,
 }
+
+/// What takes back the answer `(device, app, cap)` was given.
+pub type TakeBack = dyn Fn(&str, &str, DeviceCap) + Send + Sync;
 
 /// The person's device answers, as one device reads and gives them.
 #[derive(Clone)]
