@@ -18,6 +18,7 @@ pub struct Second {
     daemon: Child,
     env: Vec<(String, OsString)>,
     log: PathBuf,
+    home: PathBuf,
     /// The person, by their id: the hex of their root.
     pub person: String,
     /// The workspace the invitation brought it into.
@@ -69,7 +70,7 @@ impl Second {
         let profile = place("p");
         std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut env: Vec<(String, OsString)> = vec![
-            ("HOME".into(), home.into()),
+            ("HOME".into(), home.clone().into()),
             ("XDG_CONFIG_HOME".into(), config.into()),
             ("XDG_DATA_HOME".into(), data.clone().into()),
             ("XDG_CACHE_HOME".into(), place("k").into()),
@@ -111,6 +112,7 @@ impl Second {
             daemon,
             env,
             log,
+            home,
             person: String::new(),
             workspace: String::new(),
         };
@@ -169,6 +171,57 @@ impl Second {
             .stdin(Stdio::null())
             .output_locked()
             .expect("the second computer's tilo runs")
+    }
+
+    /// Mount this computer's workspace folder, as `tilo login` mounts it, and answer the folder
+    /// it stands at: the files daemon serves the workspace's tree there, and what the person
+    /// writes into it is this computer's record write.
+    ///
+    /// # Panics
+    ///
+    /// The mount does not come up, or the platform cannot mount a FUSE tree.
+    pub fn mount(&self, name: &str) -> PathBuf {
+        let point = self.home.join("Tilo").join(name);
+        std::fs::create_dir_all(&point).expect("the folder to mount at");
+        let cache = self.home.join(".cache").join("tilo-fs");
+        std::fs::create_dir_all(&cache).expect("the mount's cache");
+        let log = self.home.join("fs.log");
+        Command::new(tilo_test_env::sibling_binary("tilo-fs", "fs"))
+            .args([
+                "serve",
+                "--mount-point",
+                point.to_str().expect("the mount point is text"),
+                "--cache-dir",
+                cache.to_str().expect("the cache is text"),
+            ])
+            .envs(self.env.iter().map(|(name, value)| (name.clone(), value.clone())))
+            .env("TILO_FS_FUSE_REQUIRED", "1")
+            .env_remove("TILO_SERVER_CONFIG")
+            .env_remove(runtime_bundle::RUNTIME_DIR_ENV)
+            .env_remove("TILO_SVC_COLLAB_FD")
+            .env_remove("TILO_SVC_IDENTITY_FD")
+            .stdin(Stdio::null())
+            .stdout(std::fs::File::create(&log).unwrap())
+            .stderr(std::fs::File::create(self.home.join("fs.err")).unwrap())
+            .spawn()
+            .expect("the files daemon starts");
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            let mounted = std::fs::read_to_string("/proc/self/mountinfo")
+                .unwrap_or_default()
+                .lines()
+                .any(|line| line.contains(point.to_str().expect("the mount point is text")));
+            if mounted {
+                return point;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the workspace's folder mounts: {}\n{}",
+                std::fs::read_to_string(&log).unwrap_or_default(),
+                std::fs::read_to_string(self.home.join("fs.err")).unwrap_or_default(),
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     /// `tilo do` the action at `path` with `args`, in the workspace this computer joined, as the

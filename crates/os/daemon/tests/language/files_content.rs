@@ -340,6 +340,7 @@ fn a_resumed_upload_of_a_large_file_lands_once_and_whole() {
 /// A member who edits a public workspace founds its file tree from their computer's mounted
 /// folder; a viewer's computer founds nothing and writes nothing.
 #[test]
+#[ignore = "mounts a FUSE tree: the real-fuse check runs it"]
 fn an_editor_founds_a_public_workspace_tree_and_a_viewer_does_not() {
     host::run(|host| async move {
         let lounge = host
@@ -356,7 +357,7 @@ fn an_editor_founds_a_public_workspace_tree_and_a_viewer_does_not() {
                 host.daemon().workspaces().device_cert(),
                 tilo_server_protocol::directory::Listing {
                     description: "Everyone".into(),
-                    default_role: tilo_peer_state::join::Role::Viewer,
+                    default_role: tilo_peer_state::join::Role::Editor,
                 },
             )
             .await
@@ -368,14 +369,33 @@ fn an_editor_founds_a_public_workspace_tree_and_a_viewer_does_not() {
             "nobody founded the lounge's tree yet",
         );
 
-        // A public workspace's editor and viewer are other people's devices. This computer founds
-        // one person, and the fixture's Member is one of their own devices. Even one of them
-        // founds the tree by its mounted folder's document writes over the device link, which the
-        // fixture's Member cannot send.
-        panic!(
-            "a public workspace's editor and viewer are other people's devices, which this \
-             computer's one person cannot be, and a mounted folder founds the tree by document \
-             writes over the device link, which the fixture's Member cannot send"
+        // Another person's computer joins as an editor and mounts the workspace: what it writes
+        // into the folder is its record write, and the first change founds the tree.
+        let editor = host::Second::joined(&host, "Ada", "editor", &[], &[]).await;
+        let folder = editor.mount("Lounge");
+        std::fs::write(folder.join("plan.md"), b"Launch on Friday.\n")
+            .expect("the editor's mount takes the write");
+        let tree = crate::language::files_support::kept_when(&host, &lounge, |tree| {
+            crate::language::files_support::file_at(tree, "", "plan.md").is_some()
+        })
+        .await;
+        assert!(
+            crate::language::files_support::file_at(&tree, "", "plan.md").is_some(),
+            "the editor's folder founded the workspace's tree",
+        );
+
+        // A viewer's computer mounts it too, and writes nothing: the folder is read only, and the
+        // workspace's tree gains nothing.
+        let viewer = host::Second::joined(&host, "Vic", "viewer", &[], &[]).await;
+        let read_only = viewer.mount("Lounge");
+        assert!(
+            std::fs::write(read_only.join("other.md"), b"Nothing of mine.\n").is_err(),
+            "a viewer's folder takes no write",
+        );
+        let tree = crate::language::files_support::kept_when(&host, &lounge, |_| true).await;
+        assert!(
+            crate::language::files_support::file_at(&tree, "", "other.md").is_none(),
+            "the viewer's folder wrote nothing",
         );
     });
 }
@@ -383,6 +403,7 @@ fn an_editor_founds_a_public_workspace_tree_and_a_viewer_does_not() {
 /// A computer's mounted folder founds a workspace's tree, and the page of the person whose
 /// computer it is opens every document the mount wrote.
 #[test]
+#[ignore = "mounts a FUSE tree: the real-fuse check runs it"]
 fn a_tree_a_computers_mount_founds_is_one_a_page_opens() {
     host::run(|host| async move {
         let workspace = host
@@ -404,14 +425,34 @@ fn a_tree_a_computers_mount_founds_is_one_a_page_opens() {
             )
             .await
             .unwrap();
-        let _laptop = host.member("Ada's laptop", &workspace).await;
 
         // The laptop's folder mounts the workspace and writes the tree's records, as `tilo
-        // login` mounts it. Those are document writes over the device link, which the fixture's
-        // Member cannot make: it sends calls, not documents.
-        panic!(
-            "the fixture's Member sends no document write: a computer's mounted folder cannot \
-             found the workspace's tree over the device link"
+        // login` mounts it: the write is the member's document write over the device link.
+        let laptop = host::Second::joined(&host, "Ada's laptop", "editor", &[], &[]).await;
+        let folder = laptop.mount("Lounge");
+        std::fs::write(folder.join("plan.md"), b"Launch on Friday.\n")
+            .expect("the laptop's mount takes the write");
+
+        // The page of the person whose computer it is opens every document the mount wrote: the
+        // tree names the file and the workspace's content holds its bytes.
+        let tree = crate::language::files_support::kept_when(&host, &workspace, |tree| {
+            crate::language::files_support::file_at(tree, "", "plan.md").is_some()
+        })
+        .await;
+        let node = crate::language::files_support::file_at(&tree, "", "plan.md")
+            .expect("the mount's file is in the tree");
+        let hash = node.hash.clone().expect("the file names its content");
+        let key = host.key("the page");
+        let read = crate::language::files_support::content_at_hash(
+            &crate::language::files_support::Session::Key(&key),
+            &workspace,
+            &hash,
+        )
+        .await;
+        assert_eq!(
+            read.as_deref(),
+            Some(b"Launch on Friday.\n".as_slice()),
+            "the page opens what the mount wrote",
         );
     });
 }
