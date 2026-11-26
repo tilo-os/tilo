@@ -793,7 +793,10 @@ async fn the_members_resource_names_each_member_with_their_role_and_join_time() 
             .unwrap_or_else(|| panic!("{person} is a member: {rows:?}"))
     };
     let grace = row_of(person(target));
-    assert_eq!(grace["name"], "Grace", "the name the workspace admitted them by");
+    assert_eq!(
+        grace["name"], "Grace",
+        "the name the workspace admitted them by"
+    );
     assert_eq!(
         serde_json::from_value::<Role>(grace["role"].clone()).unwrap(),
         Role::Editor
@@ -807,7 +810,11 @@ async fn the_members_resource_names_each_member_with_their_role_and_join_time() 
         serde_json::from_value::<Role>(mine["role"].clone()).unwrap(),
         Role::Owner
     );
-    assert_eq!(mine["joined_at"].as_u64(), Some(0), "the owner from its start");
+    assert_eq!(
+        mine["joined_at"].as_u64(),
+        Some(0),
+        "the owner from its start"
+    );
 
     workspaces
         .remove_member(

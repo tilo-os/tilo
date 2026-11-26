@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::{ActionCallError, ActionProvider as _, Caller, ReceiptStatus};
 use tilo_peer_state::join::Role;
-use tilo_workspace_service::workspaces::model_answers::scripted::{Reply, ScriptedProvider};
+use tilo_person_services::model_answers::scripted::{Reply, ScriptedProvider};
 use tilo_workspace_service::workspaces::{AddMemberRequest, MemberPlace};
 use tilolang_workspace as tl;
 
@@ -404,9 +404,9 @@ pub(crate) async fn asked(scripted: &ScriptedProvider, count: usize) {
 /// What the tools answered in `request`, in the order asked: each answer's words, and whether
 /// it failed.
 pub(crate) fn tool_answers(
-    request: &tilo_workspace_service::workspaces::model_answers::protocol::ModelRequest,
+    request: &tilo_person_services::model_answers::protocol::ModelRequest,
 ) -> Vec<(String, bool)> {
-    use tilo_workspace_service::workspaces::model_answers::protocol::Content;
+    use tilo_person_services::model_answers::protocol::Content;
     request
         .messages
         .iter()

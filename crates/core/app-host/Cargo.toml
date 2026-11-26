@@ -12,9 +12,9 @@ path = "src/lib.rs"
 
 [features]
 # The fixtures the app host's tests and its embedders' tests build on, over the service's own.
-test-support = ["tilo-workspace-service/test-support", "tilo-peer-state/test-support", "dep:tilo-test-env", "dep:tilo-surface-compile", "dep:rustls", "dep:tempfile", "tilo-identity/test-support"]
+test-support = ["tilo-workspace-service/test-support", "tilo-peer-state/test-support", "dep:tilo-test-env", "dep:tilo-surface-compile", "dep:rustls", "dep:tempfile", "tilo-identity/test-support", "tilo-person-services/test-support"]
 # The agents a device runs for its workspaces ([`agents`]), and the triggers that start their turns.
-agents = ["tilo-workspace-service/agents", "dep:tilo-agent-session", "dep:ui", "dep:tilo-ui-base", "dep:tilo-recurrence", "dep:tilo-model-gateway", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:tilo-web-search", "dep:feed-rs", "tilo-clock/local"]
+agents = ["tilo-workspace-service/agents", "dep:tilo-agent-session", "dep:ui", "dep:tilo-ui-base", "dep:tilo-recurrence", "dep:tilo-model-gateway", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:tilo-web-search", "dep:feed-rs", "tilo-clock/local", "tilo-person-services/agents"]
 # A workspace's file tree, held in the device's own service.
 files = ["tilo-workspace-service/files", "dep:fs-protocol", "dep:ui", "dep:tilo-ui-base"]
 # The web tools' tests ask a server on this machine instead of the public engines and pages.
@@ -23,6 +23,7 @@ fixture-servers = ["tilo-web-search?/fixture-servers"]
 [dependencies]
 # The workspace service the apps are served on.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["apps"] }
+tilo-person-services = { path = "../person-services", features = ["apps"] }
 # The surface fixtures a test builds declare (test support): what the service stores is the compiled form.
 tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile", optional = true }
 # The device's one store, which apps write and read their resources in.
@@ -163,6 +164,7 @@ rustix = { workspace = true, features = ["process"] }
 tilo-automerge-isolate.workspace = true
 # The service's fixtures, which the app host's tests stand their hosts on.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["apps", "test-support"] }
+tilo-person-services = { path = "../person-services", features = ["test-support"] }
 # Compiles the surface this crate publishes for the test that holds its file to it.
 tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile" }
 # The committed package a provider's actions are described by, which its test reads.

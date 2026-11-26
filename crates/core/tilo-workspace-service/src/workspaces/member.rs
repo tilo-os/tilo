@@ -2591,10 +2591,6 @@ mod agent_turn_tests;
 #[path = "person_devices_tests.rs"]
 mod person_devices_tests;
 
-#[cfg(all(test, feature = "agents"))]
-#[path = "keep_devices_tests.rs"]
-mod keep_devices_tests;
-
 /// A workspace whose own record could not be read as the service opened: the file, and what
 /// reading it said.
 struct UnopenedRecord {

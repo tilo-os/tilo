@@ -1,0 +1,103 @@
+[package]
+name = "tilo-person-services"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+description = "What a workspace service keeps for a person: their settings, mail and cloud accounts, model providers and the answers of their models, the vault's logins and secrets as they use them, what they call important, and what their agents learned about them."
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "tilo_person_services"
+path = "src/lib.rs"
+
+[features]
+# The fixtures the person services' tests and their embedders' tests build on, over the service's own.
+test-support = ["tilo-workspace-service/test-support", "dep:tilo-test-env", "dep:tilo-surface-compile", "tilo-account-probe/test-support"]
+# A turn of an agent the device runs asks what its workspace keeps for its person: their
+# calendars and the secrets it uses.
+agents = ["tilo-workspace-service/agents", "apps", "device-keys", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:collaboration"]
+# A device serves its apps: Browser's asks for the website sessions a person keeps.
+apps = ["tilo-workspace-service/apps", "dep:browser-continuity-core"]
+# A host carries the sign-ins it kept before the vault over into it.
+device-keys = ["tilo-workspace-service/device-keys"]
+
+[dependencies]
+tilo-workspace-service = { path = "../tilo-workspace-service" }
+tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile", optional = true }
+tilo-test-env = { path = "../../../tools/test-env", optional = true }
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-action-policy = { path = "../action-policy" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-paths.workspace = true
+tilo-peer-state = { path = "../tilo-peer-state" }
+tilo-actions = { path = "../actions", features = ["answer-reads", "document-read"] }
+tilo-invocations = { version = "0.1.0", path = "../invocations" }
+tilo-remote-actions = { version = "0.1.0", path = "../remote-actions" }
+tilo-server-protocol = { path = "../tilo-server-protocol" }
+tilo-user-identity = { path = "../tilo-user-identity" }
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+tilo-content = { path = "../content", default-features = false, features = ["dir"] }
+blake3.workspace = true
+hex.workspace = true
+rand.workspace = true
+sha2.workspace = true
+rustls.workspace = true
+uuid.workspace = true
+form_urlencoded.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tracing.workspace = true
+tilo-history = { path = "../../sdk/tilo-history" }
+collab-types = { package = "tilo-collab-types", path = "../collab-types" }
+tilo-model-gateway = { path = "../../integrations/model-gateway", default-features = false, features = ["host-backend"], optional = true }
+collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../collaboration", optional = true }
+tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
+zeroize.workspace = true
+wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame", features = ["tokio"] }
+runtime-collab = { package = "tilo-runtime-collab", path = "../runtime-collab", features = ["settings-host"] }
+workspace-hack = { version = "0.1" }
+russh = { version = "0.65.1", default-features = false, features = ["ring"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+accounts = { package = "tilo-accounts", path = "../../integrations/accounts", features = ["person"] }
+tilo-environment = { path = "../../vm/environment", optional = true }
+agent-provider-config = { package = "tilo-agent-provider-config", path = "../../integrations/provider-config" }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
+tilo-account-probe = { path = "../../integrations/account-probe" }
+account-credentials = { path = "../../integrations/account-credentials", features = ["store"] }
+browser-continuity-core = { package = "tilo-browser-continuity-core", path = "../browser-continuity-core", optional = true }
+tilo-oauth = { path = "../../integrations/tilo-oauth" }
+tilo-dav = { path = "../../integrations/tilo-dav" }
+tilo-fs-client = { path = "../tilo-fs-client" }
+tilo-net = { path = "../../platform/tilo-net", features = ["http", "proxy-host", "blocking"] }
+tilo-resource = { path = "../tilo-resource" }
+tilo-workspace-agent = { path = "../../sdk/tilo-workspace-agent" }
+
+[dev-dependencies]
+tilo-workspace-service = { path = "../tilo-workspace-service", features = ["test-support"] }
+tilo-automerge-isolate.workspace = true
+tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile" }
+tilo-oauth = { path = "../../integrations/tilo-oauth", features = ["fake"] }
+fake-model-providers = { path = "../../../tools/fake-model-providers" }
+tilo-actions = { path = "../actions", features = ["test-support"] }
+tilo-peer-state = { path = "../tilo-peer-state", features = ["test-support"] }
+tokio = { workspace = true, features = ["test-util"] }
+tempfile.workspace = true
+test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
+tilo-test-env = { path = "../../../tools/test-env" }
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
+tilo-account-probe = { path = "../../integrations/account-probe", features = ["test-support"] }
+tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
+# The log lines a test keeps while it drives a call, as the person's services write them.
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+# The content keys a test's devices hand each other as they seal and open a vault.
+key-group = { package = "tilo-key-group", path = "../key-group" }
+# The formats a person chose, read as the styles their views render them in.
+tilo-formats = { path = "../../ui/tilo-formats" }
+# The rule a shortcut fires on, as a test names the action it admits.
+tilo-automation = { path = "../automation" }
+
+[lints]
+workspace = true

@@ -31,12 +31,13 @@ use tilo_actions::remote::person_telling::{
 };
 
 use super::*;
-use crate::workspaces::ToTell;
 use crate::workspaces::fixtures::{hosting_device, test_host};
-use crate::workspaces::model_answers::scripted::{Linking, Reply, ScriptedProvider};
-use crate::workspaces::model_answers::{ProviderProtocol, Spender};
-use crate::workspaces::push_addresses::{PushKey, Register};
 use tilo_app_host::agents::telling::Teller;
+use tilo_person_services::PersonServices;
+use tilo_person_services::ToTell;
+use tilo_person_services::model_answers::scripted::{Linking, Reply, ScriptedProvider};
+use tilo_person_services::model_answers::{ProviderProtocol, Spender};
+use tilo_person_services::push_addresses::{PushKey, Register};
 
 /// A person this server keeps a log for. No device of theirs is on.
 const ADA: [u8; 32] = [8; 32];
@@ -344,7 +345,7 @@ async fn served() -> Served<impl Sized> {
 
 /// Hand `device` over as a device of `person`'s.
 fn reach(workspaces: &Workspaces, person: &[u8; 32], device: &Device) {
-    workspaces
+    PersonServices::of(workspaces)
         .register_push_address(
             person,
             &device.id,
@@ -355,7 +356,7 @@ fn reach(workspaces: &Workspaces, person: &[u8; 32], device: &Device) {
 
 /// The tokens the server keeps for `person`, the newest first.
 fn reached(workspaces: &Workspaces, person: &[u8; 32]) -> Vec<String> {
-    workspaces
+    PersonServices::of(workspaces)
         .push_addresses(person)
         .into_iter()
         .map(|address| address.token)
@@ -417,8 +418,8 @@ fn news(words: &str, key: &str) -> ToTell {
 /// Ada's own model for judging, answering as scripted. Its key is made up.
 async fn judge(workspaces: &Workspaces, replies: impl IntoIterator<Item = Reply>) {
     let scripted = ScriptedProvider::answering(replies);
-    workspaces.answer_models_with(scripted);
-    workspaces
+    PersonServices::of(workspaces).answer_models_with(scripted);
+    PersonServices::of(workspaces)
         .link_model_for(
             WORKSPACE,
             &Linking {
@@ -492,12 +493,14 @@ async fn an_important_thing_is_pushed_once_and_an_unimportant_one_never() {
         revision: 1,
         ..Importance::default()
     };
-    workspaces.keep_importance(&ADA, &rule).unwrap();
-    let important = workspaces
+    PersonServices::of(workspaces)
+        .keep_importance(&ADA, &rule)
+        .unwrap();
+    let important = PersonServices::of(workspaces)
         .tell(&ADA, news("The landlord writes about the lease.", "mail-1"))
         .await
         .unwrap();
-    let unimportant = workspaces
+    let unimportant = PersonServices::of(workspaces)
         .tell(&ADA, news("A newsletter arrived.", "mail-2"))
         .await
         .unwrap();
@@ -555,7 +558,7 @@ async fn an_important_thing_is_pushed_once_and_an_unimportant_one_never() {
 
     // That it was pushed is written down on the thing, and it is pushed
     // never a second time, however long it waits.
-    let log = workspaces.told_after(&ADA, 0).told;
+    let log = PersonServices::of(workspaces).told_after(&ADA, 0).told;
     let pushed: Vec<Vec<(&str, u32)>> = log
         .iter()
         .map(|told| {
@@ -579,7 +582,7 @@ async fn a_thing_seen_on_another_device_is_taken_back_once() {
     let (phone, laptop) = (Device::new(1), Device::new(2));
     reach(workspaces, &ADA, &phone);
     reach(workspaces, &ADA, &laptop);
-    let told = workspaces
+    let told = PersonServices::of(workspaces)
         .tell(&ADA, reminder("Call Jo.", "r-1"))
         .await
         .unwrap();
@@ -593,7 +596,7 @@ async fn a_thing_seen_on_another_device_is_taken_back_once() {
     // She opens it on her laptop. Every device that showed it is sent one
     // push that shows nothing and names the thing as gone, and that is all
     // it says.
-    workspaces
+    PersonServices::of(workspaces)
         .acknowledge_told(&ADA, &told.id, "Ada's laptop", "opened")
         .unwrap();
     assert_eq!(served.teller.step(due.saturating_add(SECOND)).await, None);
@@ -627,8 +630,10 @@ async fn the_words_of_a_workspace_its_person_keeps_on_the_server_are_in_no_push(
         revision: 1,
         ..Importance::default()
     };
-    workspaces.keep_importance(&ADA, &rule).unwrap();
-    let kept = workspaces
+    PersonServices::of(workspaces)
+        .keep_importance(&ADA, &rule)
+        .unwrap();
+    let kept = PersonServices::of(workspaces)
         .tell(
             &ADA,
             ToTell {
@@ -638,7 +643,7 @@ async fn the_words_of_a_workspace_its_person_keeps_on_the_server_are_in_no_push(
         )
         .await
         .unwrap();
-    let free = workspaces
+    let free = PersonServices::of(workspaces)
         .tell(&ADA, reminder("Call Jo.", "r-2"))
         .await
         .unwrap();
@@ -684,11 +689,11 @@ async fn a_push_for_one_person_never_reaches_another_persons_device() {
     reach(workspaces, &BO, &his);
     // Each is told one thing, and both things have the same id, each in
     // its own person's log.
-    let for_ada = workspaces
+    let for_ada = PersonServices::of(workspaces)
         .tell(&ADA, reminder("Call Jo.", "r-1"))
         .await
         .unwrap();
-    let for_bo = workspaces
+    let for_bo = PersonServices::of(workspaces)
         .tell(&BO, reminder("Pay the rent.", "r-1"))
         .await
         .unwrap();
@@ -768,7 +773,7 @@ async fn the_sender_is_off_without_a_key_and_takes_no_key_others_can_read() {
     assert!(opened(&setup).is_err());
 
     // And with no sender nothing is pushed: what waits is told nowhere.
-    let reminded = workspaces
+    let reminded = PersonServices::of(workspaces)
         .tell(&ADA, reminder("Call Jo.", "r-1"))
         .await
         .unwrap();
@@ -783,7 +788,7 @@ async fn an_address_apples_service_says_is_gone_is_forgotten_and_a_refused_one_i
     let (phone, laptop, tablet) = (Device::new(1), Device::new(2), Device::new(3));
     reach(workspaces, &ADA, &phone);
     reach(workspaces, &ADA, &laptop);
-    workspaces
+    PersonServices::of(workspaces)
         .register_push_address(
             &ADA,
             &tablet.id,
@@ -801,7 +806,7 @@ async fn an_address_apples_service_says_is_gone_is_forgotten_and_a_refused_one_i
         .apple
         .answers(&laptop, 400, json!({"reason": "BadDeviceToken"}));
 
-    let told = workspaces
+    let told = PersonServices::of(workspaces)
         .tell(&ADA, reminder("Call Jo.", "r-1"))
         .await
         .unwrap();
@@ -810,7 +815,7 @@ async fn an_address_apples_service_says_is_gone_is_forgotten_and_a_refused_one_i
     // Every device was tried and one took it, which is what is written
     // down.
     assert_eq!(served.apple.heard().len(), 3);
-    let log = workspaces.told_after(&ADA, 0).told;
+    let log = PersonServices::of(workspaces).told_after(&ADA, 0).told;
     let pushed = log.first().unwrap().pushed.first().unwrap();
     assert_eq!((pushed.by.as_str(), pushed.took), ("apns", 1));
     // The address that is gone is forgotten. The refused one is kept: its
@@ -835,10 +840,15 @@ async fn what_must_not_be_missed_is_pushed_again_in_its_own_place() {
         revision: 1,
         ..Importance::default()
     };
-    workspaces.keep_importance(&ADA, &rule).unwrap();
+    PersonServices::of(workspaces)
+        .keep_importance(&ADA, &rule)
+        .unwrap();
     let mut must = reminder("File the tax return.", "tax-1");
     must.tell.insists = true;
-    let told = workspaces.tell(&ADA, must).await.unwrap();
+    let told = PersonServices::of(workspaces)
+        .tell(&ADA, must)
+        .await
+        .unwrap();
     let again = told.insists.unwrap().next_at_ms.unwrap();
 
     let due = told.at_ms.saturating_add(4 * SECOND);

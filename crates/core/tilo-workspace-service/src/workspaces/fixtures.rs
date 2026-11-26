@@ -19,6 +19,8 @@ use key_group::{KeyGroup, MemberKey};
 /// The content keys a fixture's device seals its records under
 /// ([`GroupKeys`]): what a test that builds its own documents hands the service.
 pub use key_group::ContentKeys;
+use tilo_actions::remote::ActionProvider as _;
+use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 use super::{
@@ -406,6 +408,35 @@ pub async fn test_host(state_root: &Path, key: &SigningKey, cert: &DeviceCert) -
     test_host_with_grants(state_root, key, cert, None).await
 }
 
+/// [`test_host`] whose workspaces open with `registers` on them, as an embedder's that runs
+/// the crates built on the workspaces does.
+///
+/// # Panics
+///
+/// The endpoint cannot bind or the host cannot open.
+pub async fn test_host_with_registers(
+    state_root: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    registers: Vec<crate::workspaces::Register>,
+) -> TestHost {
+    host_on_with(
+        state_root,
+        (key, cert),
+        registers,
+        DeviceKeyGroups {
+            keys: Arc::<TestGroupKeys>::default(),
+            sink: None,
+        },
+        None,
+        None,
+        Vec::new(),
+        #[cfg(not(target_arch = "wasm32"))]
+        None,
+    )
+    .await
+}
+
 /// The kind of `app`'s record [`write_record`] writes: one whose fields the tests write
 /// anything into.
 #[must_use]
@@ -684,10 +715,26 @@ pub async fn test_host_holding(
     cert: &DeviceCert,
     keys: Arc<TestGroupKeys>,
 ) -> TestHost {
-    host_on(
+    test_host_holding_with_registers(state_root, key, cert, keys, Vec::new()).await
+}
+
+/// [`test_host_holding`] whose workspaces open with `registers` on them, as an embedder's that
+/// runs the crates built on the workspaces does.
+///
+/// # Panics
+///
+/// The endpoint cannot bind or the host cannot open.
+pub async fn test_host_holding_with_registers(
+    state_root: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    keys: Arc<TestGroupKeys>,
+    registers: Vec<crate::workspaces::Register>,
+) -> TestHost {
+    host_on_with(
         state_root,
-        key,
-        cert,
+        (key, cert),
+        registers,
         DeviceKeyGroups { keys, sink: None },
         None,
         None,
@@ -829,6 +876,22 @@ pub async fn test_host_keyed(
     key: &SigningKey,
     cert: &DeviceCert,
 ) -> (TestHost, crate::own_device::KeyService) {
+    test_host_keyed_with_registers(state_root, key, cert, Vec::new()).await
+}
+
+/// [`test_host_keyed`] whose workspaces open with `registers` on them, as an embedder's that
+/// runs the crates built on the workspaces does.
+///
+/// # Panics
+///
+/// The key service or the host cannot open.
+#[cfg(feature = "device-keys")]
+pub async fn test_host_keyed_with_registers(
+    state_root: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    registers: Vec<crate::workspaces::Register>,
+) -> (TestHost, crate::own_device::KeyService) {
     let signer: Arc<dyn collab_types::signer::DeviceSigner> = Arc::new(key.clone());
     let keys = crate::own_device::KeyService::open(
         "test-groups",
@@ -838,10 +901,10 @@ pub async fn test_host_keyed(
         Arc::new(tilo_workspace_keys::NoSealChecks),
     )
     .expect("the device's key service opens");
-    let host = host_on(
+    let host = host_on_with(
         state_root,
-        key,
-        cert,
+        (key, cert),
+        registers,
         keys.groups(),
         None,
         None,
@@ -865,6 +928,32 @@ async fn host_on(
     app_files: Vec<std::path::PathBuf>,
     #[cfg(not(target_arch = "wasm32"))] tilolang: Option<crate::tl_records::Tilolang>,
 ) -> TestHost {
+    host_on_with(
+        state_root,
+        (key, cert),
+        Vec::new(),
+        channels,
+        grants,
+        member,
+        app_files,
+        #[cfg(not(target_arch = "wasm32"))]
+        tilolang,
+    )
+    .await
+}
+
+/// [`host_on`], with the crates built on the workspaces registering on them as they open
+/// ([`crate::service::ServiceConfig::registers`]).
+async fn host_on_with(
+    state_root: &Path,
+    (key, cert): (&SigningKey, &DeviceCert),
+    registers: Vec<crate::workspaces::Register>,
+    channels: impl Into<Option<DeviceKeyGroups>>,
+    grants: Option<usize>,
+    member: Option<Arc<MemberDevice>>,
+    app_files: Vec<std::path::PathBuf>,
+    #[cfg(not(target_arch = "wasm32"))] tilolang: Option<crate::tl_records::Tilolang>,
+) -> TestHost {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()));
     #[cfg(test)]
@@ -880,6 +969,7 @@ async fn host_on(
                 max_workspace_grants: grants,
                 member,
                 app_files,
+                registers,
                 #[cfg(not(target_arch = "wasm32"))]
                 tilolang,
                 // Each device knows only the app surfaces named to it: tests run side by side in one
@@ -1870,4 +1960,593 @@ pub fn reach_device(
 /// certified by.
 pub fn persons_root() -> SigningKey {
     SigningKey::from_bytes(&[1; 32])
+}
+
+/// `device` as a caller presents itself.
+pub fn caller(device: &DeviceCert) -> tilo_actions::remote::Caller {
+    tilo_actions::remote::Caller::authenticated(device.user_public_key, device.device_public_key)
+}
+
+/// `request` of `verb` on `workspace` with `argument`, addressed as the workspace's governance
+/// publishes it.
+pub fn request(
+    workspace: &str,
+    verb: &str,
+    argument: serde_json::Value,
+) -> tilo_actions::remote::InvokeRequest {
+    use tilo_actions::remote::{InvokeArgument, RemoteActionTarget, WORKSPACE_GOVERNANCE_PROVIDER};
+    let serde_json::Value::Object(argument) = argument else {
+        panic!("arguments are an object");
+    };
+    tilo_actions::remote::InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: match argument.get("person").and_then(serde_json::Value::as_str) {
+            // Removing is published on the person it removes.
+            Some(person) if verb == tilo_action_policy::roles::governance::REMOVE_MEMBER => {
+                RemoteActionTarget {
+                    provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+                    address: tilo_actions::ActionAddress::new(
+                        tilo_actions::remote::workspace_member(workspace, person),
+                        "remove",
+                    ),
+                }
+            }
+            // Pinning, unpinning and uninstalling are published on the app they change.
+            _ => match (
+                argument.get("app").and_then(serde_json::Value::as_str),
+                verb,
+            ) {
+                (
+                    Some(app),
+                    super::actions::UNINSTALL_APP
+                    | super::actions::PIN_APP
+                    | super::actions::UNPIN_APP,
+                ) => RemoteActionTarget {
+                    provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+                    address: tilo_actions::ActionAddress::new(
+                        tilo_actions::remote::workspace_app(workspace, app),
+                        match verb {
+                            super::actions::UNINSTALL_APP => "uninstall",
+                            super::actions::PIN_APP => "pin",
+                            _ => "unpin",
+                        },
+                    ),
+                },
+                _ => RemoteActionTarget::workspace_governance(workspace, verb),
+            },
+        },
+        argument: if argument.is_empty() {
+            InvokeArgument::None
+        } else {
+            InvokeArgument::Json(argument)
+        },
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }
+}
+
+/// `request` again, as its person's approve of it in `workspace` admits it: what only the
+/// dispatch hands a provider, once their approve of the call's asked record admits it again.
+pub fn approved(
+    request: &tilo_actions::remote::InvokeRequest,
+    workspace: &str,
+) -> tilo_actions::remote::InvokeRequest {
+    use tilo_actions::remote::Confirmation;
+    use tilo_actions::remote::asked::{Approval, RecordRef};
+    let mut again = request.clone();
+    again.confirmation = Some(Confirmation::Asked(Approval::new(
+        RecordRef {
+            workspace: workspace.to_owned(),
+            record: request.invocation.0.to_string(),
+            device: None,
+        },
+        None,
+    )));
+    again
+}
+
+/// `request` as `caller` sends it from `device` in `workspace`: signed with the device's key
+/// when the caller is its own person, or an agent that device handed its session to, and
+/// [`admit_device`] admitted it, as a person's device signs every call it sends. An agent with a
+/// key of its own signs under that key, never its person's device's.
+pub fn signed_from(
+    request: &tilo_actions::remote::InvokeRequest,
+    workspace: &str,
+    (device, caller): (&DeviceCert, &tilo_actions::remote::Caller),
+) -> tilo_actions::remote::InvokeRequest {
+    let person = hex::encode(device.user_public_key);
+    let acting = caller.acting();
+    let mut request = request.clone();
+    if let Some(key) = admitted_key(device)
+        && (!acting.is_agent() || acting.handed)
+        && acting.people() == [person.as_str()]
+    {
+        request.signed = Some(Box::new(
+            tilo_server_protocol::invocation::sign_invocation_now(
+                workspace,
+                &request,
+                device,
+                &key,
+                tilo_clock::unix_now_ns(),
+            )
+            .expect("a member's device signs its call"),
+        ));
+    }
+    request
+}
+
+impl super::actions::ServiceWorkspaceActions {
+    /// This host for requests about workspace `workspace_id` from the device `certificate`,
+    /// each call its own person sends signed with that device's key, as a member's device signs
+    /// every call it sends ([`signed_from`]).
+    pub fn device_page(
+        &self,
+        workspace_id: WorkspaceId,
+        certificate: &DeviceCert,
+    ) -> impl tilo_actions::remote::ActionProvider + Clone + Send + 'static {
+        SignedBy {
+            page: self.in_workspace_as(workspace_id, certificate),
+            device: certificate.clone(),
+            workspace: workspace_id.to_string(),
+        }
+    }
+}
+
+/// `page`, each call its device's person sends signed by `device` ([`signed_from`]).
+#[derive(Clone)]
+struct SignedBy<P> {
+    page: P,
+    device: DeviceCert,
+    workspace: String,
+}
+
+impl<P: tilo_actions::remote::ActionProvider> tilo_actions::remote::ActionProvider for SignedBy<P> {
+    fn installed_surface(&self, app_id: &str) -> tilo_actions::remote::Pending<Option<Vec<u8>>> {
+        self.page.installed_surface(app_id)
+    }
+
+    fn query(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        query: tilo_actions::remote::CatalogueQuery,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
+    > {
+        self.page.query(caller, query)
+    }
+
+    fn invoke(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        request: tilo_actions::remote::InvokeRequest,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
+    > {
+        // The device signs each call it sends, an answer sent again included.
+        let mut request = request;
+        request.signed = None;
+        let request = signed_from(&request, &self.workspace, (&self.device, caller));
+        self.page.invoke(caller, request)
+    }
+
+    fn observe(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        self.page.observe(caller, id)
+    }
+
+    fn next_change(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::Pending<()>> {
+        self.page.next_change(caller, id)
+    }
+
+    fn cancel(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
+        self.page.cancel(caller, id)
+    }
+}
+
+/// A new workspace of `workspaces`, the workspace carrying it, and its governance
+/// as actions.
+pub async fn hosted_governed(
+    workspaces: &Workspaces,
+) -> (String, WorkspaceId, super::actions::ServiceWorkspaceActions) {
+    let summary = needed(workspaces.create("Team").await, "a new workspace");
+    (
+        summary.workspace,
+        summary.workspace_id,
+        host_dispatch(workspaces),
+    )
+}
+
+/// The one dispatch that serves `workspaces`: the host's own where it has one, else one
+/// attached now as the first. A person's answer to a call that waits for them comes back to
+/// that one, and a host is handed no second.
+pub fn host_dispatch(workspaces: &Workspaces) -> super::actions::ServiceWorkspaceActions {
+    workspaces.inner.jobs.governance().unwrap_or_else(|| {
+        let host = super::actions::ServiceWorkspaceActions::new();
+        host.attach(workspaces);
+        host
+    })
+}
+
+thread_local! {
+    /// The person a test's calls wait for, where one answers ([`Answering`]).
+    static ANSWERING: std::cell::RefCell<Option<Arc<Answering>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The person the calls of a test wait for, answering every one the same way from the moment
+/// they are made, and what they were shown.
+pub struct Answering {
+    approves: bool,
+    asked: Mutex<Vec<tilo_actions::remote::asked::AskedFacts>>,
+}
+
+impl Answering {
+    /// From now on in this test, the person approves every call that waits for them.
+    pub fn approving() -> Arc<Self> {
+        Self::answering_as(true)
+    }
+
+    /// From now on in this test, the person declines every call that waits for them.
+    pub fn declining() -> Arc<Self> {
+        Self::answering_as(false)
+    }
+
+    fn answering_as(approves: bool) -> Arc<Self> {
+        let answering = Arc::new(Self {
+            approves,
+            asked: Mutex::default(),
+        });
+        ANSWERING.set(Some(Arc::clone(&answering)));
+        answering
+    }
+
+    /// What they were shown, call by call.
+    pub fn asked(&self) -> Vec<tilo_actions::remote::asked::AskedFacts> {
+        self.asked.lock().unwrap().clone()
+    }
+}
+
+/// `first`, the answer to `request` by `caller` on the connection `certificate` certified (to
+/// the workspace `workspace_id`, or to the host), as the person it waits for answers it, where
+/// it waits for one ([`Answering`]): approved, what the call answers once the person's approve
+/// of its asked record carried it out; declined, or answered by nobody (`None`), it is
+/// admitted no more and the caller hears what they were shown.
+///
+/// A call this host serves runs as its job: `Accepted` while it runs, and `Completed` once it
+/// ends without asking. One that waits is kept as its asked record, which the person answers
+/// there through `tilo.invocations#resolve`, and the call is followed to its end.
+pub async fn answered(
+    workspaces: &Workspaces,
+    (workspace_id, certificate): (Option<WorkspaceId>, Option<&DeviceCert>),
+    caller: &tilo_actions::remote::Caller,
+    request: &tilo_actions::remote::InvokeRequest,
+    first: Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
+) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError> {
+    use tilo_actions::remote::{ActionCallError, ReceiptStatus};
+    let answering = ANSWERING.with_borrow(Clone::clone);
+    if let Err(ActionCallError::ConfirmationRequired(facts)) = &first {
+        let facts = (**facts).clone();
+        return approved_at_once(
+            workspaces,
+            (workspace_id, certificate),
+            caller,
+            request,
+            first,
+            answering.as_ref(),
+            &facts,
+        )
+        .await;
+    }
+    let first = first?;
+    if !matches!(first.status, ReceiptStatus::Accepted) {
+        return Ok(first);
+    }
+    let (Some(service), Some(store)) =
+        (workspaces.inner.jobs.governance(), workspaces.asked_store())
+    else {
+        return Ok(first);
+    };
+    // Whether it waits for its person, or ends first. It is answered the moment its record
+    // shows, which the host may record as waiting a moment later: the answer stands either way.
+    // A call no workspace was named for (one the host's own actions answer) is found by its
+    // record, which names the workspace it waits in.
+    let kept = tilo_test_env::within("the call waits for its person or ends", async {
+        loop {
+            let named = workspace_id.map(|id| id.to_string()).or_else(|| {
+                store
+                    .record(&request.invocation.0.to_string())
+                    .map(|at| at.workspace)
+            });
+            if let Some(workspace) = named
+                && let Some(waiting) = store
+                    .waiting_in(&workspace)
+                    .into_iter()
+                    .find(|waiting| waiting.invocation == request.invocation)
+            {
+                return Some((waiting, WorkspaceId::parse(&workspace)));
+            }
+            if let Some(id) = workspace_id
+                && service
+                    .in_workspace(id)
+                    .observe(caller, &request.invocation)
+                    .is_some_and(|state| state.is_terminal())
+            {
+                return None;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let Some((waiting, workspace_id)) = kept else {
+        return match workspace_id {
+            Some(id) => ended_as(&service.in_workspace(id), caller, request.invocation).await,
+            None => Ok(first),
+        };
+    };
+    let Some(workspace_id) = workspace_id else {
+        return Ok(first);
+    };
+    let here = service.in_workspace(workspace_id);
+    // It waits in its asked record: nobody answering here leaves it there, and the caller hears
+    // what its person is shown.
+    let Some(answering) = &answering else {
+        return Err(tilo_actions::remote::ActionCallError::ConfirmationRequired(
+            Box::new(waiting.asked.facts.clone()),
+        ));
+    };
+    answered_as_its_person(workspaces, caller, request, &waiting, answering, &here).await
+}
+
+/// The call of `request` the asked record `waiting` keeps, answered as the person it asks: an
+/// approve admits the same call again, which ends when it ran; a decline ends it with nothing
+/// done, and the caller's call was refused for want of their yes.
+async fn answered_as_its_person(
+    workspaces: &Workspaces,
+    caller: &tilo_actions::remote::Caller,
+    request: &tilo_actions::remote::InvokeRequest,
+    waiting: &tilo_remote_actions::asked::Waiting,
+    answering: &Answering,
+    here: &(impl tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static),
+) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError> {
+    use tilo_actions::remote::{
+        ActionCallError, InvokeArgument, InvokeRequest, RemoteActionTarget,
+    };
+    answering
+        .asked
+        .lock()
+        .unwrap()
+        .push(waiting.asked.facts.clone());
+    let person: [u8; 32] = hex::decode(&waiting.person)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| ActionCallError::Refused {
+            reason: "the ask names no person to answer it".into(),
+        })?;
+    let answering_as = tilo_actions::remote::Caller::authenticated(
+        person,
+        caller.device_public_key().copied().unwrap_or(person),
+    );
+    let resolution = if answering.approves {
+        tilo_actions::remote::asked::Offer::Approve
+    } else {
+        tilo_actions::remote::asked::Offer::Decline
+    };
+    let Ok(serde_json::Value::Object(argument)) =
+        serde_json::to_value(tilo_actions::remote::asked::Resolve {
+            resolution,
+            ..tilo_actions::remote::asked::Resolve::default()
+        })
+    else {
+        return Err(ActionCallError::InvalidRequest {
+            reason: "the answer does not read".into(),
+        });
+    };
+    let resolve = InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(
+                &waiting.asked.record.record,
+                tilo_actions::remote::asked::RESOLVE,
+            ),
+        },
+        argument: InvokeArgument::Json(argument),
+        on_behalf_of: None,
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    settled(workspaces.resolve_asked(&answering_as, &resolve)).await?;
+    if !answering.approves {
+        return Err(ActionCallError::ConfirmationRequired(Box::new(
+            waiting.asked.facts.clone(),
+        )));
+    }
+    ended_as(here, caller, request.invocation).await
+}
+
+/// `first`, a call refused for the person's yes, answered once `answering` approves it: the same
+/// call admitted again as its person, and what it answers once it ran. A decline, or nobody
+/// answering, leaves the refusal as it is.
+async fn approved_at_once(
+    workspaces: &Workspaces,
+    (workspace_id, certificate): (Option<WorkspaceId>, Option<&DeviceCert>),
+    caller: &tilo_actions::remote::Caller,
+    request: &tilo_actions::remote::InvokeRequest,
+    first: Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
+    answering: Option<&Arc<Answering>>,
+    facts: &tilo_actions::remote::asked::AskedFacts,
+) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError> {
+    use tilo_actions::remote::ReceiptStatus;
+    let Some(answering) = answering else {
+        return first;
+    };
+    answering.asked.lock().unwrap().push(facts.clone());
+    if !answering.approves {
+        return first;
+    }
+    let workspace = workspace_id.map(|id| id.to_string()).unwrap_or_default();
+    let value = Box::pin(workspaces.invoke(
+        workspace_id,
+        caller,
+        certificate,
+        &approved(request, &workspace),
+    ))
+    .await?;
+    Ok(tilo_actions::remote::InvocationReceipt {
+        invocation: request.invocation,
+        status: ReceiptStatus::Completed {
+            output: tilo_actions::ActionOutput {
+                value: Some(value),
+                ..tilo_actions::ActionOutput::default()
+            },
+        },
+    })
+}
+
+/// What invocation `invocation` ended as, followed on `here` until it is terminal: the way a
+/// caller follows a call at any moment, including the one its person's approve admitted again.
+async fn ended_as(
+    here: &(impl tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static),
+    caller: &tilo_actions::remote::Caller,
+    invocation: tilo_actions::InvocationId,
+) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError> {
+    let state = tilo_test_env::within("the answered call's end", async {
+        loop {
+            match here.observe(caller, &invocation) {
+                Some(state) if state.is_terminal() => return state,
+                _ => tokio::task::yield_now().await,
+            }
+        }
+    })
+    .await;
+    Ok(state.receipt())
+}
+
+/// `request` by `caller` on the connection `device` certified to the host, answered by its
+/// person where it waits for them and one answers ([`Answering`]).
+pub async fn host_operation_on(
+    host: &super::actions::ServiceWorkspaceActions,
+    device: &DeviceCert,
+    caller: &tilo_actions::remote::Caller,
+    request: tilo_actions::remote::InvokeRequest,
+) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError> {
+    let first = settled(host.as_host(device).invoke(caller, request.clone())).await;
+    let workspaces = host
+        .shared
+        .workspaces
+        .get()
+        .and_then(crate::workspaces::WeakWorkspaces::upgrade)
+        .expect("the host's workspaces are held");
+    answered(&workspaces, (None, Some(device)), caller, &request, first).await
+}
+
+/// A request to create a person's own workspace, under a fresh invocation id.
+pub fn own_request(argument: serde_json::Value) -> tilo_actions::remote::InvokeRequest {
+    let mut request = request(
+        "",
+        tilo_server_protocol::workspaces::CREATE_OWN_WORKSPACE,
+        argument,
+    );
+    request.target = tilo_actions::remote::RemoteActionTarget {
+        provider: tilo_server_protocol::workspaces::HOST_ACTIONS_PROVIDER.into(),
+        address: tilo_actions::ActionAddress::new(
+            tilo_server_protocol::workspaces::HOST_WORKSPACES_RESOURCE,
+            tilo_server_protocol::workspaces::CREATE_OWN_WORKSPACE,
+        ),
+    };
+    request
+}
+
+/// Ask the host `request`, as `device`, and answer what a host operation completes with.
+pub async fn host_operation(
+    host: &super::actions::ServiceWorkspaceActions,
+    device: &DeviceCert,
+    request: tilo_actions::remote::InvokeRequest,
+) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
+    let receipt = host_operation_on(host, device, &caller(device), request).await?;
+    match receipt.status {
+        tilo_actions::remote::ReceiptStatus::Completed { output } => {
+            Ok(output.value.unwrap_or(serde_json::Value::Null))
+        }
+        other => panic!("a host operation completes at once: {other:?}"),
+    }
+}
+
+/// A person's own workspace made by the host, as `device` asks it.
+pub async fn create_own(
+    host: &super::actions::ServiceWorkspaceActions,
+    device: &DeviceCert,
+    argument: serde_json::Value,
+) -> Result<tilo_server_protocol::workspaces::CreatedWorkspace, tilo_actions::remote::ActionCallError>
+{
+    host_operation(host, device, own_request(argument))
+        .await
+        .map(|value| serde_json::from_value(value).unwrap())
+}
+
+/// Name the home workspace whose people `workspaces` keeps workspaces of
+/// their own for, as a site's server names its own: returns it.
+pub async fn home_of(workspaces: &Workspaces) -> String {
+    let home = needed(workspaces.create("Lounge").await, "the home workspace").workspace;
+    assert!(workspaces.admit_own_through(&home));
+    home
+}
+
+/// A host keeping workspaces of people's own for the people its home
+/// workspace lets in: returns the home.
+pub async fn open_home(workspaces: &Workspaces) -> String {
+    workspaces
+        .offer_own_workspaces(super::OwnWorkspaceOffer::free("tilo.test"))
+        .expect("the host offers workspaces of people's own");
+    home_of(workspaces).await
+}
+
+/// Let `person` in as the site does for someone it invites: an invitation
+/// into `home` names them.
+pub async fn let_in(workspaces: &Workspaces, home: &str, person: [u8; 32]) -> Vec<u8> {
+    workspaces
+        .issue(
+            home,
+            workspaces.device_cert(),
+            super::IssueInvitationRequest {
+                request_id: rand::random(),
+                role: tilo_peer_state::join::Role::Viewer,
+                recipient_user_public_key: Some(person),
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
+                inviter_name: None,
+            },
+        )
+        .await
+        .expect("the invitation is issued")
+        .signed_invitation
+}
+
+/// The workspaces `host`, a dispatch attached to them, answers for.
+pub fn workspaces_served(host: &super::actions::ServiceWorkspaceActions) -> Workspaces {
+    host.shared
+        .workspaces
+        .get()
+        .and_then(crate::workspaces::WeakWorkspaces::upgrade)
+        .expect("the dispatch serves the workspaces it was attached to")
 }

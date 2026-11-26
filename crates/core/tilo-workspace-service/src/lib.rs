@@ -42,8 +42,6 @@ pub mod agent_shortcuts;
 /// What changed in the records of the workspaces a device holds.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod change_feed;
-#[cfg(not(target_arch = "wasm32"))]
-mod connections;
 /// Content a record references, reaching the devices that may read it.
 #[cfg(all(feature = "content", not(target_arch = "wasm32")))]
 pub mod content;

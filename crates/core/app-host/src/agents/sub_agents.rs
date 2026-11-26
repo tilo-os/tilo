@@ -23,7 +23,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_workspace_agent::{Agent, Stands, WorkspaceAgents, sub};
 
 use super::{CHAT, Outcome, ServerAgents, Turn, WorkspaceActionProvider, invoke_named, triggered};
-use tilo_workspace_service::workspaces::model_answers::Interaction;
+use tilo_person_services::model_answers::Interaction;
 
 /// The most of a sub-agent's answer its starter is told, in characters: the rest is in the
 /// sub-agent's reply.

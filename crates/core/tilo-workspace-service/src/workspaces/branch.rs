@@ -138,7 +138,7 @@ mod copy {
 
     /// What a branch could not take: the part of its source, in words the
     /// person reads, and why, which the host's log keeps.
-    pub(in crate::workspaces) struct NotMade {
+    pub struct NotMade {
         pub(in crate::workspaces) part: String,
         pub(in crate::workspaces) why: String,
     }
@@ -155,7 +155,7 @@ mod copy {
         }
 
         /// The refusal the host answers with; `why` stays with the host's log.
-        pub(in crate::workspaces) fn refusal(&self) -> String {
+        pub fn refusal(&self) -> String {
             tilo_server_protocol::workspaces::AdminRefusal::BranchNotMade {
                 part: self.part.clone(),
             }
@@ -174,7 +174,7 @@ mod copy {
         /// What did not come, named: a record of `source` that does not read
         /// whole, one that does not fork or found, its content, or the branch
         /// itself. Nothing of the branch stays then.
-        pub(in crate::workspaces) async fn branch_own(
+        pub async fn branch_own(
             &self,
             source: &str,
             branch: &str,

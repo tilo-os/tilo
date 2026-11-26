@@ -31,9 +31,9 @@ use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
 
 #[cfg(feature = "agents")]
-use crate::workspaces::push_addresses::PushKind;
-#[cfg(feature = "agents")]
 use tilo_actions::remote::person_telling::Told;
+#[cfg(feature = "agents")]
+use tilo_person_services::push_addresses::PushKind;
 
 /// The file this host's application server key is kept in, under its state.
 const KEY_FILE: &str = "web-push-key.pk8";
@@ -525,7 +525,7 @@ impl WebPush {
             return 0;
         };
         let mut took: Vec<String> = Vec::new();
-        for address in workspaces
+        for address in tilo_person_services::PersonServices::of(&workspaces)
             .push_addresses(person)
             .into_iter()
             .filter(|address| address.kind == PushKind::WebPush)
@@ -574,14 +574,18 @@ impl WebPush {
             match self.post(&address.endpoint, &key, &plain).await {
                 Ok(()) => took.push(address.reached_as().to_owned()),
                 Err(Pushed::Gone) => {
-                    workspaces.forget_push_address(person, address.reached_as(), None);
+                    tilo_person_services::PersonServices::of(&workspaces).forget_push_address(
+                        person,
+                        address.reached_as(),
+                        None,
+                    );
                 }
                 Err(Pushed::Failed(reason)) => {
                     tracing::debug!(%reason, "a push to a person's closed app failed");
                 }
             }
         }
-        workspaces.push_shown(person, &took, &told.id);
+        tilo_person_services::PersonServices::of(&workspaces).push_shown(person, &took, &told.id);
         took.len()
     }
 
@@ -592,7 +596,9 @@ impl WebPush {
         let Some(workspaces) = &self.workspaces else {
             return;
         };
-        for (address, shown) in workspaces.push_taken_back(person, ids, PushKind::WebPush) {
+        for (address, shown) in tilo_person_services::PersonServices::of(&workspaces)
+            .push_taken_back(person, ids, PushKind::WebPush)
+        {
             let Ok((p256dh, auth)) = address.subscription_key() else {
                 continue;
             };
@@ -614,7 +620,11 @@ impl WebPush {
                     self.post(&address.endpoint, &key, &plain).await,
                     Err(Pushed::Gone)
                 ) {
-                    workspaces.forget_push_address(person, address.reached_as(), None);
+                    tilo_person_services::PersonServices::of(&workspaces).forget_push_address(
+                        person,
+                        address.reached_as(),
+                        None,
+                    );
                     break;
                 }
             }

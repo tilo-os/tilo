@@ -7,28 +7,22 @@
 //! answer or asks a device. The reading of a workspace's invocations lists the asked records a
 //! person may answer, across the workspaces here, read from those records as they sync.
 //!
-//! Each record written here is told to the person it waits for as a thing of their log
-//! ([`Workspaces::tell`]), which their devices raise as a notification and which reaches a
-//! browser of theirs when no device is looking: a question with Approve and Decline, which
-//! answer the record itself, or, where only they can type what it takes, none, and opening it
-//! shows the ask. Once the record is answered anywhere, the thing waits no more.
+//! What the records are written through is wrapped where a crate built on the workspaces says
+//! ([`Workspaces::wrap_asked_records`]): what tells each one to the person it waits for.
 
-use std::collections::BTreeSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use serde_json::Value;
 use tilo_action_policy::{ActionKind, Answer, Context, Grantee, TreePath, decide};
 use tilo_actions::remote::asked::{
-    self, AskedBy, AskedDispatch, AskedFacts, AskedRecords, Named, RecordRef, Resolve,
+    AskedBy, AskedDispatch, AskedFacts, AskedRecords, Named, RecordRef, Resolve,
 };
-use tilo_actions::remote::person_telling::{About, Kind, Offered, OfferedTarget, Tell, Teller};
 use tilo_actions::remote::{
     ActionCallError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, Pending,
 };
-use tilo_lock::MutexRecover as _;
 use tilo_remote_actions::asked::AskedStore;
 
-use super::{ToTell, WeakWorkspaces, Workspaces};
+use super::Workspaces;
 
 /// Who asks, as the system names `caller`: its key where its call came in on one, its agent by
 /// the name its key goes by, an app by its id, else the person's own device.
@@ -59,181 +53,11 @@ pub fn asked_by(caller: &Caller) -> AskedBy {
 
 pub use tilo_actions::remote::asked::approved_or_asks;
 
-/// The person `caller` asks, as their key.
-fn asked_person(caller: &Caller) -> Option<[u8; 32]> {
-    hex::decode(asked::asked_person(caller)?)
-        .ok()?
-        .try_into()
-        .ok()
-}
-
-/// The id the record `record` is told under in its person's log.
-fn told_id(record: &RecordRef) -> String {
-    format!("asked:{}/{}", record.workspace, record.record)
-}
-
-/// What the person reads of `facts` where the record is told: the asker's own words, else
-/// the verb and what it is on.
-fn told_words(facts: &AskedFacts) -> String {
-    if !facts.words.trim().is_empty() {
-        return facts.words.clone();
-    }
-    match &facts.on {
-        Some(on) => format!("{} {on}", facts.verb),
-        None => facts.verb.clone(),
-    }
-}
-
-/// The thing the asked `record` is told as: who asks, in their words, with Approve and
-/// Decline answering the record, except where only the person can type what it takes.
-fn telling(record: &RecordRef, facts: &AskedFacts) -> ToTell {
-    let answer = |id: &str, label: &str, main: bool| {
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("resolution".into(), Value::String(id.to_owned()));
-        Offered {
-            id: id.to_owned(),
-            label: label.to_owned(),
-            main,
-            target: OfferedTarget {
-                app: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
-                record: String::new(),
-                resource: record.record.clone(),
-                action: asked::RESOLVE.to_owned(),
-            },
-            arguments,
-        }
-    };
-    let actions = if facts.answered_by.is_some() || !facts.takes.is_empty() {
-        Vec::new()
-    } else {
-        vec![
-            answer("approve", "Approve", true),
-            answer("decline", "Decline", false),
-        ]
-    };
-    let from = match &facts.by {
-        AskedBy::Agent(agent) => Some(Teller {
-            agent: agent.id.clone(),
-            name: agent.name.clone(),
-        }),
-        AskedBy::App { .. } | AskedBy::Device(_) | AskedBy::Program { .. } => None,
-    };
-    ToTell {
-        id: Some(told_id(record)),
-        kind: Kind::Question,
-        tell: Tell {
-            words: told_words(facts),
-            about: Some(About {
-                workspace: record.workspace.clone(),
-                app: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
-                record: String::new(),
-                resource: record.record.clone(),
-            }),
-            actions,
-            ..Tell::default()
-        },
-        from,
-        workspace: Some(record.workspace.clone()),
-        words_stay: false,
-        spender: None,
-    }
-}
-
-/// The asked records as the host keeps them: each one written is told to the person it waits
-/// for, and taken back from their log once it is answered.
-struct Told {
-    records: Arc<dyn AskedRecords>,
-    workspaces: WeakWorkspaces,
-    /// The records told and not yet seen answered, with the person each waits for.
-    waiting: Mutex<BTreeSet<([u8; 32], RecordRef)>>,
-}
-
-impl Told {
-    /// Take back from their log each record told that waits no more.
-    fn settle(&self, workspaces: &Workspaces) {
-        let waiting = self.waiting.lock_recover().clone();
-        let mut asked: std::collections::BTreeMap<[u8; 32], BTreeSet<RecordRef>> =
-            std::collections::BTreeMap::new();
-        for (person, record) in waiting {
-            let still = asked.entry(person).or_insert_with(|| {
-                self.records
-                    .asked_of(&person)
-                    .into_iter()
-                    .map(|asked| asked.record)
-                    .collect()
-            });
-            if still.contains(&record) {
-                continue;
-            }
-            if let Err(error) = workspaces.withdraw_told(&person, &told_id(&record)) {
-                tracing::debug!(%error, "an answered ask stays in its person's log");
-            }
-            self.waiting.lock_recover().remove(&(person, record));
-        }
-    }
-}
-
-impl AskedRecords for Told {
-    fn write_asked(
-        &self,
-        workspace: &str,
-        caller: &Caller,
-        request: &InvokeRequest,
-        facts: &AskedFacts,
-    ) -> Result<RecordRef, String> {
-        let record = self
-            .records
-            .write_asked(workspace, caller, request, facts)?;
-        let value = (asked_person(caller), self.workspaces.upgrade());
-        if let (Some(person), Some(workspaces)) = value {
-            self.waiting.lock_recover().insert((person, record.clone()));
-            let told = telling(&record, facts);
-            tokio::spawn(async move {
-                if let Err(error) = workspaces.tell(&person, told).await {
-                    tracing::warn!(%error, "an asked record was not told to its person");
-                }
-            });
-        }
-        Ok(record)
-    }
-
-    fn asked_of(&self, person: &[u8; 32]) -> Vec<asked::Asked> {
-        self.records.asked_of(person)
-    }
-
-    fn changed(&self) -> Pending<()> {
-        self.records.changed()
-    }
-}
+/// What wraps the records a host's dispatch writes its asked calls through
+/// ([`Workspaces::wrap_asked_records`]).
+pub type AskedWrap = Arc<dyn Fn(Arc<dyn AskedRecords>) -> Arc<dyn AskedRecords> + Send + Sync>;
 
 impl Workspaces {
-    /// `records`, each one written told to the person it waits for and taken back from their
-    /// log once it is answered: what every dispatch of this host keeps its asked calls through.
-    pub fn told(&self, records: Arc<dyn AskedRecords>) -> Arc<dyn AskedRecords> {
-        let told = Arc::new(Told {
-            records,
-            workspaces: self.downgrade(),
-            waiting: Mutex::default(),
-        });
-        let follows = Arc::downgrade(&told);
-        tokio::spawn(async move {
-            loop {
-                let Some(changed) = follows.upgrade().map(|told| told.records.changed()) else {
-                    return;
-                };
-                if changed.await.is_none() {
-                    return;
-                }
-                let (Some(told), Some(workspaces)) = (follows.upgrade(), told_workspaces(&follows))
-                else {
-                    return;
-                };
-                told.settle(&workspaces);
-            }
-        });
-        told
-    }
-
     /// This host's one store of the calls that wait for a person's yes, kept and answered
     /// through its workspaces: grants written on the runtime `runtime` names, every waiting
     /// record kept in the record of the workspace it acts in, and the calls that waited before
@@ -271,7 +95,8 @@ impl Workspaces {
     pub fn secret_parameters(&self) -> tilo_actions::remote::secret_arguments::SecretParameters {
         let providers = self.providers().downgrade();
         Arc::new(move |target| {
-            let registered = providers.upgrade().and_then(|providers| {
+            let providers = providers.upgrade();
+            let registered = providers.as_ref().and_then(|providers| {
                 providers
                     .get(&target.provider)
                     .or_else(|| providers.published(target, super::providers::Reach::ThisDevice))
@@ -280,6 +105,12 @@ impl Workspaces {
                 .and_then(|registered| {
                     tilo_actions::api::locate(&registered.published, &target.address)
                         .map(|(_, action)| action.params().to_vec())
+                })
+                .or_else(|| {
+                    providers
+                        .as_ref()?
+                        .in_workspace(target)
+                        .and_then(|answers| answers.params(target))
                 })
                 .or_else(|| super::actions::published_params(target));
             params.map(|params| tilo_actions::remote::secret_arguments::secret_parameters(&params))
@@ -298,7 +129,15 @@ impl Workspaces {
             if tilo_actions::remote::answers_secret(request) {
                 return true;
             }
-            let registered = providers.upgrade().and_then(|providers| {
+            let providers = providers.upgrade();
+            if providers
+                .as_ref()
+                .and_then(|providers| providers.in_workspace(target))
+                .is_some_and(|answers| answers.answers_a_secret(target))
+            {
+                return true;
+            }
+            let registered = providers.as_ref().and_then(|providers| {
                 providers
                     .get(&target.provider)
                     .or_else(|| providers.published(target, super::providers::Reach::ThisDevice))
@@ -323,7 +162,6 @@ impl Workspaces {
             self.inner.asked_store.set(Arc::clone(store)).is_ok(),
             "a host keeps one store of the calls that wait"
         );
-        self.keep_vault_asks_in(store);
         self.action_service()
             .admit_approvals_from(Arc::clone(store));
         self.link_asked();
@@ -341,6 +179,25 @@ impl Workspaces {
         self.link_asked();
     }
 
+    /// Wrap the records this host's dispatch writes its asked calls through in `wrap` from now
+    /// on: what tells each one to the person it waits for. `wrap` is handed them once the host
+    /// names its store and its dispatch, with the store kept by then ([`Self::asked_store`]).
+    ///
+    /// # Panics
+    /// A wrap was named already, or the records were linked before it: an asked call would be
+    /// written through records nothing wraps.
+    pub fn wrap_asked_records(&self, wrap: AskedWrap) {
+        assert!(
+            self.inner.asked_records.get().is_none(),
+            "the asked records are wrapped before the host links them"
+        );
+        assert!(
+            self.inner.asked_wrap.set(wrap).is_ok(),
+            "the asked records are wrapped once"
+        );
+        self.link_asked();
+    }
+
     /// The records this host's dispatch writes through, once both the store and the dispatch
     /// are named.
     fn link_asked(&self) {
@@ -348,10 +205,13 @@ impl Workspaces {
             self.inner.asked_store.get(),
             self.inner.asked_dispatch.get(),
         ) {
-            let _ =
-                self.inner.asked_records.set(self.told(
-                    store.for_dispatch(super::actions::HOST_DISPATCH, Arc::downgrade(dispatch)),
-                ));
+            let records =
+                store.for_dispatch(super::actions::HOST_DISPATCH, Arc::downgrade(dispatch));
+            let records = match self.inner.asked_wrap.get() {
+                Some(wrap) => wrap(records),
+                None => records,
+            };
+            let _ = self.inner.asked_records.set(records);
         }
     }
 
@@ -467,9 +327,4 @@ impl Workspaces {
         );
         decision.grant().is_some().then_some(decision.answer)
     }
-}
-
-/// The workspaces `told` tells for, while both are still there.
-fn told_workspaces(told: &std::sync::Weak<Told>) -> Option<Workspaces> {
-    told.upgrade()?.workspaces.upgrade()
 }

@@ -508,7 +508,11 @@ fn open_member_service(
             },
             bound,
             groups,
-            |config| config,
+            // What the member keeps for its people, as any device of theirs does.
+            |config| tilo_workspace_service::service::ServiceConfig {
+                registers: vec![tilo_person_services::register],
+                ..config
+            },
         )
         .await
     })

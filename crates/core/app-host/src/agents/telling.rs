@@ -21,13 +21,15 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tilo_person_services::PersonServices;
 
 use tilo_actions::remote::person_telling::Told;
 use tilo_lock::MutexRecover as _;
 use tilo_workspace_agent::{Agent, WorkspaceAgents};
 
-use tilo_workspace_service::workspaces::model_answers::Spender;
-use tilo_workspace_service::workspaces::{Spenders, WeakWorkspaces, Workspaces};
+use tilo_person_services::Spenders;
+use tilo_person_services::model_answers::Spender;
+use tilo_workspace_service::workspaces::{WeakWorkspaces, Workspaces};
 
 /// The longest the teller sleeps when nothing is due: what it would miss is
 /// only a log it was not told had moved.
@@ -140,13 +142,13 @@ impl Teller {
     /// thing is due, until the host stops. One teller tells for a host:
     /// a second one started for the same workspaces ends at once.
     pub async fn run(self) {
-        if !self.workspaces.claim_telling_outside() {
+        if !PersonServices::of(&self.workspaces).claim_telling_outside() {
             return;
         }
         // What waited while this host was down is still owed.
-        let known = self.workspaces.people_told();
+        let known = PersonServices::of(&self.workspaces).people_told();
         self.waited.lock_recover().extend(known);
-        let mut moved = self.workspaces.told_changes();
+        let mut moved = PersonServices::of(&self.workspaces).told_changes();
         loop {
             let now_ms = tilo_clock::unix_now_ms();
             let wait = self.step(now_ms).await.map_or(IDLE, |at| {
@@ -169,7 +171,7 @@ impl Teller {
     pub async fn step(&self, now_ms: u64) -> Option<u64> {
         let people: Vec<[u8; 32]> = {
             let mut waited = self.waited.lock_recover();
-            waited.extend(self.workspaces.told_changed_people());
+            waited.extend(PersonServices::of(&self.workspaces).told_changed_people());
             waited.iter().copied().collect()
         };
         let mut next: Option<u64> = None;
@@ -177,7 +179,10 @@ impl Teller {
             let mut waits = false;
             // What was told outside Tilo and waits no more.
             let mut over: Vec<Told> = Vec::new();
-            for told in self.workspaces.told_after(&person, 0).told {
+            for told in PersonServices::of(&self.workspaces)
+                .told_after(&person, 0)
+                .told
+            {
                 if !told.waits() {
                     if !told.pushed.is_empty() {
                         over.push(told);
@@ -237,7 +242,7 @@ impl Teller {
         if now_ms < at {
             return Due::At(at);
         }
-        if self.workspaces.looking(person, self.pace.watching) {
+        if PersonServices::of(&self.workspaces).looking(person, self.pace.watching) {
             // A device of theirs that runs shows it. It is looked at again
             // once that device may have stopped looking.
             return Due::At(now_ms.saturating_add(millis(self.pace.watching)));
@@ -249,7 +254,7 @@ impl Teller {
     /// theirs that runs raises its notice again by itself, and with none
     /// looking it is told outside again. Answers when it comes round next.
     async fn raise(&self, person: [u8; 32], id: &str, now_ms: u64) -> Option<u64> {
-        let raised = match self.workspaces.raise_told(&person, id, now_ms) {
+        let raised = match PersonServices::of(&self.workspaces).raise_told(&person, id, now_ms) {
             Ok(raised) => raised,
             Err(error) => {
                 tracing::warn!(%error, "a thing that insists was not raised again");
@@ -257,7 +262,9 @@ impl Teller {
             }
         };
         let next = raised.insists.and_then(|insists| insists.next_at_ms);
-        if raised.waits() && !self.workspaces.looking(&person, self.pace.watching) {
+        if raised.waits()
+            && !PersonServices::of(&self.workspaces).looking(&person, self.pace.watching)
+        {
             self.tell(person, raised).await;
         }
         next
@@ -269,10 +276,12 @@ impl Teller {
         let (id, kind) = (told.id.clone(), told.kind);
         for outside in &self.outside {
             let took = outside.tell(person, told.clone()).await;
-            if let Err(error) = self
-                .workspaces
-                .told_outside(&person, &id, outside.name(), took)
-            {
+            if let Err(error) = PersonServices::of(&self.workspaces).told_outside(
+                &person,
+                &id,
+                outside.name(),
+                took,
+            ) {
                 tracing::warn!(%error, "what a person was told outside Tilo is not written down");
             }
             tracing::info!(
@@ -377,7 +386,7 @@ impl Spenders for Assistants {
 /// this is called no judgement is made: no model is asked for a call that
 /// no day counts.
 pub fn count_judgements(workspaces: &Workspaces) {
-    workspaces.count_judgements_with(Arc::new(Assistants {
+    PersonServices::of(&workspaces).count_judgements_with(Arc::new(Assistants {
         workspaces: workspaces.downgrade(),
     }));
 }

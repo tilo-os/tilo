@@ -7,7 +7,7 @@
 //! - Browser: the website sessions the person selected, listed and opened, and forgotten by
 //!   someone who administers the workspace: each is one of the workspace's accounts, its cookies
 //!   an entry of the workspace's vault, decided where the daemon opens it
-//!   ([`tilo_workspace_service::workspaces::website_session_asks`]);
+//!   ([`tilo_person_services::website_session_asks`]);
 //! - Settings, the keeper of the workspace's accounts: keeping an account's password in the
 //!   workspace's vault, which it is never released back, and naming the entry it is kept in;
 //! - any app's engine: the sign-in of the workspace's account that names the vault entry it
@@ -147,7 +147,7 @@ impl BrowserServiceSessionServices for ServiceSessions {
         let not_yet = |why: &str| -> ItemAnswering {
             tracing::warn!(target: crate::account_passwords::LOG, app = context.app_id(), why, "an account's password was asked for before this device holds its workspaces");
             ready(Err(
-                tilo_workspace_service::workspaces::account_logins::VAULT_NOT_HERE.into(),
+                tilo_person_services::account_logins::VAULT_NOT_HERE.into()
             ))
         };
         if self.daemon.link().is_err() {
@@ -174,9 +174,9 @@ impl BrowserServiceSessionServices for ServiceSessions {
             crate::account_passwords::answer(&daemon, &workspace, &app, by, command).await
         });
         Box::pin(async move {
-            answering.await.map_err(|_| {
-                tilo_workspace_service::workspaces::account_logins::VAULT_NOT_HERE.to_owned()
-            })?
+            answering
+                .await
+                .map_err(|_| tilo_person_services::account_logins::VAULT_NOT_HERE.to_owned())?
         })
     }
 

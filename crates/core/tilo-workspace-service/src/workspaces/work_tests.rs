@@ -72,7 +72,11 @@ impl tilo_actions::remote::ActionProvider for Photos {
             tilo_actions::ResourceSpec::new("photos.library", "photos.library", "Photos");
         spec.app_id = Some(PHOTOS.into());
         spec.actions = vec![
-            action(THUMBNAILS, "Make thumbnails", tilo_actions::ActionKind::Read),
+            action(
+                THUMBNAILS,
+                "Make thumbnails",
+                tilo_actions::ActionKind::Read,
+            ),
             action(RETOUCH, "Retouch", tilo_actions::ActionKind::Undoable),
             action(UNDECLARED, "Melt", tilo_actions::ActionKind::Undoable),
         ];
@@ -593,9 +597,7 @@ async fn a_call_is_judged_at_the_kind_its_action_declares() {
         let (host, workspace, viewer_key, endpoint) = (&host, &workspace, &viewer_key, &endpoint);
         async move { ask_turn(host, workspace, (viewer_key, endpoint), action, seed).await }
     };
-    let refused = |answer: &Result<InvocationUpdate, ActionCallError>| {
-        matches!(answer, Err(ActionCallError::Refused { reason }) if reason.contains("does not let"))
-    };
+    let refused = |answer: &Result<InvocationUpdate, ActionCallError>| matches!(answer, Err(ActionCallError::Refused { reason }) if reason.contains("does not let"));
 
     // A read is the viewer's to run.
     let read = ask(THUMBNAILS, 1).await;

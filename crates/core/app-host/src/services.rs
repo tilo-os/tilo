@@ -177,7 +177,7 @@ pub trait BrowserServiceSessionServices: Send + Sync {
     ) -> ItemAnswering {
         let _ = (context, command);
         Box::pin(std::future::ready(Err(
-            tilo_workspace_service::workspaces::account_logins::VAULT_NOT_HERE.to_owned(),
+            tilo_person_services::account_logins::VAULT_NOT_HERE.to_owned(),
         )))
     }
     fn disconnect(&self, peer_id: u64);

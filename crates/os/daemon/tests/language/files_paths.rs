@@ -1052,7 +1052,7 @@ fn a_file_a_message_carries_is_told_to_the_turn_and_read_as_content_from_outside
         CHAT_PACKAGE, asked as model_asked, make_scout, scripted, start_chat, tool_answers,
         write_to_scout_with,
     };
-    use tilo_workspace_service::workspaces::model_answers::scripted::Reply;
+    use tilo_person_services::model_answers::scripted::Reply;
 
     host::run_with(&[CHAT_PACKAGE], |host| async move {
         let host = host.as_ref();
@@ -1107,9 +1107,12 @@ fn a_file_a_message_carries_is_told_to_the_turn_and_read_as_content_from_outside
         );
 
         // The message starts one turn of the person's assistant, and its model is asked.
-        tokio::time::timeout(std::time::Duration::from_secs(90), model_asked(&scripted, 1))
-            .await
-            .expect("the message starts a turn");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(90),
+            model_asked(&scripted, 1),
+        )
+        .await
+        .expect("the message starts a turn");
 
         // The turn is told the file's name, its size and the address its content is kept under,
         // and how to read it.

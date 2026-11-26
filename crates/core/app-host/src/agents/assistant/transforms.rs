@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use tilo_person_services::PersonServices;
 
 use tilo_action_policy::Actor;
 use tilo_actions::remote::{Admitted, Caller, InvokeRequest, Outcome, Pending, pending};
@@ -19,9 +20,9 @@ use tilo_server_protocol::WorkspaceId;
 use ui::time::Duration;
 
 use super::{assistant_of, person_of};
+use tilo_person_services::model_answers::Spender;
 use tilo_workspace_service::service::ServiceSlot;
 use tilo_workspace_service::workspaces::Workspaces;
-use tilo_workspace_service::workspaces::model_answers::Spender;
 use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 /// The provider the transforms are answered under.
@@ -251,7 +252,7 @@ impl TransformModel for Asked<'_> {
         timeout: Duration,
         stop: &AtomicBool,
     ) -> Result<String, String> {
-        let mut model = self.workspaces.workspace_model(self.workspace, kind);
+        let mut model = PersonServices::of(&self.workspaces).workspace_model(self.workspace, kind);
         if let Some(spender) = &self.spender {
             model = model.spending_as(spender.clone());
         }

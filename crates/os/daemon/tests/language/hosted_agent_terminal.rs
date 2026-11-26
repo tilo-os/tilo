@@ -21,7 +21,7 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, ReceiptStatus, ResourceAddress, ResourceCopy,
 };
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
-use tilo_workspace_service::workspaces::model_answers::scripted::Reply;
+use tilo_person_services::model_answers::scripted::Reply;
 
 use crate::language::chat::{CHANNEL, chat_holds, chat_holds_soon, made_channel, opens};
 use crate::language::host;
@@ -422,10 +422,13 @@ fn on_the_servers_model_a_turn_that_failed_with_a_command_pending_lets_the_next_
                 Reply::tool_call(
                     "call-1",
                     "tilo_do",
-                    running("0f0e0d0c-0000-4000-8000-000000000006", "echo building && echo built"),
+                    running(
+                        "0f0e0d0c-0000-4000-8000-000000000006",
+                        "echo building && echo built",
+                    ),
                 ),
                 Reply::failing(
-                    tilo_workspace_service::workspaces::model_answers::protocol::ModelError::invalid(
+                    tilo_person_services::model_answers::protocol::ModelError::invalid(
                         "the model broke off",
                     ),
                 ),

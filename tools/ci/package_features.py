@@ -84,6 +84,9 @@ NATIVE_TEST_FEATURES = {
     # declared `required-features = ["apps"]`, so a check that does not name
     # the feature never compiles it.
     "tilo-workspace-service": ("apps",),
+    # Most of a person's services answer an agent's turn: calendars, models,
+    # the vault an agent's commands use. Their tests sit behind `agents`.
+    "tilo-person-services": ("agents",),
 }
 
 # Packages whose tested features above are not their default build. The

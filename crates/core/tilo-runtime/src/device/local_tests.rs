@@ -972,8 +972,7 @@ fn an_apps_own_process_keeps_reads_back_and_is_keyed_on_its_daemon_line() {
     );
 
     // A task's host of the bridge runs code that is not the bridge's: refused all of it.
-    let from_a_task =
-        tilo_workspace_service::workspaces::vault_release::from_a_tilolang_process(BRIDGE);
+    let from_a_task = tilo_person_services::vault_release::from_a_tilolang_process(BRIDGE);
     assert_eq!(key(&tasks, "grayjay-noise"), Err(from_a_task.clone()));
     assert_eq!(
         called(

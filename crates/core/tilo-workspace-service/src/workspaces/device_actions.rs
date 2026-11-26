@@ -314,21 +314,40 @@ impl DeviceWork {
         })
     }
 
-    /// Answer `request`, what an agent's turn asks of what its workspace keeps, for `caller`,
-    /// as the workspaces this work belongs to decide it ([`super::Workspaces::answer_turn`]).
+    /// Answer `request`, what an agent's turn asks of `answers`, a provider registered to answer
+    /// in the workspaces this device holds ([`super::providers::Providers::answer_in_workspaces`]),
+    /// as that provider decides it for the turn: the turn names its workspace, and its runtime
+    /// carries no certificate of a device.
     #[cfg(not(target_arch = "wasm32"))]
-    fn answer_turn(
+    fn answer_on_turn(
         &self,
+        answers: Arc<dyn super::providers::WorkspaceAnswers>,
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let Some(workspaces) = self.turns.get().and_then(super::WeakWorkspaces::upgrade) else {
-            return Pending::ready(Err(not_served()));
-        };
         let caller = caller.clone();
         let (completer, answer) = tilo_actions::remote::pending();
         self.runtime.spawn(async move {
-            completer.complete(workspaces.answer_turn(&caller, &request).await);
+            let call = super::providers::WorkspaceCall {
+                workspace: None,
+                caller: &caller,
+                certificate: None,
+            };
+            completer.complete(match answers.answer_turn(call, &request).await {
+                Ok(super::providers::Answered::Value(value)) => Ok(InvocationReceipt {
+                    invocation: request.invocation,
+                    status: tilo_actions::remote::ReceiptStatus::Completed {
+                        output: tilo_actions::ActionOutput {
+                            value: Some(value),
+                            resources: Vec::new(),
+                        },
+                    },
+                }),
+                Ok(super::providers::Answered::Live(_)) => Err(ActionCallError::invalid_request(
+                    "a turn asks for one answer, not a result that moves",
+                )),
+                Err(refused) => Err(refused),
+            });
         });
         answer
     }
@@ -877,19 +896,9 @@ fn not_served() -> ActionCallError {
     }
 }
 
-/// Whether `provider` is answered by a workspace's governance here: its own actions, and the
-/// models its work runs on, which the device holding the workspace keeps for its members' devices
-/// as a host keeps them for a page.
-/// The providers this device's dispatch answers an app's own connection for (Mail's connector
-/// reading the sign-ins and releasing a login's secret): the workspace's accounts and its vault.
-pub(crate) const APP_CONNECTION_PROVIDERS: [&str; 2] = [
-    crate::workspace_accounts::PROVIDER,
-    crate::workspace_vault::PROVIDER,
-];
-
+/// Whether `provider` is answered by a workspace's governance here.
 fn hosted(provider: &str) -> bool {
     provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
-        || provider == tilo_actions::remote::MODELS_PROVIDER
 }
 
 impl ActionProvider for Answers {
@@ -1382,12 +1391,28 @@ impl Answers {
         {
             return Pending::ready(Err(ActionCallError::NotPermitted));
         }
-        // What an agent's turn asks of what its workspace keeps for the person who asked it
-        // (their vault's uses by reference, mail, calendars, connections) is decided for that
-        // turn, before anything a person's device asks of the same providers.
-        #[cfg(not(target_arch = "wasm32"))]
-        if super::hosted_use::answers(caller, &request.target) {
-            return self.work.answer_turn(caller, request);
+        // What a provider registered to answer in the workspaces this device holds answers
+        // (a person's accounts, vault, models): an agent's turn asks what it takes of turns as
+        // that provider decides for the turn, an app this device launched asks it as the app
+        // through the apps it serves, and a device of the workspace's roster asks what the
+        // provider lets it as the workspace's governance decides it. Nobody else knows the call.
+        if let Some(answers) = self.work.providers.in_workspace(&request.target) {
+            #[cfg(not(target_arch = "wasm32"))]
+            if caller.acting().is_agent()
+                && caller.turn().is_some()
+                && answers.turn_takes(&request.target)
+            {
+                return self.work.answer_on_turn(answers, caller, request);
+            }
+            if caller.launched_app().is_some()
+                && let Some(served) = self.apps()
+            {
+                return served.invoke(caller, request);
+            }
+            if answers.roster_asks(&request.target) {
+                return self.work.govern(caller, request);
+            }
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         if hosted(&request.target.provider)
             || tilo_actions::remote::asked::is_resolve(&request.target)
@@ -1400,12 +1425,7 @@ impl Answers {
         if request.target.provider == WORK_PROVIDER {
             return self.work.take(caller, &request);
         }
-        // The workspace's accounts and vault are registered here for an app's own connection
-        // alone, the process this device launched as the app: anyone else asks them where they
-        // asked before, and a turn is answered above.
-        let registered = caller.launched_app().is_some()
-            || !APP_CONNECTION_PROVIDERS.contains(&request.target.provider.as_str());
-        if registered && self.work.providers.serves(&request.target.provider) {
+        if self.work.providers.serves(&request.target.provider) {
             return self
                 .work
                 .providers
@@ -1420,12 +1440,11 @@ impl Answers {
         // An address a provider registered on this device publishes is that provider's, whichever
         // provider token the call names: a workspace's own `app.<app>#open` is the open of an app
         // this device places, and page actions of what it placed are its own.
-        if registered
-            && self
-                .work
-                .providers
-                .published(&request.target, super::providers::Reach::Devices)
-                .is_some()
+        if self
+            .work
+            .providers
+            .published(&request.target, super::providers::Reach::Devices)
+            .is_some()
         {
             return self
                 .work

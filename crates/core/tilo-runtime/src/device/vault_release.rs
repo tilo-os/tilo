@@ -1,6 +1,6 @@
 //! The vault's release on an app process's own connection
-//! ([`tilo_workspace_service::workspaces::vault_release`]), and the logins a window of the
-//! app's own asks for its page ([`tilo_workspace_service::workspaces::page_logins`]).
+//! ([`tilo_person_services::vault_release`]), and the logins a window of the
+//! app's own asks for its page ([`tilo_person_services::page_logins`]).
 //!
 //! The daemon started the process and knows it by its pid ([`crate::apps::ProcessOf`]): whether
 //! it is a sandboxed launch of the app's own package, and whether that launch is the app's held
@@ -9,14 +9,15 @@
 //! process: the line it is answered on is written nowhere else.
 
 use std::sync::{Arc, Weak};
+use tilo_person_services::PersonServices;
 
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending, ReceiptStatus, pending,
 };
 use tilo_actions::{ActionOutput, InvocationId};
+use tilo_person_services::vault_release::AppProcess;
 use tilo_workspace_service::workspace_vault;
-use tilo_workspace_service::workspaces::vault_release::AppProcess;
 
 use super::services::Daemon;
 use crate::apps::ProcessOf;
@@ -121,23 +122,24 @@ impl ActionProvider for OwnProcess {
         tilo_rt::app().spawn(async move {
             let invocation = request.invocation;
             let at = (app.as_str(), workspace.as_str());
+            let services = PersonServices::of(&workspaces);
             let answered = match asked {
                 Some(action) if workspace_vault::PAGE_LOGIN_ACTIONS.contains(&action) => {
-                    workspaces.page_login(at, &process, &request).await
+                    services.page_login(at, &process, &request).await
                 }
                 Some(workspace_vault::FIND) => {
-                    answer_of(workspaces.find_tagged(at, &process, &request).await)
+                    answer_of(services.find_tagged(at, &process, &request).await)
                 }
                 Some(workspace_vault::WEB_CALL) => {
-                    workspaces.web_call_to(at, &process, &request).await
+                    services.web_call_to(at, &process, &request).await
                 }
                 Some(workspace_vault::DEVICE_KEY) => {
-                    answer_of(workspaces.device_key_for(at, &process, &request).await)
+                    answer_of(services.device_key_for(at, &process, &request).await)
                 }
                 Some(workspace_vault::KEEP) => {
-                    answer_of(workspaces.keep_for(at, &process, &request).await)
+                    answer_of(services.keep_for(at, &process, &request).await)
                 }
-                _ => answer_of(workspaces.release_to(at, &process, &request).await),
+                _ => answer_of(services.release_to(at, &process, &request).await),
             };
             completer.complete(answered.map(|value| InvocationReceipt {
                 invocation,

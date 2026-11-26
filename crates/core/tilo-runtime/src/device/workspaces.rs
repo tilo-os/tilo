@@ -176,6 +176,9 @@ impl ServiceWorkspaces {
                     // change the built-in apps' records through it, and offer the styles the
                     // device's installed packages declare.
                     tilolang: super::capabilities::tilolang(),
+                    // What the device keeps for its people: their accounts, models, vault and
+                    // what they call important.
+                    registers: vec![tilo_person_services::register],
                     ..config
                 };
                 match configure {
@@ -583,11 +586,16 @@ impl ServiceWorkspaces {
         self.service.workspaces()
     }
 
+    /// What the service's workspaces keep for their people.
+    pub(crate) fn people(&self) -> tilo_person_services::PersonServices {
+        tilo_person_services::PersonServices::of(self.copies())
+    }
+
     /// Share the device's record of the invocations it was asked for with the workspace
     /// service, so what a model call costs is written into the record of the invocation that
     /// made it ([`Invocations::note_spend`]).
     pub(crate) fn serve_invocations(&self, records: Arc<Invocations>) {
-        self.service.workspaces().serve_invocations(records);
+        self.people().serve_invocations(records);
     }
 
     /// This device's endpoint, which the profile's other services share.
@@ -1199,6 +1207,7 @@ impl ServiceWorkspaces {
             |config| tilo_workspace_service::service::ServiceConfig {
                 reaching: tilo_workspace_service::Reaching::OnItsOwn,
                 tilolang: super::capabilities::tilolang(),
+                registers: vec![tilo_person_services::register],
                 ..config
             },
         )

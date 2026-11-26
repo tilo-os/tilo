@@ -154,8 +154,7 @@ fn the_terminal_walks_a_thunderbird_migration_on_the_device() {
         let home = PathBuf::from(std::env::var_os("HOME").expect("the test's home"));
         tilo_migrate::thunderbird::fixture::write_sample_profile(&home);
         // The mail server is the one thing stood in for: it takes the password Thunderbird saved.
-        host.daemon()
-            .workspaces()
+        tilo_person_services::PersonServices::of(host.daemon().workspaces())
             .sign_in_accounts_through(|_, password| {
                 if password == tilo_migrate::thunderbird::fixture::WORK_PASSWORD {
                     Ok("signed in".into())

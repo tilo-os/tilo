@@ -41,6 +41,7 @@
 //! A workspace the person is no member of is not in the list, whether it exists or not.
 
 use std::sync::Arc;
+use tilo_person_services::PersonServices;
 
 use serde_json::{Value, json};
 use tilo_actions::remote::ActionCallError as NotTaken;
@@ -55,9 +56,9 @@ use tilo_workspace_agent::Agent;
 
 use super::turn_provider::{Ending, Rows};
 use super::{Turn, TurnProvider, TurnScope, WorkspaceId};
+use tilo_person_services::hosted_use::agent_policy_allows;
 use tilo_workspace_service::environment::EnvironmentRegistry;
 use tilo_workspace_service::workspaces::Workspaces;
-use tilo_workspace_service::workspaces::hosted_use::agent_policy_allows;
 
 /// The provider a turn's tools find its person's other workspaces under.
 const PROVIDER: &str = "tilo.other-workspaces";
@@ -147,8 +148,7 @@ impl TurnElsewhere {
         if self.agent.is_sub() {
             return Err(Refusal::Unknown);
         }
-        let Ok(asked) = self
-            .workspaces
+        let Ok(asked) = PersonServices::of(&self.workspaces)
             .asked_turn_of(self.workspace_id, caller)
             .await
         else {
@@ -205,7 +205,9 @@ impl TurnElsewhere {
     /// placed. What the agents were told is asked once more here.
     async fn device_there(&self, there: WorkspaceId, person: [u8; 32]) -> Option<[u8; 32]> {
         let placed = self.placed.as_ref()?;
-        let device = self.workspaces.persons_own_device(there, person).await?;
+        let device = PersonServices::of(&self.workspaces)
+            .persons_own_device(there, person)
+            .await?;
         let theirs = device != self.workspaces.device_cert().device_public_key
             && placed.of(&device, tilo_clock::unix_now_ns()).is_none();
         theirs.then_some(device)

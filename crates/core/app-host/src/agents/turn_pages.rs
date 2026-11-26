@@ -32,6 +32,7 @@
 //! in this server's words, with the window's plain code and none of its sentences.
 
 use std::sync::Arc;
+use tilo_person_services::PersonServices;
 
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
@@ -48,8 +49,8 @@ use super::windows::{PAGE_RESOURCE, Windows, page_action};
 use super::{Reply, Turn, TurnProvider, WorkspaceId};
 use tilo_action_policy::WorkspacePolicy;
 use tilo_app_id::apps::BROWSER as APP;
+use tilo_person_services::hosted_use::{agent_policy_allows, agent_policy_grants};
 use tilo_workspace_service::workspaces::Workspaces;
-use tilo_workspace_service::workspaces::hosted_use::{agent_policy_allows, agent_policy_grants};
 
 /// The Browser's page action that sends its page to an address.
 const NAVIGATE: &str = "navigate";
@@ -184,7 +185,7 @@ impl TurnPages {
                 &reply.workspace,
                 &on_browser(NAVIGATE),
             )
-            && workspaces
+            && PersonServices::of(&workspaces)
                 .asked_turn_of(workspace_id, &reply.caller)
                 .await
                 .is_ok();
@@ -228,8 +229,7 @@ impl TurnPages {
     ) -> Result<InvocationUpdate, ActionCallError> {
         // The turn is one this server carries out, as the workspace admits them now: nothing else is a
         // turn this server reaches a window for.
-        let theirs = self
-            .workspaces
+        let theirs = PersonServices::of(&self.workspaces)
             .asked_turn_of(self.workspace_id, caller)
             .await?;
         let action = request.target.address.action.as_str();

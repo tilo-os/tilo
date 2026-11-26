@@ -85,6 +85,7 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 # without a device's session.
 test-server = { path = "../../../tools/test-server" }
 tilo-workspace-service = { path = "../../../crates/core/tilo-workspace-service", features = ["files", "test-support", "agents"] }
+tilo-person-services = { path = "../../../crates/core/person-services", features = ["test-support", "agents"] }
 tilo-app-host = { path = "../../../crates/core/app-host", features = ["files", "test-support", "agents"] }
 # The host's WebPush sender, which reaches a push service on this machine in tests, and the
 # teller that hands it what waits for a person with nothing of theirs looking.

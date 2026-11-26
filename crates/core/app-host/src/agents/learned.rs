@@ -3,7 +3,7 @@
 //!
 //! What an agent learned about a person is that person's alone, whoever the agent belongs to. It
 //! is kept in the workspace's store by whichever holder runs the agent
-//! ([`tilo_workspace_service::workspaces::person_learned`]): one resource
+//! ([`tilo_person_services::person_learned`]): one resource
 //! ([`tilo_workspace_agent::learned::Learned`]), changed through its provider's actions. Each
 //! fact names the person it was learned about, and that is its reader rule
 //! ([`tilo_workspace_agent::learned::Fact::is_about`]): a fact is read, corrected and forgotten
@@ -26,6 +26,7 @@
 //! fact says is written to a log.
 
 use std::fmt::Write as _;
+use tilo_person_services::PersonServices;
 
 use serde_json::Value;
 use tilo_resource::Id;
@@ -33,8 +34,8 @@ use tilo_workspace_agent::Agent;
 use tilo_workspace_agent::learned::{Fact, Learned, MAX_SOURCE};
 
 use super::{Ask, Turn};
+use tilo_person_services::person_learned::{CORRECT, LEARN};
 use tilo_workspace_service::workspaces::Workspaces;
-use tilo_workspace_service::workspaces::person_learned::{CORRECT, LEARN};
 
 /// What a turn that neither knows nor keeps these facts is answered when it calls one of the
 /// tools by name.
@@ -91,7 +92,7 @@ pub(super) async fn learned_for(
 ) -> Option<Learned> {
     let person = keeps(turn)?;
     let (workspaces, workspace) = (workspaces.clone(), workspace.to_owned());
-    tokio::task::spawn_blocking(move || workspaces.learned_about(&workspace))
+    tokio::task::spawn_blocking(move || PersonServices::of(&workspaces).learned_about(&workspace))
         .await
         .ok()
         .flatten()
@@ -106,7 +107,7 @@ pub(super) async fn learned_for(
 pub(super) async fn importance_for(workspaces: &Workspaces, turn: &Turn) -> Option<String> {
     let person = keeps(turn)?;
     let workspaces = workspaces.clone();
-    tokio::task::spawn_blocking(move || workspaces.importance_told(&person))
+    tokio::task::spawn_blocking(move || PersonServices::of(&workspaces).importance_told(&person))
         .await
         .ok()
         .map(|told| format!("\n\n{told}"))
@@ -165,7 +166,7 @@ pub(super) async fn invoke(
     }
     let (keeping, action) = (keeping.clone(), action.to_owned());
     let ended = tokio::task::spawn_blocking(move || {
-        keeping.workspaces.learned_invoke(
+        PersonServices::of(&keeping.workspaces).learned_invoke(
             &keeping.person,
             &keeping.workspace,
             Some(&keeping.agent),

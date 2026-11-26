@@ -156,7 +156,7 @@ impl Readings {
     }
 
     /// What moves whenever a workspace is held here that was not before.
-    pub(super) fn holds(&self) -> tokio::sync::watch::Receiver<u64> {
+    pub(crate) fn holds(&self) -> tokio::sync::watch::Receiver<u64> {
         self.1.subscribe()
     }
 
@@ -200,7 +200,7 @@ impl Readings {
             .collect()
     }
 
-    pub(super) fn workspaces(&self) -> Vec<String> {
+    pub(crate) fn workspaces(&self) -> Vec<String> {
         self.0
             .lock_recover()
             .iter()
@@ -280,7 +280,7 @@ impl Workspaces {
 
     /// `answer` of the governance of the workspace `workspace` hosted here,
     /// as its replica holds it now; `None` for a workspace not hosted here.
-    pub(super) async fn governing<T>(
+    pub async fn governing<T>(
         &self,
         workspace: WorkspaceId,
         answer: impl FnOnce(&Governance<'_>) -> T,
@@ -297,11 +297,11 @@ impl Workspaces {
 
 /// A hosted workspace's governance as its replica holds it now: what every
 /// decision of who reads what is made against.
-pub(super) struct Governance<'a> {
-    pub(super) peer: &'a StatePeer,
+pub struct Governance<'a> {
+    pub peer: &'a StatePeer,
     /// The workspace's name, which only the views pages read ask for.
     #[cfg(feature = "agents")]
-    pub(super) workspace: &'a str,
+    pub workspace: &'a str,
 }
 
 /// What the broker admits an app's connection and checks its calls by: the workspaces this

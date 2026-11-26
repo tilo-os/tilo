@@ -341,6 +341,7 @@ TEST_SHARD_APART = (
     frozenset({"tilo-fs", "tilo-fs-native"}),
     frozenset({
         "tilo-workspace-service",
+        "tilo-person-services",
         "tilo-app-host",
         "tilo-peer-state",
         "tilo-server",

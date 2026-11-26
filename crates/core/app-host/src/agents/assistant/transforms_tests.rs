@@ -25,12 +25,10 @@ const RESOURCE: &str = "agent.transform:default";
 use crate::collab_app_broker::AppBrokerState;
 use crate::services::ProcessServices;
 use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+use tilo_person_services::model_answers::scripted::{Linking, Reply, ScriptedProvider};
 use tilo_workspace_service::work::AgentEngine;
 use tilo_workspace_service::workspaces::fixtures::hosted;
 use tilo_workspace_service::workspaces::fixtures::{hosting_device, test_host};
-use tilo_workspace_service::workspaces::model_answers::scripted::{
-    Linking, Reply, ScriptedProvider,
-};
 
 /// An agent engine that acts as every agent: what makes this device one that answers its
 /// workspaces' agents, and so runs their transforms.
@@ -109,9 +107,9 @@ fn a_transform_cancelled_while_it_runs_stops_and_reads_cancelled() {
         let server = test_host(dir.path(), &key, &owner).await;
         let workspace = hosted(server.workspaces()).await;
         server.workspaces().run_agents(Arc::new(Keys));
-        server.workspaces().call_private_model_addresses(true);
-        server
-            .workspaces()
+        tilo_person_services::PersonServices::of(server.workspaces())
+            .call_private_model_addresses(true);
+        tilo_person_services::PersonServices::of(server.workspaces())
             .link_model_for(
                 &workspace,
                 &Linking {
@@ -131,7 +129,8 @@ fn a_transform_cancelled_while_it_runs_stops_and_reads_cancelled() {
     let long = "word ".repeat(200);
     let scripted =
         ScriptedProvider::answering([Reply::text(&long).pausing(Duration::from_millis(10))]);
-    server.workspaces().answer_models_with(scripted.clone());
+    tilo_person_services::PersonServices::of(server.workspaces())
+        .answer_models_with(scripted.clone());
 
     // The broker names the workspace the service answers in, and its owner, and the device's
     // own transforms are registered on this device.

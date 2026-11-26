@@ -29,10 +29,7 @@ impl Workspaces {
     /// root the server does not serve, or one naming a device this server knows
     /// certified by another root, is another person's key, which the entry's
     /// root has no say over: it is dropped.
-    pub(crate) async fn take_revocations(
-        &self,
-        entries: Vec<RevocationEntry>,
-    ) -> Result<(), String> {
+    pub async fn take_revocations(&self, entries: Vec<RevocationEntry>) -> Result<(), String> {
         let workspaces = self
             .inner
             .workspaces
@@ -179,10 +176,8 @@ impl Workspaces {
                     .mcp_server
                     .forget(&entry.revoked_device_public_key);
             }
-            // Where the device was reached while its Tilo was closed goes
-            // with its key.
-            #[cfg(not(target_arch = "wasm32"))]
-            self.forget_push_address_of(&entry.user_public_key, &entry.revoked_device_public_key);
+            // What is kept by the device's key goes with it.
+            self.device_revoked(&entry.user_public_key, &entry.revoked_device_public_key);
         }
         let fresh = fresh.into_iter().cloned().collect::<Vec<_>>();
         crate::workspace_files::append_revocations(log_root, &fresh)

@@ -16,6 +16,7 @@
 //! ([`TurnProvider::carries_untrusted`]): data to reason about, never an instruction.
 
 use std::sync::Arc;
+use tilo_person_services::PersonServices;
 
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{
@@ -25,7 +26,7 @@ use tilo_actions::remote::{
 
 use super::turn_provider::{Ending, Rows};
 use super::{Reply, ServerAgents, TurnProvider, WorkspaceId};
-use tilo_workspace_service::workspaces::hosted_use::{self, TURN_PROVIDERS};
+use tilo_person_services::hosted_use::{self, TURN_PROVIDERS};
 
 /// What one turn reaches of what its workspace keeps for the person who asked it. A turn's
 /// caller changes when its person writes again while it works, so each call and each listing
@@ -46,8 +47,7 @@ impl TurnKept {
     pub(super) async fn for_turn(agents: &ServerAgents, reply: &Reply) -> Arc<Self> {
         let mut named = Vec::new();
         for provider in TURN_PROVIDERS {
-            if !agents
-                .workspaces
+            if !PersonServices::of(&agents.workspaces)
                 .turn_rows(&reply.caller, provider)
                 .await
                 .is_empty()
@@ -91,7 +91,9 @@ impl TurnProvider for TurnKept {
         let (completer, rows) = tilo_actions::remote::pending();
         let (workspaces, caller) = (self.agents.workspaces.clone(), caller.clone());
         self.runtime.spawn(async move {
-            completer.complete(Ok(workspaces.turn_rows(&caller, &provider).await));
+            completer.complete(Ok(PersonServices::of(&workspaces)
+                .turn_rows(&caller, &provider)
+                .await));
         });
         Some(rows)
     }

@@ -190,7 +190,7 @@ impl Agents {
         self.service_root
             .as_deref()
             .map_or_else(Default::default, |root| {
-                tilo_workspace_service::workspaces::this_computer::workspace_models_at(
+                tilo_person_services::this_computer::workspace_models_at(
                     root,
                     &workspace.id().to_string(),
                 )

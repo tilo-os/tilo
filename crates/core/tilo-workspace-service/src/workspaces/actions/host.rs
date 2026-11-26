@@ -1731,57 +1731,10 @@ impl Workspaces {
     }
 }
 
-#[cfg(test)]
-mod accounts_tests;
-#[cfg(test)]
-mod addresses_tests;
-#[cfg(test)]
-mod asking_tests;
 mod branch;
-#[cfg(test)]
-mod calendar_accounts_tests;
-#[cfg(all(test, feature = "agents"))]
-mod calendars_turn_tests;
-#[cfg(test)]
-mod connected_accounts_tests;
-#[cfg(test)]
-mod connections_tests;
-#[cfg(all(test, feature = "agents"))]
-mod device_key_tests;
-#[cfg(test)]
-mod formats_tests;
-#[cfg(test)]
-mod mail_reach_tests;
-#[cfg(all(test, feature = "agents"))]
-mod mail_sign_in_tests;
 #[cfg(all(test, feature = "agents"))]
 mod mail_turn_tests;
 #[cfg(test)]
 mod own_tests;
-#[cfg(all(test, feature = "agents"))]
-mod page_login_tests;
-#[cfg(all(test, feature = "agents"))]
-mod page_use_tests;
-#[cfg(all(test, feature = "agents"))]
-mod release_tests;
-#[cfg(test)]
-#[cfg(test)]
-mod sign_in_tests;
-#[cfg(all(test, feature = "agents"))]
-mod sign_tests;
-#[cfg(test)]
-mod telling_tests;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod told_tests;
-#[cfg(test)]
-mod turn_use_tests;
-#[cfg(all(test, feature = "agents"))]
-mod vault_asked_tests;
-#[cfg(test)]
-mod vault_tests;
-#[cfg(test)]
-mod waiting;
-#[cfg(all(test, feature = "agents"))]
-mod web_call_tests;

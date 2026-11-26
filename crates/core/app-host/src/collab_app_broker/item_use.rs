@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use super::{BrokerError, wire};
-use tilo_workspace_service::workspaces::account_logins::VAULT_NOT_HERE;
+use tilo_person_services::account_logins::VAULT_NOT_HERE;
 
 /// What an app is told when its connection is not a person's own.
 const NOT_A_PERSONS_APP: &str = "Only a person's own app keeps or uses an account's password.";

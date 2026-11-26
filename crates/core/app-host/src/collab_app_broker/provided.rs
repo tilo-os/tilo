@@ -1625,6 +1625,7 @@ mod identity_admin_tests {
                                 answers: steps as Arc<dyn ActionProvider + Send + Sync>,
                                 published: Vec::new(),
                                 placed_for: None,
+                                in_workspace: None,
                             };
                             state
                                 .invoke_registered(&caller, Some(&origin), None, &registered, asked)
@@ -2443,6 +2444,7 @@ mod own_device_verdict_tests {
             answers: Arc::new(Cache),
             published: Vec::new(),
             placed_for: None,
+            in_workspace: None,
         }
     }
 

@@ -48,14 +48,14 @@ async fn a_connected_calendar_account_is_kept_where_the_bridge_reads_it() {
         "calendars": [],
         "collapsed": false,
     });
-    workspaces
+    tilo_person_services::PersonServices::of(&workspaces)
         .keep_workspace_account((&workspace, &acting, None), &account)
         .await
         .expect("the account is kept");
 
     // What the bridge's account source reads: the workspace's calendar accounts, each with the
     // server and user name its sign-in is released for.
-    let held = workspaces
+    let held = tilo_person_services::PersonServices::of(&workspaces)
         .workspace_accounts(&workspace)
         .await
         .expect("the workspace's accounts are read");
@@ -176,14 +176,16 @@ async fn an_icloud_account_asked_for_calendars_lists_them_in_the_calendar() {
         cert: cert.clone(),
         signer: Arc::new(key.clone()),
     }));
-    workspaces.sign_in_accounts_through(|_, password| {
-        if password == APP_PASSWORD {
-            Ok("signed in".into())
-        } else {
-            Err("IMAP server rejected the credential".into())
-        }
-    });
-    workspaces.keep_icloud_calendars_at(&icloud.url());
+    tilo_person_services::PersonServices::of(&workspaces).sign_in_accounts_through(
+        |_, password| {
+            if password == APP_PASSWORD {
+                Ok("signed in".into())
+            } else {
+                Err("IMAP server rejected the credential".into())
+            }
+        },
+    );
+    tilo_person_services::PersonServices::of(&workspaces).keep_icloud_calendars_at(&icloud.url());
     let workspace = workspaces.create("Calendar").await.unwrap().workspace;
 
     // She adds her iCloud mail, asking for its calendars too.
@@ -231,7 +233,7 @@ async fn an_icloud_account_asked_for_calendars_lists_them_in_the_calendar() {
     );
 
     // The calendar account kept beside it, as the bridge's account source reads it.
-    let held = workspaces
+    let held = tilo_person_services::PersonServices::of(&workspaces)
         .workspace_accounts(&workspace)
         .await
         .expect("the workspace's accounts are read");

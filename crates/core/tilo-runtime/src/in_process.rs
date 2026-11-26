@@ -318,8 +318,8 @@ impl Device {
         endpoint: &str,
         p256dh: &str,
         auth: &str,
-    ) -> Result<tilo_workspace_service::workspaces::push_addresses::AddressList> {
-        use tilo_workspace_service::workspaces::push_addresses as addresses;
+    ) -> Result<tilo_person_services::push_addresses::AddressList> {
+        use tilo_person_services::push_addresses as addresses;
         let register = addresses::Register::WebPush {
             endpoint: endpoint.to_owned(),
             key: addresses::PushKey {

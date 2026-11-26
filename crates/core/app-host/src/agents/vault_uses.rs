@@ -17,6 +17,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use tilo_person_services::PersonServices;
 
 use serde_json::Value;
 use tilo_actions::InvocationUpdate;
@@ -26,8 +27,8 @@ use tilo_actions::remote::{
     InvokeRequest, Pending, RemoteActionTarget,
 };
 use tilo_lock::MutexRecover as _;
+use tilo_person_services::hosted_use::PageFill;
 use tilo_workspace_service::workspace_vault::{self, FillField};
-use tilo_workspace_service::workspaces::hosted_use::PageFill;
 use zeroize::Zeroizing;
 
 use super::turn_provider::{Ending, Rows};
@@ -57,8 +58,7 @@ impl TurnUses {
         // A page's field is offered where this server places Browser windows, to a turn the
         // entry would not refuse before the vault is opened.
         let offered = if agents.browsers.is_some()
-            && agents
-                .workspaces
+            && PersonServices::of(&agents.workspaces)
                 .may_fill_pages_for(&reply.caller)
                 .await
                 .is_ok()
@@ -107,7 +107,9 @@ impl TurnUses {
             });
         };
         // Refused before any window is asked, as before the vault is opened.
-        self.agents.workspaces.may_fill_pages_for(caller).await?;
+        PersonServices::of(&self.agents.workspaces)
+            .may_fill_pages_for(caller)
+            .await?;
         let fill = TurnFill {
             invocation: request.invocation,
             element: wanted.element.clone(),
@@ -154,9 +156,7 @@ impl TurnUses {
             item: &wanted.item,
             reason: wanted.reason.trim(),
         };
-        let released = self
-            .agents
-            .workspaces
+        let released = PersonServices::of(&self.agents.workspaces)
             .release_for(caller, fill, request)
             .await;
         match released {

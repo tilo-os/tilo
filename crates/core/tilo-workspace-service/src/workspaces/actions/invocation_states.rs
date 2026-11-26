@@ -7,6 +7,7 @@ use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 
 use super::ServiceWorkspaceActions as Actions;
+use crate::workspaces::providers::{Answered, Live};
 
 /// The state of an invocation that answered `value`.
 pub(super) fn succeeded(invocation: InvocationId, value: serde_json::Value) -> InvocationState {
@@ -24,9 +25,9 @@ pub(super) fn succeeded(invocation: InvocationId, value: serde_json::Value) -> I
 
 /// What `work` answered within `wait`, or `None` while it is still under way.
 pub(super) async fn answered_within(
-    work: &mut tokio::task::JoinHandle<Result<serde_json::Value, ActionCallError>>,
+    work: &mut tokio::task::JoinHandle<Result<Answered, ActionCallError>>,
     wait: Option<std::time::Duration>,
-) -> Option<Result<Result<serde_json::Value, ActionCallError>, tokio::task::JoinError>> {
+) -> Option<Result<Result<Answered, ActionCallError>, tokio::task::JoinError>> {
     match wait {
         Some(wait) => tokio::time::timeout(wait, &mut *work).await.ok(),
         None => Some((&mut *work).await),
@@ -66,11 +67,12 @@ pub(super) struct Call {
 pub(super) async fn ended(
     actions: &Actions,
     call: &Call,
-    ran: Result<Result<serde_json::Value, ActionCallError>, tokio::task::JoinError>,
+    ran: Result<Result<Answered, ActionCallError>, tokio::task::JoinError>,
 ) -> Result<InvocationReceipt, ActionCallError> {
     let invocation = call.request.invocation;
     match ran {
-        Ok(Ok(value)) => {
+        Ok(Ok(Answered::Live(moves))) => Ok(follow(actions, call, moves)),
+        Ok(Ok(Answered::Value(value))) => {
             let state = succeeded(invocation, value);
             let receipt = state.receipt();
             actions.log().complete(&invocation, state);
@@ -158,7 +160,7 @@ pub(super) async fn ended(
 pub(super) fn still_running(
     actions: &Actions,
     call: Call,
-    work: tokio::task::JoinHandle<Result<serde_json::Value, ActionCallError>>,
+    work: tokio::task::JoinHandle<Result<Answered, ActionCallError>>,
 ) -> InvocationReceipt {
     let invocation = call.request.invocation;
     let accepted = InvocationState::new(invocation, InvocationUpdate::Accepted { invocation });
@@ -189,4 +191,57 @@ pub(super) fn failed(invocation: InvocationId, message: &str) -> InvocationState
             },
         },
     )
+}
+
+/// Keep `moves`, a result that moves, as the items of `call`'s invocation: its newest item now,
+/// each newer one as it comes, and its output once it ends. Answers the receipt of its first
+/// item; a cancel of the invocation lets go of it ([`Actions::cancel`]).
+pub(super) fn follow(
+    actions: &Actions,
+    call: &Call,
+    mut moves: tokio::sync::watch::Receiver<Live>,
+) -> InvocationReceipt {
+    let invocation = call.request.invocation;
+    let first = moves.borrow_and_update().clone();
+    let state = live_state(invocation, 1, first);
+    let receipt = state.receipt();
+    actions.log().complete(&invocation, state);
+    let following = moves.clone();
+    let kept = actions.clone();
+    let task = actions.shared.runtime.spawn(async move {
+        let mut sequence = 1_u64;
+        while moves.changed().await.is_ok() {
+            sequence = sequence.saturating_add(1);
+            let now = moves.borrow_and_update().clone();
+            let ended = matches!(now, Live::Ended(_));
+            kept.log()
+                .complete(&invocation, live_state(invocation, sequence, now));
+            if ended {
+                break;
+            }
+        }
+        kept.shared.live.lock_recover().remove(&invocation);
+    });
+    actions
+        .shared
+        .live
+        .lock_recover()
+        .insert(invocation, (following, task.abort_handle()));
+    receipt
+}
+
+/// The state of invocation `invocation` whose result stands at `live`, as its `sequence`th item.
+fn live_state(invocation: InvocationId, sequence: u64, live: Live) -> InvocationState {
+    match live {
+        Live::Item(value) => InvocationState::new(
+            invocation,
+            InvocationUpdate::Item {
+                invocation,
+                sequence,
+                value,
+            },
+        ),
+        Live::Ended(Ok(value)) => succeeded(invocation, value),
+        Live::Ended(Err(why)) => failed(invocation, &why),
+    }
 }

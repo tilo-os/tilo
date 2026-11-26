@@ -20,8 +20,8 @@ pub fn published(workspaces: &Arc<crate::device::workspaces::ServiceWorkspaces>)
     let reading = Arc::clone(workspaces);
     let changing = Arc::clone(workspaces);
     let read: Arc<Read> = Arc::new(move |caller: &tilo_app_host::services::Caller| {
-        reading.copies().models_reading(&caller.workspace)
+        reading.people().models_reading(&caller.workspace)
     });
-    let changes: Arc<Changes> = Arc::new(move || changing.copies().person_settings_changes());
+    let changes: Arc<Changes> = Arc::new(move || changing.people().person_settings_changes());
     Served::new(MODELS, read, changes)
 }

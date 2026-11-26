@@ -443,8 +443,7 @@ async fn a_persons_agent_is_told_what_they_call_important_as_it_stands_at_each_t
         }
     };
 
-    server
-        .workspaces()
+    tilo_person_services::PersonServices::of(server.workspaces())
         .keep_importance(&key, &says("My landlord is always important"))
         .unwrap();
     let first = turn("asked-1").await;
@@ -453,8 +452,7 @@ async fn a_persons_agent_is_told_what_they_call_important_as_it_stands_at_each_t
         "the agent is told the rule in its person's words: {first}"
     );
 
-    server
-        .workspaces()
+    tilo_person_services::PersonServices::of(server.workspaces())
         .keep_importance(&key, &says("Only my sister is important"))
         .unwrap();
     let second = turn("asked-2").await;

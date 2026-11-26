@@ -24,7 +24,7 @@ pub fn published(workspaces: &Arc<crate::device::workspaces::ServiceWorkspaces>)
     let reading = Arc::clone(workspaces);
     let read: Arc<ReadLater> = Arc::new(move |caller: Caller| {
         let reading = Arc::clone(&reading);
-        Box::pin(async move { reading.copies().accounts_reading(&caller.workspace).await })
+        Box::pin(async move { reading.people().accounts_reading(&caller.workspace).await })
     });
     let (moved, changes) = tokio::sync::watch::channel(0_u64);
     let watching = Arc::clone(workspaces);
@@ -53,7 +53,7 @@ pub fn published(workspaces: &Arc<crate::device::workspaces::ServiceWorkspaces>)
 /// Whether `write` is a write to a workspace's accounts record.
 fn accounts_record(write: &tilo_workspace_service::workspaces::ResourceWrite) -> bool {
     write.app == tilo_app_id::apps::SETTINGS
-        && write.record == tilo_workspace_service::workspaces::account_logins::accounts_document()
+        && write.record == tilo_person_services::account_logins::accounts_document()
 }
 
 #[cfg(test)]

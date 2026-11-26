@@ -89,6 +89,116 @@ pub struct Registered {
     /// a placed device reaches no provider but the one registered for it, beside the records its
     /// certificate names.
     pub placed_for: Option<[u8; 32]>,
+    /// What answers its calls as the connection that carried each admitted it: the workspace it
+    /// was admitted to and the device certificate its transport verified
+    /// ([`Providers::answer_in_workspaces`]). `None` for a provider every call reaches through
+    /// [`Self::answers`] alone.
+    pub in_workspace: Option<Arc<dyn WorkspaceAnswers>>,
+}
+
+/// A call as the connection that carried it admitted it: the workspace it was admitted to, and the
+/// device certificate its transport verified, beside its caller. A transport that named no
+/// certificate leaves it `None`, and the workspace's own record of the caller's device decides
+/// ([`super::Workspaces::callers_certificate`]).
+#[derive(Clone, Copy)]
+pub struct WorkspaceCall<'a> {
+    /// The workspace the connection was admitted to, `None` for a call of the device itself.
+    pub workspace: Option<collab_types::WorkspaceId>,
+    pub caller: &'a Caller,
+    /// The certificate the transport verified for the caller's device.
+    pub certificate: Option<&'a tilo_user_identity::DeviceCert>,
+}
+
+/// What a provider answering in a workspace answers a call with.
+pub enum Answered {
+    /// Its output, once.
+    Value(serde_json::Value),
+    /// A result read as it moves: its first item now, each newer one as it comes, until it ends
+    /// with its output or a refusal. The caller follows it as the invocation's items; letting go
+    /// of it stops it.
+    Live(tokio::sync::watch::Receiver<Live>),
+}
+
+/// Where a live result stands ([`Answered::Live`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Live {
+    /// Its newest item.
+    Item(serde_json::Value),
+    /// It ended: its output, or why it failed.
+    Ended(Result<serde_json::Value, String>),
+}
+
+/// What an answer in a workspace is waited for as.
+pub type Answering<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+
+/// What a provider registered to answer in the workspaces this device holds offers and answers:
+/// each call with the workspace and the certificate of the connection that carried it.
+pub trait WorkspaceAnswers: Send + Sync {
+    /// The children of a workspace's own tree it answers (`vault` for
+    /// `workspace.permissions:<id>/vault`): a call naming one reaches it, whichever provider
+    /// the call names.
+    fn children(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// The rows of the children of `workspace`'s own tree it answers (its UUID,
+    /// [`Self::children`]) that `call`'s caller is offered, listed in that tree.
+    fn tree_rows<'a>(
+        &'a self,
+        _call: WorkspaceCall<'a>,
+        _workspace: &'a str,
+    ) -> Answering<'a, Vec<tilo_actions::remote::CatalogueRow>> {
+        Box::pin(std::future::ready(Vec::new()))
+    }
+
+    /// The parameters the action `target` names is published with, where it answers it.
+    fn params(&self, _target: &RemoteActionTarget) -> Option<Vec<tilo_actions::ActionParam>> {
+        None
+    }
+
+    /// Whether the action `target` names answers a secret, where it answers it
+    /// ([`tilo_actions::SECRET_ANSWER_TAG`]).
+    fn answers_a_secret(&self, _target: &RemoteActionTarget) -> bool {
+        false
+    }
+
+    /// Whether an agent's turn asks the action `target` names of it directly, decided by it for
+    /// the turn rather than by a workspace's governance.
+    fn turn_takes(&self, _target: &RemoteActionTarget) -> bool {
+        false
+    }
+
+    /// Answer `request`, which an agent's turn asks of it directly ([`Self::turn_takes`]), as
+    /// it decides for that turn.
+    fn answer_turn<'a>(
+        &'a self,
+        call: WorkspaceCall<'a>,
+        request: &'a InvokeRequest,
+    ) -> Answering<'a, Result<Answered, ActionCallError>> {
+        self.answer(call, request)
+    }
+
+    /// Whether another device of a workspace's roster asks the action `target` names of it,
+    /// through the workspace's governance. One no turn takes and no roster device asks is known
+    /// only to an app's own connection here.
+    fn roster_asks(&self, _target: &RemoteActionTarget) -> bool {
+        true
+    }
+
+    /// What `call`'s caller is offered of `query`, by the publisher and workspace each row is
+    /// offered on.
+    fn offer<'a>(
+        &'a self,
+        call: WorkspaceCall<'a>,
+        query: &'a CatalogueQuery,
+    ) -> Answering<'a, Vec<(CatalogueProvider, Vec<tilo_actions::remote::CatalogueRow>)>>;
+
+    /// Answer `request` for `call`.
+    fn answer<'a>(
+        &'a self,
+        call: WorkspaceCall<'a>,
+        request: &'a InvokeRequest,
+    ) -> Answering<'a, Result<Answered, ActionCallError>>;
 }
 
 /// How many invocations from other devices a registered provider took are remembered for routing
@@ -209,8 +319,70 @@ impl Providers {
                 answers,
                 published,
                 placed_for: None,
+                in_workspace: None,
             },
         );
+    }
+
+    /// Answer the calls that name `provider`, or a child of a workspace's tree it answers
+    /// ([`WorkspaceAnswers::children`]), with `answers` from now on, each as the connection that
+    /// carried it admitted it ([`WorkspaceCall`]): on a connection to this device's workspaces,
+    /// and on this device's own dispatch through the workspaces' governance, decided by the
+    /// grants of the application `app`. What it answers decides who may ask it.
+    pub fn answer_in_workspaces(
+        &self,
+        provider: &str,
+        app: &str,
+        answers: Arc<dyn WorkspaceAnswers>,
+    ) {
+        let through = Arc::new(ThroughGovernance(self.downgrade()));
+        self.0.provided.write_recover().insert(
+            Arc::from(provider),
+            Registered {
+                provider: Arc::from(provider),
+                app: Arc::from(app),
+                reach: Reach::ThisDevice,
+                answers: through,
+                published: Vec::new(),
+                placed_for: None,
+                in_workspace: Some(answers),
+            },
+        );
+    }
+
+    /// What answers `target` in a workspace ([`Self::answer_in_workspaces`]): the provider it
+    /// names, or the one answering the child of a workspace's tree its address names.
+    #[must_use]
+    pub fn in_workspace(&self, target: &RemoteActionTarget) -> Option<Arc<dyn WorkspaceAnswers>> {
+        let provided = self.0.provided.read_recover();
+        if let Some(answers) = provided
+            .get(target.provider.as_str())
+            .and_then(|registered| registered.in_workspace.clone())
+        {
+            return Some(answers);
+        }
+        let child = tree_child(&target.address.resource)?;
+        provided
+            .values()
+            .filter_map(|registered| registered.in_workspace.as_ref())
+            .find(|answers| answers.children().contains(&child))
+            .cloned()
+    }
+
+    /// Every provider answering in a workspace, by the provider id it is registered under.
+    #[must_use]
+    pub fn all_in_workspace(&self) -> Vec<(Arc<str>, Arc<dyn WorkspaceAnswers>)> {
+        self.0
+            .provided
+            .read_recover()
+            .values()
+            .filter_map(|registered| {
+                Some((
+                    Arc::clone(&registered.provider),
+                    registered.in_workspace.clone()?,
+                ))
+            })
+            .collect()
     }
 
     /// Answer the calls that name `app`'s actions in `workspace` with `answers` from now on,
@@ -442,6 +614,7 @@ impl Providers {
                 published: answers.published(),
                 answers,
                 placed_for,
+                in_workspace: None,
             },
         );
         drop(served);
@@ -846,6 +1019,72 @@ impl Providers {
     }
 }
 
+/// The child of a workspace's own tree `resource` names (`vault` for
+/// `workspace.permissions:<id>/vault`), when it names one.
+fn tree_child(resource: &str) -> Option<&str> {
+    let named =
+        resource.strip_prefix(tilo_actions::remote::workspace_governance_resource("").as_str())?;
+    named.split_once('/').map(|(_, child)| child)
+}
+
+/// A provider answering in a workspace, on this device's own dispatch: reached through the
+/// workspaces' governance, which admits a call made here as it admits every call of a workspace's
+/// own tree and hands it on with the certificate of this device where the caller is this device.
+struct ThroughGovernance(WeakProviders);
+
+impl ThroughGovernance {
+    fn governance(&self) -> Result<Arc<dyn ActionProvider + Send + Sync>, ActionCallError> {
+        self.0
+            .upgrade()
+            .and_then(|providers| {
+                providers.get(tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER)
+            })
+            .map(|registered| registered.answers)
+            .ok_or_else(|| ActionCallError::Unavailable {
+                reason: "this device serves no workspaces yet".into(),
+            })
+    }
+}
+
+impl ActionProvider for ThroughGovernance {
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        match self.governance() {
+            Ok(governance) => governance.query(caller, query),
+            Err(error) => Pending::ready(Err(error)),
+        }
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        match self.governance() {
+            Ok(governance) => governance.invoke(caller, request),
+            Err(error) => Pending::ready(Err(error)),
+        }
+    }
+
+    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        self.governance().ok()?.observe(caller, id)
+    }
+
+    fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        self.governance().ok()?.next_change(caller, id)
+    }
+
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        match self.governance() {
+            Ok(governance) => governance.cancel(caller, id),
+            Err(error) => Pending::ready(Err(error)),
+        }
+    }
+}
+
 /// The provider moving the record `target` names to another workspace, when `target` is a move:
 /// any app's record moves through the store of the workspace that keeps it, as the caller's write
 /// on both sides, whichever app it is of, decided as that app's ([`record_of`]).
@@ -947,5 +1186,103 @@ fn the_greater(
             Some(declared)
         }
         (declared, surface) => declared.or(surface),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+    use tilo_actions::remote::InvokeArgument;
+
+    fn request(token: &str) -> InvokeRequest {
+        InvokeRequest {
+            invocation: InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: token.into(),
+                address: tilo_actions::ActionAddress::new("console.window", "field-edit"),
+            },
+            argument: InvokeArgument::default(),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            on_behalf_of: None,
+            appearance: None,
+            signed: None,
+        }
+    }
+
+    /// A provider answering in a workspace, which records the certificate each call reached it
+    /// with.
+    struct Certified(Arc<Mutex<Vec<Option<tilo_user_identity::DeviceCert>>>>);
+
+    impl WorkspaceAnswers for Certified {
+        fn offer<'a>(
+            &'a self,
+            _call: WorkspaceCall<'a>,
+            _query: &'a CatalogueQuery,
+        ) -> Answering<'a, Vec<(CatalogueProvider, Vec<tilo_actions::remote::CatalogueRow>)>>
+        {
+            Box::pin(std::future::ready(Vec::new()))
+        }
+
+        fn answer<'a>(
+            &'a self,
+            call: WorkspaceCall<'a>,
+            _request: &'a InvokeRequest,
+        ) -> Answering<'a, Result<Answered, ActionCallError>> {
+            self.0
+                .lock()
+                .expect("the certificates seen")
+                .push(call.certificate.cloned());
+            Box::pin(std::future::ready(Ok(Answered::Value(
+                serde_json::Value::Null,
+            ))))
+        }
+    }
+
+    /// A provider registered to answer in a workspace is handed the certificate the handshake
+    /// of the caller's connection verified, as the workspace's own actions are; where the
+    /// transport named none, the certificate the workspace holds for the caller's device.
+    #[tokio::test]
+    async fn a_provider_reached_over_a_handshake_sees_its_certificate() {
+        use super::super::fixtures;
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let (key, owner) = fixtures::hosting_device();
+        let host = fixtures::test_host(dir.path(), &key, &owner).await;
+        let workspaces = host.workspaces();
+        let (workspace, workspace_id, governance) = fixtures::hosted_governed(workspaces).await;
+        let guest = fixtures::admit(workspaces, &workspace, &owner, 1).await;
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        workspaces.providers().answer_in_workspaces(
+            "test.certified",
+            "test.certified",
+            Arc::new(Certified(Arc::clone(&seen))),
+        );
+        let caller = fixtures::caller(&guest).in_workspace(&workspace);
+        // The handshake verified a certificate of its own for the guest's device: a newer one
+        // than the workspace's record holds.
+        let mut handshake = guest.clone();
+        handshake.issued_at_ns += 1;
+        fixtures::settled(
+            governance
+                .in_workspace_as(workspace_id, &handshake)
+                .invoke(&caller, request("test.certified")),
+        )
+        .await
+        .expect("the provider answers over the handshake");
+        fixtures::settled(
+            governance
+                .in_workspace(workspace_id)
+                .invoke(&caller, request("test.certified")),
+        )
+        .await
+        .expect("the provider answers where the transport named no certificate");
+        assert_eq!(
+            *seen.lock().expect("the certificates seen"),
+            vec![Some(handshake), Some(guest)],
+        );
     }
 }

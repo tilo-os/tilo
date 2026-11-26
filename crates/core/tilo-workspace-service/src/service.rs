@@ -94,6 +94,10 @@ pub struct ServiceConfig {
     /// program that mounts nothing runs the core alone.
     #[cfg(not(target_arch = "wasm32"))]
     pub tilolang: Option<crate::tl_records::Tilolang>,
+    /// What the crates built on the workspaces that this embedder runs register on them as
+    /// they open, before any call reaches them: their providers on the one actions registry.
+    /// A service whose embedder names none answers the core's own actions alone.
+    pub registers: Vec<crate::workspaces::Register>,
 }
 
 impl ServiceConfig {
@@ -119,6 +123,7 @@ impl ServiceConfig {
             app_files: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             tilolang: None,
+            registers: Vec::new(),
         }
     }
 }
@@ -322,6 +327,11 @@ impl ServiceSessions {
         // host to ask.
         #[cfg(not(target_arch = "wasm32"))]
         crate::workspaces::region::register(&workspaces);
+        // The crates built on the workspaces that this embedder names register on them before
+        // any call reaches them.
+        for register in &cfg.registers {
+            register(&workspaces);
+        }
         // The workspaces held here admit through their governance on this device's dispatch,
         // founded here or not.
         sessions.serve_governance(
@@ -383,14 +393,6 @@ impl ServiceSessions {
                     host_revocations,
                 )),
             );
-            #[cfg(all(
-                not(target_arch = "wasm32"),
-                any(feature = "agents", feature = "device-keys")
-            ))]
-            {
-                let carrying = workspaces.clone();
-                tokio::spawn(async move { carrying.carry_vaults_over().await });
-            }
         }
     }
 

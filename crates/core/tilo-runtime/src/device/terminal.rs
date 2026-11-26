@@ -8,6 +8,7 @@
 //! takes work for runs them in the workspace's VM, through the hosted-VM service.
 
 use std::sync::Arc;
+use tilo_person_services::PersonServices;
 
 use tilo_actions::remote::Caller;
 use tilo_actions::remote::environment_commands::{Person, VmSecret};
@@ -49,9 +50,11 @@ impl HostShells {
     fn secrets(&self, workspace: &str, by: &Caller) -> Result<Vec<VmSecret>, String> {
         let copies = self.copies.clone();
         let (workspace, by) = (workspace.to_owned(), by.clone());
-        super::workspaces::block_on_owned(
-            async move { copies.machine_secrets(&workspace, &by).await },
-        )
+        super::workspaces::block_on_owned(async move {
+            PersonServices::of(&copies)
+                .machine_secrets(&workspace, &by)
+                .await
+        })
     }
 }
 

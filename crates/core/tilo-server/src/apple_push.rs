@@ -43,7 +43,7 @@ use tilo_actions::remote::person_telling::Told;
 use tilo_lock::MutexRecover as _;
 
 use crate::workspaces::Workspaces;
-use crate::workspaces::push_addresses::{PushAddress, PushEnvironment, PushKind};
+use tilo_person_services::push_addresses::{PushAddress, PushEnvironment, PushKind};
 
 /// What this sender is called where a telling is written down on the thing
 /// told.
@@ -586,8 +586,7 @@ impl ApplePush {
         match answer {
             Answer::Took => return true,
             Answer::Gone(since) => {
-                self.inner
-                    .workspaces
+                tilo_person_services::PersonServices::of(&self.inner.workspaces)
                     .forget_push_address(person, &address.token, since);
             }
             Answer::Refused(status, reason) => {
@@ -608,7 +607,9 @@ impl ApplePush {
             return 0;
         }
         let mut took: Vec<String> = Vec::new();
-        for address in self.inner.workspaces.push_addresses(person) {
+        for address in
+            tilo_person_services::PersonServices::of(&self.inner.workspaces).push_addresses(person)
+        {
             if address.kind != PushKind::Apns || !self.inner.topics.contains(&address.topic) {
                 continue;
             }
@@ -626,7 +627,8 @@ impl ApplePush {
                 took.push(address.token);
             }
         }
-        self.inner.workspaces.push_shown(person, &took, &told.id);
+        tilo_person_services::PersonServices::of(&self.inner.workspaces)
+            .push_shown(person, &took, &told.id);
         u32::try_from(took.len()).unwrap_or(u32::MAX)
     }
 
@@ -634,9 +636,7 @@ impl ApplePush {
     /// showed one of them on is sent one push that shows nothing and names
     /// the thing as gone, once.
     async fn gone(&self, person: &[u8; 32], ids: &[String]) {
-        for (address, shown) in self
-            .inner
-            .workspaces
+        for (address, shown) in tilo_person_services::PersonServices::of(&self.inner.workspaces)
             .push_taken_back(person, ids, PushKind::Apns)
         {
             if address.kind != PushKind::Apns || !self.inner.topics.contains(&address.topic) {

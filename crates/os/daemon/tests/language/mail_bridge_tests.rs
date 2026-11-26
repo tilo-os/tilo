@@ -62,14 +62,14 @@ async fn a_connected_mail_account_is_kept_where_the_bridge_reads_it() {
         "smtp_host": "smtp.example.test",
         "smtp_port": 465,
     });
-    workspaces
+    tilo_person_services::PersonServices::of(&workspaces)
         .keep_workspace_account((&workspace, &acting, None), &account)
         .await
         .expect("the account is kept");
 
     // What the connector's account source reads: the workspace's email accounts, each with the
     // servers and user name its sign-in is released for.
-    let held = workspaces
+    let held = tilo_person_services::PersonServices::of(&workspaces)
         .workspace_accounts(&workspace)
         .await
         .expect("the workspace's accounts are read");
@@ -289,11 +289,14 @@ async fn add_mail_account(
     workspace: &str,
     address: &str,
 ) -> workspace_vault::ItemRef {
-    workspaces
+    tilo_person_services::PersonServices::of(&workspaces)
         .keep_mail_account_as_added(workspace, address)
         .await
         .expect("the account and its sign-in are kept");
-    let held = workspaces.workspace_accounts(workspace).await.unwrap();
+    let held = tilo_person_services::PersonServices::of(&workspaces)
+        .workspace_accounts(workspace)
+        .await
+        .unwrap();
     let account = held.account(address).expect("the account the person added");
     let named =
         accounts::email::password_item(&account.config).expect("the account names its sign-in");
@@ -346,10 +349,13 @@ fn the_mail_connector_signs_in_with_the_password_the_workspace_keeps() {
         // Another account, disabled, is no account the connector signs in to.
         let off = "off@example.test";
         add_mail_account(&workspaces, &workspace, off).await;
-        let held = workspaces.workspace_accounts(&workspace).await.unwrap();
+        let held = tilo_person_services::PersonServices::of(&workspaces)
+            .workspace_accounts(&workspace)
+            .await
+            .unwrap();
         let mut disabled = held.account(off).expect("the account the person added");
         disabled.enabled = false;
-        workspaces
+        tilo_person_services::PersonServices::of(&workspaces)
             .keep_workspace_account((&workspace, by.acting(), None), &disabled)
             .await
             .expect("the account is disabled");

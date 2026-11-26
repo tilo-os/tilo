@@ -8,7 +8,7 @@
 //!   ([`super::shares`]).
 //! - **What it keeps about its person.** A turn that knows and keeps facts ([`super::learned`])
 //!   is offered the actions of what the workspace's agents learned
-//!   ([`tilo_workspace_service::workspaces::person_learned`]), carried out for the person who asked it.
+//!   ([`tilo_person_services::person_learned`]), carried out for the person who asked it.
 
 use serde_json::Value;
 use tilo_actions::api::ActionAddress;
@@ -18,7 +18,7 @@ use tilo_actions::{ActionArgs, ActionDescriptor, ActionKind, ActionParam, ParamT
 use tilo_model_gateway::host_backend::protocol::ToolDefinition;
 
 use super::{Turn, shares};
-use tilo_workspace_service::workspaces::person_learned;
+use tilo_person_services::person_learned;
 
 /// The invocation a turn of `agent` is: of the agent's answer action, in the workspace's
 /// invocations, whose record holds the turn's state, steps and output.

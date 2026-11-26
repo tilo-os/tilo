@@ -58,6 +58,7 @@ use tilo_device_identity::login::Device;
 use tilo_identity::broker::{IdentityBrokerHandle, WorkspaceMembership};
 use tilo_invocations::Invocations;
 use tilo_lock::MutexRecover as _;
+use tilo_person_services::PersonServices;
 use tilo_server_protocol::page::PageNotice;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_server_protocol::workspaces::{
@@ -304,10 +305,13 @@ impl Daemon {
                     // app joins when it carries the call again after they allowed it.
                     Err(tilo_actions::remote::ActionCallError::NotPermitted) if joining => {
                         let workspaces = daemon.workspaces.copies().clone();
-                        let (asking, named) = (workspaces.app_asking(&app, &named), named.clone());
+                        let (asking, named) = (
+                            PersonServices::of(&workspaces).app_asking(&app, &named),
+                            named.clone(),
+                        );
                         let facts = super::live_speaking::asked_to_join(&app);
                         block_on_owned(async move {
-                            workspaces
+                            PersonServices::of(&workspaces)
                                 .ask_for_app(&named, &asking, &request, facts)
                                 .await
                         })?;
@@ -3412,7 +3416,7 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
     // app ever holds it.
     parts
         .workspaces
-        .copies()
+        .people()
         .copy_secrets_to(Arc::new(super::secret_clipboard::SessionClipboard));
     // The code of this moment a vault item's seed makes, which an app that shows one-time codes
     // follows as the item's reading: read here, where the seed is.

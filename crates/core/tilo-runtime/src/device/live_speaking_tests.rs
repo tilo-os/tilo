@@ -472,7 +472,7 @@ fn taken_back_and_declined(
         workspace,
         tilo_actions::remote::asked::Offer::Decline,
     );
-    let declined = tilo_workspace_service::workspaces::vault_release::declined_by_person(APP);
+    let declined = tilo_person_services::vault_release::declined_by_person(APP);
     until("the decline written", || {
         refused(&a_join(daemon, at, 8)) == Some(declined.clone())
     });

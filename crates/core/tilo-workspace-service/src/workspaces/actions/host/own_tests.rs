@@ -8,8 +8,7 @@ use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::remote::server_account::{self, Reason, ServerAccount};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, CatalogueQuery, InvocationReceipt, InvokeRequest,
-    ReceiptStatus,
+    ActionCallError, ActionProvider as _, Caller, CatalogueQuery, InvokeRequest, ReceiptStatus,
 };
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_server_protocol::workspaces::JoinReply;
@@ -25,95 +24,12 @@ use tilo_user_identity::{
 use super::super::ServiceWorkspaceActions;
 use super::super::tests::{Answering, answered, caller, settled};
 use crate::workspaces::fixtures::list_itself_on_link;
+use crate::workspaces::fixtures::{
+    create_own, home_of, host_operation as invoke, host_operation_on as on_host, let_in,
+    open_home as open, own_request,
+};
 use crate::workspaces::tests::{guest_device, hosting_device, test_host};
 use crate::workspaces::{IssueInvitationRequest, OwnWorkspaceOffer, WaitListSecrets, Workspaces};
-
-/// `request` by `caller` on the connection `device` certified to the host, answered by its
-/// person where it waits for them and one answers ([`Answering`]).
-async fn on_host(
-    host: &ServiceWorkspaceActions,
-    device: &DeviceCert,
-    caller: &Caller,
-    request: InvokeRequest,
-) -> Result<InvocationReceipt, ActionCallError> {
-    let first = settled(host.as_host(device).invoke(caller, request.clone())).await;
-    let workspaces = host
-        .shared
-        .workspaces
-        .get()
-        .and_then(crate::workspaces::WeakWorkspaces::upgrade)
-        .unwrap();
-    answered(&workspaces, (None, Some(device)), caller, &request, first).await
-}
-
-fn own_request(argument: Value) -> InvokeRequest {
-    let mut request = super::super::tests::request("", CREATE_OWN_WORKSPACE, argument);
-    request.target = tilo_actions::remote::RemoteActionTarget {
-        provider: HOST_ACTIONS_PROVIDER.into(),
-        address: tilo_actions::ActionAddress::new(HOST_WORKSPACES_RESOURCE, CREATE_OWN_WORKSPACE),
-    };
-    request
-}
-
-async fn invoke(
-    host: &ServiceWorkspaceActions,
-    device: &DeviceCert,
-    request: InvokeRequest,
-) -> Result<Value, ActionCallError> {
-    let receipt = on_host(host, device, &caller(device), request).await?;
-    match receipt.status {
-        ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
-        other => panic!("a host operation completes at once: {other:?}"),
-    }
-}
-
-pub(super) async fn create_own(
-    host: &ServiceWorkspaceActions,
-    device: &DeviceCert,
-    argument: Value,
-) -> Result<CreatedWorkspace, ActionCallError> {
-    invoke(host, device, own_request(argument))
-        .await
-        .map(|value| serde_json::from_value(value).unwrap())
-}
-
-/// Name the home workspace whose people `workspaces` keeps workspaces of
-/// their own for, as a site's server names its own: returns it.
-async fn home_of(workspaces: &Workspaces) -> String {
-    let home = workspaces.create("Lounge").await.unwrap().workspace;
-    assert!(workspaces.admit_own_through(&home));
-    home
-}
-
-/// A host keeping workspaces of people's own for the people its home
-/// workspace lets in: returns the home.
-pub(super) async fn open(workspaces: &Workspaces) -> String {
-    workspaces
-        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
-        .unwrap();
-    home_of(workspaces).await
-}
-
-/// Let `person` in as the site does for someone it invites: an invitation
-/// into `home` names them.
-pub(super) async fn let_in(workspaces: &Workspaces, home: &str, person: [u8; 32]) -> Vec<u8> {
-    workspaces
-        .issue(
-            home,
-            workspaces.device_cert(),
-            IssueInvitationRequest {
-                request_id: rand::random(),
-                role: Role::Viewer,
-                recipient_user_public_key: Some(person),
-                invitee_name: None,
-                expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
-                inviter_name: None,
-            },
-        )
-        .await
-        .unwrap()
-        .signed_invitation
-}
 
 async fn offered(
     host: &ServiceWorkspaceActions,

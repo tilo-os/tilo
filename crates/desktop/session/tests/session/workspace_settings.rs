@@ -714,11 +714,11 @@ fn session_keeping_workspaces(
 /// models, which the Agents tab offers.
 fn link_the_offered_model(state: &std::path::Path, session: &Session) {
     let workspace = front_workspace(session);
-    let linked = tilo_workspace_service::workspaces::this_computer::link_this_computer_at(
+    let linked = tilo_person_services::this_computer::link_this_computer_at(
         &state.join("tilo").join("workspace-service"),
         &workspace,
         &agent_provider_config::ProviderConfig::load(),
-        tilo_workspace_service::workspaces::this_computer::Linking::Chosen,
+        tilo_person_services::this_computer::Linking::Chosen,
     )
     .expect("the workspace's models are written");
     assert!(linked, "the offered model becomes the workspace's");

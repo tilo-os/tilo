@@ -3136,7 +3136,7 @@ fn a_secret_answer_is_kept_out_of_every_invocation_record() {
         WORKSPACE_VAULT, workspace_governance_child,
     };
     use tilo_actions::{ActionAddress, InvocationId};
-    use tilo_workspace_service::workspaces::account_logins::{AccountLogin, Place};
+    use tilo_person_services::account_logins::{AccountLogin, Place};
 
     let Some(root) = isolated_root(SECRET_RECORD_TEST) else {
         return;
@@ -3158,7 +3158,7 @@ fn a_secret_answer_is_kept_out_of_every_invocation_record() {
     let reference = tilo_rt::app()
         .block_on(async {
             let place = Place::parse("https://bank.example.test").unwrap();
-            workspaces
+            tilo_person_services::PersonServices::of(&workspaces)
                 .keep_account_password(
                     &workspace,
                     (&device, None),

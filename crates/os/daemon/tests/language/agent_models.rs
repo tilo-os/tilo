@@ -4,10 +4,8 @@
 //! nothing linked, the agent says so in Chat, in the person's own language, and where to choose one.
 
 use serde_json::json;
-use tilo_workspace_service::workspaces::model_answers::{
-    ModelDescriptor, ProviderProfile, ProviderProtocol,
-};
-use tilo_workspace_service::workspaces::this_computer::Linking;
+use tilo_person_services::model_answers::{ModelDescriptor, ProviderProfile, ProviderProtocol};
+use tilo_person_services::this_computer::Linking;
 
 use crate::language::agent_fixture::act;
 use crate::language::host;
@@ -39,7 +37,8 @@ fn the_model_chosen_in_a_computers_agent_models_pane_answers_its_agents() {
                 default_model: Some(chosen.to_owned()),
                 ..ProviderProfile::local_vllm()
             };
-            let mut config = workspaces.workspace_models(host.workspace());
+            let mut config = tilo_person_services::PersonServices::of(&workspaces)
+                .workspace_models(host.workspace());
             config.default_profile = Some(profile.id.clone());
             config.profiles = vec![profile];
             config
@@ -47,12 +46,13 @@ fn the_model_chosen_in_a_computers_agent_models_pane_answers_its_agents() {
 
         let choice = choose(&["llama3.2", "qwen3"], "llama3.2");
         assert!(
-            workspaces
+            tilo_person_services::PersonServices::of(&workspaces)
                 .link_this_computer(host.workspace(), &choice, Linking::Chosen)
                 .unwrap(),
             "the computer's choice becomes the workspace's"
         );
-        let models = workspaces.workspace_models(host.workspace());
+        let models = tilo_person_services::PersonServices::of(&workspaces)
+            .workspace_models(host.workspace());
         assert_eq!(models.default_profile.as_deref(), Some("ollama"));
         assert_eq!(
             models
@@ -83,12 +83,13 @@ fn the_model_chosen_in_a_computers_agent_models_pane_answers_its_agents() {
         // follows.
         let picked = choose(&["llama3.2", "qwen3"], "qwen3");
         assert!(
-            workspaces
+            tilo_person_services::PersonServices::of(&workspaces)
                 .link_this_computer(host.workspace(), &picked, Linking::Following)
                 .unwrap(),
             "the pane's next choice is followed"
         );
-        let models = workspaces.workspace_models(host.workspace());
+        let models = tilo_person_services::PersonServices::of(&workspaces)
+            .workspace_models(host.workspace());
         assert_eq!(
             models
                 .profiles
@@ -111,9 +112,7 @@ fn the_model_chosen_in_a_computers_agent_models_pane_answers_its_agents() {
 #[test]
 fn with_no_model_linked_the_agent_says_so_in_chat_in_its_persons_language() {
     host::run(|host| async move {
-        let models = host
-            .daemon()
-            .workspaces()
+        let models = tilo_person_services::PersonServices::of(host.daemon().workspaces())
             .workspace_models(host.workspace());
         assert_eq!(models.default_profile, None, "{models:?}");
         assert!(models.profiles.is_empty(), "no model is linked: {models:?}");

@@ -12,6 +12,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
+use tilo_person_services::PersonServices;
 
 use anyhow::{Result, anyhow};
 use serde_json::Value;
@@ -174,7 +175,8 @@ impl Daemon {
             &mut |app, purpose, item, secret| {
                 tilo_rt::app()
                     .block_on(
-                        workspaces.adopt_secret(&workspace, &person, app, purpose, item, secret),
+                        PersonServices::of(&workspaces)
+                            .adopt_secret(&workspace, &person, app, purpose, item, secret),
                     )
                     .map_err(|error| error.to_string())
                     .and_then(|adopted| adopted.map(drop))

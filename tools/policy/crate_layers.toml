@@ -77,6 +77,10 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
   why = "the workspace host is the store node: it holds and serves a workspace's retained state"
 
   [[rule.allow]]
+  package = "tilo-person-services"
+  why = "a person's services run inside the store node's host: they read the workspace's accounts and vault documents and which devices are their person's from the peer the host holds"
+
+  [[rule.allow]]
   package = "tilo-app-host"
   why = "the app host serves apps on the store node's workspaces: it opens their replicas and admits apps' writes into them"
 

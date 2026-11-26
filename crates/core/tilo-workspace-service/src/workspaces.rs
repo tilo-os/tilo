@@ -17,7 +17,7 @@
 //! redeems an invitation over the shared workspace-join protocol, and a page
 //! over HTTPS, where someone the workspace lets invite then admits it.
 
-mod actions;
+pub mod actions;
 #[cfg(feature = "apps")]
 pub use actions::agents::FollowedAgents;
 /// The invitation actions a member asks a workspace for, beside its `invite`.
@@ -119,80 +119,24 @@ mod packaged_model;
 pub(crate) use packaged_model::keep_surface;
 #[cfg(not(target_arch = "wasm32"))]
 pub use packaged_model::package_surface;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod asking;
 mod pages;
 mod peer_parts;
 mod reads;
 mod writes;
-// The person's mail accounts and model providers, kept where their
-// workspace runs: a page has no mail connection and no vault of its own.
-#[cfg(not(target_arch = "wasm32"))]
-mod model_providers;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod person_learned;
-pub use model_providers::OpenAiSignIn;
-#[cfg(not(target_arch = "wasm32"))]
-mod person_settings;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod this_computer;
-// A person's own model, asked for whatever this host runs for them.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod model_answers;
-// What the person calls important, what may interrupt them, and what
-// they were told.
-#[cfg(not(target_arch = "wasm32"))]
-mod person_telling;
-#[cfg(not(target_arch = "wasm32"))]
-pub use person_telling::{Spenders, ToTell};
-// Where a person's devices are reached while their Tilo is closed.
-#[cfg(not(target_arch = "wasm32"))]
-pub use person_telling::addresses as push_addresses;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod asking;
-// What the person keeps to sign in with, in that same vault of theirs.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) mod person_vault;
-#[cfg(not(target_arch = "wasm32"))]
-pub use person_vault::{NO_CLIPBOARD, SecretClipboard};
-// One vault item's secret handed to a process of an app's own that a turn placed here.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod vault_release;
-// The logins a page in a window of an app's own signs in with, kept in that same vault.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod page_logins;
 // The workspace's one vault, Passwords' document, as this device holds it.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) mod vault;
+pub mod vault;
 mod vault_entries;
-// That vault as Passwords' own window reads and changes it.
-#[cfg(not(target_arch = "wasm32"))]
-// The accounts of the workspace, signed in with entries of that vault.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod account_logins;
-// The workspace's accounts as the apps this host serves read them.
-#[cfg(all(test, any(feature = "agents", feature = "apps")))]
-mod account_logins_tests;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod accounts;
-// The website sessions a person selected, each an entry of that vault.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod website_sessions;
-// Browser's asks for those website sessions, decided where the vault opens.
-#[cfg(all(not(target_arch = "wasm32"), feature = "apps"))]
-pub mod website_session_asks;
-#[cfg(not(target_arch = "wasm32"))]
 // What a workspace keeps on the host beside its records, and who reaches it.
 #[cfg(not(target_arch = "wasm32"))]
-mod workspace_stores;
+pub mod workspace_stores;
 #[cfg(not(target_arch = "wasm32"))]
 pub use workspace_stores::{Reach, Store};
-// A secret used by reference by a turn this server carries out itself.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod hosted_use;
 // The vault items a workspace's machine hands the programs it starts.
 #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
 pub mod app_invocations;
-#[cfg(feature = "agents")]
-pub mod machine_secrets;
 pub mod record_reads;
 pub use record_reads::{DeviceJobReads, OtherDeviceReads, RecordReads};
 mod personal;
@@ -242,6 +186,9 @@ mod readings;
 pub use readings::HeldCopy;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod region;
+// What a request names and what its caller is answered.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod requests;
 pub mod server_controls;
 pub mod servers;
 mod shares;
@@ -328,7 +275,7 @@ const RECEIPTS: &str = "joins";
 type Receipts = appended::Appended<tilo_peer_state::join_log::JoinCompletionRecord>;
 
 /// A workspace this server hosts.
-pub(crate) struct HostedWorkspace {
+pub struct HostedWorkspace {
     record: WorkspaceDocumentEntry,
     peer: Replica,
     /// When the workspace was made, ms since the epoch: the time of the first
@@ -747,7 +694,7 @@ impl HostedWorkspace {
         Ok(self.parts.file_write(&self.path, bytes, &self.record.peer))
     }
 
-    fn peer(&self) -> PeerGuard<'_> {
+    pub fn peer(&self) -> PeerGuard<'_> {
         self.peer.lock()
     }
 
@@ -1089,6 +1036,12 @@ type OwnReadings = std::sync::RwLock<
 type HandOnEnded = tokio::sync::watch::Receiver<Option<Result<(), String>>>;
 
 struct WorkspacesInner {
+    /// What a crate built on these workspaces keeps beside them while they live, one value of
+    /// each type ([`Workspaces::kept`]).
+    kept: std::sync::Mutex<HashMap<std::any::TypeId, Arc<dyn std::any::Any + Send + Sync>>>,
+    /// What hears of each device revoked here, by its person's and its own key
+    /// ([`Workspaces::on_device_revoked`]).
+    revoked: std::sync::RwLock<Vec<DeviceRevoked>>,
     host: WorkspaceServices,
     /// Where the workspaces' live resources are shown, once the session asks for them
     /// ([`Workspaces::show_live`]).
@@ -1132,26 +1085,6 @@ struct WorkspacesInner {
     /// `0` keeps the build's own.
     #[cfg(any(test, feature = "test-support"))]
     cursors_per_answer: std::sync::atomic::AtomicUsize,
-    /// Where iCloud accounts' calendars are kept, when a test stands a
-    /// calendar server of its own in ([`Workspaces::keep_icloud_calendars_at`]).
-    #[cfg(all(feature = "agents", any(test, feature = "test-support")))]
-    icloud_calendars_at: std::sync::RwLock<Option<String>>,
-    /// The credential store a test signs drives in through
-    /// ([`Workspaces::cloud_sign_in_through`]); the committed registrations
-    /// otherwise.
-    #[cfg(any(test, feature = "test-support"))]
-    cloud_sign_in: std::sync::RwLock<Option<account_credentials::CredentialStore>>,
-    /// What signs an `Apple ID` in, when a test stands a provider of its own
-    /// in ([`Workspaces::icloud_sign_in_through`]); Apple's otherwise.
-    #[cfg(any(test, feature = "test-support"))]
-    icloud_sign_in:
-        std::sync::RwLock<Option<std::sync::Arc<dyn account_credentials::icloud::ICloudAuth>>>,
-    /// What controls this device's cloud mounts, when a test stands a service of its
-    /// own in ([`Workspaces::cloud_control_through`]); the device's files service otherwise.
-    #[cfg(any(test, feature = "test-support"))]
-    cloud_control: std::sync::RwLock<
-        Option<std::sync::Arc<dyn crate::workspaces::person_settings::cloud_control::CloudControl>>,
-    >,
     /// Whether this server is about to restart and hands its work to the
     /// other holders: it takes and renews no lease ([`Workspaces::drain`]).
     draining: std::sync::atomic::AtomicBool,
@@ -1212,17 +1145,13 @@ struct WorkspacesInner {
     /// Where calls that wait for a person's yes are kept as their asked records
     /// ([`Workspaces::asked_store`]).
     asked_records: std::sync::OnceLock<Arc<dyn tilo_actions::remote::asked::AskedRecords>>,
+    /// What the records this host's dispatch writes its asked calls through are wrapped in, once
+    /// a crate built on these workspaces says ([`Workspaces::wrap_asked_records`]).
+    asked_wrap: std::sync::OnceLock<asking::AskedWrap>,
     /// The store those records are kept in, which admits a person's answer to one.
     asked_store: std::sync::OnceLock<Arc<tilo_remote_actions::asked::AskedStore>>,
     /// This host's dispatch, as that store hands it back the calls it keeps.
     asked_dispatch: std::sync::OnceLock<Arc<dyn tilo_actions::remote::asked::AskedDispatch>>,
-    /// The dispatch an app's asked use of a vault item is kept under, and the records they are
-    /// written through ([`vault_release`]).
-    #[cfg(not(target_arch = "wasm32"))]
-    vault_asks: std::sync::OnceLock<(
-        Arc<dyn tilo_actions::remote::asked::AskedDispatch>,
-        Arc<dyn tilo_actions::remote::asked::AskedRecords>,
-    )>,
     /// What runs the workspaces' Linux machines, as a branch takes its
     /// source's and a deletion takes the workspace's ([`Workspaces::machines`]).
     machines: std::sync::RwLock<Option<Arc<dyn WorkspaceMachines>>>,
@@ -1240,25 +1169,6 @@ struct WorkspacesInner {
     /// before the write lands, so a list read before it is known to be behind
     /// ([`Workspaces::agents_written`]).
     agents_written: std::sync::Mutex<std::collections::HashMap<String, u64>>,
-    /// Moves whenever a person's own settings kept here — their mail
-    /// accounts — changed, so a window following them reads them again
-    /// ([`person_settings`]).
-    person_settings_moved: tokio::sync::watch::Sender<u64>,
-    /// Where this device puts a secret its person copies from the vault
-    /// ([`person_vault::SecretClipboard`]): none until its embedder says.
-    #[cfg(not(target_arch = "wasm32"))]
-    secret_clipboard: std::sync::OnceLock<Arc<dyn person_vault::SecretClipboard>>,
-    /// What answers people's model calls, each with that person's own
-    /// provider, model and key ([`model_answers`]).
-    #[cfg(not(target_arch = "wasm32"))]
-    models: Arc<model_answers::Models>,
-    /// What uses of a vault item by reference keep here ([`hosted_use`]).
-    #[cfg(not(target_arch = "wasm32"))]
-    vault_uses: hosted_use::Uses,
-    /// What its people call important, one writer at a time
-    /// ([`person_telling`]).
-    #[cfg(not(target_arch = "wasm32"))]
-    telling: person_telling::Telling,
     /// What members asking for content are answered from.
     content: content::ContentSlot,
     /// Channel access requests and commits of members waiting for the device's
@@ -1315,10 +1225,6 @@ struct WorkspacesInner {
     /// aborted with the host: it holds the endpoint's address watcher, which keeps the
     /// endpoint's socket open until it goes.
     own_address: std::sync::OnceLock<tokio::task::AbortHandle>,
-    /// The device's record of every invocation it was asked for, when this host serves one:
-    /// what a model call it answers writes what it cost into
-    /// ([`Invocations::note_spend`](tilo_invocations::Invocations::note_spend)).
-    invocations: std::sync::OnceLock<Arc<tilo_invocations::Invocations>>,
 }
 
 impl Drop for WorkspacesInner {
@@ -1389,7 +1295,82 @@ fn only_a_notice(message: &neighbour_wire::NeighbourMsg) -> bool {
         )
 }
 
+/// What a crate built on the workspaces registers on them as they open: its providers on their
+/// one actions registry, before the first call reaches them
+/// ([`crate::service::ServiceConfig::registers`]).
+pub type Register = fn(&Workspaces);
+
+/// What hears of a device revoked, by its person's key and its own ([`Workspaces::on_device_revoked`]).
+pub type DeviceRevoked = Arc<dyn Fn(&[u8; 32], &[u8; 32]) + Send + Sync>;
+
 impl Workspaces {
+    /// What a crate built on these workspaces keeps beside them, of type `T`: made the first
+    /// time it is asked for, and the same value every time after, for as long as the workspaces
+    /// live.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "each value is kept under its own type's id, so it is always of that type"
+    )]
+    pub fn kept<T: Default + Send + Sync + 'static>(&self) -> Arc<T> {
+        let value = Arc::clone(
+            self.inner
+                .kept
+                .lock_recover()
+                .entry(std::any::TypeId::of::<T>())
+                .or_insert_with(|| Arc::new(T::default())),
+        );
+        value
+            .downcast::<T>()
+            .map_err(|_| "kept under another type's id")
+            .expect("a value is kept under its own type")
+    }
+
+    /// The key this device signs its changes to its workspaces with.
+    #[must_use]
+    pub fn host_key(&self) -> &SigningKey {
+        &self.inner.host.key
+    }
+
+    /// Whether `device` is one this host placed, in an environment that stands at `now_ns`.
+    #[must_use]
+    pub fn placed_here(&self, device: &[u8; 32], now_ns: u64) -> bool {
+        self.inner.host.environments.of(device, now_ns).is_some()
+    }
+
+    /// The directory this host keeps its workspaces and their people's settings in.
+    #[must_use]
+    pub fn dir(&self) -> &std::path::Path {
+        &self.inner.dir
+    }
+
+    /// The workspaces something reads the device's own settings in now.
+    #[must_use]
+    pub fn reading_workspaces(&self) -> Vec<String> {
+        self.inner.readings.workspaces()
+    }
+
+    /// Moves whenever something starts or stops reading the device's own settings, while it
+    /// reads them.
+    #[must_use]
+    pub fn reading_holds(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.readings.holds()
+    }
+
+    /// Hand `heard` each device revoked here from now on, by its person's key and its own: what
+    /// a crate keeps by a device's key goes with it.
+    pub fn on_device_revoked(&self, heard: DeviceRevoked) {
+        self.inner.revoked.write_recover().push(heard);
+    }
+
+    /// Tell what hears of revoked devices that the device `device` of the person `user` was
+    /// revoked.
+    pub(crate) fn device_revoked(&self, user: &[u8; 32], device: &[u8; 32]) {
+        for heard in self.inner.revoked.read_recover().iter() {
+            heard(user, device);
+        }
+    }
+
     /// The MCP server as the person reads it: every agent it let in, the reach each was let in
     /// for, and the sessions open now. A device's daemon publishes it to the apps attached to
     /// it as `mcp.server` ([`tilo_actions::remote::mcp_server`]).
@@ -1572,21 +1553,13 @@ impl Workspaces {
         );
         action_service.answer_under(answering);
         // The apps this host serves answer on the same action service its workspaces' devices
-        // reach it on, beside the work and governance it answers itself. The workspace's accounts
-        // and its vault are registered there too, for an app's own connection, which reaches
-        // them through the broker ([`device_actions::APP_CONNECTION_PROVIDERS`]).
+        // reach it on, beside the work and governance it answers itself.
         if let Some(apps) = host.apps.clone() {
-            let served =
-                crate::app_serving::Served::new(&apps, Arc::clone(&workspaces), &action_service);
-            answers.serve_apps(served.clone());
-            for provider in device_actions::APP_CONNECTION_PROVIDERS {
-                answers.work.providers.provide(
-                    provider,
-                    provider,
-                    providers::Reach::Devices,
-                    Arc::new(served.clone()),
-                );
-            }
+            answers.serve_apps(crate::app_serving::Served::new(
+                &apps,
+                Arc::clone(&workspaces),
+                &action_service,
+            ));
         }
         let store =
             LinkStore::open(store, Appetite::StoreAll).map_err(|error| error.to_string())?;
@@ -1612,24 +1585,16 @@ impl Workspaces {
             host.cert.user_public_key,
             host.key.clone(),
         );
-        #[cfg(not(target_arch = "wasm32"))]
-        let models = Arc::new(model_answers::Models::new());
         let memberships = host.access.memberships();
         let this = Self {
             inner: Arc::new(WorkspacesInner {
+                kept: std::sync::Mutex::default(),
+                revoked: std::sync::RwLock::default(),
                 live: std::sync::OnceLock::new(),
                 #[cfg(any(test, feature = "test-support"))]
                 speaks_no_catch_up: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(any(test, feature = "test-support"))]
                 cursors_per_answer: std::sync::atomic::AtomicUsize::new(0),
-                #[cfg(all(feature = "agents", any(test, feature = "test-support")))]
-                icloud_calendars_at: std::sync::RwLock::new(None),
-                #[cfg(any(test, feature = "test-support"))]
-                cloud_sign_in: std::sync::RwLock::new(None),
-                #[cfg(any(test, feature = "test-support"))]
-                cloud_control: std::sync::RwLock::new(None),
-                #[cfg(any(test, feature = "test-support"))]
-                icloud_sign_in: std::sync::RwLock::new(None),
                 draining: std::sync::atomic::AtomicBool::new(false),
                 mode: std::sync::RwLock::new(None),
                 store,
@@ -1660,25 +1625,15 @@ impl Workspaces {
                 branches: tokio::sync::broadcast::channel(64).0,
                 branch_content: std::sync::RwLock::default(),
                 asked_records: std::sync::OnceLock::new(),
+                asked_wrap: std::sync::OnceLock::new(),
                 asked_store: std::sync::OnceLock::new(),
                 asked_dispatch: std::sync::OnceLock::new(),
-                #[cfg(not(target_arch = "wasm32"))]
-                vault_asks: std::sync::OnceLock::new(),
                 machines: std::sync::RwLock::default(),
                 own_readings: std::sync::RwLock::default(),
                 person_names: std::sync::RwLock::default(),
                 web_ui: std::sync::RwLock::default(),
                 document_writes: tokio::sync::broadcast::channel(256).0,
                 agents_written: std::sync::Mutex::default(),
-                person_settings_moved: tokio::sync::watch::channel(0).0,
-                #[cfg(not(target_arch = "wasm32"))]
-                secret_clipboard: std::sync::OnceLock::new(),
-                #[cfg(not(target_arch = "wasm32"))]
-                models: Arc::clone(&models),
-                #[cfg(not(target_arch = "wasm32"))]
-                vault_uses: hosted_use::Uses::proving_within(models.mail_reach()),
-                #[cfg(not(target_arch = "wasm32"))]
-                telling: person_telling::Telling::default(),
                 content: content::ContentSlot::default(),
                 channel_notices: std::sync::Mutex::default(),
                 queued_admissions: std::sync::Mutex::default(),
@@ -1698,7 +1653,6 @@ impl Workspaces {
                 device_names: std::sync::Mutex::default(),
                 mcp_server: mcp_server::McpServer::default(),
                 own_address: std::sync::OnceLock::new(),
-                invocations: std::sync::OnceLock::new(),
             }),
         };
         if let Some(device) = this.inner.host.member.clone() {
@@ -2625,7 +2579,7 @@ impl Workspaces {
         futures::executor::block_on(future)
     }
 
-    async fn workspace(
+    pub async fn workspace(
         &self,
         workspace: &str,
     ) -> Result<Arc<AsyncMutex<HostedWorkspace>>, CollaborationError> {

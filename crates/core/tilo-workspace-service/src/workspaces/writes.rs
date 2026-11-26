@@ -51,7 +51,7 @@ impl Workspaces {
     /// finds the document held already, or the workspace refused the write:
     /// [`WriteRefusal::ChangeRefused`] names the document it refused, the changes it carried and
     /// why, as a server's refusal of a change does.
-    pub(crate) async fn own_write(
+    pub async fn own_write(
         &self,
         workspace: &str,
         (app, document): (&str, &str),

@@ -75,16 +75,14 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_app_host::agents::{EngineActions, WorkspaceActionProvider, agent_keys};
 use tilo_peer_state::actions::{ActionService, NoActions, RemoteDevice};
+use tilo_person_services::model_answers::scripted::{Reply, ScriptedProvider};
+use tilo_person_services::model_answers::{ModelDescriptor, ProviderProfile, ProviderProtocol};
+use tilo_person_services::this_computer::Linking;
 use tilo_runtime::RuntimeServices as _;
 use tilo_runtime::device::services::Daemon;
 use tilo_server_protocol::WorkspaceId;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, StatementSigner as _};
-use tilo_workspace_service::workspaces::model_answers::scripted::{Reply, ScriptedProvider};
-use tilo_workspace_service::workspaces::model_answers::{
-    ModelDescriptor, ProviderProfile, ProviderProtocol,
-};
-use tilo_workspace_service::workspaces::this_computer::Linking;
 
 /// Names the test the process [`run`] starts runs, and where its profile is.
 const OWN: &str = "TILO_HOST_TEST";
@@ -519,17 +517,18 @@ impl Host {
             default_model: Some("scripted".to_owned()),
             ..ProviderProfile::local_vllm()
         };
-        let mut config = workspaces.workspace_models(self.workspace());
+        let mut config = tilo_person_services::PersonServices::of(&workspaces)
+            .workspace_models(self.workspace());
         config.default_profile = Some(profile.id.clone());
         config.profiles = vec![profile];
         assert!(
-            workspaces
+            tilo_person_services::PersonServices::of(&workspaces)
                 .link_this_computer(self.workspace(), &config, Linking::Chosen)
                 .expect("the computer's model choice is linked"),
             "the workspace runs on the model this computer chose"
         );
         let scripted = ScriptedProvider::answering(replies);
-        workspaces.answer_models_with(scripted.clone());
+        tilo_person_services::PersonServices::of(&workspaces).answer_models_with(scripted.clone());
         scripted
     }
 

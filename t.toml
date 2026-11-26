@@ -1089,7 +1089,8 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo check --locked -p tilo-ui --lib\ncargo check --locked -p tilo-ui --no-default-features --lib\ncargo check --locked --target wasm32-unknown-unknown -p tilo-ui --no-default-features --lib\ncargo check --locked -p tilo-app --no-default-features --lib\n"
 heavy = true
 
-# Every feature set an embedder builds the workspace service with, each alone:
+# Every feature set an embedder builds the workspace service and the person
+# services beside it with, each alone:
 # a device serving apps (`apps`, the runtime and the session), a host that runs
 # agents (`agents`, which carries `web` and no apps), the server embedding it
 # for pages (`web`), a build with no feature at all, and the test features the
@@ -1099,7 +1100,7 @@ heavy = true
 [[check]]
 name = "workspace-service-features"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "for features in '' device-keys apps agents apps,agents apps,test-support agents,test-support; do\n    cargo check --locked -p tilo-workspace-service --all-targets ${features:+--features \"$features\"} || exit 1\ndone\nfor features in '' agents files agents,files test-support agents,test-support; do\n    cargo check --locked -p tilo-app-host --all-targets ${features:+--features \"$features\"} || exit 1\ndone\n"
+run = "for features in '' device-keys apps agents apps,agents apps,test-support agents,test-support; do\n    cargo check --locked -p tilo-workspace-service --all-targets ${features:+--features \"$features\"} || exit 1\ndone\nfor features in '' device-keys apps agents test-support agents,test-support; do\n    cargo check --locked -p tilo-person-services --all-targets ${features:+--features \"$features\"} || exit 1\ndone\nfor features in '' agents files agents,files test-support agents,test-support; do\n    cargo check --locked -p tilo-app-host --all-targets ${features:+--features \"$features\"} || exit 1\ndone\n"
 
 [[check]]
 name = "android"

@@ -29,9 +29,9 @@ use tilo_user_identity::DeviceCert;
 
 use super::WeakWorkspaces;
 use super::Workspaces;
-use super::person_settings::{answer, argument};
 use super::person_workspace;
 use super::providers::Reach;
+use super::requests::{answer, argument};
 
 /// The resource of the person's own workspace their region is in.
 pub const REGION: (&str, &str) = ("so.tilo.region", "region");
@@ -244,7 +244,7 @@ impl Workspaces {
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
-        let person = Self::asking_person(caller, certificate, workspace_id)?;
+        let person = super::requests::asking_person(caller, certificate, workspace_id)?;
         self.answer_formats(&person, request).await
     }
 

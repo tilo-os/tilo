@@ -27,7 +27,6 @@ use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_user_identity::DeviceCert;
 
-use super::hosted_use::agent_of;
 use super::{WorkspaceId, Workspaces};
 
 /// Where a store stands in the workspace's policy: an app's node, and the
@@ -67,8 +66,8 @@ impl Store {
     };
     /// What the workspace's agents learned.
     pub const LEARNED: Self = Self {
-        app: super::person_learned::PROVIDER,
-        kind: super::person_learned::RESOURCE,
+        app: super::actions::LEARNED,
+        kind: "facts",
     };
     /// The workspace's scheduled work and events, in Shortcuts.
     pub const EVENTS: Self = Self {
@@ -108,7 +107,7 @@ pub struct Reach {
 impl Reach {
     /// The name a use is remembered under: the agent's, or none for the
     /// person themselves.
-    pub(super) fn by(&self) -> String {
+    pub fn by(&self) -> String {
         self.agent.clone().unwrap_or_default()
     }
 }
@@ -120,11 +119,85 @@ fn workspace_store_root(dir: &Path) -> PathBuf {
 
 /// Where `workspace`'s store stands under the host's directory `dir`: named by the hex of its
 /// id.
-pub(super) fn workspace_store_dir(dir: &Path, workspace: &str) -> PathBuf {
+pub fn workspace_store_dir(dir: &Path, workspace: &str) -> PathBuf {
     workspace_store_root(dir).join(hex::encode(workspace.as_bytes()))
 }
 
 impl Workspaces {
+    /// Whether the agent working a turn as `caller` in `workspace` may do `effect` with `action` of
+    /// `store` in its workspace now: the workspace's policy decides it for that
+    /// agent acting on its asker's word, as it decides every change the agent
+    /// makes to the workspace's records. The agent's own grants and the rules
+    /// its entry bounds it to hold whoever asked; the asker's role bounds what
+    /// their ask may reach, and a person the workspace no longer admits asks
+    /// nothing. A policy that asks first has not refused: the turn waits on
+    /// that answer for the one change, and this is where the change is weighed
+    /// again after it.
+    pub async fn turn_reaches(
+        &self,
+        (workspace, caller): (WorkspaceId, &Caller),
+        store: Store,
+        action: &str,
+        effect: ActionKind,
+    ) -> bool {
+        let (Some(agent), Some(person)) = (
+            caller
+                .acting()
+                .member_id()
+                .filter(|member| member.is_agent()),
+            caller.turn_person().map(hex::encode),
+        ) else {
+            return false;
+        };
+        let Some(policy) = self.policy_of(&workspace.to_string()).await else {
+            return false;
+        };
+        if policy.active_role(&person).is_none() {
+            return false;
+        }
+        // The agent works on its asker's word: it reaches what they may, as its own member.
+        let acting = tilo_action_policy::Acting::member(agent.clone())
+            .handed()
+            .acting_for(tilo_action_policy::Acting::person(person.as_str()));
+        // What its delegation hands it: the preset of a handed agent and its caller's grants.
+        let mut handed = acting.handed_preset(policy.workspace.as_str());
+        handed.extend(caller.granted());
+        let Some(access) =
+            tilo_action_policy::MemberAccess::person(policy, person.as_str()).as_acting(acting)
+        else {
+            return false;
+        };
+        let access = access.granted(caller.granted());
+        let node = store.node(access.workspace(), action);
+        let cx = Context::at_time(tilo_clock::wall());
+        let mut verdict = access.verdict(&node, effect, &cx);
+        let narrowed = narrowed(access.policy.as_ref(), caller);
+        // A narrowed agent takes only the actions its person's answers name, which each caller
+        // checks where the action is taken. The store is what such an action reaches, so the
+        // agent's own part reaches it as its grants and its delegation let it.
+        if narrowed
+            && let Some((id, own_person)) = agent.as_agent()
+            && let Some(own) = verdict.parts.last_mut()
+        {
+            *own = access
+                .policy
+                .party_of_agent(id, own_person.as_str())
+                .with_grants(&handed)
+                .decide(&node, effect, &cx);
+        }
+        let answer = if effect == ActionKind::Read {
+            // The agent's own part, decided again above for a narrowed agent, joins its people's.
+            if narrowed {
+                agent_read(&verdict, narrowed)
+            } else {
+                verdict.answer
+            }
+        } else {
+            agent_change(&verdict, narrowed)
+        };
+        answer != Answer::Deny
+    }
+
     /// Where this host keeps what `workspace` keeps on it beside its records:
     /// its accounts, providers and connections.
     pub fn workspace_root(&self, workspace: &str) -> PathBuf {
@@ -318,80 +391,6 @@ impl Workspaces {
         }
         Ok(reach)
     }
-
-    /// Whether the agent `turn` carries out may do `effect` with `action` of
-    /// `store` in its workspace now: the workspace's policy decides it for that
-    /// agent acting on its asker's word, as it decides every change the agent
-    /// makes to the workspace's records. The agent's own grants and the rules
-    /// its entry bounds it to hold whoever asked; the asker's role bounds what
-    /// their ask may reach, and a person the workspace no longer admits asks
-    /// nothing. A policy that asks first has not refused: the turn waits on
-    /// that answer for the one change, and this is where the change is weighed
-    /// again after it.
-    pub(super) async fn turn_reaches(
-        &self,
-        turn: &super::hosted_use::HostedTurn<'_>,
-        store: Store,
-        action: &str,
-        effect: ActionKind,
-    ) -> bool {
-        let (Some(agent), Some(person)) = (
-            turn.caller
-                .acting()
-                .member_id()
-                .filter(|member| member.is_agent()),
-            turn.caller.turn_person().map(hex::encode),
-        ) else {
-            return false;
-        };
-        let Some(policy) = self.policy_of(&turn.workspace.to_string()).await else {
-            return false;
-        };
-        if policy.active_role(&person).is_none() {
-            return false;
-        }
-        // The agent works on its asker's word: it reaches what they may, as its own member.
-        let acting = tilo_action_policy::Acting::member(agent.clone())
-            .handed()
-            .acting_for(tilo_action_policy::Acting::person(person.as_str()));
-        // What its delegation hands it: the preset of a handed agent and its caller's grants.
-        let mut handed = acting.handed_preset(policy.workspace.as_str());
-        handed.extend(turn.caller.granted());
-        let Some(access) =
-            tilo_action_policy::MemberAccess::person(policy, person.as_str()).as_acting(acting)
-        else {
-            return false;
-        };
-        let access = access.granted(turn.caller.granted());
-        let node = store.node(access.workspace(), action);
-        let cx = Context::at_time(tilo_clock::wall());
-        let mut verdict = access.verdict(&node, effect, &cx);
-        let narrowed = narrowed(access.policy.as_ref(), turn.caller);
-        // A narrowed agent takes only the actions its person's answers name, which each caller
-        // checks where the action is taken. The store is what such an action reaches, so the
-        // agent's own part reaches it as its grants and its delegation let it.
-        if narrowed
-            && let Some((id, own_person)) = agent.as_agent()
-            && let Some(own) = verdict.parts.last_mut()
-        {
-            *own = access
-                .policy
-                .party_of_agent(id, own_person.as_str())
-                .with_grants(&handed)
-                .decide(&node, effect, &cx);
-        }
-        let answer = if effect == ActionKind::Read {
-            // The agent's own part, decided again above for a narrowed agent, joins its people's.
-            if narrowed {
-                agent_read(&verdict, narrowed)
-            } else {
-                verdict.answer
-            }
-        } else {
-            agent_change(&verdict, narrowed)
-        };
-        answer != Answer::Deny
-    }
 }
 
 /// What `verdict` answers a change an agent makes: what the people it acts for answer, and its
@@ -473,4 +472,15 @@ fn app_answer(
         (Answer::Deny, tilo_action_policy::Basis::NoGrant) => Answer::Ask,
         (answer, _) => answer,
     }
+}
+
+/// The agent `caller` acts as and the person it is the agent of, as its member names them: the
+/// one person whose answers narrow it. `None` for a caller that is no agent.
+#[must_use]
+pub fn agent_of(caller: &Caller) -> Option<(&str, &str)> {
+    caller
+        .acting()
+        .member_id()?
+        .as_agent()
+        .map(|(agent, person)| (agent, person.as_str()))
 }

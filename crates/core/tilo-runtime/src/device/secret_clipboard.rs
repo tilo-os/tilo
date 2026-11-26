@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tilo_workspace_service::workspaces::SecretClipboard;
+use tilo_person_services::SecretClipboard;
 
 /// How long a copied secret stays on the clipboard: what a copy an app makes waits too.
 const CLEARS_AFTER: Duration = Duration::from_secs(45);

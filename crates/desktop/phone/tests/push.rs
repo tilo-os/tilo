@@ -31,9 +31,9 @@ use std::time::Duration;
 use server::Server;
 use tilo_actions::remote::person_telling::{self, Kind, Tell};
 use tilo_app_host::agents::telling::{Pace, Teller};
+use tilo_person_services::ToTell;
 use tilo_phone::telling::Watching;
 use tilo_phone::unified_push::{Key, Push};
-use tilo_workspace_service::workspaces::ToTell;
 
 /// The push service on this machine: TLS with a certificate of its own, which the sender is told
 /// to trust, and every body it is handed kept.
@@ -194,7 +194,7 @@ fn a_phone_is_told_what_waits_while_it_runs_and_through_its_push_endpoint_while_
         .expect("the address is the asking device's");
     assert_eq!(
         kept.kind,
-        tilo_workspace_service::workspaces::push_addresses::PushKind::WebPush
+        tilo_person_services::push_addresses::PushKind::WebPush
     );
 
     // What no address is: one naming another device, and one that is no `https` endpoint.
@@ -207,8 +207,8 @@ fn a_phone_is_told_what_waits_while_it_runs_and_through_its_push_endpoint_while_
     let refused = phone.person_action(
         &server.workspace,
         person_telling::PROVIDER,
-        tilo_workspace_service::workspaces::push_addresses::RESOURCE,
-        tilo_workspace_service::workspaces::push_addresses::REGISTER,
+        tilo_person_services::push_addresses::RESOURCE,
+        tilo_person_services::push_addresses::REGISTER,
         named.as_object().cloned().unwrap(),
     );
     assert!(
@@ -228,8 +228,7 @@ fn a_phone_is_told_what_waits_while_it_runs_and_through_its_push_endpoint_while_
     let told = server
         .runtime
         .block_on(
-            server
-                .workspaces()
+            tilo_person_services::PersonServices::of(&server.workspaces())
                 .tell(&person, to_tell("The deploy is waiting", "Deploy")),
         )
         .expect("the person is told");
@@ -249,8 +248,7 @@ fn a_phone_is_told_what_waits_while_it_runs_and_through_its_push_endpoint_while_
     );
 
     // Answered on another device of theirs, it is taken away from the phone.
-    server
-        .workspaces()
+    tilo_person_services::PersonServices::of(&server.workspaces())
         .acknowledge_told(
             &person,
             &told.id,
@@ -271,13 +269,15 @@ fn a_phone_is_told_what_waits_while_it_runs_and_through_its_push_endpoint_while_
     let id = "cause:deploy:7";
     let told = server
         .runtime
-        .block_on(server.workspaces().tell(
-            &person,
-            ToTell {
-                id: Some(id.to_owned()),
-                ..to_tell("The build is red", "Build")
-            },
-        ))
+        .block_on(
+            tilo_person_services::PersonServices::of(&server.workspaces()).tell(
+                &person,
+                ToTell {
+                    id: Some(id.to_owned()),
+                    ..to_tell("The build is red", "Build")
+                },
+            ),
+        )
         .expect("the person is told while no device of theirs looks");
     phone.stop().expect("the phone's daemon stops");
     let host = data.join("host");
@@ -319,8 +319,7 @@ fn a_phone_is_told_what_waits_while_it_runs_and_through_its_push_endpoint_while_
     );
 
     // Answered, a push that shows nothing names it as gone.
-    server
-        .workspaces()
+    tilo_person_services::PersonServices::of(&server.workspaces())
         .acknowledge_told(
             &person,
             &told.id,

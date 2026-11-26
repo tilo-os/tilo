@@ -13,7 +13,8 @@ use std::time::Duration;
 use tilo_server_client::LinkError;
 use tilo_server_client::link::{Dialer, Purpose};
 use tilo_user_identity::{
-    AgentScope, DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_revocation_entry,
+    AgentScope, DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason,
+    sign_revocation_entry,
 };
 
 /// How long a link or the host may take to do what a test waits for.
@@ -564,10 +565,7 @@ async fn an_agent_outside_its_grant_is_refused() {
     let (_agent_key, agent) = device_cert(
         &SigningKey::from_bytes(&[1; 32]),
         "agent",
-        DeviceCapabilities::agent_grant(AgentScope::agent_in(
-            *other.as_uuid().as_bytes(),
-            "agent",
-        )),
+        DeviceCapabilities::agent_grant(AgentScope::agent_in(*other.as_uuid().as_bytes(), "agent")),
     );
     let link = workspaces
         .direct()

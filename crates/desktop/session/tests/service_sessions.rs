@@ -1,8 +1,8 @@
 //! The person's account credentials, as the session serves it to the apps that ask: Browser asks
 //! for vault items for its pages. Every call goes through the action API the shipped app already
 //! speaks, on a connection admitted as that app in its workspace. An account's password and a
-//! website session are the workspace's vault's (`tilo_workspace_service::workspaces::account_logins`,
-//! `tilo_workspace_service::workspaces::website_sessions`), which a session opens only with its
+//! website session are the workspace's vault's (`tilo_person_services::account_logins`,
+//! `tilo_person_services::website_sessions`), which a session opens only with its
 //! device's key service: the session's own tests of its `service_sessions` open it with a test's
 //! keys.
 

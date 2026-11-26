@@ -174,8 +174,7 @@ impl Unlock {
         // answering its record, as every asked call is. The task that tells them runs on this
         // device's runtime, which the daemon start may not be in yet.
         let _entered = tilo_rt::app().handle().enter();
-        let records = workspaces
-            .copies()
+        let records = tilo_person_services::PersonServices::of(workspaces.copies())
             .told(store.for_dispatch(DISPATCH, dispatch));
         Arc::new(Self {
             workspaces,

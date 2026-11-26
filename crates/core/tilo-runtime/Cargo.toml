@@ -134,6 +134,7 @@ neighbour-wire = { package = "tilo-neighbour-wire", path = "../neighbour-wire" }
 # The workspace host every device runs, which the profile's own workspace is placed on. Its agents
 # are the ones this machine runs for the workspaces it holds, on every platform it serves.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["agents", "apps", "device-keys", "files"] }
+tilo-person-services = { path = "../person-services", features = ["agents", "apps", "device-keys"] }
 tilo-app-host = { path = "../app-host", features = ["agents", "files"] }
 # The device's search index, which `search#find` is answered from.
 tilo-workspace-search = { path = "../workspace-search" }
@@ -255,6 +256,7 @@ tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
 tilo-actions = { path = "../actions", features = ["test-support"] }
 # The channel fixtures owner tests seal writes with.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["apps", "device-keys", "files", "test-support"] }
+tilo-person-services = { path = "../person-services", features = ["test-support"] }
 tilo-app-host = { path = "../app-host", features = ["agents", "files", "test-support"] }
 # The join protocol a runtime joins workspaces over.
 # The host whose workspaces a runtime joins.

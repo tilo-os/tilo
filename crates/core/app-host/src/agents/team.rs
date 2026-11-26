@@ -32,6 +32,7 @@
 //! for them.
 
 use std::sync::Arc;
+use tilo_person_services::PersonServices;
 
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -166,8 +167,7 @@ impl TurnTeam {
     /// That `caller` is on a turn of this agent, whichever member asked it: the first check of
     /// everything here. Every other caller is answered what an unknown action is.
     async fn on_turn(&self, caller: &Caller) -> Result<(), NotTaken> {
-        let asked = self
-            .workspaces
+        let asked = PersonServices::of(&self.workspaces)
             .asked_turn_of(self.workspace_id, caller)
             .await?;
         if asked.agent == self.agent.member() {

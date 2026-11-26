@@ -58,8 +58,9 @@ use tilo_workspace_agent::{Agent, WorkspaceAgents};
 use tracing::Instrument as _;
 
 use agent_keys::AgentKeys as _;
+use tilo_person_services::PersonServices;
+use tilo_person_services::model_answers::{ModelAnswerer, ModelRefusal, Spender};
 use tilo_workspace_service::workspaces::Workspaces;
-use tilo_workspace_service::workspaces::model_answers::{ModelAnswerer, ModelRefusal, Spender};
 use turn_provider::TurnProvider;
 
 pub mod agent_keys;
@@ -450,10 +451,11 @@ pub async fn run_on_device(
 ) {
     // The person's own device calls the model their workspace linked where it is, one on their
     // own network or on this machine included: a local model answers with no network at all.
-    workspaces.call_private_model_addresses(true);
+    let person = PersonServices::of(&workspaces);
+    person.call_private_model_addresses(true);
     // The model this computer's Agent models pane chose is the workspaces' it keeps.
-    workspaces.on_a_computer();
-    workspaces.follow_this_computer();
+    person.on_a_computer();
+    person.follow_this_computer();
     telling::start(&workspaces);
     // The records of the tilolang apps built in (tl Chat, Tasks) answer here where no window of
     // their app is open: what an agent's reply and its tools write through.
@@ -820,7 +822,7 @@ impl ServerAgents {
 
     /// Ask `request` of the device's own dispatch as `caller`, signed with its agent's key:
     /// what a turn asks of what its workspace keeps for the person who asked it, decided there
-    /// as every other call of the device's ([`tilo_workspace_service::workspaces::hosted_use::answers`]).
+    /// as every other call of the device's ([`tilo_person_services::hosted_use::answers`]).
     ///
     /// # Errors
     /// The call could not be signed as the agent, or the dispatch refused it.
@@ -1576,14 +1578,12 @@ impl ServerAgents {
             // one agent going at once cannot each spend the day's whole limit.
             let named_model = turn.agent.model.as_deref().or_else(|| {
                 turn.agent.sub.as_ref().and_then(|sub| {
-                    tilo_workspace_service::workspaces::model_answers::Interaction::from_id(
-                        &sub.kind,
-                    )
-                    .is_none()
-                    .then_some(sub.kind.as_str())
+                    tilo_person_services::model_answers::Interaction::from_id(&sub.kind)
+                        .is_none()
+                        .then_some(sub.kind.as_str())
                 })
             });
-            self.workspaces
+            PersonServices::of(&self.workspaces)
                 .workspace_model(workspace_id, sub_agents::kind_of(&turn.agent))
                 // The model the agent itself names answers where the workspace linked it on
                 // this server: a sub-agent's is its skill's, or the one its starter named.

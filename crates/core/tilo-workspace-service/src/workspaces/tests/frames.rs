@@ -53,10 +53,7 @@ fn write_record(kind: &str, id: &str) -> Command {
 }
 
 /// How many of `bodies`, the frames a workspace serves, are writes of `app`.
-fn served_app_documents(
-    bodies: &[crate::workspace_documents::RetainedBody],
-    app: &str,
-) -> usize {
+fn served_app_documents(bodies: &[crate::workspace_documents::RetainedBody], app: &str) -> usize {
     bodies
         .iter()
         .filter(|body| {
@@ -160,8 +157,5 @@ async fn a_write_refused_at_its_keep_puts_no_frame_out() {
         );
     }
     let after = served(&server, created.workspace_id, APP).await;
-    assert_eq!(
-        after, kept,
-        "a write refused at its keep puts no frame out"
-    );
+    assert_eq!(after, kept, "a write refused at its keep puts no frame out");
 }

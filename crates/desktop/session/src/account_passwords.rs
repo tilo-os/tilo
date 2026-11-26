@@ -165,7 +165,7 @@ pub(crate) async fn workspace_accounts(
     daemon: &DaemonShell,
     workspace: &str,
 ) -> Result<AccountList, String> {
-    let record = tilo_workspace_service::workspaces::account_logins::accounts_document();
+    let record = tilo_person_services::account_logins::accounts_document();
     let read = daemon
         .read(whole(workspace, accounts::person::ACCOUNTS_OWNER, &record))
         .await?;
