@@ -176,3 +176,41 @@ pub fn arg(mut node: Node, name: &str, value: Value) -> Node {
 pub fn fill(node: Node) -> Node {
     arg(node, "fill", Value::Float(1.0))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_generated_builders_make_nodes_the_host_reads() {
+        let text = TextBuilder::new("greeting", "Hello").role(TextRole::Title);
+        let node: Node = text.into();
+        assert_eq!(node.kind, "ui.Text");
+        assert_eq!(node.key, "greeting");
+        assert_eq!(
+            node.props.get("value"),
+            Some(&Value::text("Hello")),
+            "the positional prop is given"
+        );
+        assert_eq!(
+            node.props.get("role"),
+            Some(&Value::Enum("title".to_owned())),
+            "a choice travels as its case"
+        );
+    }
+
+    #[test]
+    fn the_generated_code_names_every_component_the_catalogue_describes() {
+        // A component the catalogue adds is a builder in the generated code: the test reads
+        // the generated source back, so a projection that silently dropped one fails.
+        let generated = include_str!(concat!(env!("OUT_DIR"), "/ui_builders.rs"));
+        for description in &crate::node::catalogue().components {
+            let builder = format!("pub struct {}Builder", description.name);
+            assert!(
+                generated.contains(&builder),
+                "{}'s builder is generated",
+                description.name
+            );
+        }
+    }
+}

@@ -1427,4 +1427,10 @@ impl RichText {
 }
 
 #[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+mod schema_tests;
+
+#[cfg(test)]
 mod block_tests;

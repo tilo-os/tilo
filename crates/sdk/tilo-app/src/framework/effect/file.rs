@@ -406,3 +406,15 @@ fn told(reason: String) -> String {
     )));
     reason
 }
+
+#[cfg(test)]
+mod tests {
+    /// A chooser that fails says why on the window's bar, and the effect fails with the same words.
+    #[test]
+    fn a_failed_chooser_says_why_on_the_bar() {
+        let reason = super::told("the disk is full".to_owned());
+        assert_eq!(reason, "the disk is full");
+        let notice = ui_core::window_toolbar::notice().expect("the bar says why");
+        assert_eq!(notice.text, "the disk is full");
+    }
+}

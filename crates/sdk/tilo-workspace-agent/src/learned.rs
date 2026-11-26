@@ -281,3 +281,214 @@ fn check_source(source: &str) -> Result<(), Refusal> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use tilo_resource::AppNamed;
+    use tilo_resource::{Model as _, Replica};
+
+    use super::*;
+
+    const ADA: &str = "ada";
+    const ASSISTANT: &str = "assistant";
+
+    fn learn(text: &str, source: &str) -> tilo_resource::Invoke<Learned> {
+        Learned::LEARN.with(learned::Learn {
+            text: NonBlank::parse(text).expect("a fact"),
+            source: NonBlank::parse(source).expect("a source"),
+        })
+    }
+
+    fn correct(fact: &Id, text: &str, source: Option<&str>) -> tilo_resource::Invoke<Learned> {
+        Learned::CORRECT.with(learned::Correct {
+            fact: fact.clone(),
+            text: NonBlank::parse(text).expect("a fact"),
+            source: source.map(str::to_owned),
+        })
+    }
+
+    fn forget(fact: &Id) -> tilo_resource::Invoke<Learned> {
+        Learned::FORGET.with(learned::Forget { fact: fact.clone() })
+    }
+
+    fn facts(record: &Replica<Learned, AppNamed>) -> Vec<(Id, Fact)> {
+        record
+            .state()
+            .unwrap()
+            .facts
+            .iter()
+            .map(|(id, fact)| (id.clone(), fact.clone()))
+            .collect()
+    }
+
+    /// The person's agent keeps what it learned with its source and its time, corrects it, and
+    /// the person takes it away again: one list, written by both through the same verbs.
+    #[test]
+    fn a_fact_is_kept_with_its_source_corrected_and_forgotten() {
+        let mut person = Replica::<Learned>::new()
+            .in_app("so.tilo.model", "Model")
+            .as_author(ADA);
+        let mut agent = person.fork().as_agent_for(ASSISTANT, ADA);
+        agent.set_now_ms(1_000);
+        agent
+            .apply(learn(
+                "  Prefers answers in German.  ",
+                "They said so in the conversation",
+            ))
+            .unwrap();
+        person.sync_with(&mut agent).unwrap();
+        let kept = facts(&person);
+        let [(id, fact)] = kept.as_slice() else {
+            panic!("one fact, not {kept:?}");
+        };
+        assert_eq!(
+            fact,
+            &Fact {
+                text: "Prefers answers in German.".into(),
+                source: "They said so in the conversation".into(),
+                at: 1_000,
+                by: Some(ASSISTANT.into()),
+                about: Some(ADA.into()),
+            }
+        );
+        // Said again, it is the fact it was, with its newer source and time.
+        agent.set_now_ms(2_000);
+        agent
+            .apply(learn(
+                "prefers answers in german.",
+                "Their note \"About me\"",
+            ))
+            .unwrap();
+        let again = facts(&agent);
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].0, *id);
+        assert_eq!(again[0].1.source, "Their note \"About me\"");
+        assert_eq!(again[0].1.at, 2_000);
+        // The person corrects it themselves: the record says they did.
+        person.sync_with(&mut agent).unwrap();
+        person.set_now_ms(3_000);
+        person
+            .apply(correct(id, "Prefers answers in English at work.", None))
+            .unwrap();
+        let corrected = facts(&person);
+        assert_eq!(corrected[0].1.text, "Prefers answers in English at work.");
+        assert_eq!(corrected[0].1.source, "Their note \"About me\"");
+        assert_eq!(
+            (corrected[0].1.at, corrected[0].1.by.clone()),
+            (3_000, None)
+        );
+        person
+            .apply(correct(
+                id,
+                "Prefers answers in English.",
+                Some("They said so"),
+            ))
+            .unwrap();
+        assert_eq!(facts(&person)[0].1.source, "They said so");
+        // Forgotten, it is gone, and there is nothing left to correct or forget.
+        person.apply(forget(id)).unwrap();
+        assert_eq!(facts(&person), Vec::new());
+        assert!(person.apply(forget(id)).is_err());
+        assert!(person.apply(correct(id, "Anything.", None)).is_err());
+    }
+
+    /// One record holding what an agent learned from two people: each person's facts are theirs.
+    /// What Ada taught the agent is neither corrected nor forgotten for Bo, the same words Bo
+    /// says are a fact of his own, and each reads only their own.
+    #[test]
+    fn a_fact_is_read_and_changed_only_for_the_person_it_is_about() {
+        const BO: &str = "bo";
+        let mut for_ada = Replica::<Learned>::new()
+            .in_app("so.tilo.model", "Model")
+            .as_agent_for(ASSISTANT, ADA);
+        for_ada
+            .apply(learn("Takes coffee black.", "They said so"))
+            .unwrap();
+        let mut for_bo = for_ada.fork().as_agent_for(ASSISTANT, BO);
+        let (hers, _) = facts(&for_bo).remove(0);
+        assert!(for_bo.apply(correct(&hers, "Takes tea.", None)).is_err());
+        assert!(for_bo.apply(forget(&hers)).is_err());
+        for_bo
+            .apply(learn("takes coffee black.", "They said so"))
+            .unwrap();
+        let both = facts(&for_bo);
+        assert_eq!(both.len(), 2, "his words are a fact of his own: {both:?}");
+        let about = |person: &str| -> Vec<String> {
+            both.iter()
+                .filter(|(_, fact)| fact.is_about(person))
+                .map(|(_, fact)| fact.text.clone())
+                .collect()
+        };
+        assert_eq!(about(ADA), ["Takes coffee black."]);
+        assert_eq!(about(BO), ["takes coffee black."]);
+        assert_eq!(
+            facts(&for_ada)[0].1.text,
+            "Takes coffee black.",
+            "hers as it was"
+        );
+
+        // An agent that names no person, as in a person's own record on their device, keeps
+        // facts about nobody else: it changes them, and nobody named reads or changes them.
+        let mut own = Replica::<Learned>::new()
+            .in_app("so.tilo.model", "Model")
+            .as_acting(tilo_actions::Acting::agent(ASSISTANT, "ada").handed());
+        own.apply(learn("Works from Graz.", "They said so"))
+            .unwrap();
+        let (graz, kept) = facts(&own).remove(0);
+        assert_eq!(kept.about, None);
+        assert!(!kept.is_about(ADA) && !kept.is_about(BO));
+        own.apply(correct(&graz, "Works from Vienna.", None))
+            .unwrap();
+        let mut named = own.fork().as_agent_for(ASSISTANT, BO);
+        assert!(named.apply(forget(&graz)).is_err());
+    }
+
+    /// A fact is one bounded line with a source, and the list is bounded.
+    #[test]
+    fn a_fact_is_one_bounded_line_and_the_list_is_bounded() {
+        let mut record = Replica::<Learned>::new()
+            .in_app("so.tilo.model", "Model")
+            .as_author(ADA);
+        for (text, source) in [
+            ("x".repeat(MAX_FACT + 1), "They said so".to_owned()),
+            ("two\nlines".to_owned(), "They said so".to_owned()),
+            ("Likes tea.".to_owned(), "y".repeat(MAX_SOURCE + 1)),
+        ] {
+            assert!(record.apply(learn(&text, &source)).is_err(), "{text:?}");
+        }
+        assert_eq!(facts(&record), Vec::new());
+        for n in 0..MAX_FACTS {
+            record
+                .apply(learn(&format!("Fact {n}."), "They said so"))
+                .unwrap();
+        }
+        let refused = record
+            .apply(learn("One more.", "They said so"))
+            .unwrap_err();
+        assert!(refused.to_string().contains("forget one"), "{refused}");
+        // A fact kept already still renews at the limit.
+        record.apply(learn("Fact 7.", "A newer source")).unwrap();
+        assert_eq!(facts(&record).len(), MAX_FACTS);
+    }
+
+    /// What the record holds reads back as it was written, by its fields.
+    #[test]
+    fn the_record_reads_back_as_it_was_written() {
+        let mut record = Replica::<Learned>::new()
+            .in_app("so.tilo.model", "Model")
+            .as_author(ADA);
+        record.set_now_ms(1_700_000_000_000);
+        record
+            .apply(learn("Works from Graz.", "They said so"))
+            .unwrap();
+        let state = record.state().unwrap();
+        let read = Learned::from_json(&state.to_json()).expect("the record reads");
+        assert_eq!(read, state);
+        let content = tilo_resource::read::fields(&state, None).unwrap();
+        assert!(
+            content.to_string().contains("Works from Graz."),
+            "{content}"
+        );
+        assert_eq!(state.search().len(), 1);
+    }
+}

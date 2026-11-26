@@ -187,3 +187,192 @@ fn take_attachments(node: &mut UiNode, out: &mut Vec<UiNode>) {
     }
     node.children = kept;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Value;
+
+    fn component(name: &str, key: &str) -> UiNode {
+        UiNode::empty(&crate::adapter::kind(name), key)
+    }
+
+    fn fragment(key: &str, children: Vec<UiNode>) -> UiNode {
+        let mut node = UiNode::empty("fragment", key);
+        node.children = children;
+        node
+    }
+
+    fn text(key: &str) -> UiNode {
+        let mut node = component("Text", key);
+        node.props.insert("value".to_owned(), Value::text(key));
+        node
+    }
+
+    fn kinds_of(node: &UiNode, out: &mut Vec<String>) {
+        out.push(node.kind.clone());
+        for child in &node.children {
+            kinds_of(child, out);
+        }
+    }
+
+    #[test]
+    fn a_rows_attachments_move_into_its_item_in_order() {
+        let mut item = component("ListItem", "m1");
+        item.children = vec![fragment(
+            "row",
+            vec![
+                text("said"),
+                component("HoverToolbar", "bar"),
+                fragment("inner", vec![component("ContextMenu", "menu")]),
+                component("Swipe", "swipe"),
+            ],
+        )];
+        let hoisted = hoist(&item);
+        let row = &hoisted.children[0];
+        let kinds = |node: &UiNode| -> Vec<String> {
+            node.children.iter().map(|c| c.kind.clone()).collect()
+        };
+        assert_eq!(
+            kinds(row),
+            ["ui.Text", "fragment"],
+            "the row keeps what it draws"
+        );
+        assert!(row.children[1].children.is_empty());
+        let part = hoisted
+            .children
+            .iter()
+            .find(|c| c.kind == PART)
+            .expect("the item has its attached part");
+        assert_eq!(part.props.get("name"), Some(&Value::text(ATTACHED)));
+        assert_eq!(
+            kinds(part),
+            ["ui.HoverToolbar", "ui.ContextMenu", "ui.Swipe"],
+            "in the order the view wrote them"
+        );
+    }
+
+    // USER REQUIREMENT: a row's view puts its menu and toolbar in the layout it draws, as a
+    // message's does (`stack { row { name } toolbar }`), and the list still runs them.
+    #[test]
+    fn an_attachment_inside_the_rows_layout_moves_into_its_item() {
+        let mut item = component("ListItem", "m1");
+        let mut stack = UiNode::empty("stack", "content");
+        stack.children = vec![
+            fragment("voice", vec![component("ContextMenu", "menu")]),
+            fragment("head", vec![text("Grace Hopper")]),
+            fragment("bar", vec![component("HoverToolbar", "toolbar")]),
+            {
+                let mut inner = UiNode::empty("row", "actions");
+                inner.children = vec![
+                    component("Button", "reply"),
+                    fragment("more", vec![component("Swipe", "swipe")]),
+                ];
+                inner
+            },
+        ];
+        item.children = vec![fragment("row", vec![stack])];
+        let hoisted = hoist(&item);
+        let part = hoisted
+            .children
+            .iter()
+            .find(|c| c.kind == PART)
+            .expect("the item has its attached part");
+        let kinds: Vec<String> = part.children.iter().map(|c| c.kind.clone()).collect();
+        assert_eq!(
+            kinds,
+            ["ui.ContextMenu", "ui.HoverToolbar", "ui.Swipe"],
+            "the row's attachments, wherever its layout puts them"
+        );
+        let drawn = &hoisted.children[0];
+        let mut left = Vec::new();
+        kinds_of(drawn, &mut left);
+        for gone in ["ui.ContextMenu", "ui.HoverToolbar", "ui.Swipe"] {
+            assert!(
+                !left.iter().any(|kind| kind == gone),
+                "{gone} draws: {left:?}"
+            );
+        }
+        assert!(
+            left.iter().any(|kind| kind == "ui.Text")
+                && left.iter().any(|kind| kind == "ui.Button"),
+            "what the row draws stays: {left:?}"
+        );
+    }
+
+    #[test]
+    fn what_a_component_of_its_own_holds_stays_in_it() {
+        let mut card = component("Card", "card");
+        card.children = vec![fragment(
+            "in",
+            vec![component("ContextMenu", "the card's own menu")],
+        )];
+        let mut item = component("ListItem", "m1");
+        item.children = vec![fragment("row", vec![card])];
+        let hoisted = hoist(&item);
+        assert!(
+            !hoisted.children.iter().any(|c| c.kind == PART),
+            "a card's menu is the card's, not the row's"
+        );
+    }
+
+    #[test]
+    fn an_item_whose_row_attaches_nothing_is_left_as_it_is() {
+        let mut item = component("ListItem", "m1");
+        item.children = vec![fragment("row", vec![text("said")])];
+        assert_eq!(hoist(&item), item);
+    }
+
+    // USER REQUIREMENT: a menu may stand on any layout, not only in a list item's row: the layout
+    // takes it, wherever a fragment between them held it.
+    #[test]
+    fn a_menu_a_layout_holds_stands_at_the_layouts_own_children() {
+        let mut stack = UiNode::empty("stack", "content");
+        stack.children = vec![fragment(
+            "if the page has a menu",
+            vec![component("ContextMenu", "menu")],
+        )];
+        let mut layers = UiNode::empty("layers", "shell");
+        layers.children = vec![component("Text", "drawn"), stack];
+        let mut tree = layers;
+        raise_menus(&mut tree);
+        assert_eq!(
+            kinds_of_kinds(&tree),
+            ["ui.Text", "stack"],
+            "the layout keeps its shape, the fragment gone with the menu it held"
+        );
+        // The innermost layout keeps the menu the view placed in it, and the layout beside takes
+        // nothing of it.
+        let inside = &tree.children[1];
+        assert_eq!(
+            kinds_of_kinds(inside),
+            [MENU],
+            "the stack takes its own menu"
+        );
+        assert!(
+            tree.children[0].children.is_empty(),
+            "the text beside it takes nothing"
+        );
+    }
+
+    #[test]
+    fn a_menu_reached_through_a_call_is_the_layout_beside_its_call() {
+        // What a view's `if let` around a menu is: a fragment, drawing nothing, holding the menu
+        // and no one else.
+        let mut tree = UiNode::empty("layers", "page");
+        tree.children = vec![
+            component("WebView", "page"),
+            fragment("menu?", vec![component("ContextMenu", "page menu")]),
+        ];
+        raise_menus(&mut tree);
+        assert_eq!(
+            kinds_of_kinds(&tree),
+            ["ui.WebView", "ui.ContextMenu"],
+            "the empty fragment goes with the menu it held"
+        );
+    }
+
+    fn kinds_of_kinds(node: &UiNode) -> Vec<String> {
+        node.children.iter().map(|c| c.kind.clone()).collect()
+    }
+}

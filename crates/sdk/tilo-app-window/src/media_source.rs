@@ -80,3 +80,29 @@ pub fn playable(address: &str, name: Option<&str>) -> String {
             .unwrap_or_else(|| address.to_owned())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A file a package ships plays from the file itself, with nothing fetched: a scenario's
+    /// sound works with no network at all.
+    #[test]
+    fn a_packages_own_file_plays_without_the_network() {
+        install_package_assets([("media/first-light.wav".to_owned(), b"RIFF....WAVE".to_vec())]);
+        let played = playable("pkg:media/first-light.wav", Some("First Light"));
+        assert_ne!(played, "pkg:media/first-light.wav");
+        assert!(!played.contains("music.example"), "{played}");
+        let bytes = std::fs::read(played.strip_prefix("file://").expect("a staged file"))
+            .expect("the staged file reads");
+        assert_eq!(bytes, b"RIFF....WAVE");
+    }
+
+    /// An address naming a file the package did not ship is handed to the player as it is, so its
+    /// own failure says what it could not play.
+    #[test]
+    fn an_address_the_package_does_not_ship_stays_as_it_is() {
+        let address = "pkg:media/absent.wav";
+        assert_eq!(playable(address, None), address);
+    }
+}

@@ -341,3 +341,224 @@ fn draw_over(
     preview.draw(scene, transform, &mut text, theme);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::prelude::*;
+    use tilo_resource::AppNamed;
+    use ui_core::Theme;
+    use ui_core::text_render::TextRenderer;
+    use ui_core::vello::Scene;
+    use ui_core::vello::kurbo::Affine;
+
+    #[derive(Model, Default)]
+    pub struct Page {
+        pub heading: String,
+    }
+
+    #[resource(kind = "test.page", catalogue = "tests/locales")]
+    impl Page {
+        /// Set the heading.
+        #[action]
+        pub fn set_heading(&mut self, heading: String) {
+            self.heading = heading;
+        }
+    }
+
+    struct PageApp;
+
+    impl ResourceApp for PageApp {
+        type Resource = Page;
+        const ID: &'static str = "so.tilo.test-page";
+        const TITLE: &'static str = "Page";
+
+        fn view(cx: &mut ViewCx<Page>) -> Element {
+            Box::new(Column::new().push(Box::new(
+                cx.text(|page| page.heading.clone()).with_id("heading"),
+            )))
+        }
+    }
+
+    #[derive(Model, Default, Debug, Clone, PartialEq)]
+    pub struct Shelf {
+        pub title: String,
+        pub books: Collection<Book>,
+        pub note: Option<String>,
+    }
+
+    #[derive(Model, Default, Debug, Clone, PartialEq)]
+    pub struct Book {
+        pub name: String,
+        pub read: bool,
+    }
+
+    #[resource(kind = "test.shelf", catalogue = "tests/locales")]
+    impl Shelf {
+        /// Rename the shelf.
+        #[action]
+        pub fn rename(&mut self, title: String) {
+            self.title = title;
+        }
+
+        /// Add a book.
+        #[action]
+        pub fn add(&mut self, cx: &mut ActionCx, name: String) {
+            self.books.push(cx.id(), Book { name, read: false });
+        }
+
+        /// Mark a book read.
+        #[action]
+        pub fn finish(&mut self, book: Id) {
+            if let Some(book) = self.books.get_mut(&book) {
+                book.read = true;
+            }
+        }
+
+        /// Remove a book.
+        #[action]
+        pub fn remove(&mut self, book: Id) {
+            self.books.remove(&book);
+        }
+
+        /// Annotate the shelf.
+        #[action]
+        pub fn annotate(&mut self, note: Option<String>) {
+            self.note = note;
+        }
+    }
+
+    /// Bring `replica` back to the version `target` through the store's `restore` verb, as
+    /// `Shelf`'s history decodes it.
+    fn restore(
+        replica: &mut Replica<Shelf, AppNamed>,
+        target: &[ui_core::automerge::ChangeHash],
+    ) -> Result<(), tilo_actions::ActionError> {
+        use super::super::history::{HistoryEdit, ResourceHistoryEdit, version_name};
+        let edit = HistoryEdit::Restore {
+            version: version_name(target),
+            ids: None,
+            step: None,
+        };
+        let encoded = tilo_actions::EncodedAction {
+            type_id: super::super::history::EDIT_TYPE.to_owned(),
+            payload: super::super::history::edit_payload(&edit).unwrap(),
+        };
+        let mut doc = replica.doc().clone();
+        tilo_actions::apply_local(&mut doc, &ResourceHistoryEdit::<Shelf>::new(edit), encoded)?;
+        *replica = Replica::from_doc(doc).in_app("so.tilo.model", "Model");
+        Ok(())
+    }
+
+    tilo_test_env::scenario! {
+        fn past_versions_restore_by_record_shape_and_render_read_only;
+
+        phase a_record_restores_a_past_version_field_by_field_and_item_by_item;
+        {
+            let mut shelf = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
+            shelf.apply(Shelf::RENAME.with("Reading")).unwrap();
+            shelf.apply(Shelf::ADD.with("Dune")).unwrap();
+            shelf.apply(Shelf::ADD.with("Emma")).unwrap();
+            let ids: Vec<Id> = shelf.state().unwrap().books.ids().cloned().collect();
+            let past_heads = shelf.heads();
+            let past = shelf.state().unwrap();
+
+            shelf.apply(Shelf::RENAME.with("Done")).unwrap();
+            shelf.apply(Shelf::FINISH.with(ids[0].clone())).unwrap();
+            shelf.apply(Shelf::REMOVE.with(ids[1].clone())).unwrap();
+            shelf.apply(Shelf::ADD.with("Ulysses")).unwrap();
+            shelf
+                .apply(Shelf::ANNOTATE.with(Some("tidy up".into())))
+                .unwrap();
+            assert_ne!(shelf.state().unwrap(), past);
+
+            restore(&mut shelf, &past_heads).unwrap();
+            assert_eq!(shelf.state().unwrap(), past);
+            // Item identity survives: the restored books are the same items.
+            assert_eq!(
+                shelf
+                    .state()
+                    .unwrap()
+                    .books
+                    .ids()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                ids
+            );
+        }
+
+        phase a_version_comes_back_only_as_the_app_reads_it;
+        {
+            use ui_core::automerge::transaction::Transactable as _;
+            // A record stored at a version this app does not read is not restored.
+            let mut shelf = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
+            shelf.apply(Shelf::RENAME.with("Reading")).unwrap();
+            let past = shelf.heads();
+            shelf.apply(Shelf::RENAME.with("Done")).unwrap();
+            let mut doc = shelf.doc().clone();
+            tilo_resource::evolution::write_version(&mut doc, Shelf::VERSION + 1).unwrap();
+            doc.commit();
+            let mut newer = Replica::<Shelf>::from_doc(doc).in_app("so.tilo.model", "Model");
+            let refused = restore(&mut newer, &past).unwrap_err().to_string();
+            assert!(refused.contains("stored at version"), "{refused}");
+
+            // A version that no longer opens as the app's type is not restored.
+            let mut shelf = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
+            shelf.apply(Shelf::RENAME.with("Reading")).unwrap();
+            let mut doc = shelf.doc().clone();
+            doc.put_object(ui_core::automerge::ROOT, "title", ui_core::automerge::ObjType::List)
+                .unwrap();
+            doc.commit();
+            let unreadable = doc.get_heads();
+            doc.put(ui_core::automerge::ROOT, "title", "Fixed").unwrap();
+            doc.commit();
+            let mut shelf = Replica::<Shelf>::from_doc(doc).in_app("so.tilo.model", "Model");
+            let refused = restore(&mut shelf, &unreadable).unwrap_err().to_string();
+            assert!(refused.contains("no longer opens"), "{refused}");
+            assert_eq!(shelf.state().unwrap().title, "Fixed");
+            assert_eq!(historical_support::<Shelf>(), HistoricalSupport::Content);
+        }
+
+        phase a_past_version_renders_through_the_apps_own_view_read_only;
+        {
+            let mut page = Replica::<Page>::new().in_app("so.tilo.model", "Model");
+            page.apply(Page::SET_HEADING.with("First draft")).unwrap();
+            let past = page.heads();
+            page.apply(Page::SET_HEADING.with("Final")).unwrap();
+            let mut doc = page.doc().clone();
+            let bytes = doc.fork_at(&past).unwrap().save();
+
+            let frozen = AutoCommit::load(&bytes).unwrap();
+            let root = build_root::<PageApp>(
+                Reader::read(&frozen).unwrap(),
+                Editing::ReadOnly(Box::new(crate::framework::scenario::Run::past())),
+                AppStorage::for_app(PageApp::ID),
+                crate::framework::settings::Hosted::default(),
+            );
+            let mut preview = past_preview(root, frozen, Page::LABEL);
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            preview
+                .layout(Rect::new(10.0, 20.0, 410.0, 320.0), &mut text, &theme)
+                .unwrap();
+            let mut scene = Scene::new();
+            preview.draw(&mut scene, Affine::IDENTITY, &mut text, &theme);
+            assert_eq!(shown(preview.root()), ["First draft"]);
+            assert!(preview.root().get_rect().width() > 0.0);
+        }
+    }
+
+    fn shown(root: &dyn Widget) -> Vec<String> {
+        fn visit(widget: &dyn Widget, out: &mut Vec<String>) {
+            if let Some(node) = widget.accessibility()
+                && let Some(label) = node.name
+            {
+                out.push(label);
+            }
+            widget.for_each_child(&mut |child| visit(child, out));
+        }
+        let mut out = Vec::new();
+        visit(root, &mut out);
+        out
+    }
+}

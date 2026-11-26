@@ -43,6 +43,15 @@ impl VaultStore {
         })
     }
 
+    /// The store over an already open connection, as a test stands one up.
+    #[cfg(test)]
+    pub(crate) fn over(line: Arc<LineClient>, workspace: &str) -> Self {
+        Self {
+            line,
+            workspace: workspace.to_owned(),
+        }
+    }
+
     /// Call `target` with `arguments` on this process's connection, and read what its action
     /// answers as `T`.
     fn answer<T: serde::de::DeserializeOwned>(
@@ -151,5 +160,193 @@ fn refused(error: ActionCallError) -> SecretError {
         ActionCallError::Refused { reason } => SecretError::Failed(reason),
         ActionCallError::NotPermitted => SecretError::Denied,
         other => SecretError::Failed(other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::io::BufReader;
+    use std::os::unix::net::UnixStream;
+    use std::sync::Mutex;
+
+    use serde::Deserialize;
+    use tilo_actions::ActionOutput;
+    use tilo_actions::remote::person_vault::{Found, ItemRef, Kept, Released};
+    use tilo_actions::remote::{
+        ActionProvider, CataloguePage, CatalogueQuery, HostedContentPuts, InvocationReceipt,
+        Pending, serve_lines,
+    };
+
+    use super::*;
+
+    /// The vault as an app's own connection reaches it: items kept per purpose, released only by
+    /// the reference `find` answered.
+    #[derive(Clone, Default)]
+    struct FakeVault {
+        items: Arc<Mutex<HashMap<String, (ItemRef, String)>>>,
+        next: Arc<std::sync::atomic::AtomicU32>,
+    }
+
+    impl FakeVault {
+        fn item(id: u32) -> ItemRef {
+            ItemRef::parse(&format!("vault.item:{id:032x}")).expect("an item reference")
+        }
+    }
+
+    impl ActionProvider for FakeVault {
+        fn query(
+            &self,
+            _: &Caller,
+            _: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionCallError>> {
+            Pending::ready(Err(ActionCallError::UnknownAction))
+        }
+
+        fn invoke(
+            &self,
+            _: &Caller,
+            request: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+            let arguments = match &request.argument {
+                tilo_actions::remote::InvokeArgument::Json(fields) => Value::Object(fields.clone()),
+                _ => Value::Null,
+            };
+            let answer = if person_vault::is_keep(&request.target) {
+                #[derive(Deserialize)]
+                struct Keeping {
+                    purpose: String,
+                    value: String,
+                }
+                let keeping: Keeping =
+                    serde_json::from_value(arguments).expect("a keep's arguments");
+                let mut items = self.items.lock().expect("the fake vault");
+                let reference = items.get(&keeping.purpose).map_or_else(
+                    || {
+                        Self::item(
+                            self.next
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                                .saturating_add(1),
+                        )
+                    },
+                    |(reference, _)| reference.clone(),
+                );
+                items.insert(keeping.purpose, (reference.clone(), keeping.value));
+                drop(items);
+                serde_json::to_value(Kept { reference }).expect("a kept answer")
+            } else if person_vault::is_find(&request.target) {
+                let looking: FindItem =
+                    serde_json::from_value(arguments).expect("a find's arguments");
+                let reference = self
+                    .items
+                    .lock()
+                    .expect("the fake vault")
+                    .get(&looking.purpose)
+                    .map(|(reference, _)| reference.clone());
+                serde_json::to_value(Found { reference }).expect("a found answer")
+            } else {
+                let reference =
+                    person_vault::released_item(&request.target).expect("a release of an item");
+                let secret = self
+                    .items
+                    .lock()
+                    .expect("the fake vault")
+                    .values()
+                    .find(|(kept, _)| *kept == reference)
+                    .map(|(_, secret)| secret.clone())
+                    .expect("a kept item");
+                serde_json::to_value(Released { secret }).expect("a released answer")
+            };
+            Pending::ready(Ok(InvocationReceipt {
+                invocation: request.invocation,
+                status: ReceiptStatus::Completed {
+                    output: ActionOutput {
+                        value: Some(answer),
+                        resources: Vec::new(),
+                    },
+                },
+            }))
+        }
+
+        fn observe(
+            &self,
+            _: &Caller,
+            _: &tilo_actions::InvocationId,
+        ) -> Option<tilo_actions::remote::InvocationState> {
+            None
+        }
+
+        fn cancel(
+            &self,
+            _: &Caller,
+            _: &tilo_actions::InvocationId,
+        ) -> Pending<Result<(), ActionCallError>> {
+            Pending::ready(Ok(()))
+        }
+    }
+
+    /// `vault` served to a client over a socket pair, as a daemon's connection is.
+    fn connected(vault: FakeVault) -> VaultStore {
+        let (near, far) = UnixStream::pair().expect("a socket pair");
+        std::thread::spawn(move || {
+            let output = far.try_clone().expect("the other end");
+            serve_lines(
+                |_| {
+                    Ok((
+                        vault.clone(),
+                        Caller::local_app("so.tilo.notes").in_workspace("w"),
+                    ))
+                },
+                &HostedContentPuts::default(),
+                None,
+                BufReader::new(far),
+                output,
+                Duration::ZERO,
+            );
+        });
+        VaultStore::over(
+            Arc::new(LineClient::of_stream(near).expect("a client")),
+            "w",
+        )
+    }
+
+    #[test]
+    fn a_secret_is_kept_found_and_released_over_the_apps_own_connection() {
+        let store = connected(FakeVault::default());
+        assert_eq!(store.get("so.tilo.notes", "oauth-token").unwrap(), None);
+        store
+            .put("so.tilo.notes", "oauth-token", b"token-1", "Notes token")
+            .unwrap();
+        let secret = store
+            .get("so.tilo.notes", "oauth-token")
+            .unwrap()
+            .expect("the secret it kept");
+        assert_eq!(secret.expose(), b"token-1");
+        // Keeping the same purpose again renews that item rather than adding another.
+        store
+            .put("so.tilo.notes", "oauth-token", b"token-2", "")
+            .unwrap();
+        assert_eq!(
+            store
+                .get("so.tilo.notes", "oauth-token")
+                .unwrap()
+                .expect("the renewed secret")
+                .expose(),
+            b"token-2"
+        );
+        assert_eq!(store.get("so.tilo.notes", "another").unwrap(), None);
+    }
+
+    #[test]
+    fn a_secret_is_text_and_is_forgotten_in_passwords() {
+        let store = connected(FakeVault::default());
+        let refused = store
+            .put("so.tilo.notes", "avatar", &[0xff, 0xfe], "")
+            .expect_err("a secret that is not text");
+        assert!(refused.to_string().contains("text"), "{refused}");
+        let refused = store
+            .delete("so.tilo.notes", "oauth-token")
+            .expect_err("an app does not forget a vault item");
+        assert!(refused.to_string().contains("Passwords"), "{refused}");
     }
 }

@@ -271,3 +271,72 @@ impl HistoryFeeds {
         list.heads = heads;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_actions::EncodedAction;
+    use ui_core::automerge::ROOT;
+    use ui_core::automerge::transaction::Transactable;
+    use ui_core::history_source::verbs::review::RestoreReview;
+
+    #[derive(tilo_resource::Model, Default, Debug, Clone, PartialEq)]
+    pub struct ReplayBoard {
+        pub title: String,
+    }
+
+    #[tilo_resource::resource(kind = "test.review-replay", catalogue = "tests/locales")]
+    impl ReplayBoard {}
+
+    #[test]
+    fn reviewed_restore_replays_identically_beside_concurrent_work_and_duplicate_delivery() {
+        use ui_core::automerge::{ActorId, ReadDoc};
+        let mut origin = AutoCommit::new();
+        origin.put(ROOT, "title", "old").unwrap();
+        let target = origin.commit().unwrap();
+        origin.put(ROOT, "title", "new").unwrap();
+        origin.commit();
+        let response = review::answer(&origin, &target.to_string(), &["title".into()]).unwrap();
+        let review: RestoreReview = serde_json::from_value(response["review"].clone()).unwrap();
+        let edit = HistoryEdit::RestoreReviewed { review };
+        let encoded = EncodedAction {
+            type_id: EDIT_TYPE.into(),
+            payload: serde_json::to_vec(&edit).unwrap(),
+        };
+        let mut registry = tilo_actions::ActionRegistry::new();
+        registry.register::<ResourceHistoryEdit<ReplayBoard>>(EDIT_TYPE);
+        let action = registry.decode(&encoded).unwrap();
+        let mut peer = origin.fork();
+        peer.set_actor(ActorId::from(b"peer".as_slice()));
+        peer.put(ROOT, "unrelated", "keep").unwrap();
+        let unrelated = peer.commit().unwrap();
+        let mut transport = tilo_actions::LocalTransport::new();
+        tilo_actions::dispatch_with_context(
+            &mut origin,
+            action.as_ref(),
+            encoded,
+            &mut transport,
+            tilo_actions::ActionContext::for_resource("board", "test.review-replay", "Board"),
+        )
+        .unwrap();
+        let restored = origin.get_heads()[0];
+        tilo_actions::replay(&mut peer, &transport.replicated[0], &registry).unwrap();
+        assert!(peer.get_heads().contains(&restored));
+        assert!(peer.get_heads().contains(&unrelated));
+        assert_eq!(
+            peer.get(ROOT, "title").unwrap().unwrap().0.as_str(),
+            Some("old")
+        );
+        assert_eq!(
+            peer.get(ROOT, "unrelated").unwrap().unwrap().0.as_str(),
+            Some("keep")
+        );
+        assert_eq!(
+            tilo_actions::verify_change(&mut peer, restored, &registry).unwrap(),
+            tilo_actions::Verified::Reproduced
+        );
+        let before = peer.get_heads();
+        tilo_actions::replay(&mut peer, &transport.replicated[0], &registry).unwrap();
+        assert_eq!(peer.get_heads(), before);
+    }
+}

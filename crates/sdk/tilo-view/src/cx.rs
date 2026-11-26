@@ -297,3 +297,94 @@ impl ViewCx {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cx() -> ViewCx {
+        ViewCx::new(
+            ResourceRef {
+                id: "tube.channel:abc".to_owned(),
+                ty: "tube.Channel".to_owned(),
+            },
+            "page",
+            Actor {
+                id: tilo_actions::MemberId::person("Pat").into(),
+                name: "Pat".to_owned(),
+                hue: None,
+                picture: None,
+            },
+            BTreeMap::new(),
+        )
+    }
+
+    #[test]
+    fn an_action_event_carries_the_resource_and_action() {
+        let cx = cx();
+        let node: crate::node::Node = crate::ui::TextBuilder::new(&cx.key("title"), "x").into();
+        let event = cx.action(&node, "press", "subscribe");
+        assert_eq!(
+            event.invokes,
+            Some(crate::node::patch::Invocation {
+                resource: "tube.channel:abc".to_owned(),
+                action: "subscribe".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn an_open_event_shows_its_target() {
+        let cx = cx();
+        let node: crate::node::Node = crate::ui::TextBuilder::new(&cx.key("r"), "x").into();
+        cx.record(
+            &node.key,
+            "activate",
+            Effect::Open {
+                target: ResourceRef {
+                    id: "tube.video:1".to_owned(),
+                    ty: "tube.Video".to_owned(),
+                },
+                view: None,
+            },
+        );
+        let effect = cx.effect(&node.key, "activate").expect("recorded");
+        assert!(matches!(effect, Effect::Open { target, .. } if target.id == "tube.video:1"));
+    }
+
+    #[test]
+    fn the_view_state_is_the_persons() {
+        let cx = cx();
+        assert!(!cx.state_flag("open", false));
+        cx.set_state("open", Value::Bool(true));
+        assert!(cx.state_flag("open", false));
+        assert_eq!(cx.state_text("tab", "all"), "all");
+    }
+
+    #[test]
+    fn an_actions_arguments_are_what_the_view_read_and_what_the_event_carries() {
+        let cx = cx();
+        let node: crate::node::Node = crate::ui::TextInputBuilder::new(&cx.key("draft")).into();
+        let wired = cx.action_with(
+            &node,
+            "submit",
+            "post",
+            vec![Arg::text("#general"), Arg::Event],
+        );
+        assert_eq!(
+            wired.invokes,
+            Some(crate::node::patch::Invocation {
+                resource: "tube.channel:abc".to_owned(),
+                action: "post".to_owned(),
+            })
+        );
+        let effect = cx.effect(&node.key, "submit").expect("recorded");
+        assert_eq!(
+            effect,
+            Effect::Action {
+                action: "post".to_owned(),
+                args: vec![Arg::Value(Value::Text("#general".to_owned())), Arg::Event,],
+            }
+        );
+    }
+}

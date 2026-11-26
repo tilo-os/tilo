@@ -1071,3 +1071,39 @@ pub(crate) fn apply(dm: &mut DocMut<'_>, action: &RichTextAction) -> Vec<Written
     }
     written
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_splice_leaves_the_ends_the_text_keeps() {
+        assert_eq!(
+            splice_between("buy milk", "buy oat milk"),
+            Some((4, 0, "oat ".into()))
+        );
+        assert_eq!(
+            splice_between("buy milk", "buy"),
+            Some((3, 5, String::new()))
+        );
+        assert_eq!(splice_between("same", "same"), None);
+        assert_eq!(splice_between("aaa", "aa"), Some((2, 1, String::new())));
+        assert_eq!(splice_between("é1", "é2"), Some((1, 1, "2".into())));
+    }
+
+    #[test]
+    fn shapes_refuse_values_outside_their_range() {
+        let mut shape = BlockShape::of(BlockKind::Heading);
+        shape.level = Some(9);
+        assert!(shape.shape().unwrap_err().contains("level"));
+        let mut shape = BlockShape::of(BlockKind::Bullet);
+        shape.indent = Some(6);
+        assert!(shape.shape().unwrap_err().contains("indent"));
+        assert_eq!(
+            BlockShape::of(BlockKind::Checklist).shape().unwrap(),
+            Shape::Checklist(0, false)
+        );
+        assert_eq!(BlockKind::parse("Checklist"), Some(BlockKind::Checklist));
+        assert_eq!(BlockKind::parse("nope"), None);
+    }
+}

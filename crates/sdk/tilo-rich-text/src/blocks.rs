@@ -282,3 +282,199 @@ pub fn plain_clips(text: &str) -> Vec<tilo_document::ClipBlock> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_document::RichText;
+    use ui::automerge::transaction::Transactable;
+    use ui::automerge::{AutoCommit, ObjType, ROOT};
+    use ui::rich_edit::BlockKind;
+    use ui::widget::marks::{Mark, MarkSpan};
+
+    fn field(doc: &mut AutoCommit) -> ObjId {
+        let root = doc.put_object(ROOT, "notes", ObjType::Map).unwrap();
+        RichText::initialize_under(doc, &root).unwrap();
+        root
+    }
+
+    fn block(kind: BlockKind, text: &str) -> BlockContent {
+        BlockContent {
+            kind,
+            ..BlockContent::paragraph("", text)
+        }
+    }
+
+    #[test]
+    fn blocks_are_written_as_the_editor_would_store_them() {
+        let mut doc = AutoCommit::new();
+        let root = field(&mut doc);
+        let mut bold = block(BlockKind::Paragraph, "plain bold");
+        bold.marks = vec![MarkSpan::new(6..10, Mark::Bold)];
+        bold.nesting = 2;
+        let mut code = block(
+            BlockKind::CodeBlock {
+                lang: Some("rust".into()),
+            },
+            "fn main() {}",
+        );
+        code.code_group = Some("fence".into());
+        let blocks = [
+            block(BlockKind::Heading(1), "Agenda"),
+            bold,
+            block(BlockKind::Bullet { indent: 1 }, "item"),
+            block(
+                BlockKind::Checklist {
+                    indent: 0,
+                    done: true,
+                },
+                "done",
+            ),
+            code,
+            block(BlockKind::Divider, ""),
+            block(BlockKind::Quote, "quoted"),
+            block(BlockKind::Table { visual: true }, "| a | b |\n| - | - |"),
+            block(BlockKind::Table { visual: false }, "| c |"),
+            block(BlockKind::Paragraph, "soft\nbreak"),
+            {
+                // A link the editor would not author now, kept as written.
+                let mut old = block(BlockKind::Paragraph, "old site");
+                old.marks = vec![MarkSpan::new(
+                    0..3,
+                    Mark::ExternalLink("http://example.test".into()),
+                )];
+                old
+            },
+            {
+                let mut authored = block(BlockKind::Paragraph, "éλ and more");
+                authored.authors = vec![(0..4, "ada".into()), (4..13, "grace".into())];
+                authored
+            },
+        ];
+        fill_under(&mut doc, &root, &blocks).unwrap();
+        let shown = blocks_under(&doc, &root).unwrap();
+        let strip = |blocks: &[BlockContent]| -> Vec<BlockContent> {
+            blocks
+                .iter()
+                .map(|block| BlockContent {
+                    id: String::new(),
+                    ..block.clone()
+                })
+                .collect()
+        };
+        assert_eq!(strip(&shown), strip(&blocks));
+        assert_eq!(
+            RichText::plain_text_under(&doc, &root).unwrap(),
+            "Agenda\nplain bold\nitem\ndone\nfn main() {}\n\nquoted\n| a | b |\n| - | - |\n| c |\nsoft\nbreak\nold site\néλ and more"
+        );
+    }
+
+    #[test]
+    fn clipped_paragraphs_are_written_as_they_were() {
+        use tilo_document::{ClipAttr, ClipBlock};
+        let mut doc = AutoCommit::new();
+        let root = field(&mut doc);
+        let clips = [
+            ClipBlock {
+                kind: "paragraph".into(),
+                text: "hi @Ada".into(),
+                marks: vec![tilo_doc::document::MarkSpan {
+                    start: 3,
+                    end: 7,
+                    name: "mention".into(),
+                    value: tilo_doc::document::MarkValue::Str(
+                        ui::tilo_reference::Embed::Member(ui::MemberId::person("u-ada"))
+                            .mark_value(),
+                    ),
+                }],
+                level: None,
+                ordered: None,
+                align: None,
+                attrs: std::collections::BTreeMap::new(),
+            },
+            ClipBlock {
+                kind: "list_item".into(),
+                text: "done".into(),
+                marks: Vec::new(),
+                level: Some(0),
+                ordered: Some(false),
+                align: None,
+                attrs: [("checked".to_owned(), ClipAttr::Bool(true))].into(),
+            },
+        ];
+        fill_clips_under(&mut doc, &root, &clips).unwrap();
+        let shown = blocks_under(&doc, &root).unwrap();
+        assert_eq!(shown.len(), 2);
+        assert_eq!(shown[0].text, "hi @Ada");
+        assert_eq!(
+            shown[0].marks,
+            [MarkSpan::new(
+                3..7,
+                Mark::Mention(ui::MemberId::person("u-ada"))
+            )]
+        );
+        assert_eq!(
+            shown[1].kind,
+            BlockKind::Checklist {
+                indent: 0,
+                done: true
+            }
+        );
+        assert!(fill_clips_under(&mut doc, &root, &clips).is_err());
+    }
+
+    #[test]
+    fn text_already_there_is_never_overwritten() {
+        let mut doc = AutoCommit::new();
+        let root = field(&mut doc);
+        fill_under(&mut doc, &root, &[block(BlockKind::Paragraph, "first")]).unwrap();
+        assert!(fill_under(&mut doc, &root, &[block(BlockKind::Paragraph, "second")]).is_err());
+        assert_eq!(RichText::plain_text_under(&doc, &root).unwrap(), "first");
+    }
+
+    #[test]
+    fn nothing_to_fill_leaves_the_empty_paragraph() {
+        let mut doc = AutoCommit::new();
+        let root = field(&mut doc);
+        fill_under(&mut doc, &root, &[]).unwrap();
+        assert_eq!(blocks_under(&doc, &root).unwrap().len(), 1);
+        let missing = doc.put_object(ROOT, "other", ObjType::Map).unwrap();
+        assert!(fill_under(&mut doc, &missing, &[]).is_err());
+        assert!(blocks_under(&doc, &missing).is_err());
+    }
+
+    #[test]
+    fn a_record_field_is_written_whole_from_clips_and_read_back() {
+        let mut doc = AutoCommit::new();
+        let record = doc.put_object(ROOT, "comment", ObjType::Map).unwrap();
+        assert!(rich_text_at(&doc, &record, "text").is_none());
+        let mut bold = block(BlockKind::Paragraph, "plain bold");
+        bold.marks = vec![MarkSpan::new(6..10, Mark::Bold)];
+        let done = block(
+            BlockKind::Checklist {
+                indent: 0,
+                done: true,
+            },
+            "shipped",
+        );
+        let clips = crate::Draft::with_blocks(&[bold.clone(), done.clone()]).clip_blocks();
+        let root = put_rich_text(&mut doc, &record, "text", &clips).unwrap();
+        assert_eq!(rich_text_at(&doc, &record, "text"), Some(root.clone()));
+        let strip = |blocks: Vec<BlockContent>| -> Vec<BlockContent> {
+            blocks
+                .into_iter()
+                .map(|block| BlockContent {
+                    id: String::new(),
+                    ..block
+                })
+                .collect()
+        };
+        assert_eq!(strip(blocks_under(&doc, &root).unwrap()), [bold, done]);
+        // Written again, the field is replaced, not appended to.
+        let root = put_rich_text(&mut doc, &record, "text", &plain_clips("one\ntwo")).unwrap();
+        assert_eq!(RichText::plain_text_under(&doc, &root).unwrap(), "one\ntwo");
+        assert_eq!(plain_blocks("one\ntwo").len(), 2);
+        assert!(plain_blocks("").is_empty());
+        assert!(plain_clips("").is_empty());
+    }
+}

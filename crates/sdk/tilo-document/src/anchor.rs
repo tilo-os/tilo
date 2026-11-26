@@ -163,3 +163,132 @@ impl Model for TextAnchor {
         slot.put_scalar(doc, ScalarValue::Str(stored.into()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tilo_resource::AppNamed;
+    use tilo_resource::{Collection, Invoke, Model, Replica, resource};
+
+    use super::*;
+    use crate::RichTextAction;
+
+    #[derive(Model, Default, Debug, Clone, PartialEq)]
+    pub struct Note {
+        pub body: RichText,
+        #[model(unit)]
+        pub remarks: Collection<Remark>,
+    }
+
+    #[derive(Model, Default, Debug, Clone, PartialEq)]
+    pub struct Remark {
+        pub about: TextAnchor,
+        #[model(label)]
+        pub text: String,
+    }
+
+    #[resource(kind = "test.anchored-note", catalogue = "tests/locales")]
+    impl Note {
+        /// Remark on some text.
+        #[action(writes = remarks)]
+        pub fn add_remark(
+            &mut self,
+            cx: &mut tilo_resource::ActionCx,
+            block: String,
+            start: usize,
+            end: usize,
+            text: String,
+        ) -> Result<(), tilo_resource::Refusal> {
+            let about = TextAnchor::new(&self.body, &block, start, end)
+                .map_err(tilo_resource::Refusal::new)?;
+            self.remarks.push(cx.id(), Remark { about, text });
+            Ok(())
+        }
+    }
+
+    fn first_block(note: &Replica<Note, AppNamed>) -> String {
+        let state = note.state().unwrap();
+        state
+            .body
+            .state()
+            .unwrap()
+            .body()
+            .id_at(0)
+            .unwrap()
+            .to_owned()
+    }
+
+    fn type_at(note: &mut Replica<Note, AppNamed>, block: &str, at: usize, text: &str) {
+        let edit = Note::paths()
+            .body
+            .perform(&RichTextAction::SpliceText {
+                region: crate::action::RegionKind::Body,
+                block: block.to_owned(),
+                at,
+                del: 0,
+                ins: text.to_owned(),
+            })
+            .unwrap();
+        note.apply(Invoke::edit(&edit).unwrap()).unwrap();
+    }
+
+    fn anchored(note: &Replica<Note, AppNamed>) -> Option<(String, usize, usize)> {
+        let state = note.state().unwrap();
+        let (_, remark) = state.remarks.iter().next()?;
+        remark.about.range(note.doc())
+    }
+
+    #[test]
+    fn an_anchor_follows_its_characters_and_writes_no_text() {
+        let mut note = Replica::<Note>::new().in_app("so.tilo.model", "Model");
+        let block = first_block(&note);
+        type_at(&mut note, &block, 0, "hello world");
+        let text = |note: &Replica<Note, AppNamed>| {
+            let Ok(Some((_, body))) = note.doc().get(automerge::ROOT, "body") else {
+                return String::new();
+            };
+            RichText::plain_text_under(note.doc(), &body).unwrap_or_default()
+        };
+        note.apply(Note::ADD_REMARK.with(note::AddRemark {
+            block: block.clone(),
+            start: 6,
+            end: 11,
+            text: "which one?".into(),
+        }))
+        .unwrap();
+        assert_eq!(anchored(&note), Some((block.clone(), 6, 11)));
+        assert_eq!(text(&note), "hello world", "the remark left the text alone");
+
+        // Typing before the range moves it; typing at either edge does not
+        // grow it.
+        type_at(&mut note, &block, 0, "oh, ");
+        assert_eq!(anchored(&note), Some((block.clone(), 10, 15)));
+        type_at(&mut note, &block, 15, "!");
+        type_at(&mut note, &block, 10, "big ");
+        assert_eq!(anchored(&note), Some((block.clone(), 14, 19)));
+
+        let mut other = note.fork();
+        type_at(&mut other, &block, 0, ">> ");
+        note.sync_with(&mut other).unwrap();
+        assert_eq!(anchored(&note), Some((block.clone(), 17, 22)));
+        assert_eq!(anchored(&other), anchored(&note));
+
+        assert!(
+            note.apply(Note::ADD_REMARK.with(note::AddRemark {
+                block: block.clone(),
+                start: 3,
+                end: 3,
+                text: "nothing".into(),
+            }))
+            .is_err()
+        );
+        assert!(
+            note.apply(Note::ADD_REMARK.with(note::AddRemark {
+                block,
+                start: 0,
+                end: 500,
+                text: "too far".into(),
+            }))
+            .is_err()
+        );
+    }
+}

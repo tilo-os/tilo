@@ -1,0 +1,139 @@
+use super::*;
+use agent_provider_config::protocol::{ErrorKind, ModelError};
+
+tilo_test_env::scenario! {
+    /// How a gateway failure reaches the client: typed kinds, legacy prose, transport metadata
+    /// and billing envelopes.
+    fn gateway_failures_keep_their_typed_kind_in_every_envelope;
+
+    phase typed_rpc_errors_override_legacy_prose_and_redact_messages;
+    {
+        for kind in [
+            ErrorKind::Unavailable,
+            ErrorKind::Authentication,
+            ErrorKind::PermissionDenied,
+            ErrorKind::InvalidRequest,
+            ErrorKind::InvalidResponse,
+            ErrorKind::Unsupported,
+            ErrorKind::RateLimited,
+            ErrorKind::CreditsExhausted,
+            ErrorKind::ContextLimit,
+            ErrorKind::Provider,
+            ErrorKind::TimedOut,
+            ErrorKind::Cancelled,
+            ErrorKind::Truncated,
+            ErrorKind::Refused,
+            ErrorKind::Transport,
+        ] {
+            let mut response = Response::failure(ModelError {
+                kind,
+                message: "secret-never-echo".into(),
+            });
+            let wire = serde_json::to_string(&response).unwrap();
+            assert!(!wire.contains("secret-never-echo"));
+            response.error = Some("credits exhausted".into());
+            let response: Response =
+                serde_json::from_str(&serde_json::to_string(&response).unwrap()).unwrap();
+            assert_eq!(response.into_result().unwrap_err().model_error().kind, kind);
+        }
+    }
+
+    phase rpc3_legacy_errors_remain_readable;
+    {
+        #[derive(serde::Deserialize)]
+        struct OldResponse {
+            ok: bool,
+            error: Option<String>,
+        }
+        let response: Response =
+            serde_json::from_str(r#"{"ok":false,"error":"provider credits exhausted"}"#).unwrap();
+        assert!(response.model_error.is_none());
+        assert_eq!(
+            response.failure_error().model_error().kind,
+            ErrorKind::CreditsExhausted
+        );
+        // Older RPC3 clients ignore the additive diagnostic.
+        let wire =
+            serde_json::to_string(&Response::failure(ModelError::new(ErrorKind::Transport))).unwrap();
+        let old: OldResponse = serde_json::from_str(&wire).unwrap();
+        assert!(!old.ok);
+        assert!(old.error.is_some());
+    }
+
+    phase transport_kinds_come_from_source_metadata;
+    {
+        for (timeout, connect, kind, retry) in [
+            (true, false, ErrorKind::TimedOut, true),
+            (false, true, ErrorKind::Transport, true),
+            (false, false, ErrorKind::Transport, false),
+        ] {
+            let failure = failure::Failure::transport(timeout, connect);
+            assert_eq!(failure.model_error().kind, kind);
+            assert_eq!(failure.retryable(), retry);
+        }
+    }
+
+    phase a_provider_unavailable_for_now_did_not_take_the_request;
+    {
+        // HTTP's own status for a request not handled, with the wait it asks for.
+        let busy = failure::Failure::from_http(503, "", Some("2"));
+        assert_eq!(busy.model_error().kind, ErrorKind::Provider);
+        assert!(busy.retryable());
+        assert!(busy.refused_unprocessed(503));
+        assert_eq!(busy.retry_after, Some(std::time::Duration::from_secs(2)));
+        // A provider that says it is switched off is not asked again.
+        for code in ["service_disabled", "pricing_unavailable", "provider_unavailable"] {
+            let off = failure::Failure::from_http(
+                503,
+                &serde_json::json!({"error": {"code": code}}).to_string(),
+                None,
+            );
+            assert_eq!(off.model_error().kind, ErrorKind::Unavailable, "{code}");
+            assert!(!off.refused_unprocessed(503), "{code}");
+        }
+        // What a provider began and broke stays unknown.
+        for status in [500, 502, 504] {
+            assert!(
+                !failure::Failure::from_http(status, "", None).refused_unprocessed(status),
+                "HTTP {status}"
+            );
+        }
+    }
+
+    phase billing_envelopes_never_admit_retries;
+    {
+        for code in [
+            "subscription_required",
+            "insufficient_credit",
+            "insufficient_credits",
+            "credit_exhausted",
+            "credits_exhausted",
+            "insufficient_quota",
+            "credit_balance_too_low",
+            "billing_hard_limit_reached",
+        ] {
+            for status in [400, 402, 429, 500, 529] {
+                for body in [
+                    serde_json::json!({"error":{"code":code,"type":"rate_limit_error","message":"secret-never-echo"}}),
+                    serde_json::json!({"error":{"type":code,"code":"unknown-secret-never-echo"}}),
+                    serde_json::json!({"error":"secret-never-echo","code":code}),
+                ] {
+                    let failure = failure::Failure::from_http(status, &body.to_string(), None);
+                    assert_eq!(
+                        failure.model_error().kind,
+                        ErrorKind::CreditsExhausted,
+                        "{status} {code}"
+                    );
+                    assert!(!failure.retryable());
+                    assert!(!failure.refused_unprocessed(status));
+                    assert!(!failure.to_string().contains("secret-never-echo"));
+                    let response = Response::failure(failure.model_error());
+                    assert_eq!(
+                        response.failure_error().model_error().kind,
+                        ErrorKind::CreditsExhausted
+                    );
+                }
+            }
+        }
+    }
+}

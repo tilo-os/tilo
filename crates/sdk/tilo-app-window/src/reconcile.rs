@@ -340,6 +340,13 @@ pub(crate) fn fit_of(node: &UiNode) -> Fit {
     fit
 }
 
+/// How `child` is sized in its container `parent`: the fit its own arguments ask for, the columns
+/// it spans, where it sits among layers.
+#[cfg(test)]
+fn placement(parent: &UiNode, child: &UiNode) -> Placement {
+    placement_in(parent, None, child)
+}
+
 /// The weight `child` fills its container `parent` with because `parent` is a fragment that fills,
 /// by its own `fill` or by `inherited` (the weight the fragment it is the lone child of passed on),
 /// and `child` is all it holds and asks nothing of its own: a call of a view stands for what the
@@ -2253,4 +2260,700 @@ fn same_shell_but(a: &UiNode, b: &UiNode, name: &str) -> bool {
         && a.binding == b.binding
         && a.events.keys().eq(b.events.keys())
         && strip(a) == strip(b)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    fn node(kind: &str, key: &str) -> UiNode {
+        UiNode {
+            kind: kind.to_owned(),
+            key: key.to_owned(),
+            props: BTreeMap::new(),
+            binding: None,
+            events: BTreeMap::new(),
+            anchor: None,
+            children: Vec::new(),
+        }
+    }
+
+    fn text(key: &str, value: &str) -> UiNode {
+        let mut node = node("ui.Text", key);
+        node.props.insert("value".to_owned(), Value::text(value));
+        node
+    }
+
+    fn stack(key: &str, children: Vec<UiNode>) -> UiNode {
+        UiNode {
+            children,
+            ..node("stack", key)
+        }
+    }
+
+    fn reconciler() -> Reconciler {
+        Reconciler::new(Rc::default())
+    }
+
+    fn identities(container: &Element) -> Vec<usize> {
+        container
+            .children()
+            .iter()
+            .map(|child| std::ptr::from_ref::<dyn ui::widget::Widget>(*child).cast::<()>() as usize)
+            .collect()
+    }
+
+    /// A component that does not build is shown as an empty caption in its place, and said: whoever
+    /// checks the view (layout-check, a test) reads why, never only a log line.
+    #[test]
+    fn a_component_that_does_not_build_is_recorded_with_why() {
+        let mut reconciler = reconciler();
+        // `ui.Text` requires its value; an unknown component is not described at all.
+        let view = stack("s", vec![node("ui.Text", "t"), node("ui.Nothing", "n")]);
+        let _ = reconciler.build(&view);
+        let broken = reconciler.broken();
+        assert_eq!(broken.len(), 2, "both are recorded: {broken:?}");
+        assert!(
+            broken
+                .iter()
+                .any(|b| b.contains("ui.Text (t)") && b.contains("value"))
+        );
+        assert!(broken.iter().any(|b| b.contains("ui.Nothing (n)")));
+        // Every reconciler of the same view records into the one list.
+        let rows = Reconciler::sharing(&reconciler);
+        assert_eq!(rows.broken().len(), 2);
+    }
+
+    #[test]
+    fn a_changed_value_keeps_the_widget_that_shows_it() {
+        let mut reconciler = reconciler();
+        let old = stack("s", vec![text("a", "0"), text("b", "x")]);
+        let built = reconciler.build(&old);
+        let before = identities(&built);
+        let new = stack("s", vec![text("a", "1"), text("b", "x")]);
+        let updated = reconciler.update(built, &old, &new);
+        assert_eq!(identities(&updated), before, "no widget was rebuilt");
+    }
+
+    #[test]
+    fn children_keep_their_widgets_across_inserts_removals_and_moves() {
+        let mut reconciler = reconciler();
+        let old = stack("s", vec![text("a", "a"), text("b", "b"), text("c", "c")]);
+        let built = reconciler.build(&old);
+        let [a, _, c] = identities(&built)[..] else {
+            panic!("three children");
+        };
+        // A new child at the front, `b` gone, `c` moved before `a`.
+        let new = stack("s", vec![text("n", "n"), text("c", "c"), text("a", "a")]);
+        let updated = reconciler.update(built, &old, &new);
+        let after = identities(&updated);
+        assert_eq!(after.len(), 3);
+        assert_eq!(&after[1..], &[c, a], "kept widgets follow their keys");
+        assert_eq!(
+            updated.children().first().and_then(|new| new.test_id()),
+            Some("n"),
+            "the new child is built for its node"
+        );
+    }
+
+    #[test]
+    fn a_container_whose_arguments_changed_keeps_its_children() {
+        let mut reconciler = reconciler();
+        let old = stack("s", vec![text("a", "a")]);
+        let built = reconciler.build(&old);
+        let before = identities(&built);
+        let mut new = stack("s", vec![text("a", "a")]);
+        new.props.insert("gap".to_owned(), Value::text("section"));
+        let updated = reconciler.update(built, &old, &new);
+        assert_eq!(identities(&updated), before);
+    }
+
+    #[test]
+    fn a_field_shows_every_control_it_holds() {
+        let mut day = node("ui.DateField", "day");
+        day.props
+            .insert("value".to_owned(), Value::text("2026-06-30"));
+        let mut time = node("ui.TimePicker", "time");
+        time.props.insert("value".to_owned(), Value::text("09:00"));
+        let field = UiNode {
+            children: vec![day, time],
+            props: [("label".to_owned(), Value::text("Due"))]
+                .into_iter()
+                .collect(),
+            ..node("field", "due")
+        };
+        assert_eq!(
+            holder_parts(&field).len(),
+            2,
+            "the day and the time of that day are both the field's"
+        );
+        let mut reconciler = reconciler();
+        let mut built = reconciler.build(&field);
+        let mut panes = Vec::new();
+        collect_panes(built.as_mut(), &mut panes);
+        let before: Vec<usize> = panes
+            .iter()
+            .map(|pane| std::ptr::from_ref::<dyn ui::widget::Widget>(*pane).cast::<()>() as usize)
+            .collect();
+        assert_eq!(before.len(), 2, "both controls sit in a pane");
+        // The time moves: both panes stay, and each reconciles in place.
+        let mut new = field.clone();
+        new.children[1]
+            .props
+            .insert("value".to_owned(), Value::text("10:30"));
+        let mut updated = reconciler.update(built, &field, &new);
+        let mut panes = Vec::new();
+        collect_panes(updated.as_mut(), &mut panes);
+        let after: Vec<usize> = panes
+            .iter()
+            .map(|pane| std::ptr::from_ref::<dyn ui::widget::Widget>(*pane).cast::<()>() as usize)
+            .collect();
+        assert_eq!(after, before, "both keep their pane");
+    }
+
+    fn layout(
+        element: &mut Element,
+    ) -> &mut ui::widget::arrange::Arranged<ui::widget::arrange::FlexLayout> {
+        element
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut())
+            .expect("a stack is a layout")
+    }
+
+    #[test]
+    fn a_container_that_leads_stands_its_content_one_lead_in() {
+        let mut reconciler = reconciler();
+        let mut led = stack("s", vec![text("a", "a")]);
+        led.props.insert("lead".to_owned(), Value::Int(1));
+        let mut built = reconciler.build(&led);
+        assert_eq!(
+            layout(&mut built).lead(),
+            1,
+            "the node's lead is the container's"
+        );
+        let mut plain = reconciler.build(&stack("p", vec![text("b", "b")]));
+        assert_eq!(
+            layout(&mut plain).lead(),
+            0,
+            "a container without one keeps its edge"
+        );
+    }
+
+    #[test]
+    fn a_node_of_another_kind_is_built_again() {
+        let mut reconciler = reconciler();
+        let old = stack("s", vec![text("a", "a")]);
+        let built = reconciler.build(&old);
+        let before = identities(&built);
+        let new = stack("s", vec![node("divider", "a")]);
+        let updated = reconciler.update(built, &old, &new);
+        assert_ne!(identities(&updated), before);
+    }
+
+    #[test]
+    fn a_split_s_drawer_opens_and_closes_from_the_view_state() {
+        fn drawer(open: bool) -> UiNode {
+            let mut split = node("split", "sp");
+            split
+                .props
+                .insert("collapse".to_owned(), Value::text("drawer"));
+            if open {
+                split.props.insert("drawer".to_owned(), Value::Bool(true));
+            }
+            split.children = vec![node("primary", "p"), node("secondary", "q")];
+            split
+        }
+        let mut reconciler = reconciler();
+        let built = reconciler.build(&drawer(true));
+        let open = built
+            .as_any()
+            .and_then(|any| any.downcast_ref::<Split>())
+            .expect("a split");
+        assert!(open.drawer_open(), "the view opened the drawer");
+        // Closing it keeps the same container: the panes and what holds them stay.
+        let closed = reconciler.update(built, &drawer(true), &drawer(false));
+        let closed = closed
+            .as_any()
+            .and_then(|any| any.downcast_ref::<Split>())
+            .expect("still a split");
+        assert!(!closed.drawer_open(), "the view closed the drawer");
+        // A drawer the view opens starts closed and opens through the same path.
+        let shut = reconciler.build(&drawer(false));
+        let opened = reconciler.update(shut, &drawer(false), &drawer(true));
+        assert!(
+            opened
+                .as_any()
+                .and_then(|any| any.downcast_ref::<Split>())
+                .is_some_and(Split::drawer_open)
+        );
+    }
+
+    #[test]
+    fn every_primitive_of_the_language_builds() {
+        let mut reconciler = reconciler();
+        let mut split = node("split", "sp");
+        let mut primary = node("primary", "p");
+        primary
+            .props
+            .insert("min.rem".to_owned(), Value::Float(18.0));
+        primary.children.push(text("pt", "primary"));
+        let mut secondary = node("secondary", "q");
+        secondary
+            .props
+            .insert("min.rem".to_owned(), Value::Float(22.0));
+        secondary.children.push(text("st", "secondary"));
+        split.children = vec![primary, secondary];
+        let mut grid = node("grid", "g");
+        grid.props.insert("min.rem".to_owned(), Value::Float(11.0));
+        grid.children = vec![text("g1", "one"), text("g2", "two")];
+        let mut page = node("page", "pg");
+        page.props.insert("full".to_owned(), Value::Int(1));
+        page.children = vec![split, grid];
+        let mut row = node("row", "r");
+        row.props
+            .insert("distribute".to_owned(), Value::text("between"));
+        row.children = vec![
+            text("rt", "left"),
+            node("spacer", "sp1"),
+            node("divider", "dv"),
+        ];
+        let layers = UiNode {
+            children: vec![text("l1", "base"), {
+                let mut over = text("l2", "over");
+                over.props
+                    .insert("at".to_owned(), Value::text("bottom_trailing"));
+                over
+            }],
+            ..node("layers", "ly")
+        };
+        let scroll = UiNode {
+            children: vec![page, row, layers],
+            ..node("scroll", "sc")
+        };
+        let built = reconciler.build(&scroll);
+        assert!(built.children().len() <= 1);
+    }
+
+    #[test]
+    fn a_view_marked_as_the_windows_second_page_shows_it() {
+        use tilo_page_engine::PageSession;
+        use tilo_webview::test_engine::TestEngine;
+        use tilo_webview::{ExtensionSidePanelChange, SharedEngine, WebViewEvent};
+
+        let reconciler = reconciler();
+        let page = reconciler.page_handle();
+        let test = TestEngine::new();
+        let id = "abcdefghijklmnopabcdefghijklmnop".to_owned();
+        let url = format!("chrome-extension://{id}/panel.html");
+        test.push_event(WebViewEvent::ExtensionSidePanel {
+            id,
+            change: ExtensionSidePanelChange::Open(url),
+        });
+        *page.borrow_mut() = Some(PageSession::new(test as SharedEngine));
+        // The window takes what its page said of itself once a frame.
+        let noted = crate::page_runner::notes(&page);
+        assert!(noted.iter().any(|note| note.contains("\"panel\"")));
+        let panel = crate::page_runner::panel_engine(&page).expect("the window shows a panel");
+
+        // The node the app draws beside the page shows the panel's engine, and the window's
+        // session reads it, so the view is handed none.
+        let mut marked = node("ui.WebView", "panel");
+        marked
+            .props
+            .insert("surface".to_owned(), Value::text("panel"));
+        let (engine, session, surface) = reconciler.page_shown_by(&marked);
+        assert!(
+            std::sync::Arc::ptr_eq(&engine, &panel),
+            "the panel's page draws the panel's engine"
+        );
+        assert!(session.is_none());
+        assert_eq!(surface, ui::webview::Surface::Panel);
+
+        // The page the person browsed still draws the window's own engine, read by its session.
+        let plain = node("ui.WebView", "page");
+        let (engine, session, surface) = reconciler.page_shown_by(&plain);
+        assert!(!std::sync::Arc::ptr_eq(&engine, &panel));
+        assert!(session.is_some(), "the window's one session reads its page");
+        assert_eq!(surface, ui::webview::Surface::Page);
+    }
+
+    #[test]
+    fn values_read_the_way_people_read_them() {
+        assert_eq!(display(&Value::text("hi")), "hi");
+        assert_eq!(display(&Value::Int(2)), "2");
+        assert_eq!(display(&Value::Int(-2)), "-2");
+        assert_eq!(display(&Value::some(Value::Int(3))), "3");
+        assert_eq!(display(&Value::Unit), "");
+    }
+
+    #[test]
+    fn rich_text_reads_as_its_reader_reads_each_reference() {
+        use tilo_render_protocol::patch::rich::{Attr, Block, Embed, InlineView, Mark, RichText};
+        const TASK: &str =
+            r#"{"app":"so.tilo.lang.board","id":"tl:so.tilo.lang.board:d/f:t1","kind":""}"#;
+        // The window is told how the reference reads for the person it shows the text to.
+        let read_as = |view: InlineView| {
+            Value::Rich(RichText {
+                blocks: vec![Block {
+                    kind: "paragraph".into(),
+                    text: "Notes in Acquisition plan".into(),
+                    marks: vec![Mark {
+                        start: 9,
+                        end: 25,
+                        name: "mention".into(),
+                        value: Attr::Text(TASK.into()),
+                    }],
+                    attrs: BTreeMap::new(),
+                }],
+                styles: BTreeMap::new(),
+                embeds: vec![Embed {
+                    reference: TASK.into(),
+                    view,
+                    preview: None,
+                }],
+            })
+        };
+        let holder = read_as(InlineView::Resource {
+            title: "Merger timeline".into(),
+            icon: None,
+            detail: None,
+        });
+        assert_eq!(display(&holder), "Notes in Merger timeline");
+        assert_eq!(
+            display(&read_as(InlineView::Unreadable)),
+            "Notes in Not shared with you"
+        );
+    }
+
+    /// The built view as a window shows it: the window's place fills the surface the host gives
+    /// the window, and the view takes the room that place gives it.
+    fn window_content(built: Box<dyn ui::widget::Widget>) -> Box<dyn ui::widget::Widget> {
+        Box::new(
+            ui::widget::Container::new()
+                .with_no_padding()
+                .filling()
+                .with_child(built),
+        )
+    }
+
+    fn laid_out(view: &UiNode, size: (u32, u32), key: &str) -> ui::vello::kurbo::Rect {
+        let built = reconciler().build(view);
+        let harness = ui::headless::Driver::new(ui::State::new(), window_content(built), size);
+        ui::widget::find_test_id(harness.root_widget(), key)
+            .unwrap_or_else(|| panic!("{key} is built"))
+            .get_rect()
+    }
+
+    /// Every keyed node of `view`, by key, in a window of `size`.
+    fn laid_out_all(
+        view: &UiNode,
+        size: (u32, u32),
+    ) -> std::collections::BTreeMap<String, ui::vello::kurbo::Rect> {
+        let built = reconciler().build(view);
+        let harness = ui::headless::Driver::new(ui::State::new(), window_content(built), size);
+        harness.targets().into_iter().collect()
+    }
+
+    /// `fill` in the language lowers to a part's `Fit::fill`, and a scroll view to a
+    /// `Scrollable` that fills its parent. A page of many lines stands in a scroll view that
+    /// fills the room it is given.
+    fn filling_scroll(key: &str) -> UiNode {
+        let mut content = node("stack", &format!("{key}~content"));
+        content.children = (0..80)
+            .map(|index| text(&format!("{key}-line-{index}"), "A line of the page"))
+            .collect();
+        let mut scroll = node("scroll", key);
+        scroll.props.insert("fill".to_owned(), Value::Int(1));
+        scroll.children = vec![content];
+        scroll
+    }
+
+    /// A stack written `fill`, the language's `gap: .none`, with `strip` above `content`: the
+    /// shape a place's handle stood in over the place's body (`stack(gap: .none, fill) {
+    /// handle; content }`). The window it is shown in is the place.
+    fn stack_over(strip: UiNode, content: UiNode) -> UiNode {
+        let mut root = node("stack", "root");
+        root.props.insert("fill".to_owned(), Value::Int(1));
+        root.props.insert("gap".to_owned(), Value::text("none"));
+        root.children = vec![strip, content];
+        root
+    }
+
+    /// One line of text in a plain stack: a strip that hugs what it holds.
+    fn strip(key: &str) -> UiNode {
+        let mut strip = node("stack", key);
+        strip.children = vec![text(&format!("{key}-text"), "Move place")];
+        strip
+    }
+
+    /// A filled call of a view (`show(r, fill)`): the call is a fragment, the view's body one
+    /// more, and the view's root inside them.
+    fn filled_call_of_stack(key: &str, content: UiNode) -> UiNode {
+        let mut body = node("fragment", &format!("{key}~body"));
+        body.children = vec![content];
+        let mut call = node("fragment", key);
+        call.props.insert("fill".to_owned(), Value::Int(1));
+        call.children = vec![body];
+        call
+    }
+
+    /// The scroll view in a view built of stacks: the only `Scrollable` in the tree.
+    fn the_scrollable(view: &UiNode, size: (u32, u32)) -> ui::vello::kurbo::Rect {
+        fn walk(w: &dyn ui::widget::Widget, out: &mut Option<ui::vello::kurbo::Rect>) {
+            if w.name() == "Scrollable" {
+                *out = Some(w.get_rect());
+            }
+            for child in w.children() {
+                walk(child, out);
+            }
+        }
+        let built = reconciler().build(view);
+        let harness = ui::headless::Driver::new(ui::State::new(), window_content(built), size);
+        let mut found = None;
+        walk(harness.root_widget(), &mut found);
+        found.expect("the view holds a scroll view")
+    }
+
+    /// A stack written `fill` with something above filling content: the filled content takes
+    /// the room under what is above it, and never pushes the stack past the place's height.
+    ///
+    /// The language lowers `stack(gap: .none, fill) { handle; content }` to `Fit::fill` on the
+    /// filled part and a hug on the plain one, and the stack itself to an `Arranged` filling the
+    /// place: this holds that lowering to the rule — the filled part takes its share, and its
+    /// content scrolls or clips inside it.
+    #[test]
+    fn a_stack_of_a_strip_above_filling_content_keeps_the_content_in_the_place() {
+        let place = stack_over(
+            strip("strip"),
+            filled_call_of_stack("call", filling_scroll("scroll")),
+        );
+        let rects = laid_out_all(&place, (400, 520));
+        let root = *rects.get("root").expect("the stack");
+        let strip = *rects.get("strip").expect("the strip");
+        let scroll = the_scrollable(&place, (400, 520));
+        assert!(
+            (root.height() - 520.0).abs() <= 1.0,
+            "the stack is the place's height: {root:?}"
+        );
+        assert!(
+            strip.height() > 0.0 && strip.height() < 100.0,
+            "the strip hugs its one line: {strip:?}"
+        );
+        assert!(
+            (scroll.y0 - strip.y1).abs() <= 1.0,
+            "the content starts under the strip: {scroll:?} under {strip:?}"
+        );
+        assert!(
+            scroll.y1 <= 521.0,
+            "the content's room ends in the place: {scroll:?}"
+        );
+    }
+
+    /// A `spacer` in a row takes the room its neighbours leave, so what follows it stands at
+    /// the row's trailing edge (a bar's status), and a group beside it holds what it holds
+    /// rather than taking that room itself.
+    /// A `spacer` in a row takes the room its neighbours leave, so what follows it is at the row's
+    /// trailing edge (a bar's status), and a group beside it holds what it holds rather than taking
+    /// that room itself.
+    #[test]
+    fn a_spacer_sends_what_follows_it_to_the_rows_trailing_edge() {
+        let mut trailing = stack("end", vec![text("b", "trailing")]);
+        trailing.kind = "row".to_owned();
+        let row = UiNode {
+            children: vec![text("a", "leading"), node("spacer", "gap"), trailing],
+            ..node("row", "bar")
+        };
+        let end = laid_out(&row, (800, 200), "end");
+        assert!(
+            (end.x1 - 800.0).abs() < 1.0,
+            "the trailing group ends at the row's edge: {end:?}"
+        );
+        assert!(end.width() < 200.0, "it hugs its text: {end:?}");
+    }
+
+    /// A filled call of a view (`show(r, fill)`, a filled call of another package's view) stands
+    /// for the view: the root the view draws takes the call's whole room, as a window's shell does,
+    /// rather than hugging its content.
+    #[test]
+    fn a_filled_view_calls_root_takes_the_calls_room() {
+        let mut call = node("fragment", "call");
+        call.props.insert("fill".to_owned(), Value::Int(1));
+        call.children = vec![stack("root", vec![text("t", "one line")])];
+        let view = stack("window", vec![call]);
+        let root = laid_out(&view, (400, 600), "root");
+        assert!(
+            (root.height() - 600.0).abs() < 1.0,
+            "the view's root fills the call: {root:?}"
+        );
+    }
+
+    /// A view's body renders in a fragment of its own inside its call's, and a view whose root is a
+    /// call of another view (a mailbox's view listing through its list's view) puts one call inside
+    /// the other: a filled call reaches the root the innermost view draws, as it is built and once
+    /// the view draws something else there.
+    #[test]
+    fn a_filled_calls_fill_reaches_the_root_of_the_view_it_calls_through_each_fragment() {
+        let body = |key: &str, child: UiNode| UiNode {
+            children: vec![child],
+            ..node("fragment", key)
+        };
+        let call = |key: &str, child: UiNode| body(key, body(&format!("{key}~body"), child));
+        let view = |root: UiNode| {
+            let mut outer = call("outer", call("inner", root));
+            outer.props.insert("fill".to_owned(), Value::Int(1));
+            stack("window", vec![outer])
+        };
+        let first = view(stack("root", vec![text("t", "one line")]));
+        let root = laid_out(&first, (400, 600), "root");
+        assert!(
+            (root.height() - 600.0).abs() < 1.0,
+            "the innermost view's root fills the outer call: {root:?}"
+        );
+
+        let mut reconciler = reconciler();
+        let built = reconciler.build(&view(text("empty", "Nothing here")));
+        let next = view(stack("root", vec![text("t", "one line")]));
+        let updated = reconciler.update(built, &view(text("empty", "Nothing here")), &next);
+        let harness =
+            ui::headless::Driver::new(ui::State::new(), window_content(updated), (400, 600));
+        let root = ui::widget::find_test_id(harness.root_widget(), "root")
+            .expect("the root is built")
+            .get_rect();
+        assert!(
+            (root.height() - 600.0).abs() < 1.0,
+            "what the view draws next fills the call too: {root:?}"
+        );
+    }
+
+    /// A grid's `min` is the least width of its columns, never its own: on a phone narrower than
+    /// one column it takes the width it is given and holds one column, rather than reaching past
+    /// the window. A stack's `min` stays its own least width.
+    #[test]
+    fn a_grids_least_column_width_is_not_its_own_least_width() {
+        let with_min = |kind: &str| {
+            let mut child = node(kind, "c");
+            child.props.insert("min.rem".to_owned(), Value::Float(22.0));
+            placement(&stack("s", Vec::new()), &child).fit.width.min
+        };
+        assert_eq!(with_min("grid"), None);
+        assert_eq!(with_min("stack"), Some(Length::Rem(22.0)));
+    }
+
+    /// What a `for` places in a grid (a fragment per item) fills the grid's cells one by one,
+    /// rather than each item piling its cells into one; and an item added later takes cells of its
+    /// own while those already shown keep their widgets.
+    #[test]
+    fn a_grids_cells_from_a_for_are_each_a_cell_and_keep_their_widgets() {
+        let item = |key: &str, cells: [&str; 3]| UiNode {
+            children: cells
+                .iter()
+                .map(|cell| text(&format!("{key}{cell}"), cell))
+                .collect(),
+            ..node("fragment", key)
+        };
+        let grid = |items: Vec<UiNode>| {
+            let mut grid = node("grid", "g");
+            grid.props.insert("columns".to_owned(), Value::Int(3));
+            grid.children = items;
+            grid
+        };
+        let mut reconciler = reconciler();
+        let old = grid(vec![item("a", ["Title", "Old", "New"])]);
+        let built = reconciler.build(&old);
+        let before = identities(&built);
+        assert_eq!(
+            before.len(),
+            3,
+            "each of the item's cells is a cell of the grid"
+        );
+        let new = grid(vec![
+            item("a", ["Title", "Old", "New"]),
+            item("b", ["Due", "Mon", "Tue"]),
+        ]);
+        let updated = reconciler.update(built, &old, &new);
+        let after = identities(&updated);
+        assert_eq!(
+            after.len(),
+            6,
+            "the added item's cells are cells of their own"
+        );
+        assert_eq!(
+            after[..3],
+            before[..],
+            "the cells already shown keep their widgets"
+        );
+    }
+
+    /// A stack standing at `x`, `y` from the top leading corner of the layers it is in, as a
+    /// floating window stands over the rows of a desktop.
+    fn standing_at(key: &str, x: i64, y: i64) -> UiNode {
+        let mut stack = stack(key, vec![text(&format!("{key}-text"), "Notes")]);
+        stack
+            .props
+            .insert("at".to_owned(), Value::text("top_leading"));
+        stack.props.insert("x".to_owned(), Value::Int(x));
+        stack.props.insert("y".to_owned(), Value::Int(y));
+        stack
+    }
+
+    fn layers_over(children: Vec<UiNode>) -> UiNode {
+        let mut base = stack("base", vec![text("base-text", "rows")]);
+        base.props.insert("fill".to_owned(), Value::Int(1));
+        let mut layers = node("layers", "ly");
+        layers.props.insert("fill".to_owned(), Value::Int(1));
+        layers.children = std::iter::once(base).chain(children).collect();
+        layers
+    }
+
+    /// Where `key` stands from the layers' top leading corner.
+    fn from_layers(rects: &BTreeMap<String, ui::vello::kurbo::Rect>, key: &str) -> (f64, f64) {
+        let layers = rects["ly"];
+        let rect = rects
+            .get(key)
+            .unwrap_or_else(|| panic!("{key} is laid out: {rects:?}"));
+        (rect.x0 - layers.x0, rect.y0 - layers.y0)
+    }
+
+    /// The rows of a `for` under `layers` each stand where they say, as a stack written straight
+    /// in the layers does: a row is a fragment, and the view made of the loop's body one more
+    /// inside it, yet each row is a layer of its own rather than one layer piling them. An
+    /// argument that does not read the item (`at: .top_leading`) is the row's, on its fragment.
+    #[test]
+    fn positioned_rows_of_a_for_under_layers_stand_at_their_x_and_y() {
+        let row = |key: &str, x: i64, y: i64| {
+            let mut stack = standing_at(key, x, y);
+            let at = stack.props.remove("at").expect("the stack names its place");
+            let mut body = node("fragment", &format!("{key}~body"));
+            body.children = vec![stack];
+            let mut row = node("fragment", &format!("{key}~row"));
+            row.props.insert("at".to_owned(), at);
+            row.children = vec![body];
+            row
+        };
+        let view = layers_over(vec![
+            standing_at("direct", 40, 30),
+            UiNode {
+                children: vec![row("a", 320, 160), row("b", 80, 400)],
+                ..node("fragment", "for")
+            },
+        ]);
+        let rects = laid_out_all(&view, (1280, 800));
+        assert_eq!(from_layers(&rects, "direct"), (40.0, 30.0));
+        assert_eq!(from_layers(&rects, "a"), (320.0, 160.0), "{rects:?}");
+        assert_eq!(from_layers(&rects, "b"), (80.0, 400.0), "{rects:?}");
+    }
+
+    /// What an `if` places under `layers` stands where it says, as a stack written straight in
+    /// the layers does.
+    #[test]
+    fn a_positioned_stack_an_if_places_under_layers_stands_at_its_x_and_y() {
+        let view = layers_over(vec![UiNode {
+            children: vec![standing_at("shown", 320, 160)],
+            ..node("fragment", "if")
+        }]);
+        let rects = laid_out_all(&view, (1280, 800));
+        assert_eq!(from_layers(&rects, "shown"), (320.0, 160.0), "{rects:?}");
+    }
 }

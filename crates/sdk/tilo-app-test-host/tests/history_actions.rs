@@ -35,6 +35,9 @@ fn read_board(board: &Board, item: Option<&Id>) -> Result<Value, String> {
     }
 }
 
+#[path = "history_review.rs"]
+mod reviewed;
+
 #[resource(
     kind = "test.board",
     read_content = read_board,
@@ -272,6 +275,50 @@ tilo_test_env::scenario! {
         assert_eq!(app.state().title, "Plan");
     }
 
+    phase chosen_changes_are_taken_back_together_as_one_move;
+    {
+        let mut app = TestApp::<BoardApp>::new().unwrap();
+        app.call("add", json!({"text": "milk"})).unwrap();
+        app.call("add", json!({"text": "tea"})).unwrap();
+        app.call("add", json!({"text": "eggs"})).unwrap();
+        let chosen = [change_of(&mut app, "milk"), change_of(&mut app, "eggs")];
+
+        app.call("undo", json!({"chosen": chosen})).unwrap();
+        assert_eq!(cards(&app), ["tea"]);
+        // A change for each step, newest first, each naming the invocation it took back.
+        let moved = last_move(&app);
+        assert_eq!(moved.len(), 2, "{moved:?}");
+        assert!(moved.iter().all(|(op, verb, _)| op == "undo" && verb == "add"), "{moved:?}");
+        assert_ne!(moved[0].2, moved[1].2, "one invocation each: {moved:?}");
+
+        // History lists them as the one move the person made.
+        let listed = history(&mut app);
+        let undos: Vec<&Value> = listed["versions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|version| version["what"]["did"] == "history" && version["what"]["op"] == "undo")
+            .collect();
+        assert_eq!(undos.len(), 1, "{listed}");
+        assert_eq!(undos[0]["sentence"], "Undid 2 steps", "{listed}");
+        assert_eq!(undos[0]["changes"].as_array().map(Vec::len), Some(2), "{listed}");
+
+        // One redo brings both back.
+        let redone = app.call("redo", json!({})).unwrap().unwrap();
+        assert_eq!(redone["redone"].as_array().unwrap().len(), 2, "{redone}");
+        assert_eq!(cards(&app), ["milk", "tea", "eggs"]);
+
+        // Chosen changes are given alone, and must still be in effect.
+        app.call("add", json!({"text": "bread"})).unwrap();
+        let bread = [change_of(&mut app, "bread")];
+        let mixed = refusal(app.call("undo", json!({"chosen": bread, "steps": 1})));
+        assert!(mixed.contains("alone"), "{mixed}");
+        app.call("undo", json!({"chosen": bread})).unwrap();
+        assert_eq!(cards(&app), ["milk", "tea", "eggs"]);
+        let again = refusal(app.call("undo", json!({"chosen": bread})));
+        assert!(again.contains("no longer in effect"), "{again}");
+    }
+
     phase a_take_back_is_brought_back_by_naming_it_after_newer_undos;
     {
         let mut app = TestApp::<BoardApp>::new().unwrap();
@@ -310,6 +357,31 @@ tilo_test_env::scenario! {
         let mut all = cards(&app);
         all.sort();
         assert_eq!(all, ["bread", "eggs", "milk", "tea"]);
+    }
+
+    phase each_window_redoes_only_the_undos_it_made;
+    {
+        let mut app = TestApp::<BoardApp>::new().unwrap();
+        for text in ["milk", "tea"] {
+            app.call("add", json!({"text": text})).unwrap();
+        }
+        // Two windows on one record: each takes back one card.
+        let milk = [change_of(&mut app, "milk")];
+        app.call("undo", json!({"chosen": milk})).unwrap();
+        let first = newest_change(&mut app);
+        let tea = [change_of(&mut app, "tea")];
+        app.call("undo", json!({"chosen": tea})).unwrap();
+        let second = newest_change(&mut app);
+        assert!(cards(&app).is_empty());
+
+        // The first window's redo brings back its own undo, though the other's is newer.
+        app.call("redo", json!({"undos": [first]})).unwrap();
+        assert_eq!(cards(&app), ["milk"]);
+        // Of the undos a window names, the newest still in effect.
+        app.call("redo", json!({"undos": [first, second]})).unwrap();
+        assert_eq!(cards(&app), ["milk", "tea"]);
+        let none = refusal(app.call("redo", json!({"undos": [first, second]})));
+        assert!(none.contains("no longer in effect"), "{none}");
     }
 
     phase a_restore_takes_back_each_step_since_and_brings_back_what_stood_then;
@@ -365,6 +437,92 @@ tilo_test_env::scenario! {
         app.call("undo", json!({})).unwrap();
         assert_eq!(cards(&app), ["milk", "eggs", "bread"]);
         assert_eq!(app.state().title, "Plan");
+    }
+
+    phase ctrl_z_takes_back_only_what_was_done_on_this_device;
+    {
+        let mut laptop = TestApp::<BoardApp>::on_device("laptop").unwrap();
+        let mut phone = TestApp::<BoardApp>::on_device("phone").unwrap();
+        sync(&mut laptop, &mut phone);
+        laptop.call("add", json!({"text": "milk"})).unwrap();
+        sync(&mut laptop, &mut phone);
+        phone.call("add", json!({"text": "eggs"})).unwrap();
+        sync(&mut laptop, &mut phone);
+        assert_eq!(cards(&laptop), ["milk", "eggs"]);
+
+        // The same person's newer step from the phone is not the laptop's to
+        // take back with a key press.
+        assert!(laptop.undo());
+        assert_eq!(cards(&laptop), ["eggs"]);
+        assert!(
+            !laptop.undo(),
+            "Ctrl+Z on the laptop never undoes phone work"
+        );
+        assert_eq!(cards(&laptop), ["eggs"]);
+
+        // It stays reachable through the published undo.
+        laptop.call("undo", json!({})).unwrap();
+        assert_eq!(cards(&laptop), Vec::<String>::new());
+    }
+
+    phase a_keyboard_undo_and_redo_are_named_after_the_step_and_stay_its_authors;
+    {
+        let mut app = TestApp::<BoardApp>::new().unwrap();
+        app.invoke(Board::RENAME.with("Plan")).unwrap();
+        let renamed = newest(&mut app);
+        let label = renamed["sentence"].as_str().unwrap().to_owned();
+        assert!(!label.is_empty(), "{renamed}");
+        let by = renamed["by"].clone();
+        assert!(by.is_string(), "{renamed}");
+
+        // Ctrl+Z: the undo is the person's own step, named after what it took
+        // back, never an unnamed change by a bare actor.
+        assert!(app.undo());
+        assert_eq!(app.state().title, "");
+        let undo = newest(&mut app);
+        assert_eq!(
+            undo["sentence"],
+            json!(format!("Undid “{label}”")),
+            "{undo}"
+        );
+        assert_eq!(undo["by"], by, "{undo}");
+        let context = app
+            .versions()
+            .pop()
+            .unwrap()
+            .context
+            .expect("an undo says what it did");
+        let Some(tilo_actions::Did::History(step)) = &context.what else {
+            panic!("an undo records a history step: {context:?}");
+        };
+        assert_eq!(step.op, tilo_actions::HistoryOp::Undo);
+        assert_eq!(
+            step.of.as_ref().map(|of| json!(of.what)),
+            Some(renamed["what"].clone()),
+            "the undo records the step it took back"
+        );
+        assert!(context.invoker.is_some(), "{context:?}");
+
+        // Ctrl+Shift+Z names the same step, not the undo it reverts.
+        assert!(app.redo());
+        assert_eq!(app.state().title, "Plan");
+        let redo = newest(&mut app);
+        assert_eq!(
+            redo["sentence"],
+            json!(format!("Redid “{label}”")),
+            "{redo}"
+        );
+        assert_eq!(redo["by"], by, "{redo}");
+
+        // And undoing that redo is again an undo of the step.
+        assert!(app.undo());
+        let again = newest(&mut app);
+        assert_eq!(
+            again["sentence"],
+            json!(format!("Undid “{label}”")),
+            "{again}"
+        );
+        assert_eq!(again["by"], by, "{again}");
     }
 
     phase an_agent_run_undoes_its_own_steps_and_leaves_the_persons;
@@ -451,6 +609,62 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase undo_author_selector_rejects_invalid_or_ambiguous_requests_without_mutation;
+    {
+        let mut app = TestApp::<BoardApp>::new().unwrap();
+        app.call("add", json!({"text": "keep"})).unwrap();
+        for args in [
+            json!({"by": ""}),
+            json!({"by": " \n "}),
+            json!({"by": "author\u{0000}"}),
+            json!({"by": "a".repeat(513)}),
+            json!({"by": "agent:one", "invocation": "run:one"}),
+        ] {
+            assert!(app.call("undo", args).is_err());
+            assert_eq!(cards(&app), ["keep"]);
+        }
+    }
+
+    phase undo_named_author_preserves_other_authors_and_attributes_the_undo_to_its_caller;
+    {
+        let mut app = TestApp::<BoardApp>::new().unwrap();
+        for (actor, text) in [
+            (tilo_actions::ActionInvoker::agent("clipboard-helper", "ada"), "agent card"),
+            (tilo_actions::ActionInvoker::person("owner"), "person card"),
+        ] {
+            app.call_by(
+                actor,
+                "test.board",
+                "add",
+                json!({"text": text}),
+            )
+            .unwrap();
+        }
+        let listed = history(&mut app);
+        let author = listed["versions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["what"]["args"]["text"] == "agent card")
+            .map(|entry| entry["actor"]["by"].clone())
+            .expect("history publishes the exact invoker");
+        assert_eq!(
+            author,
+            json!({"member": {"agent": {"id": "clipboard-helper", "person": "ada"}}})
+        );
+        app.call_by(
+            tilo_actions::ActionInvoker::person("owner"),
+            "test.board",
+            "undo",
+            json!({"by": author}),
+        )
+        .unwrap();
+        assert_eq!(cards(&app), ["person card"]);
+        let undo = newest(&mut app);
+        assert_eq!(undo["by"], "owner", "{undo}");
+        assert_eq!(undo["what"]["op"], "undo", "{undo}");
+    }
+
     phase ctrl_z_takes_back_the_persons_steps_after_a_restart_through_the_one_history;
     {
         let mut app = TestApp::<BoardApp>::new().unwrap();
@@ -481,6 +695,32 @@ tilo_test_env::scenario! {
         assert_eq!(app.state().title, "");
     }
 
+    phase ctrl_z_in_a_session_is_the_same_undo_the_published_history_reports;
+    {
+        let mut app = TestApp::<BoardApp>::new().unwrap();
+        app.invoke(Board::RENAME.with("Plan")).unwrap();
+        assert!(app.undo());
+        assert_eq!(app.state().title, "");
+        let listed = history(&mut app);
+        let versions = carried(listed["versions"].as_array().unwrap());
+        let renamed = versions
+            .iter()
+            .find(|version| version["what"]["args"]["title"] == "Plan")
+            .unwrap();
+        assert_eq!(renamed["undone"], true, "{listed}");
+        // So the published redo brings it back after Ctrl+Z.
+        app.call("redo", json!({})).unwrap();
+        assert_eq!(app.state().title, "Plan");
+    }
+}
+
+/// Exchange what each device has, as sync does.
+fn sync(a: &mut TestApp<BoardApp>, b: &mut TestApp<BoardApp>) {
+    let mut doc = b.peer_document();
+    a.merge_peer(&mut doc).unwrap();
+    b.merge_peer(&mut doc).unwrap();
+    a.settle();
+    b.settle();
 }
 
 /// The newest listed version, with what it carries over filled in.
@@ -589,6 +829,79 @@ tilo_test_env::scenario! {
         assert!(unknown.contains("good"), "names the checkpoints: {unknown}");
     }
 
+    phase an_agents_edit_is_recorded_as_the_agent_acting_for_its_person;
+    {
+        let mut app = TestApp::<BoardApp>::new().unwrap();
+        let agent = tilo_actions::Acting::agent("claude", "ada")
+            .acting_for(tilo_actions::Acting::person("ada"));
+        app.call_by(
+            tilo_actions::ActionInvoker::admitted(&agent),
+            "test.board",
+            "rename",
+            json!({"title": "Drafted"}),
+        )
+        .unwrap();
+        let entry = app
+            .versions()
+            .pop()
+            .and_then(|version| version.context)
+            .expect("the agent's edit is recorded");
+        let invoker = entry.invoker.expect("attributed");
+        assert_eq!(invoker.acting.by, MemberId::agent("claude", "ada").into());
+        assert!(invoker.acting.is_agent());
+        assert_eq!(invoker.acting.acted_for_person(), Some("ada"));
+        let listed = newest(&mut app);
+        assert_eq!(
+            listed["actor"]["by"]["member"]["agent"],
+            json!({"id": "claude", "person": "ada"}),
+            "{listed}"
+        );
+        assert_eq!(
+            listed["actor"]["for"][0]["by"]["member"]["person"],
+            "ada",
+            "{listed}"
+        );
+    }
+
+    phase another_member_reads_the_history_and_moves_no_ones_view;
+    {
+        // A reviewer the workspace let in lists who changed the record and compares versions:
+        // reads of the record, which move no one's focus or viewport, theirs neither.
+        let mut app = TestApp::<BoardApp>::new().unwrap();
+        app.invoke(Board::RENAME.with("Filled")).unwrap();
+        let reviewer = || {
+            tilo_actions::ActionInvoker::person("reviewer")
+                .with_presence(tilo_actions::PresenceId::new("reviewer").unwrap())
+        };
+        let before = history(&mut app)["now"].clone();
+        app.invoke(Board::RENAME.with("Reviewed")).unwrap();
+        for invoker in [tilo_actions::ActionInvoker::person("reviewer"), reviewer()] {
+            let listed = app
+                .call_by(invoker, "test.board", "history", json!({"last": 50}))
+                .expect("another member reads the history")
+                .value
+                .expect("history answers");
+            let versions = listed["versions"].as_array().expect("versions");
+            assert!(
+                versions.iter().any(|version| version["what"]["args"]["title"] == "Filled"),
+                "{listed}"
+            );
+        }
+        app.call_by(reviewer(), "test.board", "diff", json!({"from": before}))
+            .expect("another member compares versions");
+    }
+
+    phase a_field_edit_without_a_message_is_named_by_the_fields_title;
+    {
+        let mut app = TestApp::<BoardApp>::new().unwrap();
+        app.invoke(Invoke::edit(&Board::paths().title.replace("Plan")).unwrap())
+            .unwrap();
+        let edited = newest(&mut app);
+        assert_eq!(edited["what"]["did"], "edit", "{edited}");
+        let sentence = edited["sentence"].as_str().unwrap();
+        assert!(sentence.contains("Board name"), "{sentence}");
+        assert!(!sentence.contains("title"), "{sentence}");
+    }
 }
 
 #[test]

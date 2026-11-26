@@ -308,3 +308,6 @@ fn denied() -> io::Error {
         "personal dictionary reader was revoked",
     )
 }
+
+#[cfg(test)]
+mod tests;

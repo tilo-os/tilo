@@ -306,3 +306,27 @@ pub fn prompts_waiting(page: &Page) -> bool {
         session.has_prompts()
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_chosen_package_is_read_from_the_content_store_by_its_address() {
+        let store = tilo_content::ContentStore::memory();
+        let hash = store.put(b"a package").expect("kept");
+        let file = format!("tilo-blob://{hash}");
+        assert_eq!(
+            read_package(|hash| store.read(hash), &file).expect("the package"),
+            b"a package"
+        );
+        assert!(
+            read_package(|hash| store.read(hash), "/home/ada/reader.crx").is_err(),
+            "a host path names no content"
+        );
+        assert!(
+            read_package(|_| None, &file).is_err(),
+            "a package this device does not hold is missing"
+        );
+    }
+}

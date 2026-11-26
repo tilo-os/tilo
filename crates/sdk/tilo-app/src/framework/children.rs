@@ -1389,3 +1389,363 @@ impl<C: ChildResource> Children<C> {
         Some(Self::new(state, me.clone()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        reason = "in a test these are the assertion"
+    )]
+
+    use super::*;
+    use tilo_resource::{Model, resource};
+    use ui_core::resource::ResourceStore;
+
+    #[derive(Model, Default, Debug, Clone, PartialEq)]
+    pub struct Workspace {
+        pub entries: Container,
+    }
+
+    #[resource(kind = "test.workspace", catalogue = "tests/locales")]
+    impl Workspace {
+        /// Rename nothing.
+        #[action]
+        #[expect(
+            clippy::unused_self,
+            clippy::needless_pass_by_ref_mut,
+            reason = "an action takes the state it acts on"
+        )]
+        pub fn touch(&mut self) {}
+    }
+
+    #[derive(Model, Default, Debug, Clone, PartialEq)]
+    pub struct Topic {
+        #[model(label)]
+        pub name: String,
+        pub note: String,
+    }
+
+    #[resource(kind = "test.topic", catalogue = "tests/locales")]
+    impl Topic {
+        /// Note.
+        #[action]
+        pub fn jot(&mut self, text: String) {
+            self.note = text;
+        }
+    }
+
+    impl ChildResource for Topic {
+        type Parent = Workspace;
+        fn container(parent: &Workspace) -> &Container {
+            &parent.entries
+        }
+        fn container_path() -> Vec<Segment> {
+            vec![Segment::Field("entries".into())]
+        }
+    }
+
+    /// A workspace's record in a store of its own, and its topics held over it.
+    fn workspace() -> (ResourceStore, Children<Topic>) {
+        let store = ResourceStore::in_memory();
+        let parent = DocumentCheckout::new(
+            DocumentId::workspace_default(),
+            ResourceType::new(Workspace::KIND),
+        );
+        store.create_resource(&parent).unwrap();
+        store
+            .with(&parent.id, |doc| {
+                Workspace::initialize(doc).unwrap();
+                doc.commit();
+            })
+            .unwrap();
+        let read = store.clone();
+        let children = Children::<Topic>::detached_in(
+            store.clone(),
+            "so.tilo.test",
+            &tilo_resource::MemberId::person("ana"),
+            move || {
+                read.read(&DocumentId::workspace_default(), |doc| {
+                    Reader::<Workspace>::read(doc).unwrap().state().clone()
+                })
+                .unwrap()
+            },
+        )
+        .unwrap();
+        (store, children)
+    }
+
+    fn order(children: &Children<Topic>) -> Vec<(String, Option<String>)> {
+        children
+            .children()
+            .into_iter()
+            .map(|(_, child, state)| {
+                let group = child.group.map(|group| {
+                    children
+                        .child(&group)
+                        .map_or_else(|| group.to_string(), |topic| topic.name.clone())
+                });
+                let name = state.with(|state| state.ready().map(|topic| topic.name.clone()));
+                (name.expect("every child here"), group)
+            })
+            .collect()
+    }
+
+    tilo_test_env::scenario! {
+        fn a_child_record_keeps_its_identity_through_its_lifecycle;
+
+        phase a_child_is_a_record_of_its_own_and_moving_it_keeps_its_identity;
+        {
+            let (store, children) = workspace();
+            let design = children
+                .create(serde_json::json!({ "name": "design" }), None, None)
+                .unwrap();
+            let ui = children
+                .create(serde_json::json!({ "name": "ui" }), Some(&design), None)
+                .unwrap();
+            let general = children
+                .create(serde_json::json!({ "name": "general" }), None, None)
+                .unwrap();
+            let record = DocumentId::workspace_default().child(ui.as_str()).unwrap();
+            assert_eq!(
+                store.read(&record, |doc| Reader::<Topic>::read(doc)
+                    .unwrap()
+                    .state()
+                    .name
+                    .clone()),
+                Some("ui".to_owned())
+            );
+            assert_eq!(
+                order(&children),
+                [
+                    ("design".to_owned(), None),
+                    ("ui".to_owned(), Some("design".to_owned())),
+                    ("general".to_owned(), None),
+                ]
+            );
+            // Moved out of its group and to the front: the same record, the
+            // same address, only its reference moved.
+            children.move_to(&ui, None, Some(&design)).unwrap();
+            assert_eq!(
+                order(&children),
+                [
+                    ("ui".to_owned(), None),
+                    ("design".to_owned(), None),
+                    ("general".to_owned(), None),
+                ]
+            );
+            assert_eq!(children.child(&ui).unwrap().name, "ui");
+            assert!(store.read(&record, |_| ()).is_some());
+            children.move_to(&general, Some(&design), None).unwrap();
+            assert_eq!(
+                order(&children)[2],
+                ("general".to_owned(), Some("design".to_owned()))
+            );
+            // Nothing is grouped under itself, nor under what is not there.
+            assert!(children.move_to(&design, Some(&design), None).is_err());
+            assert!(
+                children
+                    .move_to(&design, Some(&Id::from_raw("absent")), None)
+                    .is_err()
+            );
+        }
+
+        phase delete_puts_a_child_in_the_trash_whole_and_restore_brings_it_back;
+        {
+            let (store, children) = workspace();
+            let design = children
+                .create(
+                    serde_json::json!({ "name": "design", "note": "kept" }),
+                    None,
+                    None,
+                )
+                .unwrap();
+            let ui = children
+                .create(serde_json::json!({ "name": "ui" }), Some(&design), None)
+                .unwrap();
+            children.delete(&design).unwrap();
+            assert_eq!(
+                order(&children),
+                [("ui".to_owned(), Some("design".to_owned()))]
+            );
+            let record = DocumentId::workspace_default()
+                .child(design.as_str())
+                .unwrap();
+            assert_eq!(
+                store.read(&record, |doc| Reader::<Topic>::read(doc)
+                    .unwrap()
+                    .state()
+                    .note
+                    .clone()),
+                Some("kept".to_owned())
+            );
+            assert_eq!(children.child(&design).unwrap().note, "kept");
+            children.delete(&ui).unwrap();
+            children.restore(&ui).unwrap();
+            assert_eq!(order(&children), [("ui".to_owned(), None)]);
+            children.restore(&design).unwrap();
+            assert_eq!(
+                order(&children),
+                [("design".to_owned(), None), ("ui".to_owned(), None)]
+            );
+            // A child is made only with fields its kind has.
+            assert!(
+                children
+                    .create(serde_json::json!({ "colour": 3 }), None, None)
+                    .is_err()
+            );
+            assert!(
+                children
+                    .create(serde_json::json!({ "name": 3 }), None, None)
+                    .is_err()
+            );
+        }
+
+        phase the_api_offers_one_lifecycle_on_every_child_and_carries_each_childs_own_actions;
+        {
+            let (_, children) = workspace();
+            let agent = ActionInvoker::person("agent-1");
+            let invoke =
+                |resource: &tilo_actions::ResourceSpec, action: &str, args: serde_json::Value| {
+                    let spec = resource
+                        .actions
+                        .iter()
+                        .find(|spec| spec.id == action)
+                        .unwrap_or_else(|| panic!("`{action}` on {}", resource.id.as_str()));
+                    let encoded = spec.build_json(args.as_object().unwrap()).unwrap();
+                    children.invoke_published(&encoded, &agent)
+                };
+            let made = invoke(
+                &children.published(),
+                lifecycle::CREATE,
+                serde_json::json!({ "fields": { "name": "design" } }),
+            )
+            .unwrap();
+            let address = made.resources[0].clone();
+            assert!(address.starts_with("test.topic/"));
+            let published = children.published();
+            let child = published
+                .children
+                .iter()
+                .find(|child| child.id.as_str() == address)
+                .unwrap();
+            for verb in [lifecycle::DELETE, lifecycle::MOVE, "jot"] {
+                assert!(
+                    child.actions.iter().any(|spec| spec.id == verb),
+                    "{verb} on the child"
+                );
+            }
+            invoke(child, "jot", serde_json::json!({ "text": "agenda" })).unwrap();
+            let id = Id::from_raw(address.rsplit('/').next().unwrap());
+            assert_eq!(children.child(&id).unwrap().note, "agenda");
+            // In the trash, it offers `restore` only.
+            invoke(child, lifecycle::DELETE, serde_json::json!({})).unwrap();
+            let trashed = children.published();
+            let child = trashed
+                .children
+                .iter()
+                .find(|child| child.id.as_str() == address)
+                .unwrap();
+            assert_eq!(
+                child
+                    .actions
+                    .iter()
+                    .map(|spec| spec.id.as_str())
+                    .collect::<Vec<_>>(),
+                [lifecycle::RESTORE]
+            );
+            invoke(child, lifecycle::RESTORE, serde_json::json!({})).unwrap();
+            assert_eq!(children.children().len(), 1);
+        }
+
+        phase a_child_whose_record_is_on_its_way_reads_pending_until_it_arrives;
+        {
+            let here = device();
+            let parent = DocumentCheckout::new(
+                DocumentId::workspace_default(),
+                ResourceType::new(Workspace::KIND),
+            );
+            here.create_resource(&parent).unwrap();
+            here.with(&parent.id, |doc| {
+                Workspace::initialize(doc).unwrap();
+                doc.commit();
+            })
+            .unwrap();
+            let design = children_of(&here)
+                .create(serde_json::json!({ "name": "design" }), None, None)
+                .unwrap();
+            // Another device has the workspace's listing, not yet the child's record.
+            let there = device();
+            copy(
+                &here,
+                &there,
+                &DocumentId::workspace_default(),
+                Workspace::KIND,
+            );
+            let theirs = children_of(&there);
+            let listed = theirs.children();
+            let [(id, _, arriving)] = listed.as_slice() else {
+                panic!("the one listed child: {}", listed.len());
+            };
+            assert_eq!(*id, design);
+            assert!(
+                arriving.get().is_pending(),
+                "listed and not here is on its way, not a new child: {:?}",
+                arriving.with(|arrival| arrival.clone().map(|_| ()))
+            );
+            assert!(theirs.child(&design).is_none());
+
+            copy(
+                &here,
+                &there,
+                &DocumentId::workspace_default()
+                    .child(design.as_str())
+                    .unwrap(),
+                Topic::KIND,
+            );
+            let _ = theirs.revision();
+            assert_eq!(
+                arriving.with(|arrival| arrival.ready().map(|topic| topic.name.clone())),
+                Some("design".to_owned()),
+                "the same read answers once the record arrived"
+            );
+        }
+    }
+
+    /// The saved record `id` of `store`, as another device receives it.
+    fn copy(from: &ResourceStore, to: &ResourceStore, id: &DocumentId, kind: &str) {
+        let saved = from.read(id, |doc| doc.clone().save()).unwrap();
+        to.create_resource(&DocumentCheckout::new(id.clone(), ResourceType::new(kind)))
+            .unwrap();
+        to.with(id, |doc| {
+            *doc = ui_core::automerge::AutoCommit::load(&saved).unwrap();
+        })
+        .unwrap();
+    }
+
+    /// A device's store of workspace `lounge`'s records, kept as it keeps them:
+    /// a record it has not got reads as missing, not as an error.
+    fn device() -> ResourceStore {
+        crate::resource::ResourceOwners::in_memory()
+            .open("so.tilo.test", "lounge")
+            .unwrap()
+    }
+
+    /// The children of the workspace `store` holds, as `author` sees them.
+    fn children_of(store: &ResourceStore) -> Children<Topic> {
+        let read = store.clone();
+        Children::<Topic>::detached_in(
+            store.clone(),
+            "so.tilo.test",
+            &tilo_resource::MemberId::person("ana"),
+            move || {
+                read.read(&DocumentId::workspace_default(), |doc| {
+                    Reader::<Workspace>::read(doc).unwrap().state().clone()
+                })
+                .unwrap()
+            },
+        )
+        .unwrap()
+    }
+}

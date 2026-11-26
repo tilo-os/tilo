@@ -13,6 +13,8 @@ use thiserror::Error;
 #[cfg(unix)]
 use zeroize::Zeroizing;
 
+#[cfg(test)]
+mod error_tests;
 pub mod failure;
 #[cfg(feature = "runtime-client")]
 pub mod runtime_client;
@@ -1007,4 +1009,332 @@ pub fn read_frame<T: for<'a> Deserialize<'a>>(stream: &mut UnixStream) -> Result
     }
     serde_json::from_slice(&body)
         .map_err(|_| ClientError::Protocol("invalid gateway response".into()))
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+mod wire_tests {
+    use super::*;
+
+    /// The gateway socket's bytes: a little-endian `u32` length, then JSON.
+    #[test]
+    fn gateway_wire_bytes_are_pinned() {
+        use std::io::Read as _;
+        let (mut client, mut gateway) = UnixStream::pair().unwrap();
+        write_frame(
+            &mut client,
+            &Response {
+                ok: true,
+                output: Some("x".into()),
+                configured: None,
+                error: None,
+                model_error: None,
+                event: None,
+            },
+        )
+        .unwrap();
+        let mut sent = [0_u8; 28];
+        gateway.read_exact(&mut sent).unwrap();
+        assert_eq!(sent[..4], [24, 0, 0, 0]);
+        assert_eq!(&sent[4..], br#"{"ok":true,"output":"x"}"#);
+
+        gateway.write_all(&[12, 0, 0, 0]).unwrap();
+        gateway.write_all(br#"{"ok":false}"#).unwrap();
+        let response: Response = read_frame(&mut client).unwrap();
+        assert!(!response.ok);
+    }
+
+    fn answer(output: &str, event: Option<&str>) -> Response {
+        Response {
+            ok: true,
+            output: Some(output.into()),
+            configured: None,
+            error: None,
+            model_error: None,
+            event: event.map(Into::into),
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// The one launcher channel under a stream, a stop and a nested call. Each case hands the
+        /// client a socket pair of its own through a scoped environment, and every exchange gives its
+        /// turn back when it ends, so a case starts with the channel free.
+        fn calls_on_the_shared_launcher_channel_take_turns_and_stop_cleanly;
+
+        phase a_call_beside_a_stream_on_the_shared_channel_gets_its_own_answer;
+        // A one-shot call runs beside a streamed planning turn, over the one
+        // launcher channel. A call asked while the turn's caller is still busy
+        // with one of its events used to read the turn's next frame as its own
+        // answer, and the turn then read the call's: it now waits its turn, and
+        // each caller gets its own answer.
+        {
+            use std::os::fd::AsRawFd as _;
+            let (app, mut gateway) = UnixStream::pair().unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(SERVICE_FD_ENV, app.as_raw_fd().to_string());
+            let (asked_by, asked) = std::sync::mpsc::channel();
+            let server = std::thread::spawn(move || {
+                // The stream: one event, then its answer, written at once, as a
+                // gateway writes them whenever the provider has them.
+                let frame: Frame<Request> = read_frame(&mut gateway).unwrap();
+                assert!(matches!(frame.value, Request::Complete { .. }));
+                write_frame(&mut gateway, &answer("{}", Some(EVENT_TOOL_CALL))).unwrap();
+                write_frame(&mut gateway, &answer("the plan", None)).unwrap();
+                // Then each one-shot call, answered with what it carried.
+                while let Ok(frame) = read_frame::<Frame<Request>>(&mut gateway) {
+                    let _ = asked_by.send(());
+                    write_frame(&mut gateway, &answer(&echoed(&frame.value), None)).unwrap();
+                }
+            });
+            let (in_event, event_seen) = std::sync::mpsc::channel();
+            let (go_on, go) = std::sync::mpsc::channel::<()>();
+            let stream = std::thread::spawn(move || {
+                streaming_request(
+                    streamed_turn(),
+                    false,
+                    &mut |kind, _| {
+                        assert_eq!(kind, EVENT_TOOL_CALL);
+                        // The turn's caller is busy with the event (running the
+                        // call) while the one-shot call is asked.
+                        in_event.send(()).unwrap();
+                        let _ = go.recv_timeout(tilo_test_env::hang_bound());
+                    },
+                    None,
+                )
+            });
+            tilo_test_env::recv("the stream's event", &event_seen);
+            let call = std::thread::spawn(|| one_shot(7));
+            // Long enough for a call on the channel to have read a frame.
+            let _ = asked.recv_timeout(Duration::from_millis(300));
+            std::thread::sleep(Duration::from_millis(100));
+            go_on.send(()).unwrap();
+            assert_eq!(stream.join().unwrap().unwrap(), "the plan");
+            assert_eq!(call.join().unwrap().unwrap(), "7");
+            drop(env);
+            drop(app);
+            server.join().unwrap();
+        }
+
+        phase a_stream_its_caller_gives_up_on_is_stopped_at_the_gateway;
+        // The agent lets go of a planning turn when its task is stopped. The
+        // turn used to run to its end at the provider, billed, holding the
+        // channel: the gateway is now told to stop it, the turn ends as
+        // cancelled, and the next call on the channel gets its own answer.
+        {
+            use std::os::fd::AsRawFd as _;
+            let (app, gateway) = UnixStream::pair().unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(SERVICE_FD_ENV, app.as_raw_fd().to_string());
+            let server = stoppable_gateway(gateway, false);
+            let (plan, after) = give_up_then_call();
+            let Err(ClientError::Model(error)) = plan else {
+                panic!("a stopped turn is cancelled, not answered: {plan:?}");
+            };
+            assert_eq!(
+                error.kind,
+                agent_provider_config::protocol::ErrorKind::Cancelled
+            );
+            assert_eq!(after.unwrap(), "9");
+            drop(env);
+            drop(app);
+            server.join().unwrap();
+        }
+
+        phase a_stop_that_crosses_the_answer_leaves_nothing_on_the_channel;
+        // The stop can cross the answer: the gateway acknowledges it after
+        // the answer went out, and that acknowledgement is read here, not
+        // left on the channel as the next call's answer.
+        {
+            use std::os::fd::AsRawFd as _;
+            let (app, gateway) = UnixStream::pair().unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(SERVICE_FD_ENV, app.as_raw_fd().to_string());
+            let server = stoppable_gateway(gateway, true);
+            let (plan, after) = give_up_then_call();
+            assert!(
+                matches!(&plan, Err(ClientError::Model(error)) if error.kind == agent_provider_config::protocol::ErrorKind::Cancelled),
+                "{plan:?}"
+            );
+            assert_eq!(after.unwrap(), "9");
+            drop(env);
+            drop(app);
+            server.join().unwrap();
+        }
+
+        phase a_call_from_inside_a_stream_is_refused_rather_than_waiting_on_itself;
+        // A call from inside a stream's event callback, on the stream's own
+        // thread, would read the stream's frames as its answer, and waiting
+        // for the channel would wait on itself: it is refused instead.
+        {
+            use std::os::fd::AsRawFd as _;
+            let (app, mut gateway) = UnixStream::pair().unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(SERVICE_FD_ENV, app.as_raw_fd().to_string());
+            let server = std::thread::spawn(move || {
+                let _: Frame<Request> = read_frame(&mut gateway).unwrap();
+                write_frame(&mut gateway, &answer("{}", Some(EVENT_TOOL_CALL))).unwrap();
+                write_frame(&mut gateway, &answer("the plan", None)).unwrap();
+            });
+            let mut nested = None;
+            let plan = streaming_request(
+                streamed_turn(),
+                false,
+                &mut |_, _| {
+                    nested = Some(request(Request::Trace {
+                        trace: PlanTrace { id: 1, turn: 0 },
+                        event: TraceEvent::ActionSubmitted,
+                        at_unix_ms: None,
+                    }));
+                },
+                None,
+            );
+            assert_eq!(plan.unwrap(), "the plan");
+            assert!(matches!(nested, Some(Err(ClientError::Protocol(_)))));
+            server.join().unwrap();
+            drop(env);
+        }
+    }
+
+    /// A streamed neutral turn, as the agent asks for one.
+    fn streamed_turn() -> Request {
+        Request::Complete {
+            profile_id: "hosted".into(),
+            model_id: "model".into(),
+            request: agent_provider_config::protocol::Conversation::new("system", "hello")
+                .request(Vec::new(), 64),
+            timeout_ms: 1000,
+            stream: true,
+        }
+    }
+
+    /// A gateway that streams one event of a cancellable turn, then
+    /// (when `answers_first`) its answer, and acknowledges the stop it is
+    /// then sent; afterwards it answers each one-shot call with what it carried.
+    /// Hands back the id the stop named.
+    fn stoppable_gateway(
+        mut gateway: UnixStream,
+        answers_first: bool,
+    ) -> std::thread::JoinHandle<u64> {
+        std::thread::spawn(move || {
+            gateway
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            let frame: Frame<Request> = read_frame(&mut gateway).unwrap();
+            assert!(matches!(frame.value, Request::CancellationSupported));
+            write_frame(&mut gateway, &answer("cancel-v1", None)).unwrap();
+            let frame: Frame<Request> = read_frame(&mut gateway).unwrap();
+            let Request::Cancellable { id, request } = frame.value else {
+                panic!("a stoppable stream starts a cancellable operation");
+            };
+            assert!(matches!(*request, Request::Complete { .. }));
+            write_frame(&mut gateway, &answer("{}", Some(EVENT_TOOL_CALL))).unwrap();
+            if answers_first {
+                write_frame(&mut gateway, &answer("the plan", None)).unwrap();
+            }
+            let frame: Frame<Request> = read_frame(&mut gateway).unwrap();
+            let Request::Cancel { id: stopped } = frame.value else {
+                panic!("the caller stops the operation");
+            };
+            if !answers_first {
+                // A frame the provider produced before the stop arrived.
+                write_frame(&mut gateway, &answer("{}", Some(EVENT_TOOL_CALL))).unwrap();
+            }
+            write_frame(&mut gateway, &answer(&format!("cancelled:{stopped}"), None)).unwrap();
+            assert_eq!(stopped, id);
+            while let Ok(frame) = read_frame::<Frame<Request>>(&mut gateway) {
+                write_frame(&mut gateway, &answer(&echoed(&frame.value), None)).unwrap();
+            }
+            stopped
+        })
+    }
+
+    /// Ask a stoppable turn that its caller gives up on at its first event,
+    /// then a one-shot call on the same channel.
+    fn give_up_then_call() -> (Result<String, ClientError>, Result<String, ClientError>) {
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let mut events = 0_usize;
+        let plan = streaming_request(
+            streamed_turn(),
+            false,
+            &mut |_, _| {
+                events = events.saturating_add(1);
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                // Long enough for the watcher to see it before the answer
+                // is read.
+                std::thread::sleep(Duration::from_millis(300));
+            },
+            Some(&|| stop.load(std::sync::atomic::Ordering::Relaxed)),
+        );
+        assert_eq!(events, 1, "nothing after the stop reaches the caller");
+        (plan, one_shot(9))
+    }
+
+    /// A one-shot call on the launcher channel, carrying `id`: the fake gateways answer it
+    /// with that id ([`echoed`]).
+    fn one_shot(id: u64) -> Result<String, ClientError> {
+        request(Request::Trace {
+            trace: PlanTrace { id, turn: 0 },
+            event: TraceEvent::ActionSubmitted,
+            at_unix_ms: None,
+        })
+        .map(|answered| answered.output.unwrap_or_default())
+    }
+
+    /// What a fake gateway answers a one-shot call with: the id it carried.
+    fn echoed(asked: &Request) -> String {
+        let Request::Trace { trace, .. } = asked else {
+            panic!("only one-shot calls follow the stream");
+        };
+        trace.id.to_string()
+    }
+}
+
+#[cfg(test)]
+#[cfg(not(unix))]
+mod unsupported_platform_tests {
+    use super::*;
+
+    #[test]
+    fn photos_and_secret_operations_require_a_supported_gateway_capability() {
+        assert!(!available());
+        assert!(matches!(
+            analyze_image(
+                "local",
+                "vision",
+                VisionImage {
+                    media_type: "image/png".into(),
+                    data_base64: String::new(),
+                    source_content_hash: String::new(),
+                }
+            ),
+            Err(ClientError::Unavailable)
+        ));
+        assert!(matches!(
+            cluster_faces("local", "faces", Vec::new()),
+            Err(ClientError::Unavailable)
+        ));
+        assert!(matches!(
+            plan(
+                "hosted",
+                "model",
+                serde_json::Value::Null,
+                Duration::from_secs(1)
+            ),
+            Err(ClientError::Unavailable)
+        ));
+    }
+}
+
+#[cfg(test)]
+mod local_model_tests {
+    use super::*;
+
+    #[test]
+    fn local_vision_requires_an_immutable_model_revision() {
+        assert!(is_pinned_revision(&"a".repeat(40)));
+        assert!(is_pinned_revision(&"b".repeat(64)));
+        assert!(!is_pinned_revision("main"));
+        assert!(!is_pinned_revision(&"A".repeat(40)));
+        assert!(!is_pinned_revision(&"g".repeat(40)));
+    }
 }

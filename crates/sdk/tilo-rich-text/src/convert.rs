@@ -393,3 +393,224 @@ pub(crate) fn mark_runs(want: &MarkRuns, have: &MarkRuns) -> Vec<MarkEdit> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_doc::document::MarkSpan as DocMark;
+    use tilo_doc::document::MarkValue;
+    use ui::rich_edit::CalloutKind;
+    use ui::widget::marks::MarkSpan;
+
+    fn view(kind: &str, text: &str, attrs: &[(&str, tilo_doc::AttrVal)]) -> BlockView {
+        BlockView {
+            id: "b".into(),
+            kind: kind.into(),
+            text: text.into(),
+            marks: Vec::new(),
+            attrs: attrs
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), value.clone()))
+                .collect(),
+            children: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn kinds_round_trip_through_their_stored_form() {
+        let cases = [
+            view("paragraph", "", &[]),
+            view("heading", "", &[("level", tilo_doc::AttrVal::Int(2))]),
+            view("quote", "", &[]),
+            view(
+                "quote",
+                "",
+                &[(CALLOUT, tilo_doc::AttrVal::Str("warning".into()))],
+            ),
+            view(
+                "list_item",
+                "",
+                &[
+                    ("ordered", tilo_doc::AttrVal::Bool(true)),
+                    ("level", tilo_doc::AttrVal::Int(1)),
+                ],
+            ),
+            view(
+                "list_item",
+                "",
+                &[
+                    ("ordered", tilo_doc::AttrVal::Bool(false)),
+                    ("level", tilo_doc::AttrVal::Int(0)),
+                    ("checked", tilo_doc::AttrVal::Bool(true)),
+                ],
+            ),
+            view(
+                "paragraph",
+                "",
+                &[
+                    ("code", tilo_doc::AttrVal::Bool(true)),
+                    ("lang", tilo_doc::AttrVal::Str("rust".into())),
+                ],
+            ),
+        ];
+        assert_eq!(
+            content_of(&cases[3]).kind,
+            BlockKind::Callout(CalloutKind::Warning),
+            "a quote with an alert is that callout"
+        );
+        let plain = KindSpec::of(&content_of(&cases[2]));
+        assert!(plain.same_style(&cases[3]));
+        assert_eq!(plain.attr_changes(&cases[3]), [(CALLOUT, None)]);
+        for case in cases {
+            let content = content_of(&case);
+            let spec = KindSpec::of(&content);
+            assert!(spec.same_style(&case), "{case:?} as {content:?}");
+            assert!(
+                spec.attr_changes(&case).is_empty(),
+                "{case:?}: {:?}",
+                spec.attr_changes(&case)
+            );
+        }
+    }
+
+    /// A block converted to what an action carries is the block a document
+    /// holding it reads back: its kind, attributes, text and marks.
+    #[test]
+    fn a_block_carried_is_the_block_a_document_reads_back() {
+        use ui::automerge::{ROOT, transaction::Transactable};
+        let mut marked = BlockContent::paragraph("p", "héllo wörld again");
+        marked.marks = vec![
+            MarkSpan::new(0..3, Mark::Bold),
+            MarkSpan::new(3..6, Mark::Bold),
+            MarkSpan::new(2..9, Mark::Italic),
+            MarkSpan::new(0..7, Mark::ExternalLink("https://a.example".into())),
+            MarkSpan::new(4..13, Mark::ExternalLink("https://b.example".into())),
+        ];
+        marked.authors = vec![
+            (0..7, "ada".into()),
+            (7..13, "ada".into()),
+            (13..19, "bob".into()),
+        ];
+        let mut heading = BlockContent::paragraph("h", "Title");
+        heading.kind = BlockKind::Heading(2);
+        let mut task = BlockContent::paragraph("t", "done thing");
+        task.kind = BlockKind::Checklist {
+            indent: 1,
+            done: true,
+        };
+        let mut code = BlockContent::paragraph("c", "let a = 1;");
+        code.kind = BlockKind::CodeBlock {
+            lang: Some("rust".into()),
+        };
+        code.code_group = Some("g".into());
+        for content in [
+            marked,
+            heading,
+            task,
+            code,
+            BlockContent::paragraph("e", ""),
+        ] {
+            let mut doc = ui::automerge::AutoCommit::new();
+            let root = doc
+                .batch_create_object(ROOT, "clip", &tilo_doc::model::schema(), false)
+                .unwrap();
+            tilo_document::RichText::initialize_under(&mut doc, &root).unwrap();
+            crate::fill_under(&mut doc, &root, std::slice::from_ref(&content)).unwrap();
+            let containers = tilo_doc::model::open(&doc, &root).unwrap();
+            let read = tilo_doc::model::materialize_region(
+                &doc,
+                &containers,
+                tilo_doc::model::Region::Body,
+            );
+            let mut want = clip_block(&read[0]);
+            let mut got = clip_of_content(&content);
+            for clip in [&mut want, &mut got] {
+                clip.marks
+                    .sort_by(|a, b| (a.start, &a.name).cmp(&(b.start, &b.name)));
+            }
+            assert_eq!(got, want, "{content:?}");
+        }
+    }
+
+    #[test]
+    fn marks_convert_between_characters_and_bytes() {
+        let mut paragraph = view("paragraph", "héllo wörld", &[]);
+        paragraph.marks.push(DocMark {
+            start: 6,
+            end: 11,
+            name: "strong".into(),
+            value: MarkValue::Bool(true),
+        });
+        paragraph.marks.push(DocMark {
+            start: 0,
+            end: 5,
+            name: "color".into(),
+            value: MarkValue::Str("#ff0000".into()),
+        });
+        let content = content_of(&paragraph);
+        assert_eq!(
+            content.marks,
+            [
+                MarkSpan::new(0..6, Mark::Color([255, 0, 0])),
+                MarkSpan::new(7..13, Mark::Bold)
+            ],
+            "each mark covers the bytes of its characters"
+        );
+        assert_eq!(editor_runs(&content), document_runs(&paragraph));
+    }
+
+    #[test]
+    fn differences_are_runs_to_set_or_clear() {
+        let mut want = empty_runs(6);
+        let mut have = empty_runs(6);
+        cover(&mut want, "strong", &MarkVal::Bool(true), 0, 3);
+        cover(&mut have, "strong", &MarkVal::Bool(true), 2, 6);
+        let runs = mark_runs(&want, &have);
+        assert_eq!(
+            runs,
+            [
+                ("strong", Some(MarkVal::Bool(true)), vec![(0, 2)]),
+                ("strong", None, vec![(3, 6)]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_serif_family_the_editor_cannot_show_is_left_alone() {
+        let mut paragraph = view("paragraph", "abc", &[]);
+        paragraph.marks.push(DocMark {
+            start: 0,
+            end: 3,
+            name: "fontFamily".into(),
+            value: MarkValue::Str("serif".into()),
+        });
+        let content = content_of(&paragraph);
+        assert!(mark_runs(&editor_runs(&content), &document_runs(&paragraph)).is_empty());
+    }
+
+    #[test]
+    fn a_link_to_a_resource_reads_as_one_and_stays_a_link() {
+        let href = "tilo://open#/me/so.tilo.calendar/-/calendar.event:e-1";
+        assert_eq!(
+            editor_mark("link", &MarkValue::Str(href.into())),
+            Some(Mark::ResourceLink(href.into())),
+            "the editor shows the resource an address names"
+        );
+        assert_eq!(
+            document_mark(&Mark::ResourceLink(href.into())),
+            ("link", MarkVal::Str(href.into())),
+            "the document keeps the link, which a reader without this editor opens"
+        );
+        assert_eq!(
+            editor_mark("link", &MarkValue::Str("https://example.test".into())),
+            Some(Mark::ExternalLink("https://example.test".into())),
+            "a web address stays a web link"
+        );
+        assert!(is_resource_link(href));
+        assert!(!is_resource_link("https://example.test"));
+        assert!(
+            !is_resource_link(RESOURCE_LINK_SCHEME),
+            "a bare scheme names nothing"
+        );
+    }
+}

@@ -1480,6 +1480,11 @@ impl RootModel for ResourceRoot {
         &self.save
     }
 
+    #[cfg(test)]
+    fn save_indicator_mut(&mut self) -> &mut super::saves::SaveIndicator {
+        &mut self.save
+    }
+
     // A screenshot harness reaches the root to stage a scenario's view state
     // (`framework::stage`).
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
@@ -2671,6 +2676,13 @@ impl RootApp for ResourceRoot {
     }
 }
 
+#[cfg(test)]
+mod index_entry_tests;
+
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod search_tests;
+
 /// What a window shows instead of the app's view while its record does not
 /// read as the resource: what happened and what to do, in the person's
 /// words, with the reason the record was refused (a path and a missing
@@ -2681,3 +2693,6 @@ fn unreadable_state(reason: &str) -> ui_core::widget::EmptyState {
         .with_message(ui_core::i18n::widget_text("framework-unreadable-hint"))
         .with_details(reason)
 }
+
+#[cfg(test)]
+mod tests;

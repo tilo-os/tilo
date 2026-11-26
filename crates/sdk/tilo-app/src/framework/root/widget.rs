@@ -50,6 +50,9 @@ pub(crate) trait RootModel:
     /// When the window stops waiting for the documents its app declared, unless they open
     /// first: nothing else wakes a window whose workspace sends nothing meanwhile.
     fn gives_up_at(&self) -> Option<ui_core::time::Instant>;
+    /// The save status, for a test to move its clock.
+    #[cfg(test)]
+    fn save_indicator_mut(&mut self) -> &mut crate::framework::saves::SaveIndicator;
     fn resource_operation_handlers(&self) -> HashSet<String>;
     fn poll_resource_operation(
         &mut self,

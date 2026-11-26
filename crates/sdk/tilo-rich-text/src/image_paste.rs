@@ -153,3 +153,238 @@ fn slice(view: &tilo_doc::snapshot::BlockView, range: std::ops::Range<usize>) ->
     });
     clip
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_document::{
+        RichText,
+        action::{MarkVal, Span},
+    };
+    use ui::automerge::{AutoCommit, ROOT};
+
+    fn state(doc: &AutoCommit) -> RichTextState {
+        crate::source::FieldState::read_only(doc, ROOT, 0)
+            .unwrap()
+            .state
+    }
+
+    fn fixture() -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        RichText::initialize_under(&mut doc, &ROOT).unwrap();
+        RichTextAction::ReplaceBody {
+            markdown: "Ä😀\n\n日本\n\nAfter".into(),
+        }
+        .apply_under(&mut doc, &ROOT)
+        .unwrap();
+        doc
+    }
+
+    fn selection(state: &RichTextState) -> ImagePasteTarget {
+        ImagePasteTarget::Replace {
+            blocks: state.blocks(0..2).map(|block| content_of(block)).collect(),
+            start_byte: "Ä".len(),
+            end_byte: "日".len(),
+        }
+    }
+
+    #[test]
+    fn partial_paste_keeps_canonical_links_unknown_marks_and_authors() {
+        let mut doc = fixture();
+        let before = state(&doc);
+        let spans = before
+            .blocks(0..2)
+            .map(|block| Span {
+                block: block.id.clone(),
+                start: 0,
+                end: 2,
+            })
+            .collect::<Vec<_>>();
+        for (name, value) in [
+            ("link", MarkVal::Str("https://example.com".into())),
+            ("custom_annotation", MarkVal::Str("keep".into())),
+            ("author", MarkVal::Str("peer".into())),
+        ] {
+            RichTextAction::SetMark {
+                region: RegionKind::Body,
+                spans: spans.clone(),
+                name: name.into(),
+                value: Some(value),
+                also_clear: vec![],
+            }
+            .apply_under(&mut doc, &ROOT)
+            .unwrap();
+        }
+        let before = state(&doc);
+        let edit = plan(
+            &before,
+            &selection(&before),
+            "![Image](asset:synthetic)".into(),
+        )
+        .unwrap();
+        edit.apply_under(&mut doc, &ROOT).unwrap();
+        let after = state(&doc);
+        let blocks = after.blocks(0..4).collect::<Vec<_>>();
+        assert_eq!(
+            blocks.iter().map(|b| b.text.as_str()).collect::<Vec<_>>(),
+            ["Ä", "![Image](asset:synthetic)", "本", "After"]
+        );
+        for block in [blocks[0], blocks[2]] {
+            for name in ["link", "custom_annotation", "author"] {
+                assert!(
+                    block
+                        .marks
+                        .iter()
+                        .any(|mark| mark.name == name && mark.start == 0 && mark.end == 1),
+                    "missing {name}: {:?}",
+                    block.marks
+                );
+            }
+        }
+        assert_eq!(blocks[3], before.blocks(2..3).next().unwrap());
+    }
+
+    /// A picture pasted at the caret goes after the caret's line, which keeps
+    /// its marks, and is followed by an empty line for the caret; one pasted
+    /// on an empty line fills that line instead of leaving it above.
+    #[test]
+    fn a_picture_pasted_at_the_caret_is_followed_by_a_line_for_the_caret() {
+        let mut doc = fixture();
+        let before = state(&doc);
+        let first = before.blocks(0..1).next().unwrap().id.clone();
+        RichTextAction::SetMark {
+            region: RegionKind::Body,
+            spans: vec![Span {
+                block: first.clone(),
+                start: 0,
+                end: 2,
+            }],
+            name: "author".into(),
+            value: Some(MarkVal::Str("peer".into())),
+            also_clear: vec![],
+        }
+        .apply_under(&mut doc, &ROOT)
+        .unwrap();
+        let before = state(&doc);
+        plan(
+            &before,
+            &ImagePasteTarget::After(first),
+            "![Image](asset:one)".into(),
+        )
+        .unwrap()
+        .apply_under(&mut doc, &ROOT)
+        .unwrap();
+        let after = state(&doc);
+        let blocks = after.blocks(0..after.body().len()).collect::<Vec<_>>();
+        assert_eq!(
+            blocks.iter().map(|b| b.text.as_str()).collect::<Vec<_>>(),
+            ["Ä😀", "![Image](asset:one)", "", "日本", "After"]
+        );
+        assert!(
+            blocks[0].marks.iter().any(|mark| mark.name == "author"),
+            "{:?}",
+            blocks[0].marks
+        );
+        let empty = blocks[2].id.clone();
+        plan(
+            &after,
+            &ImagePasteTarget::After(empty),
+            "![Image](asset:two)".into(),
+        )
+        .unwrap()
+        .apply_under(&mut doc, &ROOT)
+        .unwrap();
+        let again = state(&doc);
+        assert_eq!(
+            again
+                .blocks(0..again.body().len())
+                .map(|b| b.text.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Ä😀",
+                "![Image](asset:one)",
+                "![Image](asset:two)",
+                "",
+                "日本",
+                "After"
+            ]
+        );
+    }
+
+    #[test]
+    fn changed_or_interleaved_targets_refuse_without_mutation() {
+        for interleave in [false, true] {
+            let mut doc = fixture();
+            let before = state(&doc);
+            let target = selection(&before);
+            let first = before.blocks(0..1).next().unwrap().id.clone();
+            let edit = if interleave {
+                RichTextAction::InsertParagraph {
+                    after: first,
+                    text: "Peer".into(),
+                }
+            } else {
+                RichTextAction::SpliceText {
+                    region: RegionKind::Body,
+                    block: first,
+                    at: 0,
+                    del: 0,
+                    ins: "Peer".into(),
+                }
+            };
+            edit.apply_under(&mut doc, &ROOT).unwrap();
+            let heads = doc.get_heads();
+            assert!(plan(&state(&doc), &target, "![Image](asset:synthetic)".into()).is_none());
+            assert_eq!(doc.get_heads(), heads);
+        }
+    }
+
+    #[test]
+    fn incompatible_source_attributes_refuse_instead_of_downgrading() {
+        for (key, value) in [
+            ("code", ui::automerge::ScalarValue::Boolean(true)),
+            (
+                "table_source",
+                ui::automerge::ScalarValue::Str("| a |".into()),
+            ),
+            ("custom_float", ui::automerge::ScalarValue::F64(1.25)),
+        ] {
+            let mut doc = fixture();
+            let first = state(&doc).blocks(0..1).next().unwrap().id.clone();
+            // Imported canonical content can carry attributes outside the
+            // editor action allowlist; refusing must preserve those too.
+            let captured_after = ImagePasteTarget::After(first.clone());
+            RichTextAction::SpliceText {
+                region: RegionKind::Body,
+                block: first.clone(),
+                at: 0,
+                del: 2,
+                ins: String::new(),
+            }
+            .apply_under(&mut doc, &ROOT)
+            .unwrap();
+            let c = tilo_doc::model::open(&doc, &ROOT).unwrap();
+            let mut ids = tilo_doc::model::IdGen::new(doc.get_actor().to_hex_string());
+            tilo_doc::model::DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            }
+            .set_attr(&first, key, value);
+            let before = state(&doc);
+            let target = ImagePasteTarget::Replace {
+                blocks: before.blocks(0..2).map(|block| content_of(block)).collect(),
+                start_byte: 0,
+                end_byte: "日".len(),
+            };
+            assert!(
+                plan(&before, &captured_after, "![Image](asset:synthetic)".into()).is_none(),
+                "empty {key}"
+            );
+            assert!(
+                plan(&before, &target, "![Image](asset:synthetic)".into()).is_none(),
+                "{key}"
+            );
+        }
+    }
+}

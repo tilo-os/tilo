@@ -281,3 +281,7 @@ impl Transport for FdTransport {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "transport_fd_tests.rs"]
+mod tests;

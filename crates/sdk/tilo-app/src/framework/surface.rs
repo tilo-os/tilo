@@ -1184,3 +1184,28 @@ impl ui_core::widget::resources::PublishesResources for HostedSurface {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui_core::automerge::ROOT;
+    use ui_core::automerge::transaction::Transactable;
+
+    #[test]
+    fn what_a_surface_applied_through_actions_stays() {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "title", "applied").unwrap();
+        doc.commit();
+        let heads = doc.get_heads();
+        refuse_raw_writes(&doc, 0, "sync");
+        assert_eq!(doc.get_heads(), heads);
+    }
+
+    #[test]
+    #[should_panic(expected = "outside an action")]
+    fn a_surface_writing_around_its_dispatcher_is_stopped() {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "title", "raw").unwrap();
+        refuse_raw_writes(&doc, 0, "sync");
+    }
+}

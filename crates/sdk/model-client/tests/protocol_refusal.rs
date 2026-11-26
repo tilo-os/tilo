@@ -34,7 +34,7 @@ fn cancellation_envelope_keeps_rpc3_wire_format() {
     let wire = serde_json::to_string(&frame).unwrap();
     assert_eq!(
         wire,
-        r#"{"version":3,"verb":"cancellable","id":7,"request":{"verb":"get_provider_config"}}"#
+        r#"{"version":3,"verb":"cancellable","id":7,"request":{"verb":"list_models","profile_id":"local"}}"#
     );
     let decoded: Frame<Request> = serde_json::from_str(&wire).unwrap();
     assert!(

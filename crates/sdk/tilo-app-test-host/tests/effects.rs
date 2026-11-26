@@ -655,6 +655,30 @@ fn a_drive_of_a_scenario_runs_the_effects_it_invokes_and_starts_nothing_itself()
 tilo_test_env::scenario! {
     fn an_outbox_carries_out_what_was_queued_once;
 
+    phase history_renders_effect_controls_without_replaying_outside_consequences;
+    {
+        DELIVERED.with(|delivered| delivered.borrow_mut().clear());
+        let mut app = TestApp::<MailApp>::new().unwrap();
+        app.invoke(Mailbox::FETCHED.with("historical")).unwrap();
+        let version = app.versions().last().unwrap().hash;
+        app.invoke(Mailbox::SEND.with("delivered once")).unwrap();
+        app.settle();
+        let past = app.past_version(&[version]).unwrap();
+        assert_eq!(past.state().fetched, "historical");
+        let texts = past.texts();
+        assert!(texts.iter().any(|text| text == "Fetch"), "{texts:?}");
+        assert!(
+            texts.iter().any(|text| text == "Showing inbox"),
+            "{texts:?}"
+        );
+        assert_eq!(
+            DELIVERED.with(|delivered| delivered.borrow().clone()),
+            ["delivered once"],
+            "History must not replay an external drain"
+        );
+        assert_eq!(app.state().outbox.pending().count(), 0);
+    }
+
     phase an_outbox_carries_out_each_queued_entry_once;
     {
         DELIVERED.with(|delivered| delivered.borrow_mut().clear());
@@ -1192,6 +1216,53 @@ tilo_test_env::scenario! {
         assert!(app.effect(&CounterEffect::Count { by: 1 }).is_err());
     }
 
+    phase captures_publish_surface_effects_and_availability_without_running_handlers;
+    {
+        TALLY_EFFECT_CALLS.with(|calls| calls.set(0));
+        let mut live = TestApp::<TallyApp>::new().unwrap();
+        let mut capture = TestApp::<TallyApp>::capture(None).unwrap();
+        let live_surface = live.agent_surface();
+        let capture_surface = capture.agent_surface();
+        for id in ["count", "tally"] {
+            assert_eq!(effect(&capture_surface, id), effect(&live_surface, id));
+            assert!(
+                effect(&capture_surface, id).is_some(),
+                "capture must publish {id}"
+            );
+        }
+        assert_eq!(
+            effect(&capture_surface, "tally").unwrap()["label"],
+            "Tally (0)"
+        );
+        assert!(capture.effect(&TallyEffect::Tally).is_err());
+        assert!(
+            capture
+                .effect_on("row:5", &TallyEffect::Count { by: 5 })
+                .is_err()
+        );
+        capture.settle();
+        assert_eq!(
+            capture.surface::<Tally, _>(|surface| surface.counted),
+            Some(0)
+        );
+        assert_eq!(capture.state(), Mailbox::default());
+        assert!(capture.effect_progress().is_empty());
+        assert_eq!(TALLY_EFFECT_CALLS.with(std::cell::Cell::get), 0);
+        assert_eq!(
+            live.effect(&TallyEffect::Tally).unwrap().value,
+            Some(serde_json::json!(1))
+        );
+        let head = live.versions().last().unwrap().hash;
+        let past = live.past_version(&[head]).unwrap();
+        assert_eq!(past.state().fetched, "tally 1");
+        assert_eq!(
+            TALLY_EFFECT_CALLS.with(std::cell::Cell::get),
+            1,
+            "History must not replay outside effects"
+        );
+        assert_eq!(live.surface::<Tally, _>(|surface| surface.counted), Some(1));
+    }
+
     phase a_surface_answers_its_effects_and_completes_them_with_its_own_state;
     {
         let mut app = TestApp::<TallyApp>::new().unwrap();
@@ -1700,6 +1771,102 @@ tilo_test_env::scenario! {
         assert!(capture.state().outbox.is_empty());
     }
 
+    phase an_attended_effect_is_published_as_attended;
+    {
+        let attended = |id: &str| {
+            let decl = DeviceEffect::declarations()
+                .into_iter()
+                .find(|decl| decl.id == id)
+                .unwrap();
+            let spec = decl.spec::<DeviceEffect>("test.mailbox.device");
+            assert_eq!(decl.attended, spec.contract.is_attended(), "{id}");
+            assert_eq!(
+                spec.contract.kind,
+                tilo_app::tilo_actions::ActionKind::Outside
+            );
+            decl.attended
+        };
+        assert!(attended("choose-folder"));
+        assert!(
+            !attended("empty-local-folder"),
+            "an ordinary outside effect is decided by its kind alone"
+        );
+    }
+
+    phase a_launch_invokes_a_view_effect_even_for_a_viewer;
+    // A launch that shows something invokes a view effect through the same
+    // API as a control: a viewer, who may not edit, still gets the folder it
+    // opened, while an effect that needs write access is refused to them.
+    {
+        let shown = |app: &mut TestApp<FolderApp>| app.harness().inspection_json().unwrap();
+
+        let mut viewer = TestApp::<FolderApp>::with_role(tilo_app::Role::Viewer)
+            .unwrap()
+            .relaunch(&["sent"])
+            .unwrap();
+        viewer.settle();
+        let seen = shown(&mut viewer);
+        assert!(seen.contains("Showing sent"), "{seen}");
+        assert!(!seen.contains("Refused"), "{seen}");
+
+        let mut fetcher = TestApp::<FolderApp>::with_role(tilo_app::Role::Viewer)
+            .unwrap()
+            .relaunch(&["fetch"])
+            .unwrap();
+        fetcher.settle();
+        assert_eq!(
+            fetcher.state().fetched,
+            "",
+            "a viewer's launch fetches nothing"
+        );
+    }
+
+    phase confirmation_follows_the_arguments_and_a_view_withholds_an_action;
+    {
+        let mut app = TestApp::<DiskApp>::new().unwrap();
+        app.effect(&DiskEffect::Erase { disk: "usb".into() })
+            .expect("erasing a stick needs no confirmation");
+        let unconfirmed = app.effect(&DiskEffect::Erase {
+            disk: "system".into(),
+        });
+        assert!(unconfirmed.is_err(), "the system disk asks first");
+        app.effect_confirmed(&DiskEffect::Erase {
+            disk: "system".into(),
+        })
+        .expect("confirmed, it runs");
+        app.settle();
+        assert_eq!(app.state().fetched, "erased system");
+
+        let refused = app
+            .invoke(Mailbox::SEND.with("hello"))
+            .expect_err("sending is unavailable while recording");
+        assert!(format!("{refused:?}").contains("recording"), "{refused:?}");
+        assert!(app.state().outbox.is_empty());
+    }
+
+    phase background_effect_return_values_keep_their_declared_result_contract;
+    {
+        use tilo_resource::Effect as _;
+        let export = FileEffect::Export.bound().contract.clone();
+        assert!(matches!(
+            export.execution,
+            tilo_actions::ExecutionMode::Background { cancellable: false }
+        ));
+        assert!(export.validate_declaration().is_empty());
+        let output = tilo_actions::ActionOutput {
+            value: Some(serde_json::json!({ "file": "exported.eml" })),
+            resources: Vec::new(),
+        };
+        export.result.validate(&output).unwrap();
+        let import = FileEffect::Import.bound().contract.clone();
+        assert!(import.validate_declaration().is_empty());
+        assert!(import.result.validate(&output).is_err());
+        import
+            .result
+            .validate(&tilo_actions::ActionOutput::default())
+            .unwrap();
+    }
+
     phase only_verbs_that_queue_are_published_as_jobs;
     // Only a verb that queues an outside consequence answers as a job; every
     // other document action applies where it is invoked, at once, so a host
@@ -1875,6 +2042,30 @@ pub enum DeviceEffect {
     EmptyLocalFolder,
 }
 
+/// The mailbox, opened on a folder: `mailbox sent` shows the sent folder.
+struct FolderApp;
+
+impl ResourceApp for FolderApp {
+    type Resource = Mailbox;
+    const ID: &'static str = "so.tilo.test-folder";
+    const TITLE: &'static str = "Folder";
+    const ARGUMENTS: usize = 1;
+
+    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+        MailApp::view(cx)
+    }
+
+    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Mailbox>> {
+        match input.argument() {
+            Some("sent") => vec![Invoke::effect(&MailEffect::ShowSent)],
+            Some("fetch") => vec![Invoke::effect(&MailEffect::Fetch {
+                from: "a launch".into(),
+            })],
+            _ => Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "test.mailbox.disks", catalogue = "tests/locales")]
 pub enum DiskEffect {
@@ -1891,5 +2082,32 @@ fn erase_risk(effect: &DiskEffect) -> tilo_app::tilo_actions::RiskLevel {
         tilo_app::tilo_actions::RiskLevel::Destructive
     } else {
         tilo_app::tilo_actions::RiskLevel::Low
+    }
+}
+
+struct DiskApp;
+
+impl ResourceApp for DiskApp {
+    type Resource = Mailbox;
+    const ID: &'static str = "so.tilo.test-disks";
+    const TITLE: &'static str = "Disks";
+
+    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+        cx.effects(|effect: DiskEffect, cx| {
+            let DiskEffect::Erase { disk } = effect;
+            cx.submit(Mailbox::FETCHED.with(format!("erased {disk}")));
+            Ok(Effected::done())
+        });
+        // Recording right now, so sending is not available.
+        cx.publishing(
+            tilo_app::framework::Publishes::new().availability(|| {
+                vec![EffectStatus::unavailable(
+                    Mailbox::SEND,
+                    "recording",
+                    "Nothing is sent while recording",
+                )]
+            }),
+            Box::new(Tally::default()),
+        )
     }
 }

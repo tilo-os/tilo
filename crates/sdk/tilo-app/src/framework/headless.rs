@@ -2964,3 +2964,5 @@ fn published_here(resource: &mut tilo_actions::ResourceSpec) {
 }
 
 // Retained results come from the real framework semantic API.
+#[cfg(test)]
+mod results_tests;
