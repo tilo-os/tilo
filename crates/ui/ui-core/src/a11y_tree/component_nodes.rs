@@ -488,7 +488,7 @@ fn bind_actions(
         bound_actions.insert(
             (id.clone(), spec.id.clone()),
             BoundActionTarget {
-                input: crate::bound_dispatch::Input::Discrete,
+                input: crate::widget::input_provenance::Input::Discrete,
                 binding: binding.clone(),
                 address: BoundActionAddress {
                     instance_id: binding.instance_id,

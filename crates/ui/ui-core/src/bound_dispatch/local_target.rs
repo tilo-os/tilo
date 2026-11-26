@@ -273,7 +273,7 @@ pub(crate) fn select_local_target(
             // Hidden claims still count: they can never donate fallback.
             let binding = snapshot.owner;
             target = LocalResourceTarget::Component(BoundActionTarget {
-                input: crate::bound_dispatch::Input::Discrete,
+                input: crate::widget::input_provenance::Input::Discrete,
                 address: BoundActionAddress {
                     instance_id: binding.instance_id,
                     address: address.clone(),

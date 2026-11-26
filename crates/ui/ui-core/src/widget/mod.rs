@@ -9,6 +9,7 @@ pub use contract::{
 mod action_directory_identity;
 pub mod bound_nodes;
 pub mod component_walk;
+pub(crate) mod input_provenance;
 pub mod undo_points;
 mod wheel;
 pub use wheel::{PhaselessWheel, WHEEL_GESTURE_GAP, line_of_wheel, sideways_travel};

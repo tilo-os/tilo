@@ -37,7 +37,7 @@ impl Origin {
 /// Say, while the host drains it, who asked for the invocation a queue is handing over (see
 /// [`Origin`]).
 pub fn note_drained_origin(origin: Origin) {
-    crate::bound_dispatch::note_drained_origin(origin);
+    crate::widget::input_provenance::note_drained_origin(origin);
 }
 
 /// A control intent and the effect invocation it continues, when an effect's handler or completion

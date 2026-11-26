@@ -1,8 +1,9 @@
 //! Control dispatch: what the app does with the control intents its tree queued, written once.
 
 use crate::bound_dispatch::local_target::LocalResourceTarget;
-use crate::bound_dispatch::{BoundActionTarget, ControlContinuationArguments, Origin};
+use crate::bound_dispatch::{BoundActionTarget, ControlContinuationArguments};
 use crate::widget::ResourceOperationStart;
+use crate::widget::controls::Origin;
 use tilo_actions::{ActionAddress, ApiError, ControlInvocation, InvocationId};
 
 use super::ResourceInvocation;
@@ -344,7 +345,9 @@ impl crate::app::App {
         while let Some((intent, on_behalf_of, origin)) = outer
             .pop_front()
             .map(|intent| (intent, None, Origin::Person))
-            .or_else(|| crate::bound_dispatch::take_attributed_with_origin(self.host_root_mut()))
+            .or_else(|| {
+                crate::widget::input_provenance::take_attributed_with_origin(self.host_root_mut())
+            })
         {
             delivered = delivered.saturating_add(1);
             if self.dispatch_outer_control_invocation(intent, on_behalf_of, origin, None) {

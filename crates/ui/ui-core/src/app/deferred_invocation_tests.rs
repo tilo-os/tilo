@@ -153,7 +153,7 @@ fn check_deferred_bound_view_actor(foreign: bool, typed_empty: bool) {
     let (root, guard) = owned(widget);
     let binding = &guard.binding;
     let target = crate::bound_dispatch::BoundActionTarget {
-        input: crate::bound_dispatch::Input::Discrete,
+        input: crate::widget::input_provenance::Input::Discrete,
         binding: binding.clone(),
         address: crate::bound_dispatch::BoundActionAddress {
             instance_id: binding.instance_id,

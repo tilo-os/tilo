@@ -750,14 +750,14 @@ impl Slider {
         if let Some(action) = &mut self.action {
             if !(self.settles && self.is_dragging) {
                 let input = if !self.is_dragging {
-                    crate::bound_dispatch::Input::Discrete
+                    crate::widget::input_provenance::Input::Discrete
                 } else if std::mem::replace(&mut self.gesture, true) {
-                    crate::bound_dispatch::Input::Continuing
+                    crate::widget::input_provenance::Input::Continuing
                 } else {
-                    crate::bound_dispatch::Input::Starting
+                    crate::widget::input_provenance::Input::Starting
                 };
                 let value = self.value;
-                let _ = crate::bound_dispatch::with_input(input, || action.emit(value));
+                let _ = crate::widget::input_provenance::with_input(input, || action.emit(value));
             } else if let Some(binding) = self
                 .binding
                 .as_mut()

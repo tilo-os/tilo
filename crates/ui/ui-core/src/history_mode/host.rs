@@ -818,7 +818,7 @@ impl HistoryHost {
                 Some(binding) => {
                     let origin = super::pending_controls::PendingControlOrigin::Component(
                         crate::bound_dispatch::BoundActionTarget {
-                            input: crate::bound_dispatch::Input::Discrete,
+                            input: crate::widget::input_provenance::Input::Discrete,
                             binding: binding.clone(),
                             address: crate::bound_dispatch::BoundActionAddress {
                                 instance_id: binding.instance_id,

@@ -1371,7 +1371,7 @@ impl ActionPalette {
                         || RowResolution::Address(address.clone()),
                         |binding| {
                             RowResolution::Bound(crate::bound_dispatch::BoundActionTarget {
-                                input: crate::bound_dispatch::Input::Discrete,
+                                input: crate::widget::input_provenance::Input::Discrete,
                                 binding: (*binding).clone(),
                                 address: crate::bound_dispatch::BoundActionAddress {
                                     instance_id: binding.instance_id,
@@ -1994,7 +1994,7 @@ impl ActionPalette {
                     // window publish it.
                     let row = fa.row();
                     let target = crate::bound_dispatch::BoundActionTarget {
-                        input: crate::bound_dispatch::Input::Discrete,
+                        input: crate::widget::input_provenance::Input::Discrete,
                         binding: snapshot.binding.clone(),
                         address: crate::bound_dispatch::BoundActionAddress {
                             instance_id: snapshot.binding.instance_id,

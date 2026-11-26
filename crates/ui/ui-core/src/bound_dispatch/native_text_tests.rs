@@ -323,6 +323,6 @@ tilo_test_env::scenario! {
         assert_eq!(marked, Input::Continuing);
         assert_eq!(unmarked, Input::Discrete);
         assert_eq!(physical, programmatic);
-        assert_eq!(super::input_provenance::drained_input(), Input::Discrete);
+        assert_eq!(crate::widget::input_provenance::drained_input(), Input::Discrete);
     }
 }

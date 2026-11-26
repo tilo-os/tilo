@@ -93,7 +93,7 @@ impl ControlOwner {
             #[cfg(feature = "model")]
             Self::Component(binding) => {
                 PendingControlOrigin::Component(crate::bound_dispatch::BoundActionTarget {
-                    input: crate::bound_dispatch::Input::Discrete,
+                    input: crate::widget::input_provenance::Input::Discrete,
                     binding: binding.clone(),
                     address: crate::bound_dispatch::BoundActionAddress {
                         instance_id: binding.instance_id,
@@ -114,7 +114,7 @@ struct Producer {
     pending: VecDeque<(
         ControlRequestId,
         ControlInvocation,
-        crate::bound_dispatch::Input,
+        crate::widget::input_provenance::Input,
     )>,
 }
 /// A retained producer does not keep its owner, registry or widget alive.
@@ -464,7 +464,7 @@ impl ControlOutbox {
         }
         producer
             .pending
-            .push_back((id, invocation, crate::bound_dispatch::input()));
+            .push_back((id, invocation, crate::widget::input_provenance::input()));
         Ok(LocalEmission::Queued(id))
     }
     pub fn replace(&self, invocation: ControlInvocation) -> Result<LocalEmission, EmitError> {
@@ -597,7 +597,7 @@ impl ControlHolder {
             .pending
             .pop_front()
             .map(|(_, invocation, physical_text)| {
-                crate::bound_dispatch::note_drained_input(physical_text);
+                crate::widget::input_provenance::note_drained_input(physical_text);
                 invocation
             })
     }

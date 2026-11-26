@@ -103,18 +103,17 @@ mod action_part;
 #[cfg(feature = "model")]
 pub(crate) use action_part::ToolkitPart;
 
-mod input_provenance;
-#[cfg(test)]
-pub(crate) use input_provenance::physical_text;
 #[cfg(feature = "model")]
-pub(crate) use input_provenance::take_attributed_with_origin;
-pub(crate) use input_provenance::{
-    Input, input, note_drained_input, note_drained_origin, with_input, with_physical_text,
+use crate::widget::input_provenance::Input;
+#[cfg(feature = "model")]
+use crate::widget::input_provenance::{
+    capture_physical_drain, native_text_input, with_native_text,
 };
-#[cfg(feature = "model")]
-use input_provenance::{capture_physical_drain, native_text_input, with_native_text};
+#[cfg(test)]
+use crate::widget::input_provenance::{physical_text, with_physical_text};
 
-pub(crate) use crate::widget::controls::Origin;
+#[cfg(feature = "model")]
+use crate::widget::controls::Origin;
 
 #[cfg(feature = "model")]
 /// Runtime destination; the domain address remains independent of UI instances.

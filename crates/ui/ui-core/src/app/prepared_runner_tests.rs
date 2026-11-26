@@ -396,7 +396,7 @@ fn assert_saved_body(
 
 fn edit_bound_resource(app: &mut App, binding: &crate::bound_dispatch::CallbackBinding) {
     let target = crate::bound_dispatch::BoundActionTarget {
-        input: crate::bound_dispatch::Input::Discrete,
+        input: crate::widget::input_provenance::Input::Discrete,
         binding: binding.clone(),
         address: crate::bound_dispatch::BoundActionAddress {
             instance_id: binding.instance_id,

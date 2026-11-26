@@ -1,6 +1,6 @@
 //! Where a control invocation came from: the person's input kind and origin, carried as thread-scoped
 //! provenance from the producer through the queue that drains it to the execution that records it.
-use super::Origin;
+use super::controls::Origin;
 #[cfg(feature = "model")]
 use crate::widget::Widget;
 use std::cell::Cell;
@@ -108,7 +108,7 @@ pub(crate) fn take_attributed_with_origin(
 }
 
 #[cfg(feature = "model")]
-pub(super) fn capture_physical_drain<T>(run: impl FnOnce() -> T) -> (T, Input, Origin) {
+pub(crate) fn capture_physical_drain<T>(run: impl FnOnce() -> T) -> (T, Input, Origin) {
     let _scope = DrainTextScope(DRAINED_INPUT.with(|flag| flag.replace(Input::Discrete)));
     let _origin = DrainOriginScope(DRAINED_ORIGIN.with(|flag| flag.replace(Origin::Person)));
     let result = run();
@@ -129,7 +129,7 @@ impl Drop for NativeTextScope {
 }
 
 #[cfg(feature = "model")]
-pub(super) fn with_native_text<T>(input: Input, run: impl FnOnce() -> T) -> T {
+pub(crate) fn with_native_text<T>(input: Input, run: impl FnOnce() -> T) -> T {
     let _scope = NativeTextScope(NATIVE_TEXT_EXECUTION.with(|flag| flag.replace(input)));
     run()
 }
@@ -137,12 +137,12 @@ pub(super) fn with_native_text<T>(input: Input, run: impl FnOnce() -> T) -> T {
 #[cfg(feature = "model")]
 /// The provenance of the native text execution running on this thread: [`Input::Discrete`] outside
 /// [`with_native_text`].
-pub(super) fn native_text_input() -> Input {
+pub(crate) fn native_text_input() -> Input {
     NATIVE_TEXT_EXECUTION.with(Cell::get)
 }
 
 /// The input kind the last drain on this thread recorded, outside any drain.
 #[cfg(test)]
-pub(super) fn drained_input() -> Input {
+pub(crate) fn drained_input() -> Input {
     DRAINED_INPUT.with(Cell::get)
 }

@@ -1004,7 +1004,7 @@ impl ActionFixture {
     fn target(&self, index: usize, action: &str) -> crate::bound_dispatch::BoundActionTarget {
         let binding = self.bindings[index].clone();
         crate::bound_dispatch::BoundActionTarget {
-            input: crate::bound_dispatch::Input::Discrete,
+            input: crate::widget::input_provenance::Input::Discrete,
             address: crate::bound_dispatch::BoundActionAddress {
                 instance_id: binding.instance_id,
                 address: tilo_actions::ActionAddress::new("bound:probe", action),
