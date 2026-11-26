@@ -304,5 +304,9 @@ pub(super) async fn hold_person(
         } else {
             tracing::warn!(%error, "this device is not listed with its person's");
         }
+    } else if marking.is_some() {
+        // The device keeping the person's root also writes their list, from what this host knows
+        // of the workspaces they are in.
+        copies.list_known_for(&cert.user_public_key).await;
     }
 }

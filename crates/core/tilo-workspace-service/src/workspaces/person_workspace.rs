@@ -183,6 +183,27 @@ pub async fn apply_on<R: Resource>(
     .await
 }
 
+/// [`apply_on`] of several actions in one write of this device: the changes follow one another in
+/// one document, so a record they found is founded once, at one author's first number.
+///
+/// # Errors
+/// As [`apply`].
+pub async fn apply_actions_on<R: Resource>(
+    workspaces: &Workspaces,
+    workspace: &str,
+    resource: (&str, &str),
+    actions: Vec<Invoke<R>>,
+) -> Result<(), String> {
+    let cert = workspaces.device_cert().clone();
+    let (app, name) = resource;
+    Box::pin(
+        workspaces.author_record(workspace, (app, R::KIND, name), |doc| {
+            invoke_actions(doc, &cert, app, actions)
+        }),
+    )
+    .await
+}
+
 /// The kinds of the person's own records, of what a workspace's owner alone keeps of it, and of
 /// the records the system keeps for apps, declared under the apps that keep them, each from its
 /// type: every holder's store keeps them as the resources of those apps, founded and judged by
@@ -397,6 +418,31 @@ pub(super) fn invoke<R: Resource>(
     let applied = replica
         .apply(action)
         .map(drop)
+        .map_err(|error| error.to_string());
+    std::mem::swap(doc, replica.doc_mut());
+    applied
+}
+
+/// [`invoke`] of several actions, in one document: each change follows the one before it, so a
+/// record they found is founded once, at one author's first number.
+///
+/// # Errors
+/// An action was refused.
+fn invoke_actions<R: Resource>(
+    doc: &mut automerge::AutoCommit,
+    cert: &tilo_user_identity::DeviceCert,
+    app: &str,
+    actions: Vec<Invoke<R>>,
+) -> Result<(), String> {
+    let replica =
+        Replica::<R>::from_doc(std::mem::take(doc)).as_invoker(&hex::encode(cert.user_public_key));
+    let mut replica = replica.in_app(app, &app_label::<R>(app));
+    replica
+        .doc_mut()
+        .set_actor(automerge::ActorId::from(cert.device_public_key.to_vec()));
+    let applied = actions
+        .into_iter()
+        .try_for_each(|action| replica.apply(action).map(drop))
         .map_err(|error| error.to_string());
     std::mem::swap(doc, replica.doc_mut());
     applied

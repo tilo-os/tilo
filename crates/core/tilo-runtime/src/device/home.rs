@@ -27,6 +27,8 @@ pub(crate) struct Home {
     /// The device the ticket this computer logged in with made of it, while this daemon runs.
     entered: Option<Device>,
     found: Mutex<Option<Device>>,
+    /// Set once this device wrote the person's list from what it knows of their workspaces.
+    listed: tokio::sync::OnceCell<()>,
 }
 
 impl Home {
@@ -46,6 +48,7 @@ impl Home {
             cert,
             entered,
             found: Mutex::new(None),
+            listed: tokio::sync::OnceCell::new(),
         }
     }
 
@@ -62,7 +65,30 @@ impl Home {
             Some(entered) => entered.clone(),
             None => self.named().await?,
         };
-        Some(self.found.lock_recover().get_or_insert(found).clone())
+        let known = self.found.lock_recover().get_or_insert(found).clone();
+        self.list_here(&known).await;
+        Some(known)
+    }
+
+    /// Write the person's list of their workspaces here, once, when this device keeps their root
+    /// and so is the one that writes it: the workspace its login named, as the server keeps it,
+    /// and every workspace its copy records them in. A server that keeps their own workspace
+    /// cannot write the list, so their other devices would read none.
+    async fn list_here(&self, device: &Device) {
+        if !self.cert.capabilities.can_admit_devices || self.listed.set(()).is_err() {
+            return;
+        }
+        let copies = self.workspaces.copies();
+        let person = self.cert.user_public_key;
+        let name = device
+            .workspace_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty());
+        if let Some(name) = name {
+            copies.list_for(&person, &device.workspace, name).await;
+        }
+        copies.list_known_for(&person).await;
     }
 
     /// [`Self::get`] for a thread that does not drive the app runtime: it waits on the copy's
