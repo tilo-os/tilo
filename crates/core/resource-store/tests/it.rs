@@ -781,7 +781,6 @@ fn a_surface_declares_types_their_indexed_fields_and_what_nests_in_them() {
 // app declares.
 #[test]
 fn a_store_keeps_what_each_app_declares_its_actions_as() {
-    use tilo_actions::ActionKind;
     let mut store = tilo_resource_store::Store::new();
     store.declare(Schema::of_app("so.tilo.tasks", &tracker_surface())).unwrap();
     let notes: tilo_actions::surface::Surface = toml_like(serde_json::json!({
