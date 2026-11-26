@@ -1056,7 +1056,8 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         assert_eq!(
             crate::history_source::authors::actor_handle(&committed.actor_id().to_hex_string())
                 .as_deref(),
-            Some("agent:Scribe")
+            Some("agent:restricted/Scribe"),
+            "an agent's actor bytes name the person it acts for and the agent"
         );
         let context = committed
             .message()

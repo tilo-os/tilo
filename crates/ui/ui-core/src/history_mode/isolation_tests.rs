@@ -484,7 +484,7 @@ fn retained_phrase_confirmation_requires_fresh_visible_input_and_preserves_argum
         bracket: Rc::new(RefCell::new(None)),
         undo_request: Rc::new(Cell::new(None)),
         active: None,
-        manual,
+        manual: manual.clone(),
         confirmation: tilo_actions::ConfirmationPolicy::Phrase {
             phrase: "ERASE phrase-owner".into(),
         },
@@ -501,66 +501,85 @@ fn retained_phrase_confirmation_requires_fresh_visible_input_and_preserves_argum
     driver.click_named("history-open").unwrap();
     assert_eq!(driver.pending_history_controls().len(), 1);
     driver.click_named("history-open").unwrap();
+    // The device is there for the press that asks, after History returned: a
+    // peer from the first frame would have run the live control instead.
+    driver.connect_peer();
+    driver.relayout();
     assert_eq!(starts.get(), 0, "Back to live remains inert");
     assert_eq!(
         driver.pending_history_controls()[0].status,
         crate::history_mode::pending_controls::PendingControlStatus::Ready
+    );
+    let held = &driver.pending_history_controls()[0].invocation;
+    assert_eq!(
+        held.arguments.get(tilo_actions::PROMPTED_PARAM),
+        Some(&serde_json::Value::String("alpha payload".into())),
+        "the held call keeps the arguments it was queued with"
     );
     assert!(
         driver.targets().contains_key("history-pending-1"),
         "Continue is public after return: {:?}",
         driver.targets().keys().collect::<Vec<_>>()
     );
+    assert_eq!(driver.asking(), None, "nothing is asked before the press");
+
+    // Continue asks the device, as a press whose action asks does: it names
+    // the action and shows neither internal owners nor raw arguments.
     driver.click_named("history-pending-1").unwrap();
+    assert_eq!(starts.get(), 0, "Continue asks, it does not run the effect");
+    let (asked, name) = driver.asking().expect("Continue waits on the device's ask");
+    assert_eq!(asked.action, "export");
+    assert!(
+        name.contains("Export"),
+        "the ask names the action it asks about: {name:?}"
+    );
+    assert!(
+        !name.contains("alpha payload") && !name.contains("component "),
+        "internal owners and raw arguments are never shown: {name:?}"
+    );
+
+    // A phrase that is not the one declared is no yes: nothing of the call runs.
+    assert!(
+        driver.confirm_asked_typing(Some("wrong")).is_some(),
+        "the person answered the ask"
+    );
+    assert_eq!(starts.get(), 0, "wrong phrase cannot attest confirmation");
+    assert_eq!(driver.asking(), None, "the answered ask is done");
+    assert!(
+        driver.pending_history_controls().is_empty(),
+        "the asked call is the device's; History holds it no longer: {:?}",
+        driver.pending_history_controls()
+    );
+
+    // A fresh press asks again, and the exact phrase admits the call once.
+    *manual.borrow_mut() = Some(tilo_actions::ControlInvocation {
+        address: tilo_actions::ActionAddress::new("phrase-owner", "export"),
+        arguments: [(
+            tilo_actions::PROMPTED_PARAM.to_owned(),
+            serde_json::Value::String("alpha payload".into()),
+        )]
+        .into_iter()
+        .collect(),
+    });
+    driver.key("x");
     assert_eq!(
         starts.get(),
         0,
-        "Continue enters confirmation, not the effect"
+        "a fresh press whose action asks runs nothing before the yes"
     );
-
-    let phrase_bounds = driver
-        .targets()
-        .get("history-pending-1-phrase")
-        .copied()
-        .expect("fresh phrase field is publicly addressable");
-    assert!(phrase_bounds.width() > 0.0 && phrase_bounds.height() > 0.0);
-    let labels = driver
-        .a11y_nodes()
-        .into_iter()
-        .filter_map(|(_, node)| node.label().map(str::to_owned))
-        .collect::<Vec<_>>();
+    let (again, again_name) = driver.asking().expect("the fresh press asks again");
+    assert_eq!(again.action, "export");
     assert!(
-        labels.iter().any(|label| label.contains("“Export”")),
-        "the held control is named by its action's label: {labels:?}"
+        again_name.contains("Export"),
+        "the ask names the action it asks about: {again_name:?}"
     );
     assert!(
-        !labels
-            .iter()
-            .any(|label| label.contains("alpha payload") || label.contains("component ")),
-        "internal owners and raw arguments are never shown: {labels:?}"
+        driver
+            .confirm_asked_typing(Some("ERASE phrase-owner"))
+            .is_some()
     );
-
-    driver
-        .perform_named(
-            "history-pending-1-phrase",
-            &crate::a11y::Action::SetValue("wrong".into()),
-        )
-        .unwrap();
-    driver.click_named("history-pending-1").unwrap();
-    assert_eq!(starts.get(), 0, "wrong phrase cannot attest confirmation");
-    driver
-        .perform_named(
-            "history-pending-1-phrase",
-            &crate::a11y::Action::SetValue("ERASE phrase-owner".into()),
-        )
-        .unwrap();
-    driver.click_named("history-pending-1").unwrap();
     assert_eq!(starts.get(), 1, "fresh exact phrase admits once");
-    assert!(
-        driver.pending_history_controls().is_empty(),
-        "confirmed item is consumed: {:?}",
-        driver.pending_history_controls()
-    );
+    assert_eq!(driver.asking(), None);
 }
 
 fn retained_identity_fixture(
@@ -606,6 +625,24 @@ fn retained_identity_fixture(
     )
 }
 
+/// Press History's own control in the app, then let the window take the frame:
+/// no frame runs between what the live tree queued and the press, so History
+/// seals it instead of a frame dispatching it first.
+fn press_history_control(driver: &mut Driver) {
+    let target = driver
+        .app_mut()
+        .build_a11y_tree_update(1.0)
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("History"))
+        .map(|(id, _)| *id)
+        .expect("History's own control is exported");
+    driver
+        .app_mut()
+        .dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+    driver.relayout();
+}
+
 #[test]
 fn retained_control_refuses_changed_target_handler_missing_or_ambiguous_identity() {
     let mutations: [fn(&MutableContinuationIdentity); 4] = [
@@ -623,8 +660,11 @@ fn retained_control_refuses_changed_target_handler_missing_or_ambiguous_identity
             housekeeping: Cell::new(false),
         });
         let (mut driver, starts, _emitter) = retained_identity_fixture(identity.clone());
-        driver.click_named("history-open").unwrap();
-        driver.click_named("history-open").unwrap();
+        // A press of History's own control, before any frame the driver might
+        // serve first: History takes the open request before it runs what the
+        // live tree queued, so the control is sealed rather than dispatched.
+        press_history_control(&mut driver);
+        press_history_control(&mut driver);
         let item = driver.pending_history_controls().remove(0);
         let token = driver.pending_history_control_token(item.id).unwrap();
         mutate(&identity);

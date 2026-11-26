@@ -79,6 +79,7 @@ fn software_names_whom_it_acted_for() {
     let mut served = entry(1, 1, "Planner", 0);
     served.author.relation = wire::Relation::Software;
     served.author.on_behalf_of = Some("Ben".into());
+    served.author.member = Some(tilo_actions::MemberId::agent("planner", "Ben"));
     let author = super::author(&served.author);
     assert_eq!(author.name, "Planner");
     assert_eq!(

@@ -729,11 +729,12 @@ mod tests {
                 );
             }
 
-            // An agent's handle names the agent, not the string with its prefix: an agent's
-            // change wears the colour of who it is, as its face does, never one a spelling of
-            // the same agent would hash to.
-            let agent = "agent:scribe";
+            // An agent's actor bytes name the agent and the person it acts for,
+            // `agent:<person>/<id>`: an agent's change wears the colour of what it
+            // is, as its face does, whichever person it acted for.
+            let agent = "agent:ada/scribe";
             let member = MemberId::of_actor_bytes(agent.as_bytes()).expect("an agent's actor");
+            assert_eq!(member, MemberId::agent("scribe", "ada"));
             let hex = automerge::ActorId::from(agent.as_bytes()).to_hex_string();
             let history = AuthorDirectory::new().resolve(&hex);
             assert_eq!(
@@ -742,10 +743,15 @@ mod tests {
                 "an agent's change and its face show one colour"
             );
             assert_eq!(history.rgb(), crate::presence::member_color(&member));
-            assert_ne!(
+            assert_eq!(
                 history.rgb(),
-                user_color(agent),
-                "an agent keeps the palette slot of what it is, not of its prefixed spelling"
+                crate::presence::member_color(&MemberId::agent("scribe", "bob")),
+                "an agent wears the colour of what it is, whichever person it acts for"
+            );
+            assert_eq!(
+                MemberId::of_actor_bytes(b"agent:scribe"),
+                None,
+                "actor bytes name the person it acts for and the agent, never the agent alone"
             );
 
             let unknown = "ff00ff00ff00ff00";

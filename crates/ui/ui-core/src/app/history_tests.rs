@@ -109,19 +109,23 @@ static HISTORY: HistoryDefinition = HistoryDefinition {
 };
 /// An app whose registered framework History has two committed changes.
 fn app() -> App {
+    app_on(historical_state())
+}
+/// A state whose framework History has two committed changes.
+fn historical_state() -> State {
     let mut state = State::new();
     state.doc.put(ROOT, "body", "old").unwrap();
     state.commit_action(None, None);
     state.doc.put(ROOT, "body", "live").unwrap();
     state.commit_action(None, None);
-    app_on(state)
+    state
 }
 /// An app on `state` whose History is the framework's registered History.
 fn app_on(state: State) -> App {
     app_with_root(state, Box::new(crate::widget::Column::new()))
 }
-/// An app on `state` showing `root` under the framework's registered History.
-pub(crate) fn app_with_root(state: State, root: Box<dyn crate::widget::Widget>) -> App {
+/// [`app_with_root`]'s managed root: `root` under the framework's registered History.
+pub(crate) fn history_root(root: Box<dyn crate::widget::Widget>) -> ManagedRoot {
     let registration = HistoryRegistration::new(
         &HISTORY,
         vec![HistorySourceRegistration::HostDocument {
@@ -135,8 +139,11 @@ pub(crate) fn app_with_root(state: State, root: Box<dyn crate::widget::Widget>) 
         }],
     )
     .unwrap();
-    App::from_managed_root_with_controlled_inputs(state, ManagedRoot::new(root, registration))
-        .unwrap()
+    ManagedRoot::new(root, registration)
+}
+/// An app on `state` showing `root` under the framework's registered History.
+pub(crate) fn app_with_root(state: State, root: Box<dyn crate::widget::Widget>) -> App {
+    App::from_managed_root_with_controlled_inputs(state, history_root(root)).unwrap()
 }
 /// Lay out and paint one 900×650 frame, as the native runner does.
 pub(crate) fn layout(app: &mut App) {
@@ -2299,6 +2306,7 @@ impl PaletteHistoryOwner {
                         vec![
                             action.as_bytes().to_vec(),
                             draft_epoch.to_be_bytes().to_vec(),
+                            target_epoch.to_be_bytes().to_vec(),
                         ],
                     ),
                     handler: tilo_actions::ContinuationKey::new(
@@ -2431,6 +2439,53 @@ fn palette_history_app(state: Arc<PaletteContinuationState>) -> App {
     app
 }
 
+/// [`palette_history_app`] run by the display-less driver, whose peer plays the
+/// workspace: a press whose action asks waits on the device's ask there.
+fn palette_history_driver(state: Arc<PaletteContinuationState>) -> crate::headless::Driver {
+    let mut driver = crate::headless::Driver::from_managed_root_with_controlled_inputs(
+        historical_state(),
+        history_root(Box::new(PaletteHistoryOwner {
+            text: crate::widget::Text::new("Palette history owner"),
+            state,
+        })),
+        (900, 650),
+        crate::Theme::dark(),
+        crate::font_catalog::fixture_renderer(),
+        crate::application_test_support::author(),
+    )
+    .unwrap();
+    driver.connect_peer();
+    driver.relayout();
+    driver
+}
+
+fn driver_palette_activate(driver: &mut crate::headless::Driver, action: &str, value: &str) {
+    palette_activate(driver.app_mut(), action, value);
+}
+
+fn driver_palette_enter(driver: &mut crate::headless::Driver) {
+    palette_enter(driver.app_mut());
+}
+
+fn driver_palette_history_round_trip(driver: &mut crate::headless::Driver) {
+    let named_action_target = named(driver.app_mut(), "History");
+    driver
+        .app_mut()
+        .dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+    driver.relayout();
+    let named_action_target = named(driver.app_mut(), "History");
+    driver
+        .app_mut()
+        .dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+    driver.relayout();
+}
+
+fn driver_editor_snapshot(
+    driver: &crate::headless::Driver,
+) -> (String, Option<(usize, usize)>, &'static str) {
+    editor_snapshot(driver.app())
+}
+
 fn palette_activate(app: &mut App, action: &str, value: &str) {
     app.open_action_palette();
     assert!(
@@ -2453,22 +2508,6 @@ fn palette_enter(app: &mut App) {
         winit::event::ElementState::Pressed,
     );
     assert!(app.action_palette_handle_key(&event));
-}
-
-/// Go ahead with the typed confirmation through its own button, past
-/// Cancel: Return in the field for the name stays the safe answer.
-fn palette_confirm(app: &mut App) {
-    for key in [
-        winit::keyboard::NamedKey::Tab,
-        winit::keyboard::NamedKey::Tab,
-        winit::keyboard::NamedKey::Enter,
-    ] {
-        let event = crate::synthetic_input::key_input(
-            &winit::keyboard::Key::Named(key),
-            winit::event::ElementState::Pressed,
-        );
-        assert!(app.action_palette_handle_key(&event));
-    }
 }
 
 /// Submit the row History kept back, through the palette's own control: one Tab
@@ -2526,47 +2565,66 @@ tilo_test_env::scenario! {
             if mutation == "absent" {
                 state.draft_supported.store(false, Ordering::SeqCst);
             }
-            let mut app = palette_history_app(state.clone());
-            palette_activate(&mut app, action, partial);
-            let before = editor_snapshot(&app);
+            let mut driver = palette_history_driver(state.clone());
+            driver_palette_activate(&mut driver, action, partial);
+            let before = driver_editor_snapshot(&driver);
             assert_eq!(before.0, partial);
             assert!(before.1.is_some(), "the actual editor exposes its cursor");
             assert_eq!(before.2, "argument");
 
-            palette_history_round_trip(&mut app);
-            assert_eq!(editor_snapshot(&app), before, "{action}:{mutation}");
+            driver_palette_history_round_trip(&mut driver);
+            assert_eq!(driver_editor_snapshot(&driver), before, "{action}:{mutation}");
             if mutation == "changed" {
                 state.draft_epoch.store(2, Ordering::SeqCst);
             }
-            app.actions
+            driver
+                .app_mut()
+                .actions
                 .action_palette
                 .as_deref_mut()
                 .unwrap()
                 .set_query(complete);
-            palette_enter(&mut app);
-            assert_eq!(editor_snapshot(&app).2, "confirmation");
-            app.actions
-                .action_palette
-                .as_deref_mut()
-                .unwrap()
-                .set_query(PALETTE_CONFIRMATION);
-            palette_confirm(&mut app);
+            // The row is taken after the return, asks the device, and runs once
+            // the person's fresh exact phrase admits it.
+            driver_palette_enter(&mut driver);
+            // The asked call reaches the device on the frame that publishes the
+            // surface it names.
+            driver.relayout();
 
-            let starts = state.starts.lock().unwrap().len();
-            assert_eq!(starts, usize::from(should_start), "{action}:{mutation}");
             if should_start {
+                let (asked, _) = driver
+                    .asking()
+                    .expect("the taken row waits on the device's ask");
+                assert_eq!(asked.resource, "palette-owner");
+                assert_eq!(state.starts.lock().unwrap().len(), 0, "{action}:{mutation}");
                 assert!(
-                    app.action_palette().is_none(),
-                    "successful dispatch closes palette"
+                    driver
+                        .confirm_asked_typing(Some(PALETTE_CONFIRMATION))
+                        .is_some(),
+                    "the person allowed the asked call"
+                );
+                assert_eq!(
+                    state.starts.lock().unwrap().len(),
+                    1,
+                    "{action}:{mutation}"
+                );
+                assert_eq!(driver.asking(), None);
+                assert!(
+                    driver.app().action_palette().is_none(),
+                    "the asked call is the device's: the palette that took it is gone"
                 );
             } else {
-                let snapshot = editor_snapshot(&app);
-                // The name was typed in the confirmation's own plain field,
-                // never in the search field.
-                assert_eq!(snapshot.0, "");
+                assert_eq!(
+                    driver.asking(),
+                    None,
+                    "a changed draft is never asked of the device"
+                );
+                let snapshot = driver_editor_snapshot(&driver);
                 assert_eq!(snapshot.2, "ready");
                 assert!(
-                    app.actions
+                    driver
+                        .app_mut()
+                        .actions
                         .action_palette
                         .as_deref_mut()
                         .unwrap()
@@ -2599,46 +2657,74 @@ tilo_test_env::scenario! {
             ),
         ] {
             let state = PaletteContinuationState::stable();
-            let mut app = palette_history_app(state.clone());
-            palette_activate(&mut app, action, complete);
-            palette_enter(&mut app);
-            assert_eq!(editor_snapshot(&app).2, "confirmation");
-            app.actions
-                .action_palette
-                .as_deref_mut()
-                .unwrap()
-                .set_query(PALETTE_CONFIRMATION);
+            let mut driver = palette_history_driver(state.clone());
+            driver_palette_activate(&mut driver, action, complete);
 
-            let named_action_target = named(&mut app, "History");
-            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-            layout(&mut app);
-            if mutation == "target-before-return" {
-                state.target_epoch.store(2, Ordering::SeqCst);
+            // History holds the draft while it shows; what changes there is what
+            // the row taken after the return is rechecked against.
+            let named_action_target = named(driver.app_mut(), "History");
+            driver
+                .app_mut()
+                .dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            driver.relayout();
+            // What the draft's identity is checked against changes while History
+            // shows; the document key makes the window read its actions again, so
+            // the new identity is what it holds when the row is taken.
+            match mutation {
+                "target-before-return" => state.target_epoch.store(2, Ordering::SeqCst),
+                "handler-changed-before-going-ahead" => {
+                    state.handler_epoch.store(2, Ordering::SeqCst);
+                }
+                _ => {}
+            }
+            driver
+                .app_mut()
+                .state
+                .doc
+                .put(ROOT, "unrelated-round3", mutation)
+                .unwrap();
+            // The app reads its actions again, as a republished surface makes it.
+            driver.app_mut().invalidate_widget_resource_cache();
+            let named_action_target = named(driver.app_mut(), "History");
+            driver
+                .app_mut()
+                .dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            driver.relayout();
+
+            driver_palette_enter(&mut driver);
+            // The asked call reaches the device on the frame that publishes the
+            // surface it names.
+            driver.relayout();
+            if should_start {
+                let (asked, _) = driver
+                    .asking()
+                    .expect("the unchanged exact draft asks the device");
+                assert_eq!(asked.resource, "palette-owner");
+                assert!(
+                    driver
+                        .confirm_asked_typing(Some(PALETTE_CONFIRMATION))
+                        .is_some(),
+                    "the person allowed the asked call"
+                );
             } else {
-                app.state
-                    .doc
-                    .put(ROOT, "unrelated-round3", mutation)
-                    .unwrap();
+                assert_eq!(
+                    driver.asking(),
+                    None,
+                    "a changed identity is never asked of the device"
+                );
+                assert!(
+                    driver
+                        .app_mut()
+                        .actions
+                        .action_palette
+                        .as_deref_mut()
+                        .unwrap()
+                        .take_search_announcement()
+                        .is_some_and(|message| message.contains("stale")
+                            || message.contains("identity")),
+                    "the changed identity is refused and said: {action}:{mutation}"
+                );
             }
-            let named_action_target = named(&mut app, "History");
-            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-            layout(&mut app);
-            assert_eq!(
-                editor_snapshot(&app),
-                (String::new(), Some((0, 0)), "confirmation"),
-                "History return requires a fresh phrase: {action}:{mutation}"
-            );
-
-            if mutation == "handler-changed-before-going-ahead" {
-                assert_eq!(state.starts.lock().unwrap().len(), 0);
-                state.handler_epoch.store(2, Ordering::SeqCst);
-            }
-            app.actions
-                .action_palette
-                .as_deref_mut()
-                .unwrap()
-                .set_query(PALETTE_CONFIRMATION);
-            palette_confirm(&mut app);
             assert_eq!(
                 state.starts.lock().unwrap().len(),
                 usize::from(should_start),
