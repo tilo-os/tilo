@@ -1286,6 +1286,11 @@ struct WorkspacesInner {
     /// file and what reading it said: each stays on disk exactly as it was, closed, while every
     /// other workspace serves ([`Workspaces::closed`]).
     closed: std::sync::Mutex<std::collections::BTreeMap<String, ClosedWorkspace>>,
+    /// Held from the reads of the blocked-keys and devices records through
+    /// keeping what they say (`blocked::refresh_blocked`): a refresh that read
+    /// them before a write landed cannot keep its older snapshot after one that
+    /// read the newer.
+    blocked_refreshes: AsyncMutex<()>,
     /// The workspaces of people's own, once the host's operator offers them
     /// ([`Workspaces::offer_own_workspaces`]).
     own: std::sync::OnceLock<own::OwnWorkspaces>,
@@ -1684,6 +1689,7 @@ impl Workspaces {
                 entry: wait_list::EntrySettings::default(),
                 releasing: AsyncMutex::new(()),
                 closed: std::sync::Mutex::default(),
+                blocked_refreshes: AsyncMutex::new(()),
                 own: std::sync::OnceLock::new(),
                 #[cfg(all(feature = "files", not(target_arch = "wasm32")))]
                 puts: std::sync::OnceLock::new(),

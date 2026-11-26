@@ -307,6 +307,14 @@ impl Workspaces {
     /// again, and keep what they say. A record this host holds no copy of
     /// leaves the keys it had: nothing says they were lifted.
     pub(crate) async fn refresh_blocked(&self) {
+        // The reads and the keep are one step. Two refreshes run at once: this device's own
+        // write waits for this ([`Self::read_wrote`]), and the follower wakes on every write's
+        // broadcast ([`Self::follow_blocked`]). Without the hold, a refresh that read the
+        // devices record before this device's write landed could keep its older snapshot after
+        // the one that read the newer, and the device the write listed would no longer be
+        // certified. The hold is taken here and nowhere else, and the write that asks for this
+        // read has already kept and released the workspace, so waiting here closes no cycle.
+        let _one_at_a_time = self.inner.blocked_refreshes.lock().await;
         let blocked = person_workspace::read::<Blocked>(self, BLOCKED).await;
         let devices = person_workspace::read::<Devices>(self, DEVICES).await;
         let mut next = self.blocked_keys();
