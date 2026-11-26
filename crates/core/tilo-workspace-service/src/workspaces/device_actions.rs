@@ -1125,20 +1125,29 @@ impl super::Workspaces {
     }
 
     /// Whether `device` may run `action` (app, resource, action) in `workspace` now, judged at
-    /// the kind its app declares it as and the field it declares it under. An action its app
-    /// declares no kind for is not run.
+    /// the kind it is declared as and the field it is declared under: by the provider registered
+    /// here that answers it and by its app's surface, the greater where both declare it, as a
+    /// call of it from another device is judged. An action declared nowhere is not run.
     pub(crate) async fn permits_action(
         &self,
         device: [u8; 32],
         workspace: &str,
         (app, resource, action): (&str, &str, &str),
     ) -> bool {
+        let declared = self
+            .inner
+            .jobs
+            .providers
+            .declared_need(app, &tilo_actions::ActionAddress::new(resource, action));
         let kept = self.inner.workspaces.lock().await.get(workspace).cloned();
         let Some(kept) = kept else {
             return false;
         };
         let mut kept = kept.lock().await;
-        let Some(need) = kept.call_need(&self.inner.host.surfaces, app, action) else {
+        let Some(need) = super::providers::the_greater(
+            declared,
+            kept.call_need(&self.inner.host.surfaces, app, action),
+        ) else {
             return false;
         };
         let permitted = kept.peer().permits_app_action(

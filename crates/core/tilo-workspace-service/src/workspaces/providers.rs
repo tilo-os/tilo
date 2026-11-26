@@ -795,6 +795,28 @@ impl Providers {
         Some(registered.answers.invoke(caller, request))
     }
 
+    /// What the provider registered here as `provider` declares the action `address` as, with
+    /// no argument: the need a turn of it this device runs is judged at beside its app's surface,
+    /// as a call of it from another device is ([`Self::device_call`]). `None` where no provider
+    /// registered here declares it.
+    #[must_use]
+    pub(super) fn declared_need(
+        &self,
+        provider: &str,
+        address: &tilo_actions::ActionAddress,
+    ) -> Option<tilo_actions::ActionNeed> {
+        let registered = self.get(provider)?;
+        let declared = registered
+            .answers
+            .invocation(address, None)
+            .or_else(|| tilo_actions::api::described(&registered.published, address))?;
+        Some(tilo_actions::ActionNeed {
+            kind: declared.contract.kind,
+            field: declared.contract.field,
+            privileged: false,
+        })
+    }
+
     /// Every registered provider.
     #[must_use]
     pub fn all(&self) -> Vec<Registered> {
@@ -1171,7 +1193,7 @@ async fn permits(
 /// to do more, and the field it places the action under where its declaration names one. Two
 /// declarations of one kind differ at most in that field, and a declared field bounds the action
 /// as the app's own dispatch bounds it.
-fn the_greater(
+pub(super) fn the_greater(
     declared: Option<tilo_actions::ActionNeed>,
     surface: Option<tilo_actions::ActionNeed>,
 ) -> Option<tilo_actions::ActionNeed> {
