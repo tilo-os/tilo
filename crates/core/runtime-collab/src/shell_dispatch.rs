@@ -16,8 +16,8 @@ use tilo_actions::remote::{
     RemoteActionFrame, RemoteActionMessage, ResourceReadRequest, ResourceReads, UpdateMark,
 };
 
-use crate::ShellClient;
 use super::Served;
+use crate::ShellClient;
 use crate::wire::shell::{ShellCall, ShellReply};
 use crate::wire::{Answer, Ask, Handle};
 

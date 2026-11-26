@@ -875,39 +875,6 @@ pub trait PublishedSource: Send + Sync {
     ) -> Result<(), String>;
 }
 
-/// The session's services: the platform roots read where the session publishes them.
-pub struct Session;
-
-impl PublishedSource for Session {
-    fn follow(
-        &self,
-        resource: &str,
-        wake: tilo_rt::wake::WakeHandle,
-    ) -> Result<Box<dyn Reading>, String> {
-        Ok(Box::new(Followed(collaboration::SessionResource::follow(
-            resource, wake,
-        )?)))
-    }
-
-    fn invoke(
-        &self,
-        resource: &str,
-        action: &str,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<(), String> {
-        collaboration::SessionResource::invoke_without_watching(resource, action, arguments)
-    }
-}
-
-/// A resource of the session's followed: each reading the session publishes.
-struct Followed(collaboration::SessionResource);
-
-impl Reading for Followed {
-    fn latest(&self) -> Option<Result<String, String>> {
-        self.0.latest()
-    }
-}
-
 static SOURCE: std::sync::OnceLock<Box<dyn PublishedSource>> = std::sync::OnceLock::new();
 
 /// Read the platform's published resources through `source` from now on. Called once, by the

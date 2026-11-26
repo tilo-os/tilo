@@ -3391,7 +3391,7 @@ fn approved_checks(parts: &BrokerParts<'_>) -> io::Result<()> {
         Arc::clone(&jobs) as Arc<dyn tilo_actions::remote::ResourceReads>,
     );
     parts.workspaces.copies().providers().provide(
-        runtime_collab::approved_checks::PROVIDER,
+        tilo_actions::remote::approved_checks::PROVIDER,
         tilo_app_id::apps::SETTINGS,
         tilo_workspace_service::workspaces::providers::Reach::ThisDevice,
         Arc::new(super::approved_checks::NativeChecks::new(

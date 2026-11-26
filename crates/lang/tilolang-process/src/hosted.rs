@@ -4367,7 +4367,7 @@ impl Hosted {
         // A check the project's host approved runs for an invocation the workspace holds, which
         // its invoker can follow and stop: the press goes through the dispatch, and the check
         // runs when the broker delivers it back.
-        if address.action == collaboration::APPROVED_CHECK_ACTION {
+        if address.action == tilo_actions::remote::approved_checks::ACTION_ID {
             self.dispatch_press(&address, argument.as_deref());
             self.instance.press_ran(press);
             return true;

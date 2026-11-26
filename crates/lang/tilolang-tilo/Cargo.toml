@@ -48,8 +48,6 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features =
 tilo-formats = { version = "0.1.0", path = "../../ui/tilo-formats" }
 # The interpreter alone in a browser page, where the compiled tier cannot run.
 tilolang-runtime = { version = "0.1.0", path = "../tilolang-runtime", default-features = false }
-# The history verbs a store answers, and the names history speaks of its writers in.
-collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration" }
 # The wake a followed reading rings: the same handle the session's watch takes.
 tilo-rt.workspace = true
 # The resource types and document ids the workspace's records are known by.
@@ -67,8 +65,6 @@ tilo-workspace-emoji = { version = "0.1.0", path = "../../core/tilo-workspace-em
 # The system's mention notices, read from a workspace holding tilolang rich text.
 ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
-# The fake broker a workspace's committed read is served from in the tests.
-collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration", features = ["test-support", "broker-transport", "native"] }
 # The archives an app exports, read back as a person who unzips them finds them.
 bounded-zip = { package = "tilo-bounded-zip", path = "../../engines/bounded-zip" }
 tempfile.workspace = true

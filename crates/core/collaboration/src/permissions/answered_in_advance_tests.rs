@@ -45,20 +45,17 @@ fn answer_for(action: &str) -> policy::Grant {
 
 /// What the window says of the agent's send, carrying `grants`.
 fn sends(grants: Vec<policy::Grant>) -> Result<(), tilo_actions::ApiError> {
-    let send = ActionSpec::operation("send", "Send", OperationKind::Effect, "notes.send", &())
-        .unwrap();
+    let send =
+        ActionSpec::operation("send", "Send", OperationKind::Effect, "notes.send", &()).unwrap();
     assert_eq!(send.contract.need().kind, ActionKind::Outside);
     let note = ResourceSpec::new("n1", "note", "Note").with_action(send.clone());
-    let window = PermissionContext::member_of(
-        LOCAL_WORKSPACE,
-        &MemberId::person("editor"),
-        Role::Editor,
-    )
-    .acting_as(
-        policy::Actor::Member(policy::MemberId::agent("scribe", "editor")),
-        grants,
-    )
-    .reaching_person();
+    let window =
+        PermissionContext::member_of(LOCAL_WORKSPACE, &MemberId::person("editor"), Role::Editor)
+            .acting_as(
+                policy::Actor::Member(policy::MemberId::agent("scribe", "editor")),
+                grants,
+            )
+            .reaching_person();
     let answer = window.invocation_admission(APP, &note, &send, None, None);
     admit_in_window(answer, &send, window.asker())
 }

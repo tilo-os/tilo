@@ -2242,7 +2242,7 @@ impl Instance {
         };
         let address = ActionAddress::new(
             crate::publish::resource_id(&app, &target.target.id_string()),
-            collaboration::APPROVED_CHECK_ACTION,
+            tilo_actions::remote::approved_checks::ACTION_ID,
         );
         let argument = format!(
             "{}{}",

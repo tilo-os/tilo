@@ -19,6 +19,7 @@ use runtime_portal::process_link::{Descriptor, FromProcess, Packet as _, ToProce
 use tilolang_process::TilolangProcess;
 use tilolang_process::stop::Stop;
 use tilolang_process::wait::{Wake, wait};
+use tilolang_tilo::platform_apps::{PublishedSource, Reading};
 
 /// The API, for the panic hook to say why the host ends.
 static API: OnceLock<Arc<Descriptor>> = OnceLock::new();
@@ -145,7 +146,7 @@ fn run(api: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
     let stop = stop_watching();
     // The platform's published resources (the device, Settings, the workspace's activity) are
     // read from the session's services, which this process's connection reaches.
-    tilolang_tilo::platform_apps::install(Box::new(tilolang_tilo::platform_apps::Session));
+    tilolang_tilo::platform_apps::install(Box::new(Session));
     let mut host = TilolangProcess::new(wake.waker());
     let mut api = Some(api);
     // Why the API closed, when the session did not close it.
@@ -296,5 +297,38 @@ fn take(host: &mut TilolangProcess, open: &Descriptor, message: ToProcess) {
                 "the API asked for a window, which a tilolang process has none of"
             );
         }
+    }
+}
+
+/// The session's services: the platform roots read where the session publishes them.
+struct Session;
+
+impl PublishedSource for Session {
+    fn follow(
+        &self,
+        resource: &str,
+        wake: tilo_rt::wake::WakeHandle,
+    ) -> Result<Box<dyn Reading>, String> {
+        Ok(Box::new(Followed(collaboration::SessionResource::follow(
+            resource, wake,
+        )?)))
+    }
+
+    fn invoke(
+        &self,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        collaboration::SessionResource::invoke_without_watching(resource, action, arguments)
+    }
+}
+
+/// A resource of the session's followed: each reading the session publishes.
+struct Followed(collaboration::SessionResource);
+
+impl Reading for Followed {
+    fn latest(&self) -> Option<Result<String, String>> {
+        self.0.latest()
     }
 }

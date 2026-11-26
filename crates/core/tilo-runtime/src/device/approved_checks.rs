@@ -19,14 +19,14 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use runtime_collab::approved_checks::{
-    self as checks, Binding, Diagnostic, MAX_PREVIEW_BYTES, Outcome, Receipt, ReportObservation,
-};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec, PlacedAction};
 use tilo_actions::contract::{ActionContract, ActionKind};
 use tilo_actions::params::{ActionParam, ParamType};
+use tilo_actions::remote::approved_checks::{
+    self as checks, Binding, Diagnostic, MAX_PREVIEW_BYTES, Outcome, Receipt, ReportObservation,
+};
 use tilo_actions::remote::{
     Admits, Admitted, Caller, InvokeArgument, InvokeRequest, Pending, ReadsAnswer, ResourceAddress,
     ResourceCopy, ResourceReads, Serving, reads_answer,
@@ -152,7 +152,7 @@ impl ApprovedProject for ProjectChecks {
 
 /// An approved check's informational phase, as the app hears it.
 fn observation(event: ush::approved_checks::ReportedCheckEvent) -> ReportObservation {
-    use runtime_collab::approved_checks::{EndpointRefusal, ReportObservation};
+    use tilo_actions::remote::approved_checks::{EndpointRefusal, ReportObservation};
     use ush::approved_checks::{CheckReportRefusal, ReportedCheckEvent};
     match event {
         ReportedCheckEvent::Reported(report) => ReportObservation::Reported {

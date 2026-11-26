@@ -245,10 +245,7 @@ mod portable_committed {
 
 pub use collab_types::{CommitAuthor, CommitPart, DocumentMutation, UnitMutation, WorkspaceCommit};
 pub use runtime_collab::NearbyTransferPhase;
-/// The verb an app publishes a check its project's host approved under, whatever language the
-/// app is written in: the device runs a check only as the work of an invocation of it.
-pub use runtime_collab::approved_checks::ACTION_ID as APPROVED_CHECK_ACTION;
-pub use runtime_collab::{approved_checks, file_clipboard, recall};
+pub use runtime_collab::{file_clipboard, recall};
 
 pub use collab_types::MemberId;
 use collab_types::presence::PresenceKey;

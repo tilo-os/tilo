@@ -5,7 +5,9 @@
 //! the invocation's cancel stops the check, and a press of the action goes through the dispatch.
 
 use super::*;
-use collaboration::approved_checks::{self as checks, Binding, Diagnostic, Outcome, Receipt};
+use tilo_actions::remote::approved_checks::{
+    self as checks, Binding, Diagnostic, Outcome, Receipt,
+};
 use tilo_actions::remote::{
     InvocationReceipt, InvocationState, InvokeRequest, ReceiptStatus, RemoteActionMessage,
 };
@@ -65,7 +67,9 @@ fn the_check(host: &TilolangProcess) -> tilo_actions::ActionDescriptor {
         .expect("the app runs")
         .published()
         .iter()
-        .find(|published| published.address.action == collaboration::APPROVED_CHECK_ACTION)
+        .find(|published| {
+            published.address.action == tilo_actions::remote::approved_checks::ACTION_ID
+        })
         .unwrap_or_else(|| panic!("the action that runs a check is the app's run-approved-check"))
         .clone()
 }
@@ -425,7 +429,7 @@ tilo_test_env::scenario! {
             _ => None,
         });
         let invoke = dispatched.expect("the press went to the dispatch");
-        assert_eq!(invoke.target.address.action, collaboration::APPROVED_CHECK_ACTION);
+        assert_eq!(invoke.target.address.action, tilo_actions::remote::approved_checks::ACTION_ID);
         assert_eq!(invoke.target.address.resource, address.resource);
         match invoke.argument {
             tilo_actions::remote::InvokeArgument::Json(arguments) => {

@@ -35,7 +35,8 @@ fn digest(value: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 fn invocation(value: &str) -> bool {
-    crate::valid_uuid(value)
+    value.len() == 36
+        && uuid::Uuid::try_parse(value).is_ok()
         && !value.bytes().any(|b| b.is_ascii_uppercase())
         && value != "00000000-0000-0000-0000-000000000000"
 }

@@ -40,6 +40,8 @@ pub mod admitted;
 pub use admitted::{Admits, Admitted, LiveRead, LiveView, Outcome, ReportsProgress, Serving};
 pub mod agent_tools;
 mod application;
+/// The device's project checks an app runs by id, and the receipt each run leaves.
+pub mod approved_checks;
 pub mod asked;
 pub mod browser;
 /// An outside service's call carried into a workspace's call, on an app's connection.

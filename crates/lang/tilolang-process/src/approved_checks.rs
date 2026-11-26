@@ -16,8 +16,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use collaboration::approved_checks::{self, Receipt};
 use collaboration::{CollabRequest, CollaborationManager};
+use tilo_actions::remote::approved_checks::{self, Receipt};
 use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
 };

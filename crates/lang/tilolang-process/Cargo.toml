@@ -77,6 +77,8 @@ tilo-render-protocol = { version = "0.1.0", path = "../../ui/tilo-render-protoco
 tilo-shm = { version = "0.1.0", path = "../../platform/tilo-shm" }
 # The host's connections: Unix sockets, and pipes on Windows.
 tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
+# The wake a followed platform resource rouses its view with.
+tilo-rt.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../core/actions", features = ["answer-reads"] }
 # A released vault item is wiped from this process's heap where it is dropped.
 zeroize.workspace = true
