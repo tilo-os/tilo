@@ -49,8 +49,18 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde_json::{Map, Value, json};
 use tilo_action_policy::roles::{self, governance};
 use tilo_action_policy::{Answer, EntryPolicy, ListingPolicy};
-use tilo_actions::remote::{ ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_APPS, WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE, WORKSPACE_INVITATIONS, WORKSPACE_INVITE, WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS, WORKSPACE_READ_GRANT, WORKSPACE_READ_REVOKE, WORKSPACE_REGISTRIES, WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, workspace_app, workspace_app_named, workspace_governance_address, workspace_governance_child, workspace_governance_operation, workspace_governance_resource, workspace_member, workspace_person };
-use tilo_action_services::{ formats, mcp_server, server_account };
+use tilo_action_services::{formats, mcp_server, server_account};
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
+    CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState,
+    InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_APPS,
+    WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE,
+    WORKSPACE_INVITATIONS, WORKSPACE_INVITE, WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED,
+    WORKSPACE_MEMBERS, WORKSPACE_READ_GRANT, WORKSPACE_READ_REVOKE, WORKSPACE_REGISTRIES,
+    WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, workspace_app, workspace_app_named,
+    workspace_governance_address, workspace_governance_child, workspace_governance_operation,
+    workspace_governance_resource, workspace_member, workspace_person,
+};
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionParam, ExecutionLocus,
     InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType, RiskLevel,
@@ -2081,7 +2091,7 @@ impl Workspaces {
         {
             return Box::pin(self.administer_invoke(caller, certificate, request)).await;
         }
-        Box::pin(self.account_invoke(workspace_id, caller, certificate, request, None)).await
+        Box::pin(self.account_invoke(workspace_id, caller, certificate, request)).await
     }
 
     /// Grant the device that asked a token for this host's fetch proxy

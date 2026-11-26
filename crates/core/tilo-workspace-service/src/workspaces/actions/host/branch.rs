@@ -115,7 +115,7 @@ impl Workspaces {
         drop(making);
         self.invite_own_person(
             summary,
-            person,
+            device,
             Role::Editor,
             request_id,
             expiry(now, seconds),

@@ -670,19 +670,14 @@ impl Workspaces {
         args: &Args,
         request_id: [u8; 32],
         now: u64,
-        local_address: Option<iroh_base::EndpointAddr>,
     ) -> Result<Value, ActionCallError> {
         let workspace = args.required_text("workspace")?;
         let seconds = args
             .integer("expires_in_seconds")?
             .unwrap_or(OWN_INVITATION_SECONDS);
         // The invitation is the entering device's own: its person's role, an Editor's at most,
-        // and no grant to invite. The local device redeems in process; one sent to another
-        // device needs to wait for the host's reachable address.
-        let address = match local_address {
-            Some(address) => address,
-            None => self.invitation_addr().await,
-        };
+        // and no grant to invite.
+        let address = self.invitation_addr_for(device).await;
         let issued = self
             .own_invitation(
                 workspace,
@@ -746,7 +741,6 @@ impl Workspaces {
         caller: &Caller,
         device: &DeviceCert,
         request: &InvokeRequest,
-        local_address: Option<iroh_base::EndpointAddr>,
     ) -> Result<Value, ActionCallError> {
         let (verb, operation) = self.account_operation(device, request)?;
         let now = tilo_clock::unix_now_ns();
@@ -796,8 +790,7 @@ impl Workspaces {
                 answer(&self.revocations().iter().cloned().collect::<Vec<_>>())
             }
             ServiceOperation::EnterWorkspace => {
-                self.enter_invoke(device, &args, request_id, now, local_address)
-                    .await
+                self.enter_invoke(device, &args, request_id, now).await
             }
             ServiceOperation::Block | ServiceOperation::Unblock => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
@@ -835,15 +828,14 @@ impl Workspaces {
         device: &DeviceCert,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
-        let address = self.endpoint_addr();
-        if &device.device_public_key != address.id.as_bytes()
+        if &device.device_public_key != self.endpoint_addr().id.as_bytes()
             || request.target.provider != HOST_ACTIONS_PROVIDER
             || request.target.address.action != ENTER_WORKSPACE
         {
             return Err(ActionCallError::UnknownAction);
         }
         let caller = crate::service::local_caller(device);
-        Box::pin(self.account_invoke(None, &caller, device, request, Some(address))).await
+        Box::pin(self.account_invoke(None, &caller, device, request)).await
     }
 
     /// Answer the page's administration request the host action carries
@@ -1264,7 +1256,7 @@ impl Workspaces {
             return self
                 .invite_own_person(
                     summary,
-                    person,
+                    device,
                     Role::Editor,
                     request_id,
                     expiry(now, seconds),
@@ -1305,7 +1297,7 @@ impl Workspaces {
                 role
             };
             return self
-                .invite_own_person(summary, person, role, request_id, expiry(now, seconds))
+                .invite_own_person(summary, device, role, request_id, expiry(now, seconds))
                 .await;
         } else if name.is_none() && moving.is_some() {
             // A workspace that is not theirs: another's, or one this host has
@@ -1340,7 +1332,7 @@ impl Workspaces {
         drop(making);
         self.invite_own_person(
             summary,
-            person,
+            device,
             Role::Editor,
             request_id,
             expiry(now, seconds),
@@ -1489,14 +1481,8 @@ impl Workspaces {
             .summary(workspace)
             .await
             .map_err(|error| ActionCallError::refused(error.to_string()))?;
-        self.invite_own_person(
-            summary,
-            device.user_public_key,
-            Role::Editor,
-            request_id,
-            expires_at_ns,
-        )
-        .await
+        self.invite_own_person(summary, device, Role::Editor, request_id, expires_at_ns)
+            .await
     }
 
     /// Whether `device`'s grant, which reaches one workspace already made, is asked for more
@@ -1534,16 +1520,17 @@ impl Workspaces {
             .and_then(|member| member.role)
     }
 
-    /// Answer `summary` with an invitation for its `person` as `role`, until
-    /// `expires_at_ns`: the workspace's host invites them.
+    /// Answer `summary` with an invitation for `device`'s person as `role`, until
+    /// `expires_at_ns`, for `device` to redeem: the workspace's host invites them.
     async fn invite_own_person(
         &self,
         summary: WorkspaceSummary,
-        person: [u8; 32],
+        device: &DeviceCert,
         role: Role,
         request_id: [u8; 32],
         expires_at_ns: u64,
     ) -> Result<Value, ActionCallError> {
+        let person = device.user_public_key;
         let terms = IssueInvitationRequest {
             request_id,
             role,
@@ -1552,8 +1539,16 @@ impl Workspaces {
             expires_at_ns,
             inviter_name: None,
         };
+        let address = self.invitation_addr_for(device).await;
         let issued = self
-            .issue(&summary.workspace, &self.inner.host.cert, terms)
+            .issue_from(
+                &summary.workspace,
+                &self.inner.host.cert,
+                terms,
+                false,
+                None,
+                address,
+            )
             .await
             .map_err(|error| ActionCallError::refused(error.to_string()))?;
         let mut workspace = listing(&summary);

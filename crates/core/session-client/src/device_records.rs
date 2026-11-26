@@ -220,18 +220,32 @@ impl DeviceRecords {
         }
     }
 
-    /// Wait until every write handed before this was answered: what a session that ends waits for.
-    /// Called from a thread that is not the shell's runtime.
-    pub fn flush(&self) {
+    /// Wait up to `within` until every write handed before this was answered: what a session that
+    /// ends waits for. True once they all were; false when the daemon did not answer them in time,
+    /// which a session that ends says and leaves, as it leaves a layout write that did not answer:
+    /// a daemon that never answers would otherwise hold the session's end for ever. Called from a
+    /// thread that is not the shell's runtime.
+    pub fn flush(&self, within: Duration) -> bool {
         match &*self.keeper {
             Keeper::Daemon { writes, .. } => {
                 let (done, flushed) = std::sync::mpsc::sync_channel(1);
-                if writes.send(Queued::Flushed(done)).is_ok() {
-                    let _ = flushed.recv();
+                // A queue whose writer ended has nothing left that could still be answered.
+                if writes.send(Queued::Flushed(done)).is_err() {
+                    return true;
+                }
+                match flushed.recv_timeout(within) {
+                    Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => true,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        tracing::warn!(
+                            waited_s = within.as_secs(),
+                            "what the session keeps was not all written: the device's daemon did not answer in time"
+                        );
+                        false
+                    }
                 }
             }
             #[cfg(any(test, feature = "test-support"))]
-            Keeper::Held(_) => {}
+            Keeper::Held(_) => true,
         }
     }
 }
@@ -445,7 +459,12 @@ impl DeviceRecord {
                     followed.wrote(Some(value.clone()).filter(|value| !value.is_null()));
                 }
                 // After every write handed before it.
-                self.records.flush();
+                if !self.records.flush(crate::daemon_documents::ASK_DEADLINE) {
+                    return Err(format!(
+                        "the device's daemon did not answer the session's earlier writes, so {} was not written",
+                        self.name
+                    ));
+                }
                 shell
                     .dispatch_blocking(
                         Some(place.workspace()),
@@ -524,6 +543,44 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// A session that ends while the device's daemon leaves its writes unanswered waits for them
+    /// as long as it was given, says they were not written, and ends: a daemon that holds an ask
+    /// for ever never holds the session's end with it.
+    #[test]
+    fn an_end_waits_for_unanswered_writes_no_longer_than_it_was_given() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        // The daemon's end of the link takes every ask and answers none.
+        let (link, daemon) = std::os::unix::net::UnixStream::pair().expect("a link");
+        link.set_nonblocking(true)
+            .expect("a link the runtime reads");
+        let shell = runtime.block_on(async {
+            let link = tokio::net::UnixStream::from_std(link).expect("the link on the runtime");
+            DaemonShell::new(
+                Ok(runtime_collab::ShellClient::open(link).0),
+                tokio::runtime::Handle::current(),
+            )
+        });
+        let records = DeviceRecords::on(shell, Place::Own("person".to_owned()));
+        records
+            .record("so.tilo.session-shown")
+            .set(json!({"front": "Writer"}));
+        let asked = std::time::Instant::now();
+        assert!(
+            !records.flush(Duration::from_millis(200)),
+            "a write the daemon never answered is not taken for written",
+        );
+        let waited = asked.elapsed();
+        assert!(
+            waited < Duration::from_secs(5),
+            "the end waited {waited:?} for a daemon that never answers",
+        );
+        drop(daemon);
+    }
 
     /// A session in a workspace's VM reads each of its records from the one record its device may
     /// write, under the name it has everywhere, and asks for that record, never the person's

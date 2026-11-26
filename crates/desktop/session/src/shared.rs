@@ -42,7 +42,7 @@ impl Shared {
                 std::time::Duration::from_secs(5),
             );
             if let Some(records) = &self.records {
-                records.flush();
+                records.flush(std::time::Duration::from_secs(5));
             }
             return;
         }
@@ -64,7 +64,7 @@ impl Shared {
             .borrow_mut()
             .tell_placements(&self.desktop, self.launch.as_deref());
         if let Some(records) = &self.records {
-            records.flush();
+            records.flush(std::time::Duration::from_secs(5));
         }
     }
 

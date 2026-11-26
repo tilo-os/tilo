@@ -1886,6 +1886,17 @@ impl Workspaces {
         }
     }
 
+    /// The address an invitation `device` asked for names: this device's own as it stands, where
+    /// `device` is this device, which redeems the invitation in process and dials nothing; else
+    /// [`Self::invitation_addr`], for a device that dials this one from wherever it is.
+    pub(super) async fn invitation_addr_for(&self, device: &DeviceCert) -> EndpointAddr {
+        let here = self.endpoint_addr();
+        if here.id.as_bytes() == &device.device_public_key {
+            return here;
+        }
+        self.invitation_addr().await
+    }
+
     /// The hint an invitation of `workspace` carries, signed for this device answering at `addr`.
     pub(super) fn invitation_hint(
         &self,

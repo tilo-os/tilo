@@ -120,7 +120,7 @@ const SLOW_ASK: std::time::Duration = std::time::Duration::from_secs(2);
 /// How long a blocking ask waits for the daemon's answer before it fails, saying what it asked,
 /// how long it waited, and whether the runtime that carries the link ever ran it: a daemon
 /// answers a desktop's ask in milliseconds, so one that waits this long waits on something held.
-const ASK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+pub(crate) const ASK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 /// Why a blocking ask of `asking` failed after waiting `waited`: the daemon never answered it,
 /// or, where the runtime that carries the link never `ran` it, that runtime's thread is held and
 /// the daemon was never asked.

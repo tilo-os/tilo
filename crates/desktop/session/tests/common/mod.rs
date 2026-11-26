@@ -2001,12 +2001,15 @@ pub fn publisher(session: &Session, action: &str) -> Option<String> {
 /// handed to `records` before this was answered.
 ///
 /// # Panics
-/// The record could not be read.
+/// The record could not be read, or the writes before it were not answered in time.
 pub fn kept(
     records: &tilo_session_client::device_records::DeviceRecords,
     name: &str,
 ) -> Option<serde_json::Value> {
-    records.flush();
+    assert!(
+        records.flush(tilo_test_env::hang_bound()),
+        "the writes before {name} were answered"
+    );
     records
         .record(name)
         .read()
