@@ -2211,8 +2211,10 @@ fn admit_within<H: tilo_actions::remote::ActionProvider + Send + Sync + 'static>
 }
 
 /// The longest first line a native connection is read for before it is served: a forward to
-/// another device, or the first request of any other.
-pub(crate) const FIRST_LINE: u64 = 64 * 1024;
+/// another device, or the first request of any other. An action frame is the first line of a
+/// connection that speaks the action wire, so the line is read up to the largest frame the wire
+/// carries: one cut short reads as no frame, and its caller would wait on an answer never sent.
+pub(crate) const FIRST_LINE: u64 = tilo_actions::remote::MAX_REMOTE_ACTION_FRAME_BYTES as u64 + 2;
 
 /// Connections the native endpoint serves at once.
 const MAX_CONNECTIONS: usize = 64;

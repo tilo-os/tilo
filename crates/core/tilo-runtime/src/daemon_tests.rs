@@ -3596,3 +3596,24 @@ fn a_call_in_flight_as_the_persons_part_ends_is_answered_and_the_next_one_waits_
         "the next part answers it"
     );
 }
+
+/// A connection whose first line is an action frame far larger than a request line (a package
+/// file's piece, uploaded to the workspace) has the whole frame read as its first line: cut
+/// short, it reads as no frame and its caller waits on an answer that is never sent.
+#[cfg(unix)]
+#[test]
+fn a_first_line_as_long_as_a_frame_is_read_whole() {
+    use std::io::Write as _;
+    let (ours, mut theirs) = tilo_socket::pair().unwrap();
+    let long = 512 * 1024;
+    let writing = std::thread::spawn(move || {
+        let mut line = vec![b'a'; long];
+        line.push(b'\n');
+        theirs.write_all(&line).unwrap();
+        theirs.write_all(b"after").unwrap();
+    });
+    let (first, _rest, _descriptors) = super::first_line(&ours, Vec::new()).unwrap();
+    writing.join().unwrap();
+    assert_eq!(first.len(), long + 1);
+    assert_eq!(first.last(), Some(&b'\n'));
+}
