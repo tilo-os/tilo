@@ -150,6 +150,18 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(calls, ["a", "b"])
         sleep.assert_not_called()
 
+        # The budget counts from the run's start, the packaging before the uploads included, as
+        # the job's timeout does: a wait that fits the budget alone but not what is left of it
+        # stops the run.
+        calls.clear()
+        with (patch.object(check.subprocess, "run", side_effect=cargo),
+              patch.object(check.time, "time", return_value=1795565007.0 - 60),
+              patch.object(check, "STARTED", check.time.monotonic() - 1000),
+              patch.object(check.time, "sleep") as sleep):
+            self.assertEqual(check.publish_each(Path("."), ["a", "b", "c"], 5, "0.4.1", 1050), 1)
+        self.assertEqual(calls, ["a", "b"])
+        sleep.assert_not_called()
+
 
 class LocalRegistryChecksumTests(unittest.TestCase):
     def setUp(self):

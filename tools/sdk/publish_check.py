@@ -59,9 +59,15 @@ Modes:
                  limits how fast an account takes new names (a burst, then
                  one every ten minutes): on its 429 the run waits until the
                  time crates.io names and carries on, logging "N of M".
-                 `--budget SECONDS` stops it before a wait would pass that
-                 long; a crate already there is skipped, so publishing the
-                 same tag again finishes a release that stopped halfway.
+                 `--budget SECONDS` stops it before a wait would take the run
+                 past that long since it started; a crate already there is
+                 skipped, so publishing the same tag again finishes a release
+                 that stopped halfway.
+
+At a release tag's version every mode leaves out the crates already on crates.io
+at it: they are neither packaged nor built again, and what depends on them
+resolves them from crates.io, so a release carried on after crates.io's limit
+packages and checks only what it still has to publish.
 
 `--crates A,B` packages only those crates and the crates of the set they depend on (each
 must be ready), for a proof that needs a few of them (tools/sdk/published_crates_proof.py);
@@ -736,6 +742,19 @@ def package(tree: pathlib.Path, target: pathlib.Path, ready: set[str],
     os.environ["CARGO_NET_OFFLINE"] = "false"
     forks_as_members(tree)
     at_version(tree, ready, version)
+    # At a release's version, a crate crates.io already holds is final: it is neither packaged,
+    # checked nor published again, and what builds on it resolves it from crates.io. A release
+    # carried on after crates.io's limit stopped it packages only what it still has to publish.
+    released = set()
+    if version != STAND_IN and not args.crates:
+        released = {name for name in ready if on_crates_io(name, version)}
+        for name in sorted(released):
+            print(f"{name}@{version} is already on crates.io; skipping it")
+    remaining = [name for name in publication_order(ready, needs) if name not in released]
+    if not remaining:
+        print(f"every ready crate is on crates.io at {version}")
+        return 0
+    ready = set(remaining)
     carried = embed_outside_files(tree, ready)
     if carried:
         print(f"Files the packages embed from elsewhere in the repository, carried in each "
@@ -771,13 +790,7 @@ def package(tree: pathlib.Path, target: pathlib.Path, ready: set[str],
           f"{MAX_CRATE_BYTES // 1048576} MiB)", flush=True)
     if not args.publish:
         return 0
-    remaining = [name for name in publication_order(ready, needs) if not on_crates_io(name, version)]
-    for name in sorted(ready - set(remaining)):
-        print(f"{name}@{version} is already on crates.io; skipping it")
-    if not remaining:
-        print(f"every ready crate is on crates.io at {version}")
-        return 0
-    return publish_each(tree, remaining, len(ready), version, args.budget)
+    return publish_each(tree, remaining, len(ready) + len(released), version, args.budget)
 
 
 def publication_order(ready: set[str], needs: dict[str, set[str]]) -> list[str]:
@@ -813,6 +826,9 @@ def publication_order(ready: set[str], needs: dict[str, set[str]]) -> list[str]:
 # What crates.io answers when an account takes new names (or versions) faster than it allows.
 RATE_LIMITED = re.compile(r"try again after (.+? GMT)")
 
+# When this run started: a publication's budget counts from here, as the job's timeout does.
+STARTED = time.monotonic()
+
 
 def retry_after(output: str) -> float | None:
     """When crates.io's rate limit in OUTPUT lets the next upload through, as a Unix time."""
@@ -825,8 +841,8 @@ def retry_after(output: str) -> float | None:
 def publish_each(tree: pathlib.Path, remaining: list[str], total: int, version: str,
                  budget: float | None) -> int:
     """`cargo publish` each of REMAINING in turn, waiting out crates.io's rate limit; stop when
-    BUDGET seconds would be passed by the next wait, so a later run carries on."""
-    started = time.monotonic()
+    the next wait would take the run past BUDGET seconds since it started (STARTED, so the
+    packaging before counts too, as it does for the job's timeout), so a later run carries on."""
     done = total - len(remaining)
     for name in remaining:
         while True:
@@ -844,7 +860,7 @@ def publish_each(tree: pathlib.Path, remaining: list[str], total: int, version: 
                       file=sys.stderr)
                 return 1
             wait = max(until - time.time(), 0) + 5
-            if budget is not None and time.monotonic() - started + wait > budget:
+            if budget is not None and time.monotonic() - STARTED + wait > budget:
                 print(f"{done} of {total} crates are on crates.io at {version}; crates.io takes "
                       f"the next at {time.strftime('%H:%M:%S UTC', time.gmtime(until))}, past "
                       "this run's budget. Publish again on the same tag to carry on.",
