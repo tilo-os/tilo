@@ -632,6 +632,12 @@ class MachineDaemon:
         # The unit's `RuntimeDirectory` and its state: the one open to every account, the other
         # private to the account the daemon runs as, which the daemon refuses to serve otherwise.
         self.RUNTIME.mkdir(parents=True, exist_ok=True)
+        # Each version walks a computer of its own, with its own identity root: the daemon starts
+        # from no state of the last one's. A record that this account already founded a person,
+        # whose identity lives in the last version's root, would answer its sign-in with that
+        # person and never a shell, since their part cannot start without their identity.
+        if self.PROFILE.exists():
+            shutil.rmtree(self.PROFILE)
         self.PROFILE.mkdir(parents=True, exist_ok=True)
         self.PROFILE.chmod(0o700)
         logs = self.out / "logs"
