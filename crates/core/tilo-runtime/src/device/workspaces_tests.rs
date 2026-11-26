@@ -841,6 +841,48 @@ async fn a_persons_workspace_is_founded_when_they_first_need_one() {
     assert_eq!(started_again.get(), Some(founded.as_str()));
 }
 
+/// A computer that founded its person's workspace under an id of its own, before it was founded
+/// at the id their key names, and kept that id in its directory, still founds the person's at
+/// their own id the first time they need one: every device of theirs, and the daemon's own
+/// calls, enter that id. The workspace founded earlier stays held beside it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_workspace_founded_under_an_id_of_its_own_is_not_the_persons() {
+    let (own, directory, _, cert, _) = ServiceWorkspaces::test_of_person().await;
+    let person = cert.user_public_key;
+    let earlier = tilo_desktop_model::WorkspaceId::new();
+    own.found(earlier, "Home").await.unwrap();
+    std::fs::write(
+        directory.path().join(format!(
+            "{}{}",
+            crate::device::first_workspace::FOUNDED,
+            hex::encode(person)
+        )),
+        earlier.to_string(),
+    )
+    .unwrap();
+
+    let home = FirstWorkspace::open(Arc::clone(&own), None, directory.path(), &person).unwrap();
+    assert_eq!(
+        home.get(),
+        None,
+        "the earlier workspace is not the person's"
+    );
+    let founded = home.found().await.unwrap();
+    let theirs = tilo_server_protocol::servers::person_workspace_id(&person);
+    assert_eq!(founded, theirs, "the person's is founded at their own id");
+    let mut held: Vec<_> = own
+        .workspaces()
+        .iter()
+        .map(|listed| listed.id().to_string())
+        .collect();
+    held.sort();
+    let mut expected = vec![earlier.to_string(), theirs.clone()];
+    expected.sort();
+    assert_eq!(held, expected, "the earlier workspace stays held beside it");
+    let started_again = FirstWorkspace::open(own, None, directory.path(), &person).unwrap();
+    assert_eq!(started_again.get(), Some(theirs.as_str()));
+}
+
 /// The standing of the workspace a fresh person's computer founds encodes as the JSON the
 /// daemon publishes to their shell: its people and the devices each holds travel with string
 /// keys, and it reads back as it was.

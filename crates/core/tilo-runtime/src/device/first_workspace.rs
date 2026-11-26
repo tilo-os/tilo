@@ -58,26 +58,34 @@ impl FirstWorkspace {
         let file = login
             .is_none()
             .then(|| dir.join(format!("{FOUNDED}{}", hex::encode(person))));
+        let own = own_workspace(person);
+        let held = || {
+            let kept = Arc::clone(&workspaces);
+            super::workspaces::block_on_owned(async move { kept.keeps(own).await })
+                .then(|| own.to_string())
+        };
         let named = match (login, &file) {
             (Some(login), _) => Some(login.to_owned()),
             (None, Some(file)) => match std::fs::read_to_string(file) {
-                Ok(kept) => Some(
-                    WorkspaceId::parse(kept.trim())
-                        .ok_or_else(|| {
-                            std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                format!("{} names no workspace", file.display()),
-                            )
-                        })?
-                        .to_string(),
-                ),
-                // A start that founded it before it was named here holds it all the same.
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    let own = own_workspace(person);
-                    let kept = Arc::clone(&workspaces);
-                    super::workspaces::block_on_owned(async move { kept.keeps(own).await })
-                        .then(|| own.to_string())
+                Ok(kept) => {
+                    let kept = WorkspaceId::parse(kept.trim()).ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("{} names no workspace", file.display()),
+                        )
+                    })?;
+                    // A workspace founded under an id of its own, before the person's was founded
+                    // at the id their key names, is not theirs: every device of theirs, and this
+                    // daemon's own calls, enter that id. It stays held as any other workspace,
+                    // and the person's is founded when they first need one.
+                    if kept == own {
+                        Some(own.to_string())
+                    } else {
+                        held()
+                    }
                 }
+                // A start that founded it before it was named here holds it all the same.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => held(),
                 Err(error) => return Err(error),
             },
             (None, None) => None,
