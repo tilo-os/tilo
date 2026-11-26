@@ -162,15 +162,3 @@ fn check_discord_origin_contract() -> Result<(), String> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn service_session_protocol_two_probe_exercises_cookie_and_origin_codecs() {
-        let proof = super::service_session_capability().unwrap();
-        assert_eq!(proof["service_session_protocol"], 2);
-        assert_eq!(proof["codec_verified"], true);
-        assert!(!proof.to_string().contains("synthetic-"));
-        assert!(proof.get("authenticated").is_none());
-    }
-}

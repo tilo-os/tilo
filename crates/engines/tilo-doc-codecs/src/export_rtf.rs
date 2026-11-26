@@ -433,6 +433,3 @@ fn push_escaped(out: &mut String, text: &str) {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

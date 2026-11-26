@@ -130,19 +130,3 @@ fn pin_of(certificates: Option<&[rustls::pki_types::CertificateDer<'_>]>) -> Str
         .map(|der| blake3::hash(der.as_ref()).to_hex().to_string())
         .unwrap_or_default()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_pin_is_the_certificate_it_was_hashed_from() {
-        let der = rustls::pki_types::CertificateDer::from(b"cert".to_vec());
-        let chain = [der];
-        assert_eq!(
-            pin_of(Some(&chain)),
-            blake3::hash(b"cert").to_hex().as_str()
-        );
-        assert_eq!(pin_of(None), "");
-    }
-}

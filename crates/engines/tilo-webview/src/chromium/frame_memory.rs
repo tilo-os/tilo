@@ -92,22 +92,6 @@ impl FrameMemory {
         state.store(FREE, Ordering::Release);
         Ok(taken)
     }
-
-    /// Writes a frame into `slot` and marks it ready, as the host does.
-    #[cfg(test)]
-    pub(super) fn publish(&self, slot: u32, bgra: &[u8]) {
-        assert!(slot < SLOTS && bgra.len() <= SLOT_BYTES);
-        assert_eq!(self.state(slot).load(Ordering::Acquire), FREE);
-        // SAFETY: in bounds, and the slot is free: nobody reads it.
-        unsafe { std::ptr::copy_nonoverlapping(bgra.as_ptr(), self.slot(slot), bgra.len()) };
-        self.state(slot).store(READY, Ordering::Release);
-    }
-
-    /// Whether the reader has freed `slot`.
-    #[cfg(test)]
-    pub(super) fn is_free(&self, slot: u32) -> bool {
-        self.state(slot).load(Ordering::Acquire) == FREE
-    }
 }
 
 /// Takes a frame out of the frame memory for the tab it belongs to, freeing its slot

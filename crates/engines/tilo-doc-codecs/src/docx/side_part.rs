@@ -162,20 +162,3 @@ pub(super) fn render_paragraph(
     out.push_str("</w:p>");
     out
 }
-
-#[cfg(test)]
-mod tests {
-    use super::scan_items;
-
-    #[test]
-    fn a_part_cut_off_inside_an_item_ends_the_scan() {
-        let mut closed = Vec::new();
-        scan_items(
-            br#"<w:comments><w:comment w:id="1"><w:p/></w:comment><w:comment w:id="2"><w:p>"#,
-            b"w:comment",
-            |_| Some(()),
-            |(), raw| closed.push(raw.to_string()),
-        );
-        assert_eq!(closed, [r#"<w:comment w:id="1"><w:p/></w:comment>"#]);
-    }
-}

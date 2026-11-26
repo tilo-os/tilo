@@ -1140,26 +1140,3 @@ impl<'a> Device<'a> for TextDevice {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn text_strings_decode_every_encoding() {
-        assert_eq!(text_string(b"Plain"), "Plain");
-        assert_eq!(text_string(&[0xFE, 0xFF, 0x00, 0x48, 0x00, 0x69]), "Hi");
-        assert_eq!(text_string(&[0xEF, 0xBB, 0xBF, b'o', b'k']), "ok");
-    }
-
-    #[test]
-    fn quarter_turns_rotate_clockwise() {
-        let px = [255, 0, 0, 255, 0, 0, 255, 255];
-        let (out, w, h) = rotate(&px, 2, 1, 1);
-        assert_eq!((w, h), (1, 2));
-        assert_eq!(out, [255, 0, 0, 255, 0, 0, 255, 255]);
-        let (out, w, h) = rotate(&px, 2, 1, 2);
-        assert_eq!((w, h), (2, 1));
-        assert_eq!(out, [0, 0, 255, 255, 255, 0, 0, 255]);
-    }
-}

@@ -251,8 +251,3 @@ impl Drop for DevicePipeline {
         self.stop.stop();
     }
 }
-
-#[cfg(test)]
-pub(super) fn outstanding_workers() -> usize {
-    OUTSTATE.load(Ordering::Acquire)
-}

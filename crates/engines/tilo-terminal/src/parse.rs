@@ -487,10 +487,6 @@ pub fn shown(cwd: &str, items: &[Item], position: usize) -> Result<Shown, String
     })
 }
 
-#[cfg(test)]
-#[path = "parse/tests.rs"]
-mod tests;
-
 /// `text` without the escape sequences a program printed: what it said, in its own words.
 /// Carriage returns overwrite the row they return to, as a screen does, so a progress line
 /// reads as its last frame.

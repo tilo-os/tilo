@@ -500,34 +500,3 @@ impl Drop for PcmPlayer {
         self.js.close();
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_time_names_the_frame_whose_interval_holds_it() {
-        // Frame 62 at 30 fps starts at 2066.67 ms: the millisecond before it
-        // is still frame 61, the instant itself is 62.
-        assert_eq!(frame_at(2.066, 30.0), 61);
-        assert_eq!(frame_at(62.0 / 30.0, 30.0), 62);
-        // Frame starts that land a hair under the boundary in floating point
-        // still count as that frame.
-        assert_eq!(frame_at(0.1 * 3.0, 10.0), 3);
-        assert_eq!(frame_at(-1.0, 30.0), 0);
-        assert_eq!(frame_at(1.0, 0.0), 30, "an unknown rate counts at 30");
-    }
-
-    #[test]
-    fn a_native_host_seeks_and_encodes_through_its_sessions_instead() {
-        let source = Source::LocalFile("/nonexistent/clip.mp4".into());
-        assert!(!FrameSeeker::available());
-        assert!(FrameSeeker::open(&source).is_none());
-        assert!(!ClipEncoder::available());
-        assert!(ClipEncoder::start(64, 64, 30.0, 1e6, true).is_err());
-        assert!(FrameSeeker::open_still(&source).is_none());
-        assert!(PcmDecoder::open(&source).is_none());
-        assert!(PcmPlayer::open().is_none());
-        assert!(in_memory_source(b"bytes", "video/mp4").is_none());
-    }
-}

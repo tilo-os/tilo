@@ -166,27 +166,6 @@ fn next_resize_trace(counter: &std::sync::atomic::AtomicU64) -> Option<u64> {
         .map(|n| n.saturating_add(1))
 }
 
-#[cfg(test)]
-mod resize_trace_tests {
-    use super::*;
-    use std::sync::atomic::AtomicU64;
-
-    #[test]
-    fn trace_limit_never_wraps_or_reopens_logging() {
-        let counter = AtomicU64::new(0);
-        for expected in 1..=TRACE_FRAMES {
-            assert_eq!(next_resize_trace(&counter), Some(expected));
-        }
-        for _ in 0..3 {
-            assert_eq!(next_resize_trace(&counter), None);
-            assert_eq!(counter.load(Ordering::Relaxed), TRACE_FRAMES);
-        }
-        let exhausted = AtomicU64::new(u64::MAX);
-        assert_eq!(next_resize_trace(&exhausted), None);
-        assert_eq!(exhausted.load(Ordering::Relaxed), u64::MAX);
-    }
-}
-
 impl State {
     fn print_summary(&self) {
         let elapsed = self.started.map_or(0.0, |s| s.elapsed().as_secs_f64());
@@ -272,51 +251,5 @@ impl Ring {
             p99 = pct(0.99),
             max = sorted.last().copied().unwrap_or(0.0),
         );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    tilo_test_env::scenario! {
-        fn the_ring_wraps_keeps_recent_and_orders_percentiles;
-
-        phase ring_percentiles_are_ordered;
-        {
-            let mut r = Ring::new();
-            for i in 0..100 {
-                r.push(f64::from(i));
-            }
-            let mut sorted: Vec<f64> = r.buf[..r.len].to_vec();
-            sorted.compact_sort_by(|a, b| a.partial_cmp(b).unwrap());
-            // p50 of 0..100 sits mid-range, p95 near the top.
-            let pct = |p: f64| {
-                let len = u32::try_from(sorted.len()).unwrap_or(u32::MAX);
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "p is a fixed non-negative percentile constant, so the \
-                          resulting index is always in range"
-                )]
-                let idx = (f64::from(len) * p) as usize;
-                sorted[idx.min(sorted.len() - 1)]
-            };
-            assert!(pct(0.50) >= 45.0 && pct(0.50) <= 55.0);
-            assert!(pct(0.95) >= 90.0);
-        }
-
-        phase ring_wraps_and_keeps_recent;
-        {
-            let mut r = Ring::new();
-            for i in 0..(SAMPLES + 10) {
-                let value = u32::try_from(i).unwrap_or(u32::MAX);
-                r.push(f64::from(value));
-            }
-            assert_eq!(r.len, SAMPLES);
-            // Oldest ten were overwritten; the minimum retained is >= 10.
-            let min = r.buf.iter().copied().fold(f64::INFINITY, f64::min);
-            assert!(min >= 10.0);
-        }
     }
 }

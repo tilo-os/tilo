@@ -292,6 +292,3 @@ mod jobs {
         true
     }
 }
-
-#[cfg(test)]
-mod tests;

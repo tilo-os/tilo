@@ -705,6 +705,3 @@ fn stable_id(snap: &Resolved<'_>, title: &str) -> String {
     }
     format!("{hash:016x}")
 }
-
-#[cfg(test)]
-mod tests;

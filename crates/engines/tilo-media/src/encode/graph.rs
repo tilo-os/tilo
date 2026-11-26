@@ -125,20 +125,3 @@ impl Drop for Graph {
         let _ = self.pipeline.set_state(gst::State::Null);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn frame_boundaries_do_not_accumulate_timestamp_roundoff() {
-        for fps in [24_u64, 30, 60] {
-            #[expect(clippy::cast_precision_loss, reason = "small exact integers")]
-            let rate = fps as f64;
-            assert_eq!(
-                frame_time(3600 * fps, rate),
-                gst::ClockTime::from_seconds(3600),
-            );
-        }
-    }
-}

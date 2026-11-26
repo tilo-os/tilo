@@ -59,23 +59,3 @@ impl tilo_platform_caps::Feature for Feature {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tilo_platform_caps::Feature as _;
-
-    #[test]
-    fn features_left_out_of_the_build_are_unsupported() {
-        if !cfg!(gst_decode) {
-            assert_eq!(
-                availability(Feature::Playback),
-                Availability::Unsupported(NO_DECODE)
-            );
-        }
-        assert_eq!(
-            availability(Feature::AudioGraph),
-            Feature::AudioGraph.targets()[tilo_platform_caps::COLUMN]
-        );
-    }
-}

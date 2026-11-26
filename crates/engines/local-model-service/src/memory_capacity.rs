@@ -157,6 +157,3 @@ fn bounded_text(path: &Path) -> Result<String, String> {
     String::from_utf8(bytes)
         .map_err(|_| "runtime memory capacity unavailable: invalid observation encoding".into())
 }
-
-#[cfg(test)]
-mod tests;

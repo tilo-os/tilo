@@ -39,6 +39,3 @@ pub fn call(op: &str, input: &str) -> Result<String, String> {
         other => Err(format!("`{other}` is no op this device runs")),
     }
 }
-
-#[cfg(test)]
-mod tests;

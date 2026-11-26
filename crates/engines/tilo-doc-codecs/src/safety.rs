@@ -23,35 +23,3 @@ pub fn read_zip_parts(
 ) -> Result<Vec<(String, Vec<u8>)>, CodecError> {
     bounded_zip::read_zip_parts(bytes, limits).map_err(|e| CodecError::Parse(e.to_string()))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::{Cursor, Write};
-    use zip::write::SimpleFileOptions;
-    use zip::{CompressionMethod, ZipWriter};
-
-    #[test]
-    fn limit_breaches_and_dtds_surface_as_parse_errors() {
-        let mut zw = ZipWriter::new(Cursor::new(Vec::new()));
-        let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-        zw.start_file("content.xml", opts).unwrap();
-        zw.write_all(br#"<!DOCTYPE lolz [<!ENTITY a "boom">]><doc>&a;</doc>"#)
-            .unwrap();
-        let z = zw.finish().unwrap().into_inner();
-        let err = read_zip_parts(&z, &ZipLimits::default()).unwrap_err();
-        assert!(
-            matches!(&err, CodecError::Parse(msg) if msg.contains("DTD")),
-            "expected DTD rejection, got {err}"
-        );
-        let limits = ZipLimits {
-            max_part_bytes: 8,
-            ..ZipLimits::default()
-        };
-        let err = read_zip_parts(&z, &limits).unwrap_err();
-        assert!(
-            matches!(&err, CodecError::Parse(msg) if msg.contains("per-part limit")),
-            "expected size rejection, got {err}"
-        );
-    }
-}

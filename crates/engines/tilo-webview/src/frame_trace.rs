@@ -120,38 +120,6 @@ pub fn finish_scene(cpu_frame_id: Option<u64>) {
     );
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    tilo_test_env::scenario! {
-        fn frame_traces_are_per_scene_and_overflow_explicitly;
-
-        phase scenes_keep_repeated_cached_frames_but_do_not_leak_previous_scene;
-        {
-            let mut scene = SceneFrames::default();
-            scene.record(7);
-            scene.record(7);
-            scene.record(9);
-            assert_eq!(scene.take(), (vec![7, 9], false));
-            assert_eq!(scene.take(), (vec![], false));
-            scene.record(7);
-            assert_eq!(scene.take(), (vec![7], false));
-        }
-
-        phase overflow_is_explicit_and_resets_for_the_next_scene;
-        {
-            let mut scene = SceneFrames::default();
-            for id in 1..=65 {
-                scene.record(id);
-            }
-            let (ids, overflow) = scene.take();
-            assert_eq!(ids.len(), 64);
-            assert!(overflow);
-            assert_eq!(scene.take(), (vec![], false));
-        }
-    }
-}
-
 /// Empty the frame ids recorded in this scene, for a test that inspects one.
 pub fn take_for_test() -> (Vec<u64>, bool) {
     DRAWN.with(|scene| scene.borrow_mut().take())

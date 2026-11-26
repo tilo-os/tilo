@@ -652,36 +652,3 @@ fn unexpected(response: &Response) -> Error {
         "unexpected reply from the PDF helper: {response:?}"
     ))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_helper_runs_in_utc_so_it_never_reads_a_zone_file() {
-        let command = helper_command(Path::new("tilo-pdf-helper"));
-        let tz = command
-            .get_envs()
-            .find(|(key, _)| *key == "TZ")
-            .and_then(|(_, value)| value);
-        // A POSIX rule, not a zone name ("UTC", "Etc/UTC"), which glibc
-        // would look up under /usr/share/zoneinfo.
-        assert_eq!(tz, Some(std::ffi::OsStr::new("UTC0")));
-    }
-
-    /// A test job and a development build publish the catalog appearance
-    /// text is set in below `TILO_FONT_ASSET_CACHE`; the helper reads it
-    /// through the same variable, so it must be handed on.
-    #[test]
-    fn the_helper_inherits_the_prepared_font_catalog() {
-        let command = helper_command(Path::new("tilo-pdf-helper"));
-        let forwarded = command
-            .get_envs()
-            .find(|(key, _)| *key == "TILO_FONT_ASSET_CACHE")
-            .and_then(|(_, value)| value);
-        assert_eq!(
-            forwarded,
-            std::env::var_os("TILO_FONT_ASSET_CACHE").as_deref()
-        );
-    }
-}

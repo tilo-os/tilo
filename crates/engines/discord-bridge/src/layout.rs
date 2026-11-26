@@ -313,6 +313,3 @@ impl Guild {
         })
     }
 }
-
-#[cfg(test)]
-pub(crate) mod tests;

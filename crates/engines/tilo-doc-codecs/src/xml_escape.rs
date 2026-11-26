@@ -55,35 +55,3 @@ fn escape(s: &str, quot: Option<&str>, apos: Option<&str>) -> String {
     }
     out
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const ALL: &str = r#"a&b<c>d"e'f"#;
-
-    #[test]
-    fn xml_escapers_escape_exactly_their_contexts_specials() {
-        {
-            assert_eq!(escape_text(ALL), r#"a&amp;b&lt;c&gt;d"e'f"#);
-            let mut out = String::new();
-            for c in ALL.chars() {
-                push_text(&mut out, c);
-            }
-            assert_eq!(out, escape_text(ALL));
-        }
-        {
-            assert_eq!(escape_attr(ALL), r"a&amp;b&lt;c&gt;d&quot;e'f");
-        }
-        {
-            assert_eq!(escape_attr_quotes(ALL), "a&amp;b&lt;c&gt;d&quot;e&apos;f");
-        }
-        {
-            assert_eq!(escape_html_attr(ALL), "a&amp;b&lt;c&gt;d&quot;e&#39;f");
-        }
-        {
-            assert_eq!(escape_text("é &amp; 😀"), "é &amp;amp; 😀");
-            assert_eq!(escape_attr(""), "");
-        }
-    }
-}

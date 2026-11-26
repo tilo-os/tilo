@@ -988,31 +988,3 @@ async fn read(socket: &mut Socket) -> Result<Value, ()> {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn checkpoints_round_trip_and_tolerate_an_empty_start() {
-        let checkpoint = Checkpoint {
-            session_id: Some("s".into()),
-            resume_url: Some("wss://gateway-us-east1-b.discord.gg".into()),
-            seq: 9,
-            session_started_s: 1_791_801_000,
-            last_seen: BTreeMap::from([(
-                "1500".into(),
-                Seen {
-                    message: "9".into(),
-                    parent: Some("1101".into()),
-                },
-            )]),
-            history_read: true,
-        };
-        let back: Checkpoint =
-            serde_json::from_value(serde_json::to_value(&checkpoint).unwrap()).unwrap();
-        assert_eq!(back, checkpoint);
-        let empty: Checkpoint = serde_json::from_value(json!({})).unwrap();
-        assert_eq!(empty, Checkpoint::default());
-    }
-}

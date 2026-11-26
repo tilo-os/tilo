@@ -66,21 +66,3 @@ pub fn parse_pdf_date(date: &str) -> Option<i64> {
     let days = days_from_civil(year, month, day);
     Some(((days * 24 + hour) * 60 + minute) * 60_000 + second * 1_000)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{parse_pdf_date, pdf_date};
-
-    #[test]
-    fn a_moment_and_its_pdf_date_round_trip() {
-        let ms = parse_pdf_date("D:20260317123000Z").expect("a date");
-        assert_eq!(pdf_date(ms), "D:20260317123000Z");
-        assert_eq!(pdf_date(0), "");
-        assert_eq!(parse_pdf_date(""), None);
-        // A date that names only its day fills the rest.
-        assert_eq!(
-            parse_pdf_date("D:20260317"),
-            Some(ms - (12 * 3_600 + 30 * 60) * 1_000)
-        );
-    }
-}

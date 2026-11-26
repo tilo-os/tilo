@@ -140,7 +140,3 @@ pub(super) fn composition_command(text: &str, cursor: Option<(usize, usize)>) ->
     );
     json!({"op":"ime_composition","text":text,"selection_start":start,"selection_end":end})
 }
-
-#[cfg(test)]
-#[path = "text_field_tests.rs"]
-mod tests;

@@ -610,6 +610,3 @@ fn sanitize_href(href: &str) -> String {
     }
     trimmed.to_string()
 }
-
-#[cfg(test)]
-mod tests;

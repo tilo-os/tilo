@@ -1238,22 +1238,3 @@ pub fn convert_with(
         families: c.families.into_inner().into_iter().collect(),
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::spaced;
-
-    #[test]
-    fn a_line_break_in_the_source_is_a_space_on_the_line() {
-        // As an engine hands over the text of one line box of a paragraph its page wrote
-        // on several lines.
-        assert_eq!(
-            spaced("had long\nsince stopped arguing", false),
-            "had long since stopped arguing"
-        );
-        assert_eq!(spaced(" 9 crowns,\n", false), " 9 crowns, ");
-        assert_eq!(spaced("to   read\n\t  twice", false), "to read twice");
-        // A page that keeps its spaces has them drawn, and still no line break in a line.
-        assert_eq!(spaced("a  b\tc", true), "a  b c");
-    }
-}

@@ -3,7 +3,21 @@ use serde_json::json;
 
 use super::*;
 use crate::guild::{Link, Mapping, Ownership};
-use crate::layout::tests::mapping;
+use crate::guild::{Origin, map_key};
+
+/// A mapping the bridge made, its Discord side made for Tilo's.
+fn mapping(kind: MappedKind, tilo: &str, discord: &str) -> Mapping {
+    Mapping {
+        key: map_key(kind, tilo),
+        kind,
+        tilo: tilo.into(),
+        discord: discord.into(),
+        origin: Origin::Tilo,
+        persona: None,
+        root: None,
+        picture: None,
+    }
+}
 
 /// The published id of Chat's resource `id`.
 fn at(id: &str) -> String {

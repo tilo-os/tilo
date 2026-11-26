@@ -3397,11 +3397,7 @@ use event_decoding::{
     validate_event,
 };
 #[cfg(test)]
-mod extension_tests;
-#[cfg(test)]
 mod file_chooser_tests;
-#[cfg(test)]
-mod frame_tests;
 #[cfg(test)]
 mod http_auth_tests;
 #[cfg(test)]
