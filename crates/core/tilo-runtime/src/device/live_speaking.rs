@@ -289,7 +289,7 @@ impl Speaking {
     /// `frame`, what `member` said on another device, reaches the apps watching `workspace`, as
     /// the workspace's live session hearing it does: what a test says for a device it does not
     /// run.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "test-support"))]
     pub(crate) fn hear_from_other_device(&self, member: &MemberId, frame: &Presence) {
         tell_watched(&self.watchers, &frame.cluster, member, frame, None);
     }
