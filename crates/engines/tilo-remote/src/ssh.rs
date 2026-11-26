@@ -471,27 +471,17 @@ struct Lines {
     shutdown: UnboundedReceiver<()>,
 }
 
-async fn run_session(
-    cfg: SshConfig,
-    status: &SharedStatus,
+/// Connects to the machine, checks its key, signs in and starts a shell on a terminal of the
+/// asked size.
+async fn open_shell(
+    cfg: &SshConfig,
     issue: &Arc<Mutex<Option<HostKeyIssue>>>,
-    lines: Lines,
-    said: &(dyn Fn(SshStatus) + Send + Sync),
-) -> anyhow::Result<()> {
-    let Lines {
-        output_tx,
-        mut input_rx,
-        mut commands,
-        mut resizes,
-        mut shutdown,
-    } = lines;
+) -> anyhow::Result<(client::Handle<Handler>, russh::Channel<client::Msg>)> {
     let config = Arc::new(client::Config {
         inactivity_timeout: Some(Duration::from_secs(3600)),
         ..Default::default()
     });
 
-    let host = cfg.host.clone();
-    let port = cfg.port;
     let mut session = client::connect(
         config,
         (cfg.host.as_str(), cfg.port),
@@ -508,11 +498,11 @@ async fn run_session(
             .as_ref()
             .map_or_else(
                 || anyhow!("connect: {error}"),
-                |rejected| anyhow!(rejected.message(&host, port)),
+                |rejected| anyhow!(rejected.message(&cfg.host, cfg.port)),
             )
     })?;
 
-    authenticate(&mut session, &cfg).await?;
+    authenticate(&mut session, cfg).await?;
 
     let channel = session.channel_open_session().await?;
     channel
@@ -527,30 +517,37 @@ async fn run_session(
         )
         .await?;
     channel.request_shell(true).await?;
+    Ok((session, channel))
+}
 
-    {
-        *status.lock().unwrap_or_else(PoisonError::into_inner) = SshStatus::Connected;
-        said(SshStatus::Connected);
-    }
+async fn run_session(
+    cfg: SshConfig,
+    status: &SharedStatus,
+    issue: &Arc<Mutex<Option<HostKeyIssue>>>,
+    mut lines: Lines,
+    said: &(dyn Fn(SshStatus) + Send + Sync),
+) -> anyhow::Result<()> {
+    let (session, mut channel) = open_shell(&cfg, issue).await?;
 
-    let mut channel = channel;
+    *status.lock().unwrap_or_else(PoisonError::into_inner) = SshStatus::Connected;
+    said(SshStatus::Connected);
     let session = Arc::new(session);
     loop {
         tokio::select! {
-            command = commands.recv() => {
+            command = lines.commands.recv() => {
                 if let Some(command) = command {
                     let session = Arc::clone(&session);
                     tokio::spawn(async move { run_transfer(session, command).await });
                 }
             }
-            size = resizes.recv() => {
+            size = lines.resizes.recv() => {
                 if let Some((columns, rows)) = size {
                     channel
                         .window_change(u32::from(columns), u32::from(rows), 0, 0)
                         .await?;
                 }
             }
-            queued = shutdown.recv() => {
+            queued = lines.shutdown.recv() => {
                 if queued.is_some() {
                     let _ = channel.eof().await;
                     break;
@@ -561,12 +558,12 @@ async fn run_session(
                     // Awaiting bounded output capacity deliberately slows the SSH read loop when
                     // the window cannot take output: real backpressure rather than dropping
                     // terminal bytes or growing an unbounded queue.
-                    if output_tx.send(data.to_vec()).await.is_err() { break; }
+                    if lines.output_tx.send(data.to_vec()).await.is_err() { break; }
                 }
                 Some(ChannelMsg::Eof | ChannelMsg::Close) | None => break,
                 _ => {}
             },
-            input = input_rx.recv() => if let Some(input) = input {
+            input = lines.input_rx.recv() => if let Some(input) = input {
                 match channel.data(&input.bytes[..]).await {
                     Ok(()) => {
                         if let Some(ack) = input.ack {
