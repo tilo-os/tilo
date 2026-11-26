@@ -682,6 +682,7 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
     use tilo_workspace_service::work::Where;
 
     const MAIL: &str = "so.tilo.mail";
+    const ACCOUNT: &str = "tl.so.tilo.mail.Account";
     const THREAD: &str = "tl.so.tilo.mail.Thread";
     const MESSAGE: &str = "tl.so.tilo.mail.Message";
     let dir = tempfile::tempdir().unwrap();
@@ -787,10 +788,25 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
         .await;
     };
 
+    // The account whose server holds the mail: what its conversations, and their messages, are
+    // nested under, as Mail keeps them.
+    put(
+        ACCOUNT,
+        "account-1",
+        None,
+        Stamp::ORIGIN_VERB,
+        &mail,
+        vec![
+            ("key", "account-1"),
+            ("address", "ada@example.org"),
+            ("name", "Ada"),
+        ],
+    )
+    .await;
     put(
         THREAD,
         "thread-1",
-        None,
+        Some("account-1"),
         Stamp::ORIGIN_VERB,
         &mail,
         Vec::new(),
@@ -905,6 +921,7 @@ async fn an_agents_new_mail_trigger_ignores_its_own_sent_mail_and_a_copy() {
     use tilo_resource_store::Stamp;
 
     const MAIL: &str = "so.tilo.mail";
+    const ACCOUNT: &str = "tl.so.tilo.mail.Account";
     const THREAD: &str = "tl.so.tilo.mail.Thread";
     const MESSAGE: &str = "tl.so.tilo.mail.Message";
     let dir = tempfile::tempdir().unwrap();
@@ -1004,10 +1021,25 @@ async fn an_agents_new_mail_trigger_ignores_its_own_sent_mail_and_a_copy() {
         .await;
     };
 
+    // The account whose server holds the mail: what its conversations, and their messages, are
+    // nested under, as Mail keeps them.
+    put(
+        ACCOUNT,
+        "account-1",
+        None,
+        Stamp::ORIGIN_VERB,
+        &mail,
+        vec![
+            ("key", "account-1"),
+            ("address", "ada@example.org"),
+            ("name", "Ada"),
+        ],
+    )
+    .await;
     put(
         THREAD,
         "thread-1",
-        None,
+        Some("account-1"),
         Stamp::ORIGIN_VERB,
         &mail,
         Vec::new(),
