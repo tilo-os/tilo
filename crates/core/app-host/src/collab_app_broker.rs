@@ -486,7 +486,7 @@ pub struct AppBrokerState {
     external_moderation_jobs: Mutex<external_moderation::Registry>,
     /// Remote-action invocations admitted through the action host, keyed by
     /// caller and invocation id so a retried id is idempotent.
-    remote_invocations: Mutex<tilo_actions::remote::InvocationLog<u64>>,
+    remote_invocations: Mutex<tilo_action_calls::InvocationLog<u64>>,
     /// The calls each app connection made inside an invocation delivered to it, by connection
     /// and call: whose they are, so the connection follows and cancels them as that caller.
     child_calls: Mutex<HashMap<(u64, tilo_actions::InvocationId), tilo_actions::remote::Caller>>,

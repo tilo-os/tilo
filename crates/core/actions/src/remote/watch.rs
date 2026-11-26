@@ -7,8 +7,6 @@
 //! ([`super::ActionProvider::changed`]), and a caller asks that of another device with
 //! [`super::RemoteActionMessage::ChangedRequest`].
 
-use super::{ActionCallError, ActionProvider, Caller, Pending, RemoteActionMessage};
-
 /// One member of a workspace present now: a person, or an agent acting in it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Here {
@@ -64,25 +62,3 @@ pub enum WatchScope {
 /// ([`ActionProvider::changed`]).
 pub const CHANGED_UNAVAILABLE: &str =
     "this provider cannot tell when the workspace's records or its people changed";
-
-/// The next time what `scope` follows may have changed, as `provider` tells it
-/// ([`ActionProvider::changed`]), answered for `correlation`: a provider that cannot tell says so,
-/// and the device that asked tells its waiter why rather than leaving it to a signal that never
-/// comes.
-pub(super) fn noticed<H: ActionProvider>(
-    provider: &H,
-    caller: &Caller,
-    correlation: u64,
-    scope: WatchScope,
-) -> Pending<RemoteActionMessage> {
-    let respond = move |result| RemoteActionMessage::ChangedResponse {
-        correlation,
-        result,
-    };
-    match provider.changed(caller, scope) {
-        Some(changed) => changed.map(respond),
-        None => Pending::ready(respond(Err(ActionCallError::Unavailable {
-            reason: CHANGED_UNAVAILABLE.into(),
-        }))),
-    }
-}

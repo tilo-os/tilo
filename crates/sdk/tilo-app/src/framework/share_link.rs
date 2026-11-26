@@ -531,8 +531,10 @@ mod tests {
         }
     }
 
-    /// A host answering with what the shell's `issue-invitation` answers.
+    /// A host answering with what the shell's `issue-invitation` answers; a client's calls to it
+    /// are answered as the runner answers them.
     fn shell(value: serde_json::Value) -> std::sync::Arc<tilo_actions::remote::TestProvider> {
+        ui_core::remote_actions::install_serve(tilo_action_calls::serve);
         std::sync::Arc::new(
             tilo_actions::remote::TestProvider::new().completing(move |_| {
                 tilo_actions::ActionOutput {

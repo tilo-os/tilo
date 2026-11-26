@@ -6,8 +6,8 @@ use super::{
     Pending, ResourceReads,
 };
 
-/// A shared provider is the provider: what lets one be handed to [`super::serve`], which
-/// keeps a handle for answers that wait.
+/// A shared provider is the provider: what lets one be handed to
+/// `tilo_action_calls::serve`, which keeps a handle for answers that wait.
 ///
 /// Every method is forwarded, [`Admitted`](super::Admitted) included: a handle kept to a provider
 /// must not be a provider that lost what the dispatch told it about the call, or a call made

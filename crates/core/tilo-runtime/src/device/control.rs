@@ -17,10 +17,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tilo_action_calls::{InvocationLog, Reservation};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ContentPuts,
-    InvocationLog, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
-    Reservation,
+    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
 };
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate, ResourceSpec};
 use tilo_lock::MutexRecover as _;

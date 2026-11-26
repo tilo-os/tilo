@@ -14703,6 +14703,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-action-calls"
+version = "0.1.0"
+dependencies = [
+ "postcard",
+ "serde",
+ "serde_json",
+ "tilo-action-policy",
+ "tilo-actions",
+ "tilo-clock",
+ "tilo-test-env",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-action-line"
 version = "0.1.0"
 dependencies = [
@@ -14710,6 +14725,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
+ "tilo-action-calls",
  "tilo-actions",
  "tilo-lock",
  "tilo-socket",
@@ -14790,7 +14806,6 @@ dependencies = [
  "tilo-lock",
  "tilo-rt",
  "tilo-selector",
- "tilo-socket",
  "tilo-test-env",
  "tilo-wake",
  "tilo-words",
@@ -14849,6 +14864,7 @@ dependencies = [
  "blake3",
  "serde",
  "serde_json",
+ "tilo-action-calls",
  "tilo-action-policy",
  "tilo-action-services",
  "tilo-actions",
@@ -14872,6 +14888,7 @@ name = "tilo-agent-turn"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "tilo-action-calls",
  "tilo-action-services",
  "tilo-actions",
  "tilo-agent-provider-config",
@@ -14905,6 +14922,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "tilo-action-calls",
  "tilo-action-line",
  "tilo-action-services",
  "tilo-actions",
@@ -14950,6 +14968,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tilo-action-calls",
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
@@ -15069,6 +15088,7 @@ dependencies = [
  "tempfile",
  "test-document-app",
  "tilo-accounts",
+ "tilo-action-calls",
  "tilo-action-policy",
  "tilo-action-services",
  "tilo-actions",
@@ -15326,6 +15346,7 @@ dependencies = [
  "serde_json",
  "settings-sections",
  "tempfile",
+ "tilo-action-calls",
  "tilo-action-policy",
  "tilo-app",
  "tilo-automerge",
@@ -15498,6 +15519,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.21",
+ "tilo-action-calls",
  "tilo-action-policy",
  "tilo-actions",
  "tilo-app-id",
@@ -16465,6 +16487,7 @@ dependencies = [
  "libc",
  "serde_json",
  "tempfile",
+ "tilo-action-calls",
  "tilo-actions",
  "tilo-files",
  "tilo-machine",
@@ -16834,6 +16857,7 @@ dependencies = [
  "serde_json",
  "serial_test",
  "tempfile",
+ "tilo-action-calls",
  "tilo-action-services",
  "tilo-actions",
  "tilo-audio-service",
@@ -17841,6 +17865,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "serde_json",
+ "tilo-action-calls",
  "tilo-action-policy",
  "tilo-action-services",
  "tilo-actions",
@@ -18291,6 +18316,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "tilo-accounts",
+ "tilo-action-calls",
  "tilo-action-services",
  "tilo-actions",
  "tilo-app-id",
@@ -19030,6 +19056,7 @@ dependencies = [
  "tempfile",
  "tilo-account-probe",
  "tilo-accounts",
+ "tilo-action-calls",
  "tilo-action-policy",
  "tilo-action-services",
  "tilo-actions",
@@ -19671,6 +19698,7 @@ name = "tilo-runner-native"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "tilo-action-calls",
  "tilo-action-line",
  "tilo-actions",
  "tilo-automerge-isolate",
@@ -19730,6 +19758,7 @@ dependencies = [
  "tempfile",
  "test-server",
  "thiserror 2.0.21",
+ "tilo-action-calls",
  "tilo-action-line",
  "tilo-action-policy",
  "tilo-action-services",
@@ -19874,6 +19903,7 @@ dependencies = [
  "rustix 1.1.6",
  "serde",
  "serde_json",
+ "tilo-action-calls",
  "tilo-actions",
  "tilo-browser-continuity-core",
  "tilo-canonical-json",
@@ -20276,6 +20306,7 @@ dependencies = [
  "tilo-accessibility-settings",
  "tilo-account-probe",
  "tilo-accounts",
+ "tilo-action-calls",
  "tilo-action-line",
  "tilo-action-policy",
  "tilo-action-services",
@@ -20463,6 +20494,7 @@ dependencies = [
  "hex",
  "n0-future",
  "serde_json",
+ "tilo-action-calls",
  "tilo-actions",
  "tilo-clock",
  "tilo-collab-types",
@@ -20501,6 +20533,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "test-server",
+ "tilo-action-calls",
  "tilo-action-policy",
  "tilo-action-services",
  "tilo-actions",
@@ -20565,6 +20598,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
+ "tilo-action-calls",
  "tilo-action-policy",
  "tilo-action-services",
  "tilo-actions",
@@ -22222,6 +22256,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-accounts",
+ "tilo-action-calls",
  "tilo-action-policy",
  "tilo-action-services",
  "tilo-actions",
@@ -24120,6 +24155,7 @@ dependencies = [
  "strsim",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-action-calls",
  "tilo-action-line",
  "tilo-action-policy",
  "tilo-action-services",

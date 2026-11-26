@@ -329,18 +329,14 @@ impl Daemon {
                 };
             // An admitted join runs on: it is answered once the device is in the call.
             let receipt = match receipt.status {
-                tilo_actions::remote::ReceiptStatus::Accepted => tilo_actions::remote::settle_with(
-                    &tree,
-                    &caller,
-                    receipt.invocation,
-                    None,
-                    until,
-                )
-                .wait_timeout(JOIN_WAIT)
-                .ok()
-                .flatten()
-                .flatten()
-                .map_or(receipt, |state| state.receipt()),
+                tilo_actions::remote::ReceiptStatus::Accepted => {
+                    tilo_action_calls::settle_with(&tree, &caller, receipt.invocation, None, until)
+                        .wait_timeout(JOIN_WAIT)
+                        .ok()
+                        .flatten()
+                        .flatten()
+                        .map_or(receipt, |state| state.receipt())
+                }
                 _ => receipt,
             };
             match receipt.status {

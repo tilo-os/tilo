@@ -21,6 +21,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use tilo_action_calls::settle_with;
 use tilo_action_services::workspace_invocations::{CANCEL, Origin, PROVIDER, RETRY, Spend, UNDO};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::secret_arguments::{
@@ -30,7 +31,7 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE,
     MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionTarget, ResourceWake, RunningTool,
-    pending, settle_with,
+    pending,
 };
 
 /// Whether `caller` may write the resource an invocation was made from
@@ -1129,7 +1130,7 @@ fn asked_until_ended(
 
 /// Complete `done` with how taking back `receipt` went, once what it admitted ended: a host that
 /// only accepted the record's `undo` is followed at `provider`, for as long as it runs, until it
-/// says how it went ([`tilo_actions::remote::settle_with`]). A provider that cannot say how it stands leaves it
+/// says how it went ([`tilo_action_calls::settle_with`]). A provider that cannot say how it stands leaves it
 /// running.
 fn followed(
     provider: Arc<dyn ActionProvider + Send + Sync>,

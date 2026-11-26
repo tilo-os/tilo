@@ -123,6 +123,8 @@ tilo-runner-native = { version = "0.1.0", path = "../runner-native", default-fea
 
 [dev-dependencies]
 tilo-actions = { path = "../../core/actions", features = ["test-support"] }
+# What answers a client's calls to a provider a test serves it, as the runner installs it.
+tilo-action-calls = { path = "../../core/action-calls" }
 # The tests use the test tools behind `test-support`.
 tilo-app = { path = ".", features = ["test-support"] }
 tilo-test-env = { path = "../../../tools/test-env" }

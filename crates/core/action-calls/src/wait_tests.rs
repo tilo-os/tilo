@@ -3,15 +3,17 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
-use super::super::{
-    ActionCallError, ActionProvider, Admission, Caller, CataloguePage, CatalogueQuery, Completer,
-    InvocationLog, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
+use tilo_actions::ActionAddress;
+use tilo_actions::outcome::{ActionOutput, InvocationId, InvocationUpdate};
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
+    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, MAX_REMOTE_WAIT, Pending,
     PendingPoll, REMOTE_ACTIONS_VERSION, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
-    RemoteActionTarget, pending, serve,
+    RemoteActionTarget, UpdateMark, pending,
 };
-use super::{MAX_IMMEDIATE_WAKES, MAX_REMOTE_WAIT, UpdateMark};
-use crate::ActionAddress;
-use crate::outcome::{ActionOutput, InvocationId, InvocationUpdate};
+
+use super::MAX_IMMEDIATE_WAKES;
+use crate::{Admission, InvocationLog, serve};
 
 /// How a [`Stepped`] provider signals changes.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -306,7 +308,7 @@ tilo_test_env::scenario! {
     phase a_wait_is_capped_whatever_it_asks;
     {
         let before = tilo_clock::now();
-        let until = super::deadline(u32::MAX);
+        let until = tilo_actions::remote::wait_deadline(u32::MAX);
         assert!(until <= tilo_clock::now().checked_add(MAX_REMOTE_WAIT).unwrap());
         assert!(until >= before.checked_add(MAX_REMOTE_WAIT).unwrap());
     }

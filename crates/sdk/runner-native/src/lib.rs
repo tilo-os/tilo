@@ -44,10 +44,12 @@ pub fn run_or_exit(spec: &LaunchSpec) {
     ui_core::launch::run_or_exit(spec);
 }
 
-/// Carry the device's sound output and the person's presence on the connection the app's
-/// launcher handed it. A host process has none, keeps its own sound output, and says no presence
-/// this way.
+/// Answer a window's calls to a provider in this process, and carry the device's sound output and
+/// the person's presence on the connection the app's launcher handed it. A host process has no
+/// such connection, keeps its own sound output, and says no presence this way; it still answers
+/// the providers it serves its windows from.
 fn install_from_launcher() {
+    ui_core::remote_actions::install_serve(tilo_action_calls::serve);
     let Some(handed) = tilo_action_line::handed::connection() else {
         return;
     };

@@ -15,6 +15,7 @@ path = "src/lib.rs"
 
 [dependencies]
 tilo-actions = { version = "0.1.0", path = "../actions" }
+tilo-action-calls = { version = "0.1.0", path = "../action-calls" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 hex.workspace = true
 serde = { version = "1.0", features = ["derive", "rc"] }

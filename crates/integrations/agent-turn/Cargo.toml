@@ -24,6 +24,7 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 tilo-actions = { path = "../../core/actions", features = ["test-support"] }
+tilo-action-calls = { path = "../../core/action-calls" }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 
 [lints]

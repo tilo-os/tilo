@@ -15,11 +15,11 @@
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
+use tilo_action_calls::{InvocationLog, Reservation};
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, ActionCallError, ActionProvider, Caller, CataloguePage,
-    CatalogueQuery, InvocationLog, InvocationReceipt, InvocationState, InvokeArgument,
-    InvokeRequest, Pending, ReceiptStatus, Reservation, application_provider,
-    application_provider_resource,
+    CatalogueQuery, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
+    ReceiptStatus, application_provider, application_provider_resource,
 };
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate, ResourceSpec};
 use tilo_desktop_model::WorkspaceId;

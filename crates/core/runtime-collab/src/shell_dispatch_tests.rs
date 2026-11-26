@@ -131,7 +131,7 @@ fn a_followed_call_is_answered_once_it_settles() {
     let caller = Caller::local_system();
     for _ in 0..3 {
         let asked = Instant::now();
-        let answer = tilo_actions::remote::serve(
+        let answer = tilo_action_calls::serve(
             &dispatch,
             &caller,
             RemoteActionMessage::Invoke(invoked(Some(10_000))),

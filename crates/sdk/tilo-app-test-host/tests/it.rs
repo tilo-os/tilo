@@ -102,6 +102,8 @@ pub mod reactivity;
 pub mod record_reactions;
 #[path = "references.rs"]
 pub mod references;
+#[path = "remote_actions.rs"]
+pub mod remote_actions;
 #[path = "render_anchor.rs"]
 pub mod render_anchor;
 #[path = "render_view.rs"]
@@ -166,6 +168,8 @@ pub mod unreadable;
 pub mod view_outline;
 #[path = "window_content.rs"]
 pub mod window_content;
+#[path = "window_session.rs"]
+pub mod window_session;
 #[path = "window_view.rs"]
 pub mod window_view;
 #[path = "workspace_arrival.rs"]

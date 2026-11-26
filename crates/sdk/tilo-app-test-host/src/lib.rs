@@ -31,6 +31,7 @@ impl Host for Broker {
     }
 
     fn opened(driver: &mut Driver, author: &str) {
+        answer_calls_in_process();
         let own = workspace_of_person(author).and_then(|id| {
             let mut workspace = tilo_desktop_model::Workspace::new(
                 tilo_desktop_model::WorkspaceId::parse(&id)?,
@@ -62,6 +63,14 @@ impl Host for Broker {
                 .collect()
         }));
     }
+}
+
+/// Answer the calls a window's client sends to a provider in this process, as the runner that
+/// starts an app does: a test that serves its own provider to a window (`RemoteActions::enter`,
+/// `RemoteActions::with_provider`) has it answered as the session's host answers it. Every
+/// [`TestApp`] window is opened with it installed.
+pub fn answer_calls_in_process() {
+    tilo_app::remote_actions::install_serve(tilo_action_calls::serve);
 }
 
 /// Who `acting` is as the broker decides for them: a person by their own grants; an agent by

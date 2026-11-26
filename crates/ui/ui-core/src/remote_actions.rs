@@ -3,15 +3,15 @@
 //! palette, scripts and agents use.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use tilo_ui_base::time::{Duration, Instant};
 
 use tilo_actions::InvocationUpdate;
 use tilo_actions::outcome::InvocationId;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Confirmation,
-    InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ReceiptStatus, RemoteActionMessage,
-    RemoteActionTarget, ResourceReadRequest, UpdateMark, WatchScope, serve,
+    InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, Pending, ReceiptStatus, RemoteActionMessage,
+    RemoteActionTarget, ResourceReadRequest, UpdateMark, WatchScope,
 };
 
 use tilo_lock::MutexRecover as _;
@@ -21,6 +21,45 @@ use tilo_ui_base::wake::WakeHandle;
 use tilo_ui_base::widget::Collaborative;
 
 type Served = (Arc<dyn ActionProvider + Send + Sync>, Caller);
+
+/// What answers a request a client sends to a provider in this process, as the provider's host
+/// answers one that arrives on a connection: `tilo_action_calls::serve`.
+///
+/// The toolkit knows only this seam, so it links none of the machinery that answers calls. The
+/// runner that starts an app installs it before the app runs; a host or a test that serves its own
+/// provider to a window installs it the same way.
+pub type Serve = fn(
+    &Arc<dyn ActionProvider + Send + Sync>,
+    &Caller,
+    RemoteActionMessage,
+) -> Option<Pending<RemoteActionMessage>>;
+
+static SERVE: OnceLock<Serve> = OnceLock::new();
+
+/// Install the process's dispatcher for providers in this process. The first install stands: a
+/// process answers calls one way.
+pub fn install_serve(serve: Serve) {
+    let _ = SERVE.set(serve);
+}
+
+/// What the installed dispatcher answers `message` with.
+#[expect(
+    clippy::expect_used,
+    reason = "a provider entered with no dispatcher installed is a process built wrong"
+)]
+fn serve(
+    provider: &Arc<dyn ActionProvider + Send + Sync>,
+    caller: &Caller,
+    message: RemoteActionMessage,
+) -> Option<Pending<RemoteActionMessage>> {
+    let serve = SERVE.get().expect(
+        "a client is served by a provider in this process, but nothing installed the dispatcher \
+         that answers it: tilo-runner-native installs tilo_action_calls::serve with \
+         tilo_ui::remote_actions::install_serve when an app runs, and a host or test that serves \
+         its own provider installs it the same way",
+    );
+    serve(provider, caller, message)
+}
 
 thread_local! {
     static SERVED: std::cell::RefCell<Option<Served>> = const { std::cell::RefCell::new(None) };
@@ -1078,6 +1117,32 @@ impl Collaborative for RemoteActions {
         if let CollabEvent::RemoteAction { message } = event {
             self.receive(message);
         }
+    }
+}
+
+/// What a test above the toolkit reads of a client's timing, to drive one served in its process by
+/// the clock.
+#[cfg(feature = "test-support")]
+pub mod testing {
+    use super::{Duration, RemoteActions};
+
+    /// How long a running invocation is left before it is observed again.
+    pub const OBSERVE_INTERVAL: Duration = super::OBSERVE_INTERVAL;
+    /// How long a followed record's read waits for the next write.
+    pub const FOLLOW_WAIT_MS: u32 = super::FOLLOW_WAIT_MS;
+    /// How long a followed record is left before it is read again, from a provider that waits for
+    /// no write.
+    pub const FOLLOW_INTERVAL: Duration = super::FOLLOW_INTERVAL;
+
+    /// How long each record `actions` follows waits before it is read again.
+    #[must_use]
+    pub fn follow_retries(actions: &RemoteActions) -> Vec<Duration> {
+        actions
+            .lock()
+            .following
+            .values()
+            .map(|following| following.retry)
+            .collect()
     }
 }
 

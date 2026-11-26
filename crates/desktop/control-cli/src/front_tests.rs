@@ -92,7 +92,7 @@ fn rows() -> Vec<CatalogueRow> {
 }
 
 /// A desktop's control socket answering frames as a session does, through
-/// [`remote::serve`] over a provider that offers [`rows`] and completes
+/// [`tilo_action_calls::serve`] over a provider that offers [`rows`] and completes
 /// every invocation with `done`.
 struct FakeDesktop {
     path: PathBuf,
@@ -122,7 +122,7 @@ impl FakeDesktop {
                         let Ok(line) = line else { return };
                         let frame = RemoteActionFrame::decode(line.as_bytes()).expect("a frame");
                         let caller = remote::Caller::local_person("person");
-                        let answer = remote::serve(&provider, &caller, frame.message)
+                        let answer = tilo_action_calls::serve(&provider, &caller, frame.message)
                             .and_then(|pending| pending.wait_timeout(Duration::from_secs(5)).ok())
                             .flatten()
                             .expect("an answer");

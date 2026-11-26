@@ -10,11 +10,12 @@ use std::sync::Arc;
 
 use tilo_desktop_model::Workspace;
 
+use tilo_action_calls::Reservation;
 use tilo_actions::remote::{
     ACTIONS_PROVIDER, APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND,
     APPLICATION_RESOURCE_PREFIX, ActionCallError, Caller, CataloguePage, CatalogueProvider,
     CatalogueQuery, CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState,
-    InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation, application_provider,
+    InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, application_provider,
     application_provider_resource, application_provider_token, pending, provider_workspace,
     workspace_provider,
 };

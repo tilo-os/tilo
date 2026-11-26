@@ -152,7 +152,7 @@ fn served(provider: Arc<TestProvider>) -> Answering {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         loop {
             for message in carried.take_outbox() {
-                if let Some(answer) = tilo_actions::remote::serve(&provider, &caller, message) {
+                if let Some(answer) = tilo_action_calls::serve(&provider, &caller, message) {
                     let carried = Arc::clone(&carried);
                     runtime.spawn(async move {
                         if let Some(answer) = answer.await {

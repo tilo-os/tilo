@@ -933,11 +933,10 @@ async fn followed(
     until: tilo_clock::time::Instant,
 ) -> Result<Value, DeviceRefusal> {
     loop {
-        let state =
-            tilo_actions::remote::settle_with(actions, caller, invocation, Some(seen), until)
-                .await
-                .flatten()
-                .ok_or_else(unfinished)?;
+        let state = tilo_action_calls::settle_with(actions, caller, invocation, Some(seen), until)
+            .await
+            .flatten()
+            .ok_or_else(unfinished)?;
         if let Some(ask) = RecordRef::waited_in(&state.update) {
             return Err(DeviceRefusal::awaiting(Awaiting {
                 invocation,

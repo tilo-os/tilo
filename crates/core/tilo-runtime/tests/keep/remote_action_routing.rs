@@ -8,9 +8,10 @@
 )]
 use std::sync::{Arc, Mutex};
 
+use tilo_action_calls::InvocationLog;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationLog,
-    InvocationReceipt, InvocationState, InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    InvocationState, InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_peer_state::actions::{ActionService, NoActions, RemoteDevice};

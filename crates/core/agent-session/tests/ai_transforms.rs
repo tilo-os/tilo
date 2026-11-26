@@ -21,11 +21,12 @@ use std::time::Duration;
 
 use agent_provider_config::Interaction;
 use serde_json::{Map, Value, json};
+use tilo_action_calls::InvocationLog;
 use tilo_actions::outcome::{InvocationId, InvocationUpdate};
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
-    CatalogueRow, InvocationLog, InvocationReceipt, InvocationState, InvokeRequest, Pending,
+    CatalogueRow, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
 use tilo_agent_session::transform::{self, TransformModel};
 use tilo_automation::{

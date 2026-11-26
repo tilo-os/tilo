@@ -1563,7 +1563,7 @@ impl Actions {
     }
 }
 
-/// The answer to one [`RemoteActionFrame`] line: the frame [`remote::serve`] answers it with, as
+/// The answer to one [`RemoteActionFrame`] line: the frame [`tilo_action_calls::serve`] answers it with, as
 /// the person at this device (or, at the app socket, as the app), in the workspace in front unless
 /// the connection was admitted to another. A caller names no workspace: the session decides where
 /// the person is, waiting for one when it has none yet ([`Front::known`]). The owner's socket

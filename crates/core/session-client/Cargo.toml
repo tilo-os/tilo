@@ -43,6 +43,7 @@ tilo-server-client = { path = "../tilo-server-client" }
 # The session client every device reaches its host with, over its link.
 # The action host another device of a workspace is, reached through the session.
 tilo-actions = { path = "../actions" }
+tilo-action-calls = { version = "0.1.0", path = "../action-calls" }
 # The ticket actions a page calls before it holds a certificate.
 tilo-device-identity = { version = "0.1.0", path = "../tilo-device-identity" }
 # Another device's actions, asked through this session.

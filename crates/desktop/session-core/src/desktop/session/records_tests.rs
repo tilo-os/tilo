@@ -112,9 +112,15 @@ pub fn desktop() -> (RemoteActions, Openings, RecordAnswers, Arc<AtomicBool>) {
     let woken = Arc::new(AtomicBool::new(false));
     let (session, openings) = super::serve(WORKSPACE, Arc::clone(&woken));
     let answers = openings.answer_records();
-    let window =
-        RemoteActions::with_provider(session, Caller::local_person("ada").in_workspace(WORKSPACE));
+    let window = window_of(session, Caller::local_person("ada").in_workspace(WORKSPACE));
     (window, openings, answers, woken)
+}
+
+/// A window of the desktop `session`, as `caller`: its calls answered as the desktop's host
+/// answers them.
+fn window_of(session: Arc<super::DesktopSession>, caller: Caller) -> RemoteActions {
+    ui::remote_actions::install_serve(tilo_action_calls::serve);
+    RemoteActions::with_provider(session, caller)
 }
 
 pub fn record_of(app: &str) -> ResourceReadRequest {
@@ -250,7 +256,7 @@ pub fn a_read_the_desktop_refuses_is_refused() {
     // Someone from outside the workspace reads nothing of it.
     let (session, openings) = super::serve(WORKSPACE, Arc::default());
     let mut answers = openings.answer_records();
-    let outsider = RemoteActions::with_provider(session, Caller::local_person("eve"));
+    let outsider = window_of(session, Caller::local_person("eve"));
     let read = outsider.read_resource(None, record_of(TASKS));
     held.let_read(TASKS, true);
     answers.answer(&held, now);
@@ -263,7 +269,7 @@ pub fn a_desktop_that_answers_no_reads_says_so_at_once() {
     let (session, _openings) = super::serve(WORKSPACE, Arc::default());
     let caller = Caller::local_person("ada").in_workspace(WORKSPACE);
     assert!(session.changed(&caller, WatchScope::Records).is_none());
-    let window = RemoteActions::with_provider(session, caller);
+    let window = window_of(session, caller);
     assert_eq!(
         window.read_resource(None, record_of(TASKS)).get(),
         Arrival::Failed(ActionCallError::Unavailable {

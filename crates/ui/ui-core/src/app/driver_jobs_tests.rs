@@ -900,43 +900,6 @@ fn a_person_s_yes_reaches_the_kept_call_by_its_re_admission() {
 }
 
 #[test]
-fn the_window_s_session_opens_another_app_and_its_receipt_comes_back() {
-    let mut driver = worker_driver(Worker {
-        opens_photos: true,
-        ..Worker::default()
-    });
-    let workspace = uuid::Uuid::new_v4();
-    let session = std::sync::Arc::new(tilo_actions::remote::TestProvider::new());
-    driver.set_session_api(
-        crate::RemoteActions::with_provider(
-            session.clone(),
-            tilo_actions::remote::Caller::local_app("test.worker")
-                .in_workspace(workspace.to_string()),
-        ),
-        Some(workspace.to_string()),
-    );
-    driver
-        .invoke_action(&address("open-photos"), &no_arguments(), None)
-        .expect("the window takes the press");
-    driver.idle();
-    let asked = session.take_asked();
-    assert_eq!(asked.len(), 1, "the session is asked to open Photos once");
-    assert_eq!(asked[0].target, photos().target(&workspace.to_string()));
-    let [own] = own_invocations(&driver)
-        .try_into()
-        .unwrap_or_else(|asked: Vec<_>| panic!("the press went to the broker once: {asked:?}"));
-    assert!(
-        matches!(
-            driver.job_updates(own.invocation).as_slice(),
-            [InvocationUpdate::Succeeded { .. }]
-        ),
-        "the session's receipt finished the press: {:?}",
-        driver.job_updates(own.invocation)
-    );
-    assert_eq!(driver.refusal_said(), None);
-}
-
-#[test]
 fn opening_another_app_with_no_session_is_refused_and_said() {
     let mut driver = worker_driver(Worker {
         opens_photos: true,

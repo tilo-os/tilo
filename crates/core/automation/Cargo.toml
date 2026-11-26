@@ -39,6 +39,7 @@ tilo-canonical-json = { version = "0.1.0", path = "../../platform/tilo-canonical
 model = ["dep:tilo-resource"]
 
 [dev-dependencies]
+tilo-action-calls = { path = "../action-calls" }
 tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]

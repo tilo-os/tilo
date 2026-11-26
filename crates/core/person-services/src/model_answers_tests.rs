@@ -266,7 +266,7 @@ async fn ask_as(
     if matches!(receipt.status, ReceiptStatus::Accepted) {
         let now = tilo_clock::now();
         let until = now.checked_add(tilo_test_env::hang_bound()).unwrap_or(now);
-        receipt = settled(tilo_actions::remote::settle_with(
+        receipt = settled(tilo_action_calls::settle_with(
             &provider, caller, invocation, None, until,
         ))
         .await
@@ -728,7 +728,8 @@ async fn a_page_asks_the_workspaces_model_through_its_host() {
 #[tokio::test]
 async fn a_pages_ask_is_answered_as_the_model_writes_it() {
     use agent_provider_config::protocol::{ModelError, ModelResponse};
-    use tilo_actions::remote::{ActionProvider as _, ReceiptStatus, UpdateMark, settle_with};
+    use tilo_action_calls::settle_with;
+    use tilo_actions::remote::{ActionProvider as _, ReceiptStatus, UpdateMark};
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = hosting_device();
@@ -1334,10 +1335,11 @@ async fn an_agent_no_members_device_stands_behind_asks_nothing() {
 async fn a_model_call_writes_what_it_cost_into_the_invocations_record() {
     use std::sync::Arc;
 
+    use tilo_action_calls::settle_with;
     use tilo_actions::InvocationId;
     use tilo_actions::remote::{
         ActionProvider, CataloguePage, CatalogueQuery, InvocationReceipt, InvocationState,
-        InvokeRequest, Pending, settle_with,
+        InvokeRequest, Pending,
     };
     use tilo_invocations::Invocations;
 

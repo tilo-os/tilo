@@ -897,7 +897,7 @@ impl<H: ActionProvider + Clone + Send + Sync + 'static> AppActionServer
         caller: &Caller,
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
-        tilo_actions::remote::serve(&self.host, caller, message)
+        tilo_action_calls::serve(&self.host, caller, message)
     }
 }
 

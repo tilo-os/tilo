@@ -11,9 +11,10 @@ use std::time::Duration;
 
 use serde_json::json;
 
+use tilo_action_calls::serve;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, MAX_REMOTE_WAIT, RemoteActionFrame,
-    RemoteActionMessage, refuse, serve,
+    RemoteActionMessage, refuse,
 };
 
 /// The line that answers the frame `line` holds, as [`answer_message`] answers it; a line that

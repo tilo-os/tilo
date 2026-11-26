@@ -761,7 +761,7 @@ impl JoinedChannel {
                 }
                 _ => None,
             };
-            let answer = tilo_actions::remote::serve(&provider, &caller, request.message);
+            let answer = tilo_action_calls::serve(&provider, &caller, request.message);
             // Awaited on this local set, which is also where an application's
             // directory answers; the connection's other calls keep flowing.
             let answer = match answer {

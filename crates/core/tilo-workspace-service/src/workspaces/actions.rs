@@ -47,19 +47,20 @@ use std::future::Future;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value, json};
+use tilo_action_calls::InvocationLog;
 use tilo_action_policy::roles::{self, governance};
 use tilo_action_policy::{Answer, EntryPolicy, ListingPolicy};
 use tilo_action_services::{formats, mcp_server, server_account};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
-    CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState,
-    InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_APPS,
-    WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE,
-    WORKSPACE_INVITATIONS, WORKSPACE_INVITE, WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED,
-    WORKSPACE_MEMBERS, WORKSPACE_READ_GRANT, WORKSPACE_READ_REVOKE, WORKSPACE_REGISTRIES,
-    WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, workspace_app, workspace_app_named,
-    workspace_governance_address, workspace_governance_child, workspace_governance_operation,
-    workspace_governance_resource, workspace_member, workspace_person,
+    CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument,
+    InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_APPS, WORKSPACE_GOVERNANCE_KIND,
+    WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE, WORKSPACE_INVITATIONS, WORKSPACE_INVITE,
+    WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS, WORKSPACE_READ_GRANT,
+    WORKSPACE_READ_REVOKE, WORKSPACE_REGISTRIES, WORKSPACE_SERVERS, WORKSPACE_TRUST,
+    WORKSPACE_WAITING, workspace_app, workspace_app_named, workspace_governance_address,
+    workspace_governance_child, workspace_governance_operation, workspace_governance_resource,
+    workspace_member, workspace_person,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionParam, ExecutionLocus,
@@ -3944,7 +3945,7 @@ impl ServiceWorkspaceActions {
         workspaces.mcp_keeper(caller, certificate)?;
         let invocation = request.invocation;
         let mut log = self.log();
-        if log.reserve(caller, request)? == tilo_actions::remote::Reservation::Admitted {
+        if log.reserve(caller, request)? == tilo_action_calls::Reservation::Admitted {
             return log
                 .get(caller, &invocation)
                 .map(InvocationState::receipt)
@@ -4368,12 +4369,12 @@ impl InWorkspace {
         workspaces: Workspaces,
         caller: &Caller,
         request: InvokeRequest,
-        reservation: Result<tilo_actions::remote::Reservation, ActionCallError>,
+        reservation: Result<tilo_action_calls::Reservation, ActionCallError>,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
         match reservation {
             Err(error) => return Pending::ready(Err(error)),
-            Ok(tilo_actions::remote::Reservation::Admitted) => {
+            Ok(tilo_action_calls::Reservation::Admitted) => {
                 return Pending::ready(
                     self.server
                         .log()
@@ -4382,7 +4383,7 @@ impl InWorkspace {
                         .ok_or(ActionCallError::UnknownInvocation),
                 );
             }
-            Ok(tilo_actions::remote::Reservation::Reserved) => {}
+            Ok(tilo_action_calls::Reservation::Reserved) => {}
         }
         let call = invocation_states::Call {
             workspaces,
@@ -4703,7 +4704,7 @@ impl AppActionServer for HostActionServer {
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
         if self.governs(caller, &message) {
-            return tilo_actions::remote::serve(
+            return tilo_action_calls::serve(
                 &self.governance.in_workspace(workspace_id),
                 caller,
                 message,
@@ -4730,7 +4731,7 @@ impl AppActionServer for HostActionServer {
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
         if self.governs(caller, &message) {
-            return tilo_actions::remote::serve(
+            return tilo_action_calls::serve(
                 &self.governance.in_workspace_as(workspace_id, certificate),
                 caller,
                 message,
@@ -4761,7 +4762,7 @@ impl AppActionServer for HostActionServer {
         if !self.governs(caller, &message) {
             return None;
         }
-        tilo_actions::remote::serve(&self.governance.as_host(certificate), caller, message)
+        tilo_action_calls::serve(&self.governance.as_host(certificate), caller, message)
     }
 
     fn host_change(
@@ -4990,7 +4991,7 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
             workspaces,
             caller,
             request,
-            Ok(tilo_actions::remote::Reservation::Reserved),
+            Ok(tilo_action_calls::Reservation::Reserved),
         )
         .then(|_| {});
         Ok(())

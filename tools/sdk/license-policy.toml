@@ -134,6 +134,7 @@ client_side = [
 # shrink; a crate joins neither without a decision to make the toolkit depend on it.
 toolkit_reaches = [
     "tilo-accesskit-winit",             # vendor/accesskit_winit
+    "tilo-action-calls",                # crates/core/action-calls
     "tilo-action-line",                 # crates/core/action-line
     "tilo-action-policy",               # crates/core/action-policy
     "tilo-action-types",                # crates/platform/action-types

@@ -33,6 +33,7 @@ tilo-endpoint-reachability = { path = "../endpoint-reachability" }
 neighbour-wire = { package = "tilo-neighbour-wire", path = "../neighbour-wire" }
 collab-types = { package = "tilo-collab-types", path = "../collab-types" }
 tilo-actions = { path = "../actions", features = ["answer-reads"] }
+tilo-action-calls = { version = "0.1.0", path = "../action-calls" }
 tilo-invocations = { version = "0.1.0", path = "../invocations" }
 # The calls of other services this crate makes, bound at build time to the surfaces they publish.
 tilo-resource-macros = { path = "../tilo-resource-macros" }

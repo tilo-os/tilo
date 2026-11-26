@@ -16,10 +16,10 @@
 use std::sync::Arc;
 
 use serde_json::Value;
+use tilo_action_calls::settle_with;
 use tilo_actions::remote::{
     ActionProvider, Caller, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
     RemoteActionTarget, VAULT_ITEM_KIND, VAULT_LIST, VAULT_PROVIDER, VAULT_RESOURCE, pending,
-    settle_with,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use ui::time::Duration;

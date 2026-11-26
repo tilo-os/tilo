@@ -94,7 +94,7 @@ pub(crate) async fn ask_own(
     if matches!(receipt.status, ReceiptStatus::Accepted) {
         let now = tilo_clock::now();
         let until = now.checked_add(tilo_test_env::hang_bound()).unwrap_or(now);
-        receipt = settled(tilo_actions::remote::settle_with(
+        receipt = settled(tilo_action_calls::settle_with(
             &provider, &asking, invocation, None, until,
         ))
         .await

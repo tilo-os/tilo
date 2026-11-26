@@ -1539,7 +1539,8 @@ async fn settled(
     target: tilo_actions::remote::RemoteActionTarget,
     arguments: serde_json::Map<String, Value>,
 ) -> Result<Value, ApiError> {
-    use tilo_actions::remote::{ActionCallError, InvokeRequest, ReceiptStatus, settle_with};
+    use tilo_action_calls::settle_with;
+    use tilo_actions::remote::{ActionCallError, InvokeRequest, ReceiptStatus};
     // A provider's own refusal (the vault's among them) is what the caller may not do.
     let refused = |error: ActionCallError| match error {
         ActionCallError::Refused { reason } => ApiError::new("not_permitted", reason),

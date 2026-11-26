@@ -207,10 +207,7 @@ pub enum PersonAnswer {
 
 /// The answer a provider that cannot ask has for a [`RemoteActionMessage::ConfirmationRequest`].
 #[must_use]
-pub(crate) fn unanswered(
-    correlation: u64,
-    error: super::ActionCallError,
-) -> super::RemoteActionMessage {
+pub fn unanswered(correlation: u64, error: super::ActionCallError) -> super::RemoteActionMessage {
     super::RemoteActionMessage::ConfirmationResponse {
         correlation,
         result: Err(error),

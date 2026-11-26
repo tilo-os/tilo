@@ -301,7 +301,7 @@ impl AppActionServer for KeySessions {
         match self.run(workspace_id, (caller, certificate), &message) {
             Ok(Run::Open(open)) => {
                 let (host, caller) = *open;
-                tilo_actions::remote::serve(&host, &caller, message)
+                tilo_action_calls::serve(&host, &caller, message)
             }
             Ok(Run::Opening(opening)) => {
                 let opening = *opening;
@@ -316,7 +316,7 @@ impl AppActionServer for KeySessions {
                 let (done, answer) = tilo_actions::remote::pending();
                 std::thread::spawn(move || {
                     let served = match opening.open(&open) {
-                        Ok((host, caller)) => tilo_actions::remote::serve(&host, &caller, message),
+                        Ok((host, caller)) => tilo_action_calls::serve(&host, &caller, message),
                         Err(refusal) => {
                             tilo_actions::remote::refuse(&message, refusal).map(Pending::ready)
                         }

@@ -9,10 +9,9 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use tilo_action_calls::Reservation;
 use tilo_action_services::own_device;
-use tilo_actions::remote::{
-    ActionCallError, Caller, InvocationReceipt, InvokeRequest, Reservation,
-};
+use tilo_actions::remote::{ActionCallError, Caller, InvocationReceipt, InvokeRequest};
 
 use super::super::AppBrokerState;
 

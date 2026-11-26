@@ -68,6 +68,8 @@ audio = { package = "tilo-audio-service", version = "0.1.0", path = "../../os/au
 
 [dev-dependencies]
 tilo-actions = { path = "../../core/actions", features = ["test-support"] }
+# What answers a window's calls to the desktop's session, as the runner installs it for an app.
+tilo-action-calls = { path = "../../core/action-calls" }
 tilo-copy-lint = { path = "../../../tools/copy-lint" }
 tilo-resource = { path = "../../core/tilo-resource", features = ["test-support"] }
 tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile" }

@@ -4,10 +4,11 @@
 
 use std::sync::Arc;
 
+use tilo_action_calls::Reservation;
 use tilo_actions::remote::{
     ActionCallError, CONFIRMED_ACTION_NEEDS_REVISION, Caller, CataloguePage, CatalogueProvider,
     CatalogueQuery, CatalogueResource, CatalogueRow, InvocationReceipt, InvokeRequest, Pending,
-    Reservation, pending,
+    pending,
 };
 
 use super::super::{

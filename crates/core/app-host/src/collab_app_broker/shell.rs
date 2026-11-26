@@ -817,7 +817,7 @@ async fn dispatch(
                 (Some(named), None) => named,
                 (None, _) => admitted,
             };
-            tilo_actions::remote::serve(&dispatch, &caller, message)
+            tilo_action_calls::serve(&dispatch, &caller, message)
                 .ok_or("the dispatch answers requests, and that frame is none")?
                 .await
                 .ok_or("the dispatch dropped the request")?

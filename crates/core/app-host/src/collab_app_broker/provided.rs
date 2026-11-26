@@ -12,9 +12,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::AppBrokerState;
+use tilo_action_calls::Reservation;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Admitted, Caller, InvocationReceipt, InvokeRequest, Outcome,
-    Pending, PendingPoll, ReceiptStatus, Reservation, Serving,
+    Pending, PendingPoll, ReceiptStatus, Serving,
 };
 use tilo_workspace_service::workspaces::providers::Registered;
 

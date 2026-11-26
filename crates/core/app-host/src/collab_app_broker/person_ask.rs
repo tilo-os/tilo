@@ -15,11 +15,12 @@
 
 use std::sync::Arc;
 
+use tilo_action_calls::Reservation;
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::asked::AskedFacts;
 use tilo_actions::remote::{
     ActionCallError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, Pending,
-    PersonAnswer, PersonAsk, Reservation,
+    PersonAnswer, PersonAsk,
 };
 
 use super::AppBrokerState;

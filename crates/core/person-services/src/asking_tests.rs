@@ -401,7 +401,7 @@ async fn an_answer_that_meets_the_record_is_carried_out() {
             let here = service.in_workspace_as(workspace_id, &ada);
             let now = tilo_clock::now();
             let until = now.checked_add(tilo_test_env::hang_bound()).unwrap_or(now);
-            let followed = settled(tilo_actions::remote::settle_with(
+            let followed = settled(tilo_action_calls::settle_with(
                 &here, &agent, invocation, None, until,
             ))
             .await
