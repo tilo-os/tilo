@@ -117,11 +117,9 @@ impl Refusal {
     }
 
     /// Write this refusal into `document`, its record as the store holds it,
-    /// or a record it founds: the people it is for are named once, as it is
-    /// founded.
+    /// or a record it founds.
     fn write_into(&self, document: &mut AutoCommit) -> Result<(), String> {
         let failing = |error: automerge::AutomergeError| error.to_string();
-        let founding = document.get(ROOT, "readers").map_err(failing)?.is_none();
         document
             .put(ROOT, "record", self.record.as_str())
             .map_err(failing)?;
@@ -157,10 +155,15 @@ impl Refusal {
         document
             .put(ROOT, "withdrawn", self.withdrawn)
             .map_err(failing)?;
-        if founding {
-            let readers = document
+        // The people it is for are named once, as the record is founded: the
+        // kind founds it with an empty list.
+        let readers = match document.get(ROOT, "readers").map_err(failing)? {
+            Some((AmValue::Object(ObjType::List), readers)) => readers,
+            _ => document
                 .put_object(ROOT, "readers", ObjType::List)
-                .map_err(failing)?;
+                .map_err(failing)?,
+        };
+        if document.length(&readers) == 0 {
             for (at, person) in self.readers.iter().enumerate() {
                 let reader =
                     Actor::Member(MemberId::person(tilo_actions::PersonId::from_root(*person)));
