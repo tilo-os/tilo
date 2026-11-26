@@ -1656,6 +1656,16 @@ async fn an_agents_turn_does_only_what_both_it_and_its_asker_may() {
             Answer::Allow,
             Grantee::person(owner.clone()),
         ));
+    // The agent takes part in the workspace it acts in: its person let it read there, as every
+    // agent admitted to a workspace is, before either turn may act.
+    described.policy.grants.push(Grant::new(
+        "scribe-reads",
+        Grantee::agent("scribe", owner.as_str()),
+        tilo_action_policy::TreePath::workspace(&id),
+        KindSet::READ,
+        Answer::Allow,
+        Grantee::person(owner.clone()),
+    ));
     described.policy.grants.push(Grant::new(
         "bo-no-blocks",
         Grantee::person(hex::encode(bo)),
