@@ -320,6 +320,31 @@ impl Shell {
             })
     }
 
+    /// Whether the shell names `caller` as an agent its person admitted: such a caller's calls
+    /// are its own, and reach the run its grant decides, never what this device answers for its
+    /// person.
+    fn names_an_agent(&self, caller: &Caller) -> bool {
+        self.agents.is_some() && caller.acting().is_agent() && caller.is_session_delegated()
+    }
+
+    /// Whether this device answers `request` itself for `caller`: its workspaces' governance,
+    /// the host's own operations and the person's workspace list are the person's own answers to
+    /// their calls and to an app's acting for them. An agent the person admitted on their shell
+    /// is never the device, whatever its grant: its call reaches its own run.
+    fn answers_itself(&self, caller: &Caller, request: &InvokeRequest) -> bool {
+        kept_here(request) && !self.names_an_agent(caller)
+    }
+
+    /// Whether `request` is an agent's call to `workspace`'s governance, which the agent's own
+    /// grant decides: the device's own answers are the person's, and the host's own operations
+    /// are refused to an agent whole ([`Self::dispatch_for`]).
+    fn agent_answers_kept_here(&self, caller: &Caller, request: &InvokeRequest) -> bool {
+        kept_here(request)
+            && request.target.provider.as_str()
+                != tilo_server_protocol::workspaces::HOST_ACTIONS_PROVIDER
+            && self.names_an_agent(caller)
+    }
+
     /// The dispatch `caller`'s calls reach: an agent the person admitted on their shell calls in
     /// a run of its own, delegated by them; the person, and an app acting for them, in theirs.
     fn reaching(
@@ -327,11 +352,25 @@ impl Shell {
         caller: &Caller,
     ) -> Result<Arc<dyn ActionProvider + Send + Sync>, ActionCallError> {
         match &self.agents {
-            Some(agents) if caller.acting().is_agent() && caller.is_session_delegated() => {
-                agents.run_of(caller)
-            }
+            Some(agents) if self.names_an_agent(caller) => agents.run_of(caller),
             _ => self.in_workspace().map(Arc::clone),
         }
+    }
+
+    /// The dispatch `caller`'s `request` reaches, where this device does not answer it: an agent
+    /// the person admitted on their shell reaches the run its grant decides, and the host's own
+    /// operations — this device's own for its person, asked as it — are none of an agent's.
+    fn dispatch_for(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<Arc<dyn ActionProvider + Send + Sync>, ActionCallError> {
+        let hosts_own = request.target.provider.as_str()
+            == tilo_server_protocol::workspaces::HOST_ACTIONS_PROVIDER;
+        if hosts_own && self.names_an_agent(caller) {
+            return Err(ActionCallError::NotPermitted);
+        }
+        self.reaching(caller)
     }
 }
 
@@ -382,10 +421,21 @@ impl ActionProvider for Shell {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        if kept_here(&request) {
+        if self.answers_itself(caller, &request) {
             return self.kept.invoke(self.caller, request);
         }
-        match self.reaching(caller) {
+        let by_its_grant = self.agent_answers_kept_here(caller, &request);
+        match self.dispatch_for(caller, &request) {
+            Ok(dispatch) if by_its_grant => {
+                let answer = dispatch.invoke(caller, request);
+                answer.map(|answer| match answer {
+                    // The workspace publishes this operation and does not let this agent
+                    // invoke it: its grant does not cover it, and what it may not do is not
+                    // an action nobody knows.
+                    Err(ActionCallError::UnknownAction) => Err(ActionCallError::NotPermitted),
+                    answer => answer,
+                })
+            }
             Ok(dispatch) => dispatch.invoke(caller, request),
             Err(refused) => Pending::ready(Err(refused)),
         }
@@ -416,11 +466,19 @@ impl ActionProvider for Shell {
         request: InvokeRequest,
         admitted: tilo_actions::remote::Admitted,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        if kept_here(&request) {
+        if self.answers_itself(caller, &request) {
             // The device answers this one itself: it starts nothing that outlives the answer.
             return self.kept.invoke(self.caller, request);
         }
-        match self.reaching(caller) {
+        let by_its_grant = self.agent_answers_kept_here(caller, &request);
+        match self.dispatch_for(caller, &request) {
+            Ok(dispatch) if by_its_grant => {
+                let answer = dispatch.run(caller, request, admitted);
+                answer.map(|answer| match answer {
+                    Err(ActionCallError::UnknownAction) => Err(ActionCallError::NotPermitted),
+                    answer => answer,
+                })
+            }
             Ok(dispatch) => dispatch.run(caller, request, admitted),
             Err(refused) => Pending::ready(Err(refused)),
         }
@@ -432,10 +490,10 @@ impl ActionProvider for Shell {
         request: &InvokeRequest,
         admitted: &tilo_actions::remote::Admitted,
     ) -> Option<Pending<Result<(), ActionCallError>>> {
-        if kept_here(request) {
+        if self.answers_itself(caller, request) {
             return None;
         }
-        self.reaching(caller)
+        self.dispatch_for(caller, request)
             .ok()
             .and_then(|dispatch| dispatch.asks_first(caller, request, admitted))
     }
@@ -445,10 +503,10 @@ impl ActionProvider for Shell {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<tilo_actions::remote::LiveView, String> {
-        if kept_here(request) {
+        if self.answers_itself(caller, request) {
             return Err("what this device answers itself has no live result".to_owned());
         }
-        match self.reaching(caller) {
+        match self.dispatch_for(caller, request) {
             Ok(dispatch) => dispatch.watch(caller, request),
             Err(refused) => Err(refused.to_string()),
         }

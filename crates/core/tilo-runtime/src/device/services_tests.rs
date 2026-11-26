@@ -3674,3 +3674,286 @@ fn an_agent_the_shell_names_lists_in_a_run_of_its_own() {
         );
     }
 }
+
+/// An agent the person admitted on their shell, on the shell's own link: the workspace lists it,
+/// this device made and certified its key, and the link names it as each call's caller.
+#[cfg(unix)]
+struct ShellAgent {
+    daemon: Arc<Daemon>,
+    workspace: String,
+    /// The caller the shell's link names for the agent.
+    agent: Caller,
+    /// The caller the same link names for the person.
+    person: Caller,
+    /// The agent's id, and the person it acts for, as the workspace's record names them.
+    id: String,
+    person_id: String,
+    client: runtime_collab::ShellClient,
+    runtime: tokio::runtime::Runtime,
+}
+
+#[cfg(unix)]
+impl ShellAgent {
+    /// The person's daemon, its shell link, and the agent the workspace lists and this device
+    /// made and certified a key for (`AgentKeyCall::Grant`).
+    fn on(root: &std::path::Path) -> Self {
+        use runtime_collab::wire::shell::SHELL_MAGIC;
+        use tokio::io::AsyncWriteExt as _;
+
+        let daemon = Arc::new(Daemon::start_in_dev_mode(root, &mut |_| {}).unwrap());
+        let workspace = daemon.workspace().unwrap();
+        let cert = daemon.workspaces.device_cert();
+        let person = daemon.person().unwrap();
+        let persons = person.provider(&workspace).unwrap();
+        let person_caller = persons.admission_caller().unwrap();
+        let person_id = person_caller
+            .acting()
+            .person_id()
+            .expect("the person's run names its person")
+            .to_owned();
+        // The session lists the agent in the workspace as it admits it, then has this daemon make
+        // and certify its key; the shell's link names it as each call's caller.
+        let name = "shell agent";
+        let id = tilo_actions::remote::device_agent_id(&cert.user_public_key, name);
+        let listed_as =
+            Caller::delegated_agent(id.clone(), cert.user_public_key, [7; 32]).named(name);
+        tilo_rt::app()
+            .handle()
+            .block_on(tilo_app_host::agents::workspace_agent(
+                daemon.workspaces.copies(),
+                WorkspaceId::parse(&workspace).unwrap(),
+                &listed_as,
+                &person_caller,
+            ));
+        let keys = tilo_app_host::agents::agent_keys::this_device().unwrap();
+        let (_, agent) = tilo_app_host::agents::agent_keys::AgentSigner::grant(
+            keys,
+            &workspace,
+            (&id, name),
+            &person_id,
+        )
+        .unwrap();
+        let socket = daemon.broker.app_socket().to_path_buf();
+        let secret = daemon
+            .shell_links()
+            .make(tilo_app_host::shell::ShellCaller {
+                person: cert.user_public_key,
+            });
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let client = runtime.block_on(async {
+            let mut stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            stream.write_all(SHELL_MAGIC).await.unwrap();
+            stream.write_all(&secret).await.unwrap();
+            runtime_collab::ShellClient::open(stream).0
+        });
+        Self {
+            daemon,
+            workspace,
+            agent,
+            person: person_caller,
+            id,
+            person_id,
+            client,
+            runtime,
+        }
+    }
+
+    /// The agent's caller as the shell's link carries it: each call in an execution of its own.
+    fn by_the_agent(&self) -> Caller {
+        self.agent.clone().in_new_execution()
+    }
+
+    /// `request` asked on the shell's link as `caller`.
+    fn asking(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::InvocationReceipt, ActionCallError>,
+    > {
+        self.client.dispatch().invoke(caller, request)
+    }
+
+    /// The agent's ask to invite someone into the workspace.
+    fn invite(&self) -> InvokeRequest {
+        use tilo_actions::remote::{RemoteActionTarget, WORKSPACE_INVITE};
+        InvokeRequest::plain(
+            RemoteActionTarget::workspace_governance(&self.workspace, WORKSPACE_INVITE),
+            json!({ "role": "viewer" }).as_object().unwrap().clone(),
+        )
+    }
+
+    /// An ask of the host's own operations: the workspaces this host serves.
+    fn host_list() -> InvokeRequest {
+        use tilo_server_protocol::workspaces::{
+            HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_WORKSPACES,
+        };
+        InvokeRequest::plain(
+            tilo_actions::remote::RemoteActionTarget {
+                provider: HOST_ACTIONS_PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(
+                    HOST_WORKSPACES_RESOURCE.to_owned(),
+                    LIST_WORKSPACES,
+                ),
+            },
+            serde_json::Map::new(),
+        )
+    }
+
+    /// The person's own device grants its agent `answer` for inviting alone, as their Agents
+    /// settings give one action, written as its own change to the workspace's people and
+    /// settings.
+    fn answer_the_agents_invites(&self, answer: tilo_action_policy::Answer) {
+        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
+
+        let scope = tilo_action_policy::agent_answers::AnswerScope::action(
+            tilo_action_policy::agent_answers::WORKSPACE_APP,
+            tilo_actions::remote::WORKSPACE_GOVERNANCE_KIND,
+            tilo_actions::remote::WORKSPACE_INVITE,
+        );
+        let grant = tilo_action_policy::agent_answers::grant(
+            &self.workspace,
+            (&self.id, &self.person_id),
+            (&scope, tilo_action_policy::roles::GOVERNANCE_KIND),
+            answer,
+            tilo_action_policy::Grantee::person(self.person_id.clone()),
+        );
+        let copies = self.daemon.workspaces.copies().clone();
+        let workspace = self.workspace.clone();
+        self.runtime
+            .block_on(async move {
+                copies
+                    .commit_own_change(
+                        &workspace,
+                        WorkspaceMembershipCommand::Grant { grant },
+                        None,
+                    )
+                    .await
+            })
+            .expect("the person's own device writes the agent's answer");
+    }
+}
+
+/// What a call on a shell's link was answered with.
+#[cfg(unix)]
+type ShellAnswer = Result<tilo_actions::remote::InvocationReceipt, ActionCallError>;
+
+/// The answer the daemon gave a shell's call, or why it gave none.
+#[cfg(unix)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "a test helper: a call the daemon never answered fails the test"
+)]
+fn answer_of(
+    answered: Result<Option<ShellAnswer>, tilo_actions::remote::Pending<ShellAnswer>>,
+) -> ShellAnswer {
+    match answered {
+        Ok(Some(answer)) => answer,
+        Ok(None) => panic!("the daemon dropped the shell's call"),
+        Err(mut pending) => match pending.poll_ready() {
+            PendingPoll::Ready(answer) => answer,
+            _ => panic!("the daemon did not answer the shell's call"),
+        },
+    }
+}
+
+const SHELL_AGENT_INVITE_TEST: &str =
+    "device::services::tests::an_agent_the_shell_names_invites_only_as_its_person_says_yes";
+
+/// An agent the person admitted on their shell asks to invite someone into the workspace over
+/// that shell's link. The daemon answers as the agent: the grant it starts with asks its person
+/// first, so nothing is issued on the person's own authority, and the invitation waits for their
+/// yes.
+#[cfg(unix)]
+#[test]
+fn an_agent_the_shell_names_invites_only_as_its_person_says_yes() {
+    use tilo_actions::remote::ReceiptStatus;
+
+    let Some(root) = isolated_root(SHELL_AGENT_INVITE_TEST) else {
+        return;
+    };
+    let shell = ShellAgent::on(&root);
+    let answer = answer_of(
+        shell
+            .asking(&shell.by_the_agent(), shell.invite())
+            .wait_timeout(tilo_test_env::hang_bound()),
+    );
+    assert!(
+        matches!(
+            &answer,
+            Ok(receipt) if matches!(receipt.status, ReceiptStatus::Accepted)
+        ),
+        "the agent's own grant asks its person before anything is issued: {answer:?}"
+    );
+}
+
+const SHELL_AGENT_INVITE_DENIED_TEST: &str =
+    "device::services::tests::an_agent_the_shell_names_invites_no_further_than_its_grant";
+
+/// An agent the person admitted on their shell, whose grant refuses inviting, asks to invite
+/// someone into the workspace over that shell's link: the daemon refuses the call as not
+/// permitted, decided by the agent's grant, never by the person's own authority.
+#[cfg(unix)]
+#[test]
+fn an_agent_the_shell_names_invites_no_further_than_its_grant() {
+    use tilo_actions::remote::ActionCallError;
+
+    let Some(root) = isolated_root(SHELL_AGENT_INVITE_DENIED_TEST) else {
+        return;
+    };
+    let shell = ShellAgent::on(&root);
+    shell.answer_the_agents_invites(tilo_action_policy::Answer::Deny);
+    let refused = answer_of(
+        shell
+            .asking(&shell.by_the_agent(), shell.invite())
+            .wait_timeout(tilo_test_env::hang_bound()),
+    );
+    assert!(
+        matches!(refused, Err(ActionCallError::NotPermitted)),
+        "the agent's grant does not cover inviting: {refused:?}"
+    );
+}
+
+const SHELL_AGENT_HOST_TEST: &str =
+    "device::services::tests::an_agent_the_shell_names_asks_no_host_operation";
+
+/// An agent the person admitted on their shell asks the host for the workspaces it serves over
+/// that shell's link: the host's own operations are this device's own for its person, so they are
+/// refused as not permitted, never answered as the person. The person's own call on the same link
+/// stays theirs.
+#[cfg(unix)]
+#[test]
+fn an_agent_the_shell_names_asks_no_host_operation() {
+    use tilo_actions::remote::{ActionCallError, ReceiptStatus};
+
+    let Some(root) = isolated_root(SHELL_AGENT_HOST_TEST) else {
+        return;
+    };
+    let shell = ShellAgent::on(&root);
+    let refused = answer_of(
+        shell
+            .asking(&shell.by_the_agent(), ShellAgent::host_list())
+            .wait_timeout(tilo_test_env::hang_bound()),
+    );
+    assert!(
+        matches!(refused, Err(ActionCallError::NotPermitted)),
+        "no agent asks the host's own operations: {refused:?}"
+    );
+
+    let own = answer_of(
+        shell
+            .asking(&shell.person, ShellAgent::host_list())
+            .wait_timeout(tilo_test_env::hang_bound()),
+    );
+    assert!(
+        matches!(
+            &own,
+            Ok(receipt) if matches!(receipt.status, ReceiptStatus::Completed { .. })
+        ),
+        "the person's own call on the same link lists the host's workspaces: {own:?}"
+    );
+}
