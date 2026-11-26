@@ -109,3 +109,15 @@ noq-udp 1.4 deprecated `UdpSocketState::send` (it silences I/O errors) for
 calls in `src/udp.rs` carry `#[allow(deprecated)]`, the same attribute at the
 same calls as upstream netwatch 0.20, so the workspace builds with noq-udp's
 registry release. No behaviour change; this goes with the move to 0.20.
+
+## netdev without its Android JNI extras
+
+`Cargo.toml` asks netdev for its default features but `android-extra`. With
+that feature netdev reads each interface's traffic counters through
+`ndk_context` and expects `catch_unwind` to stop the panic `ndk_context`
+raises when no Android context is published. The Tilo app is built with
+`panic = "abort"`, and its process has no context published for a moment
+while the activity takes over from the file provider (`tilo-process`'s
+`android.rs`): an endpoint bound then aborted the app on every start after
+sign-in. Without the feature netdev reads the counters from sysfs, which an
+app may not read, and reports none; netwatch does not use them.

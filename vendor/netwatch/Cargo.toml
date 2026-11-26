@@ -170,6 +170,11 @@ features = [
 
 [target.'cfg(not(any(target_os = "espidf", all(target_family = "wasm", target_os = "unknown"))))'.dependencies.netdev]
 version = "0.45.0"
+default-features = false
+features = [
+    "gateway",
+    "apple-system-configuration-extra",
+]
 
 [target.'cfg(not(any(target_os = "espidf", all(target_family = "wasm", target_os = "unknown"))))'.dependencies.tokio]
 version = "1"
