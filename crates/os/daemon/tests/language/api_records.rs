@@ -78,7 +78,7 @@ async fn write_letter(key: &host::Key, workspace: &str, text: &str, title: &str)
     let (status, written) = in_run(
         key,
         workspace,
-        ("word-processor", "append-paragraph"),
+        ("word-processor", "append_paragraph"),
         &json!({"text": text}),
         title,
     )
@@ -97,7 +97,7 @@ async fn opened_and_written(key: &host::Key, workspace: &str) {
         key,
         workspace,
         "word-processor",
-        "append-paragraph",
+        "append_paragraph",
         &json!({"text": "Dear Visa Officer,"}),
     )
     .await;
@@ -163,7 +163,8 @@ async fn every_message(key: &host::Key, workspace: &str, path: &str) -> (Vec<Val
 /// declared beside it.
 #[test]
 fn history_names_a_keys_agent_by_the_name_it_was_minted_with() {
-    host::run(|host| async move {
+    // Writer is the app the letters are written in: the device installs it to write them.
+    host::run_with(&["word-processor"], |host| async move {
         let workspace = host.workspace().to_owned();
         // The key a backend mints for its applicant's agent, named as the agent is.
         let key = host.key("Jane Doe's agent");
@@ -172,7 +173,7 @@ fn history_names_a_keys_agent_by_the_name_it_was_minted_with() {
         let (status, reply) = in_run(
             &key,
             &workspace,
-            ("word-processor", "append-paragraph"),
+            ("word-processor", "append_paragraph"),
             &json!({"text": "I apply for a tourist visa."}),
             title,
         )
@@ -507,7 +508,8 @@ fn titled<'a>(listed: &'a Value, title: &str) -> &'a Value {
 /// run back by the id its answer named, and the listing reads it undone.
 #[test]
 fn an_invocation_is_taken_back_by_a_key_other_than_the_one_that_ran_it() {
-    host::run(|host| async move {
+    // Writer is the app the letters are written in: the device installs it to write them.
+    host::run_with(&["word-processor"], |host| async move {
         let workspace = host.workspace().to_owned();
         let agent = host.key("Jane Doe's agent");
         let other = host.key("Reviewer's agent");
