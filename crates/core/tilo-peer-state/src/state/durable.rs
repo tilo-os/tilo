@@ -33,17 +33,8 @@ pub(super) const PREVIOUS: u32 = 18;
 /// device the workspace removed, so each comes up relabelled ([`brought_up`]).
 pub(super) const RELABELLED: u32 = 14;
 
-/// The newest version before [`RELABELLED`] that this build brings up ([`brought_up`]).
-pub(super) const BROUGHT_UP: u32 = 13;
-
-/// Whether this build brings up a state of durable layout `version` ([`brought_up`]).
-fn brings_up(version: u32) -> bool {
-    (RELABELLED..=PREVIOUS).contains(&version) || version == BROUGHT_UP
-}
-
 /// `bytes`, a durable state, in this build's layout: versions 18 ([`PREVIOUS`]) to 14
-/// ([`RELABELLED`]) relabelled, version 13 ([`brings_up`]) brought up to it, any other as it is,
-/// for [`Durable::read`] to read or refuse.
+/// ([`RELABELLED`]) relabelled, any other as it is, for [`Durable::read`] to read or refuse.
 ///
 /// Version 18 differs from this one only in what a certificate it keeps may name: this build's
 /// may be an agent's grant naming its agent by its id, under a binary marker version 18's builds
@@ -57,13 +48,6 @@ fn brings_up(version: u32) -> bool {
 /// certificate version 15 wrote reads the same here. Version 14 differs from version 15 only in
 /// what a governance row may say of a device the workspace removed: version 15 marks the row,
 /// and there is no other byte of itself to change.
-///
-/// Version 13 kept the writes it held for a prerequisite and each encrypted record's sealed
-/// writes as signed ops whose claims name no call. This build's claims write the call, which the
-/// op's signature covers, so those ops cannot be written again with a signature that still
-/// verifies: they are dropped as the state comes up, and their workspace's host serves them
-/// again when the device subscribes, as it does after any restart. What the state holds besides
-/// them comes up as it was.
 pub(super) fn brought_up(bytes: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, String> {
     let (version, rest) = postcard::take_from_bytes::<u32>(bytes).map_err(err)?;
     if (RELABELLED..=PREVIOUS).contains(&version) {
@@ -74,139 +58,7 @@ pub(super) fn brought_up(bytes: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, Str
         kept.extend_from_slice(rest);
         return Ok(kept.into());
     }
-    if !brings_up(version) {
-        return Ok(bytes.into());
-    }
-    let durable = before_call(bytes).map_err(|error| {
-        format!(
-            "this state is of durable layout {version} and does not read as it: {error}. Move \
-             the state directory aside, or start with an empty one"
-        )
-    })?;
-    postcard::to_allocvec(&Durable {
-        version: DURABLE_VERSION,
-        workspace: durable.workspace,
-        owner: durable.owner,
-        workspace_bytes: durable.workspace_bytes,
-        documents: durable.documents,
-        receipts: durable.receipts,
-        certificates: durable.certificates,
-        revocations: durable.revocations,
-        pending: VecDeque::new(),
-        pending_bytes: 0,
-        exact: durable.exact,
-        sealed: Vec::new(),
-    })
-    .map(Into::into)
-    .map_err(err)
-}
-
-/// A signed op as version 13 wrote it: its claims name each run's changes, action, units and
-/// invoker text, and no call. What the state held of it that is signed is dropped as it comes up
-/// ([`brought_up`]).
-#[derive(Deserialize)]
-#[expect(
-    dead_code,
-    reason = "a version 13 op is read to find where the state's dropped writes end"
-)]
-struct SignedOpBeforeCall {
-    #[serde(with = "serde_bytes")]
-    payload: Vec<u8>,
-    artifact: collab_types::ArtifactId,
-    author: collab_types::Ed25519PublicKey,
-    attestation_id: collab_types::AttestationId,
-    kind: collab_types::OpKind,
-    timestamp: SystemTime,
-    seq: u64,
-    encryption: Option<collab_types::EncryptionMetadata>,
-    claims: Vec<RunBeforeCall>,
-    surface: Option<[u8; 32]>,
-    governance: Vec<[u8; 4]>,
-    signature: collab_types::Signature,
-}
-
-#[derive(Deserialize)]
-#[expect(
-    dead_code,
-    reason = "a version 13 claim run is read to find where the state's dropped writes end"
-)]
-struct RunBeforeCall {
-    changes: Vec<[u8; 32]>,
-    action: collab_types::ClaimedAction,
-    units: Vec<collab_types::UnitPath>,
-    invoker: Option<String>,
-}
-
-/// One document write held for a prerequisite, as version 13 kept it.
-#[derive(Deserialize)]
-#[expect(
-    dead_code,
-    reason = "a version 13 held write is read to find where the state's dropped writes end"
-)]
-struct DocumentWriteBeforeCall {
-    peer: neighbour_wire::PeerId,
-    app_id: String,
-    cluster_id: String,
-    document_id: String,
-    envelope: SignedOpBeforeCall,
-    readers: Option<String>,
-}
-
-/// A version 13 state, with what this build reads of it and nothing of what it drops
-/// ([`brought_up`]).
-fn before_call(bytes: &[u8]) -> Result<Durable<'_>, postcard::Error> {
-    type Head = (u32, String, [u8; 32], Option<Vec<u8>>, usize);
-    let ((_, workspace, owner, workspace_bytes, count), mut rest) =
-        postcard::take_from_bytes::<Head>(bytes)?;
-    let mut documents = Vec::new();
-    for _ in 0..count {
-        let (document, after) = postcard::take_from_bytes::<DurableDocument>(rest)?;
-        documents.push(document);
-        rest = after;
-    }
-    let ((receipts, certificates, revocations, held), mut rest) = postcard::take_from_bytes::<(
-        BTreeMap<String, Vec<u8>>,
-        Vec<DeviceCert>,
-        Vec<tilo_user_identity::RevocationEntry>,
-        usize,
-    )>(rest)?;
-    // The held writes are read only to find where they end: their signed bytes are dropped.
-    for _ in 0..held {
-        let (_, after) = postcard::take_from_bytes::<[u8; 32]>(rest)?;
-        let after = after_before_call(after)?;
-        let (_, after) = postcard::take_from_bytes::<bool>(after)?;
-        rest = after;
-    }
-    let ((_, exact), rest) = postcard::take_from_bytes::<(usize, Option<&[u8]>)>(rest)?;
-    // Each sealed record's writes: read to find the end of the state, and dropped with the held
-    // writes.
-    let (_, rest) = postcard::take_from_bytes::<Vec<(Route, Vec<SignedOpBeforeCall>)>>(rest)?;
-    if !rest.is_empty() {
-        return Err(postcard::Error::DeserializeBadEncoding);
-    }
-    Ok(Durable {
-        version: DURABLE_VERSION,
-        workspace,
-        owner,
-        workspace_bytes,
-        documents,
-        receipts,
-        certificates,
-        revocations,
-        pending: VecDeque::new(),
-        pending_bytes: 0,
-        exact,
-        sealed: Vec::new(),
-    })
-}
-
-/// The bytes after the one message at the start of `bytes` as version 13 kept it: a document
-/// write read in version 13's claim layout, any other message as it is.
-fn after_before_call(bytes: &[u8]) -> Result<&[u8], postcard::Error> {
-    let Some(fields) = bytes.strip_prefix(&[NeighbourMsg::APP_DOCUMENT_TAG]) else {
-        return postcard::take_from_bytes::<NeighbourMsg>(bytes).map(|(_, rest)| rest);
-    };
-    postcard::take_from_bytes::<DocumentWriteBeforeCall>(fields).map(|(_, rest)| rest)
+    Ok(bytes.into())
 }
 
 /// A replica's durable state. `exact` is the exact admission index, present

@@ -361,23 +361,16 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    fn the_command_line_names_one_mode_and_reads_the_names_it_had;
+    fn the_command_line_names_one_mode_and_the_status_names_its_workspace;
 
-    phase run_app_reads_the_workspace_flag_it_had_another_name_for;
-    // A launcher outside this repository passes the flag by the name it had
-    // before the workspace was called a workspace.
+    phase run_app_takes_a_workspace_and_never_a_program;
     {
         let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
         let workspace = "6f1b4a7e-0b2f-4d3a-9a1e-2c3d4e5f6a7b";
-        let named = args(&[
-            "--profile",
-            "/tmp/profile",
-            "--run-app",
-            "so.tilo.photos",
-            "--workspace",
-            workspace,
-        ])
-        .unwrap();
+        let run = |rest: &[&str]| {
+            args(&[&["--profile", "/tmp/profile", "--run-app", "so.tilo.photos"], rest].concat())
+        };
+        let named = run(&["--workspace", workspace]).unwrap();
         let Mode::RunApp {
             workspace: Some(id),
             ..
@@ -386,63 +379,22 @@ tilo_test_env::scenario! {
             panic!("the launch was parsed as {:?}", named.mode);
         };
         assert_eq!(id, workspace);
-
-        let old = args(&[
-            "--profile",
-            "/tmp/profile",
-            "--run-app",
-            "so.tilo.photos",
-            "--workspace",
-            workspace,
-        ])
-        .unwrap();
-        assert_eq!(old.mode, named.mode);
-
-        assert!(
-            args(&[
-                "--profile",
-                "/tmp/profile",
-                "--run-app",
-                "so.tilo.photos",
-                "--workspace",
-                "not-a-workspace",
-            ])
-            .is_err()
-        );
-
+        assert!(run(&["--workspace", "not-a-workspace"]).is_err());
         // A program named after the app is refused: what runs is the app this computer has
         // installed, never one the command line names.
-        assert!(
-            args(&[
-                "--profile",
-                "/tmp/profile",
-                "--run-app",
-                "so.tilo.photos",
-                "--",
-                "/bin/true",
-            ])
-            .is_err()
-        );
+        assert!(run(&["--", "/bin/true"]).is_err());
     }
 
-    phase the_status_probe_reads_the_field_name_it_had;
-    // The status probe answers the served workspace as `workspace` and reads
-    // `workspace` as the same.
+    phase the_status_probe_answers_the_workspace_it_serves;
+    // Launchers and scripts read the answer's `workspace`.
     {
         let workspace = "6f1b4a7e-0b2f-4d3a-9a1e-2c3d4e5f6a7b";
-        let old: super::Status = serde_json::from_str(&format!(
+        let status: super::Status = serde_json::from_str(&format!(
             "{{\"version\":1,\"pid\":42,\"workspace\":\"{workspace}\"}}"
         ))
         .unwrap();
-        assert_eq!(old.workspace, workspace);
-        let new: super::Status = serde_json::from_str(&format!(
-            "{{\"version\":1,\"pid\":42,\"workspace\":\"{workspace}\"}}"
-        ))
-        .unwrap();
-        assert_eq!(new.workspace, old.workspace);
-        // Launchers and scripts read the answer's `workspace`.
         assert_eq!(
-            serde_json::to_value(&new).unwrap()["workspace"],
+            serde_json::to_value(&status).unwrap()["workspace"],
             serde_json::json!(workspace)
         );
     }
@@ -3112,10 +3064,7 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
 
     // The account's session redeems it: the daemon ties the secret to this process, and answers
     // no link yet, as the person's services do not run.
-    let answer = ask(
-        ADA,
-        json!({"native": "shells#link", "token": token}),
-    );
+    let answer = ask(ADA, json!({"native": "shells#link", "token": token}));
     assert_eq!(answer["founding"], true, "{answer}");
     assert_eq!(answer["shell"], false, "{answer}");
 
@@ -3274,9 +3223,13 @@ fn a_founding_link_is_never_an_apps_or_another_programs() {
     };
 
     // Root says Ada signed in with no identity yet: her session is answered the founding secret.
-    let signed_in = ask(ROOT, SESSION, json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+    let signed_in = ask(
+        ROOT,
+        SESSION,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {"name": "tilo_do", "arguments": {"path": "seats#signed-in",
-            "args": {"uid": ADA}}}}));
+            "args": {"uid": ADA}}}}),
+    );
     let text = signed_in["result"]["content"][0]["text"]
         .as_str()
         .unwrap_or_default();
