@@ -619,7 +619,16 @@ struct StreamFrames {
 /// The frames of `stream`, handed to a loaded engine that makes them.
 fn frames_of(stream: &Arc<StreamFrames>) -> tilo_engine_loader::Frames {
     let context = Arc::as_ptr(stream).cast_mut().cast::<std::ffi::c_void>();
-    tilo_engine_loader::Frames::new(context, pushed)
+    tilo_engine_loader::Frames::new(context, pushed, said)
+}
+
+#[cfg(feature = "app-launch")]
+/// What a stream a loaded engine runs said of itself: kept where a view reads `engine.state`
+/// and the window is woken to show it.
+fn said(context: *mut std::ffi::c_void, slot: &str, state: &str) {
+    // SAFETY: the context is the `StreamFrames` the stream's caller kept for the process's life.
+    let frames = unsafe { &*context.cast::<StreamFrames>() };
+    tilolang_tilo::runtime::host_work::Push::state(frames, slot, state);
 }
 
 #[cfg(feature = "app-launch")]

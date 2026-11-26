@@ -237,11 +237,12 @@ impl File {
 
 /// The frames of a stream, handed to the window that shows them as they
 /// arrive: the job it belongs to, which frame of it, its size, and its pixels
-/// as RGBA.
+/// as RGBA; and what the stream says of itself as it changes.
 #[derive(Clone, Copy)]
 pub struct Frames {
     context: *mut c_void,
     frame: fn(*mut c_void, &str, u64, u32, u32, &[u8]),
+    state: fn(*mut c_void, &str, &str),
 }
 
 // SAFETY: the host that hands a stream its frames keeps what they name for the process's life,
@@ -251,16 +252,32 @@ unsafe impl Send for Frames {}
 unsafe impl Sync for Frames {}
 
 impl Frames {
-    /// Frames handed to `frame`, with `context`.
+    /// Frames handed to `frame` and what a stream says handed to `state`, with
+    /// `context`.
     #[must_use]
-    pub fn new(context: *mut c_void, frame: fn(*mut c_void, &str, u64, u32, u32, &[u8])) -> Self {
-        Self { context, frame }
+    pub fn new(
+        context: *mut c_void,
+        frame: fn(*mut c_void, &str, u64, u32, u32, &[u8]),
+        state: fn(*mut c_void, &str, &str),
+    ) -> Self {
+        Self {
+            context,
+            frame,
+            state,
+        }
     }
 
     /// One frame of the stream `job`: which frame it is, its size, and its
     /// pixels as RGBA.
     pub fn frame(&self, job: &str, generation: u64, width: u32, height: u32, pixels: &[u8]) {
         (self.frame)(self.context, job, generation, width, height, pixels);
+    }
+
+    /// The stream `job` says what it stands at now: connecting, running, or why
+    /// it ended. A view reading `engine.state(job)` shows it and runs again when
+    /// the next word arrives.
+    pub fn state(&self, job: &str, state: &str) {
+        (self.state)(self.context, job, state);
     }
 }
 
