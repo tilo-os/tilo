@@ -10,7 +10,6 @@
 )]
 
 use std::cell::RefCell;
-use std::path::Path;
 use std::rc::Rc;
 
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
@@ -19,27 +18,7 @@ use tilolang_tilo::host::Host;
 
 const APP: &str = "so.tilo.settings";
 
-/// The app as it ships, with the platform's packages it reads through loaded, as a window's
-/// process loads them.
-fn settings() -> (Host, tilolang::Compiled) {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/settings");
-    let source = tilolang::PackageSource::read_dir(&dir).expect("the package reads");
-    let ids = tilolang::IdsLock::parse(
-        &std::fs::read_to_string(dir.join("app.ids")).expect("the package's ids"),
-    )
-    .expect("its ids parse");
-    let metas = crate::fixtures::settings_packages().expect("the platform's packages read");
-    let compiled =
-        tilolang::compile_package_source(&source, &ids, &metas).expect("the package compiles");
-    let host = Host::new(
-        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
-        || None,
-    )
-    .expect("a host");
-    host.load_compiled(&compiled).expect("the package loads");
-    tilolang_tilo::platform_apps::load(&host, &compiled.meta.uses);
-    (host, compiled)
-}
+use crate::fixtures::settings_host as settings;
 
 /// The resource `doc` of `ty`, as a view of a platform package reads it.
 fn resource(doc: &str, ty: &str) -> ResourceRef {

@@ -1,12 +1,11 @@
 //! Windows Apps end to end: this computer's Windows programs and appliance over the device's
 //! `windows-apps` reading, the pages each opens onto, and the actions they offer.
 
-use std::cell::RefCell;
+use crate::fixtures::Pane;
 use std::rc::Rc;
 
 use tilolang::IdsLock;
 use tilolang_runtime::blob::FileValue;
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::{Host, RootView};
 
@@ -50,7 +49,7 @@ fn reader_app() -> serde_json::Value {
         "can_vendor_uninstall": true,
         "can_delete_data": true,
         "can_publish_vm_candidate": false,
-        "installation": "Installed 12 June 2026.",
+        "installation": "Pane 12 June 2026.",
         "vm_fallback_available": false,
         "vm_fallback_unavailable_reason": null
     })
@@ -85,7 +84,7 @@ fn studio_app() -> serde_json::Value {
         "can_vendor_uninstall": false,
         "can_delete_data": false,
         "can_publish_vm_candidate": false,
-        "installation": "Installed 21 April 2026.",
+        "installation": "Pane 21 April 2026.",
         "vm_fallback_available": true,
         "vm_fallback_unavailable_reason": null
     })
@@ -146,167 +145,39 @@ fn full() -> String {
     )
 }
 
-#[derive(Clone, Default)]
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Sent {
-    fn asked(&self, name: &str) -> Vec<Value> {
-        self.0
-            .borrow()
-            .iter()
-            .find_map(|invocation| match invocation {
-                Invocation::Action {
-                    name: asked, args, ..
-                } if asked == name || asked == &name.replace('_', "-") => {
-                    Some(args.iter().map(|(_, value)| value.clone()).collect())
-                }
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("the app asks `{name}`; it asked {:?}", self.all()))
-    }
-
-    fn last_asked(&self, name: &str) -> Vec<Value> {
-        self.0
-            .borrow()
-            .iter()
-            .rev()
-            .find_map(|invocation| match invocation {
-                Invocation::Action {
-                    name: asked, args, ..
-                } if asked == name || asked == &name.replace('_', "-") => {
-                    Some(args.iter().map(|(_, value)| value.clone()).collect())
-                }
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("the app asks `{name}`; it asked {:?}", self.all()))
-    }
-
-    fn all(&self) -> Vec<String> {
-        self.0
-            .borrow()
-            .iter()
-            .filter_map(|invocation| match invocation {
-                Invocation::Action { name, .. } => Some(name.clone()),
-                Invocation::Edit { .. } => None,
-            })
-            .collect()
-    }
+fn installed(reading: String) -> Pane {
+    Pane::install(&me(), SOURCE)
+        .delegating()
+        .reading(&windows(), &reading)
+        .rooted("so.tilo.windows.Windows")
 }
 
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
+fn installed_full() -> Pane {
+    installed(full())
 }
 
-struct Installed {
-    host: Host,
-    root: ResourceRef,
-    view: String,
-    actions: Vec<(String, String)>,
-    sent: Sent,
+/// The program `id` of the reading, as a view reads it.
+fn program(app: &Pane, id: &str) -> Value {
+    let runtime = app.host.runtime();
+    let Value::List(programs) = runtime.read(&windows(), "apps").expect("the programs") else {
+        panic!("the reading lists its programs");
+    };
+    programs
+        .into_iter()
+        .find(|value| match value {
+            Value::Ref(held) => runtime.read(&held.target, "id").ok() == Some(Value::text(id)),
+            _ => false,
+        })
+        .unwrap_or_else(|| panic!("the reading lists no {id}"))
 }
 
-impl Installed {
-    fn over(reading: String) -> Self {
-        let host = Host::new(me(), || None).expect("a host");
-        let metas = tilolang_tilo::platform_apps::named_platform_packages(SOURCE)
-            .expect("the platform's packages read");
-        for meta in &metas {
-            host.runtime()
-                .load_foreign(meta.clone())
-                .expect("the device is loaded");
-        }
-        let compiled = tilolang::compile_package(SOURCE, &IdsLock::new(), &metas)
-            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
-        let package = host.load_compiled(&compiled).expect("the app loads");
-        let view = package
-            .meta
-            .views
-            .iter()
-            .find(|view| view.name == "window")
-            .expect("the window view")
-            .id
-            .clone();
-        let actions = package
-            .meta
-            .actions
-            .iter()
-            .map(|action| (action.name.clone(), action.id.clone()))
-            .collect();
-        let sent = Sent::default();
-        host.runtime().set_invoker(sent.clone());
-        host.runtime()
-            .set_reading(&windows(), &reading)
-            .expect("the Windows programs read");
-        let root = host
-            .runtime()
-            .create_root("so.tilo.windows.Windows")
-            .expect("the app's root");
-        Self {
-            host,
-            root,
-            view,
-            actions,
-            sent,
-        }
-    }
-
-    fn full() -> Self {
-        Self::over(full())
-    }
-
-    fn call(&self, name: &str, args: Vec<Value>) -> Value {
-        let id = self
-            .actions
-            .iter()
-            .find(|(asked, _)| asked == name)
-            .map_or_else(|| panic!("no action {name}"), |(_, id)| id.clone());
-        match self
-            .host
-            .runtime()
-            .invoke_action(&me(), (id.as_str(), args))
-            .unwrap_or_else(|why| panic!("{name} runs: {why}"))
-        {
-            tilolang_runtime::InvokeOutcome::Done(value) => value,
-            other => panic!("{name} answers {other:?}"),
-        }
-    }
-
-    fn window(&self) -> ViewInstance {
-        self.host
-            .runtime()
-            .open_view(&me(), &self.view, vec![Value::resource(&self.root)])
-            .expect("the window opens")
-    }
-
-    fn root_value(&self) -> Value {
-        Value::resource(&self.root)
-    }
-
-    /// The program `id` of the reading, as a view reads it.
-    fn program(&self, id: &str) -> Value {
-        let runtime = self.host.runtime();
-        let Value::List(programs) = runtime.read(&windows(), "apps").expect("the programs") else {
-            panic!("the reading lists its programs");
-        };
-        programs
-            .into_iter()
-            .find(|value| match value {
-                Value::Ref(held) => runtime.read(&held.target, "id").ok() == Some(Value::text(id)),
-                _ => false,
-            })
-            .unwrap_or_else(|| panic!("the reading lists no {id}"))
-    }
-
-    fn at(&self, chosen: &str) -> ViewInstance {
-        self.host
-            .runtime()
-            .stage_view_state("so.tilo.windows", "chosen", chosen)
-            .expect("the view state is declared");
-        self.window()
-    }
+/// The window with the program `chosen` picked.
+fn shown_at(app: &Pane, chosen: &str) -> ViewInstance {
+    app.host
+        .runtime()
+        .stage_view_state("so.tilo.windows", "chosen", chosen)
+        .expect("the view state is declared");
+    app.window()
 }
 
 fn words(node: &UiNode, into: &mut Vec<String>) {
@@ -341,7 +212,7 @@ fn contains(view: &ViewInstance, wanted: &str) -> bool {
 }
 
 /// The case `case` of the app's `OpenWith`, as the package declares it.
-fn open_with(app: &Installed, case: &str) -> Value {
+fn open_with(app: &Pane, case: &str) -> Value {
     let package = app
         .host
         .package("so.tilo.windows")
@@ -378,7 +249,7 @@ fn installer() -> Value {
 
 #[test]
 fn the_window_lists_every_program_and_the_appliance() {
-    let app = Installed::full();
+    let app = installed_full();
     let window = app.window();
     for wanted in [
         "Adobe Acrobat Reader",
@@ -399,15 +270,15 @@ fn the_window_lists_every_program_and_the_appliance() {
 
 #[test]
 fn an_empty_catalogue_says_so() {
-    let app = Installed::over(reading(Vec::new(), appliance(), None, support()));
+    let app = installed(reading(Vec::new(), appliance(), None, support()));
     let window = app.window();
     assert!(contains(&window, "No Windows apps"));
 }
 
 #[test]
 fn a_program_page_says_how_it_opens_what_it_reaches_and_where_it_was_learned() {
-    let app = Installed::full();
-    let window = app.at("adobe-reader");
+    let app = installed_full();
+    let window = shown_at(&app, "adobe-reader");
     for wanted in [
         "Open with",
         "Files it can read",
@@ -417,7 +288,7 @@ fn a_program_page_says_how_it_opens_what_it_reaches_and_where_it_was_learned() {
         "Tilo compatibility catalogue",
         "A verified recipe",
         "Wine 11.0",
-        "Installed 12 June 2026.",
+        "Pane 12 June 2026.",
     ] {
         assert!(
             contains(&window, wanted),
@@ -434,8 +305,8 @@ fn a_failed_setup_leads_with_running_it_again() {
     app["launch_available"] = serde_json::json!(false);
     app["can_retry_install"] = serde_json::json!(true);
     app["installation"] = serde_json::json!("The installer stopped before Reader was ready.");
-    let installed = Installed::over(reading(vec![app], appliance(), None, support()));
-    let window = installed.at("adobe-reader");
+    let installed = installed(reading(vec![app], appliance(), None, support()));
+    let window = shown_at(&installed, "adobe-reader");
     for wanted in [
         "Its setup did not finish",
         "The installer stopped before Reader was ready.",
@@ -451,7 +322,7 @@ fn a_failed_setup_leads_with_running_it_again() {
 
 #[test]
 fn the_waiting_setup_offers_both_places_to_go() {
-    let app = Installed::over(reading(
+    let app = installed(reading(
         vec![],
         appliance(),
         Some(serde_json::json!({
@@ -461,7 +332,7 @@ fn the_waiting_setup_offers_both_places_to_go() {
         })),
         support(),
     ));
-    let window = app.at("pending");
+    let window = shown_at(&app, "pending");
     for wanted in [
         "Install Notepad++ 8.6.4",
         "A signed installer from Don Ho.",
@@ -479,8 +350,8 @@ fn the_waiting_setup_offers_both_places_to_go() {
 
 #[test]
 fn the_appliance_page_states_its_power_licence_and_recovery() {
-    let app = Installed::full();
-    let window = app.at("appliance");
+    let app = installed_full();
+    let window = shown_at(&app, "appliance");
     for wanted in [
         "Windows is running.",
         "Activated with a digital license",
@@ -502,8 +373,8 @@ fn the_appliance_page_states_its_power_licence_and_recovery() {
 fn a_shut_down_appliance_offers_to_start_and_not_to_restart() {
     let mut state = appliance();
     state["power_state"] = serde_json::json!("shut-down");
-    let app = Installed::over(reading(vec![], state, None, support()));
-    let window = app.at("appliance");
+    let app = installed(reading(vec![], state, None, support()));
+    let window = shown_at(&app, "appliance");
     assert!(contains(&window, "Start Windows"), "{:?}", shown(&window));
     assert!(!contains(&window, "Restart Windows"));
     assert!(!contains(&window, "Shut Windows down"));
@@ -513,8 +384,8 @@ fn a_shut_down_appliance_offers_to_start_and_not_to_restart() {
 fn a_suspended_appliance_offers_to_resume() {
     let mut state = appliance();
     state["power_state"] = serde_json::json!("suspended");
-    let app = Installed::over(reading(vec![], state, None, support()));
-    let window = app.at("appliance");
+    let app = installed(reading(vec![], state, None, support()));
+    let window = shown_at(&app, "appliance");
     assert!(contains(&window, "Resume Windows"), "{:?}", shown(&window));
     assert!(contains(&window, "Windows is suspended."));
 }
@@ -526,8 +397,8 @@ fn a_temporary_connection_says_what_it_is_for_and_can_be_ended() {
         "purpose": "activation",
         "expires_in_seconds": 300
     });
-    let app = Installed::over(reading(vec![], state, None, support()));
-    let window = app.at("appliance");
+    let app = installed(reading(vec![], state, None, support()));
+    let window = shown_at(&app, "appliance");
     assert!(contains(&window, "activation"), "{:?}", shown(&window));
     assert!(contains(&window, "5 minutes"));
     assert!(contains(&window, "End the connection"));
@@ -535,7 +406,7 @@ fn a_temporary_connection_says_what_it_is_for_and_can_be_ended() {
 
 #[test]
 fn choosing_a_route_writes_the_shared_choice_and_carries_it() {
-    let app = Installed::full();
+    let app = installed_full();
     app.call(
         "set_route",
         vec![
@@ -557,7 +428,7 @@ fn choosing_a_route_writes_the_shared_choice_and_carries_it() {
 
 #[test]
 fn letting_the_catalogue_decide_carries_no_route() {
-    let app = Installed::full();
+    let app = installed_full();
     app.call(
         "set_route",
         vec![
@@ -579,7 +450,7 @@ fn letting_the_catalogue_decide_carries_no_route() {
 
 #[test]
 fn an_installer_opened_from_a_folder_is_installed() {
-    let app = Installed::full();
+    let app = installed_full();
     app.call("installed", vec![app.root_value(), installer()]);
     let asked = app.sent.asked("install");
     assert!(
@@ -598,7 +469,7 @@ fn a_windows_image_is_imported_and_a_document_opens_in_its_program() {
     let mut studio = studio_app();
     studio["portal_file_open_available"] = serde_json::json!(true);
     studio["portal_file_open_unavailable_reason"] = serde_json::Value::Null;
-    let app = Installed::over(reading(vec![studio], appliance(), None, support()));
+    let app = installed(reading(vec![studio], appliance(), None, support()));
     app.call(
         "imported_iso",
         vec![Value::file(FileValue {
@@ -606,8 +477,8 @@ fn a_windows_image_is_imported_and_a_document_opens_in_its_program() {
             ..FileValue::new("win11.iso", "application/x-cd-image", 4096, "h2")
         })],
     );
-    assert!(app.sent.all().iter().any(|name| name == "import-iso"));
-    let studio = app.program("visual-studio");
+    assert!(app.sent.names().iter().any(|name| name == "import-iso"));
+    let studio = program(&app, "visual-studio");
     app.call("opened_file", vec![app.root_value(), studio, installer()]);
     let asked = app.sent.asked("open_file");
     assert!(
@@ -622,7 +493,7 @@ fn a_windows_image_is_imported_and_a_document_opens_in_its_program() {
 /// of those actions reaches the computer's `windows-apps` reading.
 #[test]
 fn the_appliance_works_with_the_window_closed() {
-    let app = Installed::full();
+    let app = installed_full();
     for (action, asked) in [
         ("recovery_desktop", "recovery"),
         ("start_windows", "start"),
@@ -636,9 +507,9 @@ fn the_appliance_works_with_the_window_closed() {
     ] {
         app.call(action, Vec::new());
         assert!(
-            app.sent.all().iter().any(|name| name == asked),
+            app.sent.names().iter().any(|name| name == asked),
             "{action} asks `{asked}`: {:?}",
-            app.sent.all()
+            app.sent.names()
         );
     }
 }
@@ -649,8 +520,8 @@ fn the_support_banner_offers_to_install_windows_support() {
     support["state"] = serde_json::json!("needs-install");
     support["summary"] =
         serde_json::json!("Wine and Proton are not installed; installing takes 1.2 GB.");
-    let app = Installed::over(reading(vec![reader_app()], appliance(), None, support));
-    let window = app.at("adobe-reader");
+    let app = installed(reading(vec![reader_app()], appliance(), None, support));
+    let window = shown_at(&app, "adobe-reader");
     assert!(
         contains(&window, "Install Windows support"),
         "{:?}",
@@ -661,8 +532,8 @@ fn the_support_banner_offers_to_install_windows_support() {
 
 #[test]
 fn a_program_of_the_appliance_says_what_its_window_cannot_receive() {
-    let app = Installed::full();
-    let window = app.at("visual-studio");
+    let app = installed_full();
+    let window = shown_at(&app, "visual-studio");
     assert!(contains(
         &window,
         "This app window can't receive files yet."
@@ -678,8 +549,8 @@ fn the_operations_an_installation_allows_are_the_ones_shown() {
     let mut app = reader_app();
     app["can_publish_vm_candidate"] = serde_json::json!(true);
     app["can_vendor_uninstall"] = serde_json::json!(true);
-    let installed = Installed::over(reading(vec![app], appliance(), None, support()));
-    let window = installed.at("adobe-reader");
+    let first = installed(reading(vec![app], appliance(), None, support()));
+    let window = shown_at(&first, "adobe-reader");
     for wanted in ["Add to Windows Apps", "Uninstall", "Delete its data"] {
         assert!(
             contains(&window, wanted),
@@ -690,8 +561,8 @@ fn the_operations_an_installation_allows_are_the_ones_shown() {
     let mut quiet = reader_app();
     quiet["can_vendor_uninstall"] = serde_json::json!(false);
     quiet["can_delete_data"] = serde_json::json!(false);
-    let installed = Installed::over(reading(vec![quiet], appliance(), None, support()));
-    let window = installed.at("adobe-reader");
+    let quiet_app = installed(reading(vec![quiet], appliance(), None, support()));
+    let window = shown_at(&quiet_app, "adobe-reader");
     assert!(!contains(&window, "Uninstall"));
     assert!(!contains(&window, "Delete its data"));
 }
@@ -706,7 +577,7 @@ fn the_setups_programs_are_named_before_their_data_goes() {
     let mut second = suite.clone();
     second["id"] = serde_json::json!("psftp");
     second["name"] = serde_json::json!("PSFTP");
-    let installed = Installed::over(reading(vec![suite, second], appliance(), None, support()));
+    let installed = installed(reading(vec![suite, second], appliance(), None, support()));
     installed
         .host
         .runtime()
@@ -717,7 +588,7 @@ fn the_setups_programs_are_named_before_their_data_goes() {
         .runtime()
         .stage_view_state("so.tilo.windows", "confirm_target", "wine-putty")
         .expect("its target is view state");
-    let window = installed.at("putty");
+    let window = shown_at(&installed, "putty");
     let words = shown(&window);
     assert!(
         words
@@ -745,7 +616,7 @@ fn a_program_that_ended_says_how() {
         "pending": [],
         "problem": null
     });
-    let app = Installed::over(ended.to_string());
+    let app = installed(ended.to_string());
     let window = app.window();
     assert!(
         contains(&window, "Adobe Acrobat Reader stopped"),
@@ -760,7 +631,7 @@ fn a_program_that_ended_says_how() {
         "program": "adobe-reader", "name": "Adobe Acrobat Reader", "success": false,
         "exit_code": null, "error": "The capsule's runner is not installed.", "said": null
     });
-    let app = Installed::over(ended.to_string());
+    let app = installed(ended.to_string());
     let window = app.window();
     assert!(contains(&window, "Adobe Acrobat Reader could not open"));
     assert!(contains(&window, "The capsule's runner is not installed."));
@@ -779,7 +650,7 @@ fn what_the_service_reports_as_wrong_is_said() {
         "problem": "The compatibility service did not answer."
     });
     state["problem"] = serde_json::json!("The compatibility service did not answer.");
-    let app = Installed::over(state.to_string());
+    let app = installed(state.to_string());
     let window = app.window();
     assert!(contains(
         &window,
@@ -902,7 +773,7 @@ fn a_search_hit_on_a_program_opens_the_window_at_its_page() {
 /// window. One no list of the reading holds is nothing to open.
 #[test]
 fn a_program_of_the_reading_is_the_record_the_window_opens() {
-    let app = Installed::full();
+    let app = installed_full();
     let plan = app
         .host
         .open_plan("so.tilo.windows", "windows-apps/adobe-reader", None)

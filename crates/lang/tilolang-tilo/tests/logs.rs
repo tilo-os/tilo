@@ -1,13 +1,8 @@
 //! Logs end to end: the window over the device's `journal` reading, the shared filter, the
 //! live tail and the export.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
-use tilolang::IdsLock;
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+use crate::fixtures::Pane;
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
-use tilolang_tilo::host::Host;
 
 const SOURCE: &str = include_str!("../../../../apps/tl/logs/app.tl");
 
@@ -58,128 +53,11 @@ fn reading() -> ResourceRef {
     ResourceRef::parse_id("journal", "so.tilo.device#Journal").expect("a resource id")
 }
 
-/// What the app asked of the device's verbs.
-#[derive(Clone, Default)]
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Sent {
-    fn all(&self) -> Vec<Invocation> {
-        self.0.borrow().clone()
-    }
-
-    /// The last verb `name` was asked on the reading, with its arguments after the resource.
-    fn asked(&self, name: &str) -> Vec<Value> {
-        self.all()
-            .into_iter()
-            .rev()
-            .find_map(|invocation| match invocation {
-                Invocation::Action {
-                    name: asked, args, ..
-                } if asked == name => Some(args.into_iter().map(|(_, value)| value).collect()),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("the app asks `{name}`"))
-    }
-}
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
-}
-
-struct Installed {
-    host: Host,
-    root: ResourceRef,
-    view: String,
-    actions: Vec<(String, String)>,
-    sent: Sent,
-}
-
-impl Installed {
-    fn new(reading_json: &str) -> Self {
-        let host = Host::new(me(), || None).expect("a host");
-        let metas = tilolang_tilo::platform_apps::platform_packages()
-            .expect("the platform's packages read");
-        for meta in &metas {
-            host.runtime()
-                .load_foreign(meta.clone())
-                .expect("the device is loaded");
-        }
-        let compiled = tilolang::compile_package(SOURCE, &IdsLock::new(), &metas)
-            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
-        let package = host.load_compiled(&compiled).expect("the app loads");
-        let view = package
-            .meta
-            .views
-            .iter()
-            .find(|view| view.name == "window")
-            .expect("the window view")
-            .id
-            .clone();
-        let actions = package
-            .meta
-            .actions
-            .iter()
-            .map(|action| (action.name.clone(), action.id.clone()))
-            .collect();
-        let root_type = package
-            .meta
-            .types
-            .iter()
-            .find(|ty| ty.name == "Logs")
-            .expect("the root type")
-            .id
-            .clone();
-        let sent = Sent::default();
-        host.runtime().set_invoker(sent.clone());
-        host.runtime()
-            .set_reading(&reading(), reading_json)
-            .expect("the reading is set");
-        let root = host
-            .runtime()
-            .create_root(&root_type)
-            .expect("the app's root");
-        Self {
-            host,
-            root,
-            view,
-            actions,
-            sent,
-        }
-    }
-
-    fn call(&self, name: &str, args: Vec<Value>) -> Result<Value, String> {
-        let id = self
-            .actions
-            .iter()
-            .find(|(asked, _)| asked == name)
-            .map_or_else(
-                || Err(format!("no action {name}")),
-                |(_, id)| Ok(id.clone()),
-            )?;
-        match self
-            .host
-            .runtime()
-            .invoke_action(&me(), (id.as_str(), args))
-            .map_err(|why| why.to_string())?
-        {
-            tilolang_runtime::InvokeOutcome::Done(value) => Ok(value),
-            other => Err(format!("{name} answers {other:?}")),
-        }
-    }
-
-    fn window(&self) -> ViewInstance {
-        self.host
-            .runtime()
-            .open_view(&me(), &self.view, vec![Value::resource(&self.root)])
-            .expect("the window opens")
-    }
-
-    fn root_value(&self) -> Value {
-        Value::resource(&self.root)
-    }
+fn installed(reading_json: &str) -> Pane {
+    Pane::install(&me(), SOURCE)
+        .delegating()
+        .reading(&reading(), reading_json)
+        .rooted("Logs")
 }
 
 /// Every text, title, badge and label under `node`, in order.
@@ -209,7 +87,7 @@ fn has(view: &ViewInstance, wanted: &str) -> bool {
 
 #[test]
 fn the_window_lists_the_journal_with_its_severity_and_unit() {
-    let app = Installed::new(READING);
+    let app = installed(READING);
     let window = app.window();
     let words = shown(&window);
     for wanted in [
@@ -229,8 +107,8 @@ fn the_window_lists_the_journal_with_its_severity_and_unit() {
 
 #[test]
 fn the_filter_hides_records_below_its_severity() {
-    let app = Installed::new(READING);
-    app.call("set_severity", vec![app.root_value(), Value::text("err")])
+    let app = installed(READING);
+    app.try_call("set_severity", vec![app.root_value(), Value::text("err")])
         .expect("the severity is set");
     let window = app.window();
     let words = shown(&window);
@@ -246,8 +124,8 @@ fn the_filter_hides_records_below_its_severity() {
 
 #[test]
 fn the_filter_narrows_to_one_unit() {
-    let app = Installed::new(READING);
-    app.call(
+    let app = installed(READING);
+    app.try_call(
         "set_unit",
         vec![app.root_value(), Value::text("sshd.service")],
     )
@@ -264,8 +142,8 @@ fn the_filter_narrows_to_one_unit() {
 
 #[test]
 fn the_filter_narrows_to_one_boot() {
-    let app = Installed::new(READING);
-    app.call("set_boot", vec![app.root_value(), Value::text("boot-b")])
+    let app = installed(READING);
+    app.try_call("set_boot", vec![app.root_value(), Value::text("boot-b")])
         .expect("the boot is set");
     let window = app.window();
     let words = shown(&window);
@@ -292,7 +170,7 @@ fn the_search_narrows_the_records() {
             && matches!(node.props.get("placeholder"), Some(Value::Text(text)) if text.starts_with("Search"));
         usize::from(searching) + node.children.iter().map(fields).sum::<usize>()
     }
-    let app = Installed::new(READING);
+    let app = installed(READING);
     let mut window = app.window();
     assert_eq!(
         fields(window.tree()),
@@ -315,10 +193,10 @@ fn the_search_narrows_the_records() {
 
 #[test]
 fn clearing_the_filters_shows_every_record() {
-    let app = Installed::new(READING);
-    app.call("set_severity", vec![app.root_value(), Value::text("err")])
+    let app = installed(READING);
+    app.try_call("set_severity", vec![app.root_value(), Value::text("err")])
         .unwrap();
-    app.call("clear_filters", vec![app.root_value()])
+    app.try_call("clear_filters", vec![app.root_value()])
         .expect("the filters are cleared");
     let window = app.window();
     assert!(has(&window, "Linux version 7.0.9"));
@@ -326,8 +204,8 @@ fn clearing_the_filters_shows_every_record() {
 
 #[test]
 fn a_refresh_reads_the_most_recent_records() {
-    let app = Installed::new(READING);
-    app.call("refresh", vec![app.root_value()])
+    let app = installed(READING);
+    app.try_call("refresh", vec![app.root_value()])
         .expect("the read starts");
     let asked = app.sent.asked("refresh");
     match &asked[0] {
@@ -339,15 +217,15 @@ fn a_refresh_reads_the_most_recent_records() {
 
 #[test]
 fn following_reads_the_records_after_the_cursor() {
-    let app = Installed::new(READING);
-    app.call("follow", vec![app.root_value(), Value::Bool(true)])
+    let app = installed(READING);
+    app.try_call("follow", vec![app.root_value(), Value::Bool(true)])
         .expect("following starts");
     assert_eq!(
         app.sent.asked("set-following")[1],
         Value::Bool(true),
         "the device follows"
     );
-    app.call("poll_tail", vec![app.root_value()])
+    app.try_call("poll_tail", vec![app.root_value()])
         .expect("a tail read runs");
     let asked = app.sent.asked("read-after");
     assert_eq!(
@@ -360,9 +238,9 @@ fn following_reads_the_records_after_the_cursor() {
 
 #[test]
 fn the_export_writes_one_json_object_a_line() {
-    let app = Installed::new(READING);
+    let app = installed(READING);
     let made = app
-        .call("made_export", vec![app.root_value()])
+        .try_call("made_export", vec![app.root_value()])
         .expect("the export is made");
     let text = match made {
         Value::Text(text) => text,
@@ -379,8 +257,8 @@ fn the_export_writes_one_json_object_a_line() {
 
 #[test]
 fn the_records_detail_shows_its_fields() {
-    let app = Installed::new(READING);
-    app.call(
+    let app = installed(READING);
+    app.try_call(
         "choose",
         vec![app.root_value(), Value::text("1760000000000000:kernel")],
     )
@@ -403,7 +281,7 @@ fn the_records_detail_shows_its_fields() {
 }
 #[test]
 fn a_computer_without_a_readable_journal_says_so() {
-    let app = Installed::new(MISSING);
+    let app = installed(MISSING);
     let window = app.window();
     let words = shown(&window);
     assert!(
@@ -457,7 +335,7 @@ fn button<'a>(node: &'a UiNode, wanted: &dyn Fn(&str) -> bool) -> Option<&'a UiN
 
 #[test]
 fn selection_auto_lands_on_errors_and_moves_through_the_document() {
-    let app = Installed::new(READING);
+    let app = installed(READING);
     // The list shows each record once; the inspector's record is shown a second time.
     let window = app.window();
     assert_eq!(
@@ -479,7 +357,7 @@ fn selection_auto_lands_on_errors_and_moves_through_the_document() {
     let selected = app
         .host
         .runtime()
-        .read(&app.root, "selected")
+        .read(app.root(), "selected")
         .expect("the selection reads");
     assert_ne!(selected, Value::text(""), "a record is written as chosen");
     // A second window shows the same record: the selection is the document's, not a window's.
@@ -495,12 +373,12 @@ fn selection_auto_lands_on_errors_and_moves_through_the_document() {
 
 #[test]
 fn the_live_tail_reads_in_the_window_not_the_workspaces_origin() {
-    let app = Installed::new(READING);
+    let app = installed(READING);
     assert!(
         of_kind(app.window().tree(), "ui.Timer").is_empty(),
         "a window that follows nothing asks for nothing"
     );
-    app.call("follow", vec![app.root_value(), Value::Bool(true)])
+    app.try_call("follow", vec![app.root_value(), Value::Bool(true)])
         .expect("the journal is followed");
     let window = app.window();
     let timers = of_kind(window.tree(), "ui.Timer");

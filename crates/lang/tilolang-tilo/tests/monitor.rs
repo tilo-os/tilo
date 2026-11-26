@@ -1,13 +1,8 @@
 //! System Monitor end to end: the process list over the device's `processes` reading, its
 //! arrangement, its inspector and the verbs that end a process, and the machine's readings.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
-use tilolang::IdsLock;
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+use crate::fixtures::Pane;
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
-use tilolang_tilo::host::Host;
 
 const SOURCE: &str = include_str!("../../../../apps/tl/monitor/app.tl");
 
@@ -94,109 +89,10 @@ const MISSING: &str = r#"{
   "processes": [], "apps": [], "pending": [], "problem": null
 }"#;
 
-#[derive(Clone, Default)]
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Sent {
-    fn asked(&self, name: &str) -> Vec<Value> {
-        self.0
-            .borrow()
-            .iter()
-            .find_map(|invocation| match invocation {
-                Invocation::Action {
-                    name: asked, args, ..
-                } if asked == name => Some(args.iter().map(|(_, value)| value.clone()).collect()),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("the app asks `{name}`"))
-    }
-}
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
-}
-
-struct Installed {
-    host: Host,
-    root: ResourceRef,
-    view: String,
-    actions: Vec<(String, String)>,
-    sent: Sent,
-}
-
-impl Installed {
-    fn new(reading_json: &str) -> Self {
-        let host = Host::new(me(), || None).expect("a host");
-        // Only the packages the app `use`s: the whole platform carries the actions package the
-        // host already runs, and a host loads one package once.
-        let metas = tilolang_tilo::platform_apps::named_platform_packages(SOURCE)
-            .expect("the platform's packages read");
-        for meta in &metas {
-            host.runtime()
-                .load_foreign(meta.clone())
-                .expect("the device is loaded");
-        }
-        let compiled = tilolang::compile_package(SOURCE, &IdsLock::new(), &metas)
-            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
-        let package = host.load_compiled(&compiled).expect("the app loads");
-        let view = package
-            .meta
-            .views
-            .iter()
-            .find(|view| view.name == "window")
-            .expect("the window view")
-            .id
-            .clone();
-        let actions = package
-            .meta
-            .actions
-            .iter()
-            .map(|action| (action.name.clone(), action.id.clone()))
-            .collect();
-        let sent = Sent::default();
-        host.runtime().set_foreign_invoker(sent.clone());
-        host.runtime()
-            .set_reading(&reading(), reading_json)
-            .expect("the reading is set");
-        let root = host
-            .runtime()
-            .create_root("Monitor")
-            .expect("the app's root");
-        Self {
-            host,
-            root,
-            view,
-            actions,
-            sent,
-        }
-    }
-
-    fn call(&self, name: &str, args: Vec<Value>) -> Value {
-        let id = self
-            .actions
-            .iter()
-            .find(|(asked, _)| asked == name)
-            .map_or_else(|| panic!("no action {name}"), |(_, id)| id.clone());
-        match self
-            .host
-            .runtime()
-            .invoke_action(&me(), (id.as_str(), args))
-            .unwrap_or_else(|why| panic!("{name} runs: {why}"))
-        {
-            tilolang_runtime::InvokeOutcome::Done(value) => value,
-            other => panic!("{name} answers {other:?}"),
-        }
-    }
-
-    fn window(&self) -> ViewInstance {
-        self.host
-            .runtime()
-            .open_view(&me(), &self.view, vec![Value::resource(&self.root)])
-            .expect("the window opens")
-    }
+fn installed(reading_json: &str) -> Pane {
+    Pane::install(&me(), SOURCE)
+        .reading(&reading(), reading_json)
+        .rooted("Monitor")
 }
 
 /// The words the page shows: each node's text, its title and the label a described component
@@ -263,7 +159,7 @@ fn pick(window: &mut ViewInstance, state: &str, value: Value) {
 
 #[test]
 fn the_process_list_shows_the_processes_and_what_the_machine_uses() {
-    let app = Installed::new(READING);
+    let app = installed(READING);
     let window = app.window();
     let words = shown(&window);
     for wanted in ["systemd", "sshd", "bash"] {
@@ -286,7 +182,7 @@ fn the_process_list_shows_the_processes_and_what_the_machine_uses() {
 
 #[test]
 fn the_tree_indents_children_under_their_parent_and_the_flat_list_does_not() {
-    let app = Installed::new(READING);
+    let app = installed(READING);
     let mut window = app.window();
     let words = shown(&window);
     let systemd = words
@@ -310,7 +206,7 @@ fn the_tree_indents_children_under_their_parent_and_the_flat_list_does_not() {
 
 #[test]
 fn kernel_threads_show_when_they_are_asked_for() {
-    let app = Installed::new(READING);
+    let app = installed(READING);
     let mut window = app.window();
     pick(&mut window, "kernel", Value::Bool(true));
     assert!(contains(&window, "kworker/0:1"), "{:?}", shown(&window));
@@ -326,7 +222,7 @@ fn the_filter_narrows_the_list() {
         }
         node.children.iter().find_map(shell)
     }
-    let app = Installed::new(READING);
+    let app = installed(READING);
     let mut window = app.window();
     let shell = shell(window.tree()).expect("the window is a shell");
     window
@@ -343,7 +239,7 @@ fn the_filter_narrows_the_list() {
 
 #[test]
 fn sorting_by_name_orders_the_list_rising() {
-    let app = Installed::new(READING);
+    let app = installed(READING);
     let mut window = app.window();
     pick(&mut window, "sort", Value::text("name"));
     pick(&mut window, "descending", Value::Bool(false));
@@ -362,7 +258,7 @@ fn sorting_by_name_orders_the_list_rising() {
 
 #[test]
 fn a_chosen_process_shows_its_facts_and_the_verbs_that_end_it() {
-    let app = Installed::new(READING);
+    let app = installed(READING);
     let mut window = app.window();
     pick(&mut window, "chosen", Value::Int(12));
     let words = shown(&window);
@@ -389,7 +285,7 @@ fn a_chosen_process_shows_its_facts_and_the_verbs_that_end_it() {
 
 #[test]
 fn a_persons_cadence_is_their_window_state_and_reaches_the_device() {
-    let app = Installed::new(READING);
+    let app = installed(READING);
     let mut window = app.window();
     let item = find(window.tree(), &|text| text == "Every 3 seconds").expect("the cadence menu");
     window
@@ -412,7 +308,7 @@ fn a_persons_cadence_is_their_window_state_and_reaches_the_device() {
 
 #[test]
 fn an_app_from_the_reading_is_offered_its_end() {
-    let app = Installed::new(READING);
+    let app = installed(READING);
     let mut window = app.window();
     pick(&mut window, "chosen", Value::Int(12));
     assert!(has(&window, "End app"));
@@ -420,7 +316,7 @@ fn an_app_from_the_reading_is_offered_its_end() {
 
 #[test]
 fn ending_a_process_asks_the_device_for_its_lifetime() {
-    let app = Installed::new(READING);
+    let app = installed(READING);
     // The buttons are the reading's verbs; the app names the process by its lifetime.
     app.call("end_app", vec![Value::text("so.tilo.terminal")]);
     assert_eq!(
@@ -431,7 +327,7 @@ fn ending_a_process_asks_the_device_for_its_lifetime() {
 
 #[test]
 fn the_resources_tab_shows_the_machine_readings() {
-    let app = Installed::new(READING);
+    let app = installed(READING);
     let mut window = app.window();
     pick(&mut window, "tab", Value::text("resources"));
     let words = shown(&window);
@@ -459,7 +355,7 @@ fn the_resources_tab_shows_the_machine_readings() {
 
 #[test]
 fn a_computer_with_no_system_information_service_says_so_and_offers_to_try_again() {
-    let app = Installed::new(MISSING);
+    let app = installed(MISSING);
     let window = app.window();
     let words = shown(&window);
     assert!(
@@ -471,7 +367,7 @@ fn a_computer_with_no_system_information_service_says_so_and_offers_to_try_again
 
 #[test]
 fn a_process_uses_what_stands_under_it_when_the_person_asks() {
-    let app = Installed::new(READING);
+    let app = installed(READING);
     let window = app.window();
     assert!(
         has(&window, "2%"),
@@ -493,7 +389,7 @@ fn a_failed_end_says_why() {
         r#""problem": null"#,
         r#""problem": "the operating system refused the process signal""#,
     );
-    let app = Installed::new(&reading);
+    let app = installed(&reading);
     let window = app.window();
     assert!(
         contains(&window, "the operating system refused the process signal"),

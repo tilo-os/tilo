@@ -3,14 +3,9 @@
 //! after, the agent session a range is with each record's own undo, and a brief opening its own
 //! changes.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
+use crate::fixtures::Pane;
 use serde_json::{Value as Json, json};
-use tilolang::IdsLock;
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
-use tilolang_tilo::host::Host;
 
 const SOURCE: &str = include_str!("../../../../apps/tl/activity/app.tl");
 
@@ -171,96 +166,11 @@ fn detail(group: Option<&str>, offers: Json) -> String {
     .to_string()
 }
 
-#[derive(Clone, Default)]
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Sent {
-    /// The arguments of the first `action` asked, by parameter name.
-    fn arg(&self, action: &str, name: &str) -> Option<Value> {
-        self.0
-            .borrow()
-            .iter()
-            .find_map(|invocation| match invocation {
-                Invocation::Action {
-                    name: asked, args, ..
-                } if asked == action => args
-                    .iter()
-                    .find(|(arg, _)| arg == name)
-                    .map(|(_, value)| value.clone()),
-                _ => None,
-            })
-    }
-}
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
-}
-
-struct Installed {
-    host: Host,
-    root: ResourceRef,
-    view: String,
-    sent: Sent,
-}
-
-impl Installed {
-    fn new(activity_reading: &str) -> Self {
-        let host = Host::new(me(), || None).expect("a host");
-        // Only the packages the app `use`s: the whole platform carries the actions package the
-        // host already runs, and a host loads one package once.
-        let metas = tilolang_tilo::platform_apps::named_platform_packages(SOURCE)
-            .expect("the platform's packages read");
-        for meta in &metas {
-            host.runtime()
-                .load_foreign(meta.clone())
-                .expect("the device is loaded");
-        }
-        let lock =
-            IdsLock::parse(include_str!("../../../../apps/tl/activity/app.ids")).expect("the ids");
-        let compiled = tilolang::compile_package(SOURCE, &lock, &metas)
-            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
-        let package = host.load_compiled(&compiled).expect("the app loads");
-        let view = package
-            .meta
-            .views
-            .iter()
-            .find(|view| view.name == "activity")
-            .expect("the window view")
-            .id
-            .clone();
-        let sent = Sent::default();
-        host.runtime().set_foreign_invoker(sent.clone());
-        host.runtime()
-            .set_reading(&activity(), activity_reading)
-            .expect("the activity reads");
-        let root = host
-            .runtime()
-            .create_root("so.tilo.activity.Window")
-            .expect("the app's root");
-        Self {
-            host,
-            root,
-            view,
-            sent,
-        }
-    }
-
-    fn read(&self, target: &ResourceRef, reading: &str) {
-        self.host
-            .runtime()
-            .set_reading(target, reading)
-            .expect("the reading is set");
-    }
-
-    fn window(&self) -> ViewInstance {
-        self.host
-            .runtime()
-            .open_view(&me(), &self.view, vec![Value::resource(&self.root)])
-            .expect("the window opens")
-    }
+fn installed(activity_reading: &str) -> Pane {
+    Pane::install(&me(), SOURCE)
+        .viewing("activity")
+        .reading(&activity(), activity_reading)
+        .rooted("so.tilo.activity.Window")
 }
 
 /// Pick `value` for the window's `state`, as the person does, and let the view run again.
@@ -332,7 +242,7 @@ fn press(view: &mut ViewInstance, label: &str) {
 }
 
 /// A feed page the history reads, and the place that shows it.
-fn open_history(app: &Installed) -> ViewInstance {
+fn open_history(app: &Pane) -> ViewInstance {
     let mut window = app.window();
     pick(&mut window, "place", Value::text("history"));
     window
@@ -340,21 +250,21 @@ fn open_history(app: &Installed) -> ViewInstance {
 
 #[test]
 fn a_person_pages_toward_the_oldest_change_and_searches_past_the_first_page() {
-    let app = Installed::new("{}");
-    app.read(&feed(0), &page(changes(200), 500));
+    let app = installed("{}");
+    app.device_says(&feed(0), &page(changes(200), 500));
     let mut window = open_history(&app);
     assert!(contains(&window, "Change 199"), "{:?}", shown(&window));
     assert!(!contains(&window, "Change 250"), "the first page holds 200");
     assert!(has(&window, "Show more"), "older changes are reachable");
 
     // Showing more reads a larger page, and the changes only it holds appear.
-    app.read(&feed(400), &page(changes(400), 500));
+    app.device_says(&feed(400), &page(changes(400), 500));
     press(&mut window, "Show more");
     assert!(contains(&window, "Change 250"), "{:?}", shown(&window));
 
     // The search reads further back than the page shown, and shows what it kept of what it
     // read.
-    app.read(&feed(1600), &page(changes(500), 500));
+    app.device_says(&feed(1600), &page(changes(500), 500));
     pick(&mut window, "found", Value::text("Change 250"));
     assert!(contains(&window, "Change 250"), "{:?}", shown(&window));
     assert!(
@@ -370,10 +280,10 @@ fn a_person_pages_toward_the_oldest_change_and_searches_past_the_first_page() {
 
 #[test]
 fn a_chrome_verb_opens_the_window_at_its_focus_and_says_it_was_shown() {
-    let app = Installed::new(
+    let app = installed(
         r#"{"focus":{"serial":7,"view":"history","author":"Ada","lens":null,"entry":null}}"#,
     );
-    app.read(&feed(0), &page(changes(3), 3));
+    app.device_says(&feed(0), &page(changes(3), 3));
     let mut window = app.window();
     let timer = of_kind(window.tree(), "ui.Timer").first().map_or_else(
         || panic!("the window holds the ask's clock: {:?}", shown(&window)),
@@ -400,14 +310,14 @@ fn a_chrome_verb_opens_the_window_at_its_focus_and_says_it_was_shown() {
 
 #[test]
 fn a_ranges_agent_work_lists_the_changes_it_still_leaves_in_place_and_undoes_one() {
-    let app = Installed::new("{}");
+    let app = installed("{}");
     let standing = json!([
         still_in_effect("Renamed a note", "e020", "aa11"),
         still_in_effect("Moved a paragraph", "e010", "bb22"),
     ]);
-    app.read(&feed(0), &page(changes(3), 3));
-    app.read(&range("e010", "e020"), &detail(None, json!([])));
-    app.read(
+    app.device_says(&feed(0), &page(changes(3), 3));
+    app.device_says(&range("e010", "e020"), &detail(None, json!([])));
+    app.device_says(
         &sessions(20),
         &sessions_page(json!([still_standing(standing.clone(), 2)])),
     );
@@ -463,13 +373,13 @@ fn a_ranges_agent_work_lists_the_changes_it_still_leaves_in_place_and_undoes_one
     );
 
     // A session that ran long lists a page, and showing more reads a larger one.
-    app.read(
+    app.device_says(
         &sessions(20),
         &sessions_page(json!([still_standing(standing, 30)])),
     );
     window.poll_patches().expect("the window runs again");
     assert!(has(&window, "Show more"), "{:?}", shown(&window));
-    app.read(
+    app.device_says(
         &sessions(40),
         &sessions_page(json!([still_standing(
             json!([still_in_effect("Moved a paragraph", "e010", "bb22")]),
@@ -486,13 +396,13 @@ fn a_ranges_agent_work_lists_the_changes_it_still_leaves_in_place_and_undoes_one
 
 #[test]
 fn a_range_compares_the_workspace_either_side_of_it() {
-    let app = Installed::new("{}");
-    app.read(&feed(0), &page(changes(3), 3));
-    app.read(
+    let app = installed("{}");
+    app.device_says(&feed(0), &page(changes(3), 3));
+    app.device_says(
         &range("e010", "e020"),
         &detail(None, json!([{"verb": "detail", "label": "Compare"}])),
     );
-    app.read(
+    app.device_says(
         &compare("e010", "e020"),
         &json!({
             "detail": {
@@ -525,7 +435,7 @@ fn a_range_compares_the_workspace_either_side_of_it() {
 
 #[test]
 fn a_brief_opens_its_own_changes_in_history() {
-    let app = Installed::new(
+    let app = installed(
         &json!({
             "summary": {
                 "workspace": "Home",

@@ -1,13 +1,9 @@
 //! Firewall end to end: the window over the device's `firewall` reading, the shared
 //! configuration each device applies, and the verbs that hand it to firewalld.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use crate::fixtures::Pane;
 
-use tilolang::IdsLock;
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
-use tilolang_tilo::host::Host;
 
 const SOURCE: &str = include_str!("../../../../apps/tl/firewall/app.tl");
 
@@ -80,146 +76,14 @@ fn reading() -> ResourceRef {
     ResourceRef::parse_id("firewall", "so.tilo.device#Firewall").expect("a resource id")
 }
 
-/// What the app asked of the device's verbs.
-#[derive(Clone, Default)]
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Sent {
-    fn all(&self) -> Vec<Invocation> {
-        self.0.borrow().clone()
-    }
-
-    /// The last verb `name` was asked on the reading, with its arguments after the resource.
-    fn asked(&self, name: &str) -> Vec<Value> {
-        self.all()
-            .into_iter()
-            .rev()
-            .find_map(|invocation| match invocation {
-                Invocation::Action {
-                    name: asked, args, ..
-                } if asked == name => Some(args.into_iter().map(|(_, value)| value).collect()),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("the app asks `{name}`"))
-    }
-}
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
-}
-
-struct Installed {
-    host: Host,
-    root: ResourceRef,
-    view: String,
-    actions: Vec<(String, String)>,
-    roles: Vec<(String, Option<String>)>,
-    sent: Sent,
-}
-
-impl Installed {
-    fn new(reading_json: &str) -> Self {
-        let host = Host::new(me(), || None).expect("a host");
-        let metas = tilolang_tilo::platform_apps::platform_packages()
-            .expect("the platform's packages read");
-        for meta in &metas {
-            host.runtime()
-                .load_foreign(meta.clone())
-                .expect("the device is loaded");
-        }
-        let compiled = tilolang::compile_package(SOURCE, &IdsLock::new(), &metas)
-            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
-        let package = host.load_compiled(&compiled).expect("the app loads");
-        let view = package
-            .meta
-            .views
-            .iter()
-            .find(|view| view.name == "window")
-            .expect("the window view")
-            .id
-            .clone();
-        let actions = package
-            .meta
-            .actions
-            .iter()
-            .map(|action| (action.name.clone(), action.id.clone()))
-            .collect();
-        let roles = package
-            .meta
-            .actions
-            .iter()
-            .map(|action| (action.name.clone(), action.role.clone()))
-            .collect();
-        let root_type = package
-            .meta
-            .types
-            .iter()
-            .find(|ty| ty.name == "Firewall")
-            .expect("the root type")
-            .id
-            .clone();
-        let sent = Sent::default();
-        host.runtime().set_invoker(sent.clone());
-        host.runtime()
-            .set_reading(&reading(), reading_json)
-            .expect("the reading is set");
-        let root = host
-            .runtime()
-            .create_root(&root_type)
-            .expect("the app's root");
-        let app = Self {
-            host,
-            root,
-            view,
-            actions,
-            roles,
-            sent,
-        };
-        // Opening the app reads this device's firewalld into an empty configuration.
-        let _ = app.call("import_device", vec![app.root_value()]);
-        app
-    }
-
-    fn role(&self, name: &str) -> Option<&str> {
-        self.roles
-            .iter()
-            .find(|(asked, _)| asked == name)
-            .and_then(|(_, role)| role.as_deref())
-    }
-
-    fn call(&self, name: &str, args: Vec<Value>) -> Result<Value, String> {
-        let id = self
-            .actions
-            .iter()
-            .find(|(asked, _)| asked == name)
-            .map_or_else(
-                || Err(format!("no action {name}")),
-                |(_, id)| Ok(id.clone()),
-            )?;
-        match self
-            .host
-            .runtime()
-            .invoke_action(&me(), (id.as_str(), args))
-            .map_err(|why| why.to_string())?
-        {
-            tilolang_runtime::InvokeOutcome::Done(value) => Ok(value),
-            other => Err(format!("{name} answers {other:?}")),
-        }
-    }
-
-    fn window(&self) -> ViewInstance {
-        self.host
-            .runtime()
-            .open_view(&me(), &self.view, vec![Value::resource(&self.root)])
-            .expect("the window opens")
-    }
-
-    fn root_value(&self) -> Value {
-        Value::resource(&self.root)
-    }
+fn installed(reading_json: &str) -> Pane {
+    let app = Pane::install(&me(), SOURCE)
+        .delegating()
+        .reading(&reading(), reading_json)
+        .rooted("Firewall");
+    // Opening the app reads this device's firewalld into an empty configuration.
+    let _ = app.try_call("import_device", vec![app.root_value()]);
+    app
 }
 
 /// Every text, title, badge and label under `node`, in order.
@@ -271,22 +135,17 @@ fn with_key<'a>(node: &'a UiNode, key: &str, into: &mut Vec<&'a UiNode>) {
 }
 
 /// How many times the app asked the device to apply a configuration.
-fn applies(app: &Installed) -> usize {
+fn applies(app: &Pane) -> usize {
     app.sent
-        .all()
+        .names()
         .into_iter()
-        .filter(|invocation| {
-            matches!(
-                invocation,
-                Invocation::Action { name, .. } if name == "apply"
-            )
-        })
+        .filter(|name| name == "apply")
         .count()
 }
 
 #[test]
 fn the_window_lists_the_zones_and_their_rules() {
-    let app = Installed::new(READING);
+    let app = installed(READING);
     let window = app.window();
     let words = shown(&window);
     for wanted in ["Public", "Work", "HTTPS", "Port 3389", "Allow", "Deny"] {
@@ -299,7 +158,7 @@ fn the_window_lists_the_zones_and_their_rules() {
 
 #[test]
 fn the_zone_page_reads_the_active_zone_and_its_details() {
-    let app = Installed::new(READING);
+    let app = installed(READING);
     let window = app.window();
     let words = shown(&window);
     for wanted in [
@@ -320,8 +179,8 @@ fn the_zone_page_reads_the_active_zone_and_its_details() {
 
 #[test]
 fn opening_brings_in_the_devices_configuration() {
-    let app = Installed::new(READING);
-    app.call("import_device", vec![app.root_value()])
+    let app = installed(READING);
+    app.try_call("import_device", vec![app.root_value()])
         .expect("the configuration is read");
     let window = app.window();
     for wanted in ["Public", "Work", "HTTPS", "Port 3389"] {
@@ -331,9 +190,10 @@ fn opening_brings_in_the_devices_configuration() {
 
 #[test]
 fn adding_a_rule_applies_the_new_configuration_to_the_device() {
-    let app = Installed::new(READING);
-    app.call("import_device", vec![app.root_value()]).unwrap();
-    app.call(
+    let app = installed(READING);
+    app.try_call("import_device", vec![app.root_value()])
+        .unwrap();
+    app.try_call(
         "add_rule",
         vec![
             app.root_value(),
@@ -369,9 +229,10 @@ fn adding_a_rule_applies_the_new_configuration_to_the_device() {
 
 #[test]
 fn an_invalid_port_is_refused_with_its_reason() {
-    let app = Installed::new(READING);
-    app.call("import_device", vec![app.root_value()]).unwrap();
-    let refused = app.call(
+    let app = installed(READING);
+    app.try_call("import_device", vec![app.root_value()])
+        .unwrap();
+    let refused = app.try_call(
         "add_rule",
         vec![
             app.root_value(),
@@ -391,19 +252,17 @@ fn an_invalid_port_is_refused_with_its_reason() {
         "the reason names the port: {refused}"
     );
     assert!(
-        app.sent.all().iter().all(|invocation| !matches!(
-            invocation,
-            Invocation::Action { name, .. } if name == "apply"
-        )),
+        !app.sent.names().iter().any(|name| name == "apply"),
         "nothing was applied"
     );
 }
 
 #[test]
 fn an_invalid_source_is_refused_with_its_reason() {
-    let app = Installed::new(READING);
-    app.call("import_device", vec![app.root_value()]).unwrap();
-    let refused = app.call(
+    let app = installed(READING);
+    app.try_call("import_device", vec![app.root_value()])
+        .unwrap();
+    let refused = app.try_call(
         "add_rule",
         vec![
             app.root_value(),
@@ -426,7 +285,7 @@ fn an_invalid_source_is_refused_with_its_reason() {
 
 #[test]
 fn the_traffic_cutting_verbs_are_destructive() {
-    let app = Installed::new(READING);
+    let app = installed(READING);
     for name in ["stop", "enter_panic", "delete_rule"] {
         assert_eq!(app.role(name), Some("destructive"), "{name} is destructive");
     }
@@ -434,8 +293,9 @@ fn the_traffic_cutting_verbs_are_destructive() {
 
 #[test]
 fn reading_dropped_traffic_asks_the_device_for_the_last_hour() {
-    let app = Installed::new(READING);
-    app.call("load_blocked", vec![]).expect("the read starts");
+    let app = installed(READING);
+    app.try_call("load_blocked", vec![])
+        .expect("the read starts");
     let asked = app.sent.asked("read-blocked");
     match &asked[0] {
         Value::Ref(r) => assert_eq!(r.target.as_ref(), &reading(), "the verb is the reading's"),
@@ -446,7 +306,7 @@ fn reading_dropped_traffic_asks_the_device_for_the_last_hour() {
 
 #[test]
 fn the_window_shows_what_the_kernel_dropped() {
-    let app = Installed::new(READING);
+    let app = installed(READING);
     let window = app.window();
     let words = shown(&window);
     for wanted in ["184", "Drop TCP port 5900", "from 23 addresses"] {
@@ -456,7 +316,7 @@ fn the_window_shows_what_the_kernel_dropped() {
 
 #[test]
 fn the_services_page_offers_each_service_its_switch() {
-    let app = Installed::new(READING);
+    let app = installed(READING);
     let window = app.window();
     let words = shown(&window);
     for wanted in ["SSH", "HTTPS", "Samba", "Cockpit"] {
@@ -481,7 +341,7 @@ fn a_refused_apply_says_what_the_device_said() {
         "\"problem\": null",
         "\"problem\": \"firewalld refused the configuration: ZONE_CONFLICT\"",
     );
-    let app = Installed::new(&refused);
+    let app = installed(&refused);
     let window = app.window();
     assert!(
         has(&window, "firewalld refused the configuration"),
@@ -492,7 +352,7 @@ fn a_refused_apply_says_what_the_device_said() {
 
 #[test]
 fn a_computer_without_a_running_firewall_says_so_and_how_to_try_again() {
-    let app = Installed::new(MISSING);
+    let app = installed(MISSING);
     let window = app.window();
     let words = shown(&window);
     assert!(
@@ -510,7 +370,7 @@ fn a_computer_without_a_running_firewall_says_so_and_how_to_try_again() {
 
 #[test]
 fn the_delete_key_acts_on_the_chosen_rule_and_undo_brings_it_back() {
-    let app = Installed::new(READING);
+    let app = installed(READING);
     let window = app.window();
     let mut deleting = Vec::new();
     with_key(window.tree(), "Delete", &mut deleting);
@@ -546,12 +406,12 @@ fn the_delete_key_acts_on_the_chosen_rule_and_undo_brings_it_back() {
 
 #[test]
 fn a_stored_change_reaches_this_devices_firewall_without_a_press() {
-    let app = Installed::new(READING);
+    let app = installed(READING);
     let rule = {
         let zones = app
             .host
             .runtime()
-            .read(&app.root, "zones")
+            .read(app.root(), "zones")
             .expect("the zones read");
         let Value::List(zones) = zones else {
             panic!("zones are a list: {zones:?}")
@@ -589,7 +449,7 @@ fn a_stored_change_reaches_this_devices_firewall_without_a_press() {
     };
     // A change made elsewhere, or an undo here, leaves the workspace's configuration different
     // from what this device holds; the window hands it to this device's firewalld.
-    app.call(
+    app.try_call(
         "toggle_rule",
         vec![
             app.root_value(),

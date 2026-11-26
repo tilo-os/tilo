@@ -10,7 +10,6 @@
 )]
 
 use std::cell::RefCell;
-use std::path::Path;
 use std::rc::Rc;
 
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
@@ -23,21 +22,8 @@ fn me() -> Actor {
     Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
 }
 
-/// The app as it ships: its source, its ids and the platform's packages it reads through.
 fn settings() -> Host {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/settings");
-    let source = tilolang::PackageSource::read_dir(&dir).expect("the package reads");
-    let ids = tilolang::IdsLock::parse(
-        &std::fs::read_to_string(dir.join("app.ids")).expect("the package's ids"),
-    )
-    .expect("its ids parse");
-    let metas = crate::fixtures::settings_packages().expect("the platform's packages read");
-    let compiled =
-        tilolang::compile_package_source(&source, &ids, &metas).expect("the package compiles");
-    let host = Host::new(me(), || None).expect("a host");
-    host.load_compiled(&compiled).expect("the package loads");
-    tilolang_tilo::platform_apps::load(&host, &compiled.meta.uses);
-    host
+    crate::fixtures::settings_host().0
 }
 
 /// Where this device's sound plays and records: what the audio service publishes.

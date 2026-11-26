@@ -13,7 +13,6 @@
 )]
 
 use std::cell::RefCell;
-use std::path::Path;
 use std::rc::Rc;
 
 use serde_json::{Value as Json, json};
@@ -25,25 +24,8 @@ use tilolang_tilo::runtime::{Actor, ResourceRef, Value, ViewInstance};
 
 const APP: &str = "so.tilo.settings";
 
-/// The app as it ships: its source, its ids and the platform's packages it reads through.
 fn settings() -> Host {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/settings");
-    let source = tilolang::PackageSource::read_dir(&dir).expect("the package reads");
-    let ids = tilolang::IdsLock::parse(
-        &std::fs::read_to_string(dir.join("app.ids")).expect("the package's ids"),
-    )
-    .expect("its ids parse");
-    let metas = crate::fixtures::settings_packages().expect("the platform's packages read");
-    let compiled =
-        tilolang::compile_package_source(&source, &ids, &metas).expect("the package compiles");
-    let host = Host::new(
-        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
-        || None,
-    )
-    .expect("a host");
-    host.load_compiled(&compiled).expect("the package loads");
-    tilolang_tilo::platform_apps::load(&host, &compiled.meta.uses);
-    host
+    crate::fixtures::settings_host().0
 }
 
 /// What the session publishes of the reading `ty` (`so.tilo.settings.sections#Input`), as the

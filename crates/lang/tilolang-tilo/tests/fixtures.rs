@@ -840,3 +840,277 @@ pub fn stage_people(host: &Host, policy: &tilo_action_policy::WorkspacePolicy) {
             .expect("the workspace adds its people");
     }
 }
+
+/// What a window sent to other apps, in order: the invocations the shell would carry out, each
+/// answered with nothing.
+#[derive(Clone, Default)]
+pub struct Sent(Rc<std::cell::RefCell<Vec<Invocation>>>);
+
+impl Sent {
+    fn matching(&self, action: &str) -> Vec<(String, Vec<(String, Value)>)> {
+        self.0
+            .borrow()
+            .iter()
+            .filter_map(|invocation| match invocation {
+                Invocation::Action { name, args, .. }
+                    if name == action || name == &action.replace('_', "-") =>
+                {
+                    Some((name.clone(), args.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The arguments (after the resource) of the first `action` asked.
+    pub fn asked(&self, action: &str) -> Vec<Value> {
+        let (_, args) = self
+            .matching(action)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("the app asks `{action}`; it asked {:?}", self.names()));
+        args.into_iter().map(|(_, value)| value).collect()
+    }
+
+    /// The arguments (after the resource) of the last `action` asked.
+    pub fn last_asked(&self, action: &str) -> Vec<Value> {
+        let (_, args) = self
+            .matching(action)
+            .pop()
+            .unwrap_or_else(|| panic!("the app asks `{action}`; it asked {:?}", self.names()));
+        args.into_iter().map(|(_, value)| value).collect()
+    }
+
+    /// One argument of the first `action` asked, by its parameter name.
+    pub fn arg(&self, action: &str, name: &str) -> Option<Value> {
+        let (_, args) = self.matching(action).into_iter().next()?;
+        args.into_iter()
+            .find(|(arg, _)| arg == name)
+            .map(|(_, value)| value)
+    }
+
+    /// The names of the actions asked, in order.
+    pub fn names(&self) -> Vec<String> {
+        self.0
+            .borrow()
+            .iter()
+            .filter_map(|invocation| match invocation {
+                Invocation::Action { name, .. } => Some(name.clone()),
+                Invocation::Edit { .. } => None,
+            })
+            .collect()
+    }
+}
+
+impl Invoker for Sent {
+    fn invoke(&self, invocation: &Invocation) -> Invoked {
+        self.0.borrow_mut().push(invocation.clone());
+        Invoked::Done(Value::Unit)
+    }
+}
+
+/// An app that shows a window over what the device reads, on a host of its own: the platform
+/// packages it `use`s loaded, its `window` view found, and what it asks of other apps recorded.
+pub struct Pane {
+    pub host: Host,
+    pub sent: Sent,
+    me: Actor,
+    root: Option<ResourceRef>,
+    view: String,
+    actions: Vec<(String, String)>,
+    roles: Vec<(String, Option<String>)>,
+    views: Vec<(String, String)>,
+    types: Vec<(String, String)>,
+}
+
+impl Pane {
+    /// `source` loaded on a host that runs as `me`. Only the packages it `use`s: the whole
+    /// platform carries the actions package the host already runs, and a host loads one package
+    /// once.
+    pub fn install(me: &Actor, source: &str) -> Self {
+        let host = Host::new(me.clone(), || None).expect("a host");
+        let metas = tilolang_tilo::platform_apps::named_platform_packages(source)
+            .expect("the platform's packages read");
+        for meta in &metas {
+            host.runtime()
+                .load_foreign(meta.clone())
+                .expect("the device is loaded");
+        }
+        let compiled = tilolang::compile_package(source, &tilolang::IdsLock::new(), &metas)
+            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+        let package = host.load_compiled(&compiled).expect("the app loads");
+        let views: Vec<(String, String)> = package
+            .meta
+            .views
+            .iter()
+            .map(|view| (view.name.clone(), view.id.clone()))
+            .collect();
+        let types = package
+            .meta
+            .types
+            .iter()
+            .map(|ty| (ty.name.clone(), ty.id.clone()))
+            .collect();
+        let view = views
+            .iter()
+            .find(|(name, _)| name == "window")
+            .map_or_else(String::new, |(_, id)| id.clone());
+        let actions = package
+            .meta
+            .actions
+            .iter()
+            .map(|action| (action.name.clone(), action.id.clone()))
+            .collect();
+        let roles = package
+            .meta
+            .actions
+            .iter()
+            .map(|action| (action.name.clone(), action.role.clone()))
+            .collect();
+        let sent = Sent::default();
+        host.runtime().set_foreign_invoker(sent.clone());
+        Self {
+            host,
+            sent,
+            roles,
+            views,
+            types,
+            me: me.clone(),
+            root: None,
+            view,
+            actions,
+        }
+    }
+
+    /// What the app asks of other apps is run by the host's own resources, not carried out
+    /// elsewhere: the runtime of a task's host, which holds no records of its own.
+    pub fn delegating(self) -> Self {
+        self.host.runtime().set_invoker(self.sent.clone());
+        self
+    }
+
+    /// The device's reading at `resource`, as this JSON.
+    pub fn reading(self, resource: &ResourceRef, json: &str) -> Self {
+        self.host
+            .runtime()
+            .set_reading(resource, json)
+            .expect("the reading is set");
+        self
+    }
+
+    /// The window is the view `name` (the app's `window` view when this is not said).
+    pub fn viewing(mut self, name: &str) -> Self {
+        self.view = self
+            .views
+            .iter()
+            .find(|(view, _)| view == name)
+            .map(|(_, id)| id.clone())
+            .unwrap_or_else(|| panic!("the {name} view"));
+        self
+    }
+
+    /// The app's root, made from its type `name` (an id, or a name the app's own types give).
+    pub fn rooted(mut self, name: &str) -> Self {
+        let ty = self
+            .types
+            .iter()
+            .find(|(ty, _)| ty == name)
+            .map_or(name, |(_, id)| id.as_str());
+        self.root = Some(self.host.runtime().create_root(ty).expect("the app's root"));
+        self
+    }
+
+    /// The app's root, the one its application id names.
+    pub fn rooted_of(mut self, app: &str) -> Self {
+        self.root = Some(self.host.root_of(app).expect("the app's root"));
+        self
+    }
+
+    /// The id the action `name` is stored and invoked by.
+    pub fn action_id(&self, name: &str) -> &str {
+        self.actions
+            .iter()
+            .find(|(asked, _)| asked == name)
+            .map(|(_, id)| id.as_str())
+            .unwrap_or_else(|| panic!("no action {name}"))
+    }
+
+    /// How the action `name` presents itself (`destructive`, `primary`, ...), where it says.
+    pub fn role(&self, name: &str) -> Option<&str> {
+        self.roles
+            .iter()
+            .find(|(asked, _)| asked == name)
+            .and_then(|(_, role)| role.as_deref())
+    }
+
+    /// The device's reading at `target` changes to this JSON.
+    pub fn device_says(&self, target: &ResourceRef, json: &str) {
+        self.host
+            .runtime()
+            .set_reading(target, json)
+            .expect("the reading is set");
+    }
+
+    pub fn root(&self) -> &ResourceRef {
+        self.root.as_ref().expect("the app has a root")
+    }
+
+    pub fn root_value(&self) -> Value {
+        Value::resource(self.root())
+    }
+
+    /// Run the action `name` as the person, answering what the runtime says when it refuses.
+    pub fn try_call(&self, name: &str, args: Vec<Value>) -> Result<Value, String> {
+        let id = self
+            .actions
+            .iter()
+            .find(|(asked, _)| asked == name)
+            .map(|(_, id)| id.clone())
+            .ok_or_else(|| format!("no action {name}"))?;
+        match self
+            .host
+            .runtime()
+            .invoke_action(&self.me, (id.as_str(), args))
+            .map_err(|why| why.to_string())?
+        {
+            tilolang_runtime::InvokeOutcome::Done(value) => Ok(value),
+            other => Err(format!("{name} answers {other:?}")),
+        }
+    }
+
+    /// Run the action `name` as the person, which must answer.
+    pub fn call(&self, name: &str, args: Vec<Value>) -> Value {
+        self.try_call(name, args)
+            .unwrap_or_else(|why| panic!("{name} runs: {why}"))
+    }
+
+    /// The window, opened over the root.
+    pub fn window(&self) -> ViewInstance {
+        self.host
+            .runtime()
+            .open_view(&self.me, &self.view, vec![self.root_value()])
+            .expect("the window opens")
+    }
+}
+
+/// The Settings app as it ships, on a host that runs as Ada with the platform's packages it
+/// reads through loaded, as a window's process loads them.
+pub fn settings_host() -> (Host, tilolang::Compiled) {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/settings");
+    let source = tilolang::PackageSource::read_dir(&dir).expect("the package reads");
+    let ids = tilolang::IdsLock::parse(
+        &std::fs::read_to_string(dir.join("app.ids")).expect("the package's ids"),
+    )
+    .expect("its ids parse");
+    let metas = settings_packages().expect("the platform's packages read");
+    let compiled =
+        tilolang::compile_package_source(&source, &ids, &metas).expect("the package compiles");
+    let host = Host::new(
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .expect("a host");
+    host.load_compiled(&compiled).expect("the package loads");
+    tilolang_tilo::platform_apps::load(&host, &compiled.meta.uses);
+    (host, compiled)
+}

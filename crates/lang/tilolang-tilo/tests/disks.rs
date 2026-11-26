@@ -1,13 +1,8 @@
 //! Disks end to end: this computer's drives over the device's `disks` reading, its map, its
 //! health, its partitions and the verbs that open, erase, measure and eject them.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
-use tilolang::IdsLock;
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+use crate::fixtures::Pane;
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
-use tilolang_tilo::host::Host;
 
 const SOURCE: &str = include_str!("../../../../apps/tl/disks/app.tl");
 const APP: &str = "so.tilo.disks";
@@ -62,126 +57,27 @@ const READING: &str = r#"{
   "problem": null
 }"#;
 
-#[derive(Clone, Default)]
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Sent {
-    fn asked(&self, name: &str) -> Vec<Value> {
-        self.0
-            .borrow()
-            .iter()
-            .find_map(|invocation| match invocation {
-                Invocation::Action {
-                    name: asked, args, ..
-                } if asked == name => Some(args.iter().map(|(_, value)| value.clone()).collect()),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("the app asks `{name}`"))
-    }
-}
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
-}
-
-struct Installed {
-    host: Host,
-    root: ResourceRef,
-    view: String,
-    actions: Vec<(String, String)>,
-    sent: Sent,
-}
-
-impl Installed {
-    fn new() -> Self {
-        let host = Host::new(me(), || None).expect("a host");
-        let metas = tilolang_tilo::platform_apps::platform_packages()
-            .expect("the platform's packages read");
-        for meta in &metas {
-            host.runtime()
-                .load_foreign(meta.clone())
-                .expect("the device is loaded");
-        }
-        let compiled = tilolang::compile_package(SOURCE, &IdsLock::new(), &metas)
-            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
-        let package = host.load_compiled(&compiled).expect("the app loads");
-        let view = package
-            .meta
-            .views
-            .iter()
-            .find(|view| view.name == "window")
-            .expect("the window view")
-            .id
-            .clone();
-        let actions = package
-            .meta
-            .actions
-            .iter()
-            .map(|action| (action.name.clone(), action.id.clone()))
-            .collect();
-        let sent = Sent::default();
-        host.runtime().set_invoker(sent.clone());
-        host.runtime()
-            .set_reading(&reading(), READING)
-            .expect("the reading is set");
-        let root = host.root_of(APP).expect("the app's root");
-        Self {
-            host,
-            root,
-            view,
-            actions,
-            sent,
-        }
-    }
-
-    fn call(&self, name: &str, args: Vec<Value>) -> Value {
-        let id = self
-            .actions
-            .iter()
-            .find(|(asked, _)| asked == name)
-            .map_or_else(|| panic!("no action {name}"), |(_, id)| id.clone());
-        match self
-            .host
+/// The window with its view state staged, its rows drawn and its patches answered.
+fn window_showing(app: &Pane, states: &[(&str, &str)]) -> ViewInstance {
+    for (state, value) in states {
+        app.host
             .runtime()
-            .invoke_action(&me(), (id.as_str(), args))
-            .unwrap_or_else(|why| panic!("{name} runs: {why}"))
-        {
-            tilolang_runtime::InvokeOutcome::Done(value) => value,
-            other => panic!("{name} answers {other:?}"),
-        }
+            .stage_view_state(APP, state, value)
+            .expect("the window's state");
     }
+    let mut window = app.window();
+    window
+        .set_lazy_rows(false)
+        .expect("the window draws its rows");
+    window.poll_patches().expect("the window answers");
+    window
+}
 
-    fn window(&self) -> ViewInstance {
-        self.window_showing(&[])
-    }
-
-    /// The window with the view state `states` names, drawn with every row: what a person sees
-    /// rather than what a scroll would have to reach.
-    fn window_showing(&self, states: &[(&str, &str)]) -> ViewInstance {
-        for (state, value) in states {
-            self.host
-                .runtime()
-                .stage_view_state(APP, state, value)
-                .expect("the window's state");
-        }
-        let mut window = self
-            .host
-            .runtime()
-            .open_view(&me(), &self.view, vec![Value::resource(&self.root)])
-            .expect("the window opens");
-        window
-            .set_lazy_rows(false)
-            .expect("the window draws its rows");
-        window.poll_patches().expect("the window answers");
-        window
-    }
-
-    fn root_value(&self) -> Value {
-        Value::resource(&self.root)
-    }
+fn installed() -> Pane {
+    Pane::install(&me(), SOURCE)
+        .delegating()
+        .reading(&reading(), READING)
+        .rooted_of(APP)
 }
 
 /// Every text under `node` that the window shows, in order.
@@ -222,7 +118,7 @@ fn has(view: &ViewInstance, wanted: &str) -> bool {
 
 #[test]
 fn the_drive_list_names_the_drives_and_their_health() {
-    let app = Installed::new();
+    let app = installed();
     let window = app.window();
     assert!(contains(&window, "Samsung SSD"));
     assert!(contains(&window, "USB Disk"));
@@ -231,8 +127,8 @@ fn the_drive_list_names_the_drives_and_their_health() {
 
 #[test]
 fn a_chosen_drive_shows_its_partitions_and_unallocated_space() {
-    let app = Installed::new();
-    let window = app.window_showing(&[("chosen", "nvme0n1")]);
+    let app = installed();
+    let window = window_showing(&app, &[("chosen", "nvme0n1")]);
     for wanted in [
         "How it is divided",
         "nvme0n1p1 boot",
@@ -249,8 +145,8 @@ fn a_chosen_drive_shows_its_partitions_and_unallocated_space() {
 
 #[test]
 fn the_health_tab_shows_what_the_drive_reports() {
-    let app = Installed::new();
-    let window = app.window_showing(&[("chosen", "nvme0n1"), ("tab", "health")]);
+    let app = installed();
+    let window = window_showing(&app, &[("chosen", "nvme0n1"), ("tab", "health")]);
     for wanted in [
         "Verdict",
         "Temperature",
@@ -267,8 +163,8 @@ fn the_health_tab_shows_what_the_drive_reports() {
 
 #[test]
 fn the_partitions_tab_offers_each_partition_its_verbs() {
-    let app = Installed::new();
-    let window = app.window_showing(&[("chosen", "nvme0n1"), ("tab", "partitions")]);
+    let app = installed();
+    let window = window_showing(&app, &[("chosen", "nvme0n1"), ("tab", "partitions")]);
     let words = shown(&window);
     for wanted in ["nvme0n1p1", "nvme0n1p2", "Close", "Erase…"] {
         assert!(
@@ -280,14 +176,9 @@ fn the_partitions_tab_offers_each_partition_its_verbs() {
 
 #[test]
 fn a_drive_is_named_in_the_workspace() {
-    let app = Installed::new();
+    let app = installed();
     // The buttons are the reading's verbs; each names the device it is called on.
-    let id = app
-        .actions
-        .iter()
-        .find(|(name, _)| name == "name_drive")
-        .map(|(_, id)| id.clone())
-        .expect("the rename verb");
+    let id = app.action_id("name_drive").to_owned();
     app.host
         .runtime()
         .invoke_action(
@@ -304,7 +195,7 @@ fn a_drive_is_named_in_the_workspace() {
 
 #[test]
 fn erasing_asks_for_the_filesystem_and_then_asks_the_device() {
-    let app = Installed::new();
+    let app = installed();
     // The confirmation calls `format_device`, which the window's Erase answers with.
     app.call(
         "format_device",
@@ -317,8 +208,8 @@ fn erasing_asks_for_the_filesystem_and_then_asks_the_device() {
 
 #[test]
 fn a_failing_drive_says_so_and_offers_its_eject() {
-    let app = Installed::new();
-    let window = app.window_showing(&[("chosen", "sda")]);
+    let app = installed();
+    let window = window_showing(&app, &[("chosen", "sda")]);
     for wanted in ["Eject", "Measure", "Erase…", "Predicted to fail"] {
         assert!(
             has(&window, wanted) || contains(&window, wanted),
@@ -358,8 +249,8 @@ fn of_kind<'a>(tree: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
 
 #[test]
 fn a_mounted_filesystem_offers_both_ways_on_its_files() {
-    let app = Installed::new();
-    let window = app.window_showing(&[("chosen", "nvme0n1"), ("tab", "overview")]);
+    let app = installed();
+    let window = window_showing(&app, &[("chosen", "nvme0n1"), ("tab", "overview")]);
     for wanted in ["Open in Files", "Disk Usage"] {
         assert!(
             has(&window, wanted),
@@ -367,11 +258,14 @@ fn a_mounted_filesystem_offers_both_ways_on_its_files() {
             shown(&window)
         );
     }
-    let partitions = app.window_showing(&[
-        ("chosen", "nvme0n1"),
-        ("tab", "partitions"),
-        ("chosen_part", "nvme0n1p2"),
-    ]);
+    let partitions = window_showing(
+        &app,
+        &[
+            ("chosen", "nvme0n1"),
+            ("tab", "partitions"),
+            ("chosen_part", "nvme0n1p2"),
+        ],
+    );
     for wanted in ["Open in Files", "Disk Usage"] {
         assert!(
             has(&partitions, wanted),
@@ -380,7 +274,7 @@ fn a_mounted_filesystem_offers_both_ways_on_its_files() {
         );
     }
     // Nothing mounted on the external drive: neither way on is offered.
-    let unmounted = app.window_showing(&[("chosen", "sda"), ("tab", "overview")]);
+    let unmounted = window_showing(&app, &[("chosen", "sda"), ("tab", "overview")]);
     for wanted in ["Open in Files", "Disk Usage"] {
         assert!(
             !has(&unmounted, wanted),
@@ -392,8 +286,8 @@ fn a_mounted_filesystem_offers_both_ways_on_its_files() {
 
 #[test]
 fn a_locked_partition_is_encrypted_and_shows_nothing_inside() {
-    let app = Installed::new();
-    let window = app.window_showing(&[("chosen", "nvme0n1"), ("tab", "partitions")]);
+    let app = installed();
+    let window = window_showing(&app, &[("chosen", "nvme0n1"), ("tab", "partitions")]);
     let words = shown(&window);
     assert!(
         words.iter().any(|text| text.contains("LUKS2, locked")),
@@ -418,8 +312,8 @@ fn a_locked_partition_is_encrypted_and_shows_nothing_inside() {
 
 #[test]
 fn blocks_tile_the_track_and_slivers_stay_clickable() {
-    let app = Installed::new();
-    let window = app.window_showing(&[("chosen", "nvme0n1"), ("tab", "overview")]);
+    let app = installed();
+    let window = window_showing(&app, &[("chosen", "nvme0n1"), ("tab", "overview")]);
     let blocks: Vec<&UiNode> = of_kind(window.tree(), "ui.Drawing")
         .into_iter()
         .filter(|node| {
@@ -465,8 +359,8 @@ fn blocks_tile_the_track_and_slivers_stay_clickable() {
 
 #[test]
 fn blocks_legend_entries_and_the_chip_report_the_choice() {
-    let app = Installed::new();
-    let window = app.window_showing(&[("chosen", "nvme0n1"), ("tab", "overview")]);
+    let app = installed();
+    let window = window_showing(&app, &[("chosen", "nvme0n1"), ("tab", "overview")]);
     let chip = find(window.tree(), &|text| text.starts_with("nvme0n1p4 · "))
         .expect("the legend names each piece");
     window
@@ -476,11 +370,14 @@ fn blocks_legend_entries_and_the_chip_report_the_choice() {
         window.view_state("chosen_part"),
         Some(Value::text("nvme0n1p4"))
     );
-    let window = app.window_showing(&[
-        ("chosen", "nvme0n1"),
-        ("tab", "overview"),
-        ("chosen_part", "nvme0n1p4"),
-    ]);
+    let window = window_showing(
+        &app,
+        &[
+            ("chosen", "nvme0n1"),
+            ("tab", "overview"),
+            ("chosen_part", "nvme0n1p4"),
+        ],
+    );
     assert!(
         contains(&window, "LUKS2"),
         "the legend reports the chosen partition's facts: {:?}",
