@@ -84,10 +84,6 @@ use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-#[cfg(test)]
-use vello::Scene;
-#[cfg(test)]
-use vello::kurbo::Affine;
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent};
 
@@ -95,8 +91,6 @@ use crate::actions::SetPreference;
 use crate::learned::{Learned, Lesson};
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Role};
 
-#[cfg(test)]
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 

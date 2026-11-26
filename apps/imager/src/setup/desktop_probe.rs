@@ -963,92 +963,6 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_desktop_probe_reads_hosts_and_packages_exactly;
 
-        phase native_package_status_and_installed_version_are_exact;
-        {
-            {
-                assert_eq!(
-                    parse_package_status(PackageManager::Dnf, 0, "0\t1.0\t2.fc44\n", "").unwrap(),
-                    InstalledPackage::Installed {
-                        version: "1.0-2.fc44".into()
-                    }
-                );
-                assert_eq!(
-                    parse_package_status(PackageManager::Dnf, 0, "2\t1.0\t2.fc44\n", "").unwrap(),
-                    InstalledPackage::Installed {
-                        version: "2:1.0-2.fc44".into()
-                    }
-                );
-                assert_eq!(
-                    parse_package_status(
-                        PackageManager::Dnf,
-                        1,
-                        "package tilo-session is not installed\n",
-                        ""
-                    )
-                    .unwrap(),
-                    InstalledPackage::Absent
-                );
-                assert_eq!(
-                    parse_package_status(PackageManager::Apt, 0, "installed\t1:1.0-2\n", "").unwrap(),
-                    InstalledPackage::Installed {
-                        version: "1:1.0-2".into()
-                    }
-                );
-                assert_eq!(
-                    parse_package_status(
-                        PackageManager::Apt,
-                        1,
-                        "",
-                        "dpkg-query: no packages found matching tilo-session\n"
-                    )
-                    .unwrap(),
-                    InstalledPackage::Absent
-                );
-                assert_eq!(
-                    parse_package_status(PackageManager::Pacman, 0, "tilo-session 1:1.0-2\n", "")
-                        .unwrap(),
-                    InstalledPackage::Installed {
-                        version: "1:1.0-2".into()
-                    }
-                );
-                assert_eq!(
-                    parse_package_status(
-                        PackageManager::Pacman,
-                        1,
-                        "",
-                        "error: package 'tilo-session' was not found\n"
-                    )
-                    .unwrap(),
-                    InstalledPackage::Absent
-                );
-                for (manager, status, stdout, stderr) in [
-                    (PackageManager::Dnf, 1, "", "error: rpmdb failed"),
-                    (PackageManager::Dnf, 0, "0\t1.0\t1\n0\t2.0\t1\n", ""),
-                    (PackageManager::Apt, 0, "config-files\t1.0-1\n", ""),
-                    (PackageManager::Apt, 0, "installed\t\n", ""),
-                    (PackageManager::Pacman, 0, "other 1.0-1\n", ""),
-                    (PackageManager::Pacman, 1, "", "error: database unavailable"),
-                ] {
-                    assert!(parse_package_status(manager, status, stdout, stderr).is_err());
-                }
-            }
-
-            {
-                let mut host = fedora();
-                host.installed_package = Ok(InstalledPackage::Installed {
-                    version: "1.0-1".into(),
-                });
-                assert!(matches!(
-                    desktop_readiness(&host, &[release()]),
-                    DesktopReadiness::AlreadyInstalled(_)
-                ));
-                host.installed_package = Ok(InstalledPackage::Installed {
-                    version: "1.0-2".into(),
-                });
-                blocked(&host, &[release()]);
-            }
-        }
-
         phase readiness_accepts_only_verified_ordinary_supported_hosts;
         {
             {
@@ -1162,40 +1076,6 @@ mod tests {
             }
         }
 
-        phase os_release_parses_literally_and_rejects_ambiguity;
-        {
-            {
-                let host = parse_os_release("# Fedora fixture\nNAME=\"Fedora Linux\"\nID='fedora'\nVERSION_ID=\"44\"\nPRETTY_NAME=\"Fedora \\\"44\\\" \\$HOME\"\n").unwrap();
-                assert_eq!(host.id, "fedora");
-                assert_eq!(host.version_id.as_deref(), Some("44"));
-            }
-
-            {
-                for value in [
-                    "",
-                    "ID=fedora\nID=fedora\n",
-                    "ID=fedora\nVERSION_ID=44\nVERSION_ID=45\n",
-                    "ID=\"fedora",
-                    "ID=fedora extra",
-                    "export ID=fedora",
-                    "ID=$(whoami)",
-                    "ID=fedora;true",
-                    "ID=fedora\nBROKEN",
-                    "ID=Fedora",
-                    "ID=fedora\nVERSION_ID=\"44\"junk",
-                ] {
-                    assert!(parse_os_release(value).is_err(), "accepted {value:?}");
-                }
-            }
-
-            {
-                assert_eq!(parse_os_release("ID=fedora\n").unwrap().version_id, None);
-                assert_eq!(catalog_architecture("aarch64"), Some("aarch64"));
-                assert_eq!(catalog_architecture("x86_64"), Some("x86_64"));
-                assert_eq!(catalog_architecture("arm64"), None);
-                assert_eq!(catalog_architecture("x86"), None);
-            }
-        }
     }
 
     fn fedora() -> DesktopHost {

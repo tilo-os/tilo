@@ -717,10 +717,6 @@ impl TerminalWidget {
         self.write_input(text.as_bytes());
     }
 
-    #[cfg(test)]
-    pub(crate) const fn disconnected_badge_label() -> &'static str {
-        "Session ended"
-    }
     pub fn title(&self) -> &str {
         &self.title
     }
@@ -1570,11 +1566,6 @@ impl TerminalWidget {
         }
         let images = self.images.take_finished();
         activity || native_activity || images
-    }
-
-    #[cfg(test)]
-    pub(crate) fn has_received_pty_output(&self) -> bool {
-        self.ever_nonblank
     }
 
     /// The one path terminal output takes; tests and scenarios feed the same parser.

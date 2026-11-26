@@ -409,11 +409,6 @@ pub(crate) fn validate_startup_secret_for(secret: &str, tpm_pin: bool) -> Result
     imager_backend::startup_password::validate_on_destination(secret, tpm_pin)
 }
 
-#[cfg(test)]
-fn validate_startup_secret(secret: &str) -> Result<(), &'static str> {
-    validate_startup_secret_for(secret, false)
-}
-
 const NETWORK_WAKE: &str = "\u{1}network";
 
 #[derive(Clone)]

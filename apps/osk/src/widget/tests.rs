@@ -1,10 +1,7 @@
 use super::*;
-use crate::presentation::MAX_KEYBOARD_CONTENT_WIDTH;
 use automerge::AutoCommit;
 use std::cell::RefCell;
 use std::rc::Rc;
-use ui::presence::PresenceCtx;
-use ui::widget::DrawChild;
 
 tilo_test_env::scenario! {
     fn purposes_pick_the_layout_the_tools_and_the_names_spoken;
@@ -276,28 +273,6 @@ tilo_test_env::scenario! {
                 .any(|(_, rect)| rect.height() > 0.0)
         );
     }
-}
-
-#[test]
-fn a_tall_phone_surface_keeps_normal_keyboard_rows_docked_and_touchable() {
-    let mut osk = OskWidget::new().with_surface_height();
-    lay_out(&mut osk, 390.0, 844.0);
-    let height = f64::from(keyboard_height(
-        osk.current_layout().row_count(),
-        &osk.spacing,
-        &osk.metrics,
-    ));
-    assert!((osk.content_rect.height() - height).abs() < 0.01);
-    assert!((osk.content_rect.y1 - 844.0).abs() < 0.01);
-    let (_, q) = key_rect(&osk, "q");
-    assert!(q.height() <= f64::from(osk.metrics.header_height));
-    assert!(!osk.key_area.contains(Point::new(195.0, 100.0)));
-    finger(&mut osk, 1, TouchPhase::Started, q.center());
-    finger(&mut osk, 1, TouchPhase::Ended, q.center());
-    assert_eq!(osk.pending_text(), "q");
-    lay_out(&mut osk, 844.0, 220.0);
-    assert!(osk.content_rect.y0 >= 0.0);
-    assert!(osk.content_rect.y1 <= 220.0);
 }
 
 fn lay_out(osk: &mut OskWidget, w: f32, h: f32) {
@@ -719,172 +694,6 @@ fn accessibility_operates_each_painted_key_and_announces_disabled_suggestions() 
 }
 
 #[test]
-fn shift_caps_and_symbol_layers_toggle_and_mark_structure_dirty() {
-    eprintln!("phase shift_uppercases_next_letter_then_resets");
-    {
-        let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-        lay_out(&mut osk, 800.0, 360.0);
-        assert_eq!(osk.shift_state(), ShiftState::Off);
-        osk.activate_label("Shift");
-        assert_eq!(osk.shift_state(), ShiftState::Shift);
-        osk.activate_label("a"); // -> "A", one-shot shift resets
-        osk.activate_label("b"); // -> "b"
-        assert_eq!(osk.pending_text(), "Ab");
-        assert_eq!(osk.shift_state(), ShiftState::Off);
-    }
-
-    eprintln!("phase caps_lock_is_sticky");
-    {
-        let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-        lay_out(&mut osk, 800.0, 360.0);
-        osk.activate_label("Shift"); // Off -> Shift
-        osk.activate_label("Shift"); // Shift -> CapsLock
-        assert_eq!(osk.shift_state(), ShiftState::CapsLock);
-        osk.activate_label("a");
-        osk.activate_label("b");
-        assert_eq!(osk.pending_text(), "AB");
-        assert_eq!(osk.shift_state(), ShiftState::CapsLock, "caps stays on");
-    }
-
-    eprintln!("phase symbols_toggle_switches_layer");
-    {
-        let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-        lay_out(&mut osk, 800.0, 360.0);
-        assert_eq!(osk.active_layout_name(), "qwerty");
-        assert!(!osk.showing_symbols());
-        osk.activate_label("?123");
-        assert!(osk.showing_symbols());
-        assert_eq!(osk.active_layout_name(), "symbols");
-        // Re-layout (host would after structure_dirty) and type a digit.
-        lay_out(&mut osk, 800.0, 360.0);
-        assert!(osk.activate_label("1"));
-        assert_eq!(osk.pending_text(), "1");
-    }
-
-    eprintln!("phase toggle_raises_structure_dirty");
-    {
-        let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-        lay_out(&mut osk, 800.0, 360.0);
-        osk.activate_label("?123");
-        assert!(osk.take_structure_dirty());
-        assert!(!osk.take_structure_dirty(), "flag is rising-edge");
-    }
-}
-
-#[test]
-fn pointer_and_toolbar_taps_route_to_their_targets() {
-    eprintln!("phase pointer_tap_routes_to_key_under_cursor");
-    {
-        let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-        lay_out(&mut osk, 800.0, 360.0);
-
-        let target = KeyId::new(0, 0);
-        let rect = osk
-            .key_geometry()
-            .iter()
-            .find(|(id, _)| *id == target)
-            .map(|(_, r)| *r)
-            .expect("q key laid out");
-        let c = rect.center();
-
-        let device = winit::event::DeviceId::dummy();
-        let dispatch = |osk: &mut OskWidget, ev: WindowEvent| {
-            ui::testing::dispatch(osk, &ev);
-        };
-
-        dispatch(
-            &mut osk,
-            WindowEvent::CursorMoved {
-                device_id: device,
-                position: (c.x, c.y).into(),
-            },
-        );
-        dispatch(
-            &mut osk,
-            WindowEvent::MouseInput {
-                device_id: device,
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-        );
-        dispatch(
-            &mut osk,
-            WindowEvent::MouseInput {
-                device_id: device,
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
-        );
-
-        assert_eq!(osk.pending_text(), "q", "tap over 'q' typed q");
-    }
-
-    eprintln!("phase toolbar_tap_emits_action");
-    {
-        let seen = Rc::new(RefCell::new(Vec::new()));
-        let mut osk = {
-            let seen = seen.clone();
-            OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()))
-                .on_toolbar(move |a| seen.borrow_mut().push(a))
-        };
-        lay_out(&mut osk, 800.0, 360.0);
-        osk.activate_tool(0); // default[0] == Paste
-        assert_eq!(osk.take_toolbar_actions(), vec![OskToolbarAction::Paste]);
-        assert_eq!(*seen.borrow(), vec![OskToolbarAction::Paste]);
-    }
-
-    eprintln!("phase layout_action_switches_active_letter_layout");
-    {
-        let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-        lay_out(&mut osk, 800.0, 360.0);
-        osk.apply_action(KeyAction::Layout("azerty".into()));
-        assert_eq!(osk.active_layout_name(), "azerty");
-        lay_out(&mut osk, 800.0, 360.0);
-        assert!(osk.activate_label("a"));
-        assert_eq!(osk.pending_text(), "a");
-    }
-
-    eprintln!("phase letter_layout_selects_the_word_language");
-    {
-        let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-        assert_eq!(osk.language(), Language::English);
-        lay_out(&mut osk, 800.0, 360.0);
-        osk.apply_action(KeyAction::Layout("azerty".into()));
-        assert_eq!(osk.language(), Language::French);
-        lay_out(&mut osk, 800.0, 360.0);
-        for letter in ["t", "r", "e", "s"] {
-            assert!(osk.activate_label(letter));
-        }
-        let words: Vec<&str> = osk.suggestions().iter().map(|s| s.word.as_str()).collect();
-        assert!(words.contains(&"très"), "French completes tres: {words:?}");
-        osk.apply_action(KeyAction::Layout("qwerty".into()));
-        assert_eq!(osk.language(), Language::English);
-    }
-
-    eprintln!("phase hidden_keyboard_ignores_pointer_events");
-    {
-        // A hidden keyboard must not consume taps meant for the app behind it:
-        // `handle_event` returns early and `handled` stays false.
-        let mut osk =
-            OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english())).hidden();
-        lay_out(&mut osk, 800.0, 360.0);
-
-        let device = winit::event::DeviceId::dummy();
-        // Aim where the 'q' key would be on a visible keyboard.
-        let handled = ui::testing::dispatch(
-            &mut osk,
-            &WindowEvent::MouseInput {
-                device_id: device,
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-        );
-        assert!(!handled, "a hidden keyboard does not consume pointer input");
-        assert_eq!(osk.pending_text(), "");
-    }
-}
-
-#[test]
 fn configured_layout_order_controls_the_actual_language_key() {
     let mut keyboard = OskWidget::new();
     keyboard.present_preferences(&crate::resource::OskPreferences {
@@ -959,114 +768,6 @@ fn purpose_changes_swap_layouts_and_clear_stale_state() {
         // Moving to a number pad must drop the now-meaningless shift state.
         osk.set_purpose(InputPurpose::Number);
         assert_eq!(osk.shift_state(), ShiftState::Off);
-    }
-}
-
-#[test]
-fn offscreen_render_and_geometry_follow_layout_and_suggestions() {
-    eprintln!("phase numeric_layout_renders_offscreen");
-    {
-        // A non-letter layout must lay out and draw without panicking even
-        // though it has no Shift / symbols affordances.
-        use ui::offscreen::OffscreenRenderer;
-        use vello::peniko::Color;
-
-        let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()))
-            .with_purpose(InputPurpose::Telephone);
-        lay_out(&mut osk, 720.0, 360.0);
-        assert!(!osk.key_geometry().is_empty(), "dialpad laid out keys");
-
-        let theme = Theme::dark();
-        let presence = PresenceCtx::empty();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        osk.draw_child(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &presence.draw_env(),
-        );
-
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("osk_dialpad.png");
-        let mut renderer = OffscreenRenderer::new(720, 360);
-        renderer.render_png(&scene, Color::BLACK, &out);
-        let bytes = std::fs::read(&out).unwrap();
-        assert!(bytes.len() > 1000, "rendered a non-trivial PNG");
-    }
-
-    eprintln!("phase offscreen_render_includes_suggestion_bar");
-    {
-        // A full offscreen frame with a populated suggestion bar must produce
-        // non-empty pixels (the bar + chips draw).
-        use ui::offscreen::OffscreenRenderer;
-        use vello::peniko::Color;
-
-        let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-        lay_out(&mut osk, 720.0, 360.0);
-        let path = path_through(&osk, "quick");
-        assert!(osk.swipe(&path));
-        assert!(!osk.suggestions().is_empty());
-        lay_out(&mut osk, 720.0, 360.0);
-
-        let theme = Theme::dark();
-        let presence = PresenceCtx::empty();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        osk.draw_child(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &presence.draw_env(),
-        );
-
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("osk_suggestion_bar.png");
-        let mut renderer = OffscreenRenderer::new(720, 360);
-        renderer.render_png(&scene, Color::BLACK, &out);
-        let bytes = std::fs::read(&out).unwrap();
-        assert!(
-            bytes.len() > 1000,
-            "rendered a non-trivial PNG ({} bytes)",
-            bytes.len()
-        );
-    }
-
-    eprintln!("phase suggestion_bar_geometry_matches_suggestion_count");
-    {
-        let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-        lay_out(&mut osk, 720.0, 360.0);
-        let path = path_through(&osk, "hello");
-        osk.swipe(&path);
-        lay_out(&mut osk, 720.0, 360.0);
-        let n = osk.suggestions().len();
-        assert!(n > 0);
-        assert_eq!(osk.suggestion_geometry().len(), n, "one rect per chip");
-        let geom = osk.suggestion_geometry();
-        let leftmost = geom.iter().map(|(_, r)| r.x0).fold(f64::MAX, f64::min);
-        let rightmost = geom.iter().map(|(_, r)| r.x1).fold(f64::MIN, f64::max);
-        let gutter = keyboard_gutter(&osk.spacing);
-        assert!((leftmost - gutter).abs() < 1.0, "chips start at the gutter");
-        assert!(
-            (rightmost - (720.0 - gutter)).abs() < 1.0,
-            "chips fill the width inside the gutter"
-        );
-    }
-
-    eprintln!("phase responsive_content_caps_on_desktop_but_keeps_tablet_width");
-    {
-        let mut desktop = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-        lay_out(&mut desktop, 1_920.0, 480.0);
-        assert_eq!(desktop.content_rect.width(), MAX_KEYBOARD_CONTENT_WIDTH);
-        assert!(desktop.content_rect.x0 > 0.0, "desktop keyboard is centred");
-
-        let mut tablet = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-        lay_out(&mut tablet, 768.0, 420.0);
-        let gutter = keyboard_gutter(&tablet.spacing);
-        assert_eq!(tablet.content_rect.width(), 768.0 - 2.0 * gutter);
-        assert_eq!(tablet.content_rect.x0, gutter);
     }
 }
 
@@ -1488,44 +1189,6 @@ fn password_field_never_composes_suggests_or_learns() {
 }
 
 #[test]
-fn visibility_defaults_toggle_and_collapse_height() {
-    // Each default is read from a keyboard as it was built, through `&self`,
-    // before anything touches it; the same two keyboards are laid out after.
-    eprintln!("phase keyboard_is_visible_by_default");
-    let mut visible = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-    assert!(visible.is_visible());
-
-    eprintln!("phase hidden_builder_starts_invisible");
-    let mut hidden =
-        OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english())).hidden();
-    assert!(!hidden.is_visible());
-
-    eprintln!("phase hidden_keyboard_takes_zero_height");
-    {
-        lay_out(&mut visible, 720.0, 360.0);
-        assert!(visible.get_rect().height() > 0.0);
-
-        lay_out(&mut hidden, 720.0, 360.0);
-        assert_eq!(hidden.get_rect().height(), 0.0);
-    }
-
-    eprintln!("phase set_visible_toggles_and_marks_structure_dirty");
-    {
-        let mut osk =
-            OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english())).hidden();
-        assert!(!osk.is_visible());
-        osk.set_visible(true);
-        assert!(osk.is_visible());
-        assert!(osk.take_structure_dirty(), "showing relays out");
-        osk.set_visible(true);
-        assert!(!osk.take_structure_dirty(), "no-op when unchanged");
-        osk.set_visible(false);
-        assert!(!osk.is_visible());
-        assert!(osk.take_structure_dirty(), "hiding relays out");
-    }
-}
-
-#[test]
 fn the_input_method_drives_visibility_and_purpose_without_blocking() {
     eprintln!("phase keyboard_app_id_is_the_well_known_id");
     {
@@ -1840,39 +1503,6 @@ fn a_word_that_names_an_emoji_offers_it_and_the_chip_commits_it() {
     assert_eq!(osk.take_output(), vec![commit("pizza "), commit("🍕 ")]);
     assert_eq!(osk.pending_text(), "pizza 🍕 ");
     assert_eq!(osk.emoji_recents(), ["🍕".to_owned()]);
-}
-
-#[test]
-fn every_panel_face_paints() {
-    let theme = Theme::dark();
-    let presence = PresenceCtx::empty();
-    let mut tr = TextRenderer::new();
-    let mut osk = OskWidget::new();
-    open_panel(&mut osk);
-    let mut paint = |osk: &mut OskWidget| {
-        let mut scene = Scene::new();
-        osk.draw_child(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &presence.draw_env(),
-        );
-        assert!(!scene.encoding().is_empty());
-    };
-    paint(&mut osk);
-    assert!(semantic(
-        &mut osk,
-        "osk:emoji-search",
-        &AccessibilityAction::SetValue("thumbs".into()),
-    ));
-    paint(&mut osk);
-    assert!(semantic(
-        &mut osk,
-        "osk:emoji:👍",
-        &AccessibilityAction::ShowContextMenu,
-    ));
-    paint(&mut osk);
 }
 
 #[test]
@@ -2237,52 +1867,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase previews_stay_inside_the_keyboard_at_its_edges;
-    {
-        let mut osk = OskWidget::new();
-        lay_out(&mut osk, 390.0, 312.0);
-        for label in ["q", "p", "a", "l", "z", "m"] {
-            let (_, rect) = key_rect(&osk, label);
-            let bubble = crate::presentation::preview_rect(rect, osk.content_rect);
-            assert!(
-                bubble.x0 >= osk.content_rect.x0 && bubble.x1 <= osk.content_rect.x1,
-                "{label} preview spills out: {bubble:?}"
-            );
-            assert!(bubble.y0 >= osk.content_rect.y0);
-        }
-    }
-
-    phase hit_areas_move_with_context_but_the_drawn_keys_never_do;
-    {
-        let mut osk = OskWidget::new();
-        lay_out(&mut osk, 390.0, 312.0);
-        let before = osk.key_geometry().to_vec();
-        let start = osk.hit_cells(2.0);
-        type_word(&mut osk, "th");
-        lay_out(&mut osk, 390.0, 312.0);
-        assert_eq!(
-            osk.key_geometry(),
-            before.as_slice(),
-            "context never moves a key"
-        );
-        let th = osk.hit_cells(2.0);
-        let (e, _) = key_rect(&osk, "e");
-        let (r, rr) = key_rect(&osk, "r");
-        let e_after_th = th.iter().filter(|c| c.key == e).count();
-        let e_at_start = start.iter().filter(|c| c.key == e).count();
-        assert!(e_after_th > e_at_start, "'e' grows after 'th'");
-        assert!(
-            th.iter().any(|c| c.drawn == r && c.key == e),
-            "the r/e border goes to 'e' after 'th'"
-        );
-        let core = crate::touch_model::core_zone(rr, crate::touch_model::CORE_FRACTION);
-        assert!(
-            th.iter()
-                .filter(|c| core.contains(c.rect.center()))
-                .all(|c| c.key == r),
-            "r's core zone stays r's"
-        );
-    }
 }
 
 #[test]

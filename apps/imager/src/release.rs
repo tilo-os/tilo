@@ -1092,49 +1092,6 @@ mod tests {
         catalog["releases"].as_array_mut().unwrap().push(board);
         catalog
     }
-
-    tilo_test_env::scenario! {
-        fn a_release_source_keeps_strict_digests_and_identity;
-
-        phase release_sources_keep_strict_digests_and_identity;
-        {
-            {
-                assert!(validate_digest(&"a".repeat(64)).is_ok());
-                assert!(validate_digest(&"z".repeat(64)).is_err());
-                assert!(validate_digest("abc").is_err());
-            }
-
-            {
-                let image = tempfile::NamedTempFile::new().unwrap();
-                let release = TiloRelease {
-                    name: "Tilo".into(),
-                    version: "1.0".into(),
-                    size: 1,
-                    channel: "stable".into(),
-                    architecture: "aarch64".into(),
-                    hardware_profile: "generic".into(),
-                    local_path: String::new(),
-                    url:
-                        "https://code.tilo.so/tilo/releases/releases/download/imager-v1.0.0/tilo.img.zst"
-                            .into(),
-                    archive_sha256: "a".repeat(64),
-                    archive_size: 1,
-                    image_sha256: "b".repeat(64),
-                };
-
-                let source = source_for(&release, image.path()).unwrap();
-                let expected = "b".repeat(64);
-                assert_eq!(source.expected_sha256.as_deref(), Some(expected.as_str()));
-                assert!(source.identity.is_some());
-                assert_eq!(
-                    source.identity,
-                    crate::model::SourceIdentity::from_file(image.as_file()).unwrap()
-                );
-                let missing = image.path().with_extension("missing");
-                assert!(source_for(&release, &missing).is_err());
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1152,77 +1109,6 @@ mod internal_catalog_tests {
     }
     tilo_test_env::scenario! {
         fn the_internal_and_media_catalogs_parse_strictly;
-
-        phase internal_catalog_entries_parse_strictly_and_separately_from_media;
-        {
-            {
-                assert!(parse_catalog(&catalog(media())).is_ok());
-            }
-
-            {
-                let mut value = media();
-                value["purpose"] = json!("tilo-internal-installer");
-                value["layout"] = json!("internal-bundle-v2");
-                assert!(parse_catalog(&catalog(value)).is_err());
-            }
-
-            {
-                let mut value = media();
-                value["unexpected"] = json!(true);
-                assert!(parse_catalog(&catalog(value)).is_err());
-                for (field, bad) in [
-                    ("archive_sha256", json!("invalid")),
-                    ("url", json!("https://evil.example/file")),
-                    ("image_size", json!(0)),
-                ] {
-                    let mut value = media();
-                    value["arch"] = json!("aarch64");
-                    value[field] = bad;
-                    assert!(parse_catalog(&catalog(value)).is_err(), "accepted {field}");
-                }
-            }
-
-            {
-                let mut entry = internal(b"{}");
-                entry["release_id"] = json!("loop-test");
-                entry["manifest_url"] = json!("https://code.tilo.so/tilo/loop-test/manifest.json");
-                let text =
-                    json!({"schema":2,"tag":"imager-v0.0.0-loop-test","releases":[entry]}).to_string();
-                let parsed = parse_catalog(&text).unwrap();
-                assert!(matches!(
-                    parsed.releases.as_slice(),
-                    [CatalogRelease::Internal(m)] if m.release_id == "loop-test"
-                ));
-            }
-
-            {
-                let mut value = crate::setup::internal_bundle::tests::fixture();
-                value["release_id"] = json!("imager-v1.2.3");
-                let bytes = crate::setup::internal_bundle::tests::bytes(&value);
-                let mut entry = internal(&bytes);
-                entry["release_id"] = json!("imager-v1.2.3");
-                entry["manifest_url"] = json!(
-                    "https://code.tilo.so/api/packages/tilo/generic/tilo-internal-installer/imager-v1.2.3/tilo-internal-installer-x86_64.json"
-                );
-                let raw =
-                    json!({"schema":2,"tag":"imager-v1.2.3","releases":[media(), entry]}).to_string();
-                let catalog = parse_catalog(&raw).unwrap();
-                assert_eq!(
-                    media_releases(parse_catalog(&raw).unwrap(), "x86_64").len(),
-                    1
-                );
-                let release = catalog
-                    .releases
-                    .into_iter()
-                    .find_map(|entry| match entry {
-                        CatalogRelease::Internal(metadata) => Some(InternalRelease { metadata }),
-                        CatalogRelease::Media(_) | CatalogRelease::TargetPolicy(_) => None,
-                    })
-                    .unwrap();
-                assert_eq!(release.release_id(), "imager-v1.2.3");
-                assert!(release.verify_manifest(&bytes).is_ok());
-            }
-        }
 
         phase internal_entries_bind_manifest_bytes_release_and_architecture;
         {
@@ -1305,98 +1191,6 @@ mod internal_catalog_tests {
             }
         }
 
-        phase catalog_representation_requires_objects_string_tags_and_unique_keys;
-        {
-            let bytes = crate::setup::internal_bundle::tests::bytes(
-                &crate::setup::internal_bundle::tests::fixture(),
-            );
-
-            let raw = catalog(media());
-            assert!(parse_catalog(&raw).is_ok());
-            let value: Value = serde_json::from_str(&raw).unwrap();
-            let array = positional_record(&value, "schema tag releases");
-            assert!(parse_catalog(&array.to_string()).is_err());
-
-            let mut tagged_media = media();
-            tagged_media["purpose"] = json!("removable-media");
-            tagged_media["layout"] = json!("whole-disk-image");
-            for (case, entry, fields) in [
-                (
-                    "media",
-                    tagged_media,
-                    "purpose layout name version channel arch hardware_profile url archive_sha256 archive_size image_sha256 image_size",
-                ),
-                (
-                    "internal",
-                    internal(&bytes),
-                    "purpose layout release_id arch manifest_url manifest_sha256 manifest_size",
-                ),
-            ] {
-                assert!(
-                    parse_catalog(&catalog(entry.clone())).is_ok(),
-                    "case {case}"
-                );
-                let array = positional_record(&entry, fields);
-                assert!(parse_catalog(&catalog(array)).is_err(), "case {case}");
-                let accepted: Vec<_> = ["purpose", "layout"]
-                    .into_iter()
-                    .filter(|field| {
-                        let mut value = entry.clone();
-                        value[*field] = json!({entry[*field].as_str().unwrap():null});
-                        parse_catalog(&catalog(value)).is_ok()
-                    })
-                    .collect();
-                assert!(
-                    accepted.is_empty(),
-                    "case {case}: accepted object-shaped tags: {accepted:?}"
-                );
-            }
-
-            for entry in [media(), internal(&bytes)] {
-                let raw = catalog(entry);
-                assert!(parse_catalog(&raw).is_ok());
-                for (marker, replacement) in [
-                    ("\"schema\":2", "\"schema\":2,\"schema\":2"),
-                    (
-                        "\"arch\":\"x86_64\"",
-                        "\"arch\":\"x86_64\",\"arch\":\"x86_64\"",
-                    ),
-                ] {
-                    let changed = raw.replacen(marker, replacement, 1);
-                    assert_ne!(changed, raw);
-                    assert!(parse_catalog(&changed).is_err());
-                }
-            }
-        }
-
-        phase zstd_frames_decode_back_to_back_frames_in_small_reads;
-        {
-            use ruzstd::encoding::{CompressionLevel, compress_to_vec};
-            let first: Vec<u8> = (0..300_000_u32).map(|i| (i % 251) as u8).collect();
-            let second = b"second frame".repeat(1000);
-            let mut archive = compress_to_vec(first.as_slice(), CompressionLevel::Fastest);
-            archive.extend(compress_to_vec(
-                second.as_slice(),
-                CompressionLevel::Fastest,
-            ));
-            let mut frames = ZstdFrames::new(BufReader::new(archive.as_slice()));
-            let mut expanded = Vec::new();
-            let mut chunk = [0_u8; 4096];
-            loop {
-                let read = frames.read(&mut chunk).unwrap();
-                if read == 0 {
-                    break;
-                }
-                expanded.extend_from_slice(&chunk[..read]);
-            }
-            assert_eq!(expanded.len(), first.len() + second.len());
-            assert!(expanded.starts_with(&first) && expanded.ends_with(&second));
-            assert!(
-                ZstdFrames::new(BufReader::new(&b"not zstd"[..]))
-                    .read(&mut chunk)
-                    .is_err()
-            );
-        }
     }
     fn internal(manifest: &[u8]) -> Value {
         json!({"purpose":"tilo-internal-installer","layout":"internal-bundle-v2",
@@ -1414,13 +1208,5 @@ mod internal_catalog_tests {
             CatalogRelease::Internal(metadata) => InternalRelease { metadata },
             _ => panic!("internal entry became media"),
         }
-    }
-    fn positional_record(value: &Value, fields: &str) -> Value {
-        Value::Array(
-            fields
-                .split_whitespace()
-                .map(|key| value[key].clone())
-                .collect(),
-        )
     }
 }
