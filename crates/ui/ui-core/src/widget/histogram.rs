@@ -142,7 +142,8 @@ impl Histogram {
                 })
                 .collect()
         };
-        // Bars are sized in logical pixels against a representative 720 px width.
+        // The bars are drawn no wider than they stand on a 720 px plot, a gap between them.
+        // A narrower plot fits them to their slots instead, so the bins stay apart there.
         let bar_width = (720.0 / f64::from(bin_count) - self.bar_gap).max(2.0);
         let series = match self.palette {
             Some(index) => PlotSeries::from_palette("histogram", self.series_name, index, data),

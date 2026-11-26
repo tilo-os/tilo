@@ -1985,6 +1985,98 @@ impl CartesianMarks {
         }
     }
 
+    /// Each reading of `series` the plot draws, with the point it stands at now, in the order
+    /// it draws them: `None` for a reading with nothing to stand at.
+    fn projected<'a>(
+        &self,
+        series_index: usize,
+        series: &'a PlotSeries,
+        plot: Rect,
+        xd: Domain,
+        yd: Domain,
+        now: Instant,
+    ) -> Vec<(usize, &'a PlotDatum, Option<Point>)> {
+        self.render_indices(series, plot)
+            .into_iter()
+            .filter_map(|index| {
+                Some((
+                    index,
+                    series.data.get(index)?,
+                    self.map_animated_datum(series_index, index, plot, xd, yd, now),
+                ))
+            })
+            .collect()
+    }
+
+    /// The share of a bar's slot left open when a narrow plot fits its bars to the slots: a
+    /// twentieth, the gap between the bars of a histogram drawn wide.
+    const BAR_GAP_FRACTION: f64 = 0.05;
+
+    /// The rects a bar series fills: each bar at most `width` logical pixels wide, on whole
+    /// device pixels, and never touching its neighbour. A plot too narrow to draw the bars at
+    /// `width` fits them to their slots instead, keeping a gap of a twentieth of a slot and
+    /// never less than one device pixel — without it the bars of a histogram run together
+    /// into one silhouette and its bins can no longer be told apart. Slots under two device
+    /// pixels apart leave no gap to draw at all, and no bars are drawn.
+    fn bar_rects(points: &[Point], width: f64, zero: f64) -> Vec<Rect> {
+        let scale = f64::from(crate::widget::device_scale()).max(f64::MIN_POSITIVE);
+        let mut width_px = (width * scale).floor();
+        if let Some(pitch_px) = Self::bar_pitch_px(points, scale) {
+            let gap_px = (pitch_px * Self::BAR_GAP_FRACTION).ceil().max(1.0);
+            // A device pixel of every slot stays unclaimed: snapping a bar's edge onto the
+            // grid can move it by up to half a pixel while its neighbour moves the other way.
+            width_px = width_px.min((pitch_px - gap_px).floor() - 1.0);
+        }
+        if width_px < 1.0 {
+            return Vec::new();
+        }
+        let width = width_px / scale;
+        points
+            .iter()
+            .map(|point| {
+                let left = crate::widget::layout::snap_to_device_pixels(point.x - width / 2.0);
+                Rect::new(left, point.y.min(zero), left + width, point.y.max(zero))
+            })
+            .collect()
+    }
+
+    /// The closest two bars of `points` stand, in device pixels: the slot each one has to fit
+    /// in. `None` where there is no pair to keep apart.
+    fn bar_pitch_px(points: &[Point], scale: f64) -> Option<f64> {
+        let mut xs = points.iter().map(|point| point.x).collect::<Vec<_>>();
+        xs.sort_by(f64::total_cmp);
+        xs.windows(2)
+            .map(|pair| (pair[1] - pair[0]) * scale)
+            .filter(|pitch| *pitch > 0.0)
+            .reduce(f64::min)
+    }
+
+    /// The rects the bars of series `id` cover as the plot draws them now.
+    #[cfg(test)]
+    fn bars_of(&self, id: &str) -> Vec<Rect> {
+        let plot = self.plot_rect();
+        let (index, series) = self
+            .series
+            .iter()
+            .enumerate()
+            .find(|(_, series)| series.id == id)
+            .unwrap_or_else(|| panic!("the plot has no series {id}"));
+        let SeriesKind::Bar { width } = series.kind else {
+            panic!("{id}'s readings are not drawn as bars");
+        };
+        if self.toggles.is_hidden(id) {
+            return Vec::new();
+        }
+        let xd = self.domain(&self.style.x_axis, true);
+        let yd = self.domain(&self.style.y_axis, false);
+        let points = self
+            .projected(index, series, plot, xd, yd, crate::time::now())
+            .into_iter()
+            .filter_map(|(_, _, point)| point)
+            .collect::<Vec<_>>();
+        Self::bar_rects(&points, width, self.y_baseline(plot, yd))
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "all series kinds share projection, selection and ordering in one paint pass"
@@ -2004,18 +2096,7 @@ impl CartesianMarks {
                 continue;
             }
             let color = series.color_in(theme);
-            let projected = self
-                .render_indices(series, plot)
-                .into_iter()
-                .filter_map(|index| {
-                    let datum = series.data.get(index)?;
-                    Some((
-                        index,
-                        datum,
-                        self.map_animated_datum(series_index, index, plot, xd, yd, now),
-                    ))
-                })
-                .collect::<Vec<_>>();
+            let projected = self.projected(series_index, series, plot, xd, yd, now);
             let points = projected
                 .iter()
                 .filter_map(|(_, _, point)| *point)
@@ -2069,13 +2150,7 @@ impl CartesianMarks {
                 }
                 SeriesKind::Bar { width } => {
                     let zero = self.y_baseline(plot, yd);
-                    for point in &points {
-                        let rect = Rect::new(
-                            point.x - width / 2.0,
-                            point.y.min(zero),
-                            point.x + width / 2.0,
-                            point.y.max(zero),
-                        );
+                    for rect in Self::bar_rects(&points, width, zero) {
                         scene.fill(
                             Fill::NonZero,
                             transform,
@@ -3326,5 +3401,45 @@ mod tests {
             stable_ids_interpolate_live_updates_and_reduced_motion_snaps();
         }
 
+    }
+
+    tilo_test_env::scenario! {
+        /// A histogram's bins stay apart as its plot narrows to a phone's width.
+        fn histogram_bins_keep_a_gap_at_a_phone_width;
+
+        phase bins_never_touch_at_a_phone_width_whatever_the_device_scale;
+        {
+            let theme = Theme::dark();
+            // Twelve bins of ten readings each. Drawn at the width a desktop plot gives
+            // them, the bars would overlap this narrow a plot and read as one silhouette.
+            let samples = (0..120)
+                .map(|index| 80.0 + f64::from(index % 12) * 3.0)
+                .collect::<Vec<_>>();
+            for scale in [1.0_f64, 1.5] {
+                let _held = crate::widget::enter_device_scale(scale);
+                let mut chart = crate::widget::histogram::Histogram::new(
+                    samples.iter().copied(),
+                    Color::WHITE,
+                )
+                .bins(12)
+                .build();
+                crate::testing::lay_out_in(&mut chart, 342.0, 300.0, &theme)
+                    .expect("the histogram lays out");
+                let bars = chart.marks.bars_of("histogram");
+                assert_eq!(
+                    bars.len(),
+                    12,
+                    "every bin draws a bar at scale {scale}: {bars:?}"
+                );
+                let device = 1.0 / scale;
+                for pair in bars.windows(2) {
+                    let gap = pair[1].x0 - pair[0].x1;
+                    assert!(
+                        gap >= device - 1e-9,
+                        "bins stay a device pixel apart at scale {scale}: {gap} between {pair:?}"
+                    );
+                }
+            }
+        }
     }
 }
