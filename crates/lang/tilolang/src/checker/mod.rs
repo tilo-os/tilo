@@ -2164,6 +2164,21 @@ impl Checker<'_> {
             let _ = self.expr(value, None);
             return;
         }
+        // The app's preferences are the settings service's record: each changes through its
+        // own setter (`set-<field>`), which a control bound to it runs, so the change is
+        // recorded in the settings' history and every device follows it.
+        if self.env.prefs.contains(&key) {
+            self.err(
+                "E045",
+                span,
+                format!(
+                    "`{}.{}` is one of the app's preferences: it changes through its setter, which a control bound to it runs (`bind: p.{}` where `p` is `root {}`), so the settings keep the change and every device follows it",
+                    key.name, f.name, f.name, key.name
+                ),
+            );
+            let _ = self.expr(value, None);
+            return;
+        }
         self.st.facts.mutates = true;
         self.writes_field(&key, &f);
         if f.merge == MergeKind::Structural {

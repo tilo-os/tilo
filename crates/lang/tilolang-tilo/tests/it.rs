@@ -14,6 +14,7 @@
 mod action_ids;
 mod activity;
 mod agent_queries;
+mod app_prefs;
 mod asking_at_press;
 mod asking_at_press_shot;
 mod asking_effects;

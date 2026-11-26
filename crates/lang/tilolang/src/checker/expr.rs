@@ -673,6 +673,19 @@ impl Checker<'_> {
         if env.device_roots.contains(&info.key) {
             return Self::device_root_ref(&info.key.app, &info.id, &info.key);
         }
+        // The app's preferences are the settings service's record of them, not a document of
+        // the app's: `root Preferences` reads `settings/apps/<app>`.
+        if env.prefs.contains(&info.key) {
+            return Ex::host(
+                Imp::RefLit,
+                vec![
+                    Ex::str(&info.key.app),
+                    Ex::str(&info.id),
+                    Ex::str(&format!("settings/apps/{}", info.key.app)),
+                ],
+                Ty::Record(info.key.clone()),
+            );
+        }
         Self::root_ref(&info.key.app, &info.id, &info.key)
     }
 

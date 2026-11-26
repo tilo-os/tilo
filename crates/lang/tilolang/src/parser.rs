@@ -1143,6 +1143,11 @@ impl<'a> Parser<'a> {
     fn item(&mut self) -> PResult<Item> {
         let doc = self.docs();
         let start = self.span();
+        if matches!(self.peek(), Tok::Ident(n) if n == "prefs")
+            && matches!(self.peek_at(1), Tok::Ident(_))
+        {
+            return self.prefs_decl(doc, start).map(Item::Type);
+        }
         if self.at_root_decl() || self.at_device_root_decl() {
             let device = self.at_device_root_decl();
             if device {
@@ -1407,6 +1412,17 @@ impl<'a> Parser<'a> {
 
     fn type_decl(&mut self, doc: Vec<String>, start: Span) -> PResult<TypeDecl> {
         self.expect_kw("type")?;
+        self.record_decl(doc, start, false)
+    }
+
+    /// `prefs Preferences { ... }`: the app's preferences, a record type the settings service
+    /// keeps (`settings/apps/<app>`). One per package.
+    fn prefs_decl(&mut self, doc: Vec<String>, start: Span) -> PResult<TypeDecl> {
+        self.bump();
+        self.record_decl(doc, start, true)
+    }
+
+    fn record_decl(&mut self, doc: Vec<String>, start: Span, prefs: bool) -> PResult<TypeDecl> {
         let node = self.node();
         let name = self.ident("a type name")?;
         let mut origin = None;
@@ -1585,6 +1601,7 @@ impl<'a> Parser<'a> {
             node,
             doc,
             name,
+            prefs,
             origin,
             title,
             untitled,

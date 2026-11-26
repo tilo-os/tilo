@@ -82,6 +82,10 @@ pub struct Env {
     pub roots: Vec<TypeKey>,
     /// The roots each device keeps its own (`device root readings: Readings`), among [`Self::roots`].
     pub device_roots: Vec<TypeKey>,
+    /// The app's preferences types (`prefs Preferences { ... }`): roots read from the settings
+    /// service (`settings/apps/<app>`) and changed through its setters, and never documents of
+    /// the app's own.
+    pub prefs: Vec<TypeKey>,
     pub named_roots: Vec<(String, TypeKey)>,
     /// `type Name = T` naming a type that is not a container, as its written form.
     pub aliases: Vec<(TypeKey, Ty)>,
@@ -3283,6 +3287,9 @@ impl Resolver<'_> {
             .roots
             .iter()
             .filter(|k| device_is_the_window || !self.env.device_roots.contains(k))
+            // An app's preferences are read and set in Settings, never opened as the app's own
+            // root: they need no default view.
+            .filter(|k| !self.env.prefs.contains(k))
             .filter(|k| !self.env.default_views.iter().any(|(d, _)| d == *k))
             .cloned()
             .collect();

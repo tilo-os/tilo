@@ -1100,7 +1100,8 @@ impl Printer<'_> {
                 } else {
                     format!(" ({})", options.join(", "))
                 };
-                self.line(&format!("type {}{options} {{", t.name.name));
+                let keyword = if t.prefs { "prefs" } else { "type" };
+                self.line(&format!("{keyword} {}{options} {{", t.name.name));
                 self.level += 1;
                 for f in &t.fields {
                     self.field(f);

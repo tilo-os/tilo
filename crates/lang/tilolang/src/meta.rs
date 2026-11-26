@@ -166,6 +166,11 @@ pub struct PackageMeta {
     /// launcher.
     #[serde(default)]
     pub roots: Vec<String>,
+    /// The ids of the app's preferences types (`prefs Preferences { ... }`): each is a root the
+    /// host reads from the settings service (`settings/apps/<app>`) and changes through its
+    /// setters, never a document of the app's own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prefs: Vec<String>,
     /// The packages it uses (`use app.id`), by their current app ids, and `tilo.std`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uses: Vec<String>,

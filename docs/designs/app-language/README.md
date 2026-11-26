@@ -31,6 +31,27 @@ native UI come from the system.
   and what people share stays in an ordinary root.
 - **Queries**: `T.all` and the type's declared filters (`Task.today`) are lazy and answered by
   the index; `in: r` narrows to a subtree. Nothing loads more than what is shown.
+- **An app's preferences** are declared once (`prefs Preferences { ... }`) and kept by the
+  settings service, one section per app at `settings/apps/<app>`: every device of the person
+  reads them, Settings shows them in the app's section, and each changes through its own setter
+  (`set-<field>`) as any setting does. `root Preferences` reads them in a view or an action; a
+  control bound to one writes it. They are the person's, never a workspace's, so they sync to
+  their devices and to no other member, and an app reads and changes only its own.
+
+```
+/// What this app keeps for the person.
+prefs Preferences {
+    font_size: Int = 13
+    bell: Bool = false
+}
+
+view window(p: Preferences) {
+    ui.Toggle(bind: p.bell)
+}
+```
+
+  A field starts at its default, which is what every device shows before a person sets it; the
+  settings service's section replaces it as it arrives, and a view that read it runs again.
 - **Views** are functions of resources, plus each person's own view state, which shows as
   presence. `default view v for T` is what opens a resource of `T`, `row view r for T` how it
   appears in a list, and `place view p for T` what a place of it shows access on its own when

@@ -926,6 +926,48 @@ pub struct Roots {
     wake: Option<tilo_rt::wake::WakeHandle>,
     /// Whether the packages and their roots were loaded from the bundle.
     loaded: bool,
+    /// The app whose window this is, when it declares preferences: the only app's preferences it
+    /// reads and changes.
+    own_app: Option<String>,
+    /// Where this app's preferences are published (`settings/apps/<app>`): the section of the
+    /// settings service it reads and sets.
+    prefs: Option<String>,
+}
+
+/// Where an app's preferences are published by the settings service: `settings/apps/<app>`.
+#[must_use]
+pub fn prefs_address(app: &str) -> String {
+    format!("settings/apps/{app}")
+}
+
+/// Why the resource `id` is another app's preferences, which this app neither reads nor changes:
+/// its own live at `settings/apps/{app}`. `None` for its own, and for anything else.
+#[must_use]
+pub fn refuse_foreign_prefs(id: &str, app: &str) -> Option<String> {
+    let other = id.split('#').next().unwrap_or(id);
+    let theirs = other.strip_prefix("settings/apps/")?;
+    (theirs != app).then(|| {
+        format!(
+            "`{id}` is the preferences of {theirs}: an app reads and changes only its own, at {}",
+            prefs_address(app)
+        )
+    })
+}
+
+/// The settings-service call a control's edit of the preference `field` to `value` is: the
+/// field's setter (`set-<field>`), with the whole new value. One app's preferences are set field
+/// by field, so a bound control's change is the same change Settings makes.
+#[must_use]
+pub fn prefs_setter(
+    field: &str,
+    value: &crate::runtime::Value,
+) -> (String, serde_json::Map<String, serde_json::Value>) {
+    let verb = format!("set-{}", field.replace('_', "-"));
+    let value = crate::runtime::value::to_argument(value).unwrap_or_default();
+    (
+        verb,
+        serde_json::Map::from_iter([("value".to_owned(), value)]),
+    )
 }
 
 impl Roots {
@@ -982,6 +1024,48 @@ impl Roots {
         self.apps.extend(apps);
     }
 
+    /// Follow the app's own preferences, which the settings service keeps
+    /// (`settings/apps/<app>`): each reads as its declared defaults until the service answers,
+    /// and every view that reads one runs again when it does. An app that declares none reads
+    /// nothing here.
+    pub fn load_prefs(
+        &mut self,
+        host: &crate::host::Host,
+        meta: &tilolang::meta::PackageMeta,
+        wake: &tilo_rt::wake::WakeHandle,
+    ) {
+        if meta.prefs.is_empty() {
+            return;
+        }
+        let address = prefs_address(&meta.app);
+        self.own_app = Some(meta.app.clone());
+        self.prefs = Some(address.clone());
+        let runtime = host.runtime();
+        for ty in &meta.prefs {
+            let target = crate::runtime::ResourceRef::root(address.clone(), ty.clone());
+            // What the app declared is what every device shows before a person sets it: the
+            // settings service's reading replaces it as it arrives.
+            let defaults = meta
+                .types
+                .iter()
+                .find(|declared| declared.id == *ty)
+                .map(|declared| {
+                    let mut held = serde_json::Map::new();
+                    for field in &declared.fields {
+                        if let Some(default) = &field.default {
+                            held.insert(field.name.clone(), default.clone());
+                        }
+                    }
+                    serde_json::Value::Object(held)
+                });
+            if let Some(defaults) = defaults {
+                let _ = runtime.set_reading(&target, &defaults.to_string());
+            }
+            self.declared.insert(target.id_string());
+            self.follow(&target, wake.clone());
+        }
+    }
+
     /// Follow `target`, the resource the session publishes under its id.
     fn follow(&mut self, target: &crate::runtime::ResourceRef, wake: tilo_rt::wake::WakeHandle) {
         let Some(source) = published() else {
@@ -1028,6 +1112,11 @@ impl Roots {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), String> {
+        if let Some(app) = self.own_app.as_deref()
+            && let Some(why) = refuse_foreign_prefs(resource, app)
+        {
+            return Err(why);
+        }
         published()
             .ok_or_else(|| "nothing reads the platform's resources here".to_owned())?
             .invoke(resource, action, arguments)
@@ -1043,6 +1132,28 @@ impl Roots {
     ) -> bool {
         let runtime = host.runtime();
         let mut moved = false;
+        // An app reads only its own preferences: a view that names another app's is told so,
+        // rather than left waiting for a reading no service will hand it.
+        if let Some(app) = self.own_app.clone() {
+            let refused: Vec<(String, String)> =
+                runtime.take_wanted_if(|id, _| refuse_foreign_prefs(id, &app).is_some());
+            for (id, ty) in refused {
+                let Some(target) = crate::runtime::ResourceRef::parse_id(&id, ty) else {
+                    continue;
+                };
+                let Some(why) = refuse_foreign_prefs(&id, &app) else {
+                    continue;
+                };
+                let unreadable =
+                    serde_json::json!({ tilolang_runtime::store::UNREADABLE: why }).to_string();
+                moved |= runtime
+                    .set_reading(&target, &unreadable)
+                    .unwrap_or_else(|error| {
+                        tracing::warn!(%error, resource = %id, "a refused preference read was not said");
+                        false
+                    });
+            }
+        }
         for (target, reading) in &self.followed {
             while let Some(result) = reading.latest() {
                 match result {

@@ -457,6 +457,26 @@ impl Foreign {
         taken
     }
 
+    /// [`Self::take_wanted`], of the resources `take` names by their id and type: the rest stay
+    /// asked for. A host that answers one family of addresses (an app's preferences) refuses
+    /// what it may not give without holding another host's readings back.
+    pub(crate) fn take_wanted_if(
+        &mut self,
+        mut take: impl FnMut(&str, &str) -> bool,
+    ) -> Vec<(String, String)> {
+        let mut taken = Vec::new();
+        let mut kept = BTreeMap::new();
+        for (at, (id, ty)) in std::mem::take(&mut self.wanted) {
+            if take(&id, &ty) {
+                taken.push((id, ty));
+            } else {
+                kept.insert(at, (id, ty));
+            }
+        }
+        self.wanted = kept;
+        taken
+    }
+
     /// The reading of `target` whole, as JSON, with the generation it was read at, when one
     /// arrived: what a Rust app's view is handed of the resource it shows (its own model type
     /// reads its fields from it).

@@ -725,6 +725,12 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
     let mut surfaces = Vec::new();
     let seeded = !meta.scenarios.is_empty();
     for ty in &meta.types {
+        // An app's preferences are the settings service's record (`settings/apps/<app>`), not a
+        // kind of the app's own document: another package reads them through that service, not
+        // through a surface of this app.
+        if meta.prefs.contains(&ty.id) {
+            continue;
+        }
         let mut types = TypeSet::new();
         let mut verbs = edit_verbs(ty);
         // A type an outside service keeps in step declares its origin (`imap.message`): the

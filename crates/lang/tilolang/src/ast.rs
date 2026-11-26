@@ -169,6 +169,10 @@ pub struct TypeDecl {
     pub node: NodeId,
     pub doc: Vec<String>,
     pub name: Ident,
+    /// `prefs Name { ... }`: the app's preferences, read and set through the settings service
+    /// (`settings/apps/<app>`). A prefs declaration is a record type plus a root the host reads
+    /// from the settings service.
+    pub prefs: bool,
     /// `(origin: mail.message)`: the outside service kind whose resources the type holds
     /// (convergence.md, "Outside services").
     pub origin: Option<Ident>,

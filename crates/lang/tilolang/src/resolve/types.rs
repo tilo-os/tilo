@@ -136,12 +136,47 @@ impl Resolver<'_> {
                 }
                 fields.push(self.field(&t.name.name, f, lock));
             }
+            let key = TypeKey {
+                app: self.env.app.clone(),
+                name: t.name.name.clone(),
+            };
+            // A preference is read from the settings service, which every device reads and
+            // nobody writes unless a person sets it: it starts at its declared value, so what
+            // the app shows before anyone changed it is what the app declared.
+            if t.prefs {
+                if !self.env.prefs.is_empty() {
+                    self.err(
+                        "E011",
+                        t.name.span,
+                        "a package declares its preferences once: an app has one section in the settings",
+                    );
+                }
+                for f in &fields {
+                    if f.default.is_none() {
+                        self.err(
+                            "E019",
+                            t.name.span,
+                            format!(
+                                "the preference `{}` needs a default (`{}: {} = ...`): what every device shows before a person sets it",
+                                f.name,
+                                f.name,
+                                f.ty.display(&self.env.app)
+                            ),
+                        );
+                    }
+                }
+                self.env.prefs.push(key.clone());
+                self.env.roots.push(key.clone());
+            }
             self.env.types.push(TypeInfo {
-                key: TypeKey {
-                    app: self.env.app.clone(),
-                    name: t.name.name.clone(),
+                key,
+                id: if t.prefs {
+                    // A preference is a reading, not a document of the app's: its id names it a
+                    // published resource ([`crate::meta::PackageMeta::prefs`]).
+                    format!("{}#{}", self.env.app, t.name.name)
+                } else {
+                    id_of(lock, &t.name.name)
                 },
-                id: id_of(lock, &t.name.name),
                 doc: t.doc.join("\n"),
                 fields,
                 search: crate::meta::SearchMeta::default(),

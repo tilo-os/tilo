@@ -87,6 +87,12 @@ pub fn split_id(text: &str) -> Option<(&str, Option<&str>)> {
     if text.starts_with("devices/") {
         return tilo_resource_store::split_device_id(text);
     }
+    // An app's preferences are one document per app, `settings/apps/<app>`: the whole path names
+    // the document, as a device's resources do. A settings section is one step
+    // (`settings/appearance`), which the path below reads as its item.
+    if let Some(app) = text.strip_prefix("settings/apps/") {
+        return (!app.is_empty() && !app.contains('/')).then_some((text, None));
+    }
     let Some((doc, rest)) = text.split_once('/') else {
         return (!text.is_empty()).then_some((text, None));
     };
@@ -1088,6 +1094,23 @@ mod tests {
             assert_eq!(serde_json::from_value::<ResourceRef>(old).unwrap(), r);
             let json = serde_json::to_value(&r).unwrap();
             assert_eq!(serde_json::from_value::<ResourceRef>(json).unwrap(), r);
+        }
+
+        phase an_apps_preferences_are_one_document_under_the_settings;
+        {
+            // `settings/apps/<app>` names one document, not the item `<app>` of `settings/apps`:
+            // an app's preferences are the settings service's own record.
+            let prefs = ResourceRef::root("settings/apps/so.tilo.notes", "so.tilo.notes#Preferences");
+            assert_eq!(
+                ResourceRef::parse_id(&prefs.id_string(), "so.tilo.notes#Preferences"),
+                Some(prefs.clone())
+            );
+            assert_eq!(flat_id(&prefs.id_string()), prefs.id_string());
+            // A settings section is one step, as it reads today.
+            assert_eq!(
+                flat_id("settings/appearance"),
+                "settings/appearance"
+            );
         }
     }
 }

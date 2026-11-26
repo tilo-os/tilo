@@ -680,7 +680,15 @@ fn build_meta(
     };
     let type_id =
         |key: &crate::types::TypeKey| env.type_info(key).map(|t| t.id.clone()).unwrap_or_default();
-    meta.roots = env.roots.iter().map(type_id).collect();
+    // An app's preferences are the settings service's record, not a document of the app's: only
+    // its other roots are documents the host keeps.
+    meta.roots = env
+        .roots
+        .iter()
+        .filter(|key| !env.prefs.contains(key))
+        .map(type_id)
+        .collect();
+    meta.prefs = env.prefs.iter().map(type_id).collect();
     // A window that holds one item of a shared root's collection: the root stays the workspace's.
     meta.document_items = module
         .app

@@ -747,7 +747,16 @@ impl Platform for HostPlatform {
         let installed = |app: &str| self.installed.contains_key(app);
         if let Some(update) = self.builds().and_then(|builds| builds.latest()) {
             match host.load_bundle_using(&update.bundle, installed) {
-                Ok(_) => return update.generation,
+                Ok(_) => {
+                    // The app's preferences are the settings service's record: followed where
+                    // the settings publish them, read as the app declared them until then.
+                    self.platform.borrow_mut().load_prefs(
+                        host,
+                        &update.bundle.meta,
+                        &self.root_wake,
+                    );
+                    return update.generation;
+                }
                 Err(error) => {
                     tracing::error!(app = update.bundle.meta.app, %error, "the later build did not load");
                 }
@@ -756,6 +765,9 @@ impl Platform for HostPlatform {
         if let Err(error) = host.load_bundle_using(&self.bundle, installed) {
             tracing::error!(app = self.bundle.meta.app, %error, "the package did not load");
         }
+        self.platform
+            .borrow_mut()
+            .load_prefs(host, &self.bundle.meta, &self.root_wake);
         0
     }
 
@@ -2278,6 +2290,12 @@ impl Hosted {
                 presses: Rc::clone(&self.presses),
                 manager: self.connection.shared_manager(),
                 platform: Rc::clone(&self.platform),
+                prefs: self
+                    .callees
+                    .apps
+                    .get(&self.spec.app)
+                    .filter(|meta| !meta.prefs.is_empty())
+                    .map(|meta| tilolang_tilo::platform_apps::prefs_address(&meta.app)),
             };
             match &self.shell {
                 Some(shell) => host.runtime().set_foreign_invoker(shell.invoker(apis)),
@@ -4555,10 +4573,46 @@ struct Apis {
     /// The platform packages this window reads: their resources are no records here, and what a
     /// view changes of one runs where the session serves it, before the calling action goes on.
     platform: Rc<RefCell<Roots>>,
+    /// Where this app's own preferences are published (`settings/apps/<app>`), when it declares
+    /// any: a field set on them is that field's setter in the settings service.
+    prefs: Option<String>,
 }
 
 impl Invoker for Apis {
     fn invoke(&self, invocation: &Invocation) -> Invoked {
+        // The app's preferences are its section in the settings service
+        // (`settings/apps/<app>`): a control bound to one invokes that field's setter, the same
+        // change Settings makes, recorded in the settings' history. No app reaches another's.
+        if let Some(own) = self.prefs.as_deref() {
+            let app = own.strip_prefix("settings/apps/").unwrap_or(own).to_owned();
+            let target = match invocation {
+                Invocation::Action {
+                    target: Some(target),
+                    ..
+                }
+                | Invocation::Edit { target, .. } => Some(target),
+                _ => None,
+            };
+            if let Some(target) = target {
+                if let Some(refusal) =
+                    tilolang_tilo::platform_apps::refuse_foreign_prefs(&target.id_string(), &app)
+                {
+                    use tilolang_tilo::runtime::delegate::Invoked;
+                    return Invoked::Refused(refusal);
+                }
+                if target.id_string() == own
+                    && let Invocation::Edit { field, value, .. } = invocation
+                {
+                    use tilolang_tilo::runtime::delegate::Invoked;
+                    let (verb, arguments) =
+                        tilolang_tilo::platform_apps::prefs_setter(field, value);
+                    return match self.platform.borrow().invoke(own, &verb, &arguments) {
+                        Ok(()) => Invoked::Done(tilolang_tilo::runtime::Value::Unit),
+                        Err(refusal) => Invoked::Refused(refusal),
+                    };
+                }
+            }
+        }
         // A platform app's resource is answered by the session's services, and its refusal is
         // the calling action's result, not a change that lands later as a reading.
         if let Some((app, resource, action, tilo_actions::remote::InvokeArgument::Json(arguments))) =
