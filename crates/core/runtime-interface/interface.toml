@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one range for all of them: the image serves
 # every version from `oldest` to `version`.
 name = "runtime"
-version = 53
+version = 54
 version_const = "crates/core/runtime-interface/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 oldest_const = "crates/core/runtime-interface/src/lib.rs:OLDEST_RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
@@ -26,10 +26,9 @@ sources = [
     "crates/core/collab-types/src/artifact.rs",
     "crates/core/collab-types/src/presence/payload.rs",
     "crates/core/collab-types/src/presence/said.rs",
-    "crates/core/action-policy/src/presence/key.rs",
-    "crates/core/action-policy/src/presence/availability.rs",
+    "crates/platform/tilo-presence/src/key.rs",
+    "crates/platform/tilo-presence/src/availability.rs",
     "crates/core/collab-types/src/presence/bridged.rs",
-    "crates/core/collab-types/src/inbound.rs",
     "crates/core/collab-types/src/peer.rs",
     "crates/core/collab-types/src/history.rs",
     "crates/core/collab-types/src/op.rs",
@@ -48,7 +47,7 @@ sources = [
     "crates/core/action-policy/src/kind.rs",
     "crates/core/tilo-app-id/src/lib.rs",
     "crates/core/action-policy/src/grant.rs",
-    "crates/core/action-policy/src/presence/hue.rs",
+    "crates/platform/tilo-presence/src/hue.rs",
     "crates/core/actions/src/key.rs",
     "crates/core/actions/src/framework.rs",
     "crates/core/actions/src/entry.rs",
@@ -201,7 +200,6 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "Availability::away" = "#2 unit"
 "Availability::focusing" = "#1 unit"
 "Availability::idle" = "#3 unit"
-"AvatarBytes" = "tuple(Vec<u8>) transparent"
 "BackupsRoute" = "enum external"
 "BackupsRoute::overview" = "#0 unit"
 "BackupsRoute::restore" = "#1 unit"
@@ -278,9 +276,8 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "ContextUpdate::RecordsMoved" = "#4 tuple(Vec<String>)"
 "ContextUpdate::ResourcesArrived" = "#3 tuple(Vec<String>)"
 "ContextUpdate::Snapshot" = "#0 struct"
-"ContextUpdate::Snapshot.apps" = "#2 Vec<NamedApp>"
-"ContextUpdate::Snapshot.members" = "#0 Vec<Member>"
-"ContextUpdate::Snapshot.permissions" = "#1 Vec<String>"
+"ContextUpdate::Snapshot.apps" = "#1 Vec<NamedApp>"
+"ContextUpdate::Snapshot.permissions" = "#0 Vec<String>"
 "DirEntry" = "struct"
 "DirEntry.metadata" = "#1 Metadata"
 "DirEntry.name" = "#0 String"
@@ -351,8 +348,7 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "Event::Reading.reading" = "#2 Option<Vec<u8>>"
 "Event::Reading.resource" = "#0 String"
 "Event::Reading.revision" = "#1 u64"
-"Event::Resources" = "#5 tuple(Vec<u8>)"
-"Event::ShownActions" = "#6 tuple(Vec<ActionDecision>)"
+"Event::ShownActions" = "#5 tuple(Vec<ActionDecision>)"
 "Event::WorkspaceControl" = "#3 tuple(WorkspaceControlEvent)"
 "FirewallRoute" = "enum external"
 "FirewallRoute::overview" = "#0 unit"
@@ -1026,17 +1022,6 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "LiveActivityCall::Controls" = "#1 struct"
 "LiveActivityCall::Controls.after" = "#0 u64"
 "LiveActivityCall::Show" = "#0 tuple(Vec<u8>)"
-"Member" = "struct"
-"Member.administrator" = "#8 bool"
-"Member.avatar" = "#3 Option<AvatarBytes>"
-"Member.colour" = "#4 PresenceHue"
-"Member.grants" = "#9 u32"
-"Member.id" = "#0 MemberId"
-"Member.is_self" = "#6 bool"
-"Member.joined_at" = "#5 Option<u64>"
-"Member.name" = "#2 String"
-"Member.removed" = "#7 bool"
-"Member.role" = "#1 Option<Role>"
 "MemberId" = "enum external"
 "MemberId::agent" = "#1 struct"
 "MemberId::agent.id" = "#0 String"
@@ -1198,19 +1183,6 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "Presence.member" = "#5 Option<String>"
 "Presence.on_behalf" = "#4 Option<String>"
 "Presence.payload" = "#3 PeerPresencePayload"
-"PresenceHue" = "enum external"
-"PresenceHue::amber" = "#2 unit"
-"PresenceHue::blue" = "#8 unit"
-"PresenceHue::cyan" = "#6 unit"
-"PresenceHue::green" = "#4 unit"
-"PresenceHue::magenta" = "#10 unit"
-"PresenceHue::olive" = "#3 unit"
-"PresenceHue::orange" = "#1 unit"
-"PresenceHue::pink" = "#11 unit"
-"PresenceHue::red" = "#0 unit"
-"PresenceHue::sky" = "#7 unit"
-"PresenceHue::teal" = "#5 unit"
-"PresenceHue::violet" = "#9 unit"
 "PresenceKey" = "enum external"
 "PresenceKey::App" = "#3 struct"
 "PresenceKey::App.app" = "#0 AppKind"
@@ -1360,12 +1332,6 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "Response::MetadataWithPresentation.threshold" = "#5 u16"
 "Response::MetadataWithPresentation.total_shares" = "#6 u16"
 "Response::Signature" = "#1 tuple(Vec<u8>)"
-"Role" = "enum external"
-"Role::commenter" = "#1 unit"
-"Role::editor" = "#2 unit"
-"Role::moderator" = "#3 unit"
-"Role::owner" = "#4 unit"
-"Role::viewer" = "#0 unit"
 "Run" = "struct"
 "Run.action" = "#1 ClaimedAction"
 "Run.call" = "#4 Option<Box<SignedInvocation>>"
@@ -1409,13 +1375,11 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "SCHEMA_ASSERTIONS::type" = "word"
 "SCHEMA_ASSERTIONS::uniqueItems" = "word"
 "Service" = "enum external"
-"Service::AudioOutput" = "#0 unit"
-"Service::BrowserServiceSession" = "#2 unit"
-"Service::CommittedDocument" = "#4 unit"
-"Service::LocalFile" = "#3 unit"
-"Service::NativeMedia" = "#1 unit"
-"Service::RemoteAction" = "#5 unit"
-"Service::Resources" = "#6 unit"
+"Service::BrowserServiceSession" = "#0 unit"
+"Service::CommittedDocument" = "#2 unit"
+"Service::LocalFile" = "#1 unit"
+"Service::RemoteAction" = "#3 unit"
+"Service::Resources" = "#4 unit"
 "SettingsCall" = "enum external"
 "SettingsCall::Display" = "#2 struct"
 "SettingsCall::Display.command" = "#0 Vec<u8>"
@@ -1478,11 +1442,9 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "ShellCall::Workspaces" = "#1 unit"
 "ShellCall::Write" = "#2 struct"
 "ShellCall::Write.app" = "#1 String"
-"ShellCall::Write.changes" = "#6 Vec<u8>"
-"ShellCall::Write.document" = "#2 String"
-"ShellCall::Write.founding" = "#4 bool"
-"ShellCall::Write.readers" = "#3 Option<String>"
-"ShellCall::Write.snapshot" = "#5 bool"
+"ShellCall::Write.changes" = "#4 Vec<u8>"
+"ShellCall::Write.kind" = "#2 Option<String>"
+"ShellCall::Write.record" = "#3 String"
 "ShellCall::Write.workspace" = "#0 String"
 "ShellCall::Writes" = "#6 unit"
 "ShellChat" = "struct deny_unknown_fields"
@@ -1538,7 +1500,7 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "ShellReply::Vouched" = "#11 unit"
 "ShellReply::Workspaces" = "#1 tuple(Vec<String>)"
 "ShellReply::Writes" = "#5 tuple(Option<Vec<DocumentWritten>>)"
-"ShellReply::Written" = "#2 tuple(Result<ShellWrite, String>)"
+"ShellReply::Written" = "#2 tuple(Result<(), String>)"
 "ShellSelection" = "struct deny_unknown_fields"
 "ShellSelection.anchor" = "#0 String"
 "ShellSelection.composing" = "#2 u32"
@@ -1561,14 +1523,6 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "ShellWord.status" = "#4 Option<(String, bool)>"
 "ShellWord.user" = "#2 Option<String>"
 "ShellWord.wave" = "#8 Option<ShownWave>"
-"ShellWrite" = "struct"
-"ShellWrite.app_id" = "#1 String"
-"ShellWrite.author" = "#4 String"
-"ShellWrite.cluster_id" = "#2 String"
-"ShellWrite.document_id" = "#3 String"
-"ShellWrite.envelope" = "#6 Vec<u8>"
-"ShellWrite.peer" = "#0 u64"
-"ShellWrite.replayed" = "#5 bool"
 "ShownAction" = "struct"
 "ShownAction.action" = "#4 String"
 "ShownAction.app" = "#1 String"
@@ -1638,8 +1592,7 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "Topic::Context" = "#1 unit"
 "Topic::Invocations" = "#2 struct"
 "Topic::Invocations.stable_ids" = "#0 bool"
-"Topic::Resources" = "#4 tuple(Vec<u8>)"
-"Topic::ShownActions" = "#5 tuple(Vec<ShownAction>)"
+"Topic::ShownActions" = "#4 tuple(Vec<ShownAction>)"
 "Topic::WorkspaceControl" = "#3 struct"
 "Topic::WorkspaceControl.target_device" = "#0 [u8; 32]"
 "Turn" = "struct"

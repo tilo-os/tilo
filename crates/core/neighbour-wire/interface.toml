@@ -429,6 +429,7 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "RefusalReason::Revoked" = "#0 unit"
 "RetiredFlags" = "struct"
 "RetiredFlags.act_as_host" = "#0 bool"
+"RetiredFlags.administer" = "#2 bool"
 "RetiredFlags.read_all_workspaces" = "#1 bool"
 "RevocationEntry" = "struct deny_unknown_fields"
 "RevocationEntry.reason" = "#3 RevocationReason"
