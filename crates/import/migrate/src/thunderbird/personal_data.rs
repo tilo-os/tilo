@@ -173,3 +173,76 @@ fn sqlite(sidecar: Sidecar, bytes: &[u8]) -> io::Result<Option<String>> {
         Sidecar::Calendar => (!components.is_empty()).then(|| wrap_calendar(&components)),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_vcard_file_is_read_as_cards() {
+        let text = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:a\r\nFN:Ada\r\nEND:VCARD\r\n\r\nBEGIN:VCARD\r\nUID:b\r\nFN:Grace\r\nEND:VCARD\r\n";
+        let canonical = canonical(Sidecar::AddressBook, text.as_bytes())
+            .unwrap()
+            .expect("cards");
+        assert_eq!(canonical.matches("BEGIN:VCARD").count(), 2);
+        assert!(canonical.contains("FN:Grace"));
+    }
+
+    #[test]
+    fn an_ics_file_is_read_as_a_calendar() {
+        let text = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:e\r\nSUMMARY:Kept\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let canonical = canonical(Sidecar::Calendar, text.as_bytes())
+            .unwrap()
+            .expect("calendar");
+        assert!(canonical.starts_with("BEGIN:VCALENDAR"));
+        assert_eq!(canonical.matches("BEGIN:VEVENT").count(), 1);
+    }
+
+    #[test]
+    fn a_thunderbird_address_book_sqlite_is_converted_to_vcard() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("abook.sqlite");
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE cards(uid TEXT, card TEXT);
+                 INSERT INTO cards VALUES('one', 'BEGIN:VCARD\r\nUID:person@example.test\r\nFN:Person\r\nEND:VCARD\r\n');",
+            )
+            .unwrap();
+        drop(connection);
+        let bytes = std::fs::read(&database).unwrap();
+        let canonical = canonical(Sidecar::AddressBook, &bytes)
+            .unwrap()
+            .expect("cards");
+        assert!(canonical.contains("UID:person@example.test"));
+        assert!(canonical.contains("FN:Person"));
+    }
+
+    #[test]
+    fn a_thunderbird_calendar_sqlite_is_converted_to_ics() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("local.sqlite");
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE cal_events(icalString TEXT);
+                 INSERT INTO cal_events VALUES('BEGIN:VEVENT\r\nUID:kept@example.test\r\nSUMMARY:Kept\r\nEND:VEVENT');",
+            )
+            .unwrap();
+        drop(connection);
+        let bytes = std::fs::read(&database).unwrap();
+        let canonical = canonical(Sidecar::Calendar, &bytes)
+            .unwrap()
+            .expect("calendar");
+        assert!(canonical.contains("SUMMARY:Kept"));
+    }
+
+    #[test]
+    fn an_unusable_sidecar_is_not_understood() {
+        assert!(
+            canonical(Sidecar::AddressBook, b"selected address book")
+                .unwrap()
+                .is_none()
+        );
+    }
+}

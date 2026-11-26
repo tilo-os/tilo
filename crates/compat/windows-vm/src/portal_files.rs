@@ -431,3 +431,201 @@ fn valid_owner_component(value: &str) -> bool {
 fn portal_error(message: impl Into<String>) -> LaunchError {
     LaunchError::CapabilityBroker(message.into())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read as _, Write as _};
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    fn source(directory: &TempDir, name: &str, contents: &[u8]) -> File {
+        let path = directory.path().join(name);
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .unwrap();
+        file.write_all(contents).unwrap();
+        file.rewind().unwrap();
+        file
+    }
+
+    fn request(grant: PortalDocumentGrant) -> LaunchRequest {
+        LaunchRequest {
+            workspace_id: "workspace".to_string(),
+            application_id: "published.app".to_string(),
+            grants: crate::VmLaunchGrants {
+                portal_documents: vec![grant],
+                ..crate::VmLaunchGrants::default()
+            },
+        }
+    }
+
+    #[test]
+    fn portal_projections_follow_their_lease_mode_and_never_replaced_links() {
+        {
+            let temp = TempDir::new().unwrap();
+            let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
+            let grant = store
+                .register(
+                    "workspace",
+                    "published.app",
+                    source(&temp, "input", b"private"),
+                    PortalDocumentAccess::ReadOnly,
+                )
+                .unwrap();
+            let broker = PortalRailCapabilityBroker::new(store);
+            let lease = broker.materialize(&request(grant)).unwrap();
+            assert_eq!(lease.shares.len(), 1);
+            assert!(lease.shares[0].read_only);
+            assert!(
+                lease.shares[0]
+                    .host_path
+                    .starts_with(temp.path().join("leases").join(&lease.lease_id))
+            );
+            assert_eq!(
+                fs::read(lease.shares[0].host_path.join("document")).unwrap(),
+                b"private"
+            );
+            broker.revoke(&lease.lease_id);
+            assert!(!temp.path().join("leases").join(&lease.lease_id).exists());
+        }
+        {
+            let temp = TempDir::new().unwrap();
+            let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
+            let grant = store
+                .register(
+                    "workspace",
+                    "published.app",
+                    source(&temp, "input", b"private"),
+                    PortalDocumentAccess::ReadOnly,
+                )
+                .unwrap();
+            let broker = PortalRailCapabilityBroker::new(store);
+            let lease = broker.materialize(&request(grant)).unwrap();
+            assert!(lease.shares[0].read_only);
+            let document = lease.shares[0].host_path.join("document");
+            let mode = fs::metadata(&document).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o400);
+            assert_eq!(
+                mode & 0o222,
+                0,
+                "read-only projections must have no write bits"
+            );
+            broker.revoke(&lease.lease_id);
+        }
+        {
+            let temp = TempDir::new().unwrap();
+            let source_path = temp.path().join("input");
+            let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
+            let grant = store
+                .register(
+                    "workspace",
+                    "published.app",
+                    source(&temp, "input", b"before"),
+                    PortalDocumentAccess::ReadWrite,
+                )
+                .unwrap();
+            let broker = PortalRailCapabilityBroker::new(store);
+            let lease = broker.materialize(&request(grant)).unwrap();
+            fs::write(lease.shares[0].host_path.join("document"), b"after").unwrap();
+            broker.revoke(&lease.lease_id);
+            let mut contents = String::new();
+            File::open(source_path)
+                .unwrap()
+                .read_to_string(&mut contents)
+                .unwrap();
+            assert_eq!(contents, "after");
+        }
+        {
+            let temp = TempDir::new().unwrap();
+            let source_path = temp.path().join("input");
+            let unrelated_path = temp.path().join("unrelated");
+            fs::write(&unrelated_path, b"must-not-be-copied").unwrap();
+            let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
+            let grant = store
+                .register(
+                    "workspace",
+                    "published.app",
+                    source(&temp, "input", b"before"),
+                    PortalDocumentAccess::ReadWrite,
+                )
+                .unwrap();
+            let broker = PortalRailCapabilityBroker::new(Arc::clone(&store));
+            let lease = broker.materialize(&request(grant)).unwrap();
+            let projection = lease.shares[0].host_path.join("document");
+            fs::remove_file(&projection).unwrap();
+            std::os::unix::fs::symlink(&unrelated_path, &projection).unwrap();
+
+            assert!(store.revoke_checked(&lease.lease_id).is_err());
+            assert_eq!(fs::read(source_path).unwrap(), b"before");
+        }
+    }
+
+    #[test]
+    fn portal_handles_are_caller_scoped_one_shot_and_bounded() {
+        {
+            let temp = TempDir::new().unwrap();
+            let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
+            let grant = store
+                .register(
+                    "workspace-a",
+                    "published.app",
+                    source(&temp, "input", b"private"),
+                    PortalDocumentAccess::ReadOnly,
+                )
+                .unwrap();
+            let broker = PortalRailCapabilityBroker::new(store);
+            assert!(matches!(
+                broker.materialize(&request(grant)),
+                Err(LaunchError::CapabilityBroker(_))
+            ));
+        }
+        {
+            let temp = TempDir::new().unwrap();
+            let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
+            let grant = store
+                .register(
+                    "workspace",
+                    "published.app",
+                    source(&temp, "input", b"private"),
+                    PortalDocumentAccess::ReadOnly,
+                )
+                .unwrap();
+            let broker = PortalRailCapabilityBroker::new(store);
+            let first = broker.materialize(&request(grant.clone())).unwrap();
+            assert!(matches!(
+                broker.materialize(&request(grant)),
+                Err(LaunchError::CapabilityBroker(_))
+            ));
+            broker.revoke(&first.lease_id);
+        }
+        {
+            let temp = TempDir::new().unwrap();
+            let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
+            let broker = PortalRailCapabilityBroker::new(store);
+            let request = LaunchRequest {
+                workspace_id: "workspace".to_string(),
+                application_id: "published.app".to_string(),
+                grants: crate::VmLaunchGrants {
+                    portal_documents: (0..=MAX_PORTAL_DOCUMENTS_PER_LAUNCH)
+                        .map(|number| PortalDocumentGrant {
+                            handle: format!("doc-{number}"),
+                            access: PortalDocumentAccess::ReadOnly,
+                        })
+                        .collect(),
+                    ..crate::VmLaunchGrants::default()
+                },
+            };
+            assert!(matches!(
+                broker.materialize(&request),
+                Err(LaunchError::CapabilityBroker(message)) if message.contains("too many")
+            ));
+            assert!(!temp.path().join("leases").exists());
+        }
+    }
+}

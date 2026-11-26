@@ -1541,3 +1541,101 @@ fn page_path(pages: &[IncomingPage], page: &IncomingPage) -> String {
     path.reverse();
     path.join("/")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::writer::{Answer, Refused};
+
+    #[test]
+    fn a_note_an_earlier_run_imported_is_told_by_its_code() {
+        let imported: anyhow::Error = Refused::coded(
+            tilo_actions::codes::NOTE_ALREADY_IMPORTED,
+            "that note is imported already",
+        )
+        .into();
+        assert!(already_imported(&imported));
+        let other: anyhow::Error =
+            Refused::coded("something_else", "that note is imported already").into();
+        assert!(
+            !already_imported(&other),
+            "the app's words alone decide nothing"
+        );
+    }
+
+    #[test]
+    fn tasks_answers_name_the_issue_they_made() {
+        let id = "0f0e0d0c-0b0a-4908-8706-050403020100";
+        let answered = |value: Value| Answer::of(Some(value));
+        // What a tilolang action returns for the resource it made: the resource by its id.
+        assert_eq!(
+            created_id(&answered(json!({
+                "app": "so.tilo.tasks",
+                "kind": "tl.so.tilo.tasks.Task",
+                "id": id,
+                "label": "",
+            })))
+            .as_deref(),
+            Some(id)
+        );
+        // What an action that said it made items answers: per item, its id and its address.
+        assert_eq!(
+            created_id(&answered(json!({
+                "made": [{"id": id, "address": format!("tl:so.tilo.tasks:{id}")}]
+            })))
+            .as_deref(),
+            Some(id)
+        );
+        assert_eq!(
+            created_id(&answered(json!({"id": id}))).as_deref(),
+            Some(id)
+        );
+        assert_eq!(created_id(&Answer::of(None)), None);
+    }
+
+    #[test]
+    fn an_issue_keeps_who_opened_it_where_and_when() {
+        let author = IncomingAuthor {
+            name: "Grace Hopper".into(),
+            handle: Some("grace@example.com".into()),
+        };
+        let origin = origin_of(
+            Some(&author),
+            "Linear",
+            "https://linear.example/acme/issue/ENG-1/set-up-ci",
+            Some("ENG-1"),
+            "2025-09-01T10:00:00.000Z",
+            "2025-08-01T10:00:00.000Z",
+        )
+        .unwrap();
+        assert_eq!(origin["author"], "Grace Hopper");
+        assert_eq!(origin["handle"], "grace@example.com");
+        assert_eq!(origin["reference"], "ENG-1");
+        assert_eq!(origin["created_ms"], 1_756_720_800_000_i64);
+        assert!(
+            origin["updated_ms"].is_null(),
+            "a change dated before it was written is not kept"
+        );
+        assert!(origin_of(None, "Linear", "", None, "", "").is_none());
+        assert_eq!(
+            reference_of("https://linear.example/acme/issue/ENG-12/a-title"),
+            "ENG-12"
+        );
+        assert_eq!(
+            reference_of("https://linear.example/acme/issue/ENG-12"),
+            "ENG-12"
+        );
+        assert_eq!(
+            reference_of("https://forge.example/acme/app/issues/12"),
+            "app#12"
+        );
+        assert_eq!(service_name(FORGEJO), "Forgejo");
+    }
+
+    #[test]
+    fn a_page_is_kept_under_the_same_note_every_run() {
+        assert_eq!(note_for("outline", "doc-1"), note_for("outline", "doc-1"));
+        assert_ne!(note_for("outline", "doc-1"), note_for("outline", "doc-2"));
+        assert!(uuid::Uuid::parse_str(&note_for("outline", "doc-1")).is_ok());
+    }
+}

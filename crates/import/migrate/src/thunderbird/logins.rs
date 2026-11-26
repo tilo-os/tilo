@@ -358,3 +358,41 @@ fn element(bytes: &[u8]) -> Option<(u8, &[u8], &[u8])> {
     let (content, rest) = rest.split_at_checked(length)?;
     Some((tag, content, rest))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_sample_profiles_saved_passwords_are_read_and_matched_to_their_servers() {
+        let dir = tempfile::tempdir().unwrap();
+        super::super::fixture::write_sample_profile(dir.path());
+        let profile = super::super::discover(dir.path()).unwrap().remove(0);
+        let logins = saved_logins(dir.path(), &profile.source_id).unwrap();
+        assert_eq!(
+            password_for(&logins, "imap", "imap.example.com", "ada@example.com")
+                .map(|password| password.as_str()),
+            Some(super::super::fixture::WORK_PASSWORD)
+        );
+        assert!(password_for(&logins, "imap", "imap.example.com", "someone@else").is_none());
+        assert!(!format!("{logins:?}").contains(super::super::fixture::WORK_PASSWORD));
+    }
+
+    #[test]
+    fn a_primary_password_locks_them() {
+        let dir = tempfile::tempdir().unwrap();
+        super::super::fixture::write_sample_profile(dir.path());
+        let profile = super::super::discover(dir.path()).unwrap().remove(0);
+        let key4 = std::fs::read(
+            dir.path()
+                .join(".thunderbird/fx8r2l9p.default-release/key4.db"),
+        )
+        .unwrap();
+        assert!(logins_key(&key4, b"").is_ok());
+        assert_eq!(
+            logins_key(&key4, b"not the primary password").err(),
+            Some(LoginsError::Locked)
+        );
+        drop(profile);
+    }
+}

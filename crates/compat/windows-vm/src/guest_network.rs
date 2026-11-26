@@ -385,6 +385,11 @@ impl ActiveTunnels {
             }
         }
     }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.tunnels.lock().map_or(0, |tunnels| tunnels.len())
+    }
 }
 
 /// An active CONNECT tunnel is removed even when either copy path errors or
@@ -456,4 +461,373 @@ async fn write_response(stream: &mut tokio::net::TcpStream, status: &str) -> io:
         stream.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").as_bytes()),
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn a_binding_is_kept_private_and_served_again_on_its_own_token() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let binding = GuestNetworkBinding {
+            endpoint: "127.0.0.1:1234".parse().unwrap(),
+            token: "a".repeat(64),
+        };
+        binding.persist(directory.path()).unwrap();
+        let kept = directory
+            .path()
+            .join(launcher::egress_proxy::APPLIANCE_NETWORK);
+        assert_eq!(
+            std::fs::metadata(&kept).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "the token is this person's alone"
+        );
+        assert_eq!(
+            GuestNetworkBinding::read(directory.path()).unwrap(),
+            binding
+        );
+
+        let proxy = GuestNetworkProxy::start_at_with_token(
+            "127.0.0.1:0".parse().unwrap(),
+            &["example.test".into()],
+            false,
+            binding.token.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            proxy.binding().token,
+            binding.token,
+            "the guest's token is served"
+        );
+        assert!(matches!(
+            GuestNetworkProxy::start_at_with_token(
+                "127.0.0.1:0".parse().unwrap(),
+                &["example.test".into()],
+                false,
+                "not a token".into()
+            ),
+            Err(GuestNetworkError::InvalidToken)
+        ));
+        drop(proxy);
+        GuestNetworkBinding::forget(directory.path());
+        assert!(GuestNetworkBinding::read(directory.path()).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn persist_creates_private_stage_under_zero_umask_and_keeps_old_binding_on_failed_replace() {
+        tilo_test_env::in_own_process(
+            module_path!(),
+            "persist_creates_private_stage_under_zero_umask_and_keeps_old_binding_on_failed_replace",
+            || {
+                use std::os::unix::fs::PermissionsExt as _;
+                use tilo_files::native::atomic::test_support::{
+                    Checkpoint, with_failure, with_observer,
+                };
+                use tilo_test_env::file_mode::{on_a_thread_without_chmod, with_zero_umask};
+
+                with_zero_umask(|| {
+                    let dir = tempfile::tempdir().unwrap();
+                    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
+                        .unwrap();
+                    let path = dir.path().join(launcher::egress_proxy::APPLIANCE_NETWORK);
+                    let first = GuestNetworkBinding {
+                        endpoint: "127.0.0.1:1234".parse().unwrap(),
+                        token: "a".repeat(64),
+                    };
+                    let second = GuestNetworkBinding {
+                        endpoint: "127.0.0.1:5678".parse().unwrap(),
+                        token: "b".repeat(64),
+                    };
+
+                    // With umask 0 and chmod/fchmod neutralized, neither the writer nor the
+                    // atomic backend's post-open fchmod can narrow the inode: the stage can
+                    // only be 0600 if openat created it with 0600.
+                    let observed = Arc::new(Mutex::new(None));
+                    let seen = Arc::clone(&observed);
+                    let existed_at_stage = Arc::new(AtomicBool::new(false));
+                    let flag = Arc::clone(&existed_at_stage);
+                    let target = path.clone();
+                    on_a_thread_without_chmod(|| {
+                        with_observer(
+                            move |event| {
+                                if event.checkpoint == Checkpoint::StageCreated {
+                                    let mode =
+                                        event.stage.as_ref().unwrap().metadata.permissions().mode()
+                                            & 0o777;
+                                    *seen.lock().unwrap() = Some(mode);
+                                    flag.store(target.exists(), Ordering::SeqCst);
+                                }
+                            },
+                            || first.persist(dir.path()).unwrap(),
+                        );
+                    });
+                    assert_eq!(*observed.lock().unwrap(), Some(0o600));
+                    assert!(!existed_at_stage.load(Ordering::SeqCst));
+                    assert_eq!(
+                        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                        0o600
+                    );
+                    assert_eq!(
+                        std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+                        0o755
+                    );
+
+                    let failed =
+                        with_failure(Checkpoint::BeforePublish, || second.persist(dir.path()));
+                    assert!(failed.is_err());
+                    assert_eq!(GuestNetworkBinding::read(dir.path()).unwrap(), first);
+                    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+                });
+            },
+        );
+    }
+
+    #[test]
+    fn guest_network_leases_parse_strictly_and_hide_their_tokens() {
+        {
+            assert!(matches!(
+                GuestNetworkProxy::start_at("127.0.0.1:0".parse().unwrap(), &[], false),
+                Err(GuestNetworkError::EmptyAllowlist)
+            ));
+            assert!(matches!(
+                GuestNetworkProxy::start_at(
+                    "127.0.0.1:0".parse().unwrap(),
+                    &["bad host".into()],
+                    false
+                ),
+                Err(GuestNetworkError::InvalidHost(_))
+            ));
+        }
+        {
+            // An address is not a host, for the guest as for apps and
+            // environments.
+            for address in ["10.0.0.5", "[::1]", "192.168.1.1"] {
+                assert!(
+                    matches!(
+                        GuestNetworkProxy::start_at(
+                            "127.0.0.1:0".parse().unwrap(),
+                            &[address.into()],
+                            false
+                        ),
+                        Err(GuestNetworkError::InvalidHost(ref host)) if host == address
+                    ),
+                    "{address} must not be leased"
+                );
+            }
+            assert_eq!(
+                lease_policy(&["*.example.test".into()]).unwrap(),
+                EgressPolicy::from_grants([".example.test"])
+            );
+        }
+        {
+            let proxy = GuestNetworkProxy::start_at(
+                "127.0.0.1:0".parse().unwrap(),
+                &["example.test".into()],
+                false,
+            )
+            .unwrap();
+            assert!(!format!("{:?}", proxy.binding()).contains(&proxy.binding().token));
+            assert_eq!(
+                proxy.binding().endpoint.ip(),
+                IpAddr::V4(Ipv4Addr::LOCALHOST)
+            );
+        }
+        {
+            assert!(
+                parse_connect(
+                    "CONNECT example.test:443 HTTP/1.1\r\nProxy-Authorization: Bearer aaaa\r\n\r\n"
+                )
+                .is_none()
+            );
+            assert_eq!(
+                parse_connect(&format!(
+                    "CONNECT example.test:443 HTTP/1.1\r\nProxy-Authorization: Bearer {}\r\n\r\n",
+                    "a".repeat(64)
+                ))
+                .map(|value| value.0),
+                Some("example.test".into())
+            );
+        }
+    }
+
+    fn connected_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        (client, server)
+    }
+
+    #[test]
+    fn tunnels_register_carry_bytes_and_close_on_revocation() {
+        {
+            let tunnels = ActiveTunnels::default();
+            let (client, server) = connected_pair();
+            let shutdown = AtomicBool::new(false);
+            let registration = tunnels.register(client, server, &shutdown).unwrap();
+            assert_eq!(tunnels.len(), 1);
+            drop(registration);
+            assert_eq!(tunnels.len(), 0, "completed tunnels retain no descriptors");
+        }
+        {
+            let tunnels = ActiveTunnels::default();
+            let shutdown = AtomicBool::new(true);
+            let (client, server) = connected_pair();
+            assert!(tunnels.register(client, server, &shutdown).is_err());
+            assert_eq!(tunnels.len(), 0);
+        }
+        {
+            let service = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = service.local_addr().unwrap().port();
+            let proxy = GuestNetworkProxy::start_at(
+                "127.0.0.1:0".parse().unwrap(),
+                &["localhost".into()],
+                false,
+            )
+            .unwrap();
+            let mut client = TcpStream::connect(proxy.binding().endpoint).unwrap();
+            client
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            send_connect(&mut client, port, &proxy.binding().token);
+            assert!(read_response(&mut client).starts_with("HTTP/1.1 200"));
+            let (mut upstream, _) = service.accept().unwrap();
+            upstream
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+
+            client.write_all(b"ping").unwrap();
+            let mut buf = [0_u8; 4];
+            upstream.read_exact(&mut buf).unwrap();
+            assert_eq!(&buf, b"ping");
+            upstream.write_all(b"pong").unwrap();
+            client.read_exact(&mut buf).unwrap();
+            assert_eq!(&buf, b"pong");
+
+            proxy.revoke();
+            let mut byte = [0_u8; 1];
+            match client.read(&mut byte) {
+                Ok(0) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::ConnectionReset | io::ErrorKind::BrokenPipe
+                    ) => {}
+                result => panic!("active tunnel survived revoke: {result:?}"),
+            }
+        }
+        {
+            let proxy = GuestNetworkProxy::start_at(
+                "127.0.0.1:0".parse().unwrap(),
+                &["example.test".into()],
+                false,
+            )
+            .unwrap();
+            let (client, mut peer) = connected_pair();
+            let _registration = proxy
+                .active_connections
+                .register(client, peer.try_clone().unwrap(), &proxy.shutdown)
+                .unwrap();
+            proxy.revoke();
+            peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            let mut byte = [0_u8; 1];
+            match peer.read(&mut byte) {
+                Ok(0) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::ConnectionReset | io::ErrorKind::BrokenPipe
+                    ) => {}
+                result => panic!("active tunnel survived revoke: {result:?}"),
+            }
+        }
+    }
+
+    fn send_connect(stream: &mut TcpStream, port: u16, token: &str) {
+        stream
+            .write_all(
+                format!(
+                    "CONNECT localhost:{port} HTTP/1.1\r\n\
+                     Proxy-Authorization: Bearer {token}\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+    }
+
+    /// Connections waiting to be accepted by the IPv4 loopback listener on
+    /// `port`, as the kernel counts them.
+    fn accept_queue(port: u16) -> Option<u32> {
+        let table = std::fs::read_to_string("/proc/net/tcp").ok()?;
+        let local = format!("0100007F:{port:04X}");
+        table.lines().skip(1).find_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            // A listening socket ("0A") counts its accept queue as rx_queue.
+            (fields.get(1) == Some(&local.as_str()) && fields.get(3) == Some(&"0A"))
+                .then(|| fields.get(4)?.split_once(':'))
+                .flatten()
+                .and_then(|(_, queued)| u32::from_str_radix(queued, 16).ok())
+        })
+    }
+
+    fn read_response(stream: &mut TcpStream) -> String {
+        let mut head = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).unwrap();
+            head.push(byte[0]);
+        }
+        String::from_utf8(head).unwrap()
+    }
+
+    #[test]
+    fn connections_past_the_limit_wait_for_a_free_slot() {
+        let service = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = service.local_addr().unwrap().port();
+        let proxy = GuestNetworkProxy::start_limited(
+            "127.0.0.1:0".parse().unwrap(),
+            &["localhost".into()],
+            false,
+            1,
+            None,
+        )
+        .unwrap();
+        let token = proxy.binding().token.clone();
+
+        let mut first = TcpStream::connect(proxy.binding().endpoint).unwrap();
+        first
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .unwrap();
+        send_connect(&mut first, port, &token);
+        assert!(read_response(&mut first).starts_with("HTTP/1.1 200"));
+        let (held, _) = service.accept().unwrap();
+
+        let mut second = TcpStream::connect(proxy.binding().endpoint).unwrap();
+        send_connect(&mut second, port, &token);
+        let relay_port = proxy.binding().endpoint.port();
+        tilo_test_env::wait_until("the second connection to wait in the backlog", || {
+            accept_queue(relay_port) == Some(1)
+        });
+        second.set_nonblocking(true).unwrap();
+        let mut byte = [0_u8; 1];
+        match second.read(&mut byte) {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            result => panic!("a connection past the limit was served: {result:?}"),
+        }
+        second.set_nonblocking(false).unwrap();
+
+        drop(first);
+        drop(held);
+        second
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .unwrap();
+        assert!(read_response(&mut second).starts_with("HTTP/1.1 200"));
+    }
 }

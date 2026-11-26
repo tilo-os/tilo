@@ -437,3 +437,159 @@ pub enum ExecutionError {
     #[error("sandbox process failed: {0}")]
     Io(#[from] std::io::Error),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A real program's stderr ends in Wine's own diagnostics more often than in its reason.
+    #[test]
+    fn what_a_program_said_is_its_own_words_not_wines() {
+        let lines = [
+            "Unable to open key file: no such file",
+            "0024:fixme:kernelbase:AppPolicyGetProcessTerminationMethod FFFFFFFFFFFFFFFA",
+            "00a4:err:module:loader_init Importing dlls failed, status c0000135",
+            "",
+        ]
+        .map(str::to_owned);
+        assert_eq!(
+            last_words(&lines).as_deref(),
+            Some("Unable to open key file: no such file")
+        );
+        assert_eq!(last_words(&lines[1..]), None);
+        let said = ["error: fixme: the file is missing".to_owned()];
+        assert_eq!(last_words(&said).as_deref(), Some(said[0].as_str()));
+    }
+
+    /// What the graphics stack under Wine prints is no reason a program stopped: a program that
+    /// quit and said nothing of its own says nothing, and one that failed says its own last line
+    /// with the warnings around it.
+    #[test]
+    fn a_graphics_warning_is_no_reason_a_program_stopped() {
+        let warnings = [
+            "MESA-LOADER: failed to open swrast: /usr/lib64/dri/swrast_dri.so: cannot open shared object file",
+            "MESA: error: ZINK: failed to choose pdev",
+            "dzn: D3D12CreateDevice failed with 0x80070005",
+            "err:vulkan:wine_vk_init Failed to load Wine graphics driver.",
+            "WARNING: lavapipe is not a conformant Vulkan implementation, testing use only.",
+            "wine: created the configuration directory '/var/home/tilo/.wine'",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        assert_eq!(last_words(&warnings), None, "no reason, only diagnostics");
+
+        let quit = ExecutionOutcome::ended(Some(0), false, &warnings, &[]);
+        assert!(quit.success && quit.said.is_none(), "{quit:?}");
+
+        let mut failed = warnings;
+        failed.push("Unable to open key file: no such file".into());
+        let end = ExecutionOutcome::ended(Some(3), true, &failed, &[]);
+        assert!(!end.success);
+        assert_eq!(
+            end.said.as_deref(),
+            Some("Unable to open key file: no such file"),
+            "the program's own last line, not the warnings"
+        );
+    }
+
+    #[test]
+    fn a_sandbox_with_sound_and_a_network_proxy_starts_after_both() {
+        let bwrap_argv = vec!["--die-with-parent".to_owned()];
+        let (program, args) = sandbox_program(None, None, false, &bwrap_argv);
+        assert_eq!(program, std::path::Path::new("/usr/bin/bwrap"));
+        assert_eq!(args, ["--die-with-parent"]);
+        let lease = std::path::Path::new("/lease");
+        let (program, args) = sandbox_program(None, Some(lease), false, &bwrap_argv);
+        assert_eq!(program, std::path::Path::new(crate::plan::TILO_LAUNCHER));
+        assert_eq!(
+            args,
+            [
+                "windows-audio",
+                "--graph",
+                "/lease",
+                "--",
+                "/usr/bin/bwrap",
+                "--die-with-parent"
+            ]
+        );
+        // The display is added to the sandbox's own arguments, past the audio graph's.
+        let (program, args) = sandbox_program(None, Some(lease), true, &bwrap_argv);
+        assert_eq!(program, std::path::Path::new(crate::plan::TILO_LAUNCHER));
+        assert_eq!(
+            args,
+            [
+                "windows-x11-sandbox",
+                "--",
+                crate::plan::TILO_LAUNCHER,
+                "windows-audio",
+                "--graph",
+                "/lease",
+                "--",
+                "/usr/bin/bwrap",
+                "--die-with-parent"
+            ]
+        );
+        let proxy = crate::plan::NetworkProxy {
+            dir: "/lease/netproxy".into(),
+            control: "/keeper/network-proxy-control".into(),
+        };
+        let (program, args) = sandbox_program(Some(&proxy), Some(lease), false, &bwrap_argv);
+        assert_eq!(program, std::path::Path::new(crate::plan::TILO_LAUNCHER));
+        assert_eq!(
+            args,
+            [
+                "windows-network",
+                "--dir",
+                "/lease/netproxy",
+                "--control",
+                "/keeper/network-proxy-control",
+                "--",
+                crate::plan::TILO_LAUNCHER,
+                "windows-audio",
+                "--graph",
+                "/lease",
+                "--",
+                "/usr/bin/bwrap",
+                "--die-with-parent"
+            ]
+        );
+        let (_, args) = sandbox_program(None, None, true, &bwrap_argv);
+        assert_eq!(
+            args,
+            [
+                "windows-x11-sandbox",
+                "--",
+                "/usr/bin/bwrap",
+                "--die-with-parent"
+            ]
+        );
+    }
+
+    #[test]
+    fn execution_identity_is_fixed_and_fails_closed_when_changed() {
+        {
+            for (uid, gid) in [(0, 0), (1000, 2000), (u32::MAX, u32::MAX)] {
+                let files = identity_files(uid, gid);
+                assert_eq!(
+                    files[0].1,
+                    format!(
+                        "tilo:x:{uid}:{gid}:Tilo capsule:/run/tilo/capsule/home:/usr/bin/nologin\n"
+                    )
+                );
+                assert_eq!(files[1].1, format!("tilo:x:{gid}:\n"));
+                assert_eq!(files[0].2, PASSWD_CHILD_FD);
+                assert_eq!(files[1].2, GROUP_CHILD_FD);
+            }
+        }
+        {
+            assert!(validate_identity_uid(1000, 1000).is_ok());
+            assert!(matches!(
+                validate_identity_uid(1000, 0),
+                Err(ExecutionError::IdentityMismatch {
+                    planned: 1000,
+                    effective: 0
+                })
+            ));
+        }
+    }
+}

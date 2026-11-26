@@ -186,3 +186,30 @@ pub(crate) fn random_media_token() -> String {
     UnwrapErr(SysRng).fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use tilo_test_env::idle::{assert_stays_asleep, spawned_thread};
+
+    #[test]
+    fn idle_http_accept_thread_sleeps_without_clients() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let receiver = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        let ((port, thread), tid) = spawned_thread("tilo-proj-http", || {
+            start_http_server(
+                std::env::temp_dir(),
+                stop.clone(),
+                receiver,
+                "token".to_owned(),
+                Arc::new(MediaTelemetry::default()),
+            )
+            .expect("HTTP server")
+        });
+        assert_stays_asleep(&tid, "projection HTTP accept");
+        stop.store(true, Ordering::Release);
+        wake_http_listener(receiver, port);
+        thread.join().expect("join HTTP server");
+    }
+}

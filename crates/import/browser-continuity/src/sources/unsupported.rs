@@ -77,3 +77,28 @@ fn unavailable() -> io::Error {
         "Browser source capture is unavailable on this platform",
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_backend_never_captures_sources() {
+        assert!(!super::super::supported());
+        let profile = GrantedProfile { _private: () };
+        assert_eq!(
+            parse_chromium_bookmarks(&profile).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            parse_chromium_history_bundle(&profile).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            parse_firefox_places_selected_bundle(&profile, true, true)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Unsupported
+        );
+    }
+}

@@ -142,3 +142,23 @@ fn review(home: &Path, source: &str) -> Result<Review> {
         unreadable,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_home_lists_its_hidden_files_and_leaves_its_caches_out() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".config/app")).unwrap();
+        std::fs::write(home.path().join(".config/app/settings.ini"), "x=1").unwrap();
+        std::fs::write(home.path().join(".bashrc"), "alias l=ls").unwrap();
+        std::fs::create_dir_all(home.path().join(".cache/big")).unwrap();
+        std::fs::create_dir_all(home.path().join("Documents")).unwrap();
+        let review = review(home.path(), "settings").unwrap();
+        let keys: Vec<&str> = review.items.iter().map(|item| item.key.as_str()).collect();
+        assert_eq!(keys, [".bashrc", ".config"]);
+        assert_eq!(review.items[1].count, 1);
+        assert!(review.chosen().is_empty());
+    }
+}

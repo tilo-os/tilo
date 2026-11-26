@@ -381,3 +381,57 @@ fn keyring_key(profile: &BrowserProfile) -> Option<Zeroizing<[u8; 16]>> {
 fn keyring_key(_: &BrowserProfile) -> Option<Zeroizing<[u8; 16]>> {
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_firefox_index_names_each_profile_and_where_it_is() {
+        let ini = "[Install4F96D1932A9F858E]\nDefault=x.default-release\n\n\
+                   [Profile1]\nName=default\nIsRelative=1\nPath=y.default\n\n\
+                   [Profile0]\nName=default-release\nIsRelative=0\nPath=/data/ff\n\n[General]\nVersion=2\n";
+        assert_eq!(
+            firefox_sections(ini),
+            [
+                ("default".to_owned(), "y.default".to_owned(), Some(true)),
+                (
+                    "default-release".to_owned(),
+                    "/data/ff".to_owned(),
+                    Some(false)
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_chromium_profiles_v10_passwords_open_with_chromiums_fixed_key() {
+        let home = tempfile::tempdir().unwrap();
+        let profile = home.path().join(".config/chromium/Default");
+        std::fs::create_dir_all(&profile).unwrap();
+        let connection = rusqlite::Connection::open(profile.join("Login Data")).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE logins (origin_url TEXT, username_value TEXT, \
+                 password_value BLOB, blacklisted_by_user INTEGER);",
+            )
+            .unwrap();
+        let key = tilo_seal::compat::chromium_oscrypt_key(b"peanuts");
+        let mut sealed = b"v10".to_vec();
+        sealed.extend(tilo_seal::compat::chromium_oscrypt_ciphertext(&key, b"hunter2").unwrap());
+        connection
+            .execute(
+                "INSERT INTO logins VALUES ('https://example.com/', 'ada', ?1, 0)",
+                [sealed],
+            )
+            .unwrap();
+        drop(connection);
+        let found = profiles(home.path(), &home.path().join(".config"));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].label, "Chromium · Default");
+        let logins = saved_logins(&found[0]).unwrap();
+        assert_eq!(logins.len(), 1);
+        assert_eq!(logins[0].username, "ada");
+        assert_eq!(logins[0].password.as_str(), "hunter2");
+    }
+}

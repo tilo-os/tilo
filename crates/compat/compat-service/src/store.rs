@@ -1216,3 +1216,447 @@ pub enum CapsuleError {
     #[error("capsule state is invalid: {0}")]
     Json(#[from] serde_json::Error),
 }
+
+#[cfg(test)]
+mod tests {
+    use compat_catalogue::{Architecture, MatchKind, Runtime, SecurityProfileRef};
+    use std::io::{SeekFrom, Write};
+    use std::os::unix::fs::symlink;
+    use tempfile::TempDir;
+
+    use super::*;
+
+    fn plan() -> LaunchPlan {
+        LaunchPlan {
+            record_id: Some("example".to_string()),
+            match_kind: MatchKind::Executable,
+            runtime: Runtime {
+                id: "example".to_string(),
+                layer: Layer::Wine,
+            },
+            runner: Runner::new("wine", "11.0").unwrap(),
+            settings: RunnerSettings {
+                architecture: Architecture::Win64,
+                ..RunnerSettings::default()
+            },
+            security_profile: SecurityProfileRef::new("windows-app").unwrap(),
+            proton_recipe: None,
+            compatibility_grade: None,
+        }
+    }
+
+    #[test]
+    fn prefix_state_and_c_mappings_are_managed_without_following_links() {
+        {
+            let directory = TempDir::new().unwrap();
+            let store = CapsuleStore::new(directory.path()).unwrap();
+            let state = store.ensure_for_plan(&plan()).unwrap();
+            assert!(store.load(&state.id).unwrap().is_some());
+            assert!(store.prefix_path(&state.id).join("drive_c").is_dir());
+            assert_eq!(
+                fs::read_link(store.prefix_path(&state.id).join("dosdevices/c:")).unwrap(),
+                PathBuf::from("../drive_c")
+            );
+            assert_eq!(
+                fs::read_link(store.prefix_path(&state.id).join("dosdevices/q:")).unwrap(),
+                PathBuf::from(SANDBOX_FILES_ROOT)
+            );
+            assert_eq!(
+                fs::read_link(store.prefix_path(&state.id).join("dosdevices/w:")).unwrap(),
+                PathBuf::from(RUNTIME_DRIVE_ROOT),
+                "Wine finds its shipped Mono and its 32-bit DLLs through a drive"
+            );
+            assert!(!store.prefix_path(&state.id).join("state.json").exists());
+        }
+        {
+            let directory = TempDir::new().unwrap();
+            let store = CapsuleStore::new(directory.path()).unwrap();
+            let state = store.ensure_for_plan(&plan()).unwrap();
+            let prefix = store.prefix_path(&state.id);
+            fs::write(prefix.join("drive_c/document.txt"), "retained").unwrap();
+            fs::remove_file(prefix.join("dosdevices/c:")).unwrap();
+            store.ensure_for_plan(&plan()).unwrap();
+            assert_eq!(
+                fs::read_link(prefix.join("dosdevices/c:")).unwrap(),
+                PathBuf::from("../drive_c")
+            );
+            assert_eq!(
+                fs::read_to_string(prefix.join("drive_c/document.txt")).unwrap(),
+                "retained"
+            );
+        }
+        {
+            for replacement in ["symlink", "file", "directory"] {
+                let directory = TempDir::new().unwrap();
+                let store = CapsuleStore::new(directory.path()).unwrap();
+                let state = store.ensure_for_plan(&plan()).unwrap();
+                let mapping = store.prefix_path(&state.id).join("dosdevices/c:");
+                fs::remove_file(&mapping).unwrap();
+                match replacement {
+                    "symlink" => symlink("/outside", &mapping).unwrap(),
+                    "file" => fs::write(&mapping, "retained").unwrap(),
+                    _ => fs::create_dir(&mapping).unwrap(),
+                }
+                assert!(matches!(
+                    store.ensure_for_plan(&plan()),
+                    Err(CapsuleError::ManagedDriveCollision("C:"))
+                ));
+                match replacement {
+                    "symlink" => {
+                        assert_eq!(fs::read_link(&mapping).unwrap(), Path::new("/outside"));
+                    }
+                    "file" => assert_eq!(fs::read_to_string(&mapping).unwrap(), "retained"),
+                    _ => assert!(mapping.is_dir()),
+                }
+            }
+        }
+        {
+            let directory = TempDir::new().unwrap();
+            let outside = TempDir::new().unwrap();
+            fs::write(outside.path().join("value"), "retained").unwrap();
+            let store = CapsuleStore::new(directory.path()).unwrap();
+            let state = store.ensure_for_plan(&plan()).unwrap();
+            let drive = store.prefix_path(&state.id).join("drive_c");
+            fs::remove_dir(&drive).unwrap();
+            symlink(outside.path(), &drive).unwrap();
+            assert!(store.ensure_for_plan(&plan()).is_err());
+            assert_eq!(
+                fs::read_to_string(outside.path().join("value")).unwrap(),
+                "retained"
+            );
+            assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 1);
+        }
+        {
+            let program = CapsuleProgram {
+                id: "bad".to_string(),
+                display_name: "Bad".to_string(),
+                prefix_relative_executable: PathBuf::from("../host.exe"),
+                query: ApplicationQuery::default(),
+                kind: ProgramKind::Application,
+                arguments: Vec::new(),
+                opens_with: None,
+            };
+            assert!(matches!(
+                program.validate(),
+                Err(CapsuleError::InvalidExecutable)
+            ));
+        }
+    }
+
+    /// What setup installed is listed; the stand-ins Wine writes into every prefix are not.
+    #[test]
+    fn programs_are_what_setup_installed_not_what_wine_placed() {
+        let directory = TempDir::new().unwrap();
+        let store = CapsuleStore::new(directory.path()).unwrap();
+        let state = store.ensure_for_plan(&plan()).unwrap();
+        let program_files = store.prefix_path(&state.id).join("drive_c/Program Files");
+        let mut placeholder = b"MZ".to_vec();
+        placeholder.resize(0x40, 0);
+        placeholder.extend_from_slice(b"Wine builtin DLL\0\0\0\0in DOS mode");
+        for (folder, name, bytes) in [
+            ("Internet Explorer", "iexplore.exe", placeholder.clone()),
+            ("Windows NT/Accessories", "wordpad.exe", placeholder.clone()),
+            ("../windows/system32", "uninstaller.exe", placeholder),
+            (
+                "Notepad++",
+                "notepad++.exe",
+                b"MZ an installed program".to_vec(),
+            ),
+        ] {
+            fs::create_dir_all(program_files.join(folder)).unwrap();
+            fs::write(program_files.join(folder).join(name), bytes).unwrap();
+        }
+        // The Start menu is what a person sees: Notepad++'s shortcut names its program, and
+        // Wine's own shortcut names nothing a setup installed.
+        let start_menu = store
+            .prefix_path(&state.id)
+            .join("drive_c/users/root/AppData/Roaming/Microsoft/Windows/Start Menu/Programs");
+        fs::create_dir_all(&start_menu).unwrap();
+        fs::write(
+            start_menu.join("Notepad++.lnk"),
+            shortcut_to(r"C:\Program Files\Notepad++\notepad++.exe"),
+        )
+        .unwrap();
+        fs::write(
+            start_menu.join("Notepad.lnk"),
+            shortcut_to(r"C:\windows\notepad.exe"),
+        )
+        .unwrap();
+        let (_, uninstaller) = store
+            .discover_programs(&state.id, &ApplicationQuery::default())
+            .unwrap();
+        assert_eq!(uninstaller, None, "Wine's own uninstaller is not the app's");
+        fs::write(
+            program_files.join("Notepad++/uninstall.exe"),
+            b"MZ its uninstaller",
+        )
+        .unwrap();
+        let (programs, uninstaller) = store
+            .discover_programs(&state.id, &ApplicationQuery::default())
+            .unwrap();
+        assert!(uninstaller.is_some_and(|path| path.ends_with("Notepad++/uninstall.exe")));
+        let names: Vec<&str> = programs
+            .iter()
+            .map(|program| program.display_name.as_str())
+            .collect();
+        assert_eq!(programs.len(), 1, "only what setup installed: {names:?}");
+        assert_eq!(
+            programs[0].display_name, "Notepad++",
+            "the name its shortcut shows"
+        );
+        assert!(
+            programs[0]
+                .prefix_relative_executable
+                .ends_with("Notepad++/notepad++.exe")
+        );
+    }
+
+    /// What the Start menu opens is what a person installed: an updater or a tool its setup kept
+    /// for itself has no shortcut, and is no app. A shortcut's own name is the name shown, and an
+    /// MSI's advertised shortcut, which carries no path, names its program by its own.
+    #[test]
+    fn programs_are_what_the_start_menu_opens() {
+        let directory = TempDir::new().unwrap();
+        let store = CapsuleStore::new(directory.path()).unwrap();
+        let state = store.ensure_for_plan(&plan()).unwrap();
+        let program_files = store.prefix_path(&state.id).join("drive_c/Program Files");
+        for (folder, name) in [
+            ("Notepad++", "notepad++.exe"),
+            ("Notepad++/updater", "GUP.exe"),
+            ("PuTTY", "putty.exe"),
+            ("PuTTY", "psftp.exe"),
+            ("PuTTY", "plink.exe"),
+        ] {
+            fs::create_dir_all(program_files.join(folder)).unwrap();
+            fs::write(program_files.join(folder).join(name), b"MZ a program").unwrap();
+        }
+        let start_menu = store
+            .prefix_path(&state.id)
+            .join("drive_c/users/root/AppData/Roaming/Microsoft/Windows/Start Menu/Programs");
+        fs::create_dir_all(start_menu.join("Notepad++")).unwrap();
+        fs::write(
+            start_menu.join("Notepad++/Notepad++.lnk"),
+            shortcut_to(r"C:\Program Files\Notepad++\notepad++.exe"),
+        )
+        .unwrap();
+        fs::create_dir_all(start_menu.join("PuTTY")).unwrap();
+        fs::write(
+            start_menu.join("PuTTY/PuTTY.lnk"),
+            shortcut_to(r"C:\Program Files\PuTTY\putty.exe"),
+        )
+        .unwrap();
+        // An MSI's advertised shortcut: no path, matched by the name it shows.
+        fs::write(start_menu.join("PuTTY/PSFTP.lnk"), advertised_shortcut()).unwrap();
+        let (programs, _) = store
+            .discover_programs(&state.id, &ApplicationQuery::default())
+            .unwrap();
+        let names: Vec<&str> = programs
+            .iter()
+            .map(|program| program.display_name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["Notepad++", "PSFTP", "PuTTY"],
+            "only what the Start menu opens: {names:?}"
+        );
+        assert!(
+            programs.iter().all(|program| !program
+                .prefix_relative_executable
+                .to_string_lossy()
+                .contains("GUP")),
+            "an updater with no shortcut is no app: {names:?}"
+        );
+        assert!(
+            programs.iter().all(|program| !program
+                .prefix_relative_executable
+                .to_string_lossy()
+                .contains("plink")),
+            "a console tool with no shortcut is no app: {names:?}"
+        );
+    }
+
+    /// A shell link as a setup writes one: its `LinkInfo` names `target` as the local base path.
+    fn shortcut_to(target: &str) -> Vec<u8> {
+        let header = 0x1c_u32;
+        let volume = 0x11_u32;
+        let base_offset = header.saturating_add(volume);
+        let base = target.as_bytes();
+        let suffix_offset = base_offset
+            .saturating_add(u32::try_from(base.len()).unwrap())
+            .saturating_add(1);
+        let size = suffix_offset.saturating_add(1);
+        let mut link_info = Vec::new();
+        link_info.extend_from_slice(&size.to_le_bytes());
+        link_info.extend_from_slice(&header.to_le_bytes());
+        link_info.extend_from_slice(&1_u32.to_le_bytes()); // VolumeIDAndLocalBasePath
+        link_info.extend_from_slice(&header.to_le_bytes()); // VolumeIDOffset
+        link_info.extend_from_slice(&base_offset.to_le_bytes()); // LocalBasePathOffset
+        link_info.extend_from_slice(&0_u32.to_le_bytes()); // CommonNetworkRelativeLinkOffset
+        link_info.extend_from_slice(&suffix_offset.to_le_bytes()); // CommonPathSuffixOffset
+        link_info.extend_from_slice(&volume.to_le_bytes());
+        link_info.extend_from_slice(&3_u32.to_le_bytes()); // DRIVE_FIXED
+        link_info.extend_from_slice(&0_u32.to_le_bytes());
+        link_info.extend_from_slice(&0x10_u32.to_le_bytes());
+        link_info.push(0); // an empty volume label
+        assert_eq!(link_info.len(), usize::try_from(base_offset).unwrap());
+        link_info.extend_from_slice(base);
+        link_info.push(0);
+        link_info.push(0); // the common suffix: empty
+        let mut lnk = vec![0_u8; 0x4c];
+        lnk[0] = 0x4c;
+        lnk[0x14..0x18].copy_from_slice(&2_u32.to_le_bytes()); // HasLinkInfo
+        lnk.extend_from_slice(&link_info);
+        lnk
+    }
+
+    /// An MSI's advertised shortcut: its target lives in the installer, named by its item id list
+    /// alone.
+    fn advertised_shortcut() -> Vec<u8> {
+        let mut lnk = vec![0_u8; 0x4c];
+        lnk[0] = 0x4c;
+        lnk[0x14..0x18].copy_from_slice(&1_u32.to_le_bytes()); // HasLinkTargetIDList
+        lnk.extend_from_slice(&4_u16.to_le_bytes());
+        lnk.extend_from_slice(&[0; 4]);
+        lnk
+    }
+
+    #[test]
+    fn capsule_state_saves_migrations_and_installers_are_exact() {
+        {
+            let directory = TempDir::new().unwrap();
+            let store = CapsuleStore::new(directory.path()).unwrap();
+            store.ensure_for_plan(&plan()).unwrap();
+            let mut changed = plan();
+            changed.runner = Runner::new("wine", "12.0").unwrap();
+            assert!(matches!(
+                store.ensure_for_plan(&changed),
+                Err(CapsuleError::RecipeChanged(_))
+            ));
+        }
+        {
+            let root = TempDir::new().unwrap();
+            let outside = TempDir::new().unwrap();
+            let store = CapsuleStore::new(root.path()).unwrap();
+            fs::create_dir(root.path().join("capsules")).unwrap();
+            symlink(outside.path(), root.path().join("capsules/example")).unwrap();
+
+            assert!(store.load("example").is_err());
+            assert!(store.ensure_for_plan(&plan()).is_err());
+            assert!(
+                !outside.path().join("data/prefix").exists(),
+                "managed path preparation must not follow the attacker symlink"
+            );
+        }
+        {
+            let root = TempDir::new().unwrap();
+            let outside = root.path().join("outside.json");
+            let store = CapsuleStore::new(root.path()).unwrap();
+            let state = store.ensure_for_plan(&plan()).unwrap();
+            fs::write(&outside, "outside stays intact").unwrap();
+            let state_path = store.capsule_dir(&state.id).join("state.json");
+            fs::remove_file(&state_path).unwrap();
+            symlink(&outside, &state_path).unwrap();
+
+            store.save(&state).unwrap();
+            assert_eq!(
+                fs::read_to_string(&outside).unwrap(),
+                "outside stays intact"
+            );
+            assert!(
+                fs::symlink_metadata(&state_path)
+                    .unwrap()
+                    .file_type()
+                    .is_file()
+            );
+            assert!(store.load(&state.id).unwrap().is_some());
+        }
+        {
+            let directory = TempDir::new().unwrap();
+            let store = CapsuleStore::new(directory.path()).unwrap();
+            let state = store.ensure_for_plan(&plan()).unwrap();
+            let mut selected = tempfile::NamedTempFile::new().unwrap();
+            let mut pe = vec![0_u8; 0x200];
+            pe[..2].copy_from_slice(b"MZ");
+            pe[0x3c..0x40].copy_from_slice(&0x80_u32.to_le_bytes());
+            pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+            pe[0x84..0x86].copy_from_slice(&0x8664_u16.to_le_bytes());
+            selected.write_all(&pe).unwrap();
+            selected.flush().unwrap();
+            let mut source = selected.reopen().unwrap();
+            let inspected = crate::inspect_installer(&mut source, "favorite.exe").unwrap();
+
+            selected.as_file_mut().seek(SeekFrom::Start(0x100)).unwrap();
+            selected.as_file_mut().write_all(b"changed").unwrap();
+            selected.as_file_mut().flush().unwrap();
+            assert!(matches!(
+                store.copy_installer(
+                    &state.id,
+                    &mut source,
+                    &inspected.sha256,
+                    InstallerKind::Exe,
+                    crate::MAX_INSTALLER_BYTES,
+                ),
+                Err(CapsuleError::InstallerChanged)
+            ));
+        }
+    }
+
+    #[test]
+    fn a_prefix_wine_set_up_is_laid_out_for_proton_without_following_its_links() {
+        let directory = TempDir::new().unwrap();
+        let prefix = directory.path().join("prefix");
+        let users = prefix.join("drive_c/users");
+        fs::create_dir_all(users.join("tilo/Documents")).unwrap();
+        fs::write(prefix.join("user.reg"), "settings").unwrap();
+        let open = |path: &Path| open_directory_nofollow(path).unwrap();
+
+        // Twice: a later start finds it laid out and changes nothing.
+        for _ in 0..2 {
+            prepare_for_proton(open(&prefix).as_fd()).unwrap();
+            assert_eq!(fs::read_link(prefix.join("pfx")).unwrap(), Path::new("."));
+            assert!(prefix.join("shadercache").is_dir());
+            assert!(prefix.join("tracked_files").is_file());
+            assert_eq!(
+                fs::read_link(users.join("steamuser")).unwrap(),
+                Path::new("tilo")
+            );
+            assert!(
+                users.join("tilo/Documents").is_dir(),
+                "Wine's user keeps its files"
+            );
+            assert_eq!(
+                fs::read_to_string(prefix.join("user.reg")).unwrap(),
+                "settings"
+            );
+        }
+
+        // A `pfx` a program pointed elsewhere names the prefix again.
+        fs::remove_file(prefix.join("pfx")).unwrap();
+        symlink("/", prefix.join("pfx")).unwrap();
+        prepare_for_proton(open(&prefix).as_fd()).unwrap();
+        assert_eq!(fs::read_link(prefix.join("pfx")).unwrap(), Path::new("."));
+
+        // A new prefix: Proton's user is a folder, the capsule's names it.
+        let fresh = directory.path().join("fresh");
+        fs::create_dir(&fresh).unwrap();
+        prepare_for_proton(open(&fresh).as_fd()).unwrap();
+        assert!(
+            fs::symlink_metadata(fresh.join("drive_c/users/steamuser"))
+                .unwrap()
+                .is_dir()
+        );
+        assert_eq!(
+            fs::read_link(fresh.join("drive_c/users/tilo")).unwrap(),
+            Path::new("steamuser")
+        );
+
+        // A prefix whose drive_c leads out of it is refused, and nothing is made out there.
+        let outside = directory.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        let hostile = directory.path().join("hostile");
+        fs::create_dir(&hostile).unwrap();
+        symlink(&outside, hostile.join("drive_c")).unwrap();
+        assert!(prepare_for_proton(open(&hostile).as_fd()).is_err());
+        assert!(!outside.join("users").exists());
+    }
+}

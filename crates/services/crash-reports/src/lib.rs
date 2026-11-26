@@ -391,3 +391,163 @@ fn le_u64(bytes: &[u8], at: usize) -> Option<u64> {
         bytes.get(at..at.checked_add(8)?)?.try_into().ok()?,
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn note(kind: u32, name: &[u8], desc: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&u32::try_from(name.len()).unwrap().to_le_bytes());
+        out.extend_from_slice(&u32::try_from(desc.len()).unwrap().to_le_bytes());
+        out.extend_from_slice(&kind.to_le_bytes());
+        out.extend_from_slice(name);
+        out.resize(out.len().next_multiple_of(4), 0);
+        out.extend_from_slice(desc);
+        out.resize(out.len().next_multiple_of(4), 0);
+        out
+    }
+
+    tilo_test_env::scenario! {
+        fn a_build_id_is_read_from_the_gnu_note;
+
+        phase the_build_id_is_found_after_other_notes;
+        {
+            let mut notes = note(1, b"GNU\0", &[0; 16]);
+            notes.extend(note(
+                NT_GNU_BUILD_ID,
+                b"GNU\0",
+                &[0xde, 0xad, 0xbe, 0xef, 0x01],
+            ));
+            assert_eq!(gnu_build_id(&notes).as_deref(), Some("deadbeef01"));
+        }
+
+        phase a_truncated_note_is_no_build_id;
+        {
+            let notes = note(NT_GNU_BUILD_ID, b"GNU\0", &[1, 2, 3, 4]);
+            assert_eq!(gnu_build_id(&notes[..notes.len() - 2]), None);
+            assert_eq!(gnu_build_id(&note(NT_GNU_BUILD_ID, b"XYZ\0", &[1])), None);
+        }
+
+        phase the_running_test_binary_has_a_build_id;
+        {
+            #[cfg(target_os = "linux")]
+            {
+                // Every Linux link here passes --build-id (the distribution
+                // compiler's default); the crash log relies on it to name the binary.
+                let id = read_build_id(&std::env::current_exe().unwrap()).unwrap();
+                assert!(
+                    id.len() >= 16 && id.chars().all(|c| c.is_ascii_hexdigit()),
+                    "{id}"
+                );
+            }
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_rendered_report_names_what_ran_and_keeps_its_stacks;
+
+        phase a_report_names_the_binary_and_keeps_the_backtrace;
+        {
+            let build = BuildInfo {
+                version: "0.1.0",
+                executable: Some(PathBuf::from("/usr/bin/tilo-session")),
+                build_id: Some("abc123".to_owned()),
+            };
+            let report = render(
+                PANIC_TITLE,
+                &build,
+                &Panic {
+                    timestamp: "2026-10-03-120000",
+                    thread: "main",
+                    contained: "no: the session ends",
+                    location: "crates/desktop/session/src/x.rs:1:2",
+                    message: "boom",
+                    backtrace: "   0: session::x::f\n             at ./crates/desktop/session/src/x.rs:1:2",
+                },
+            );
+            assert_eq!(
+                report,
+                "tilo session panic\n\
+             ==================\n\
+             timestamp: 2026-10-03-120000\n\
+             version:   0.1.0\n\
+             binary:    /usr/bin/tilo-session\n\
+             build-id:  abc123\n\
+             thread:    main\n\
+             contained: no: the session ends\n\
+             location:  crates/desktop/session/src/x.rs:1:2\n\
+             message:   boom\n\n\
+             backtrace:\n   0: session::x::f\n             at ./crates/desktop/session/src/x.rs:1:2\n"
+            );
+        }
+
+        phase a_freeze_report_names_the_binary_and_keeps_the_stacks;
+        {
+            let build = BuildInfo {
+                version: "0.1.0",
+                executable: Some(PathBuf::from("/usr/bin/tilo-session")),
+                build_id: Some("abc123".to_owned()),
+            };
+            let report = render_freeze(
+                &build,
+                &Freeze {
+                    timestamp: "2026-10-24-225201",
+                    tid: 412,
+                    blocked_for: Duration::from_millis(26_400),
+                    report: "main loop hung\nthread 412 (session)\n   0: session::x::wait",
+                },
+            );
+            assert!(report.starts_with(FREEZE_TITLE), "{report}");
+            for line in [
+                "timestamp: 2026-10-24-225201\n",
+                "binary:    /usr/bin/tilo-session\n",
+                "build-id:  abc123\n",
+                "thread:    412\n",
+                "stalled:   26.4 s\n",
+                "   0: session::x::wait\n",
+            ] {
+                assert!(report.contains(line), "{line:?} in:\n{report}");
+            }
+        }
+
+        phase a_report_without_an_identity_says_so;
+        {
+            let build = BuildInfo {
+                version: "0.1.0",
+                executable: None,
+                build_id: None,
+            };
+            let report = render(
+                "t",
+                &build,
+                &Panic {
+                    timestamp: "",
+                    thread: "",
+                    contained: "",
+                    location: "",
+                    message: "",
+                    backtrace: "",
+                },
+            );
+            assert!(report.contains("binary:    <unknown>\n"), "{report}");
+            assert!(report.contains("build-id:  <none>\n"), "{report}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_report_is_private_and_never_replaced() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        tilo_files::native::private::directory(dir.path()).unwrap();
+        let path = write_report(dir.path(), "2026-10-24-225201-1-freeze.log", "first").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(write_report(dir.path(), "2026-10-24-225201-1-freeze.log", "second").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
+    }
+}

@@ -1239,3 +1239,1045 @@ pub enum PlanError {
     #[error("catalogue setting value is empty, oversized, or contains controls")]
     InvalidSettingValue,
 }
+
+#[cfg(test)]
+mod tests {
+    use compat_catalogue::{
+        ApplicationQuery, MatchKind, RunnerSettings, Runtime, SecurityProfileRef,
+    };
+    use tempfile::TempDir;
+
+    use super::*;
+
+    fn route(layer: Layer) -> LaunchPlan {
+        let (runner, proton_recipe) = match layer {
+            Layer::Wine => (Runner::new("wine", "system").unwrap(), None),
+            Layer::Proton => (
+                Runner::new("umu-proton", "UMU-Proton-10.0-4").unwrap(),
+                Some("umu-123".to_string()),
+            ),
+            Layer::Vm => (Runner::new("windows-vm", "managed").unwrap(), None),
+        };
+        LaunchPlan {
+            record_id: Some("example".to_string()),
+            match_kind: MatchKind::Executable,
+            runtime: Runtime {
+                id: "example".to_string(),
+                layer,
+            },
+            runner,
+            settings: RunnerSettings::default(),
+            security_profile: SecurityProfileRef::new("windows-app").unwrap(),
+            proton_recipe,
+            compatibility_grade: None,
+        }
+    }
+
+    fn setup(route: &LaunchPlan) -> (TempDir, CapsuleStore, CapsuleState, CapsuleProgram) {
+        let directory = TempDir::new().unwrap();
+        let store = CapsuleStore::new(directory.path()).unwrap();
+        let state = store.ensure_for_plan(route).unwrap();
+        let program = CapsuleProgram {
+            id: "program".to_string(),
+            display_name: "Program".to_string(),
+            prefix_relative_executable: PathBuf::from("drive_c/Program Files/App/app.exe"),
+            query: ApplicationQuery::executable("app.exe"),
+            kind: crate::ProgramKind::Application,
+            arguments: Vec::new(),
+            opens_with: None,
+        };
+        let state = store.register_program(&state.id, program.clone()).unwrap();
+        (directory, store, state, program)
+    }
+
+    fn session() -> LaunchDisplay {
+        LaunchDisplay {
+            uid: 1000,
+            runtime_dir: PathBuf::from("/xdg/1000"),
+            wayland_socket: PathBuf::from("/xdg/1000/tilo-ws-test"),
+            render_node: Some(PathBuf::from("/dev/dri/renderD999")),
+        }
+    }
+
+    /// Wine draws its windows with shared memory or the software renderer, so a display with no
+    /// GPU (a virtual machine without 3D) still starts Windows programs: with no device node in
+    /// the sandbox, never with a display's primary node in place of a render node.
+    #[test]
+    fn a_display_without_a_gpu_starts_the_program_with_no_device_node() {
+        let route = route(Layer::Wine);
+        let (_directory, store, state, program) = setup(&route);
+        let registry = SystemRuntimeRegistry::assuming_provider();
+        let host = LaunchDisplay {
+            render_node: None,
+            ..session()
+        };
+        let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
+        let command = planner
+            .plan(
+                &route,
+                &state,
+                &program,
+                &CapabilityPlan::empty(),
+                "workspace",
+                &LaunchLease::deny_all("lease"),
+            )
+            .unwrap();
+        let argv = &command.bwrap_argv;
+        let hidden = argv
+            .windows(2)
+            .rposition(|args| args == ["--tmpfs", "/dev/dri"])
+            .expect("the GPU's device directory is emptied");
+        assert!(
+            !argv[hidden..]
+                .iter()
+                .any(|arg| arg.starts_with("/dev/dri/")),
+            "no device node is bound over it: {argv:?}"
+        );
+
+        let card = LaunchDisplay {
+            render_node: Some(PathBuf::from("/dev/dri/card0")),
+            ..session()
+        };
+        assert!(matches!(
+            card.validate(),
+            Err(PlanError::UnsafeRenderNode(node)) if node == "/dev/dri/card0"
+        ));
+        assert!(host.validate().is_ok());
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn runtime_selection_follows_host_architecture_and_shipped_artifacts() {
+        {
+            let wine = SystemRuntimeRegistry::resolve_for_host(
+                Layer::Wine,
+                &Runner::new("wine", "system").unwrap(),
+                "x86_64",
+            )
+            .unwrap();
+            assert!(
+                wine.host_paths()
+                    .any(|path| path == Path::new("/usr/bin/wine"))
+            );
+            assert_eq!(wine.sandbox_entrypoint(), Path::new("/usr/bin/wine"));
+
+            // On x86, Proton's own script starts it on the system's libraries, in the capsule's
+            // sandbox alone: no UMU and no Steam runtime container inside it.
+            let proton = SystemRuntimeRegistry::resolve_for_host(
+                Layer::Proton,
+                &Runner::new("umu-proton", "UMU-Proton-10.0-4").unwrap(),
+                "x86_64",
+            )
+            .unwrap();
+            assert_eq!(proton.sandbox_entrypoint(), Path::new("/usr/bin/python3"));
+            assert_eq!(
+                proton.entry_arguments,
+                [
+                    format!("{PROTON_MOUNT}/proton"),
+                    "waitforexitandrun".to_string()
+                ]
+            );
+            assert!(
+                proton
+                    .host_paths()
+                    .any(|path| path == Path::new(PROTON_HOST))
+            );
+            assert!(!proton.host_paths().any(|path| {
+                path.starts_with("/usr/lib/tilo/windows-runners/steam-runtime")
+                    || path.ends_with("tilo-umu-run")
+                    || path == Path::new("/usr/bin/bwrap")
+            }));
+            for variable in [
+                ("PROTON_NO_ESYNC", "1"),
+                ("PROTON_NO_FSYNC", "1"),
+                ("PROTON_USE_WOW64", "1"),
+            ] {
+                assert!(
+                    proton
+                        .environment
+                        .contains(&(variable.0, variable.1.to_string()))
+                );
+            }
+            assert!(
+                !proton
+                    .environment
+                    .iter()
+                    .any(|(key, _)| key.starts_with("UMU_"))
+            );
+            assert_eq!(RuntimeImage::seccomp_profile(), SeccompProfile::TiloJit);
+            assert_eq!(
+                proton.reads,
+                [
+                    PathBuf::from("/proc/sys/fs/file-max"),
+                    PathBuf::from("/proc/sys/vm/max_map_count")
+                ]
+            );
+
+            // ARM translates Wine through FEX. Proton is offered there by neither route.
+            let error = SystemRuntimeRegistry::resolve_for_host(
+                Layer::Proton,
+                &Runner::new("umu-proton", "UMU-Proton-10.0-4").unwrap(),
+                "aarch64",
+            )
+            .unwrap_err();
+            assert!(matches!(error, PlanError::ProtonUnavailableOnArm));
+            let wine = SystemRuntimeRegistry::resolve_for_host(
+                Layer::Wine,
+                &Runner::new("wine", "system").unwrap(),
+                "aarch64",
+            )
+            .unwrap();
+            assert!(wine.translated);
+            assert_eq!(wine.sandbox_entrypoint(), Path::new(TRANSLATED_HELPER));
+            assert!(
+                wine.host_paths()
+                    .any(|path| path == Path::new(X86_ROOTFS_HOST))
+            );
+        }
+        {
+            for host in ["x86_64", "aarch64"] {
+                for layer in [Layer::Wine, Layer::Proton] {
+                    for architecture in [Architecture::Win32, Architecture::Win64] {
+                        let mut route = route(layer);
+                        route.settings.architecture = architecture;
+                        let (_directory, store, state, program) = setup(&route);
+                        let session = session();
+                        let registry = TestHostRegistry(host);
+                        let planner = SandboxPlanner::new(&store, &registry, &session).unwrap();
+                        if host == "aarch64" && layer == Layer::Proton {
+                            let error = planner
+                                .plan(
+                                    &route,
+                                    &state,
+                                    &program,
+                                    &CapabilityPlan::empty(),
+                                    "workspace",
+                                    &LaunchLease::deny_all("lease"),
+                                )
+                                .unwrap_err();
+                            assert!(matches!(error, PlanError::ProtonUnavailableOnArm));
+                            continue;
+                        }
+                        let command = planner
+                            .plan(
+                                &route,
+                                &state,
+                                &program,
+                                &CapabilityPlan::empty(),
+                                "workspace",
+                                &LaunchLease::deny_all("lease"),
+                            )
+                            .unwrap();
+                        assert_eq!(command.seccomp_profile, Some(SeccompProfile::TiloJit));
+                        assert!(
+                            command.seccomp_grants.wow64_thread_area,
+                            "a Wine capsule may set its 32-bit thread area"
+                        );
+                        assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));
+                        assert!(
+                            command
+                                .bwrap_argv
+                                .iter()
+                                .any(|arg| arg == "--net-restricted")
+                        );
+                        if host == "aarch64" {
+                            let mode = match architecture {
+                                Architecture::Win32 => "wine32",
+                                Architecture::Win64 => "wine64",
+                            };
+                            assert!(
+                                command
+                                    .bwrap_argv
+                                    .windows(2)
+                                    .any(|args| args == [TRANSLATED_HELPER, mode])
+                            );
+                            assert!(command.bwrap_argv.windows(3).any(|args| {
+                                args == ["--ro-bind", X86_ROOTFS_HOST, crate::translated::ROOTFS]
+                            }));
+                            assert!(!command.bwrap_argv.iter().any(|arg| arg == "/usr/bin/wine"));
+                            for resource in ["usr/lib/wine", "usr/lib64/wine"] {
+                                let source = format!("{X86_ROOTFS_HOST}/{resource}");
+                                let destination = format!("/{resource}");
+                                assert!(
+                                    command.bwrap_argv.windows(3).any(|args| {
+                                        args == ["--ro-bind", &source, &destination]
+                                    })
+                                );
+                            }
+                            assert!(
+                                !command
+                                    .bwrap_argv
+                                    .iter()
+                                    .any(|arg| arg.contains("wine-wow64"))
+                            );
+                        } else {
+                            assert!(
+                                !command
+                                    .bwrap_argv
+                                    .iter()
+                                    .any(|arg| arg == TRANSLATED_HELPER)
+                            );
+                            if layer == Layer::Wine {
+                                assert!(command.bwrap_argv.windows(3).any(|args| {
+                                    args == ["--ro-bind", "/usr/share/wine", "/usr/share/wine"]
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        {
+            for (host, layer) in [
+                ("x86_64", Layer::Wine),
+                ("x86_64", Layer::Proton),
+                ("aarch64", Layer::Wine),
+            ] {
+                let route = route(layer);
+                let (_directory, store, state, program) = setup(&route);
+                let session = session();
+                let registry = TestHostRegistry(host);
+                let command = SandboxPlanner::new(&store, &registry, &session)
+                    .unwrap()
+                    .plan(
+                        &route,
+                        &state,
+                        &program,
+                        &CapabilityPlan::empty(),
+                        "workspace",
+                        &LaunchLease::deny_all("lease"),
+                    )
+                    .unwrap();
+                let shim_position = command
+                    .bwrap_argv
+                    .iter()
+                    .position(|argument| {
+                        argument == launcher::landlock_shim::SANDBOX_EXEC_SUBCOMMAND
+                    })
+                    .unwrap();
+                let shim = launcher::landlock_shim::ShimArgs::parse(
+                    &command.bwrap_argv[shim_position + 1..],
+                )
+                .unwrap();
+                assert_eq!(shim.ro.contains(&PathBuf::from("/proc")), host == "aarch64");
+                assert!(!shim.rw.iter().any(|path| path.starts_with("/proc")));
+                assert!(!shim.no_landlock);
+                let namespace = &command.bwrap_argv[..shim_position];
+                assert!(namespace.iter().any(|argument| argument == "--unshare-all"));
+                assert!(
+                    namespace
+                        .windows(2)
+                        .any(|arguments| arguments == ["--proc", "/proc"])
+                );
+                assert!(!namespace.iter().any(|argument| argument == "--share-pid"));
+                assert!(
+                    !namespace
+                        .windows(3)
+                        .any(|arguments| arguments[0].contains("bind")
+                            && (Path::new(&arguments[1]).starts_with("/proc")
+                                || Path::new(&arguments[2]).starts_with("/proc")))
+                );
+            }
+        }
+        {
+            assert!(
+                require_translated_provider(Some(r#"{"provider":"fex-traditional-wine"}"#)).is_ok()
+            );
+            for manifest in [
+                Some(r#"{"schema_version":1,"host_architecture":"aarch64","provider":"none"}"#),
+                Some(r#"{"provider":"native-wine"}"#),
+                Some("not json"),
+                None,
+            ] {
+                assert!(matches!(
+                    require_translated_provider(manifest),
+                    Err(PlanError::WindowsProviderNotIncluded)
+                ));
+            }
+        }
+        {
+            let error = SystemRuntimeRegistry::resolve_for_host(
+                Layer::Wine,
+                &Runner::new("wine", "system").unwrap(),
+                "riscv64",
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, PlanError::UnsupportedHostArchitecture(host) if host == "riscv64")
+            );
+        }
+        {
+            let emulator: serde_json::Value = serde_json::from_str(include_str!(
+                "../../../../os/usr/share/tilo/windows/fex-emulator.json"
+            ))
+            .unwrap();
+            let graphics: serde_json::Value = serde_json::from_str(include_str!(
+                "../../../../os/usr/share/tilo/windows/fex-graphics-provider.json"
+            ))
+            .unwrap();
+            assert_eq!(
+                emulator["emulator_v0"]["environment"]["FEX_ROOTFS"],
+                crate::translated::ROOTFS
+            );
+            assert_eq!(
+                emulator["emulator_v0"]["container_environment"]["FEX_ROOTFS"],
+                ""
+            );
+            assert_eq!(
+                emulator["emulator_v0"]["argv"],
+                serde_json::json!(["/usr/bin/FEX"])
+            );
+            assert_eq!(
+                graphics["graphics_provider_v0"]["root"],
+                crate::translated::ROOTFS
+            );
+        }
+    }
+
+    struct TestHostRegistry(&'static str);
+
+    impl RuntimeRegistry for TestHostRegistry {
+        fn resolve(&self, layer: Layer, runner: &Runner) -> Result<RuntimeImage, PlanError> {
+            SystemRuntimeRegistry::resolve_for_host(layer, runner, self.0)
+        }
+    }
+
+    /// An ARM computer offers no Proton: Proton's own program files are x86, and Tilo can give
+    /// them the translator only inside the Steam Runtime's container, which starts a sandbox of
+    /// its own that a capsule's sandbox refuses. The person is told that plainly, and Wine stays.
+    #[test]
+    fn an_arm_computer_refuses_proton_with_the_reason_and_keeps_wine() {
+        let refusal = SystemRuntimeRegistry::resolve_for_host(
+            Layer::Proton,
+            &Runner::new("umu-proton", PINNED_PROTON).unwrap(),
+            "aarch64",
+        )
+        .unwrap_err();
+        assert!(matches!(refusal, PlanError::ProtonUnavailableOnArm));
+        let said = refusal.to_string();
+        assert!(said.contains("Steam Runtime's own container"), "{said}");
+        assert!(said.contains("capsule's sandbox refuses"), "{said}");
+        assert!(
+            said.contains("Wine"),
+            "the message names what works here: {said}"
+        );
+        assert!(said.contains("Nothing was started"), "{said}");
+
+        let route = route(Layer::Proton);
+        let (_directory, store, state, program) = setup(&route);
+        let error = SandboxPlanner::new(&store, &TestHostRegistry("aarch64"), &session())
+            .unwrap()
+            .plan(
+                &route,
+                &state,
+                &program,
+                &CapabilityPlan::empty(),
+                "workspace",
+                &LaunchLease::deny_all("lease"),
+            )
+            .unwrap_err();
+        assert_eq!(error.to_string(), said, "a launch is refused the same way");
+
+        // The x86 Proton start and the ARM Wine start are unchanged by the refusal.
+        let x86 = SystemRuntimeRegistry::resolve_for_host(
+            Layer::Proton,
+            &Runner::new("umu-proton", PINNED_PROTON).unwrap(),
+            "x86_64",
+        )
+        .unwrap();
+        assert_eq!(x86.sandbox_entrypoint(), Path::new("/usr/bin/python3"));
+        let wine = SystemRuntimeRegistry::resolve_for_host(
+            Layer::Wine,
+            &Runner::new("wine", "system").unwrap(),
+            "aarch64",
+        )
+        .unwrap();
+        assert!(wine.translated);
+        assert_eq!(wine.sandbox_entrypoint(), Path::new(TRANSLATED_HELPER));
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn wine_plans_are_default_deny_with_fixed_artifacts_and_no_injection() {
+        {
+            let error = SystemRuntimeRegistry::new()
+                .resolve(Layer::Wine, &Runner::new("wine", "../../evil").unwrap())
+                .unwrap_err();
+            assert!(matches!(error, PlanError::InvalidRunner));
+            let error = SystemRuntimeRegistry::new()
+                .resolve(Layer::Wine, &Runner::new("wine", "11.0").unwrap())
+                .unwrap_err();
+            assert!(matches!(error, PlanError::RunnerNotInstalled(_)));
+        }
+        {
+            let mut route = route(Layer::Wine);
+            route
+                .settings
+                .environment
+                .insert("LD_PRELOAD".to_string(), "/home/user/evil.so".to_string());
+            let (_directory, store, state, program) = setup(&route);
+            let registry = SystemRuntimeRegistry::assuming_provider();
+            let host = session();
+            let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
+            let error = planner
+                .plan(
+                    &route,
+                    &state,
+                    &program,
+                    &CapabilityPlan::empty(),
+                    "workspace",
+                    &LaunchLease::deny_all("lease"),
+                )
+                .unwrap_err();
+            assert!(matches!(error, PlanError::ForbiddenEnvironment(key) if key == "LD_PRELOAD"));
+        }
+        {
+            let route = route(Layer::Wine);
+            let (_directory, store, state, program) = setup(&route);
+            let registry = SystemRuntimeRegistry::assuming_provider();
+            let host = session();
+            let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
+            let command = planner
+                .plan(
+                    &route,
+                    &state,
+                    &program,
+                    &CapabilityPlan::empty(),
+                    "workspace",
+                    &LaunchLease::deny_all("lease"),
+                )
+                .unwrap();
+            assert!(command.bwrap_argv.iter().any(|arg| arg == "--clearenv"));
+            assert!(
+                command
+                    .bwrap_argv
+                    .windows(2)
+                    .any(|args| { args == ["--chdir", &format!("{PREFIX_MOUNT}/drive_c")] })
+            );
+            assert_eq!(command.identity_uid, host.uid);
+            for (fd, path) in [
+                (crate::execute::PASSWD_CHILD_FD, "/etc/passwd"),
+                (crate::execute::GROUP_CHILD_FD, "/etc/group"),
+            ] {
+                assert!(
+                    command
+                        .bwrap_argv
+                        .windows(3)
+                        .any(|args| args == ["--ro-bind-data", fd.to_string().as_str(), path])
+                );
+                assert!(
+                    command
+                        .bwrap_argv
+                        .windows(2)
+                        .any(|args| args == ["--ro", path])
+                );
+                assert!(
+                    !command
+                        .bwrap_argv
+                        .windows(3)
+                        .any(|args| matches!(args[0].as_str(), "--bind" | "--ro-bind")
+                            && args[1] == path)
+                );
+            }
+            for key in ["USER", "LOGNAME"] {
+                assert!(
+                    command
+                        .bwrap_argv
+                        .windows(3)
+                        .any(|args| args == ["--setenv", key, "tilo"])
+                );
+            }
+            assert!(command.bwrap_argv.iter().any(|arg| arg == "--unshare-all"));
+            assert!(
+                command
+                    .bwrap_argv
+                    .iter()
+                    .any(|arg| arg == "--net-restricted")
+            );
+            assert!(!command.latency_sensitive);
+            assert!(command.bwrap_argv.iter().any(|arg| arg == "--seccomp"));
+            assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));
+            let expected_entry = if std::env::consts::ARCH == "aarch64" {
+                TRANSLATED_HELPER
+            } else {
+                "/usr/bin/wine"
+            };
+            assert!(command.bwrap_argv.iter().any(|arg| arg == expected_entry));
+            assert!(command.bwrap_argv.iter().any(|arg| {
+                arg == "/run/tilo/capsule/prefix/drive_c/Program Files/App/app.exe"
+            }));
+            assert!(
+                !command
+                    .bwrap_argv
+                    .iter()
+                    .any(|arg| arg.contains("/home/user"))
+            );
+            for (fd, destination) in [
+                (crate::execute::PREFIX_CHILD_FD, PREFIX_MOUNT),
+                (crate::execute::HOME_CHILD_FD, HOME_MOUNT),
+            ] {
+                assert!(
+                    command.bwrap_argv.windows(3).any(|args| {
+                        args == ["--bind-fd", fd.to_string().as_str(), destination]
+                    })
+                );
+            }
+        }
+    }
+
+    /// A Proton program shows through X11: the display its keeper picks once it starts is added
+    /// to the planned sandbox, inside its private `/tmp`, after the environment is emptied, and
+    /// reachable through Landlock, and nothing else of the plan moves.
+    #[test]
+    fn a_proton_sandbox_is_given_its_keepers_x11_display() {
+        let route = route(Layer::Proton);
+        let (_directory, store, state, program) = setup(&route);
+        let host = session();
+        let planned = SandboxPlanner::new(&store, &TestHostRegistry("x86_64"), &host)
+            .unwrap()
+            .plan(
+                &route,
+                &state,
+                &program,
+                &CapabilityPlan::empty(),
+                "workspace",
+                &LaunchLease::deny_all("lease"),
+            )
+            .unwrap()
+            .bwrap_argv;
+        let mut given: Vec<std::ffi::OsString> = planned.iter().map(Into::into).collect();
+        let cookie = Path::new("/home/me/kept/3/Xauthority");
+        launcher::sandbox::give_x11_display(&mut given, ":7", cookie).unwrap();
+        let given: Vec<String> = given
+            .into_iter()
+            .map(|arg| arg.into_string().unwrap())
+            .collect();
+        let at = |wanted: &[&str]| {
+            given
+                .windows(wanted.len())
+                .position(|args| args == wanted)
+                .unwrap_or_else(|| panic!("{wanted:?} in {given:?}"))
+        };
+        let socket = "/tmp/.X11-unix/X7";
+        let mount = launcher::sandbox::X11_AUTHORITY_MOUNT;
+        let tmp = at(&["--tmpfs", "/tmp"]);
+        let bound = at(&["--ro-bind", socket, socket]);
+        let cookie_bound = at(&["--ro-bind", cookie.to_str().unwrap(), mount]);
+        let display = at(&["--setenv", "DISPLAY", ":7"]);
+        let authority = at(&["--setenv", "XAUTHORITY", mount]);
+        let shim = at(&[launcher::landlock_shim::SANDBOX_EXEC_SUBCOMMAND]);
+        let read = at(&["--ro", mount]);
+        let reached = at(&["--rw", socket]);
+        let program = at(&["--"]);
+        assert!(
+            at(&["--clearenv"]) < display,
+            "set after the environment is emptied"
+        );
+        assert!(
+            tmp < bound && tmp < cookie_bound,
+            "bound over the private /tmp"
+        );
+        assert!(authority < shim && shim < read && shim < reached && reached < program);
+        assert_eq!(given.len(), planned.len() + 16, "nothing else is added");
+        let mut rest = given.clone();
+        rest.drain(shim + 1..shim + 5);
+        rest.drain(tmp + 2..tmp + 14);
+        assert_eq!(rest, planned, "and nothing of the plan moves");
+
+        for (display, cookie) in [
+            ("wayland-0", Path::new("/var/cookie")),
+            (":7", Path::new("cookie")),
+            ("remote:7", Path::new("/var/cookie")),
+        ] {
+            let mut args: Vec<std::ffi::OsString> = planned.iter().map(Into::into).collect();
+            assert!(
+                launcher::sandbox::give_x11_display(&mut args, display, cookie).is_err(),
+                "{display} {cookie:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn capsules_provision_private_storage_brokered_audio_and_proton_runtimes() {
+        {
+            let route = route(Layer::Proton);
+            let (_directory, store, state, program) = setup(&route);
+            let host = session();
+            let planner = SandboxPlanner::new(&store, &TestHostRegistry("x86_64"), &host).unwrap();
+            let command = planner
+                .plan(
+                    &route,
+                    &state,
+                    &program,
+                    &CapabilityPlan::empty(),
+                    "workspace",
+                    &LaunchLease::deny_all("lease"),
+                )
+                .unwrap();
+            // The prefix is Proton's data directory, and the program's recipe reaches the fixes
+            // Proton carries under the id UMU would give it.
+            let set = |key: &str| {
+                command
+                    .bwrap_argv
+                    .windows(3)
+                    .find(|args| args[0] == "--setenv" && args[1] == key)
+                    .map(|args| args[2].clone())
+            };
+            assert_eq!(set("STEAM_COMPAT_DATA_PATH").as_deref(), Some(PREFIX_MOUNT));
+            assert_eq!(set("WINEPREFIX").as_deref(), Some(PREFIX_MOUNT));
+            let recipe = route.proton_recipe.unwrap();
+            assert_eq!(set("SteamAppId").as_deref(), Some(steam_app_id(&recipe)));
+            assert_eq!(set("UMU_ID"), Some(recipe));
+            assert_eq!(set("STEAM_COMPAT_CLIENT_INSTALL_PATH").as_deref(), Some(""));
+            assert_eq!(
+                set("STEAM_COMPAT_INSTALL_PATH"),
+                Path::new(PREFIX_MOUNT)
+                    .join(&program.prefix_relative_executable)
+                    .parent()
+                    .map(|folder| folder.display().to_string())
+            );
+            let entry = command
+                .bwrap_argv
+                .iter()
+                .position(|arg| arg == "--")
+                .unwrap();
+            assert_eq!(
+                command.bwrap_argv[entry + 1..entry + 4],
+                [
+                    "/usr/bin/python3".to_string(),
+                    format!("{PROTON_MOUNT}/proton"),
+                    "waitforexitandrun".to_string()
+                ]
+            );
+            assert!(command.prefix_for_proton);
+            assert!(!command.bwrap_argv.iter().any(|arg| {
+                arg.starts_with("/usr/lib/tilo/windows-runners/steam-runtime")
+                    || (arg.starts_with("UMU_") && arg != "UMU_ID")
+            }));
+            assert_eq!(steam_app_id("umu-1091500"), "1091500");
+            assert_eq!(steam_app_id("umu-"), "0");
+            assert_eq!(steam_app_id("none"), "0");
+            assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));
+        }
+        {
+            for layer in [Layer::Wine, Layer::Proton] {
+                let route = route(layer);
+                let (_directory, store, state, program) = setup(&route);
+                // Proton is planned on an x86 computer; Wine is planned on ARM, translated.
+                let registry = TestHostRegistry(if layer == Layer::Proton {
+                    "x86_64"
+                } else {
+                    "aarch64"
+                });
+                let host = session();
+                let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
+                let command = planner
+                    .plan(
+                        &route,
+                        &state,
+                        &program,
+                        &CapabilityPlan::empty(),
+                        "workspace",
+                        &LaunchLease::deny_all("lease"),
+                    )
+                    .unwrap();
+                let shim_position = command
+                    .bwrap_argv
+                    .iter()
+                    .position(|arg| arg == launcher::landlock_shim::SANDBOX_EXEC_SUBCOMMAND)
+                    .unwrap();
+                let shim = launcher::landlock_shim::ShimArgs::parse(
+                    &command.bwrap_argv[shim_position + 1..],
+                )
+                .unwrap();
+                assert!(shim.rw.contains(&PathBuf::from("/tmp")));
+                assert!(!shim.no_landlock);
+                assert!(shim.net_restricted);
+                let mounts = &command.bwrap_argv[..shim_position];
+                assert!(mounts.windows(2).any(|args| args == ["--tmpfs", "/tmp"]));
+                assert!(!mounts.windows(3).any(|args| {
+                    args[0].contains("bind") && (args[1] == "/tmp" || args[2] == "/tmp")
+                }));
+            }
+        }
+        {
+            let route = route(Layer::Wine);
+            let (_directory, store, state, program) = setup(&route);
+            let registry = SystemRuntimeRegistry::assuming_provider();
+            let host = session();
+            let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
+            let capabilities = CapabilityPlan {
+                rw_paths: vec![
+                    PathBuf::from("/run/user/1000/pipewire-0"),
+                    PathBuf::from("/dev/snd"),
+                ],
+                devices: vec![collab_types::caps::DeviceCap::Microphone],
+                ..CapabilityPlan::empty()
+            };
+            let graph = lease_root().join("audio-lease");
+            let pipewire = graph.join("audio/pipewire-0");
+            let pulse = graph.join("audio/pulse/native");
+            let lease = LaunchLease {
+                id: "audio-lease".to_string(),
+                audio: vec![
+                    AudioBinding {
+                        protocol: AudioProtocol::PipeWire,
+                        host_socket: pipewire.clone(),
+                        input_enabled: true,
+                    },
+                    AudioBinding {
+                        protocol: AudioProtocol::Pulse,
+                        host_socket: pulse.clone(),
+                        input_enabled: true,
+                    },
+                ],
+                audio_graph: Some(graph),
+                egress_proxy: None,
+            };
+            let command = planner
+                .plan(&route, &state, &program, &capabilities, "workspace", &lease)
+                .unwrap();
+            assert!(
+                command
+                    .bwrap_argv
+                    .iter()
+                    .any(|arg| *arg == pipewire.to_string_lossy())
+            );
+            assert!(
+                command
+                    .bwrap_argv
+                    .iter()
+                    .any(|arg| *arg == pulse.to_string_lossy())
+            );
+            assert!(!command.bwrap_argv.iter().any(|arg| arg == "/dev/snd"));
+            // The sandbox must name its own runtime destination so clients can
+            // resolve the private PipeWire endpoint. The host socket occurs only
+            // as the source half of the explicit broker bind above, never as a
+            // capability-derived bind.
+            assert!(
+                command
+                    .bwrap_argv
+                    .iter()
+                    .any(|arg| arg == "/run/user/1000/pipewire-0")
+            );
+        }
+        {
+            let route = route(Layer::Wine);
+            let (_directory, store, state, program) = setup(&route);
+            let registry = SystemRuntimeRegistry::assuming_provider();
+            let host = session();
+            let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
+            let capabilities = CapabilityPlan {
+                rw_paths: vec![PathBuf::from("/home/alice")],
+                masked_dirs: vec![PathBuf::from("/home/alice/.config/tilo")],
+                pinned_dirs: vec![PathBuf::from("/home/alice/.config")],
+                ..CapabilityPlan::empty()
+            };
+            let command = planner
+                .plan(
+                    &route,
+                    &state,
+                    &program,
+                    &capabilities,
+                    "workspace",
+                    &LaunchLease::deny_all("lease"),
+                )
+                .unwrap();
+            let argv = &command.bwrap_argv;
+            let position = |pattern: &[&str]| {
+                argv.windows(pattern.len())
+                    .position(|w| w.iter().zip(pattern).all(|(a, b)| a == b))
+            };
+            let grant = position(&["--bind-try", "/home/alice", "/run/tilo/files/write/000"]);
+            let pin = position(&[
+                "--bind",
+                "/home/alice/.config",
+                "/run/tilo/files/write/000/.config",
+            ]);
+            let mask = position(&[
+                "--tmpfs",
+                "/run/tilo/files/write/000/.config/tilo",
+                "--remount-ro",
+                "/run/tilo/files/write/000/.config/tilo",
+            ]);
+            assert!(
+                matches!((grant, pin, mask), (Some(g), Some(p), Some(m)) if g < p && p < m),
+                "the store must be pinned and masked after the grant's mount: {argv:?}"
+            );
+        }
+        {
+            use std::os::unix::fs::symlink;
+
+            let route = route(Layer::Wine);
+            let (_directory, store, state, program) = setup(&route);
+            let outside = TempDir::new().unwrap();
+            let data = store.root().join("capsules").join(&state.id).join("data");
+            std::fs::remove_dir_all(&data).unwrap();
+            symlink(outside.path(), &data).unwrap();
+            let registry = SystemRuntimeRegistry::assuming_provider();
+            let host = session();
+            let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
+
+            assert!(
+                planner
+                    .plan(
+                        &route,
+                        &state,
+                        &program,
+                        &CapabilityPlan::empty(),
+                        "workspace",
+                        &LaunchLease::deny_all("lease"),
+                    )
+                    .is_err()
+            );
+            assert!(
+                !outside.path().join("prefix").exists(),
+                "planner must not bind a path through an attacker symlink"
+            );
+        }
+        {
+            let route = route(Layer::Proton);
+            let (_directory, store, state, program) = setup(&route);
+            let registry = TestHostRegistry("x86_64");
+            let host = session();
+            let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
+            let command = planner
+                .plan(
+                    &route,
+                    &state,
+                    &program,
+                    &CapabilityPlan::empty(),
+                    "workspace",
+                    &LaunchLease::deny_all("lease"),
+                )
+                .unwrap();
+            assert!(
+                command
+                    .bwrap_argv
+                    .windows(2)
+                    .any(|args| args == ["--", "/usr/bin/python3"])
+            );
+            assert!(
+                command
+                    .bwrap_argv
+                    .windows(3)
+                    .any(|args| { args == ["--setenv", "PROTON_NO_FSYNC", "1"] })
+            );
+            // Proton's script reads two kernel limits; Landlock lets it read those files alone,
+            // never the rest of the capsule's /proc.
+            for read in ["/proc/sys/fs/file-max", "/proc/sys/vm/max_map_count"] {
+                assert!(
+                    command
+                        .bwrap_argv
+                        .windows(2)
+                        .any(|args| args == ["--ro", read])
+                );
+            }
+            assert!(
+                !command
+                    .bwrap_argv
+                    .windows(2)
+                    .any(|args| args == ["--ro", "/proc"])
+            );
+            // Proton's Wine is held to the same system calls as Wine's.
+            assert_eq!(command.seccomp_profile, Some(SeccompProfile::TiloJit));
+            assert!(command.latency_sensitive);
+            assert!(
+                command
+                    .bwrap_argv
+                    .windows(3)
+                    .any(|args| { args == ["--dev-bind", "/dev/ntsync", "/dev/ntsync"] })
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod payload_tests {
+    use super::*;
+
+    fn proton() -> RuntimeImage {
+        SystemRuntimeRegistry::resolve_for_host(
+            Layer::Proton,
+            &Runner::new("umu-proton", PINNED_PROTON).unwrap(),
+            "x86_64",
+        )
+        .unwrap()
+    }
+
+    tilo_test_env::scenario! {
+        fn the_windows_payload_is_required_before_a_plan_binds_it;
+
+        phase a_device_without_windows_support_gets_an_install_instruction_not_a_failed_bind;
+        {
+            let error = require_payload(&proton(), |_| false).unwrap_err();
+            assert!(matches!(error, PlanError::WindowsSupportNotInstalled));
+            let message = error.to_string();
+            assert!(message.contains("not installed"), "{message}");
+            assert!(
+                message.contains("Windows apps in Settings"),
+                "the message names where to turn it on: {message}"
+            );
+            assert!(message.contains("Nothing was started"), "{message}");
+        }
+
+        phase a_merged_payload_plans_normally;
+        {
+            assert!(require_payload(&proton(), |_| true).is_ok());
+        }
+
+        phase only_payload_paths_are_probed_not_the_base_the_image_always_has;
+        {
+            let probed = std::cell::RefCell::new(Vec::new());
+            let _ = require_payload(&proton(), |path| {
+                probed.borrow_mut().push(path.to_path_buf());
+                true
+            });
+            let probed = probed.into_inner();
+            assert!(!probed.is_empty());
+            assert!(
+                probed
+                    .iter()
+                    .all(|path| { PAYLOAD_PATHS.iter().any(|prefix| path.starts_with(prefix)) })
+            );
+            assert!(probed.contains(&PathBuf::from(PROTON_HOST)));
+            assert!(!probed.contains(&PathBuf::from("/usr/bin/bwrap")));
+        }
+
+        phase production_registry_requires_the_payload_and_test_registry_does_not;
+        {
+            assert!(SystemRuntimeRegistry::new().require_payload);
+            assert!(!SystemRuntimeRegistry::assuming_provider().require_payload);
+        }
+
+        phase the_payload_paths_are_exactly_what_the_sysext_stage_packs;
+        {
+            let containerfile = include_str!("../../../../os/Containerfile");
+            for packed in [
+                "/tree/usr/lib/tilo/windows-runners/proton/",
+                "/payload/usr/lib/tilo/windows-runners",
+            ] {
+                assert!(containerfile.contains(packed), "{packed}");
+            }
+            // Proton starts on the system's libraries, never in the Steam
+            // Runtime's nested sandbox, so the runtime is not payload.
+            assert!(!containerfile.contains("steam-runtime"));
+            for host in [PROTON_HOST, X86_ROOTFS_HOST] {
+                assert!(
+                    PAYLOAD_PATHS.iter().any(|prefix| host.starts_with(prefix)),
+                    "{host}"
+                );
+            }
+        }
+    }
+}

@@ -98,6 +98,11 @@ impl SessionControl {
         self.wait_until(timeout, |state| state.finished).finished
     }
 
+    #[cfg(test)]
+    pub(crate) fn finished(&self) -> bool {
+        self.lock().finished
+    }
+
     fn wait_until(&self, timeout: Duration, done: impl Fn(&State) -> bool) -> Flags {
         let deadline = Instant::now().checked_add(timeout);
         let mut state = self.lock();
@@ -209,5 +214,47 @@ impl SessionContext {
 
     pub(crate) fn wait_stop(&self, timeout: Duration) -> bool {
         self.control.wait_stop(timeout)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stop_wakes_waiters_and_wakers_without_polling() {
+        let control = Arc::new(SessionControl::default());
+        let (woke_tx, woke_rx) = std::sync::mpsc::channel();
+        control.on_stop(move || {
+            let _ = woke_tx.send(());
+        });
+        let waiting = control.clone();
+        let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+        // A waiter the condvar failed to wake would wait out its hour.
+        std::thread::spawn(move || {
+            let _ = stopped_tx.send(waiting.wait_stop(Duration::from_secs(3600)));
+        });
+        control.expire_unless_ready(
+            Duration::from_millis(20),
+            "projection session did not become ready in time",
+        );
+        control.request_stop(None);
+        assert!(tilo_test_env::recv(
+            "the condvar to wake the waiter",
+            &stopped_rx
+        ));
+        tilo_test_env::recv("the registered waker", &woke_rx);
+        assert_eq!(
+            control.stop_reason(),
+            Some("projection session did not become ready in time")
+        );
+        let (late_tx, late_rx) = std::sync::mpsc::channel();
+        control.on_stop(move || {
+            let _ = late_tx.send(());
+        });
+        late_rx.try_recv().expect("late waker ran immediately");
+        assert!(!control.finished());
+        control.mark_finished();
+        assert!(control.wait_finished(Duration::ZERO));
     }
 }

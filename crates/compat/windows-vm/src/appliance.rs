@@ -676,3 +676,361 @@ pub enum LaunchError {
     #[error("capability broker failed: {0}")]
     CapabilityBroker(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::sync::Mutex;
+
+    use tempfile::TempDir;
+
+    use crate::{
+        AgentHealth, Association, AssociationKind, GuestLaunch, GuestSession, LicenseState,
+        PublishedApplication, RdpEndpoint, Secret,
+    };
+
+    use super::*;
+
+    struct Backend(DomainState);
+
+    impl VmBackend for Backend {
+        fn ensure_singleton(&self, _: &ApplianceConfig) -> Result<(), VmBackendError> {
+            Ok(())
+        }
+        fn state(&self, _: &ApplianceConfig) -> Result<DomainState, VmBackendError> {
+            Ok(self.0)
+        }
+        fn start(&self, _: &ApplianceConfig) -> Result<(), VmBackendError> {
+            Ok(())
+        }
+        fn retire_installation_media(&self, _: &ApplianceConfig) -> Result<(), VmBackendError> {
+            Ok(())
+        }
+    }
+
+    struct Agent {
+        available: bool,
+        alias_on_launch: String,
+    }
+
+    impl GuestAgent for Agent {
+        fn wait_ready(&self, _: Duration) -> Result<GuestSession, AgentError> {
+            if !self.available {
+                return Err(AgentError::Unavailable);
+            }
+            Ok(GuestSession {
+                id: "session".to_string(),
+                health: AgentHealth {
+                    protocol_major: 1,
+                    guest_boot_id: "boot".to_string(),
+                    catalog_generation: 2,
+                    license: LicenseState::DigitallyActivated,
+                },
+            })
+        }
+
+        fn catalog(&self, _: &GuestSession) -> Result<Catalog, AgentError> {
+            Ok(Catalog {
+                generation: 2,
+                applications: vec![PublishedApplication {
+                    id: "word".to_string(),
+                    display_name: "Word".to_string(),
+                    remote_app_alias: "tilo-word".to_string(),
+                    icon_sha256: None,
+                    associations: vec![Association {
+                        kind: AssociationKind::Extension,
+                        value: ".docx".to_string(),
+                    }],
+                    uninstall_available: false,
+                }],
+            })
+        }
+
+        fn prepare_launch(
+            &self,
+            _: &GuestSession,
+            _: &str,
+            _: Option<&crate::GuestNetworkBinding>,
+        ) -> Result<GuestLaunch, AgentError> {
+            Ok(GuestLaunch {
+                endpoint: RdpEndpoint {
+                    address: (IpAddr::V4(Ipv4Addr::LOCALHOST), 3389).into(),
+                    username: "tilo".to_string(),
+                    certificate_sha256: "a".repeat(64),
+                },
+                password: Secret::new(b"secret".to_vec()),
+                remote_app_alias: self.alias_on_launch.clone(),
+                launch_nonce: "nonce".to_string(),
+                presentation: crate::ApplicationPresentation::NativeRail,
+            })
+        }
+    }
+
+    struct Broker {
+        launch: BrokeredLaunch,
+        revoked: Mutex<Vec<String>>,
+    }
+
+    impl CapabilityBroker for Broker {
+        fn materialize(&self, _: &LaunchRequest) -> Result<BrokeredLaunch, LaunchError> {
+            Ok(self.launch.clone())
+        }
+
+        fn revoke(&self, lease_id: &str) {
+            self.revoked.lock().unwrap().push(lease_id.to_string());
+        }
+    }
+
+    struct Launcher;
+
+    impl RemoteAppLauncher for Launcher {
+        fn launch(
+            &self,
+            _: &crate::Shown<'_>,
+            _: &GuestLaunch,
+            _: &BrokeredLaunch,
+        ) -> Result<RemoteAppProcess, RemoteAppError> {
+            Ok(RemoteAppProcess { exit_code: Some(0) })
+        }
+    }
+
+    fn fixture(
+        directory: &TempDir,
+        agent: Agent,
+        brokered: BrokeredLaunch,
+    ) -> WindowsAppliance<Backend, Agent, Broker, Launcher> {
+        let store = ProvisioningStore::new(directory.path().join("state.json"));
+        store
+            .save(&ApplianceState {
+                schema_version: 1,
+                phase: crate::AppliancePhase::Ready,
+                license: LicenseState::DigitallyActivated,
+                catalog_generation: 1,
+                cached_catalog: None,
+                setup: None,
+            })
+            .unwrap();
+        WindowsAppliance::new(
+            ApplianceConfig::recommended(
+                "01234567-89ab-cdef-0123-456789abcdef",
+                "/var/lib/tilo/windows/system.qcow2",
+                "/var/lib/tilo/windows/nvram.fd",
+            ),
+            store,
+            Backend(DomainState::Running),
+            agent,
+            Broker {
+                launch: brokered,
+                revoked: Mutex::new(Vec::new()),
+            },
+            Launcher,
+        )
+    }
+
+    fn request() -> LaunchRequest {
+        LaunchRequest {
+            workspace_id: "workspace-1".to_string(),
+            application_id: "word".to_string(),
+            grants: VmLaunchGrants::default(),
+        }
+    }
+
+    #[test]
+    fn appliance_launches_require_an_available_guest_and_published_unchanged_apps() {
+        {
+            let directory = TempDir::new().unwrap();
+            let appliance = fixture(
+                &directory,
+                Agent {
+                    available: false,
+                    alias_on_launch: "tilo-word".to_string(),
+                },
+                BrokeredLaunch::deny_all("lease"),
+            );
+            assert!(matches!(
+                appliance.launch(&request()),
+                Err(LaunchError::Agent(AgentError::Unavailable))
+            ));
+        }
+        {
+            let directory = TempDir::new().unwrap();
+            let appliance = fixture(
+                &directory,
+                Agent {
+                    available: true,
+                    alias_on_launch: "tilo-word".to_string(),
+                },
+                BrokeredLaunch::deny_all("lease"),
+            );
+            let mut bad = request();
+            bad.application_id = "arbitrary-exe".to_string();
+            assert!(matches!(
+                appliance.launch(&bad),
+                Err(LaunchError::ApplicationNotPublished(_))
+            ));
+        }
+        {
+            let directory = TempDir::new().unwrap();
+            let appliance = fixture(
+                &directory,
+                Agent {
+                    available: true,
+                    alias_on_launch: "tilo-different".to_string(),
+                },
+                BrokeredLaunch::deny_all("lease"),
+            );
+            assert!(matches!(
+                appliance.launch(&request()),
+                Err(LaunchError::PublicationChanged)
+            ));
+            assert_eq!(
+                appliance.capabilities.revoked.lock().unwrap().as_slice(),
+                ["lease"]
+            );
+        }
+    }
+
+    #[test]
+    fn brokers_cannot_widen_portal_documents_handles_or_clipboard() {
+        {
+            let directory = TempDir::new().unwrap();
+            let appliance = fixture(
+                &directory,
+                Agent {
+                    available: true,
+                    alias_on_launch: "tilo-word".to_string(),
+                },
+                BrokeredLaunch {
+                    lease_id: "lease".to_string(),
+                    network: false,
+                    network_binding: None,
+                    clipboard: false,
+                    microphone: false,
+                    shares: vec![ShareBinding {
+                        drive_name: "TILO1".to_string(),
+                        portal_document_id: "portal-document".to_string(),
+                        host_path: crate::portal_lease_root().join("lease/document"),
+                        read_only: false,
+                    }],
+                },
+            );
+            let mut request = request();
+            request.grants.portal_documents = vec![PortalDocumentGrant {
+                handle: "portal-document".to_string(),
+                access: PortalDocumentAccess::ReadOnly,
+            }];
+            assert!(matches!(
+                appliance.launch(&request),
+                Err(LaunchError::BrokerEscalated("files"))
+            ));
+        }
+        {
+            let directory = TempDir::new().unwrap();
+            let appliance = fixture(
+                &directory,
+                Agent {
+                    available: true,
+                    alias_on_launch: "tilo-word".to_string(),
+                },
+                BrokeredLaunch::deny_all("lease"),
+            );
+            let mut request = request();
+            request.grants.portal_documents = vec![
+                PortalDocumentGrant {
+                    handle: "portal-document".to_string(),
+                    access: PortalDocumentAccess::ReadOnly,
+                },
+                PortalDocumentGrant {
+                    handle: "portal-document".to_string(),
+                    access: PortalDocumentAccess::ReadWrite,
+                },
+            ];
+            assert!(matches!(
+                appliance.launch(&request),
+                Err(LaunchError::InvalidRequest("portal document id"))
+            ));
+        }
+        {
+            let directory = TempDir::new().unwrap();
+            let appliance = fixture(
+                &directory,
+                Agent {
+                    available: true,
+                    alias_on_launch: "tilo-word".to_string(),
+                },
+                BrokeredLaunch {
+                    lease_id: "lease".to_string(),
+                    network: false,
+                    network_binding: None,
+                    clipboard: true,
+                    microphone: false,
+                    shares: Vec::new(),
+                },
+            );
+            assert!(matches!(
+                appliance.launch(&request()),
+                Err(LaunchError::BrokerEscalated("clipboard"))
+            ));
+            assert_eq!(
+                appliance.capabilities.revoked.lock().unwrap().as_slice(),
+                ["lease"]
+            );
+        }
+    }
+
+    #[test]
+    fn the_passive_catalogue_cache_is_authenticated_and_never_wakes_the_guest() {
+        {
+            let directory = TempDir::new().unwrap();
+            let appliance = fixture(
+                &directory,
+                Agent {
+                    available: true,
+                    alias_on_launch: "tilo-word".to_string(),
+                },
+                BrokeredLaunch::deny_all("lease"),
+            );
+            let fresh = appliance.catalog().unwrap();
+            assert_eq!(fresh.generation, 2);
+
+            let cached = appliance.cached_catalog().unwrap().unwrap();
+            assert_eq!(cached, fresh);
+            assert_eq!(appliance.state.load().unwrap().catalog_generation, 2);
+        }
+        {
+            let directory = TempDir::new().unwrap();
+            let appliance = fixture(
+                &directory,
+                Agent {
+                    available: false,
+                    alias_on_launch: "tilo-word".to_string(),
+                },
+                BrokeredLaunch::deny_all("lease"),
+            );
+            let cached = Catalog {
+                generation: 1,
+                applications: vec![PublishedApplication {
+                    id: "word".to_string(),
+                    display_name: "Word".to_string(),
+                    remote_app_alias: "tilo-word".to_string(),
+                    icon_sha256: None,
+                    associations: Vec::new(),
+                    uninstall_available: false,
+                }],
+            };
+            appliance
+                .state
+                .save(&ApplianceState {
+                    schema_version: 1,
+                    phase: crate::AppliancePhase::Ready,
+                    license: LicenseState::DigitallyActivated,
+                    catalog_generation: 1,
+                    cached_catalog: Some(cached.clone()),
+                    setup: None,
+                })
+                .unwrap();
+
+            assert_eq!(appliance.cached_catalog().unwrap(), Some(cached));
+        }
+    }
+}
