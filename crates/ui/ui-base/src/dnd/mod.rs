@@ -53,7 +53,7 @@ pub fn uri_list(paths: &[PathBuf]) -> String {
     for uri in paths
         .iter()
         .filter(|path| path.is_absolute())
-        .filter_map(|path| media::source::path_to_file_uri(path).ok())
+        .filter_map(|path| file_uri(path))
     {
         out.push_str(&uri);
         out.push_str("\r\n");
@@ -110,7 +110,7 @@ pub fn copied_files(mime: &str, body: &str) -> CopiedFiles {
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .filter_map(|line| media::source::file_uri_to_path(line).ok())
+            .filter_map(file_path)
             .collect(),
         cut,
     }
@@ -245,6 +245,30 @@ fn start_drag_with(offers: Vec<(String, Offer)>) -> bool {
         let _ = (window, offers);
         false
     }
+}
+
+/// The `file://` URI naming the absolute `path`, percent-encoding what a URI cannot carry.
+#[cfg(any(unix, windows))]
+fn file_uri(path: &Path) -> Option<String> {
+    url::Url::from_file_path(path).ok().map(String::from)
+}
+
+/// A host without local paths has no file URI for one.
+#[cfg(not(any(unix, windows)))]
+fn file_uri(_path: &Path) -> Option<String> {
+    None
+}
+
+/// The local path a `file://` URI names.
+#[cfg(any(unix, windows))]
+fn file_path(uri: &str) -> Option<PathBuf> {
+    url::Url::parse(uri).ok()?.to_file_path().ok()
+}
+
+/// A host without local paths has none for a file URI.
+#[cfg(not(any(unix, windows)))]
+fn file_path(_uri: &str) -> Option<PathBuf> {
+    None
 }
 
 #[cfg(test)]

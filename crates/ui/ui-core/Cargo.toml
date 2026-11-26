@@ -78,11 +78,11 @@ test-support = ["tilo-process-services/test-support", "collaboration?/test-suppo
 # `media`'s GStreamer real-time decoder. Apps that stream video enable
 # `media/realtime` themselves; this feature exists so the widget's own tests
 # can exercise the path.
-realtime-video = ["media/realtime", "tilo-ui-base/realtime-video"]
+realtime-video = ["media/realtime"]
 # File and stream decode in `VideoPlayer` (its `MediaEngine`): `media`'s GStreamer `playbin`
 # backend. A host that draws a declared `ui.VideoPlayer` enables this so the video a person
 # opened actually plays; a build without it (layout checks, the web) leaves the decoder out.
-decode = ["media/decode", "tilo-ui-base/decode"]
+decode = ["media/decode"]
 presentation-feedback = ["dep:wgpu-hal", "tilo-ui-base/presentation-feedback"]
 # Persist DXC-compiled shaders between runs on Windows. It needs the patched
 # wgpu-hal (vendor/wgpu-hal), which crates.io does not have, so it stays off

@@ -28,14 +28,14 @@ default = ["native", "broker-transport"]
 # history and undo, presence, search and the resource-backed views. Without
 # it the crate is a UI toolkit that knows nothing about Tilo. `tilo-app` turns
 # it on.
-model = ["dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-automerge", "tilo-doc/model", "dep:tilo-desktop-model", "dep:fs-protocol", "dep:tilo-reference", "settings-model/model", "tilo-process-services/models", "tilo-actions/document-read"]
+model = ["dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-automerge", "tilo-doc/model", "dep:tilo-reference", "settings-model/model", "tilo-process-services/models", "tilo-actions/document-read"]
 # The native runner and its services: the winit event loop with its
 # AccessKit adapter, the Wayland clipboard, the OS URI handler, startup
 # warmup, the system appearance a standalone app follows, and the
 # `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::process::ProcessServices`.
-native = ["local-daemons", "collaboration?/native", "tilo-process-services/native", "tilo-process-services/system-status", "dep:tilo-appearance", "tilo-appearance/host-portals", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store?/watch"]
+native = ["local-daemons", "collaboration?/native", "tilo-process-services/native", "tilo-process-services/system-status", "dep:tilo-appearance", "tilo-appearance/host-portals", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store?/watch"]
 # X11 windows (winit's X11 backend), for development builds on an X11 host:
 # `cargo run -p <app> --features ui/x11` (through `tilo-app`'s `x11`). Every
 # Tilo app runs as a Wayland client in its sandbox, so the shared runtime
@@ -74,15 +74,6 @@ broker-transport = ["local-daemons", "collaboration?/broker-transport", "runtime
 # fixtures a test draws with ([`headless::Driver::mount`], the pinned font
 # catalogue) come with it.
 test-support = ["tilo-process-services/test-support", "collaboration?/test-support", "dep:tilo-test-env", "runtime-collab?/settings-host"]
-# Push-mode decode in `VideoPlayer` (`feed_frame` / `feed_encoded`) through
-# `media`'s GStreamer real-time decoder. Apps that stream video enable
-# `media/realtime` themselves; this feature exists so the widget's own tests
-# can exercise the path.
-realtime-video = ["media/realtime"]
-# File and stream decode in `VideoPlayer` (its `MediaEngine`): `media`'s GStreamer `playbin`
-# backend. A host that draws a declared `ui.VideoPlayer` enables this so the video a person
-# opened actually plays; a build without it (layout checks, the web) leaves the decoder out.
-decode = ["media/decode"]
 presentation-feedback = ["dep:wgpu-hal"]
 # Persist DXC-compiled shaders between runs on Windows. It needs the patched
 # wgpu-hal (vendor/wgpu-hal), which crates.io does not have, so it stays off
@@ -146,14 +137,10 @@ fnv.workspace = true
 # native backends. Re-exported under the toolkit's own module paths.
 tilo-process-services = { version = "0.1.0", path = "../../sdk/tilo-process-services", default-features = false }
 tilo-ui-paint = { version = "0.1.0", path = "../ui-paint" }
-# Brush presets and stroke geometry, so a stroke is previewed while it is
-# drawn by the same code that bakes it.
-tilo-paint-strokes = { version = "0.1.0", path = "../../engines/paint-strokes" }
 # The web engine client the `WebView` widget displays: the Chromium helper transport,
 # the page protocol and their commands, so code that talks to a web engine links that
 # crate instead of the toolkit.
 tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview" }
-tilo-page-engine = { version = "0.1.0", path = "../../engines/page-engine" }
 # The part painter interface every painter set draws through (`part_paint`).
 tilo-theme-sdk = { version = "0.1.0", path = "../theme-sdk" }
 # The interpreter a theme's painter sets loaded from wasm run on
@@ -165,16 +152,9 @@ tilo-theme-painter-wasm = { version = "0.1.0", path = "../theme-painter-wasm" }
 # crate, and every app's field offers emoji by default. A workspace's own
 # emoji are added to it (`workspace_emoji`), never a replacement for it.
 emoji = { package = "tilo-emoji", version = "0.1.0", path = "../emoji" }
-# The paint stream: a page as a layered display list the WebView can draw
-# instead of the engine's pixels, natively and in the WASM client alike. Its
-# SVG parser (`svg`, usvg) is native only, below: the browser toolkit core
-# leaves it out, so `Image::from_svg` there finds no supported artwork.
-tilo-paint-stream = { version = "0.1.0", path = "../../engines/paint-stream" }
 # The system's light/dark, accent, contrast and motion preferences, which a
 # standalone app outside Tilo OS follows (`host_appearance`).
 tilo-appearance = { version = "0.1.0", path = "../../platform/tilo-appearance", optional = true }
-# A host search result the OS wakes this app for goes to the runtime.
-tilo-host-search = { version = "0.1.0", path = "../../integrations/tilo-host-search", optional = true }
 # Test builds bound their waits with the shared hang bound.
 tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env", optional = true }
 tilo-advisory-lock = { version = "0.1.0", path = "../../platform/advisory-lock" }
@@ -191,18 +171,7 @@ tilo-cpu-raster = { version = "0.1.0", path = "../tilo-cpu-raster" }
 # The content store a host lends a component (`ProcessContext::content`), in every
 # build.
 tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false }
-# A workspace file is its content manifest, and its bytes decide the app that
-# opens it (`content.rs`): both are content operations an app names through
-# the toolkit.
-fs-content = { package = "tilo-fs-content", version = "0.1.0", path = "../../core/fs-content" }
-tilo-content-types = { version = "0.1.0", path = "../../core/content-types" }
-# The `native` build takes the launcher's content-store capability at launch
-# (`launch.rs`).
-tilo-content-device = { version = "0.1.0", path = "../../core/content-device" }
 tilo-ui-graph = { version = "0.1.0", path = "../ui-graph" }
-# tilolang's own lexer colours its programs (`code_editor::tilolang`): the language
-# without its compiler, which stays out of the SDK.
-tilolang-lex = { version = "0.1.0", path = "../../lang/tilolang-lex" }
 tilo-ui-macros = { version = "0.1.0", path = "../ui-macros" }
 tilo-font-catalog = { version = "0.1.0", path = "../../platform/font-catalog" }
 settings-store = { package = "tilo-settings-store", version = "0.1.0", path = "../../desktop/settings", optional = true }
@@ -308,19 +277,11 @@ uuid.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 tilo-image-codec = { version = "0.1.0", path = "../../engines/tilo-image-codec" }
 jiff.workspace = true
-# Shared Tilo media layer. The `VideoPlayer` widget owns a `media::MediaEngine`
-# and pulls frames from it; `media`'s default (no `decode`) build carries no
-# gstreamer dependency, so `ui`'s hermetic build / `--shots` / CI stay green.
-# An app that wants real decode enables `media/decode` in its own manifest.
-media = { version = "0.1.0", package = "tilo-media", path = "../../engines/tilo-media" }
 # Shared collaboration types used by the history/conflict/channel widgets and
 # by the signed wire envelopes carried by
 # `CollabRequest::SignedSyncIncremental` /
 # `CollabEvent::SignedCRDTIncremental`.
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types", optional = true }
-# The collaborative filesystem's records and history protocol, read by the
-# file history and conflict widgets.
-fs-protocol = { package = "tilo-fs-protocol", version = "0.1.0", path = "../../core/fs-protocol", optional = true }
 # The document engine's line breaks, paragraphs and paging, which text layout
 # reads in every build. With `model` (its `model` feature), `history_source`
 # also materialises past versions with `tilo_doc::snapshot::at` and writes each
@@ -346,8 +307,6 @@ tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
 tilo-presence = { version = "0.1.0", path = "../../platform/tilo-presence" }
 # Who sits at this device: the identity a host installs, read with or without the model.
 tilo-local-identity = { version = "0.1.0", path = "../../platform/local-identity" }
-# Window-group widths and drop targets are the layout model's own types.
-tilo-desktop-model = { version = "0.1.0", path = "../../desktop/desktop-model", optional = true }
 # Direct dep on the Ed25519 implementation `tilo-collab-types` uses so
 # the toolkit can name its `SigningKey` without reaching into the
 # tilo-collab-types private module path. Pinned
@@ -495,9 +454,6 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
 
 # Private files need an OS; the browser supplies them through its host instead.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# The paint stream's host side turns SVG images into vector items, so a page's
-# logos reach every client as paths rather than as bytes it cannot decode.
-tilo-paint-stream = { version = "0.1.0", path = "../../engines/paint-stream", features = ["svg"] }
 # Hyphenation patterns for every language. The browser toolkit core keeps
 # English and German only (the common table): the rest would add about 1 MB
 # downloaded before anything runs; other languages there are not hyphenated.
