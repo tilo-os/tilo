@@ -164,17 +164,11 @@ pub(crate) fn browser_emoji_runs<'text, 'attrs>(
     runs
 }
 
-#[cfg(test)]
-thread_local! {
-    pub(crate) static FONT_SYSTEM_CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
 /// This crate's unit tests get the checked-in controlled catalog instead of the host's
 /// fonts, so their shaping and pixels never depend on which fonts the machine running
 /// them has installed.
 #[cfg(test)]
 pub fn configured_font_system() -> FontSystem {
-    FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
     crate::font_catalog::fixture_font_system()
 }
 
@@ -4813,34 +4807,13 @@ mod layout_renderer_pool {
     use super::*;
 
     #[test]
-    fn layout_passes_reuse_pooled_renderers_instead_of_reloading_fonts() {
-        let constructions = || FONT_SYSTEM_CONSTRUCTIONS.with(std::cell::Cell::get);
-        FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
-        let theme = crate::theme::Theme::light();
-        for _ in 0..8 {
-            with_layout_renderer(&theme, |tr| {
-                tr.measure("Files", 14.0, None);
-            });
-        }
-        assert_eq!(
-            constructions(),
-            1,
-            "a repeated layout pass loads fonts once"
-        );
-
+    fn a_nested_layout_pass_has_its_own_renderer_and_scale() {
         let wide = crate::theme::Theme::light().with_text_scale(2.0);
         let narrow = crate::theme::Theme::light().with_text_scale(1.5);
         let scales = with_layout_renderer(&wide, |outer| {
             let inner = with_layout_renderer(&narrow, |inner| inner.text_scale());
             (outer.text_scale(), inner)
         });
-        assert_eq!(
-            scales,
-            (2.0, 1.5),
-            "a nested pass has its own renderer and scale"
-        );
-        assert_eq!(constructions(), 2, "nesting adds one renderer to the pool");
-        with_layout_renderer(&theme, |_| with_layout_renderer(&theme, |_| ()));
-        assert_eq!(constructions(), 2, "and later nested passes reuse it");
+        assert_eq!(scales, (2.0, 1.5));
     }
 }

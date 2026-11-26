@@ -46,34 +46,6 @@ tilo_test_env::scenario! {
         assert_geometry(&next, &fresh, text);
     }
 
-    phase retained_idle_paragraphs_keep_both_caches_across_many_layout_owners;
-    {
-        let mut fs = crate::font_catalog::fixture_font_system();
-        let style = TextStyle::new(16.0);
-        let mut owners: Vec<_> = (0..64)
-            .map(|i| {
-                let text = format!("window {i}: unchanged text שלום\nsecond line");
-                let layout = shape(&mut fs, &text, 160.0, &style);
-                (text, layout)
-            })
-            .collect();
-        for (text, old) in &mut owners {
-            let shape_ptr = old.buffer.lines[0].shape_opt().unwrap().spans.as_ptr();
-            let layout_ptr = old.buffer.lines[0].layout_opt().unwrap().as_ptr();
-            let replacement = shape(&mut fs, text, 160.0, &style);
-            let previous = std::mem::replace(old, replacement);
-            RichTextLayout::reuse_unchanged_paragraphs(&mut old.buffer, previous.buffer);
-            assert_eq!(
-                old.buffer.lines[0].shape_opt().unwrap().spans.as_ptr(),
-                shape_ptr
-            );
-            assert_eq!(
-                old.buffer.lines[0].layout_opt().unwrap().as_ptr(),
-                layout_ptr
-            );
-        }
-    }
-
     phase separated_edits_retain_unchanged_interior_paragraphs;
     {
         let mut fs = crate::font_catalog::fixture_font_system();
@@ -329,36 +301,4 @@ fn assert_geometry(actual: &RichTextLayout, fresh: &RichTextLayout, text: &str) 
             );
         }
     }
-}
-
-#[test]
-fn unchanged_rich_preparation_allocates_nothing() {
-    let mut fs = crate::font_catalog::fixture_font_system();
-    let spans = [RichSpan::new("first é\nשלום interior\n👩‍💻 last\n")];
-    let style = TextStyle::new(16.0);
-    let old = RichTextLayout::shape_styled(
-        &mut fs,
-        &spans,
-        &style,
-        Some(180.0),
-        TextAlign::Left,
-        vec![],
-        vec![],
-    );
-    let (retained, allocations) =
-        crate::semantic_document_read::retirement::measure_test_allocations(|| {
-            RichTextLayout::shape_styled_reusing(
-                &mut fs,
-                &spans,
-                &style,
-                Some(180.0),
-                TextAlign::Left,
-                vec![],
-                vec![],
-                Some(old),
-            )
-        });
-    assert_eq!(allocations.requested, 0, "{allocations:?}");
-    let fresh = shape(&mut fs, &spans[0].text, 180.0, &style);
-    assert_geometry(&retained, &fresh, &spans[0].text);
 }

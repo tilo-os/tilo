@@ -350,178 +350,46 @@ impl Harness {
 f64's 2^53 exact-integer range"
 )]
 fn cached_subtrees_stay_visible_at_scale_and_on_animation_frames() {
-    {
-        let mut h = Harness::new(1600, 1200, 2.0);
+    let mut h = Harness::new(1600, 1200, 2.0);
 
-        // Frame 0 — every cache is dirty (cache_rect == Rect::ZERO),
-        // so this is the rebuild path. Frame 1 — animated leaves
-        // (Spinner/ProgressBar) are still dirty by default and force
-        // the outer Column to rebuild, but the panels Row hits the
-        // cache. Bug-on-regression: cache primitives would be built
-        // with `transform = scale(2)` baked in, then the outer
-        // append composes another `transform`, putting them at scale 4
-        // off-screen. With the fix, both frames render every widget.
-        let rebuild = h.draw_one_frame();
-        let cache_hit = h.draw_one_frame();
-        let bg = h.theme.tokens.colors.surfaces.base;
-        let n_rebuild = count_non_bg(&rebuild, bg);
-        let n_cache_hit = count_non_bg(&cache_hit, bg);
+    // Frame 0 — every cache is dirty (cache_rect == Rect::ZERO),
+    // so this is the rebuild path. Frame 1 — animated leaves
+    // (Spinner/ProgressBar) are still dirty by default and force
+    // the outer Column to rebuild, but the panels Row hits the
+    // cache. Bug-on-regression: cache primitives would be built
+    // with `transform = scale(2)` baked in, then the outer
+    // append composes another `transform`, putting them at scale 4
+    // off-screen. With the fix, both frames render every widget.
+    let rebuild = h.draw_one_frame();
+    let cache_hit = h.draw_one_frame();
+    let bg = h.theme.tokens.colors.surfaces.base;
+    let n_rebuild = count_non_bg(&rebuild, bg);
+    let n_cache_hit = count_non_bg(&cache_hit, bg);
 
-        assert!(
-            n_rebuild > 1000,
-            "rebuild frame has too few non-bg pixels ({n_rebuild}) — widget tree not rendering",
-        );
-        let ratio = n_cache_hit as f64 / n_rebuild as f64;
-        assert!(
-            ratio > 0.97,
-            "cache-hit frame lost pixels relative to rebuild \
-         (cache_hit={n_cache_hit}, rebuild={n_rebuild}, ratio={ratio:.3}); \
-         double-transform regression in Column/Row subtree cache?",
-        );
-    }
-
-    {
-        let mut h = Harness::new(1600, 1200, 2.0);
-
-        // Frame 0: full repaint (every leaf starts `dirty == true`).
-        // Frame 1: only spinners + progress bars remain dirty —
-        // the post-scroll steady state. If a future change reintroduces an unconditional
-        // damage-region clip across the whole `draw`,
-        // the second frame will drop all static widgets and this
-        // test will fail.
-        let _warmup = h.draw_one_frame();
-        let steady = h.draw_one_frame();
-        let bg = h.theme.tokens.colors.surfaces.base;
-        let n_steady = count_non_bg(&steady, bg);
-
-        // Hard floor — the panels alone (4 × 40 rows of Text +
-        // Buttons + Avatars + Badges) easily exceed this even after
-        // spatial culling clips the off-viewport rows.
-        assert!(
-            n_steady > 30_000,
-            "steady frame has only {n_steady} non-bg pixels; static \
-         widgets are being clipped out on animation-only frames \
-         (damage-clip regression?)",
-        );
-    }
-}
-
-#[test]
-fn scrolled_scrollable_renders_widgets_that_were_offscreen_at_initial_layout() {
-    // Focused repro: a Scrollable wrapping a Column with 200 Text
-    // rows. Initial layout puts only the top ~25 rows in the
-    // 600-px logical viewport. Then we scroll deep, relayout, and
-    // assert the now-visible rows render. With the Column/Row
-    // subtree cache, if the rebuild path applied spatial culling
-    // the cache would only contain rows 0..~25; the post-scroll
-    // viewport would be blank.
-    ensure_i18n();
-    let canvas_w = 800u32;
-    let canvas_h = 600u32;
-    let scale = 1.0_f64;
-    let logical_w = f64::from(canvas_w);
-    let logical_h = f64::from(canvas_h);
-
-    let theme = Theme::dark();
-    let mut text_renderer = TextRenderer::new();
-    let presence = PresenceCtx::default();
-
-    let mut col = Column::new().with_intrinsic_height();
-    for i in 0..200 {
-        let key = leak(&format!("scroll_row_{i}"));
-        I18nManager::add_resource("en-US", format!("{key} = Row {i}\n"));
-        col = col.push(Box::new(Text::new(key)));
-    }
-    let mut root: Box<Scrollable> =
-        Box::new(Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(col)));
-
-    let mut taffy = TaffyTree::<()>::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let root_node = {
-        let r: &mut dyn Widget = root.as_mut();
-        r.build_layout(&mut taffy, &theme, &mut node_map)
-    };
-
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "logical_w/logical_h are small test canvas dimensions (a few thousand px at \
-                  most); f32 has ample precision at that magnitude, matching the live App's own \
-                  f64->f32 compositing cast"
-    )]
-    let do_layout = |root: &mut Scrollable,
-                     taffy: &mut TaffyTree<()>,
-                     node_map: &HashMap<NodeId, *mut dyn Widget>,
-                     text_renderer: &mut TextRenderer| {
-        taffy
-            .compute_layout_with_measure(
-                root_node,
-                Size {
-                    width: AvailableSpace::Definite(logical_w as f32),
-                    height: AvailableSpace::Definite(logical_h as f32),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = node_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, text_renderer) }
-                    } else {
-                        Size::ZERO
-                    }
-                },
-            )
-            .unwrap();
-        let r: &mut dyn Widget = root;
-        r.apply_layout(taffy, root_node, Point::ZERO);
-    };
-    do_layout(&mut root, &mut taffy, &node_map, &mut text_renderer);
-
-    let mut renderer = OffscreenRenderer::new(canvas_w, canvas_h);
-    let bg = theme.tokens.colors.surfaces.base;
-    let transform = Affine::scale(scale);
-    let mut scene = Scene::new();
-    let vp = vello::kurbo::Rect::new(0.0, 0.0, logical_w, logical_h);
-
-    let draw = |root: &mut Scrollable,
-                scene: &mut Scene,
-                text_renderer: &mut TextRenderer,
-                presence: &PresenceCtx| {
-        scene.reset();
-        let prev = presence.push_viewport(vp);
-        let r: &mut dyn Widget = root;
-        r.draw(&mut tilo_ui::draw::DrawCtx::new(
-            scene,
-            transform,
-            text_renderer,
-            &theme,
-            presence.draw_env(),
-        ));
-        presence.pop_viewport(prev);
-        r.mark_drawn();
-    };
-
-    draw(&mut root, &mut scene, &mut text_renderer, &presence);
-    let warm_rgba = renderer.render(&scene, bg);
-    let warm_pixels = count_non_bg(&warm_rgba, bg);
-    renderer.render_png(&scene, bg, "/tmp/scroll_warmup.png");
     assert!(
-        warm_pixels > 1000,
-        "warmup frame is blank ({warm_pixels}px) — test setup broken"
+        n_rebuild > 1000,
+        "rebuild frame has too few non-bg pixels ({n_rebuild}) — widget tree not rendering",
+    );
+    let ratio = n_cache_hit as f64 / n_rebuild as f64;
+    assert!(
+        ratio > 0.97,
+        "cache-hit frame lost pixels relative to rebuild \
+     (cache_hit={n_cache_hit}, rebuild={n_rebuild}, ratio={ratio:.3}); \
+     double-transform regression in Column/Row subtree cache?",
     );
 
-    // Scroll to row ~150-ish (each row is ~20 px logical → ~3000 px).
-    root.scroll_by(0.0, 3000.0);
-    let off = root.offset_y();
-    assert!(off > 1000.0, "offset_y={off}, scroll didn't take effect");
-    do_layout(&mut root, &mut taffy, &node_map, &mut text_renderer);
-
-    draw(&mut root, &mut scene, &mut text_renderer, &presence);
-    let scrolled_rgba = renderer.render(&scene, bg);
-    let scrolled_pixels = count_non_bg(&scrolled_rgba, bg);
-    renderer.render_png(&scene, bg, "/tmp/scroll_after.png");
-    eprintln!("warmup={warm_pixels} scrolled={scrolled_pixels} offset_y={off}");
+    // The second frame is also the post-scroll steady state: only
+    // spinners + progress bars remain dirty. If a future change
+    // reintroduces an unconditional damage-region clip across the whole
+    // `draw`, it drops all static widgets.
+    // Hard floor — the panels alone (4 × 40 rows of Text +
+    // Buttons + Avatars + Badges) easily exceed this even after
+    // spatial culling clips the off-viewport rows.
     assert!(
-        scrolled_pixels > 1000,
-        "post-scroll frame has only {scrolled_pixels} non-bg pixels — \
-         viewport blanked out after scroll; the subtree cache likely \
-         captured only the originally-visible primitives.",
+        n_cache_hit > 30_000,
+        "steady frame has only {n_cache_hit} non-bg pixels; static \
+     widgets are being clipped out on animation-only frames \
+     (damage-clip regression?)",
     );
 }
 

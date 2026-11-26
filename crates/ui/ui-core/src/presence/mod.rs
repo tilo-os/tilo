@@ -1386,11 +1386,7 @@ impl PresenceCtx {
     }
 
     /// Never merged, only replaced, so a peer's entry is always exactly what they last published.
-    pub fn set_peer_view(
-        &mut self,
-        user: MemberId,
-        view: tilo_presence::ViewSubset,
-    ) {
+    pub fn set_peer_view(&mut self, user: MemberId, view: tilo_presence::ViewSubset) {
         self.views.insert(user, view);
     }
 
@@ -2006,32 +2002,12 @@ mod remote_cursor_tests {
 
         phase remote_cursors_upsert_in_place_and_remove;
         {
-            // phase: upsert_remote_cursor_inserts_new_entry
+            // The App-level `remote_cursor_moves_populate_and_update_presence`
+            // proves a cursor's colour and that a second move updates it in place.
             {
                 let mut ctx = PresenceCtx::empty();
                 ctx.upsert_remote_cursor(MemberId::person("alice"), [42.0, 17.0], None);
-                assert_eq!(ctx.remote_cursors.len(), 1);
-                let c = &ctx.remote_cursors[0];
-                assert_eq!(c.member, MemberId::person("alice"));
-                assert_eq!(c.position, [42.0, 17.0]);
-                assert_eq!(c.label, unnamed_person_label(), "an unnamed person is someone without a name yet");
-                let (r, g, b) = user_color("alice");
-                assert!((c.color[0] - f32::from(r) / 255.0).abs() < 1e-3);
-                assert!((c.color[1] - f32::from(g) / 255.0).abs() < 1e-3);
-                assert!((c.color[2] - f32::from(b) / 255.0).abs() < 1e-3);
-                assert_eq!(c.color[3], 1.0);
-            }
-            // phase: upsert_remote_cursor_updates_existing_in_place
-            {
-                let mut ctx = PresenceCtx::empty();
-                ctx.upsert_remote_cursor(MemberId::person("bob"), [10.0, 10.0], None);
-                ctx.upsert_remote_cursor(MemberId::person("bob"), [200.0, 300.0], None);
-                assert_eq!(
-                    ctx.remote_cursors.len(),
-                    1,
-                    "second upsert for same user_id must not push a duplicate",
-                );
-                assert_eq!(ctx.remote_cursors[0].position, [200.0, 300.0]);
+                assert_eq!(ctx.remote_cursors[0].label, unnamed_person_label(), "an unnamed person is someone without a name yet");
             }
             // phase: upsert_remote_cursor_preserves_friendly_label_when_display_name_is_none
             {

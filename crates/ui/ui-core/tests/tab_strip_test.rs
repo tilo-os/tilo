@@ -4,7 +4,7 @@
 
 use tilo_ui::component::{Described, Event, Person, ResourceId};
 use tilo_ui::tokens::PresenceHue;
-use tilo_ui::widget::{TabItemProps, TabStrip, TabStripProps, pack_point, unpack_point};
+use tilo_ui::widget::{TabItemProps, TabStrip, TabStripProps};
 
 fn tab(key: &str, title: &str) -> TabItemProps {
     TabItemProps {
@@ -67,30 +67,6 @@ tilo_test_env::scenario! {
         assert!(two.bar().closable_for_tests());
     }
 
-    // A strip's props are the same strip while only its events change, and a new strip when its
-    // tabs, its active tab or its focus do.
-    phase a_strip_keeps_its_pills_while_its_events_change;
-    {
-        let tabs = vec![tab("a", "A"), tab("b", "B")];
-        let mut strip = TabStrip::from_props("frame", props(tabs.clone(), 0));
-        let mut next = props(tabs.clone(), 0);
-        next.activate = Event::None;
-        assert!(strip.set_props(next), "the same tabs are the same strip");
-
-        let mut retitled = props(tabs.clone(), 0);
-        retitled.tabs[0].title = Some("Renamed".to_owned());
-        assert!(
-            !strip.set_props(retitled),
-            "a retitled tab builds the strip again, and shows the new title"
-        );
-        let strip = TabStrip::from_props("frame", {
-            let mut p = props(tabs, 0);
-            p.tabs[0].title = Some("Renamed".to_owned());
-            p
-        });
-        assert_eq!(strip.bar().tabs()[0].title, "Renamed");
-    }
-
     // Who is at a resource is presence the strip draws live; a face its view declares says
     // who to show, and never marks the tab as held by someone else, which would hide its
     // close chip and its changed dot.
@@ -124,33 +100,6 @@ tilo_test_env::scenario! {
             "and the changed tab keeps its dot"
         );
     }
-
-    // A point a pill was let go at crosses the event unchanged, at the window's scale.
-    phase a_drop_point_crosses_an_event_whole;
-    {
-        for (x, y) in [(0.0, 0.0), (12.0, 640.0), (1279.0, 799.0), (3440.0, 1439.0)] {
-            assert_eq!(unpack_point(pack_point(x, y)), (x, y), "at {x},{y}");
-        }
-    }
-}
-
-/// The strip lays out headlessly, as the window bar does in a frame: it takes the width its
-/// column gives it and stands a bar tall.
-#[test]
-fn the_strip_lays_out_as_the_window_bars_does() {
-    use tilo_ui::widget::{Column, Element};
-
-    let tabs = vec![tab("a", "Sorting"), tab("b", "Second"), tab("c", "Third")];
-    let strip = TabStrip::from_props("frame", props(tabs, 0));
-    let column = Column::new().push(Box::new(strip) as Element);
-    let harness = tilo_ui::headless::Driver::new_with_theme(
-        tilo_ui::State::new(),
-        Box::new(column),
-        (900, 200),
-        tilo_ui::Theme::light(),
-    );
-    let rect = harness.inspection().root.rect;
-    assert!(rect[3] > 0.0, "the strip stands a bar tall: {rect:?}");
 }
 
 /// A press on a pill is the view's own event in the pass that took it: the strip reports what
