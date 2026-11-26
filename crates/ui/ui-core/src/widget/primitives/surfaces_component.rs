@@ -532,6 +532,11 @@ impl Widget for DeclaredPanel {
         "FloatingPanel"
     }
 
+    /// The panel's edges resize it, and the pointer says so as it crosses one.
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.panel.cursor_shape(point)
+    }
+
     fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.panel.accessibility()
     }
