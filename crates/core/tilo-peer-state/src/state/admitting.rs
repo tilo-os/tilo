@@ -294,6 +294,7 @@ impl StatePeer {
                 covered: BTreeMap::new(),
                 covered_snapshot: None,
                 sealed: backend::SealedLog::default(),
+                resealed: std::sync::Arc::default(),
                 checkpoint_writes: std::sync::Arc::default(),
                 quarantine: None,
             }
@@ -886,7 +887,13 @@ impl StatePeer {
         let founding = folded.is_some()
             && candidate.sealed.is_empty()
             && !self.checkpoint_settled((&route.app, &route.record), &envelope);
-        Self::retain_sealed(&mut candidate, envelope, segments, checked)?;
+        Self::retain_sealed(
+            &mut candidate,
+            (&self.core.workspace, &route),
+            envelope,
+            segments,
+            checked,
+        )?;
         let primary = if self.core.exact_selected {
             // The writes the compaction folded are in its snapshot now, and
             // the number it took with them: their exact evidence becomes one
@@ -976,6 +983,7 @@ impl StatePeer {
 
     fn retain_sealed(
         candidate: &mut Document,
+        (workspace, route): (&str, &Route),
         envelope: SignedOp,
         segments: Vec<SignedOp>,
         checked: bool,
@@ -993,7 +1001,18 @@ impl StatePeer {
             if !history.within_bounds() {
                 return Err(full());
             }
-            candidate.fold_sealed(history, checked);
+            candidate.fold_sealed(
+                history,
+                |op| {
+                    collab_types::sealed_before_reader_sets(
+                        &route.app,
+                        workspace,
+                        &route.record,
+                        op,
+                    )
+                },
+                checked,
+            );
         } else {
             if !Self::has_room(&candidate.sealed, &envelope) {
                 return Err(full());

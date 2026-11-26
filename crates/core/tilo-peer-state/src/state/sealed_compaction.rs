@@ -468,6 +468,7 @@ impl PeerPublicationMut<'_> {
             .filter(|first| super::checkpoints::is_checkpoint(first))
             .is_some_and(|first| candidate.checkpoint_checked_by_all((app, record), first));
         let gathered = !segments.is_empty();
+        let workspace = candidate.core.workspace.clone();
         let document = candidate
             .core
             .documents
@@ -489,7 +490,11 @@ impl PeerPublicationMut<'_> {
         if !history.within_bounds() {
             return Err("the record's history exceeds its bound".into());
         }
-        document.fold_sealed(history, checked);
+        document.fold_sealed(
+            history,
+            |op| route.sealed_before_reader_sets(&workspace, op),
+            checked,
+        );
         let floors = &mut document.channel.last_seq_per_author;
         for (author, seq) in wrapper
             .covers
@@ -1978,7 +1983,9 @@ impl PeerPublicationMut<'_> {
 impl PeerPublication<'_> {
     /// Every encrypted record whose sealed history has used three quarters
     /// of its bound, as `(app, record)`: its key holder compacts it before
-    /// new writes are refused.
+    /// new writes are refused. A document holding writes sealed before
+    /// reader sets is due at once ([`Self::awaiting_reseal`]): the compaction
+    /// is what seals their content again under the document's own scope.
     #[must_use]
     pub fn sealed_to_compact(self) -> Vec<(String, String)> {
         let mut due: Vec<(String, String)> = self
@@ -1986,7 +1993,9 @@ impl PeerPublication<'_> {
             .core
             .documents
             .iter()
-            .filter(|(_, document)| document.sealed.due())
+            .filter(|(route, document)| {
+                document.sealed.due() || self.holds_sealed_before_reader_sets(route, document)
+            })
             .map(|(route, _)| route.named())
             .collect();
         // Every sealed write leaves exact admission evidence until a
@@ -2007,6 +2016,53 @@ impl PeerPublication<'_> {
             );
         }
         due
+    }
+
+    /// Whether `document` of `app` holds writes sealed before reader sets that no key holder has
+    /// sealed again under the document's own scope yet
+    /// ([`collab_types::artifact_before_reader_sets`]). A replica holding the document's
+    /// keys opens them as they are, and its compaction seals their content again
+    /// ([`Self::sealed_to_compact`]); one without them reads none of it until a key holder has.
+    #[must_use]
+    pub fn awaiting_reseal(self, app: &str, document: &str) -> bool {
+        let route = Route::of(app, document);
+        self.peer
+            .core
+            .documents
+            .get(&route)
+            .is_some_and(|held| self.holds_sealed_before_reader_sets(&route, held))
+    }
+
+    /// The documents holding writes sealed before reader sets that no key holder has sealed
+    /// again yet ([`Self::awaiting_reseal`]), as `(app, document)`.
+    #[must_use]
+    pub fn awaiting_reseals(self) -> Vec<(String, String)> {
+        self.peer
+            .core
+            .documents
+            .iter()
+            .filter(|(route, held)| self.holds_sealed_before_reader_sets(route, held))
+            .map(|(route, _)| route.named())
+            .collect()
+    }
+
+    /// The writes of `document` of `app` sealed before reader sets whose content a key holder
+    /// sealed again, each as its author signed it: kept beside the document so who wrote what
+    /// stays provable, and never replayed as its history.
+    #[must_use]
+    pub fn resealed_originals(self, app: &str, document: &str) -> Vec<SignedOp> {
+        self.peer
+            .core
+            .documents
+            .get(&Route::of(app, document))
+            .map(|held| held.resealed.to_vec())
+            .unwrap_or_default()
+    }
+
+    fn holds_sealed_before_reader_sets(self, route: &Route, held: &super::Document) -> bool {
+        held.sealed
+            .iter()
+            .any(|write| route.sealed_before_reader_sets(&self.peer.core.workspace, write))
     }
 }
 
@@ -2059,7 +2115,8 @@ impl StatePeer {
 ///
 /// Epochs count within one set of keys, so only writes sealed under the compaction's own keys
 /// are compared with it: the workspace's, or the one document group it names. A document that
-/// moved to a group of its own (its reader set) is compacted under that group, at whatever epoch the group has reached,
+/// moved to a group of its own (its reader set, or writes sealed before reader sets that a key
+/// holder seals again) is compacted under that group, at whatever epoch the group has reached,
 /// over writes the workspace's keys sealed at theirs; which group a compaction may be sealed
 /// under at all is the document's key scope's to say ([`StatePeer::check_document_key_scope`]).
 fn sealed_under_a_stale_epoch<'a>(

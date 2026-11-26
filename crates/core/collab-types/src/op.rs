@@ -43,6 +43,8 @@ const MAX_ENCODED_DOCUMENT_MUTATION_BYTES: usize = DOCUMENT_MUTATION_V2_PREFIX.l
     + crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES / 1024
     + 16;
 const DOCUMENT_ATTESTATION_DOMAIN: &[u8] = b"tilo-document-attestation-v1\0";
+/// The domain of [`artifact_before_reader_sets`].
+const ARTIFACT_BEFORE_READER_SETS_DOMAIN: &[u8] = b"tilo-document-artifact-v1\0";
 
 /// Meaning of a signed document payload. Keeping this tag inside
 /// [`SignedOp::payload`] makes snapshot-vs-incremental part of the bytes the
@@ -227,13 +229,55 @@ pub fn document_artifact_id(app_id: &str, workspace_id: &str, document_id: &str)
     }
 }
 
-/// Whether `op` is signed for `document_id` of `app_id` in `workspace_id`: its attestation and
-/// its artifact are the document's ([`document_artifact_id`]). Both derive from the whole route,
-/// so neither names any other document.
+/// The artifact a write of `document_id` of `app_id` in `workspace_id` named before reader sets
+/// ([`crate::readers`]), when the workspace's one key group sealed every document's content
+/// for this id.
+///
+/// It names no write made since. A build from before reader sets still names every write of
+/// its documents so, sealed or in the clear, and what a workspace's members wrote then is signed
+/// over it: a replica takes such a write as one of its document ([`names_document`]), and the
+/// first device holding the workspace's keys to open a document sealed so opens it under this id
+/// and seals its content again under [`document_artifact_id`] as its own write, keeping the
+/// original beside the document as its author signed it.
+#[must_use]
+pub fn artifact_before_reader_sets(
+    app_id: &str,
+    workspace_id: &str,
+    document_id: &str,
+) -> ArtifactId {
+    ArtifactId(derived_document_uuid(
+        ARTIFACT_BEFORE_READER_SETS_DOMAIN,
+        app_id,
+        workspace_id,
+        document_id,
+    ))
+}
+
+/// Whether `op` is signed for `document_id` of `app_id` in `workspace_id`: its attestation is
+/// the document's, and its artifact the document's of today ([`document_artifact_id`]) or of
+/// before reader sets ([`artifact_before_reader_sets`]). Both derive from the whole route, so
+/// neither names any other document.
 #[must_use]
 pub fn names_document(app_id: &str, workspace_id: &str, document_id: &str, op: &SignedOp) -> bool {
     op.attestation_id == document_attestation_id(app_id, workspace_id, document_id)
-        && op.artifact == document_artifact_id(app_id, workspace_id, document_id)
+        && (op.artifact == document_artifact_id(app_id, workspace_id, document_id)
+            || op.artifact == artifact_before_reader_sets(app_id, workspace_id, document_id))
+}
+
+/// Whether `op` is a sealed write of `document_id` of `app_id` in `workspace_id` made before
+/// reader sets ([`artifact_before_reader_sets`]): its content sealed under the artifact of then,
+/// which a key holder seals again under today's.
+#[must_use]
+pub fn sealed_before_reader_sets(
+    app_id: &str,
+    workspace_id: &str,
+    document_id: &str,
+    op: &SignedOp,
+) -> bool {
+    op.encryption.is_some()
+        && op.artifact != document_artifact_id(app_id, workspace_id, document_id)
+        && op.artifact == artifact_before_reader_sets(app_id, workspace_id, document_id)
+        && op.attestation_id == document_attestation_id(app_id, workspace_id, document_id)
 }
 
 static LAST_UNORDERED_DOCUMENT_SEQUENCE: std::sync::atomic::AtomicU64 =
@@ -1292,6 +1336,68 @@ mod tests {
             );
             assert_eq!(
                 validate_document_payload_route(app, workspace, "other", &op),
+                Err(DocumentMutationError::RouteMismatch)
+            );
+        }
+
+        phase a_write_named_before_reader_sets_is_known_by_the_artifact_it_named;
+        {
+            // The ids that build's writes named, as it derived them.
+            assert_eq!(
+                artifact_before_reader_sets("so.tilo.notes", "workspace-a", "note-b")
+                    .0
+                    .to_string(),
+                "83dfd05d-57e8-8b27-a8da-ee7f8a9278d4"
+            );
+            assert_eq!(
+                artifact_before_reader_sets("dev.tilo.notes", "workspace-a", "note-b")
+                    .0
+                    .to_string(),
+                "71ee3ff5-69ab-8d1a-9dc8-ef0c63e0eacc"
+            );
+            let (app, workspace, note) = ("notes", "workspace", "meeting");
+            let sealed = |artifact| {
+                SignedOp::new_unsigned_with_encryption(
+                    vec![0xde, 0xad],
+                    artifact,
+                    Ed25519PublicKey::from_bytes([7; 32]),
+                    document_attestation_id(app, workspace, note),
+                    OpKind::Change,
+                    SystemTime::UNIX_EPOCH,
+                    1,
+                    EncryptionMetadata::content_key(3, ContentRetention::Delta),
+                )
+            };
+            let former = sealed(artifact_before_reader_sets(app, workspace, note));
+            assert!(sealed_before_reader_sets(app, workspace, note, &former));
+            // It is a write of its document, as one of today's is, and of no other document.
+            assert_eq!(
+                validate_whole_document_payload_route(app, workspace, note, &former),
+                Ok(WholeDocumentPayload::Encrypted { epoch: 3 })
+            );
+            assert_eq!(
+                validate_document_payload_route(app, workspace, note, &former),
+                Ok(RoutedDocumentPayload::Encrypted { epoch: 3 })
+            );
+            assert_eq!(
+                validate_whole_document_payload_route(app, workspace, "other", &former),
+                Err(DocumentMutationError::RouteMismatch)
+            );
+            assert!(!sealed_before_reader_sets(app, workspace, "other", &former));
+            let current = sealed(document_artifact_id(app, workspace, note));
+            assert!(!sealed_before_reader_sets(app, workspace, note, &current));
+            // A write in the clear that build named so is its document's too, and was never
+            // sealed.
+            let mut clear = former;
+            clear.encryption = None;
+            clear.payload = DocumentMutation::Incremental(vec![1, 2, 3]).encode().unwrap();
+            assert!(!sealed_before_reader_sets(app, workspace, note, &clear));
+            assert_eq!(
+                validate_whole_document_payload_route(app, workspace, note, &clear),
+                Ok(WholeDocumentPayload::Cleartext(DocumentMutation::Incremental(vec![1, 2, 3])))
+            );
+            assert_eq!(
+                validate_whole_document_payload_route(app, workspace, "other", &clear),
                 Err(DocumentMutationError::RouteMismatch)
             );
         }

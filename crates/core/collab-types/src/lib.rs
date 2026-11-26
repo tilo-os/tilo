@@ -135,8 +135,9 @@ pub use mls_governance::{
 pub use op::{
     ContentRetention, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,
     EncryptionMetadata, EncryptionScheme, MAX_DOCUMENT_MUTATION_BYTES, RoutedDocumentPayload,
-    SignedOp, WholeDocumentPayload, document_artifact_id, document_attestation_id, governance_head,
-    names_document, next_unordered_document_sequence, validate_document_payload_route,
+    SignedOp, WholeDocumentPayload, artifact_before_reader_sets, document_artifact_id,
+    document_attestation_id, governance_head, names_document, next_unordered_document_sequence,
+    sealed_before_reader_sets, validate_document_payload_route,
     validate_whole_document_payload_route,
 };
 pub use peer::{PeerPresence, PeerPresencePayload};
