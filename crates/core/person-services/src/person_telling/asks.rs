@@ -142,9 +142,14 @@ impl AskedRecords for Told {
         if let (Some(person), Some(workspaces)) = value {
             self.waiting.lock_recover().insert((person, record.clone()));
             let told = telling(&record, facts);
-            if let Err(error) = workspaces.tell(&person, told) {
-                tracing::warn!(%error, "an asked record was not told to its person");
-            }
+            // Told off the call's own path: the host records the call as waiting only once
+            // this write returns, and telling writes the person's log and reaches their
+            // devices, which the call has no reason to wait for.
+            tokio::task::spawn_blocking(move || {
+                if let Err(error) = workspaces.tell(&person, told) {
+                    tracing::warn!(%error, "an asked record was not told to its person");
+                }
+            });
         }
         Ok(record)
     }
