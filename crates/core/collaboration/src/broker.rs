@@ -2140,6 +2140,7 @@ impl CollaborationManager {
         // handed the process is its first window's.
         let source = match connection {
             crate::NativeConnection::Window(None) => return Ok(Self::disabled()),
+            crate::NativeConnection::Handed(handed) => return Self::join_handed(kind, handed),
             #[cfg(not(windows))]
             crate::NativeConnection::Window(Some(connection)) => {
                 SdkConnectSource::Fd(runtime_portal::process_link::into_raw(connection))
@@ -2182,6 +2183,44 @@ impl CollaborationManager {
             Some(kind.as_str().to_owned()),
             crate::local_identity::own_name(),
         ))
+    }
+
+    /// [`Self::join_native`] of a window on the connections its own process
+    /// made for it ([`crate::HandedConnection`]), joined as an instance a
+    /// tilolang host runs is ([`Self::join_instance`]). The identity
+    /// connection is kept as long as the process runs: the first window of a
+    /// process lives as long as it does.
+    #[cfg(feature = "native")]
+    fn join_handed(
+        kind: &collab_types::document::ResourceType,
+        handed: crate::HandedConnection,
+    ) -> Result<Self, crate::NativeLaunchError> {
+        #[cfg(any(unix, windows))]
+        {
+            static KEPT: std::sync::Mutex<Vec<runtime_portal::process_link::Descriptor>> =
+                std::sync::Mutex::new(Vec::new());
+            let crate::HandedConnection {
+                collaboration,
+                identity,
+                app,
+                workspace,
+            } = handed;
+            let route = RouteSpec {
+                app_id: app,
+                cluster_id: workspace,
+                document: None,
+            };
+            let manager = Self::join_instance(kind, collaboration, &identity, route)?;
+            KEPT.lock_recover().push(identity);
+            Ok(manager)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            drop(handed);
+            Err(crate::NativeLaunchError::Operation(
+                "this platform hands a window no connection".into(),
+            ))
+        }
     }
 
     /// The manager of one app instance a tilolang host runs, joining `route`
@@ -2397,6 +2436,20 @@ impl CollaborationManager {
             return Err(runtime_portal::NotAvailable::ServiceFdMissing);
         };
         await_primary_route_on(transport.as_mut(), &mut self.primary_route)
+    }
+
+    /// The manager of a window that now shows `checkout` in place of the record it was built on,
+    /// where its route is not that record ([`Self::has_native_committed_primary`]): one for the
+    /// new record, on the connection the launcher handed the process. A process the launcher
+    /// handed none (one that is its own launcher hands its window a connection it made,
+    /// [`crate::NativeConnection::Handed`]) has nothing to start another on, and keeps this one
+    /// rather than end the connection its records go over.
+    #[must_use]
+    pub fn for_reopened(self, checkout: &collab_types::document::DocumentCheckout) -> Self {
+        if runtime_portal::service_fd("collab").is_none() {
+            return self;
+        }
+        Self::for_resource(checkout)
     }
 
     pub(super) fn new_scoped(record: Option<String>, resource_type: Option<String>) -> Self {

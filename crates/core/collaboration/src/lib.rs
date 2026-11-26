@@ -377,6 +377,24 @@ pub enum NativeConnection {
     /// A window the shell opened in the running process, on the connection
     /// its request attached, if it attached one.
     Window(Option<runtime_portal::process_link::Descriptor>),
+    /// The first window of a process that is its own launcher (a phone, which
+    /// runs the device's daemon in the app's process): the connections that
+    /// daemon made for the window, as a launcher makes them for a process it
+    /// starts.
+    Handed(HandedConnection),
+}
+
+/// What a process that is its own launcher hands its first window: the
+/// window's collaboration connection, which the collaboration service attests
+/// as that window from the record the daemon made of it, its identity-service
+/// connection, which signs what it writes as the person, and the app and
+/// workspace it joins.
+#[cfg(feature = "native")]
+pub struct HandedConnection {
+    pub collaboration: runtime_portal::process_link::Descriptor,
+    pub identity: runtime_portal::process_link::Descriptor,
+    pub app: String,
+    pub workspace: Uuid,
 }
 
 #[derive(Debug, Clone)]
@@ -830,6 +848,14 @@ impl CollaborationManager {
         _checkout: &collab_types::document::DocumentCheckout,
     ) -> Result<(), String> {
         Err("native document routes need the broker transport".into())
+    }
+
+    /// Without the broker transport a window's manager has no connection
+    /// of its own to keep: the one for `checkout`.
+    #[cfg(not(feature = "broker-transport"))]
+    #[must_use]
+    pub fn for_reopened(self, checkout: &collab_types::document::DocumentCheckout) -> Self {
+        Self::for_resource(checkout)
     }
 
     pub fn has_native_committed_primary(&self) -> bool {
