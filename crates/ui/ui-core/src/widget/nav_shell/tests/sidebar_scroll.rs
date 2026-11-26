@@ -28,7 +28,7 @@ fn a_sidebar_taller_than_its_window_scrolls_by_wheel_to_its_last_row() {
     let shell = NavShell::new()
         .content_kind(ContentKind::Page)
         .sidebar(Box::new(tall_list(40)))
-        .content(Probe::boxed("content").0)
+        .content(TestLeaf::fill("content").boxed().0)
         .sidebar_header("Places", Vec::new())
         .content_header("Row 0", Vec::new());
     let mut h = harness(shell, 1280, 800, Theme::dark());

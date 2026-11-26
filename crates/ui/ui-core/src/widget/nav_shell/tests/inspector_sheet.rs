@@ -6,11 +6,11 @@ const H: u32 = 800;
 
 /// A narrow window with its inspector open as a sheet, settled at half
 /// height; and the content's input counter.
-fn sheet_open() -> (Driver, SharedRc<Cell<usize>>) {
-    let (content, events) = Probe::boxed("content");
+fn sheet_open() -> (Driver, crate::testing::Seen) {
+    let (content, events) = TestLeaf::fill("content").boxed();
     let shell = NavShell::new()
         .content(content)
-        .inspector(Probe::boxed("inspector").0);
+        .inspector(TestLeaf::fill("inspector").boxed().0);
     let mut h = harness(shell, W, H, Theme::dark());
     settle(&mut h, W, H);
     h.root_mut::<NavShell>().open_inspector();
@@ -75,8 +75,8 @@ tilo_test_env::scenario! {
         ] {
             let shell = NavShell::new()
                 .content_kind(kind)
-                .content(Probe::boxed("content").0)
-                .inspector(Probe::boxed("inspector").0);
+                .content(TestLeaf::fill("content").boxed().0)
+                .inspector(TestLeaf::fill("inspector").boxed().0);
             let mut h = harness(shell, 640, 480, Theme::dark());
             settle(&mut h, 640, 480);
             h.root_mut::<NavShell>().open_inspector();
@@ -101,8 +101,8 @@ tilo_test_env::scenario! {
         let _settled = crate::motion::testing::settled();
         let (w, h_px) = (W, 480);
         let shell = NavShell::new()
-            .content(Probe::boxed("content").0)
-            .inspector(Probe::boxed("inspector").0);
+            .content(TestLeaf::fill("content").boxed().0)
+            .inspector(TestLeaf::fill("inspector").boxed().0);
         let mut h = harness(shell, w, h_px, Theme::dark());
         settle(&mut h, w, h_px);
         h.root_mut::<NavShell>().open_inspector();
@@ -143,11 +143,11 @@ tilo_test_env::scenario! {
             content.y1 <= panel.y0 + 0.5,
             "the content keeps the foot under the sheet clear: {content:?} {panel:?}"
         );
-        let before = events.get();
+        let before = events.events();
         h.click_at(f64::from(W) / 2.0, panel.y0 / 2.0);
         settle(&mut h, W, H);
         assert!(
-            events.get() > before,
+            events.events() > before,
             "a press above the sheet is the content's"
         );
         assert!(
@@ -273,10 +273,10 @@ fn pixels(h: &Driver, ground: vello::peniko::Color) -> Vec<u8> {
 fn the_sheet_stands_off_the_content_above_it_in_both_themes() {
     let _settled = crate::motion::testing::settled();
     for theme in [Theme::light(), Theme::dark()] {
-        let (content, _) = Probe::boxed("content");
+        let (content, _) = TestLeaf::fill("content").boxed();
         let shell = NavShell::new()
             .content(content)
-            .inspector(Probe::boxed("inspector").0);
+            .inspector(TestLeaf::fill("inspector").boxed().0);
         let mut h = harness(shell, W, H, theme.clone());
         settle(&mut h, W, H);
         h.root_mut::<NavShell>().open_inspector();
@@ -344,9 +344,9 @@ fn back_lowers_or_puts_the_sheet_away_before_it_goes_anywhere() {
             (SheetDetent::Peek, None),
         ] {
             let shell = NavShell::new()
-                .sidebar(Probe::boxed("sidebar").0)
-                .content(Probe::boxed("content").0)
-                .inspector(Probe::boxed("inspector").0)
+                .sidebar(TestLeaf::fill("sidebar").boxed().0)
+                .content(TestLeaf::fill("content").boxed().0)
+                .inspector(TestLeaf::fill("inspector").boxed().0)
                 .with_window_toolbar();
             let mut h = harness(shell, W, H, Theme::dark());
             settle(&mut h, W, H);

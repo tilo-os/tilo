@@ -21,13 +21,13 @@ mod sidebar_button;
 mod sidebar_scroll;
 mod touch;
 
-use crate::testing::Probe;
+use crate::testing::TestLeaf;
 
 fn mail_shell() -> NavShell {
     NavShell::new()
-        .sidebar(Probe::boxed("sidebar").0)
-        .overview(Probe::boxed("overview").0)
-        .content(Probe::boxed("content").0)
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .overview(TestLeaf::fill("overview").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0)
         .sidebar_header("Mailboxes", Vec::new())
         .overview_header("Inbox", Vec::new())
         .content_header("Design review", Vec::new())
@@ -71,8 +71,8 @@ fn child_rect(h: &Driver, id: &str) -> Option<Rect> {
 
 fn notes_shell() -> NavShell {
     NavShell::new()
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0)
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0)
         .sidebar_header("Notes", Vec::new())
         .content_header("", Vec::new())
 }
@@ -80,8 +80,8 @@ fn notes_shell() -> NavShell {
 fn files_shell() -> NavShell {
     NavShell::new()
         .content_kind(ContentKind::List)
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0)
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0)
         .sidebar_header("Places", Vec::new())
         .content_header("Home", Vec::new())
 }
@@ -89,8 +89,8 @@ fn files_shell() -> NavShell {
 fn settings_shell() -> NavShell {
     NavShell::new()
         .content_kind(ContentKind::Page)
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0)
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0)
         .sidebar_header("Settings", Vec::new())
         .content_header("Appearance", Vec::new())
 }
@@ -312,8 +312,8 @@ tilo_test_env::scenario! {
         );
         assert!(g.content_column.width() <= 0.0 || g.content_column.x0 >= 360.0);
         let shell = NavShell::new()
-            .sidebar(Probe::boxed("sidebar").0)
-            .content(Probe::boxed("content").0)
+            .sidebar(TestLeaf::fill("sidebar").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0)
             .content_header("General", Vec::new());
         let mut h = harness(shell, 360, 700, Theme::dark());
         settle(&mut h, 360, 700);
@@ -418,8 +418,8 @@ tilo_test_env::scenario! {
     phase the_inspector_docks_beside_the_content_and_rises_as_a_sheet_when_narrow;
     {
         let shell = NavShell::new()
-            .content(Probe::boxed("content").0)
-            .inspector(Probe::boxed("inspector").0);
+            .content(TestLeaf::fill("content").boxed().0)
+            .inspector(TestLeaf::fill("inspector").boxed().0);
         let mut h = harness(shell, 1280, 800, Theme::dark());
         settle(&mut h, 1280, 800);
         let g = geometry(&h);
@@ -449,8 +449,8 @@ tilo_test_env::scenario! {
         // A view that asks for a drawer: the inspector comes in from the trailing edge over
         // the content rather than up from the foot, and the view opens it.
         let shell = NavShell::new()
-            .content(Probe::boxed("content").0)
-            .inspector(Probe::boxed("inspector").0)
+            .content(TestLeaf::fill("content").boxed().0)
+            .inspector(TestLeaf::fill("inspector").boxed().0)
             .inspector_collapse(InspectorCollapse::Drawer);
         let mut h = harness(shell, 600, 800, Theme::dark());
         settle(&mut h, 600, 800);
@@ -481,8 +481,8 @@ tilo_test_env::scenario! {
         // kind would have made it a screen of the push stack.
         let list = NavShell::new()
             .content_kind(ContentKind::List)
-            .sidebar(Probe::boxed("sidebar").0)
-            .content(Probe::boxed("content").0)
+            .sidebar(TestLeaf::fill("sidebar").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0)
             .sidebar_collapse(SidebarCollapse::Drawer);
         let mut h = harness(list, 400, 700, Theme::dark());
         settle(&mut h, 400, 700);
@@ -503,9 +503,9 @@ tilo_test_env::scenario! {
         let tokens = Theme::dark().tokens.metrics;
         let at = |w: u32| {
             let shell = NavShell::new()
-                .sidebar(Probe::boxed("sidebar").0)
-                .overview(Probe::boxed("overview").0)
-                .content(Probe::boxed("content").0);
+                .sidebar(TestLeaf::fill("sidebar").boxed().0)
+                .overview(TestLeaf::fill("overview").boxed().0)
+                .content(TestLeaf::fill("content").boxed().0);
             let mut h = harness(shell, w, 800, Theme::dark());
             settle(&mut h, w, 800);
             geometry(&h)
@@ -547,7 +547,7 @@ tilo_test_env::scenario! {
         .selected("appearance");
         let shell = NavShell::new()
             .sidebar(Box::new(list))
-            .content(Probe::boxed("content").0)
+            .content(TestLeaf::fill("content").boxed().0)
             .content_header("Appearance", Vec::new());
         let mut h = harness(shell, 1280, 700, Theme::dark());
         settle(&mut h, 1280, 700);
@@ -581,8 +581,8 @@ tilo_test_env::scenario! {
 #[test]
 fn a_resize_across_the_threshold_lands_in_the_layout_its_rect_asks_for() {
     let shell = NavShell::new()
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0)
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0)
         .content_header("Appearance", Vec::new());
     let mut h = harness(shell, 1280, 700, Theme::dark());
     settle(&mut h, 1280, 700);
@@ -617,8 +617,8 @@ fn a_resize_across_the_threshold_lands_in_the_layout_its_rect_asks_for() {
 #[test]
 fn under_reduced_motion_a_resize_switched_layout_stands_at_once() {
     let shell = NavShell::new()
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0);
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0);
     let mut theme = Theme::dark();
     theme.reduce_motion = true;
     let mut h = harness(shell, 1280, 700, theme);
@@ -654,7 +654,7 @@ fn narrowing_keeps_the_keyboard_where_it_was() {
     .selected("appearance");
     let shell = NavShell::new()
         .sidebar(Box::new(list))
-        .content(Probe::boxed("content").0);
+        .content(TestLeaf::fill("content").boxed().0);
     let mut h = harness(shell, 1280, 700, Theme::dark());
     settle(&mut h, 1280, 700);
     let row = h.a11y_node_named("Appearance").expect("the list row");
@@ -687,7 +687,7 @@ fn narrowing_shows_the_page_chosen_in_the_sidebar() {
                     ],
                 ),
             ])))
-            .content(Probe::boxed("content").0)
+            .content(TestLeaf::fill("content").boxed().0)
     };
     let mut h = harness(shell(), 1280, 700, Theme::dark());
     settle(&mut h, 1280, 700);
@@ -761,9 +761,9 @@ tilo_test_env::scenario! {
         };
         let shell = NavShell::new()
             .content_kind(ContentKind::Document)
-            .sidebar(Probe::boxed("sidebar").0)
-            .overview(Probe::boxed("overview").0)
-            .content(Probe::boxed("content").0)
+            .sidebar(TestLeaf::fill("sidebar").boxed().0)
+            .overview(TestLeaf::fill("overview").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0)
             .sidebar_header("Mailboxes", Vec::new())
             .overview_header("Inbox", vec![toolbar()])
             .content_header("", vec![toolbar()]);
@@ -824,10 +824,10 @@ tilo_test_env::scenario! {
 /// drawer away without reaching it.
 #[test]
 fn an_open_drawer_floats_over_the_content_without_a_scrim() {
-    let (content, content_events) = Probe::boxed("content");
+    let (content, content_events) = TestLeaf::fill("content").boxed();
     let shell = NavShell::new()
         .content_kind(ContentKind::Document)
-        .sidebar(Probe::boxed("sidebar").0)
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
         .content(content)
         .sidebar_header("Notes", Vec::new())
         .content_header("", Vec::new());
@@ -853,14 +853,14 @@ fn an_open_drawer_floats_over_the_content_without_a_scrim() {
         "not modal: the document stays exposed beside the drawer ({ids:?})"
     );
 
-    let seen = content_events.get();
+    let seen = content_events.events();
     let point = Point::new(g.sidebar_column.x1 + 40.0, 300.0);
     h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
     let handled = h.dispatch_to_root(&crate::synthetic_input::mouse_press());
     assert!(handled);
     assert!(!h.root::<NavShell>().is_sidebar_open());
     assert_eq!(
-        content_events.get(),
+        content_events.events(),
         seen + 1,
         "the document heard the pointer move, not the dismissing press"
     );
@@ -873,8 +873,8 @@ tilo_test_env::scenario! {
     {
         let shell = NavShell::new()
             .mode(NavMode::Push)
-            .sidebar(Probe::boxed("sidebar").0)
-            .content(Probe::boxed("content").0);
+            .sidebar(TestLeaf::fill("sidebar").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0);
         let mut h = harness(shell, 360, 800, Theme::dark());
         settle(&mut h, 360, 800);
         let g = geometry(&h);
@@ -957,8 +957,8 @@ fn escape_pops_the_apps_page_stack() {
     let write = SharedRc::clone(&can);
     let shell = NavShell::new()
         .content_kind(ContentKind::Document)
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0)
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0)
         .content_header("Call the landlord", Vec::new())
         .on_back(move || read.get(), move || write.set(false));
     let mut h = harness(shell, 1280, 800, Theme::dark());
@@ -990,7 +990,7 @@ fn choosing_a_destination_in_a_narrow_window_moves_on() {
     let shell = NavShell::new()
         .mode(NavMode::Push)
         .sidebar(Box::new(list))
-        .content(Probe::boxed("content").0);
+        .content(TestLeaf::fill("content").boxed().0);
     let mut h = harness(shell, 360, 800, Theme::dark());
     settle(&mut h, 360, 800);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
@@ -1147,7 +1147,7 @@ tilo_test_env::scenario! {
 
     phase a_column_without_a_shell_has_no_header_row;
     {
-        let shell = NavShell::new().content(Probe::boxed("content").0);
+        let shell = NavShell::new().content(TestLeaf::fill("content").boxed().0);
         let mut h = harness(shell, 1024, 700, Theme::dark());
         settle(&mut h, 1024, 700);
         let g = geometry(&h);
@@ -1250,8 +1250,8 @@ tilo_test_env::scenario! {
 
         {
             let shell = NavShell::new()
-                .content(Probe::boxed("content").0)
-                .inspector(Probe::boxed("inspector").0);
+                .content(TestLeaf::fill("content").boxed().0)
+                .inspector(TestLeaf::fill("inspector").boxed().0);
             let mut h = harness(shell, 1280, 800, Theme::dark());
             h.root_mut::<NavShell>()
                 .set_history_control(Some(HistoryControl::Closed));
@@ -1263,7 +1263,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let shell = NavShell::new().content(Probe::boxed("content").0);
+            let shell = NavShell::new().content(TestLeaf::fill("content").boxed().0);
             let mut h = harness(shell, 1024, 700, Theme::dark());
             h.root_mut::<NavShell>()
                 .set_history_control(Some(HistoryControl::Closed));
@@ -1522,7 +1522,7 @@ tilo_test_env::scenario! {
             )),
         ];
         let shell = NavShell::new()
-            .content(Probe::boxed("content").0)
+            .content(TestLeaf::fill("content").boxed().0)
             .content_header("Groceries", actions);
         let mut h = harness(shell, 390, 800, theme);
         assert!(
@@ -1706,7 +1706,7 @@ tilo_test_env::scenario! {
     phase the_shell_continues_and_reports_input_as_its_content;
     {
         let shell = NavShell::new()
-            .sidebar(Probe::boxed("sidebar").0)
+            .sidebar(TestLeaf::fill("sidebar").boxed().0)
             .content(Box::new(ResumableContent(crate::widget::Spacer::new())));
         let mut h = harness(shell, 900, 600, Theme::dark());
         settle(&mut h, 900, 600);
@@ -1796,7 +1796,7 @@ fn the_navigation_list_keeps_its_typed_identity_and_selected_activation_opens_co
     let shell = NavShell::new()
         .mode(NavMode::Push)
         .sidebar(Box::new(list))
-        .content(Probe::boxed("content").0);
+        .content(TestLeaf::fill("content").boxed().0);
     let mut h = harness(shell, 360, 800, Theme::dark());
     settle(&mut h, 360, 800);
     assert_eq!(
@@ -1833,7 +1833,7 @@ fn push_navigation_keeps_back_operable_before_the_incoming_screen_is_visible() {
     let shell = NavShell::new()
         .mode(NavMode::Push)
         .sidebar(Box::new(list))
-        .content(Probe::boxed("content").0);
+        .content(TestLeaf::fill("content").boxed().0);
     let mut h = harness(shell, 360, 800, Theme::dark());
     settle(&mut h, 360, 800);
     let outgoing = h.a11y_node_named("Inbox").expect("initial navigation row");
@@ -1987,8 +1987,8 @@ fn notes_shell_with_search() -> NavShell {
         )),
     ];
     NavShell::new()
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0)
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0)
         .sidebar_header("Notes", Vec::new())
         .content_header("", actions)
 }

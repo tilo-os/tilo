@@ -12,7 +12,7 @@ fn nothing_listed_props(nothing_listed: bool) -> NavShellProps {
     NavShellProps {
         nothing_listed,
         sidebar_title: Some("Channels".to_owned()),
-        content: Some(Probe::boxed("empty").0),
+        content: Some(TestLeaf::fill("empty").boxed().0),
         actions: vec![Box::new(Button::new("new", "New channel"))],
         ..NavShellProps::default()
     }
@@ -72,7 +72,7 @@ tilo_test_env::scenario! {
     // widgets are the ones it gave.
     phase the_empty_state_owns_the_content_area_until_something_is_listed;
     {
-        let shell = mail_shell().nothing_listed(Probe::boxed("empty").0);
+        let shell = mail_shell().nothing_listed(TestLeaf::fill("empty").boxed().0);
         let mut h = harness(shell, W, H, Theme::dark());
         settle(&mut h, W, H);
         let g = geometry(&h);
@@ -86,7 +86,7 @@ tilo_test_env::scenario! {
         );
         assert!(
             h.root_mut::<NavShell>()
-                .content_mut::<Probe>()
+                .content_mut::<TestLeaf>()
                 .is_some_and(|probe| probe.id == "content"),
             "the app's content is held, not dropped"
         );
@@ -105,11 +105,11 @@ tilo_test_env::scenario! {
 
     phase a_swap_behind_the_empty_state_is_what_comes_back;
     {
-        let shell = mail_shell().nothing_listed(Probe::boxed("empty").0);
+        let shell = mail_shell().nothing_listed(TestLeaf::fill("empty").boxed().0);
         let mut h = harness(shell, W, H, Theme::dark());
         settle(&mut h, W, H);
         h.root_mut::<NavShell>()
-            .set_content(Probe::boxed("reading").0);
+            .set_content(TestLeaf::fill("reading").boxed().0);
         settle(&mut h, W, H);
         assert!(child_rect(&h, "empty").is_some() && child_rect(&h, "reading").is_none());
         h.root_mut::<NavShell>().set_nothing_listed(None);
@@ -127,9 +127,9 @@ tilo_test_env::scenario! {
     {
         const NARROW: u32 = 420;
         let shell = NavShell::new()
-            .overview(Probe::boxed("overview").0)
-            .content(Probe::boxed("content").0)
-            .nothing_listed(Probe::boxed("empty").0);
+            .overview(TestLeaf::fill("overview").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0)
+            .nothing_listed(TestLeaf::fill("empty").boxed().0);
         let mut h = harness(shell, NARROW, H, Theme::dark());
         settle(&mut h, NARROW, H);
         let empty = child_rect(&h, "empty").expect("the empty state is shown");
@@ -147,10 +147,10 @@ tilo_test_env::scenario! {
     {
         const NARROW: u32 = 420;
         let mut shell = NavShell::new()
-            .sidebar(Probe::boxed("sidebar").0)
-            .overview(Probe::boxed("overview").0)
-            .content(Probe::boxed("content").0)
-            .nothing_listed(Probe::boxed("empty").0);
+            .sidebar(TestLeaf::fill("sidebar").boxed().0)
+            .overview(TestLeaf::fill("overview").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0)
+            .nothing_listed(TestLeaf::fill("empty").boxed().0);
         shell.set_sidebar_toggle_in_window_bar(true);
         let mut h = harness(shell, NARROW, H, Theme::dark());
         settle(&mut h, NARROW, H);

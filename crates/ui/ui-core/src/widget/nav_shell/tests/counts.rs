@@ -18,8 +18,8 @@ fn places_shell(count: u32) -> NavShell {
     .selected("inbox");
     NavShell::new()
         .sidebar(Box::new(places))
-        .overview(Probe::boxed("overview").0)
-        .content(Probe::boxed("content").0)
+        .overview(TestLeaf::fill("overview").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0)
         .sidebar_header("Places", Vec::new())
         .overview_header("Inbox", Vec::new())
         .overview_count(usize::try_from(count).expect("a count that fits"))
@@ -109,8 +109,8 @@ tilo_test_env::scenario! {
         .rail();
         let shell = NavShell::new()
             .sidebar(Box::new(places))
-            .overview(Probe::boxed("overview").0)
-            .content(Probe::boxed("content").0)
+            .overview(TestLeaf::fill("overview").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0)
             .overview_header("Inbox", Vec::new())
             .overview_count(6);
         let mut h = harness(shell, 1280, 800, Theme::dark());

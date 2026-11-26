@@ -19,8 +19,8 @@ fn actions() -> Vec<Element> {
 
 fn shell() -> NavShell {
     NavShell::new()
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0)
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0)
         .sidebar_header("Notes", Vec::new())
         .content_header("Q3 plan", actions())
 }
@@ -94,7 +94,7 @@ tilo_test_env::scenario! {
         let gutter = crate::chrome::column_gutter(&theme);
         let page = || {
             NavShell::new()
-                .content(Probe::boxed("content").0)
+                .content(TestLeaf::fill("content").boxed().0)
                 .content_header("Q3 plan", actions())
         };
         for (w, h) in [(1280, 800), (390, 844)] {
@@ -152,8 +152,8 @@ tilo_test_env::scenario! {
             let write = SharedRc::clone(&can);
             let shell = NavShell::new()
                 .content_kind(ContentKind::Document)
-                .sidebar(Probe::boxed("sidebar").0)
-                .content(Probe::boxed("content").0)
+                .sidebar(TestLeaf::fill("sidebar").boxed().0)
+                .content(TestLeaf::fill("content").boxed().0)
                 .content_header("Call the landlord", Vec::new())
                 .on_back(move || read.get(), move || write.set(false));
             (shell, can)
@@ -198,8 +198,8 @@ tilo_test_env::scenario! {
         let write = SharedRc::clone(&can);
         let shell = NavShell::new()
             .content_kind(ContentKind::Document)
-            .sidebar(Probe::boxed("sidebar").0)
-            .content(Probe::boxed("content").0)
+            .sidebar(TestLeaf::fill("sidebar").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0)
             .with_window_toolbar()
             .on_back(move || read.get(), move || write.set(false));
         let mut harness = harness(shell, 390, 844, theme);

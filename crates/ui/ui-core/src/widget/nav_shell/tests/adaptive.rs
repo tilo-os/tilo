@@ -53,7 +53,7 @@ fn shell_with(sidebar: NavList) -> NavShell {
         .with_id("places-shell")
         .content_kind(ContentKind::Grid)
         .sidebar(Box::new(sidebar))
-        .content(Probe::boxed("content").0)
+        .content(TestLeaf::fill("content").boxed().0)
 }
 
 fn shows_rail(h: &Driver) -> bool {

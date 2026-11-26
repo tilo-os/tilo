@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::presence::PresenceCtx;
+use crate::testing::TestLeaf;
 use crate::testing::{Dispatch, dispatch};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -29,70 +30,6 @@ fn vertical(content_h: f32) -> Scrollable {
 use crate::synthetic_input::cursor_moved;
 fn mouse(state: ElementState) -> WindowEvent {
     crate::synthetic_input::mouse_input(state, MouseButton::Left)
-}
-
-struct EventSpy {
-    rect: Rect,
-    pointer_events: Rc<Cell<u32>>,
-    draw_viewport: Rc<Cell<Option<Rect>>>,
-    activations: Rc<Cell<u32>>,
-}
-
-impl Widget for EventSpy {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let style = Style {
-            size: Size::from_lengths(200.0, 500.0),
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-
-    crate::rect_geometry!();
-
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(
-            unused_variables,
-            unused_mut,
-            reason = "a draw binds only the parts it uses"
-        )]
-        let (_scene, _transform, _text_renderer, _theme, mut env) = ctx.parts();
-        self.draw_viewport.set(env.viewport);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if matches!(
-            event,
-            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
-        ) {
-            self.pointer_events
-                .set(self.pointer_events.get().saturating_add(1));
-        }
-        if matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            }
-        ) {
-            self.activations
-                .set(self.activations.get().saturating_add(1));
-            *ctx.focus_target = Some(ctx.node_id);
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        "EventSpy"
-    }
-
-    fn reveal_descendant(&mut self, target: *const dyn Widget, _rect: Rect) -> bool {
-        std::ptr::addr_eq(std::ptr::from_ref::<dyn Widget>(self), target)
-    }
 }
 
 tilo_test_env::scenario! {
@@ -227,15 +164,9 @@ tilo_test_env::scenario! {
     phase content_insets_keep_the_child_clear_of_footer_gutters_and_the_bar;
     {
         {
-            let pointer_events = Rc::new(Cell::new(0));
-            let activations = Rc::new(Cell::new(0));
+            let (spy, seen) = TestLeaf::sized(200.0, 500.0).focusable().boxed();
             let mut scroll = Scrollable::new_vertical()
-                .with_child(Box::new(EventSpy {
-                    rect: Rect::ZERO,
-                    pointer_events: Rc::clone(&pointer_events),
-                    draw_viewport: Rc::default(),
-                    activations: Rc::clone(&activations),
-                }))
+                .with_child(spy)
                 .with_height(100.0)
                 .with_bottom_content_inset(20.0);
             let theme = Theme::dark();
@@ -277,12 +208,12 @@ tilo_test_env::scenario! {
                     .or(focus_target);
             }
             assert_eq!(
-                pointer_events.get(),
+                seen.pointer(),
                 0,
                 "the clipped child sees no pointer event"
             );
             assert_eq!(
-                activations.get(),
+                seen.presses(),
                 0,
                 "an invisible child action cannot activate"
             );
@@ -298,11 +229,11 @@ tilo_test_env::scenario! {
                     .or(focus_target);
             }
             assert_eq!(
-                pointer_events.get(),
+                seen.pointer(),
                 2,
                 "visible content still receives pointer input"
             );
-            assert_eq!(activations.get(), 1, "visible child action still activates");
+            assert_eq!(seen.presses(), 1, "visible child action still activates");
             assert!(focus_target.is_some(), "visible content remains focusable");
         }
 
@@ -549,12 +480,9 @@ tilo_test_env::scenario! {
     phase focus_reveal_scrolls_to_new_focus_with_context_but_respects_manual_scroll;
     {
         {
-            let mut scroll = vertical(900.0).with_child(Box::new(EventSpy {
-                rect: Rect::new(12.0, 520.0, 188.0, 568.0),
-                pointer_events: Rc::default(),
-                draw_viewport: Rc::default(),
-                activations: Rc::default(),
-            }));
+            let mut spy = TestLeaf::sized(200.0, 500.0);
+            spy.rect = Rect::new(12.0, 520.0, 188.0, 568.0);
+            let mut scroll = vertical(900.0).with_child(Box::new(spy));
             scroll.rect = Rect::new(0.0, 0.0, 200.0, 300.0);
             let target = {
                 let child = scroll.child.as_deref_mut().expect("child");
@@ -1653,8 +1581,9 @@ fn a_scroll_keeps_the_named_descendant_in_view() {
 /// takes the sideways wheel a window's own column is no use for.
 #[test]
 fn a_wheel_a_scroll_refuses_reaches_the_row_above_it() {
-    let block =
-        |width: f32, height: f32| Box::new(crate::testing::Block::new(width, height)) as Element;
+    let block = |width: f32, height: f32| {
+        Box::new(crate::testing::TestLeaf::sized(width, height)) as Element
+    };
     let inner = Scrollable::new_vertical()
         .with_cursor(Point::new(50.0, 50.0))
         .with_child(block(200.0, 1600.0));

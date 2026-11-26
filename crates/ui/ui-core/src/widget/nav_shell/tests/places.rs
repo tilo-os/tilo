@@ -45,9 +45,9 @@ tilo_test_env::scenario! {
         let mut h = harness(
             NavShell::new()
                 .content_kind(ContentKind::Reading)
-                .sidebar(Probe::boxed("sidebar").0)
-                .overview(Probe::boxed("overview").0)
-                .content(Probe::boxed("content").0)
+                .sidebar(TestLeaf::fill("sidebar").boxed().0)
+                .overview(TestLeaf::fill("overview").boxed().0)
+                .content(TestLeaf::fill("content").boxed().0)
                 .with_window_toolbar(),
             W,
             H,
@@ -207,8 +207,8 @@ fn the_back_gesture_puts_a_floating_sidebar_away() {
     let _settled = crate::motion::testing::settled();
     let shell = NavShell::new()
         .content_kind(ContentKind::Document)
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0);
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0);
     let mut h = harness(shell, W, H, Theme::light());
     settle(&mut h, W, H);
     assert_eq!(geometry(&h).sidebar, SidebarPlacement::Drawer);

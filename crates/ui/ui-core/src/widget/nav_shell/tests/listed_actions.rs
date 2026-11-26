@@ -14,7 +14,7 @@ fn actions() -> Vec<Element> {
 
 fn shell() -> NavShell {
     NavShell::new()
-        .content(Probe::boxed("content").0)
+        .content(TestLeaf::fill("content").boxed().0)
         .content_header("Q3 plan", actions())
 }
 

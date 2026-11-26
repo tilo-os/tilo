@@ -197,7 +197,7 @@ tilo_test_env::scenario! {
 
         {
             let anchor = Rect::new(200.0, 100.0, 280.0, 132.0);
-            let mut p = Popover::with_content(crate::testing::Block::new(120.0, 60.0))
+            let mut p = Popover::with_content(crate::testing::TestLeaf::sized(120.0, 60.0))
             .anchored(anchor)
             .with_viewport(WINDOW)
             .open(true);
@@ -218,7 +218,7 @@ tilo_test_env::scenario! {
 
         {
             let anchor = Rect::new(200.0, 540.0, 280.0, 572.0);
-            let mut p = Popover::with_content(crate::testing::Block::new(120.0, 120.0))
+            let mut p = Popover::with_content(crate::testing::TestLeaf::sized(120.0, 120.0))
             .anchored(anchor)
             .with_viewport(WINDOW)
             .open(true);

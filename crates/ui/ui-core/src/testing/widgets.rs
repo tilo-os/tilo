@@ -234,63 +234,192 @@ impl crate::widget::Widget for TwoWindows {
     }
 }
 
-/// A leaf that fills the space it is given, answers to `id` and counts the events it is
-/// sent: the content a test puts inside a container to see where the container placed it and
-/// whether input reached it.
-pub(crate) struct Probe {
-    pub(crate) id: &'static str,
-    pub(crate) rect: ::vello::kurbo::Rect,
-    events: ::std::rc::Rc<::std::cell::Cell<usize>>,
+/// How much room a [`TestLeaf`] asks for.
+#[derive(Clone, Copy)]
+enum LeafSize {
+    /// All the space its parent gives it.
+    Fill,
+    /// A fixed width and height.
+    Fixed(f32, f32),
+    /// As small as its (absent) content.
+    Auto,
 }
 
-impl Probe {
-    pub(crate) fn new(id: &'static str) -> Self {
+/// What a [`TestLeaf`] was shown and sent, shared with the test that placed it.
+#[derive(Clone, Default)]
+pub(crate) struct Seen(::std::rc::Rc<::std::cell::RefCell<SeenLog>>);
+
+#[derive(Default)]
+struct SeenLog {
+    events: usize,
+    pointer: usize,
+    presses: usize,
+    focused: bool,
+}
+
+impl Seen {
+    /// Every event the leaf was sent.
+    pub(crate) fn events(&self) -> usize {
+        self.0.borrow().events
+    }
+
+    /// Pointer moves and button changes the leaf was sent.
+    pub(crate) fn pointer(&self) -> usize {
+        self.0.borrow().pointer
+    }
+
+    /// Left-button presses the leaf was sent.
+    pub(crate) fn presses(&self) -> usize {
+        self.0.borrow().presses
+    }
+
+    /// Whether the leaf holds keyboard focus.
+    pub(crate) fn focused(&self) -> bool {
+        self.0.borrow().focused
+    }
+}
+
+/// The one leaf this crate's tests put inside containers, scrolls, dialogs and shells to
+/// see where they placed it and what reached it: it fills its parent, or has a fixed size,
+/// answers to a test id, can take focus on a press and swallow the events it is sent, and
+/// records what reached it in a [`Seen`] the test keeps. Containers in tests are the real
+/// ones (`Column`, `Row`, `Scrollable`), holding these leaves.
+pub(crate) struct TestLeaf {
+    pub(crate) id: &'static str,
+    pub(crate) rect: ::vello::kurbo::Rect,
+    size: LeafSize,
+    focusable: bool,
+    pub(crate) consumes: bool,
+    seen: Seen,
+}
+
+impl TestLeaf {
+    fn with_size(id: &'static str, size: LeafSize) -> Self {
         Self {
             id,
             rect: ::vello::kurbo::Rect::ZERO,
-            events: ::std::rc::Rc::default(),
+            size,
+            focusable: false,
+            consumes: false,
+            seen: Seen::default(),
         }
     }
 
-    /// The probe as an element, with the counter of the events it will be sent.
-    pub(crate) fn boxed(
-        id: &'static str,
-    ) -> (
-        crate::widget::Element,
-        ::std::rc::Rc<::std::cell::Cell<usize>>,
-    ) {
-        let probe = Self::new(id);
-        let events = ::std::rc::Rc::clone(&probe.events);
-        (Box::new(probe), events)
+    /// A leaf that fills the space it is given, answering to `id`.
+    pub(crate) fn fill(id: &'static str) -> Self {
+        Self::with_size(id, LeafSize::Fill)
+    }
+
+    /// A leaf `width` by `height`.
+    pub(crate) fn sized(width: f32, height: f32) -> Self {
+        Self::with_size("leaf", LeafSize::Fixed(width, height))
+    }
+
+    /// A leaf with no size of its own.
+    pub(crate) fn auto() -> Self {
+        Self::with_size("leaf", LeafSize::Auto)
+    }
+
+    /// The leaf takes keyboard focus, and a left press focuses it.
+    pub(crate) fn focusable(mut self) -> Self {
+        self.focusable = true;
+        self
+    }
+
+    /// The leaf marks every event it is sent handled, so nothing behind it sees it.
+    pub(crate) fn consumes(mut self) -> Self {
+        self.consumes = true;
+        self
+    }
+
+    /// What the leaf will be shown and sent.
+    pub(crate) fn seen(&self) -> Seen {
+        self.seen.clone()
+    }
+
+    /// The leaf as an element, with what it will be shown and sent.
+    pub(crate) fn boxed(self) -> (crate::widget::Element, Seen) {
+        let seen = self.seen();
+        (Box::new(self), seen)
     }
 }
 
-impl crate::widget::Widget for Probe {
+impl crate::widget::Widget for TestLeaf {
     fn build_layout(
         &mut self,
         taffy: &mut ::taffy::TaffyTree<()>,
         _: &crate::theme::Theme,
         node_map: &mut ::std::collections::HashMap<::taffy::NodeId, *mut dyn crate::widget::Widget>,
     ) -> ::taffy::NodeId {
-        crate::widget::TaffyTreeExt::fill_leaf(taffy, node_map, self)
+        let size = match self.size {
+            LeafSize::Fill => ::taffy::Size::from_percent(1.0, 1.0),
+            LeafSize::Fixed(width, height) => ::taffy::Size::from_lengths(width, height),
+            LeafSize::Auto => ::taffy::Size::auto(),
+        };
+        let style = ::taffy::Style {
+            size,
+            ..::taffy::Style::default()
+        };
+        crate::widget::TaffyTreeExt::widget_leaf(taffy, style, node_map, self)
     }
 
     crate::rect_geometry!();
 
     fn handle_event(
         &mut self,
-        _event: &::winit::event::WindowEvent,
-        _ctx: &mut crate::widget::EventCtx<'_>,
+        event: &::winit::event::WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
-        self.events.set(self.events.get().saturating_add(1));
+        use ::winit::event::{ElementState, MouseButton, WindowEvent};
+        let mut seen = self.seen.0.borrow_mut();
+        seen.events = seen.events.saturating_add(1);
+        match event {
+            WindowEvent::CursorMoved { .. } => seen.pointer = seen.pointer.saturating_add(1),
+            WindowEvent::MouseInput { state, button, .. } => {
+                seen.pointer = seen.pointer.saturating_add(1);
+                if *state == ElementState::Pressed && *button == MouseButton::Left {
+                    seen.presses = seen.presses.saturating_add(1);
+                    if self.focusable {
+                        *ctx.focus_target = Some(ctx.node_id);
+                    }
+                }
+            }
+            _ => {}
+        }
+        if self.consumes {
+            *ctx.handled = true;
+        }
     }
 
     fn is_layout_dirty(&self) -> bool {
         self.rect == ::vello::kurbo::Rect::ZERO
     }
 
+    fn is_focusable(&self) -> bool {
+        self.focusable
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.seen.0.borrow_mut().focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.seen.focused()
+    }
+
+    fn reveal_descendant(
+        &mut self,
+        target: *const dyn crate::widget::Widget,
+        _: ::vello::kurbo::Rect,
+    ) -> bool {
+        ::std::ptr::addr_eq(
+            ::std::ptr::from_ref::<dyn crate::widget::Widget>(self),
+            target,
+        )
+    }
+
     fn name(&self) -> &'static str {
-        "Probe"
+        "TestLeaf"
     }
 
     fn as_any(&self) -> Option<&dyn ::std::any::Any> {
@@ -303,52 +432,5 @@ impl crate::widget::Widget for Probe {
 
     fn test_id(&self) -> Option<&str> {
         Some(self.id)
-    }
-}
-
-/// A leaf of a fixed size, or as small as its (absent) content: what a test puts inside a
-/// container, a scroll or a dialog to give it something to place.
-pub(crate) struct Block {
-    size: Option<(f32, f32)>,
-    rect: ::vello::kurbo::Rect,
-}
-
-impl Block {
-    pub(crate) fn new(width: f32, height: f32) -> Self {
-        Self {
-            size: Some((width, height)),
-            rect: ::vello::kurbo::Rect::ZERO,
-        }
-    }
-
-    /// A leaf with no size of its own.
-    pub(crate) fn auto() -> Self {
-        Self {
-            size: None,
-            rect: ::vello::kurbo::Rect::ZERO,
-        }
-    }
-}
-
-impl crate::widget::Widget for Block {
-    fn build_layout(
-        &mut self,
-        taffy: &mut ::taffy::TaffyTree<()>,
-        _: &crate::theme::Theme,
-        node_map: &mut ::std::collections::HashMap<::taffy::NodeId, *mut dyn crate::widget::Widget>,
-    ) -> ::taffy::NodeId {
-        let style = ::taffy::Style {
-            size: self.size.map_or_else(::taffy::Size::auto, |(w, h)| {
-                ::taffy::Size::from_lengths(w, h)
-            }),
-            ..::taffy::Style::default()
-        };
-        crate::widget::TaffyTreeExt::widget_leaf(taffy, style, node_map, self)
-    }
-
-    crate::rect_geometry!();
-
-    fn name(&self) -> &'static str {
-        "Block"
     }
 }

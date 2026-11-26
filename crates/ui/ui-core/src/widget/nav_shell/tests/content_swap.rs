@@ -10,8 +10,8 @@ fn props(key: Option<&str>) -> NavShellProps {
         content_kind: ContentKind::Page,
         title: Some("Sound".to_owned()),
         content_key: key.map(str::to_owned),
-        sidebar: Some(Probe::boxed("sidebar").0),
-        content: Some(Probe::boxed("content").0),
+        sidebar: Some(TestLeaf::fill("sidebar").boxed().0),
+        content: Some(TestLeaf::fill("content").boxed().0),
         sidebar_title: Some("Settings".to_owned()),
         ..NavShellProps::default()
     }

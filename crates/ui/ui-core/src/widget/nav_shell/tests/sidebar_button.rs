@@ -83,8 +83,8 @@ fn a_sidebar_screen_holds_the_way_back_and_the_place_before_it_the_places() {
     let mut h = harness(
         NavShell::new()
             .content_kind(ContentKind::List)
-            .sidebar(Probe::boxed("sidebar").0)
-            .content(Probe::boxed("content").0),
+            .sidebar(TestLeaf::fill("sidebar").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0),
         400,
         800,
         Theme::dark(),
@@ -142,8 +142,8 @@ fn a_sidebar_screen_holds_the_way_back_and_the_place_before_it_the_places() {
 fn the_bars_sidebar_button_flips_a_sidebar_drawer() {
     let shell = NavShell::new()
         .content_kind(ContentKind::Document)
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0);
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0);
     assert!(!three_clicks(shell, 400, SidebarPlacement::Drawer));
 }
 
@@ -155,8 +155,8 @@ fn the_page_a_row_of_the_places_opens_keeps_back_to_them() {
     let shell = || {
         NavShell::new()
             .content_kind(ContentKind::Page)
-            .sidebar(Probe::boxed("sidebar").0)
-            .content(Probe::boxed("content").0)
+            .sidebar(TestLeaf::fill("sidebar").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0)
     };
     // The shell's window frame hosts the shell, as a window of the session hosts a tile: the
     // frame hands its bar to the shell's header row.

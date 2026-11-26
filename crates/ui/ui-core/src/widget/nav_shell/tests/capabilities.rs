@@ -26,7 +26,7 @@ fn exposed_ids(h: &Driver) -> Vec<String> {
 
 fn titled_content(actions: Vec<Element>) -> NavShell {
     NavShell::new()
-        .content(Probe::boxed("content").0)
+        .content(TestLeaf::fill("content").boxed().0)
         .content_header("Quarterly planning: first draft", actions)
 }
 
@@ -38,13 +38,13 @@ tilo_test_env::scenario! {
     // was built with, never a dropped one.
     phase a_swap_waits_for_the_next_build;
     {
-        let (old, old_events) = Probe::boxed("content");
+        let (old, old_events) = TestLeaf::fill("content").boxed();
         let shell = NavShell::new()
             .content(old)
             .content_header("Draft", Vec::new());
         let mut h = harness(shell, 1024, 700, Theme::dark());
         settle(&mut h, 1024, 700);
-        let (new, new_events) = Probe::boxed("content-next");
+        let (new, new_events) = TestLeaf::fill("content-next").boxed();
         h.widget_mut::<NavShell>().expect("the shell").set_content(new);
         h.widget_mut::<NavShell>()
             .expect("the shell")
@@ -59,12 +59,12 @@ tilo_test_env::scenario! {
             device_id: device,
             position: winit::dpi::PhysicalPosition::new(400.0, 400.0),
         });
-        assert!(old_events.get() > 0, "the event reached the built content");
-        assert_eq!(new_events.get(), 0);
+        assert!(old_events.events() > 0, "the event reached the built content");
+        assert_eq!(new_events.events(), 0);
         assert!(
             h.widget_mut::<NavShell>()
                 .expect("the shell")
-                .content_mut::<Probe>()
+                .content_mut::<TestLeaf>()
                 .is_some_and(|p| p.id == "content-next"),
             "typed access sees the content waiting to go in"
         );
@@ -85,7 +85,7 @@ tilo_test_env::scenario! {
     phase a_header_takes_new_actions_in_place;
     {
         let shell = NavShell::new()
-            .overview(Probe::boxed("overview").0)
+            .overview(TestLeaf::fill("overview").boxed().0)
             .overview_header(
                 "Inbox",
                 vec![
@@ -151,9 +151,9 @@ tilo_test_env::scenario! {
     {
         let title = LocalState::new("Inbox".to_owned());
         let shell = NavShell::new()
-            .sidebar(Probe::boxed("sidebar").0)
-            .content(Probe::boxed("content").0)
-            .inspector(Probe::boxed("inspector").0)
+            .sidebar(TestLeaf::fill("sidebar").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0)
+            .inspector(TestLeaf::fill("inspector").boxed().0)
             .content_header_bound(&title, Vec::new())
             .overview_count(3);
         let mut h = harness(shell, 1400, 800, Theme::dark());
@@ -218,8 +218,8 @@ tilo_test_env::scenario! {
         assert!(reply.x1 < 1024.0 && reply.width() > 0.0);
 
         let shell = NavShell::new()
-            .sidebar(Probe::boxed("sidebar").0)
-            .content(Probe::boxed("content").0)
+            .sidebar(TestLeaf::fill("sidebar").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0)
             .content_header(
                 "Quarterly planning",
                 vec![icon("reply", Icon::Reply, "Reply")],
@@ -244,7 +244,7 @@ tilo_test_env::scenario! {
             .map(|_| Box::new(Button::new("open", "Open").in_menu().on_open(|| {})) as Element)
             .collect();
         let shell = NavShell::new()
-            .content(Probe::boxed("content").0)
+            .content(TestLeaf::fill("content").boxed().0)
             .content_header(title, actions);
         let mut h = harness(shell, 1024, 700, theme.clone());
         settle(&mut h, 1024, 700);
@@ -300,7 +300,7 @@ tilo_test_env::scenario! {
             ] {
                 let mut h = harness(
                     NavShell::new()
-                        .content(Probe::boxed("content").0)
+                        .content(TestLeaf::fill("content").boxed().0)
                         .content_header(title, actions()),
                     width,
                     700,
@@ -351,8 +351,8 @@ tilo_test_env::scenario! {
     phase a_leading_fill_stands_between_the_toggle_and_the_actions;
     {
         let shell = NavShell::new()
-            .sidebar(Probe::boxed("sidebar").0)
-            .content(Probe::boxed("content").0)
+            .sidebar(TestLeaf::fill("sidebar").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0)
             .content_header("", vec![icon("new", Icon::Plus, "New folder")])
             .content_header_leading(Box::new(Button::new("path", "Home › Documents › Taxes")));
         let mut h = harness(shell, 1280, 800, Theme::dark());
@@ -439,8 +439,8 @@ tilo_test_env::scenario! {
         let theme = Theme::dark();
         let gutter = crate::chrome::column_gutter(&theme);
         let shell = NavShell::new()
-            .overview(Probe::boxed("overview").0)
-            .content(Probe::boxed("content").0)
+            .overview(TestLeaf::fill("overview").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0)
             .overview_header("Inbox", vec![icon("search", Icon::Send, "Search")]);
         let mut h = harness(shell, 1024, 700, theme);
         settle(&mut h, 1024, 700);
@@ -489,7 +489,7 @@ tilo_test_env::scenario! {
             }) as Element
         };
         let shell = NavShell::new()
-            .content(Probe::boxed("content").0)
+            .content(TestLeaf::fill("content").boxed().0)
             .content_header(
                 title,
                 vec![labelled("pin", "Pin to the top", Icon::Pin), primary(None)],
@@ -607,8 +607,8 @@ fn a_titles_box_reaches_the_actions_that_follow_it() {
     let theme = Theme::dark();
     let m = Metrics::resolve(&theme);
     let shell = NavShell::new()
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0)
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0)
         .sidebar_header("Notes", vec![icon("new", Icon::Plus, "New note")]);
     let mut h = harness(shell, 280, 700, theme.clone());
     settle(&mut h, 280, 700);
@@ -648,7 +648,7 @@ tilo_test_env::scenario! {
     {
         let pages = LocalState::new(crate::NavStack::new("dashboard"));
         let shell = NavShell::new()
-            .content(Probe::boxed("content").0)
+            .content(TestLeaf::fill("content").boxed().0)
             .content_header("Dashboard", Vec::new())
             .with_back(&pages);
         let mut h = harness(shell, 1024, 700, Theme::dark());
@@ -672,8 +672,8 @@ tilo_test_env::scenario! {
         let pages = LocalState::new(crate::NavStack::new("watch"));
         pages.update(|stack| stack.push("creator"));
         let shell = NavShell::new()
-            .sidebar(Probe::boxed("sidebar").0)
-            .content(Probe::boxed("content").0)
+            .sidebar(TestLeaf::fill("sidebar").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0)
             .with_back(&pages)
             .with_sidebar_hidden();
         let mut h = harness(shell, 1280, 800, Theme::dark());
@@ -755,8 +755,8 @@ tilo_test_env::scenario! {
 
         let inspector = LocalState::new(false);
         let shell = NavShell::new()
-            .content(Probe::boxed("content").0)
-            .inspector(Probe::boxed("inspector").0)
+            .content(TestLeaf::fill("content").boxed().0)
+            .inspector(TestLeaf::fill("inspector").boxed().0)
             .with_inspector_state(&inspector);
         let mut h = harness(shell, 1280, 800, Theme::dark());
         settle(&mut h, 1280, 800);
@@ -775,8 +775,8 @@ tilo_test_env::scenario! {
     phase the_inspector_remembers_its_choice_across_removal;
     {
         let shell = NavShell::new()
-            .content(Probe::boxed("content").0)
-            .inspector(Probe::boxed("inspector").0);
+            .content(TestLeaf::fill("content").boxed().0)
+            .inspector(TestLeaf::fill("inspector").boxed().0);
         let mut h = harness(shell, 1280, 800, Theme::dark());
         settle(&mut h, 1280, 800);
         h.root_mut::<NavShell>().close_inspector();
@@ -784,7 +784,7 @@ tilo_test_env::scenario! {
         h.root_mut::<NavShell>().set_inspector(None);
         settle(&mut h, 1280, 800);
         h.root_mut::<NavShell>()
-            .set_inspector(Some(Probe::boxed("inspector").0));
+            .set_inspector(Some(TestLeaf::fill("inspector").boxed().0));
         settle(&mut h, 1280, 800);
         assert!(!h.root::<NavShell>().is_inspector_open());
     }
@@ -794,11 +794,11 @@ tilo_test_env::scenario! {
         let query = SharedRc::new(RefCell::new(String::new()));
         let list = Filtered {
             query: SharedRc::clone(&query),
-            inner: Probe::new("overview"),
+            inner: TestLeaf::fill("overview"),
         };
         let shell = NavShell::new()
             .overview(Box::new(list))
-            .content(Probe::boxed("content").0)
+            .content(TestLeaf::fill("content").boxed().0)
             .overview_header("Contacts", Vec::new())
             .overview_controls(Box::new(Button::new("sort", "Sort by name").on_open(|| {})))
             .with_filter(SearchField::filter());
@@ -819,8 +819,8 @@ tilo_test_env::scenario! {
 
         let order = LocalState::new("Name".to_owned());
         let shell = NavShell::new()
-            .overview(Probe::boxed("list").0)
-            .content(Probe::boxed("detail").0)
+            .overview(TestLeaf::fill("list").boxed().0)
+            .content(TestLeaf::fill("detail").boxed().0)
             .overview_header("Contacts", Vec::new())
             .overview_controls(Box::new(
                 crate::widget::Dropdown::from_state(vec!["Name".into(), "Organization".into()], &order)
@@ -836,8 +836,8 @@ tilo_test_env::scenario! {
                 .overview_mut::<Filtered>()
                 .is_some()
         );
-        assert!(h.root_mut::<NavShell>().content_mut::<Probe>().is_some());
-        assert!(h.root_mut::<NavShell>().sidebar_mut::<Probe>().is_none());
+        assert!(h.root_mut::<NavShell>().content_mut::<TestLeaf>().is_some());
+        assert!(h.root_mut::<NavShell>().sidebar_mut::<TestLeaf>().is_none());
 
         h.root_mut::<NavShell>()
             .filter_mut()
@@ -863,9 +863,9 @@ tilo_test_env::scenario! {
         )])
         .rail();
         let shell = NavShell::new()
-            .overview(Probe::boxed("overview").0)
+            .overview(TestLeaf::fill("overview").boxed().0)
             .overview_rail(Box::new(rail))
-            .content(Probe::boxed("content").0);
+            .content(TestLeaf::fill("content").boxed().0);
         let theme = Theme::dark();
         let m = Metrics::resolve(&theme);
         let mut h = harness(shell, 1280, 800, theme.clone());
@@ -906,13 +906,13 @@ tilo_test_env::scenario! {
     {
         let filtered = |query: &SharedRc<RefCell<String>>| Filtered {
             query: SharedRc::clone(query),
-            inner: Probe::new("sidebar"),
+            inner: TestLeaf::fill("sidebar"),
         };
         let query = SharedRc::new(RefCell::new(String::new()));
         let shell = NavShell::new()
             .mode(NavMode::Push)
             .sidebar(Box::new(filtered(&query)))
-            .content(Probe::boxed("content").0)
+            .content(TestLeaf::fill("content").boxed().0)
             .content_header("Found", Vec::new())
             .search_sidebar();
         let mut h = harness(shell, 400, 800, Theme::dark());
@@ -934,7 +934,7 @@ tilo_test_env::scenario! {
         let other = SharedRc::new(RefCell::new(String::new()));
         let mut plain = NavShell::new()
             .sidebar(Box::new(filtered(&other)))
-            .content(Probe::boxed("content").0);
+            .content(TestLeaf::fill("content").boxed().0);
         assert!(
             crate::widget::capability::capability_mut::<dyn Filterable>(&mut plain).is_none(),
             "a shell answers for its sidebar's list only when it searches it"
@@ -947,9 +947,9 @@ tilo_test_env::scenario! {
             let band = f64::from(theme.tokens.metrics.min_pointer_target + theme.tokens.spacing.s4);
             let shell = NavShell::new()
                 .content_kind(ContentKind::Document)
-                .sidebar(Probe::boxed("sidebar").0)
-                .content(Probe::boxed("content").0)
-                .inspector(Probe::boxed("inspector").0);
+                .sidebar(TestLeaf::fill("sidebar").boxed().0)
+                .content(TestLeaf::fill("content").boxed().0)
+                .inspector(TestLeaf::fill("inspector").boxed().0);
             let mut h = harness(shell, 480, 800, theme.clone());
             h.root_mut::<NavShell>().open_sidebar();
             settle(&mut h, 480, 800);
@@ -975,12 +975,12 @@ fn an_enlarged_inspector_sheet_leaves_the_content_above_it_in_reach() {
     let _settled = crate::motion::testing::settled();
     for theme in [Theme::light(), Theme::dark().with_text_scale(2.0)] {
         let band = f64::from(theme.tokens.metrics.min_pointer_target + theme.tokens.spacing.s4);
-        let (content, events) = Probe::boxed("content");
+        let (content, events) = TestLeaf::fill("content").boxed();
         let shell = NavShell::new()
             .content_kind(ContentKind::Document)
-            .sidebar(Probe::boxed("sidebar").0)
+            .sidebar(TestLeaf::fill("sidebar").boxed().0)
             .content(content)
-            .inspector(Probe::boxed("inspector").0);
+            .inspector(TestLeaf::fill("inspector").boxed().0);
         let mut h = harness(shell, 480, 800, theme.clone());
         h.root_mut::<NavShell>().open_inspector();
         settle(&mut h, 480, 800);
@@ -992,13 +992,13 @@ fn an_enlarged_inspector_sheet_leaves_the_content_above_it_in_reach() {
             "a pointer target of content above the sheet: {content:?} {:?}",
             g.inspector_column
         );
-        let before = events.get();
+        let before = events.events();
         h.click_at(
             content.center().x,
             (content.y0 + g.inspector_column.y0) / 2.0,
         );
         settle(&mut h, 480, 800);
-        assert!(events.get() > before, "the press reaches the content");
+        assert!(events.events() > before, "the press reaches the content");
         assert_eq!(
             geometry(&h).open_drawer(),
             Some(Column::Inspector),
@@ -1048,7 +1048,7 @@ impl Widget for Capturing {
 #[test]
 fn a_popover_owned_by_a_header_button_hears_the_pointer_first() {
     let events = SharedRc::new(Cell::new(0));
-    let (content, content_events) = Probe::boxed("content");
+    let (content, content_events) = TestLeaf::fill("content").boxed();
     let shell = NavShell::new().content(content).content_header(
         "Forecast",
         vec![Box::new(Capturing {
@@ -1064,19 +1064,19 @@ fn a_popover_owned_by_a_header_button_hears_the_pointer_first() {
         device_id: device,
         position: winit::dpi::PhysicalPosition::new(700.0, 200.0),
     });
-    let before = content_events.get();
+    let before = content_events.events();
     h.dispatch_to_root(&WindowEvent::MouseInput {
         device_id: device,
         state: ElementState::Pressed,
         button: MouseButton::Left,
     });
     assert_eq!(events.get(), 1, "the popover's owner heard the press");
-    assert_eq!(content_events.get(), before, "the column under it did not");
+    assert_eq!(content_events.events(), before, "the column under it did not");
 }
 
 struct Filtered {
     query: SharedRc<RefCell<String>>,
-    inner: Probe,
+    inner: TestLeaf,
 }
 
 impl Filterable for Filtered {

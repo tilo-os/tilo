@@ -27,7 +27,7 @@ fn hosted() -> (Driver, NavFeed, WindowBarLink) {
         .sidebar(Box::new(
             NavList::new(Vec::new()).with_id("places").fed_by(&feed),
         ))
-        .content(Probe::boxed("content").0);
+        .content(TestLeaf::fill("content").boxed().0);
     feed.show(places(), Some("home".into()));
     let mut h = harness(shell, W, H, Theme::dark());
     settle(&mut h, W, H);
@@ -43,9 +43,9 @@ tilo_test_env::scenario! {
     phase a_narrow_window_with_its_toolbar_in_the_bar_opens_on_its_list;
     {
         let shell = NavShell::new()
-            .sidebar(Probe::boxed("sidebar").0)
-            .overview(Probe::boxed("overview").0)
-            .content(Probe::boxed("content").0)
+            .sidebar(TestLeaf::fill("sidebar").boxed().0)
+            .overview(TestLeaf::fill("overview").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0)
             .with_window_toolbar();
         let mut h = harness(shell, 560, 800, Theme::dark());
         settle(&mut h, 560, 800);
@@ -72,8 +72,8 @@ tilo_test_env::scenario! {
         const NARROW: u32 = 420;
         let shell = NavShell::new()
             .content_kind(ContentKind::List)
-            .sidebar(Probe::boxed("sidebar").0)
-            .content(Probe::boxed("content").0)
+            .sidebar(TestLeaf::fill("sidebar").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0)
             .with_window_toolbar();
         let mut h = harness(shell, NARROW, H, Theme::dark());
         settle(&mut h, NARROW, H);
@@ -115,9 +115,9 @@ tilo_test_env::scenario! {
     {
         const NARROW: u32 = 420;
         let shell = NavShell::new()
-            .sidebar(Probe::boxed("sidebar").0)
-            .overview(Probe::boxed("overview").0)
-            .content(Probe::boxed("content").0)
+            .sidebar(TestLeaf::fill("sidebar").boxed().0)
+            .overview(TestLeaf::fill("overview").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0)
             .with_window_toolbar();
         let mut h = harness(shell, NARROW, H, Theme::dark());
         settle(&mut h, NARROW, H);
@@ -158,9 +158,9 @@ tilo_test_env::scenario! {
         };
         let mut shell = NavShell::new()
             .content_kind(ContentKind::Page)
-            .sidebar(Probe::boxed("sidebar").0)
-            .overview(Probe::boxed("overview").0)
-            .content(Probe::boxed("content").0);
+            .sidebar(TestLeaf::fill("sidebar").boxed().0)
+            .overview(TestLeaf::fill("overview").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0);
         shell.set_sidebar_toggle_in_window_bar(true);
         let mut h = harness(shell, NARROW, H, Theme::dark());
         settle(&mut h, NARROW, H);
@@ -181,8 +181,8 @@ tilo_test_env::scenario! {
 
         let mut shell = NavShell::new()
             .content_kind(ContentKind::List)
-            .sidebar(Probe::boxed("sidebar").0)
-            .content(Probe::boxed("content").0)
+            .sidebar(TestLeaf::fill("sidebar").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0)
             .content_header("", Vec::new());
         shell.set_sidebar_toggle_in_window_bar(true);
         let mut h = harness(shell, NARROW, H, Theme::dark());
@@ -474,9 +474,9 @@ fn a_hosted_shell_keeps_every_columns_header_in_its_own_row() {
         Button::new("mail.compose", "Compose").on_click(move || count.set(count.get() + 1));
     let shell = NavShell::new()
         .content_kind(ContentKind::Page)
-        .sidebar(Probe::boxed("sidebar").0)
-        .overview(Probe::boxed("overview").0)
-        .content(Probe::boxed("content").0)
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .overview(TestLeaf::fill("overview").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0)
         .sidebar_header(
             "Mailboxes",
             vec![Box::new(Button::icon_only(
@@ -561,8 +561,8 @@ fn a_notice_asked_through_the_bar_leaves_the_sidebar_as_it_is() {
         .content_kind(ContentKind::Reading);
     let link = shell.window_bar_link();
     let shell = shell
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0);
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0);
     let mut h = harness(shell, 1100, 760, Theme::dark());
     settle(&mut h, 1100, 760);
     assert_eq!(geometry(&h).sidebar, SidebarPlacement::Docked);
@@ -601,8 +601,8 @@ fn a_narrow_window_floating_as_a_card_shows_its_content_alone() {
         .content_kind(ContentKind::Reading);
     let link = shell.window_bar_link();
     let shell = shell
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0);
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0);
     let mut h = harness(shell, 360, 520, Theme::dark());
     crate::window_toolbar::deliver(ToolbarEvent::Floating { floating: true });
     link.stage_sidebar(true);
@@ -641,8 +641,8 @@ fn a_window_that_shows_one_thing_alone_places_no_sidebar_at_any_width() {
         .content_kind(ContentKind::Reading);
     let link = shell.window_bar_link();
     let shell = shell
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0);
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0);
     let mut h = harness(shell, 1100, 760, Theme::dark());
     settle(&mut h, 1100, 760);
     assert_eq!(geometry(&h).sidebar, SidebarPlacement::Docked);

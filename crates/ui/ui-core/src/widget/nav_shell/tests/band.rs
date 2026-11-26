@@ -12,8 +12,8 @@ fn banded(kind: ContentKind) -> (NavShell, SharedRc<Cell<usize>>) {
     let shell = NavShell::new()
         .with_id("banded")
         .content_kind(kind)
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0)
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0)
         .bottom_band(Box::new(band));
     (shell, presses)
 }

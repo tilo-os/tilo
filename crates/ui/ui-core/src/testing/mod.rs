@@ -37,7 +37,7 @@ pub use tilo_test_env::{hang_bound, hang_deadline, wait_for, wait_until};
 pub(crate) use widgets::TwoWindows;
 #[cfg(test)]
 pub(crate) use widgets::{
-    Block, Probe, delegate_widget_methods, inert_widget_methods, test_app_widget,
+    Seen, TestLeaf, delegate_widget_methods, inert_widget_methods, test_app_widget,
 };
 
 /// Write the frame a regression test drew, when a run asks for the evidence: a PNG under
