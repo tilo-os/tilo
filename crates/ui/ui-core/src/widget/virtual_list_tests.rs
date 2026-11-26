@@ -1804,3 +1804,185 @@ fn a_finger_held_on_a_row_lifts_it_and_moves_it_in_the_list() {
         "the held row moved where the finger took it"
     );
 }
+
+#[test]
+fn rows_the_person_moves_glide_and_a_sync_lands_at_once() {
+    use crate::tokens::MotionSource;
+    let model = VecListModel::new(vec![1_u64, 2, 3], |key| *key).unwrap();
+    let mut list = VirtualList::new(model, 20.0, |_, _, key| {
+        Box::new(ProbeRow::new(
+            key.to_string(),
+            20.0,
+            false,
+            Rc::new(Cell::new(0)),
+        ))
+    })
+    .with_viewport_height(100.0);
+    let _ = lay_out(&mut list, 300.0);
+    let motion = Theme::dark().motion();
+
+    list.update_model_changes(
+        &[ListModelChange::RowsInserted { index: 3, count: 1 }],
+        |model| model.push(4, 4).unwrap(),
+    );
+    let _ = lay_out(&mut list, 300.0);
+    list.start_row_motion(motion);
+    assert!(list.row_motion.is_empty(), "a sync lands at once");
+
+    crate::motion::note_source(MotionSource::Pointer);
+    list.update_model_changes(
+        &[ListModelChange::RowsMoved {
+            from: 3,
+            to: 0,
+            count: 1,
+        }],
+        |model| assert!(model.move_item(3, 0)),
+    );
+    let _ = lay_out(&mut list, 300.0);
+    list.start_row_motion(motion);
+    let now = crate::time::now();
+    let first = list
+        .row_motion
+        .get(&ListKey::new(1u64))
+        .expect("row 1 moved down");
+    assert!(
+        first.offset(now) < 0.0,
+        "drawn where it stood, above its new place"
+    );
+    assert!(list.needs_animation_frame());
+    let later = now + Duration::from_millis(600);
+    assert!(!list.row_motion.is_moving(later), "and lands");
+
+    crate::motion::note_source(MotionSource::Keyboard);
+    list.update_model_changes(
+        &[ListModelChange::RowsMoved {
+            from: 0,
+            to: 3,
+            count: 1,
+        }],
+        |model| assert!(model.move_item(0, 3)),
+    );
+    assert!(!list.row_motion.has_pending(), "a shortcut's result lands");
+}
+
+#[test]
+fn a_selection_delegate_wrapped_in_its_swipe_takes_its_selection() {
+    let model = VecListModel::new((0..3_u32).collect(), |i| *i).unwrap();
+    let mut list = VirtualList::with_selection_delegate(model, 40.0, |_, _, key, _| {
+        let row = crate::widget::ListRow::new(format!("r{key}"), format!("Row {key}"));
+        Box::new(crate::widget::SwipeRow::new(Box::new(row), None, None)) as Element
+    })
+    .with_viewport_height(400.0);
+    let _ = lay_out(&mut list, 300.0);
+    list.select_only(Some(1));
+    list.push_row_selection();
+    let selected: Vec<bool> = list
+        .mounted
+        .iter_mut()
+        .map(|row| {
+            row.widget
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<crate::widget::SwipeRow>())
+                .expect("the row's swipe")
+                .content()
+                .as_any()
+                .and_then(|any| any.downcast_ref::<crate::widget::ListRow>())
+                .expect("the row under its swipe")
+                .is_selected()
+        })
+        .collect();
+    assert_eq!(selected, [false, true, false], "only the chosen row is");
+}
+
+tilo_test_env::scenario! {
+    fn a_press_after_a_fast_scroll_reaches_the_row_under_it;
+
+    phase a_placement_that_placed_no_row_leaves_the_pointer_the_rows_that_mount;
+    {
+        // A scroll that outruns the rows a list mounted asks for a placement of
+        // its neighbours: that placement finds no row near the box and places
+        // none, so it must not narrow the pointer to nothing. The rows the frame
+        // mounts stand under the pointer before they are placed, and a press
+        // there is theirs.
+        let keys = Rc::new(RefCell::new((0_u64..80).collect::<Vec<_>>()));
+        let presses = Rc::new(Cell::new(0));
+        let captured = Rc::clone(&presses);
+        let mut list = VirtualList::new(
+            SharedOrder {
+                keys: Rc::clone(&keys),
+            },
+            20.0,
+            move |_, index, _| {
+                Box::new(ProbeRow::new(
+                    format!("row {index}"),
+                    20.0,
+                    true,
+                    Rc::clone(&captured),
+                ))
+            },
+        )
+        .with_viewport_height(60.0);
+        let (taffy, node) = lay_out(&mut list, 200.0);
+        assert!(!list.mounted.is_empty(), "the rows at the top show");
+        assert!(list.mounted.len() < 80, "a list mounts only what it shows");
+
+        list.set_scroll_offset(1200.0);
+        let tree = crate::widget::layout::TreeId::of(&taffy);
+        crate::widget::layout::placing_again_in(tree, || {
+            list.apply_layout(&taffy, node, Point::ZERO);
+        });
+
+        let mut mounted = TaffyTree::new();
+        let mut node_map = HashMap::new();
+        let grown = list.build_layout(&mut mounted, &Theme::dark(), &mut node_map);
+        assert!(!list.mounted.is_empty(), "the rows at the view show");
+        dispatch(&mut list, &cursor(10.0), &mounted, grown);
+        dispatch(&mut list, &left(ElementState::Pressed), &mounted, grown);
+        assert_eq!(
+            presses.get(),
+            1,
+            "the row the pointer stands on takes its press"
+        );
+    }
+}
+
+#[test]
+fn a_closed_rows_own_controls_are_where_the_row_is() {
+    use crate::a11y::Action;
+    use crate::app::driver::Driver;
+    use crate::widget::{Checkbox, Column, Text};
+    use accesskit::Role as AkRole;
+
+    let done = crate::LocalState::new(false);
+    let model = VecListModel::new(vec![7_u64], |key| *key).unwrap();
+    let state = done.clone();
+    let list = VirtualList::new(model, 40.0, move |_, _, _| {
+        Box::new(
+            Column::new()
+                .push(Box::new(Text::new("Buy oat milk")))
+                .push(Box::new(
+                    Checkbox::from_state(&state).with_accessible_name("Done"),
+                )),
+        ) as Element
+    })
+    .with_viewport_height(200.0);
+    let mut harness = Driver::for_root(crate::State::new(), list, (300, 400), Theme::dark());
+
+    let nodes = harness.a11y_nodes();
+    let (row_id, row) = named(&nodes, AkRole::ListItem, "Buy oat milk");
+    let row_bounds = row.bounds().expect("the row stands where it is drawn");
+    let controls = inside(&nodes, row_id);
+    let (checkbox, _) = named(&controls, AkRole::CheckBox, "Done");
+    let bounds = exported(&nodes, checkbox)
+        .bounds()
+        .expect("the box stands where it is drawn");
+    assert!(
+        within(row_bounds, bounds),
+        "the box stands inside its row: {bounds:?} not in {row_bounds:?}"
+    );
+
+    harness
+        .perform_a11y_action(checkbox, &Action::Activate)
+        .expect("the box is operated");
+    assert!(done.with(|checked| *checked), "the tick reaches the box");
+}

@@ -239,3 +239,84 @@ fn a_keyed_table_whose_host_reorders_its_rows_moves_them() {
     let pushed = table.moving.rows.get(&key("00")).expect("00 makes way");
     assert!(pushed.offset(now) < 0.0, "00 is drawn above its new place");
 }
+
+/// A click's sort brings rows from off-screen in by fading them in at their slot, and drops the
+/// rows that left the view without drawing them on their way out; a key's sort, or a click under
+/// reduced motion, lands every row at once and asks for no frames.
+#[test]
+fn a_click_sort_fades_rows_in_and_a_key_or_a_still_theme_lands_them() {
+    let _frame = crate::motion::pin_frame();
+    let theme = Theme::dark();
+    let mut clicked = table(hundred(&["00", "90", "91", "92", "93", "94"]));
+    settled_frames(&mut clicked, &theme);
+    crate::motion::note_source(MotionSource::Pointer);
+    assert!(clicked.toggle_sort(0).is_some());
+    frame(&mut clicked, &theme);
+    let now = crate::motion::frame_now();
+    let arriving = clicked
+        .moving
+        .rows
+        .get(&key("01"))
+        .expect("01 came from below");
+    assert!(arriving.opacity(now) < 0.5, "it fades in");
+    assert!(arriving.offset(now).abs() < f64::EPSILON, "at its own slot");
+    assert!(
+        clicked.moving.rows.get(&key("90")).is_none(),
+        "a row that left is not drawn"
+    );
+
+    for (source, theme) in [
+        (MotionSource::Keyboard, Theme::dark()),
+        (
+            MotionSource::Pointer,
+            Theme::dark().with_reduce_motion(true),
+        ),
+    ] {
+        let mut landed = table(hundred(&["00", "03", "02", "01"]));
+        settled_frames(&mut landed, &theme);
+        crate::motion::note_source(source);
+        assert!(landed.toggle_sort(0).is_some());
+        frame(&mut landed, &theme);
+        assert!(
+            landed.moving.rows.is_empty(),
+            "{source:?}: rows land in place at once"
+        );
+        assert!(
+            !Widget::needs_animation_frame(&landed),
+            "{source:?}: and ask for nothing"
+        );
+    }
+}
+
+/// A row the person adds fades in and pushes the rows below it down from where they stood.
+#[test]
+fn a_row_the_person_adds_fades_in_and_pushes_the_rows_below_down() {
+    let _frame = crate::motion::pin_frame();
+    let theme = Theme::dark();
+    let names = ["00", "01", "02", "03", "04", "05", "06", "07"];
+    let mut table = table(rows(&names));
+    settled_frames(&mut table, &theme);
+    let before = table.viewport.item_view_top(1).expect("01 is shown");
+    crate::motion::note_source(MotionSource::Pointer);
+    let mut added = names.to_vec();
+    added.insert(1, "50");
+    table.set_rows(rows(&added));
+    frame(&mut table, &theme);
+    let now = crate::motion::frame_now();
+    let new = table
+        .moving
+        .rows
+        .get(&key("50"))
+        .expect("the new row moves");
+    assert!(new.opacity(now) < 0.5, "the added row fades in");
+    let after = table.viewport.item_view_top(2).expect("01 is shown");
+    let pushed = table.moving.rows.get(&key("01")).expect("01 moves down");
+    assert!(
+        (pushed.offset(now) - (before - after)).abs() < 2.0,
+        "from where it stood"
+    );
+    assert!(
+        table.moving.rows.get(&key("00")).is_none(),
+        "the row above stays put"
+    );
+}

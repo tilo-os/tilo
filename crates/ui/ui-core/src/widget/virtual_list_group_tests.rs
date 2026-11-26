@@ -724,3 +724,64 @@ fn an_agents_outline_reads_each_row_and_heading_once() {
         );
     }
 }
+
+fn painted(list: &mut VirtualList<Grouped>, theme: &Theme) -> Vec<u8> {
+    let mut text = crate::text_render::TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let mut scene = vello::Scene::new();
+    list.draw(&mut crate::draw::DrawCtx::new(
+        &mut scene,
+        vello::kurbo::Affine::IDENTITY,
+        &mut text,
+        theme,
+        crate::presence::PresenceCtx::empty().draw_env(),
+    ));
+    let mut renderer =
+        crate::offscreen::OffscreenRenderer::try_new_with_cpu_preprocessing(300, 400)
+            .expect("the offscreen renderer");
+    renderer.render_rgba(&scene)
+}
+
+/// The pixels of `rgba` (300 wide) that wear the focus ring's colour on `row`, at its sides.
+fn ring_pixels(rgba: &[u8], theme: &Theme, row: usize) -> usize {
+    let ring = theme.border_focus;
+    let wanted = [0, 1, 2]
+        .map(|channel| crate::num::i32_of_f64(f64::from(ring.components[channel]) * 255.0));
+    (0..300)
+        .filter(|x| *x < 5 || *x >= 295)
+        .filter(|x| {
+            let at = (row * 300 + x) * 4;
+            rgba.get(at..at + 3).is_some_and(|pixel: &[u8]| {
+                pixel
+                    .iter()
+                    .zip(wanted)
+                    .all(|(found, want)| (i32::from(*found) - want).abs() < 70)
+            })
+        })
+        .count()
+}
+
+#[test]
+fn the_heading_holding_the_keyboard_wears_a_focus_ring() {
+    let _settled = crate::motion::testing::settled();
+    let theme = Theme::dark();
+    let mut list = week();
+    let (taffy, node) = settle(&mut list);
+    let band = list.groups.height;
+    let unfocused = painted(&mut list, &theme);
+    let middle = crate::num::usize_of_f64(band / 2.0);
+    assert_eq!(
+        ring_pixels(&unfocused, &theme, middle),
+        0,
+        "no heading holds the keyboard: no ring"
+    );
+    list.set_focus(true);
+    assert!(key(&mut list, NamedKey::ArrowDown, &taffy, node));
+    assert!(key(&mut list, NamedKey::ArrowUp, &taffy, node));
+    assert_eq!(focused_heading(&list), Some("Monday"));
+    let focused = painted(&mut list, &theme);
+    assert!(
+        ring_pixels(&focused, &theme, middle) >= 2,
+        "the heading the keyboard is on wears its ring on both its sides"
+    );
+}

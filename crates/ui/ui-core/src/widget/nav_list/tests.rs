@@ -1596,3 +1596,134 @@ fn a_rows_own_menu_opens_where_it_stands_and_runs_its_command() {
         "the host opens the menu of a row that places none"
     );
 }
+
+#[test]
+fn a_section_action_is_pressed_at_the_input_s_target() {
+    let seen = Rc::new(Cell2::new(Vec::<(String, String)>::new()));
+    let log = Rc::clone(&seen);
+    let list = NavList::new(mailboxes()).on_section_action(move |section, action| {
+        log.borrow_mut()
+            .push((section.to_owned(), action.to_owned()));
+    });
+    let mut h = harness(list, Theme::dark());
+    h.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
+    let header = h
+        .root::<NavList>()
+        .row_rect("folders")
+        .expect("folders header");
+    let (target, painted) = {
+        let nav = h.root::<NavList>();
+        let row = nav
+            .list()
+            .model()
+            .row_of("section:folders")
+            .expect("folders row")
+            .clone();
+        let paint = nav.paint.borrow();
+        (
+            paint
+                .section_action_rect(&row, header)
+                .expect("the header's action"),
+            crate::widget::nav_list::nav_row::nav_section_layout(
+                &Theme::dark(),
+                &crate::widget::nav_list::nav_row::NavSectionFace::new(header, "")
+                    .action(Icon::Plus),
+            )
+            .action
+            .expect("the painted square"),
+        )
+    };
+    let finger = f64::from(crate::InteractionEnvironment::TOUCH.minimum_target());
+    assert!(
+        painted.width() < finger && painted.height() < finger,
+        "the square keeps its size: {painted:?}"
+    );
+    assert!(
+        target.width() + 0.5 >= finger && target.height() + 0.5 >= finger,
+        "a finger's target: {target:?}"
+    );
+    fn button(node: &crate::a11y::AccessNode) -> Option<&crate::a11y::AccessNode> {
+        if node
+            .action_target
+            .as_deref()
+            .is_some_and(|target| target.starts_with("section-action:"))
+        {
+            return Some(node);
+        }
+        node.children.iter().find_map(button)
+    }
+    let published = Widget::accessibility(h.root::<NavList>()).expect("published navigation");
+    let bounds = button(&published)
+        .expect("the header's button")
+        .bounds
+        .expect("the button publishes its target")
+        .to_rect();
+    assert!(
+        bounds.width() + 0.5 >= finger && bounds.height() + 0.5 >= finger,
+        "the button says where it is pressed: {bounds:?}"
+    );
+    // A finger presses it: a mouse's press would say the person took up a fine pointer, whose
+    // targets are the squares they paint.
+    h.tap_at(target.x0 + 2.0, target.center().y);
+    assert_eq!(
+        seen.borrow().as_slice(),
+        [("folders".to_owned(), "new-folder".to_owned())]
+    );
+}
+
+/// A pointer's hover tints the row over the theme's motion, then rests.
+#[test]
+fn a_hover_comes_in_over_the_theme_motion_and_then_rests() {
+    use crate::time::testing::with_monotonic_time;
+    let items = (0..6)
+        .map(|row| NavItem::new(format!("row-{row}"), format!("Row {row}")))
+        .collect();
+    let list = NavList::new(vec![NavSection::untitled("all", items)]);
+    let mut h = harness(list, Theme::dark());
+    let at = h
+        .root::<NavList>()
+        .row_rect("row-2")
+        .expect("row 2 shown")
+        .center();
+    let t0 = crate::time::now();
+    with_monotonic_time(t0, || {
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        h.dispatch_to_root(&crate::synthetic_input::cursor_moved(at.x, at.y));
+        h.poll_frame().expect("the frame paints");
+        assert!(
+            h.frame_schedule().needs_animation_frame,
+            "the tint is part way in: the row asks the host for the next frame"
+        );
+    });
+    let settled = t0 + crate::time::Duration::from_millis(1_000);
+    with_monotonic_time(settled, || {
+        h.poll_frame().expect("the frame paints");
+        assert!(
+            !h.frame_schedule().needs_animation_frame,
+            "the tint has arrived: the row rests and asks for no more frames"
+        );
+    });
+}
+
+/// A selected place is a visible lift on every ground a list stands on, in every theme.
+#[test]
+fn a_selected_row_lifts_visibly_on_every_ground() {
+    use crate::chrome::{SELECTION_MIN_STEP, lightness_step, selection_tier_on};
+    for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+        let colors = &theme.tokens.colors;
+        for (name, ground) in [
+            ("content", colors.surfaces.content),
+            ("sidebar", colors.surfaces.sidebar),
+            ("raised", colors.surfaces.raised),
+        ] {
+            let local = theme.on_ground(ground);
+            let lift =
+                selection_tier_on(&local, crate::chrome::SelectionState::active(true), ground).fill;
+            assert!(
+                lightness_step(lift, ground) >= SELECTION_MIN_STEP,
+                "{} {name}",
+                theme.name
+            );
+        }
+    }
+}

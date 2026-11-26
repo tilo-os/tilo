@@ -1176,3 +1176,46 @@ fn a_branch_on_its_way_offers_nothing_to_fold_until_it_arrives() {
     );
     assert_eq!(disclosures(&mut harness), 1, "and a reader hears it");
 }
+
+tilo_test_env::scenario! {
+    fn the_keys_reach_every_row_of_a_tree_with_a_tall_row;
+
+    phase a_tree_row_keeps_its_own_height_and_the_ends_and_pages_reach_its_rows;
+    {
+        let marks = Rc::new(TreeMarks::default());
+        let model = Movable {
+            labels: (0..3).map(|key| (key, format!("row {key}"))).collect(),
+            keys: vec![0, 1, 2],
+            parents: [(1, 0)].into_iter().collect(),
+            takes_children: (0..3).collect(),
+        };
+        let mut list = VirtualList::new(model, 20.0, |_, _, key| {
+            let height = if *key == 1 { 44.0 } else { 20.0 };
+            Box::new(super::tests::ProbeRow::new(
+                key.to_string(),
+                height,
+                false,
+                Rc::new(Cell::new(0)),
+            ))
+        })
+        .with_viewport_height(200.0)
+        .with_tree(Rc::clone(&marks));
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        // The taller row keeps its height indented under row 0, and the row below it clears it.
+        assert_eq!(marks.depth(&1), 1);
+        assert_eq!(list.viewport.item_height(1), Some(f64::from(44.0_f32)));
+        assert_eq!(
+            list.row_box(2).map(|row| row.y0),
+            Some(64.0),
+            "row 2 starts under row 1's full height"
+        );
+
+        let key = |named| Key::Named(named);
+        assert!(list.on_key(&key(NamedKey::End), false, false));
+        assert_eq!(list.focused_key(), Some(&2), "End reaches the last row");
+        assert!(list.on_key(&key(NamedKey::Home), false, false));
+        assert_eq!(list.focused_key(), Some(&0), "Home the first");
+        assert!(list.on_key(&key(NamedKey::PageDown), false, false));
+        assert_eq!(list.focused_key(), Some(&2), "a page down the flat rows");
+    }
+}

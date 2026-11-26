@@ -927,3 +927,136 @@ fn a_refused_check_says_why_and_keeps_its_mark() {
     );
     assert_eq!(marked(&mut driver), Some(false), "the box keeps its mark");
 }
+
+/// The levels a row's check stands at over 24 frames after `press` at 100 ms.
+fn check_levels(row: ListRow, press: impl FnOnce(&mut Driver)) -> Vec<f64> {
+    use crate::time::testing::with_monotonic_time;
+    use crate::time::{Duration, Instant};
+    let start = Instant::now();
+    let mut harness = with_monotonic_time(start, || {
+        Driver::for_root(crate::State::new(), row, (400, 60), Theme::dark())
+    });
+    with_monotonic_time(start, || harness.poll_frame()).expect("the first frame draws");
+    assert_eq!(
+        harness.root::<ListRow>().check_pose.expect("drawn").level,
+        0.0
+    );
+    let pressed = start + Duration::from_millis(100);
+    with_monotonic_time(pressed, || press(&mut harness));
+    (1..=24_u64)
+        .map(|frame| {
+            with_monotonic_time(pressed + Duration::from_millis(frame * 16), || {
+                harness.poll_frame()
+            })
+            .expect("a frame");
+            f64::from(harness.root::<ListRow>().check_pose.expect("drawn").level)
+        })
+        .collect()
+}
+
+/// A person's check fills the box over several frames, whether the row is plain or bound (and
+/// a bound row reports the check once, as its check event); a row that says it is still marks
+/// at once.
+#[test]
+fn a_check_fills_in_over_frames_unless_the_row_is_still() {
+    let by_pointer = |harness: &mut Driver| {
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        press_leading_checkbox(&mut harness.root_mut::<ListRow>());
+    };
+    let state = crate::LocalState::new(false);
+    let intents = crate::Intents::<Fired>::default();
+    for (name, levels) in [
+        (
+            "plain",
+            check_levels(
+                ListRow::new("milk", "Buy oat milk").checkbox(false, |_| {}),
+                by_pointer,
+            ),
+        ),
+        (
+            "bound",
+            check_levels(bound_row(&state, &intents), |harness| {
+                let [x, y, _, h] = find(&harness.inspection().root, "ListRow")
+                    .expect("the row is laid out")
+                    .rect;
+                harness.click_at(x + 12.0, y + h / 2.0);
+            }),
+        ),
+    ] {
+        assert!(
+            levels
+                .iter()
+                .filter(|level| **level > 0.0 && **level < 1.0)
+                .count()
+                >= 3,
+            "{name}: the box fills over several frames rather than popping: {levels:?}"
+        );
+        assert!(
+            levels.windows(2).all(|pair| pair[1] >= pair[0] - 1e-6),
+            "{name}: {levels:?}"
+        );
+        assert!((levels[23] - 1.0).abs() < 1e-3, "{name}: it settles marked");
+    }
+    assert!(state.get(), "the binding took the person's check");
+    let fired = intents.take();
+    assert_eq!(fired.len(), 1, "the check is reported once");
+    assert_eq!(
+        (fired[0].key.as_str(), fired[0].event.as_str()),
+        ("milk", "check")
+    );
+
+    let still = ListRow::new("milk", "Buy oat milk")
+        .checkbox(false, |_| {})
+        .with_feel(crate::motion::Feel::Still);
+    assert_eq!(
+        check_levels(still, by_pointer)[1],
+        1.0,
+        "a still row's mark lands at once"
+    );
+}
+
+/// A row's tooltip answers a pointer anywhere over its text.
+#[test]
+fn a_row_tooltip_reads_anywhere_the_row_has_nothing_closer_to_say() {
+    let row = ListRow::new("used", "Deploy").tooltip("Used 3 times");
+    let h = Driver::for_root(crate::State::new(), row, (480, 60), Theme::dark());
+    let row = h.root::<ListRow>();
+    let (_, text) = Widget::tooltip_target_at(row, row.text_band().center()).expect("a tooltip");
+    assert_eq!(text, "Used 3 times");
+}
+
+/// In every theme a selected row stands off the ground while an idle one is the ground, and
+/// toned facts stay legible on both.
+#[test]
+fn a_selection_shows_and_toned_facts_stay_legible_in_every_theme() {
+    use crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
+    for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+        let ground = theme.tokens.colors.surfaces.content;
+        let fill = row_fill(&theme, true, false).expect("a selected row has a lift");
+        assert!(
+            crate::surface::edge_delta(fill, ground) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+            "{}: the selection shows",
+            theme.name
+        );
+        assert!(
+            row_fill(&theme, false, false).is_none(),
+            "{}: idle is the ground",
+            theme.name
+        );
+        let lift = crate::tokens::colors::composite(fill, ground);
+        for tone in [Tone::Success, Tone::Danger, Tone::Warning] {
+            let ink = theme.tokens.colors.ink_on_any(
+                &[ground, lift],
+                tone.colour(&theme),
+                SMALL_TEXT_MIN_CONTRAST,
+            );
+            for under in [ground, lift] {
+                assert!(
+                    crate::a11y::contrast_ratio(ink, under) >= SMALL_TEXT_MIN_CONTRAST,
+                    "{}: {tone:?} reads on the ground and the lift",
+                    theme.name
+                );
+            }
+        }
+    }
+}
