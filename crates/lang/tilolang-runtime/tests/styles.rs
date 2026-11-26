@@ -219,6 +219,12 @@ view timeline(a: shell.Layout) {
                 "a style whose package did not load draws a failed state: {}",
                 dump(view.tree())
             );
+            assert_eq!(
+                failed_message(&view).as_deref(),
+                Some("the module does not load"),
+                "the reason a person reads under it: {}",
+                dump(view.tree())
+            );
             let reported = rt.take_view_failures();
             let said = reported
                 .iter()
@@ -358,6 +364,25 @@ view style_shell(a: Layout) {{
                         })
                         .unwrap_or_default(),
                 );
+            }
+            for child in &node.children {
+                find(child, out);
+            }
+        }
+        let mut out = None;
+        find(view.tree(), &mut out);
+        out
+    }
+
+    /// What a failed view says under its title: why it could not be shown, which the person
+    /// reads and a screen reader hears.
+    fn failed_message(view: &ViewInstance) -> Option<String> {
+        fn find(node: &tilolang_runtime::UiNode, out: &mut Option<String>) {
+            if node.kind == "ui.EmptyState" {
+                *out = node.props.get("message").and_then(|t| match t {
+                    tilolang_runtime::Value::Text(text) => Some(text.clone()),
+                    _ => None,
+                });
             }
             for child in &node.children {
                 find(child, out);

@@ -611,34 +611,25 @@ impl Core {
         acc.state_reads.push((state_key.clone(), generation));
         acc.state_seen.push((state_key, seen));
         // The words are the reader's, through the words the host set, so a person in any
-        // language reads what happened: the title, with the reason under it.
+        // language reads what happened: the title, with the reason under it. The reason is the
+        // empty state's message, not a child of it: the component draws the props it declares,
+        // so a reason put in a child would never be shown nor heard.
         let title = self.word_args("tilolang-view-failed", &[], "This couldn't be shown");
-        let mut children = Vec::new();
+        let mut props = std::collections::BTreeMap::from([
+            ("title".to_owned(), Value::text(title)),
+            ("error".to_owned(), Value::Bool(true)),
+        ]);
         if !failure.reason.is_empty() {
-            children.push(UiNode {
-                kind: "ui.Text".to_owned(),
-                key: format!("{key}/reason"),
-                props: std::collections::BTreeMap::from([(
-                    "value".to_owned(),
-                    Value::text(failure.reason.as_str()),
-                )]),
-                binding: None,
-                events: std::collections::BTreeMap::new(),
-                anchor: None,
-                children: Vec::new(),
-            });
+            props.insert("message".to_owned(), Value::text(failure.reason.as_str()));
         }
         let root = UiNode {
             kind: "ui.EmptyState".to_owned(),
             key: format!("{key}/failed"),
-            props: std::collections::BTreeMap::from([
-                ("title".to_owned(), Value::text(title)),
-                ("error".to_owned(), Value::Bool(true)),
-            ]),
+            props,
             binding: None,
             events: std::collections::BTreeMap::new(),
             anchor: None,
-            children,
+            children: Vec::new(),
         };
         Rendered {
             root,

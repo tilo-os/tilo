@@ -1986,6 +1986,15 @@ impl crate::Session {
                 // Raised through the session's own notices, as every notice it tells: the
                 // notifications service when one runs, the shell's own otherwise.
                 notices.borrow().tell(&notice);
+            } else {
+                // A view that is no style's failed some other way (a page's own), and the page
+                // says so where it stands; a session's log is where whoever looks reads why.
+                tracing::warn!(
+                    app = %failure.app,
+                    view = %failure.view,
+                    why = %failure.reason,
+                    "a shell view could not be shown"
+                );
             }
         }
         let (apps, calls) = recoveries;
