@@ -480,7 +480,9 @@ pub(super) fn bridge_error(app: &str, error: ActionDirectoryBridgeError) -> Acti
         },
         // The directory's own word, so a refusal is told apart from a
         // republish and from a directory that is not there.
-        ActionDirectoryBridgeError::Refused(reason) => ActionCallError::Unavailable { reason },
+        ActionDirectoryBridgeError::Refused(reason) => ActionCallError::Unavailable {
+            reason: format!("{app}'s action directory refused the ask: {reason}"),
+        },
         other => ActionCallError::Unavailable {
             reason: format!("{app}'s action directory is {other:?}"),
         },
