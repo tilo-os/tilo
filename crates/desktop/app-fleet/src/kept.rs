@@ -5,6 +5,10 @@
 //! its app still decide every read and change.
 
 /// A record an app keeps for the whole workspace.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one policy of the record, independent of the others and read by name"
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WorkspaceDocument {
     /// The app that keeps it: whose surface and grants decide its changes.
