@@ -1657,7 +1657,7 @@ impl Instance {
                     {
                         match plan.view.as_deref() {
                             None => self.show_in_window(&target, Some(front), press),
-                            Some(view) => self.open_detail(&target, Some(view), Some(front)),
+                            Some(view) => self.open_detail(&target, Some(view), Some(front), press),
                         }
                     }
                     self.commit_planned();

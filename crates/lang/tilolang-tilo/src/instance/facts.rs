@@ -48,7 +48,7 @@ impl super::Instance {
             return;
         };
         self.facts = None;
-        self.open_detail(&target, None, None);
+        self.open_detail(&target, None, None, 0);
     }
 }
 

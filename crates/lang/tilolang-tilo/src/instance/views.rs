@@ -123,14 +123,18 @@ impl Instance {
             return;
         };
         target.ty = ty;
-        self.open_detail(&target, None, Some(ui::Front::Input));
+        self.open_detail(&target, None, Some(ui::Front::Input), 0);
     }
 
+    /// Show `target` in the detail view: what `open(r)` asked for, or a row. With `front`, a
+    /// narrow window brings it to the front. `press` is the person's press that opened it, or 0
+    /// for one a script, a search hit or an agent opened.
     pub(super) fn open_detail(
         &mut self,
         target: &ResourceRef,
         with: Option<&str>,
         front: Option<ui::Front>,
+        press: u64,
     ) {
         // A place of the window's own view is no view of its own: the window goes there.
         if let Some(place) = with
@@ -146,7 +150,7 @@ impl Instance {
         if let Some(place) = with
             && app.runtime().has_place(&target.ty, place)
         {
-            self.open_detail(target, None, front);
+            self.open_detail(target, None, front, press);
             self.show_place(target, place, None);
             return;
         }
@@ -184,7 +188,7 @@ impl Instance {
                 return;
             };
             self.open_facts(target, tree, front);
-            self.run_opened(target);
+            self.run_opened(target, press);
             self.commit_planned();
             return;
         };
@@ -200,7 +204,7 @@ impl Instance {
                 }
                 self.lenses_changed = true;
                 self.send_open(Level::Detail, front);
-                self.run_opened(target);
+                self.run_opened(target, press);
                 self.commit_planned();
             }
             Err(error) => {
@@ -242,7 +246,7 @@ impl Instance {
         if let Some(target) = wire::runtime_resource(resource) {
             // A page comes to the front of a narrow window as `open(r, view: v)` does, without
             // the keyboard a person's press takes.
-            self.open_detail(&target, Some(view), Some(ui::Front::Action));
+            self.open_detail(&target, Some(view), Some(ui::Front::Action), 0);
         }
     }
 
@@ -264,18 +268,21 @@ impl Instance {
                     shows: Some((press, wire::resource(target))),
                 });
             }
-            self.run_opened(target);
+            self.run_opened(target, press);
             return;
         }
-        self.open_detail(target, None, front);
+        self.open_detail(target, None, front, press);
     }
 
     /// Run what opening `target` does, its type's `opened action`, as the person who opened it:
     /// wherever it was opened from (a list, search, a link, an agent, another app), since every
-    /// opening comes here. A person who may not change it opens it all the same, without the
+    /// opening comes here. `press` is the person's press that opened it: what the action reaches
+    /// outside runs on that press, as the same press of the app's own control would. Without one
+    /// (a search hit, an agent, a script) what it reaches outside waits for the person, as any
+    /// call of theirs does. A person who may not change it opens it all the same, without the
     /// change. A past version or a scenario's capture is nobody opening anything, and changes
     /// nothing. The caller commits what it planned.
-    fn run_opened(&self, target: &ResourceRef) {
+    fn run_opened(&self, target: &ResourceRef, press: u64) {
         if self.mode != Mode::Live {
             return;
         }
@@ -285,13 +292,18 @@ impl Instance {
         let Some(action) = host.runtime().opened_action(&target.ty) else {
             return;
         };
-        let opened = host.runtime().invoke_action(
-            &self.me_actor(),
-            (
+        let opened = {
+            let runtime = host.runtime();
+            let action = (
                 action.as_str(),
                 vec![tilolang_runtime::Value::resource(target)],
-            ),
-        );
+            );
+            if press > 0 {
+                runtime.invoke_pressed_through(&self.me_actor(), None, action, None)
+            } else {
+                runtime.invoke_action(&self.me_actor(), action)
+            }
+        };
         if let Err(error) = opened {
             tracing::debug!(%error, ty = %target.ty, "opening a resource did not change it");
         }
@@ -875,7 +887,7 @@ impl Instance {
                     // A selection the keyboard moves shows the item beside the list without
                     // bringing it to the front of a narrow window; an activation does.
                     let front = front.then_some(ui::Front::Input);
-                    self.open_detail(&target, view.as_deref(), front);
+                    self.open_detail(&target, view.as_deref(), front, self.last_fire);
                 }
                 // The run's log is the system's: the window's host shows it.
                 ViewEvent::Review { run, .. } => self.out.push(ToUi::ShowRun { run }),

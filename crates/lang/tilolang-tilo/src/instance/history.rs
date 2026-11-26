@@ -88,7 +88,7 @@ impl Instance {
         self.detail = None;
         self.lenses_changed = true;
         match before {
-            Some((target, with)) => self.open_detail(&target, with.as_deref(), None),
+            Some((target, with)) => self.open_detail(&target, with.as_deref(), None, 0),
             None => self.out.push(ToUi::Close),
         }
     }
