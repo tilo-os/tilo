@@ -10,7 +10,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use tilo_workspace_service::workspaces::MemberDevice;
 use tilo_workspace_service::workspaces::fixtures::{
-    TestGroupKeys, hosting_device, test_host_holding,
+    TestGroupKeys, hosting_device, test_host_holding, test_host_holding_with_registers,
 };
 use tilolang_calendar::test_support::Rig;
 use tilolang_calendar::test_support::fake_caldav::Server;
@@ -158,7 +158,6 @@ async fn an_icloud_account_asked_for_calendars_lists_them_in_the_calendar() {
     use tilo_actions::remote::{
         ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
     };
-    use tilo_workspace_records::accounts as workspace_accounts;
     use tilolang_calendar::engine::CalendarAccount;
 
     const ADDRESS: &str = "ada@icloud.example";
@@ -170,7 +169,15 @@ async fn an_icloud_account_asked_for_calendars_lists_them_in_the_calendar() {
 
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = hosting_device();
-    let host = test_host_holding(dir.path(), &key, &cert, Arc::new(TestGroupKeys::default())).await;
+    // Opened as the daemon opens it, with the person's services answering their accounts.
+    let host = test_host_holding_with_registers(
+        dir.path(),
+        &key,
+        &cert,
+        Arc::new(TestGroupKeys::default()),
+        vec![tilo_person_services::register],
+    )
+    .await;
     let workspaces = host.workspaces().clone();
     workspaces.set_member_device(Arc::new(MemberDevice {
         cert: cert.clone(),
@@ -202,13 +209,24 @@ async fn an_icloud_account_asked_for_calendars_lists_them_in_the_calendar() {
     };
     let herself = Caller::authenticated(cert.user_public_key, cert.device_public_key)
         .in_workspace(&workspace);
-    let receipt = workspaces
-        .device_actions()
+    let workspace_id = collab_types::WorkspaceId::parse(&workspace).expect("a workspace's id");
+    let receipt = tilo_workspace_service::workspaces::fixtures::host_dispatch(&workspaces)
+        .in_workspace_as(workspace_id, &cert)
         .invoke(
             &herself,
             InvokeRequest {
                 invocation: tilo_actions::InvocationId::new(),
-                target: workspace_accounts::target(workspace_accounts::ADD_MAIL),
+                // Added as Settings adds it: the workspace's own mail accounts, in its tree.
+                target: tilo_actions::remote::RemoteActionTarget {
+                    provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.into(),
+                    address: tilo_actions::ActionAddress::new(
+                        tilo_actions::remote::workspace_governance_child(
+                            &workspace,
+                            Some(tilo_actions::remote::WORKSPACE_MAIL_ACCOUNTS),
+                        ),
+                        "add",
+                    ),
+                },
                 argument: InvokeArgument::Json(adding),
                 context: None,
                 confirmation: None,
@@ -220,7 +238,7 @@ async fn an_icloud_account_asked_for_calendars_lists_them_in_the_calendar() {
             },
         )
         .await
-        .expect("the device's dispatch answers")
+        .expect("the workspace's dispatch answers")
         .expect("her iCloud account is added");
     let ReceiptStatus::Completed { output } = receipt.status else {
         panic!("her own add is answered at once: {:?}", receipt.status);
