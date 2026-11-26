@@ -1762,3 +1762,26 @@ opt-level = 3
 opt-level = 3
 [profile.test.package.unicode-segmentation]
 opt-level = 3
+
+# The interpreter every package runs in: a test that draws a graph or sorts a thousand rows
+# spends its seconds in it, and unoptimised it is an order of magnitude slower.
+[profile.dev.package.wasmi]
+opt-level = 3
+[profile.test.package.wasmi]
+opt-level = 3
+[profile.dev.package.wasmi_collections]
+opt-level = 3
+[profile.test.package.wasmi_collections]
+opt-level = 3
+[profile.dev.package.wasmi_core]
+opt-level = 3
+[profile.test.package.wasmi_core]
+opt-level = 3
+[profile.dev.package.wasmi_ir]
+opt-level = 3
+[profile.test.package.wasmi_ir]
+opt-level = 3
+# The runtime's own glue (view diffing, the store, calls) is the rest of a test's time; tests only,
+# so editing it stays a quick build.
+[profile.test.package.tilolang-runtime]
+opt-level = 2
