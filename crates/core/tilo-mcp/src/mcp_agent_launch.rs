@@ -301,8 +301,8 @@ pub(super) fn starts_app(action: &str) -> bool {
 }
 
 /// Whether `action` with `arguments`, asked of the app `parsed` names, is one of Files' verbs on
-/// the workspace's own folder, its `write-file` there, or one of its reads of it
-/// ([`reads_workspace_folder`]): a path in the workspace, and no device whose own disk it would
+/// the workspace's own folder, its `write-file` there, its `open` of content
+/// ([`puts_into_workspace_folder`]), or one of its reads of it ([`reads_workspace_folder`]): a path in the workspace, and no device whose own disk it would
 /// change or read. Those go to the workspace, which changes its tree wherever that is kept, as a file put
 /// into the workspace does; with a `device` they stay Files' own on that device.
 pub(super) fn in_workspace_folder(
@@ -314,8 +314,18 @@ pub(super) fn in_workspace_folder(
         && tilo_actions::tree::names_files(&app_of(parsed))
         && (fs_protocol::tree::is_tree_verb(action)
             || action == fs_protocol::tree::WRITE_FILE
+            || puts_into_workspace_folder(action, arguments)
             || reads_workspace_folder(action, arguments))
         && !arguments.contains_key("device")
+}
+
+/// Whether `action` with `arguments` is Files' `open` of content (`content`, or `files` for
+/// many): a put into the workspace's own folder, which the workspace answers wherever Files
+/// runs. Asked of a running Files it would be resolved in that window's own actions, which
+/// put nothing into the workspace.
+fn puts_into_workspace_folder(action: &str, arguments: &serde_json::Map<String, Value>) -> bool {
+    action == tilo_actions::remote::APPLICATION_OPEN_ACTION
+        && (arguments.contains_key("content") || arguments.contains_key("files"))
 }
 
 /// Whether `action` with `arguments` is one of Files' reads of the workspace's own folder by a
