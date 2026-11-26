@@ -1041,16 +1041,29 @@ impl ui::framework::ResourceSurface<super::resource::Workspace> for HostedWindow
         let Some(running) = &mut self.in_process else {
             return;
         };
-        // A capture of a scenario that did not run whole pictures nothing it tells: it stops on
-        // the step that failed, in the words of why.
+        // A capture of a scenario that did not run whole pictures nothing it tells: the capture
+        // stops on the step that failed, in the words of why ([`take_stage_failure`]).
         if let Some(scenario) = scenario
             && let Some(hosted) = running.host.instances_mut().next()
             && let Err(why) = hosted.stage(scenario)
         {
-            panic!("{why}");
+            STAGE_FAILED.with(|failed| *failed.borrow_mut() = Some(why));
         }
         running.settle();
     }
+}
+
+thread_local! {
+    /// Why the scenario a capture staged in the window this thread draws did not run whole,
+    /// until the capture takes it. The framework stages a surface on its next frame, with no
+    /// answer of its own, and asks the app afterwards whether the scene stands.
+    static STAGE_FAILED: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Why the scenario the window this thread draws staged did not run whole, taken once: the
+/// step that failed, its action and why.
+pub(crate) fn take_stage_failure() -> Option<String> {
+    STAGE_FAILED.with(|failed| failed.borrow_mut().take())
 }
 
 impl ui::component_lifecycle::WindowActivation for HostedWindow {

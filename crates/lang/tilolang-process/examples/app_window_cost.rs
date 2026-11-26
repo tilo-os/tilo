@@ -122,7 +122,7 @@ struct Open {
     window: Option<End>,
 }
 
-fn open(app: &str, platform: &Rc<Packages>, scenario: Option<&str>) -> Open {
+fn open(app: &str, platform: &Rc<Packages>, scenario: Option<&str>) -> Result<Open, String> {
     let (app_end, window_end) = pair();
     let mut instance = Instance::new(
         Config {
@@ -140,16 +140,14 @@ fn open(app: &str, platform: &Rc<Packages>, scenario: Option<&str>) -> Open {
         Box::new(app_end),
     );
     instance.sync();
-    if let Some(scenario) = scenario
-        && let Err(why) = instance.stage(scenario)
-    {
-        panic!("{why}");
+    if let Some(scenario) = scenario {
+        instance.stage(scenario)?;
     }
     instance.update();
-    Open {
+    Ok(Open {
         instance,
         window: Some(window_end),
-    }
+    })
 }
 
 /// A window built from what its instance sent, laid out and drawn into a scene.
@@ -239,7 +237,7 @@ fn first_frame(
     theme: &ui::Theme,
 ) -> Result<(), String> {
     let started = Instant::now();
-    let mut first = open(app, platform, scenario);
+    let mut first = open(app, platform, scenario)?;
     let opened = started.elapsed();
     let shown = show(first.window.take().ok_or("no window")?, text, theme);
     let cold = started.elapsed();
@@ -263,7 +261,7 @@ fn first_frame(
     let mut warm = Vec::new();
     for _ in 0..5 {
         let started = Instant::now();
-        let mut again = open(app, platform, scenario);
+        let mut again = open(app, platform, scenario)?;
         let opened = started.elapsed();
         let shown = show(again.window.take().ok_or("no window")?, text, theme);
         warm.push((opened, started.elapsed()));
@@ -337,7 +335,7 @@ fn main() -> Result<(), String> {
     for count in counts {
         while apps.len() < count {
             let before = status("RssAnon:");
-            apps.push(open(&app, &platform, scenario.as_deref()));
+            apps.push(open(&app, &platform, scenario.as_deref())?);
             instances_kb = instances_kb.saturating_add(status("RssAnon:").saturating_sub(before));
         }
         for opened in &mut apps {

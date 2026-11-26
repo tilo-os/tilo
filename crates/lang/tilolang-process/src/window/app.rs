@@ -75,6 +75,15 @@ impl ResourceApp for TlApp {
         installed().map_or(&[], scenario_names)
     }
 
+    /// A capture stands on its scenario run whole: one that stopped at a step fails the capture
+    /// there, in the words of the step that failed and why.
+    fn scenario_input(
+        _name: Option<&str>,
+        _input: &mut ui::headless::Driver,
+    ) -> Result<(), String> {
+        super::hosted::take_stage_failure().map_or(Ok(()), Err)
+    }
+
     // The first frame shows what the workspace's indexes hold; the document is read off the frame.
     const OPENS_BEFORE_RESOURCE: bool = true;
 

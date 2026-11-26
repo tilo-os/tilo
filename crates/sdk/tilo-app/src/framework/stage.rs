@@ -217,7 +217,7 @@ fn stage_with(
     driver.relayout();
     (app.input)(scenario, driver).map_err(|error| {
         LaunchError::Operation(format!(
-            "{title} scenario {:?} input failed: {error}",
+            "{title} scenario {:?} failed: {error}",
             scenario.unwrap_or("default")
         ))
     })?;
