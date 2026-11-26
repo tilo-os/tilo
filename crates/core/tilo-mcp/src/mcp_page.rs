@@ -1,43 +1,16 @@
-//! The compact directory page an app's listing is answered as.
-//!
-//! A model pays for every byte of every page it reads, and again on every
-//! later turn that still carries it. A full row repeats its resource id three
-//! times and its contract twice; the compact page names each resource once
-//! and each action by a one-line signature. Everything it leaves out stays one
-//! `tilo_resolve` (or `detail: "full"`) away.
-use base64::Engine as _;
-use serde_json::{Map, Value, json};
+//! The session's short names for long resource ids (handles), and the
+//! readings of values and arguments an agent's calls are answered with.
 use std::collections::HashMap;
-use tilo_actions::remote::{CataloguePage, CatalogueRow};
-use tilo_actions::{ActionDescriptor, ActionParam, Availability, ParamType, RiskLevel};
+use serde_json::Value;
+use tilo_actions::remote::CatalogueRow;
+use tilo_actions::{ActionParam, Availability, ParamType, RiskLevel};
 
-/// Marks a cursor that is not printable text and so travels as base64.
-const BASE64_CURSOR: &str = "b64:";
-/// Longest first sentence a compact signature carries whole. Apps keep
-/// first sentences short; one past this is cut at a clause boundary.
-const DESCRIPTION_CHARS: usize = 240;
 /// Resource ids up to this long are shown as they are: `sheets.workbook`
 /// reads better than a handle and costs about as much.
 const SHORT_ID_BYTES: usize = 24;
 /// Handles one session keeps; later ids are shown in full.
 const MAX_HANDLES: usize = 4096;
 
-/// An opaque continuation as a JSON string: printable text verbatim (an
-/// app's cursor usually is), anything else as prefixed base64.
-pub fn cursor_text(cursor: &[u8]) -> String {
-    match std::str::from_utf8(cursor) {
-        Ok(text)
-            if !text.starts_with(BASE64_CURSOR)
-                && text.bytes().all(|byte| byte.is_ascii_graphic()) =>
-        {
-            text.to_owned()
-        }
-        _ => format!(
-            "{BASE64_CURSOR}{}",
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(cursor)
-        ),
-    }
-}
 
 
 
@@ -86,136 +59,9 @@ impl Handles {
     }
 }
 
-/// `page` with its rows grouped by resource and each action reduced to a
-/// signature: `{"save-as": "Save document as (path?)"}`. With `handles`,
-/// long resource ids are named by their session handles. With `describe`
-/// false each action's description is left out (an `open` reply, read again
-/// on every later turn); the label, parameters and risk stay: that is what a
-/// call needs.
-pub fn compact_described(
-    page: &CataloguePage,
-    handles: Option<&mut Handles>,
-    describe: bool,
-) -> Value {
-    compact_first_described(page, handles, if describe { usize::MAX } else { 0 })
-}
 
-/// [`compact_described`] describing only the first `described` rows: the ones a
-/// needle matched. The rest of a matched resource's actions follow as bare
-/// signatures, so finding one action shows the others without paying for
-/// every description again.
-pub fn compact_first_described(
-    page: &CataloguePage,
-    mut handles: Option<&mut Handles>,
-    described: usize,
-) -> Value {
-    /// One resource of the page: its head and its actions, in page order.
-    struct Group {
-        id: String,
-        head: Map<String, Value>,
-        actions: Map<String, Value>,
-    }
-    let mut groups: Vec<Group> = Vec::new();
-    for (index, row) in page.rows.iter().enumerate() {
-        if !groups.iter().any(|group| group.id == row.resource.id) {
-            groups.push(Group {
-                id: row.resource.id.clone(),
-                head: resource_head(row, handles.as_deref_mut()),
-                actions: Map::new(),
-            });
-        }
-        let Some(group) = groups.iter_mut().find(|group| group.id == row.resource.id) else {
-            continue;
-        };
-        if row.has_children {
-            group.head.insert("children".into(), Value::Bool(true));
-        }
-        if let Some(action) = &row.action {
-            group.actions.insert(
-                action.address.action.clone(),
-                signature(action, index < described).into(),
-            );
-        }
-    }
-    let resources = groups
-        .into_iter()
-        .map(|mut group| {
-            if !group.actions.is_empty() {
-                group
-                    .head
-                    .insert("actions".into(), Value::Object(group.actions));
-            }
-            Value::Object(group.head)
-        })
-        .collect::<Vec<_>>();
-    let mut value =
-        json!({"revision": page.revision, "resources": resources, "exhausted": page.exhausted});
-    if let Some(fields) = value.as_object_mut() {
-        if !page.next_cursor.is_empty() {
-            fields.insert("next_cursor".into(), cursor_text(&page.next_cursor).into());
-        }
-        for (flag, set) in [
-            ("stale_cursor", page.stale_cursor),
-            ("budget_exhausted", page.budget_exhausted),
-        ] {
-            if set {
-                fields.insert(flag.into(), Value::Bool(true));
-            }
-        }
-    }
-    value
-}
 
-fn resource_head(row: &CatalogueRow, handles: Option<&mut Handles>) -> Map<String, Value> {
-    let mut head = Map::new();
-    let name = handles.map_or_else(
-        || row.resource.id.clone(),
-        |handles| handles.short(&row.resource.id),
-    );
-    head.insert("resource".into(), name.into());
-    head.insert("kind".into(), row.resource.kind.clone().into());
-    head.insert("label".into(), row.resource.label.clone().into());
-    head
-}
 
-/// One line an agent can act on: label, parameters, and only the contract
-/// facts that change what it should do.
-fn signature(action: &ActionDescriptor, describe: bool) -> String {
-    let mut line = action.action_label.clone();
-    if describe
-        && let Some(description) = action
-            .description
-            .as_deref()
-            .map(str::trim)
-            .filter(|description| !description.is_empty())
-    {
-        line.push_str(" — ");
-        line.push_str(&first_sentence(description));
-    }
-    if !action.params.is_empty() {
-        let params = action.params.iter().map(param).collect::<Vec<_>>();
-        line.push_str(" (");
-        line.push_str(&params.join(", "));
-        line.push(')');
-    }
-    match action.contract.risk {
-        RiskLevel::None | RiskLevel::Low => {}
-        risk => {
-            line.push_str(" [");
-            line.push_str(risk_label(risk));
-            line.push(']');
-        }
-    }
-    if action.contract.carries_untrusted_content() {
-        line.push_str(" [untrusted content]");
-    }
-    if let Availability::Unavailable { reason, .. } = &action.contract.availability {
-        line.push_str(" [unavailable: ");
-        line.push_str(reason);
-        line.push(']');
-    }
-    line
-}
 
 pub fn param(param: &ActionParam) -> String {
     let mut text = param.name.to_string();
@@ -290,27 +136,6 @@ const fn risk_label(risk: RiskLevel) -> &'static str {
     }
 }
 
-/// The first sentence of `text`, whole unless it is pathologically long;
-/// then cut at the last clause boundary (`;`, `:`, `,`) or word before the
-/// cap.
-fn first_sentence(text: &str) -> String {
-    let sentence = text
-        .split_once(". ")
-        .map_or(text, |(sentence, _)| sentence)
-        .trim_end_matches('.');
-    if sentence.chars().count() <= DESCRIPTION_CHARS {
-        return sentence.to_owned();
-    }
-    let cut: String = sentence.chars().take(DESCRIPTION_CHARS).collect();
-    let clause = cut
-        .rfind([';', ':', ','])
-        .filter(|at| *at >= DESCRIPTION_CHARS / 2);
-    let head = clause.map_or_else(
-        || cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head),
-        |at| cut.get(..at).unwrap_or(cut.as_str()),
-    );
-    format!("{}…", head.trim_end())
-}
 
 /// The resource `name` means among `rows` (a provider's resources): one
 /// whose kind or label is `name`, when exactly one is. `None` when `name`

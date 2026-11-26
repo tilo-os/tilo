@@ -101,9 +101,6 @@ pub struct McpServer<H> {
     caller: Caller,
     /// The session every invocation of this connection is attributed to.
     agent_session: std::sync::Mutex<Option<Session>>,
-    /// The page a listing answers when a call names no `detail`; a client
-    /// that parses v1 rows pins `full` for its session at `initialize`.
-    detail: std::sync::Mutex<Detail>,
     /// The caller-chosen invocation ids a call of this session is running
     /// now. A second call naming one waits for the first, so overlapping
     /// calls never start the same id twice, nor retry it twice.
@@ -428,16 +425,6 @@ fn may_have_opened(value: &Value) -> bool {
     )
 }
 
-/// How much of each row a page carries.
-#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-enum Detail {
-    /// Rows grouped by resource, each action a one-line signature.
-    #[default]
-    Compact,
-    /// Every row with its descriptor and contracts, as first published.
-    Full,
-}
 /// One action inside a `calls` batch. It runs on the call's peer.
 /// One action of either form, after the batch has been split apart.
 #[derive(Clone)]
@@ -611,7 +598,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             workspace,
             caller,
             agent_session: std::sync::Mutex::new(None),
-            detail: std::sync::Mutex::new(Detail::Compact),
             invoking: InFlight::default(),
             handles: std::sync::Mutex::default(),
             open_files: OpenFiles::default(),
@@ -1163,16 +1149,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             resource_list(&rows)
         ))
     }
-    /// `describe` false leaves each action's description out. An `open`
-    /// reply is read again on every later turn, and the label with its
-    /// parameters is what the next call needs.
-    fn compact_described(&self, page: &CataloguePage, workspace: bool, describe: bool) -> Value {
-        if workspace {
-            page::compact_described(page, None, describe)
-        } else {
-            page::compact_described(page, Some(&mut self.handles()), describe)
-        }
-    }
     fn tools(&self) -> Vec<Value> {
         let mut tools = definitions(
             self.host.content_puts().is_some(),
@@ -1222,10 +1198,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             declared.onto(&mut group);
         }
         Some(group)
-    }
-    /// The page detail this session answers with when a call names none.
-    fn detail(&self) -> Detail {
-        *self.detail.lock_recover()
     }
     pub async fn handle(&self, request: Value) -> Option<Value> {
         let id = request.get("id").cloned();
@@ -1492,7 +1464,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let working = self.working.acquire().await.map_err(|_| "session closed")?;
         Ok(Some([admitted, working]))
     }
-    /// Negotiate the protocol version and take the client's page detail.
+    /// Negotiate the protocol version.
     fn initialize(&self, params: &Value) -> Result<Value, &'static str> {
         let version = params
             .get("protocolVersion")
@@ -1503,11 +1475,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         } else {
             "2025-06-18"
         };
-        if let Some(detail) = params.pointer(SURFACE_DETAIL) {
-            let detail =
-                Detail::deserialize(detail).map_err(|_| "detail must be compact or full")?;
-            *self.detail.lock_recover() = detail;
-        }
         // Every connection is one agent session, so its edits are attributed
         // to it in history and undo, whatever transport it came over. A host
         // that names the session itself (the HTTP endpoint) has done so
@@ -1906,18 +1873,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         });
         // Best effort: the app is open whether or not its directory reads.
         let page = match peer {
-            Some(peer) if self.detail() == Detail::Compact || file_open => {
-                self.directory_page(&peer.to_string()).await.ok()
-            }
+            Some(peer) if file_open => self.directory_page(&peer.to_string()).await.ok(),
             _ => None,
         };
         let reader = page
             .as_ref()
-            .filter(|_| file_open)
-            .and_then(|(page, _)| document_reader(page));
-        let directory = page
-            .filter(|_| self.detail() == Detail::Compact)
-            .map(|(page, truncated)| self.directory_value(&page, truncated));
+            .and_then(document_reader);
         let content = match (peer, reader) {
             (Some(peer), Some((reader, untrusted))) => {
                 let mut content = self.document_content(peer, reader, wait).await;
@@ -1934,9 +1895,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             }
             if let Some(opened) = opened {
                 fields.insert("opened".into(), opened);
-            }
-            if let Some(directory) = directory {
-                fields.insert("directory".into(), directory);
             }
             if let Some(content) = content {
                 fields.insert("content".into(), content);
@@ -2178,11 +2136,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         value.insert("update".into(), json!({"state": "succeeded"}));
         value.insert("peer_id".into(), peer.into());
         value.insert("opened".into(), json!({"already_open": true}));
-        if self.detail() == Detail::Compact
-            && let Ok(directory) = self.directory(&peer.to_string()).await
-        {
-            value.insert("directory".into(), directory);
-        }
         Value::Object(value)
     }
     /// Replace each argument naming a session handle with the resource id
@@ -2293,26 +2246,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
         Ok(any_file)
     }
-    async fn directory(&self, provider: &str) -> Result<Value, String> {
-        let (page, truncated) = self.directory_page(provider).await?;
-        Ok(self.directory_value(&page, truncated))
-    }
-    /// A directory page as an `open` answers it.
-    fn directory_value(&self, page: &CataloguePage, truncated: bool) -> Value {
-        let mut value = self.compact_described(page, false, false);
-        if let Some(fields) = value.as_object_mut() {
-            fields.remove("exhausted");
-            if truncated {
-                fields.insert("truncated".into(), Value::Bool(true));
-            }
-        }
-        value
-    }
-    /// A just-opened instance's directory: its top-level resources with
-    /// their actions, and the resources beneath them while the page stays
-    /// within [`DIRECTORY_BYTES`], so an agent can act without browsing.
-    /// Answers whether anything was left out.
-    async fn directory_page(&self, provider: &str) -> Result<(CataloguePage, bool), String> {
+    /// A just-opened instance's top-level resources with their actions, and
+    /// those of a few resources beneath them: where the reader of the file
+    /// it opened is found.
+    async fn directory_page(&self, provider: &str) -> Result<CataloguePage, String> {
         let listing = |parent: Option<String>| CatalogueQuery {
             provider: Some(provider.to_owned()),
             parent_resource: parent,
@@ -2325,7 +2262,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             exhausted: true,
             ..CataloguePage::default()
         };
-        let mut truncated = !root.exhausted;
         let mut queue = std::collections::VecDeque::new();
         for row in root.rows {
             if row.has_children && !queue.contains(&row.resource.id) {
@@ -2336,12 +2272,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let mut expanded = Vec::<String>::new();
         while let Some(parent) = queue.pop_front() {
             if expanded.len() >= DIRECTORY_EXPANSIONS {
-                truncated = true;
                 break;
             }
             expanded.push(parent.clone());
             let listed = self.ask(listing(Some(parent.clone()))).await?;
-            truncated |= !listed.exhausted;
             let mut grown = page.clone();
             grown.rows.extend(listed.rows.into_iter().filter(|row| {
                 !page.rows.iter().any(|seen| {
@@ -2350,15 +2284,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                             == row.action.as_ref().map(|a| &a.address.action)
                 })
             }));
-            let mut trial = self.handles().clone();
-            if page::compact_described(&grown, Some(&mut trial), false)
-                .to_string()
-                .len()
-                > DIRECTORY_BYTES
-            {
-                truncated = true;
-                continue;
-            }
             for row in grown.rows.iter().skip(page.rows.len()) {
                 let id = &row.resource.id;
                 if row.has_children
@@ -2371,7 +2296,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             }
             page = grown;
         }
-        Ok((page, truncated))
+        Ok(page)
     }
     /// The invocation's update once it is terminal, or after `wait`. A call held until its
     /// action has ended ([`Hold::UntilEnded`]) is answered only then, for as long as its
@@ -2586,13 +2511,8 @@ const QUERY_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(15
 const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Where a workspace `open`'s answer names the instance it started.
 const OPENED_PEER: &str = "/update/output/value/peer_id";
-/// The experimental capability naming this surface's version. Version 2
-/// answers listings with compact pages; version 3 names long resource
-/// ids by session handles in them and answers an `open` with the new
-/// instance's directory. A client sends `{"so.tilo.mcp": {"detail": "full"}}`
-/// to keep version 1's rows.
+/// The experimental capability naming this surface's version.
 const SURFACE: &str = "so.tilo.mcp";
-const SURFACE_DETAIL: &str = "/capabilities/experimental/so.tilo.mcp/detail";
 /// The agent session a client continues: `{"so.tilo.mcp": {"session": "mcp:…"}}`
 /// with the id its earlier connection was answered with, or one it chose.
 /// Provenance only: it names whose steps `undo` takes back, never what the
@@ -2614,10 +2534,8 @@ fn continued_session(session: &Value) -> Result<String, &'static str> {
 }
 /// The most host pages read to list every action of one found resource.
 const EVERY_ACTION_PAGES: usize = 4;
-/// Largest directory an `open` answers with, in bytes of JSON, and how many
-/// resources beneath the top level it lists. A model reads it again on every
-/// later turn; beyond this, `tilo_ls` browses the rest.
-const DIRECTORY_BYTES: usize = 12 * 1024;
+/// How many resources beneath an opened instance's top level are read for
+/// the reader of the file it opened.
 const DIRECTORY_EXPANSIONS: usize = 6;
 const OPENED_NO_PEER: &str = "the workspace did not say which instance it started, so the file is not open; tilo_ls shows whether it runs";
 const OPENED_NO_ACTION: &str = "the app offers no open action taking a path, so it started empty; its directory shows what it can do";
