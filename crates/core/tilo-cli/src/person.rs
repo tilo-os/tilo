@@ -146,10 +146,10 @@ pub fn act(workspace: &str, path: &str, args: Map<String, Value>) -> Result<Valu
         .server_address
         .as_ref()
         .ok_or_else(|| anyhow!(login::LOGIN_ENDED))?;
-    let mut signed = login::signed_over_iroh(&here, address)?;
-    signed.agent = String::new();
-    signed.label.clone_from(&person.cert.device_label);
-    signed.cert = person.cert.clone();
+    let mut answer = login::signed_over_iroh(&here, address)?;
+    answer.agent = String::new();
+    answer.label.clone_from(&person.cert.device_label);
+    answer.cert = person.cert.clone();
     // This computer's device key stays with its daemon: the session signs through it, and the
     // key never enters this process.
     let signer = tilo_identity::daemon_signer::DaemonSigner::here(crate::identity::paths())?;
@@ -157,7 +157,7 @@ pub fn act(workspace: &str, path: &str, args: Map<String, Value>) -> Result<Valu
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let device = Device::connect(&signed, Arc::new(signer));
+        let device = Device::connect(&answer, Arc::new(signer));
         let answered = async {
             device
                 .connected()

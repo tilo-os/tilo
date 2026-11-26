@@ -563,12 +563,12 @@ mod tests {
         at(&mut env, first.path());
         let _first_taken = took_the_device_key();
         let ada = made_here("Ada");
-        let words = tilo_identity::store::recovery_words(&active_here()).unwrap();
+        let words = tilo_identity::store::recovery_words(active_here()).unwrap();
         let other = tempfile::tempdir().unwrap();
         at(&mut env, other.path());
         let _other_taken = took_the_device_key();
         made_here("Bea");
-        let bea_words = tilo_identity::store::recovery_words(&active_here()).unwrap();
+        let bea_words = tilo_identity::store::recovery_words(active_here()).unwrap();
 
         // A computer account with nothing of Tilo on it: the words make it Ada's again, with a
         // device of its own that her root certified.
