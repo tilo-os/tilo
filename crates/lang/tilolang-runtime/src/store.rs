@@ -2461,6 +2461,58 @@ pub fn field_of(json: &Json) -> Result<FieldValue, String> {
 mod tests {
     use super::*;
 
+    tilo_test_env::scenario! {
+        /// Bytes read and write the form the platform's content store keeps.
+        fn bytes_read_the_stored_form;
+
+        phase small_bytes_are_themselves_inside_the_record;
+        {
+            let data = BytesData::Inline(std::rc::Rc::new(vec![1u8, 2, 3]));
+            assert_eq!(
+                BytesData::from_json(&serde_json::json!({"inline": [1, 2, 3]})).unwrap(),
+                data,
+                "the record's own form"
+            );
+            assert_eq!(
+                BytesData::from_json(&serde_json::json!([1, 2, 3])).unwrap(),
+                data,
+                "a reader that holds bytes as a list of them"
+            );
+            assert_eq!(data.to_json(), serde_json::json!({"inline": [1, 2, 3]}));
+            assert_eq!(
+                BytesData::from_json(&serde_json::Value::Null)
+                    .unwrap()
+                    .len(),
+                0,
+                "no bytes is bytes of nothing"
+            );
+        }
+
+        phase large_bytes_are_named_by_their_address_and_length;
+        {
+            let hash = "a".repeat(64);
+            let json = serde_json::json!(format!("blake3:{hash}:4096"));
+            let data = BytesData::from_json(&json).unwrap();
+            assert_eq!(
+                data,
+                BytesData::Kept {
+                    hash: hash.clone(),
+                    len: 4096
+                }
+            );
+            assert_eq!(data.to_json(), json);
+            assert_eq!(data.len(), 4096);
+            assert!(!data.is_empty());
+            for refused in [
+                serde_json::json!("nope"),
+                serde_json::json!({"x": 1}),
+                serde_json::json!("blake3:short:4096"),
+            ] {
+                assert!(BytesData::from_json(&refused).is_err(), "{refused}");
+            }
+        }
+    }
+
     /// `ids` as a listing the store holds whole.
     fn listing(ids: &[&str]) -> Listing {
         Listing::from_ids(ids.iter().map(|id| (*id).to_owned()))
