@@ -75,6 +75,7 @@ jni = "0.21.1"
 tilo-process = { path = "../../../crates/platform/tilo-process" }
 
 [dev-dependencies]
+tilo-device-tickets = { path = "../../core/device-tickets", features = ["test-support"] }
 # The Android receiver's JNI entry is type-checked by the unit tests.
 jni = "0.21.1"
 tempfile.workspace = true

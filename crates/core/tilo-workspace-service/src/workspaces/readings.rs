@@ -269,6 +269,24 @@ impl Reading {
 }
 
 impl Workspaces {
+    /// Keep `hosted`, opened here as `workspace`, among the workspaces this service holds and
+    /// reads from now on: what every copy taken up here goes through.
+    pub(super) async fn hold_open(
+        &self,
+        workspace: &str,
+        hosted: HostedWorkspace,
+    ) -> Arc<tokio::sync::Mutex<HostedWorkspace>> {
+        let reading = hosted.reading();
+        let state = Arc::new(tokio::sync::Mutex::new(hosted));
+        self.inner.readings.hold(workspace, &state, reading);
+        self.inner
+            .workspaces
+            .lock()
+            .await
+            .insert(workspace.to_owned(), Arc::clone(&state));
+        state
+    }
+
     /// What `workspace` is read through: its store and its copy, a command or a read at a time.
     /// No lock of the workspace is taken, and none is waited for: a workspace that is held but
     /// has not kept its reading yet is one still opening, and this waits for that reading —

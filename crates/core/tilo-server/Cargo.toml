@@ -349,5 +349,6 @@ workspace = true
 sd-notify.workspace = true
 
 [dev-dependencies]
+tilo-device-tickets = { path = "../device-tickets" }
 # Compiles the surfaces its tests decide changes against.
 tilo-surface-compile = { version = "0.1.0", path = "../tilo-surface-compile" }

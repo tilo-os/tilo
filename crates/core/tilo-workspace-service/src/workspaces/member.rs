@@ -1045,14 +1045,7 @@ impl Workspaces {
                 tracing::warn!(%name, %error, "a member copy's device address was not kept");
             }
             self.bind_member(&hosted).await?;
-            let reading = hosted.reading();
-            let state = Arc::new(tokio::sync::Mutex::new(hosted));
-            self.inner.readings.hold(&name, &state, reading);
-            self.inner
-                .workspaces
-                .lock()
-                .await
-                .insert(name.clone(), Arc::clone(&state));
+            let state = self.hold_open(&name, hosted).await;
             // Synced once it is held: what the serving device sends from the start is kept in it.
             self.serve_member(&state, device).await?;
         }

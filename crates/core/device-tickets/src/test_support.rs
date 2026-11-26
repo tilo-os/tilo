@@ -13,7 +13,7 @@ use tilo_peer_state::actions::{ActionService, NoActions};
 use tilo_peer_state::new_device::{Keeping, ServedTicket};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
-use crate::workspaces::{Workspaces, person_workspace};
+use tilo_workspace_service::workspaces::{Workspaces, person_workspace};
 
 /// The person's laptop, serving one ticket: a device that logs in with it is certified by the
 /// person's root and enters the person's workspace on their server.

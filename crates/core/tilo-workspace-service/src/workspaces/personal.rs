@@ -215,7 +215,7 @@ impl Workspaces {
 
     /// The devices resource of the person's own workspace: empty while this
     /// host does not hold it.
-    pub(crate) async fn devices_of(&self, person: &[u8; 32]) -> Devices {
+    pub async fn devices_of(&self, person: &[u8; 32]) -> Devices {
         let workspace = person_workspace_id(person);
         person_workspace::read_on::<Devices>(self, &workspace, devices::DEVICES)
             .await

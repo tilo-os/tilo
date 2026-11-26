@@ -15,8 +15,8 @@ use tilo_user_identity::{RevocationEntry, RevocationReason};
 use tilo_action_services::device_tickets::device_in;
 
 use super::TicketServer;
-use crate::workspaces::person_workspace::devices::{DEVICES, Devices, Listed};
-use crate::workspaces::{Workspaces, person_workspace};
+use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices, Listed};
+use tilo_workspace_service::workspaces::{Workspaces, person_workspace};
 
 impl TicketServer {
     /// Call the device `args` names what `name` says, in every list: the record of the person's

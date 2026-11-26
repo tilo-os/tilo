@@ -464,14 +464,7 @@ impl Workspaces {
         )
         .map_err(|error| error.to_string())?;
         hosted.handed_by = Some(holder.clone());
-        let reading = hosted.reading();
-        let state = Arc::new(AsyncMutex::new(hosted));
-        self.inner.readings.hold(workspace, &state, reading);
-        self.inner
-            .workspaces
-            .lock()
-            .await
-            .insert(workspace.to_owned(), Arc::clone(&state));
+        let state = self.hold_open(workspace, hosted).await;
         let hosted = state.lock().await;
         self.serve_direct(&hosted).await?;
         drop(hosted);

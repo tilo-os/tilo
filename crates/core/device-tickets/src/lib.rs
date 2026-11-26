@@ -42,7 +42,7 @@ use tilo_peer_state::actions::ActionService;
 use tilo_peer_state::new_device::{Keeping, ServedTicket};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, StatementSigner};
 
-use crate::workspaces::{Workspaces, person_workspace, servers};
+use tilo_workspace_service::workspaces::{Workspaces, person_workspace, servers};
 
 mod manage;
 #[cfg(any(test, feature = "test-support"))]

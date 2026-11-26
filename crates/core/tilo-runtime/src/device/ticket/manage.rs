@@ -35,8 +35,8 @@ use futures_util::future::BoxFuture;
 use iroh::Endpoint;
 use tilo_desktop_model::WorkspaceId;
 use tilo_device_identity::login::{Entry, Reached};
+use tilo_device_tickets::{Issuer, Role, Root};
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::device_tickets::{Issuer, Role, Root};
 use tilo_workspace_service::workspaces::Workspaces;
 
 use super::super::workspaces::ServiceWorkspaces;

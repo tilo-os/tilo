@@ -306,7 +306,7 @@ impl Workspaces {
     /// Read the blocked-keys record and the record of the operator's devices
     /// again, and keep what they say. A record this host holds no copy of
     /// leaves the keys it had: nothing says they were lifted.
-    pub(crate) async fn refresh_blocked(&self) {
+    pub async fn refresh_blocked(&self) {
         // The reads and the keep are one step. Two refreshes run at once: this device's own
         // write waits for this ([`Self::read_wrote`]), and the follower wakes on every write's
         // broadcast ([`Self::follow_blocked`]). Without the hold, a refresh that read the

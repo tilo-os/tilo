@@ -873,7 +873,7 @@ impl Issuing {
     }
 }
 
-impl tilo_workspace_service::device_tickets::Issuer for Issuing {
+impl tilo_device_tickets::Issuer for Issuing {
     fn serving(
         &self,
     ) -> Result<
@@ -898,7 +898,7 @@ impl tilo_workspace_service::device_tickets::Issuer for Issuing {
         Ok((self.cert.clone(), Arc::new(self.key.clone())))
     }
 
-    fn root(&self) -> Result<Option<tilo_workspace_service::device_tickets::Root>, String> {
+    fn root(&self) -> Result<Option<tilo_device_tickets::Root>, String> {
         Ok(Some(Arc::new(self.root.clone())))
     }
 
@@ -950,8 +950,8 @@ async fn ticket_server(
     device: &TestDevice,
     hosted: &Hosted,
     addr: iroh::EndpointAddr,
-) -> (tilo_workspace_service::device_tickets::TicketServer, usize) {
-    let tickets = tilo_workspace_service::device_tickets::TicketServer::new(Arc::new(Issuing {
+) -> (tilo_device_tickets::TicketServer, usize) {
+    let tickets = tilo_device_tickets::TicketServer::new(Arc::new(Issuing {
         workspaces: hosted.host.workspaces().clone(),
         addr,
         cert: device.cert.clone(),
@@ -997,13 +997,11 @@ async fn plan_cupboard(hosted: &Hosted, expires_at_ns: u64) {
 
 /// The plan's ticket, as `tilo machine add` asks the laptop for it.
 async fn planned_ticket(
-    tickets: &tilo_workspace_service::device_tickets::TicketServer,
+    tickets: &tilo_device_tickets::TicketServer,
 ) -> tilo_device_identity::login::Ticket {
     tickets
         .issue(
-            Some(tilo_workspace_service::device_tickets::Role::Plan(
-                PLANNED.to_owned(),
-            )),
+            Some(tilo_device_tickets::Role::Plan(PLANNED.to_owned())),
             false,
         )
         .await

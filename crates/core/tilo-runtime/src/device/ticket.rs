@@ -39,12 +39,12 @@ use tilo_device_identity::login::{
     RECOVERY_WORDS, RELEASE_HALF, REMOVE_IDENTITY, RENAME, REPORTED, RESOURCE, RESTORE, REVOKE,
     Report, TICKET_LIFETIME_NS, Ticket, UPDATE, USE_IDENTITY,
 };
+use tilo_device_tickets::{Role, TicketServer};
 use tilo_identity::store::SigningIdentity;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::{ActionService, NoActions};
 use tilo_session_client::device::Device as Entered;
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::device_tickets::{Role, TicketServer};
 
 /// How long the issuer keeps serving once the computer is certified, for it to read its answer.
 const TELL_WAIT: Duration = Duration::from_secs(30);

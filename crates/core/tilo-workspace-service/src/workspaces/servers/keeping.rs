@@ -29,7 +29,6 @@ use tilo_peer_state::join::TransportHint;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::workspaces::IDENTITY_LIST;
 use tilo_user_identity::WorkspaceList;
-use tokio::sync::Mutex as AsyncMutex;
 
 use super::{SERVERS, person_workspace_id, read};
 use crate::workspaces::person_workspace::{self, holds_person_workspace};
@@ -182,15 +181,7 @@ async fn keep_again(workspaces: &Workspaces, workspace: &str) -> Result<bool, St
     }
     std::fs::remove_file(&released).map_err(|error| error.to_string())?;
     workspaces.serve_direct(&hosted).await?;
-    let reading = hosted.reading();
-    let state = Arc::new(AsyncMutex::new(hosted));
-    workspaces.inner.readings.hold(workspace, &state, reading);
-    workspaces
-        .inner
-        .workspaces
-        .lock()
-        .await
-        .insert(workspace.to_owned(), Arc::clone(&state));
+    let state = workspaces.hold_open(workspace, hosted).await;
     workspaces.serve_kept(std::slice::from_ref(&state)).await?;
     workspaces.keep_reading(&state).await;
     let _ = workspaces.inner.changes.send(workspace.to_owned());

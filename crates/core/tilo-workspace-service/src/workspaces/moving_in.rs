@@ -11,14 +11,12 @@
 //! the workspace in that service's place.
 
 use std::path::Path;
-use std::sync::Arc;
 
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::CopyRole;
 use tilo_peer_state::store::{Appetite, Budget, Frame, Store, advance};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
-use tokio::sync::Mutex as AsyncMutex;
 
 use super::delete::DELETED;
 use super::{HostedWorkspace, RELEASED, Workspaces};
@@ -296,14 +294,7 @@ impl Workspaces {
             return Err("the workspace's record names another workspace".into());
         }
         self.serve_direct(&hosted).await?;
-        let reading = hosted.reading();
-        let state = Arc::new(AsyncMutex::new(hosted));
-        self.inner.readings.hold(&name, &state, reading);
-        self.inner
-            .workspaces
-            .lock()
-            .await
-            .insert(name.clone(), Arc::clone(&state));
+        let state = self.hold_open(&name, hosted).await;
         let mut hosted = state.lock().await;
         let hint = self
             .transport_hint_as(&hosted, CopyRole::KeyHolder)

@@ -48,8 +48,6 @@ pub mod content;
 /// A device's own documents, as its workspace service holds them.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod device_documents;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod device_tickets;
 /// Holding one workspace's documents: what a device reads of them and the writes it authors,
 /// over the replica and keys whichever holder keeps them.
 pub mod documents;
