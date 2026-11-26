@@ -49,6 +49,10 @@ impl ResourceApp for TlApp {
     const ICON: Option<&'static str> = Some("code-editor");
     // The document is the workspace's: every package keeps its resources in it.
     const WORKSPACE_RESOURCE: bool = true;
+    // This process runs the package's module itself: it is its app's runtime, so it attaches to
+    // none beside it. It joins its workspace over the connection the launcher handed it, as a
+    // window a session vouched for does.
+    const ATTACHES_RUNTIME: bool = false;
 
     fn named() -> Option<AppName> {
         let meta = &super::installed_bundle()?.meta;
