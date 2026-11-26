@@ -2216,11 +2216,7 @@ impl Workspaces {
         context: &tilo_broker_core::services::ResourceRequestContext,
         command: collab_types::store::wire::Command,
     ) -> Result<collab_types::store::wire::Reply, String> {
-        let step = store_step(&command);
-        let answering = crate::timing::start();
-        let answer = self.answer_resource_command(context, command).await;
-        crate::timing::window(step, answering);
-        answer
+        self.answer_resource_command(context, command).await
     }
 
     #[cfg(feature = "apps")]
@@ -3041,28 +3037,6 @@ fn stamp_resource_invoker(
     }
     device.0.clone_into(&mut stamp.device);
     device.1.clone_into(&mut stamp.device_name);
-}
-
-/// The timing step an app's store command is counted under ([`crate::timing::window`]): a
-/// capacity run reads which commands an app's work spends its time in.
-#[cfg(feature = "apps")]
-fn store_step(command: &collab_types::store::wire::Command) -> &'static str {
-    use collab_types::store::wire::Command;
-    match command {
-        Command::Put { .. } => "store.put",
-        Command::Remove { .. } => "store.remove",
-        Command::Edit { .. } => "store.edit",
-        Command::Batch(_) => "store.batch",
-        Command::Get { .. } => "store.get",
-        Command::Query(_) => "store.query",
-        Command::Count { .. } => "store.count",
-        Command::Positions { .. } => "store.positions",
-        Command::PageAt { .. } => "store.page_at",
-        Command::RecordChange { .. } => "store.record_change",
-        Command::RecordChanges { .. } => "store.record_changes",
-        Command::Turn { .. } => "store.turn",
-        _ => "store.other",
-    }
 }
 
 /// Who a caller reads records as: a member as the person they are or act for, and a visitor, who

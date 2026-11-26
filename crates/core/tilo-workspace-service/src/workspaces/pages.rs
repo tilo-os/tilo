@@ -1264,7 +1264,6 @@ impl Workspaces {
         token: Option<&[u8]>,
         now: u64,
     ) -> Result<JoinReply, CollaborationError> {
-        let proving = crate::timing::start();
         let (invitation, person) = (presented.invitation.clone(), presented.cert.user_public_key);
         let joined = joined_name(name)?;
         let reply = match token {
@@ -1280,8 +1279,6 @@ impl Workspaces {
         if let JoinReply::Admitted { workspace, .. } = &reply {
             self.accepted(workspace, &invitation, person).await;
         }
-        crate::timing::event("join.prove.admitted", proving, 0);
-        crate::timing::event("join.prove", proving, 0);
         Ok(reply)
     }
 
@@ -1401,7 +1398,6 @@ impl Workspaces {
     /// pre-admissions decide each.
     async fn admit_queued(&self, workspace: WorkspaceId) {
         let identity = workspace.to_string();
-        let locking = crate::timing::start();
         // Redemptions that arrive while the workspace commits another change wait for the next
         // pass together: it starts once the workspace is free.
         if let Ok(hosted) = self.workspace(&identity).await {
@@ -1413,8 +1409,6 @@ impl Workspaces {
             .lock_recover()
             .remove(&identity)
             .unwrap_or_default();
-        crate::timing::event("join.queued.locked", locking, queued.len() as u64);
-        let admitting = crate::timing::start();
         let admissions = queued
             .iter()
             .map(|join| Admitting::Entry {
@@ -1429,7 +1423,6 @@ impl Workspaces {
         let answers = self
             .admit_through(workspace, &Caller::local_system(), admissions)
             .await;
-        crate::timing::event("join.queued.admit", admitting, queued.len() as u64);
         match answers {
             Ok(answers) => {
                 for (queued, answer) in queued.into_iter().zip(answers) {

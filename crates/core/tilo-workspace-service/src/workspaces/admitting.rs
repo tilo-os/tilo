@@ -592,7 +592,6 @@ impl Workspaces {
         joins: &[Redeeming<'_>],
         now: u64,
     ) -> Result<Vec<Result<JoinBootstrap, CollaborationError>>, CollaborationError> {
-        let deciding = crate::timing::start();
         let (admitted, committed) = {
             let shared = workspace.peer.shared();
             let mut replica = shared.lock();
@@ -605,11 +604,8 @@ impl Workspaces {
             let admitted = tilo_peer_state::join_answer::admit(&mut held, joins, now);
             (admitted, held.committed)
         };
-        crate::timing::event("join.admit.decide", deciding, joins.len() as u64);
         if committed {
-            let settling = crate::timing::start();
             self.settle(workspace).await?;
-            crate::timing::event("join.admit.settle", settling, joins.len() as u64);
             if let Ok(answers) = &admitted {
                 for (join, answer) in joins.iter().zip(answers) {
                     if answer.is_ok() {

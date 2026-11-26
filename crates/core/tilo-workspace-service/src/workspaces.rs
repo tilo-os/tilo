@@ -861,7 +861,6 @@ impl HostedWorkspace {
             &StatePeer,
         ) -> Result<collaboration::CollaborationState, String>,
     ) -> Result<(), String> {
-        let keeping = crate::timing::start();
         let device = key.verifying_key().to_bytes();
         // The owner changes only by a transfer the workspace's member list
         // replays; any other owner is another workspace.
@@ -888,16 +887,10 @@ impl HostedWorkspace {
             own_changes(replica, &candidate, &device)
         };
         let mut record = self.record.clone();
-        let encoding = crate::timing::start();
         record.peer = self.parts.stage(&candidate)?;
-        crate::timing::window("workspace.commit.durable", encoding);
-        let deriving = crate::timing::start();
         record.collaboration = state(&record, &candidate)?;
-        crate::timing::window("workspace.commit.state", deriving);
         let prior = std::mem::replace(&mut self.record, record);
-        let persisting = crate::timing::start();
         let persisted = self.persist();
-        crate::timing::window("workspace.commit.persist", persisting);
         if let Err(error) = persisted {
             self.record = prior;
             return Err(error);
@@ -905,7 +898,6 @@ impl HostedWorkspace {
         self.kept_heads = candidate.workspace_heads();
         *replica = candidate;
         self.unsent.extend(own);
-        crate::timing::event("workspace.governance_commit", keeping, 0);
         Ok(())
     }
 
@@ -2867,9 +2859,7 @@ impl Workspaces {
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let waiting = crate::timing::start();
         let mut workspace = workspace.lock().await;
-        crate::timing::window("workspace.follow_wait", waiting);
         if workspace.peer().holds_document(&app_id, &document_id) {
             let refused = self
                 .follow_write(&mut workspace, author, message, (app_id, document_id), true)
@@ -3041,7 +3031,6 @@ impl Workspaces {
         (app, record): (String, String),
         compact: bool,
     ) -> Option<tilo_peer_state::AdmissionError> {
-        let following = crate::timing::start();
         // A sealed compaction this copy is behind in is taken as the record's base rather than
         // refused ([`HostedWorkspace::follow_kept`]).
         let followed = self
@@ -3083,14 +3072,11 @@ impl Workspaces {
         {
             tracing::warn!(workspace = %workspace.workspace(), %reason, %error, "the host did not publish a refusal of a record write");
         }
-        crate::timing::window("workspace.follow", following);
         #[cfg(feature = "device-keys")]
         if compact {
-            let compacting = crate::timing::start();
             if let Err(error) = self.compact_sealed_histories(workspace).await {
                 tracing::warn!(workspace = %workspace.workspace(), %error, "hosted workspace did not compact a sealed record");
             }
-            crate::timing::window("workspace.compact", compacting);
         }
         #[cfg(not(feature = "device-keys"))]
         let _ = compact;
@@ -3196,14 +3182,12 @@ impl Workspaces {
         if self.forget_expired_devices(workspace)? {
             tracing::debug!(workspace = %workspace.workspace(), "workspace settled without the devices whose certificates expired");
         }
-        let accessing = crate::timing::start();
         let now = tilo_clock::wall();
         let access: MemberListAccess = workspace.peer().governance().member_list_access(now)?;
         let (device_access, _) = workspace
             .peer()
             .governance()
             .projection(&access.member_devices, now)?;
-        crate::timing::event("workspace.settle.access_read", accessing, 0);
         // Who is in the workspace is what its member list just said: the person
         // listing of every one of them, and the people the handshake trusts, are
         // answered from that, not by reading every workspace this host serves.
@@ -3238,8 +3222,6 @@ impl Workspaces {
             .settle(workspace.workspace_id(), access, revoked, device_access)
             .await
             .map_err(|error| error.to_string())?;
-        crate::timing::event("workspace.settle.access", accessing, 0);
-        let carrying = crate::timing::start();
         // A member copy's own change reaches the device serving it over the
         // copy's link as every write of its does: the records store keeps it
         // for whichever device links next, and the serving device takes it in
@@ -3260,11 +3242,8 @@ impl Workspaces {
         for message in forwarded {
             self.forward_member_document(workspace_id, message);
         }
-        crate::timing::event("workspace.settle.publish", carrying, 0);
-        let observing = crate::timing::start();
         self.dial_holders(workspace);
         self.governance_moved(workspace);
-        crate::timing::event("workspace.settle.observe", observing, 0);
         Ok(())
     }
 

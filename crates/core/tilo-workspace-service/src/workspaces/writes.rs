@@ -11,6 +11,31 @@ use tilo_peer_state::owner::{AppWrite, WriteRefusal};
 
 use super::Workspaces;
 
+/// How long a phase of a write may wait before it is said while it still waits.
+const WAITED_LONG: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Run `work`, a phase of a write, saying at warn level once it has waited [`WAITED_LONG`] for
+/// `phase` and still waits: a write that never ends names the phase it waits in before whoever
+/// gives up on it does.
+pub(crate) async fn said_if_long<T>(
+    phase: &'static str,
+    work: impl std::future::Future<Output = T>,
+) -> T {
+    let mut work = std::pin::pin!(work);
+    let waited = std::pin::pin!(tilo_rt::sleep(WAITED_LONG));
+    match futures::future::select(work.as_mut(), waited).await {
+        futures::future::Either::Left((done, _)) => done,
+        futures::future::Either::Right(((), _)) => {
+            tracing::warn!(
+                phase,
+                waited_s = WAITED_LONG.as_secs(),
+                "a write still waits"
+            );
+            work.await
+        }
+    }
+}
+
 impl Workspaces {
     /// Write `changes` to `app`'s `document` of `workspace` as this device's own: the document's
     /// founding write when `founding` (the whole document, which the workspace must not hold
@@ -78,12 +103,11 @@ impl Workspaces {
         };
         // A workspace this device does not hold yet is one it is still joining or opening: the
         // write is made once it holds it, and nobody is told of a refusal.
-        let state = crate::timing::said_if_long("opening the workspace", self.workspace(workspace))
+        let state = said_if_long("opening the workspace", self.workspace(workspace))
             .await
             .map_err(|_| WriteRefusal::Waiting(tilo_peer_state::MissingPrerequisite::Workspace))?;
-        let drafting = crate::timing::start();
         let (envelopes, author) = {
-            let hosted = crate::timing::said_if_long("the workspace's lock", state.lock()).await;
+            let hosted = said_if_long("the workspace's lock", state.lock()).await;
             let picked = match sealed {
                 Some(_) => None,
                 None => self
@@ -112,16 +136,12 @@ impl Workspaces {
                 },
             )?
         };
-        crate::timing::event("own_write.draft", drafting, changes.len() as u64);
         // A write too large for one frame is committed a segment at a time, in order.
         let mut last = None;
         for mut envelope in envelopes {
-            let signing = crate::timing::start();
             sign_op(&mut envelope, &*device.signer)
                 .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
-            crate::timing::event("own_write.sign", signing, 0);
-            let committing = crate::timing::start();
-            crate::timing::said_if_long(
+            said_if_long(
                 "the commit to the workspace",
                 Box::pin(self.commit_local_document(
                     workspace,
@@ -132,7 +152,6 @@ impl Workspaces {
                 )),
             )
             .await?;
-            crate::timing::event("own_write.commit", committing, 0);
             last = Some(envelope);
         }
         let envelope =

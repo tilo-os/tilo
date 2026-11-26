@@ -148,9 +148,7 @@ impl Admit for Workspaces {
                 return entered;
             }
             if let Some(access) = access {
-                let keying = crate::timing::start();
                 self.key_arrival(&entering.workspace, cert, access).await;
-                crate::timing::event("entry.keys", keying, 0);
             }
             self.with_host(&entering.workspace, entered).await
         })
@@ -236,9 +234,7 @@ impl Workspaces {
             user_public_key: hex::encode(cert.user_public_key),
             display_name: kept(name, MAX_DISPLAY_NAME_CHARS),
         };
-        let asking = crate::timing::start();
         let admitted = self.admit_listed(workspace, &join).await;
-        crate::timing::event("entry.entry", asking, 0);
         admitted.map_err(|refusal| EnterRefusal::Entry {
             retry_after_secs: match refusal {
                 crate::workspaces::EntryRefusal::Full { retry_after_secs } => {
@@ -605,14 +601,12 @@ impl Workspaces {
         let workspaces = self.clone();
         let workspace = workspace.to_owned();
         tokio::spawn(async move {
-            let taking = crate::timing::start();
             if let Err(error) = workspaces
                 .take_governance(&workspace, device, request, Carried::Unkept)
                 .await
             {
                 tracing::warn!(%workspace, %error, "an entry's channel request was not taken");
             }
-            crate::timing::event("entry.keys.taken", taking, 0);
         });
     }
 

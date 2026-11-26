@@ -153,9 +153,7 @@ impl PeerParts {
     /// `peer`'s durable state as parts for the workspace file, in memory: what
     /// [`Self::stage`] writes, or a [`FileWrite`] made of them later.
     pub(super) fn name(&mut self, peer: &StatePeer) -> Result<Vec<PeerPart>, String> {
-        let encoding = crate::timing::start();
         let parts = peer.durable_parts()?;
-        crate::timing::window("workspace.parts.encode", encoding);
         let mut staged = HashMap::new();
         let mut named = Vec::with_capacity(parts.len());
         for part in parts {
@@ -282,8 +280,6 @@ impl PartFiles {
 
     /// Write every part of `stored` not on disk yet.
     fn write_parts(&self, held: &mut OnDisk, stored: &[Stored]) -> Result<(), String> {
-        let writing = crate::timing::start();
-        let mut written = 0u64;
         for (digest, part) in stored {
             if held.parts.contains(digest) {
                 continue;
@@ -295,10 +291,7 @@ impl PartFiles {
                 .and_then(|()| tilo_files::native::atomic::write(&self.path(digest), part))
                 .map_err(|error| error.to_string())?;
             held.parts.insert(*digest);
-            written = written.saturating_add(part.len() as u64);
         }
-        // The bytes of parts written anew: a change's own, not the workspace's.
-        crate::timing::event("workspace.parts.write", writing, written);
         Ok(())
     }
 
@@ -313,10 +306,8 @@ impl PartFiles {
             return Ok(false);
         }
         self.write_parts(&mut held, &write.stored)?;
-        let writing = crate::timing::start();
         tilo_files::native::atomic::write(&write.path, &write.bytes)
             .map_err(|error| error.to_string())?;
-        crate::timing::event("workspace.record.write", writing, write.bytes.len() as u64);
         held.written = write.order;
         self.collect(&mut held, &named);
         drop(held);

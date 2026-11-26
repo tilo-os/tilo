@@ -176,11 +176,6 @@ impl Workspaces {
             .map_err(|_| "channel notices poisoned")?
             .remove(workspace)
             .unwrap_or_default();
-        crate::timing::event(
-            "channels.notices.taken",
-            crate::timing::start(),
-            waiting.len() as u64,
-        );
         sink.take(waiting);
         Ok(())
     }

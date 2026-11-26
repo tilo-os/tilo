@@ -1381,7 +1381,7 @@ impl Workspaces {
                 .await
                 .map_err(|error| error.to_string())?;
             let mut hosted =
-                crate::timing::said_if_long("the member copy's lock", state.lock()).await;
+                super::writes::said_if_long("the member copy's lock", state.lock()).await;
             self.follow_member_document(&mut hosted, device.device(), &message);
         }
         if let NeighbourMsg::AppDocument {

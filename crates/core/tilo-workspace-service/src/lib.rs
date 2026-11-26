@@ -104,9 +104,6 @@ pub mod styles;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod surfaces;
 #[cfg(not(target_arch = "wasm32"))]
-#[doc(hidden)]
-pub mod timing;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod tl_records;
 
 #[cfg(not(target_arch = "wasm32"))]
