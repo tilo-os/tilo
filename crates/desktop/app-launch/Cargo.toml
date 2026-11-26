@@ -79,6 +79,8 @@ libc.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 # The control interface of the keeper an app that is not Tilo's runs behind.
 tilo-app-keeper = { path = "../app-keeper" }
+# Who is on the other end of the keeper's control socket: the kernel's account of the caller.
+tilo-peer-facts = { path = "../../core/peer-facts" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

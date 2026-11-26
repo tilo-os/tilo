@@ -14,6 +14,8 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
+#[cfg(unix)]
+use peer_facts::{Namespaces, PeerFacts};
 use tilo_user_identity::DeviceCert;
 
 /// The administrator's account: the device's, and the only one that says who signed in.
@@ -54,6 +56,59 @@ impl Admitted {
     #[must_use]
     pub const fn served(self) -> bool {
         !matches!(self, Self::Stranger)
+    }
+}
+
+/// Who a connection to a session's own socket is from: what the kernel's account of the process
+/// at its other end says, and nothing the process says about itself.
+///
+/// A session belongs to a login, so it admits that account's programs in its user and mount
+/// namespaces. A process whose namespaces the kernel will not show made itself non-dumpable, as
+/// one does that loads the device key: the session serves it an environment's socket and nothing
+/// else, since it cannot tell it from a sandboxed app's owner. What keeps a sandboxed app's
+/// program out of that socket is the mount: no sandbox binds the session's directory, so whatever
+/// opens it is a program of the account outside every sandbox.
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionPeer {
+    /// A program of the session's account, in the session's namespaces: the login's own.
+    Login {
+        /// The process that opened the connection.
+        pid: u32,
+    },
+    /// A process of the session's account whose namespaces the kernel will not show: served an
+    /// environment's socket and nothing else.
+    Hidden {
+        /// The process that opened the connection.
+        pid: u32,
+    },
+    /// A program outside the session's user or mount namespace: a sandboxed app's program.
+    Sandboxed,
+    /// Another account's process.
+    OtherAccount,
+    /// The kernel did not name the process that opened the connection.
+    Unidentified,
+}
+
+#[cfg(unix)]
+impl SessionPeer {
+    /// What `facts`, the kernel's account of the process at the other end of a connection, say the
+    /// session of the account `session_uid` sees. Decided before the session reads a byte the
+    /// peer sent.
+    #[must_use]
+    pub fn of(facts: &PeerFacts, session_uid: u32) -> Self {
+        // No pid is no process this login can be serving, whoever its account is.
+        let Some(pid) = facts.pid else {
+            return Self::Unidentified;
+        };
+        if facts.uid != session_uid {
+            return Self::OtherAccount;
+        }
+        match facts.namespaces {
+            Namespaces::Shared => Self::Login { pid },
+            Namespaces::Other => Self::Sandboxed,
+            Namespaces::NotShown => Self::Hidden { pid },
+        }
     }
 }
 
@@ -388,7 +443,13 @@ impl Admission {
                     held.device = false;
                 }
             }
-            accounts.insert(uid, AccountPerson { person, device: true });
+            accounts.insert(
+                uid,
+                AccountPerson {
+                    person,
+                    device: true,
+                },
+            );
         }
         self.seats
             .lock()
@@ -760,7 +821,10 @@ mod tests {
         assert_eq!(admission.admit(1000), Admitted::Person([8; 32]));
         let held = admission.recorded_person(1000).expect("the joined person");
         assert_eq!(held.person, [8; 32]);
-        assert!(held.device, "the joined person is the one this device serves");
+        assert!(
+            held.device,
+            "the joined person is the one this device serves"
+        );
         // It survives a restart as the account's person.
         let restarted = Admission::new(990, true)
             .keeping_accounts_in(profile.path().to_path_buf())
@@ -780,5 +844,75 @@ mod tests {
         assert_eq!(admission.admit(1000), Admitted::Device);
         assert_eq!(admission.admit(ROOT), Admitted::Device);
         assert_eq!(admission.admit(1001), Admitted::Stranger);
+    }
+
+    /// Who a session's own socket admits, from the kernel's account of the peer.
+    #[cfg(unix)]
+    mod session_peers {
+        use std::path::PathBuf;
+
+        use super::*;
+
+        const OWN: u32 = 1000;
+
+        fn peer(uid: u32, pid: Option<u32>, namespaces: Namespaces) -> PeerFacts {
+            PeerFacts {
+                uid,
+                pid,
+                exe: Some(PathBuf::from("/usr/bin/tilo-session")),
+                namespaces,
+            }
+        }
+
+        /// A process of this account the kernel hides comes in by the entrance that asks only for
+        /// an environment's socket; a process it can look at in another mount namespace is a
+        /// sandboxed program and is refused as one, and another account's process is refused
+        /// before anything of it is considered.
+        #[test]
+        fn a_hidden_process_of_this_account_comes_in_for_an_environments_socket_alone() {
+            assert_eq!(
+                SessionPeer::of(&peer(OWN, Some(7), Namespaces::NotShown), OWN),
+                SessionPeer::Hidden { pid: 7 },
+                "hidden, and in the login's account: let in for an environment's socket"
+            );
+            assert_eq!(
+                SessionPeer::of(&peer(OWN, Some(7), Namespaces::Other), OWN),
+                SessionPeer::Sandboxed,
+                "a program in another mount namespace, which the session can look at, is sandboxed"
+            );
+            assert_eq!(
+                SessionPeer::of(&peer(OWN + 1, Some(7), Namespaces::NotShown), OWN),
+                SessionPeer::OtherAccount,
+                "another account's process, hidden or not, is not let in"
+            );
+            assert_eq!(
+                SessionPeer::of(&peer(OWN, Some(7), Namespaces::Shared), OWN),
+                SessionPeer::Login { pid: 7 },
+                "a program of this login sharing its namespaces is an ordinary one"
+            );
+        }
+
+        #[test]
+        fn the_peer_must_be_this_accounts_own_process_in_its_namespaces() {
+            assert_eq!(
+                SessionPeer::of(&peer(OWN, Some(1), Namespaces::Shared), OWN),
+                SessionPeer::Login { pid: 1 }
+            );
+            assert_eq!(
+                SessionPeer::of(&peer(OWN + 1, Some(1), Namespaces::Shared), OWN),
+                SessionPeer::OtherAccount,
+                "another account"
+            );
+            assert_eq!(
+                SessionPeer::of(&peer(OWN, Some(1), Namespaces::Other), OWN),
+                SessionPeer::Sandboxed,
+                "a program inside a sandbox"
+            );
+            assert_eq!(
+                SessionPeer::of(&peer(OWN, None, Namespaces::NotShown), OWN),
+                SessionPeer::Unidentified,
+                "the kernel named no process"
+            );
+        }
     }
 }

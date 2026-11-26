@@ -38,11 +38,13 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 use tilo_action_policy::Lifetime;
 
+use peer_facts::PeerFacts;
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer, ContentPuts,
     InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
+use tilo_api::daemon::admission::SessionPeer;
 use tilo_app_host::agents::agent_keys::{AgentSigner, Signed};
 use tilo_compositor::ReadableWatch;
 use tilo_lock::MutexRecover as _;
@@ -539,8 +541,8 @@ impl Loop {
                     return;
                 }
             };
-            let pressed = identify(&stream).and_then(|(pid, peer)| {
-                let from = entrance(pid, &peer)?;
+            let pressed = identify(&stream).and_then(|facts| {
+                let from = entrance(&facts)?;
                 // Only a program the server would serve is told that it is full.
                 let place = self.room.take().ok_or(PeerRefusal::Busy)?;
                 Ok((place, from))
@@ -909,16 +911,6 @@ pub(crate) fn bind_private(path: &Path) -> io::Result<UnixListener> {
     bound
 }
 
-/// What the kernel says about the process on the other end.
-pub(crate) struct Peer {
-    uid: libc::uid_t,
-    /// Whether it shares this session's user and mount namespaces.
-    shares_namespaces: bool,
-    /// Whether the kernel would not say which namespaces it is in: a process that made itself
-    /// non-dumpable, as one does that loads the device key.
-    hidden: bool,
-}
-
 /// Why a connection was refused before anyone was asked.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum PeerRefusal {
@@ -950,86 +942,39 @@ impl PeerRefusal {
     }
 }
 
-/// Which entrance the peer `pid`, whose facts the kernel gave as `peer`, comes in by: the login's
-/// own program, or a process of this account the kernel hides from the session
-/// ([`From::Hidden`]), which is served an environment's socket and nothing else.
+/// Which entrance the peer whose facts the kernel gave as `facts` comes in by: the login's own
+/// program, or a process of this account the kernel hides from the session ([`From::Hidden`]),
+/// which is served an environment's socket and nothing else.
 ///
 /// A hidden process is not one sharing the session's namespaces, so it is
 /// [`PeerRefusal::Sandboxed`] to [`peer_decision`]. What keeps a sandboxed app's program out is
 /// the mount: no sandbox binds this socket's directory, the login's session directory, so no
-/// program in one can open it (`launcher`'s sandbox tests hold that), and whatever opens it is a
+/// program in one can open it (`launcher`'s sandbox tests prove that), and whatever opens it is a
 /// program of the account outside every sandbox.
-fn entrance(pid: u32, peer: &Peer) -> Result<From, PeerRefusal> {
-    match peer_decision(peer) {
-        Ok(()) => Ok(From::Login(pid)),
-        Err(PeerRefusal::Sandboxed) if peer.hidden => Ok(From::Hidden(pid)),
-        Err(refusal) => Err(refusal),
+fn entrance(facts: &PeerFacts) -> Result<From, PeerRefusal> {
+    match SessionPeer::of(facts, rustix::process::geteuid().as_raw()) {
+        SessionPeer::Login { pid } => Ok(From::Login(pid)),
+        SessionPeer::Hidden { pid } => Ok(From::Hidden(pid)),
+        SessionPeer::Sandboxed => Err(PeerRefusal::Sandboxed),
+        SessionPeer::OtherAccount => Err(PeerRefusal::OtherAccount),
+        SessionPeer::Unidentified => Err(PeerRefusal::Unidentified),
     }
 }
 
 /// Decide one connection from its peer's facts: this session's account, in this session's
 /// namespaces.
-pub(crate) fn peer_decision(peer: &Peer) -> Result<(), PeerRefusal> {
-    if peer.uid != rustix::process::geteuid().as_raw() {
-        return Err(PeerRefusal::OtherAccount);
+pub(crate) fn peer_decision(facts: &PeerFacts) -> Result<(), PeerRefusal> {
+    match SessionPeer::of(facts, rustix::process::geteuid().as_raw()) {
+        SessionPeer::Login { .. } => Ok(()),
+        SessionPeer::Hidden { .. } | SessionPeer::Sandboxed => Err(PeerRefusal::Sandboxed),
+        SessionPeer::OtherAccount => Err(PeerRefusal::OtherAccount),
+        SessionPeer::Unidentified => Err(PeerRefusal::Unidentified),
     }
-    if !peer.shares_namespaces {
-        return Err(PeerRefusal::Sandboxed);
-    }
-    Ok(())
 }
 
-/// The kernel's account of an accepted connection's peer: its process, and whether it is this
-/// login's own.
-pub(crate) fn identify(stream: &UnixStream) -> Result<(u32, Peer), PeerRefusal> {
-    use std::os::fd::AsRawFd as _;
-    let mut credentials = libc::ucred {
-        pid: 0,
-        uid: 0,
-        gid: 0,
-    };
-    let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>())
-        .map_err(|_| PeerRefusal::Unidentified)?;
-    // SAFETY: `stream` owns the descriptor for the whole call, and the
-    // kernel writes at most the length this buffer declares.
-    let read = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            (&raw mut credentials).cast(),
-            &raw mut length,
-        )
-    };
-    if read != 0 {
-        return Err(PeerRefusal::Unidentified);
-    }
-    let pid = u32::try_from(credentials.pid)
-        .ok()
-        .filter(|pid| *pid != 0)
-        .ok_or(PeerRefusal::Unidentified)?;
-    let shares = shares_security_namespaces(pid);
-    Ok((
-        pid,
-        Peer {
-            uid: credentials.uid,
-            shares_namespaces: shares == Some(true),
-            hidden: shares.is_none(),
-        },
-    ))
-}
-
-/// Whether `pid` runs in this process's user and mount namespaces: what tells a program of this
-/// login from one a sandbox put elsewhere. `None` when the kernel does not show them to this
-/// process, which is no program this server knows by its namespaces.
-fn shares_security_namespaces(pid: u32) -> Option<bool> {
-    use std::os::unix::fs::MetadataExt as _;
-    let same = |space: &str| {
-        let ours = std::fs::metadata(format!("/proc/self/ns/{space}")).ok()?;
-        let theirs = std::fs::metadata(format!("/proc/{pid}/ns/{space}")).ok()?;
-        Some(ours.dev() == theirs.dev() && ours.ino() == theirs.ino())
-    };
-    Some(same("user")? && same("mnt")?)
+/// The kernel's account of an accepted connection's peer, as this session decides by it.
+pub(crate) fn identify(stream: &UnixStream) -> Result<PeerFacts, PeerRefusal> {
+    peer_facts::facts(stream).map_err(|_| PeerRefusal::Unidentified)
 }
 
 /// What the person is shown about the connection from `pid`, which came in by `entrance`.

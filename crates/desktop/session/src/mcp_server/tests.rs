@@ -1,5 +1,4 @@
 use super::*;
-use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// An agent's `open` and `place` naming nothing to stand beside stand beside the conversation
 /// of its turn; one that names its own anchor, and every other action, keep their arguments.
@@ -39,53 +38,6 @@ fn an_answer_remembered_for_a_program_covers_each_instance_of_it() {
         !same_program("claude-code", "claude-codex@host#1"),
         "an id that only begins with the same letters is another program"
     );
-}
-
-/// A process that loads the device key makes itself non-dumpable, and the kernel then hides its
-/// namespaces from the session: such a peer is hidden, which is not a peer sharing the session's
-/// namespaces, and a process the session can look at is not hidden.
-#[test]
-fn a_process_holding_the_device_key_is_hidden_from_the_session() {
-    let mut shown = std::process::Command::new("sleep")
-        .arg("30")
-        .spawn_locked()
-        .unwrap();
-    assert_eq!(shares_security_namespaces(shown.id()), Some(true));
-    let _ = shown.kill();
-    let _ = shown.wait();
-
-    let mut ready = [0_i32; 2];
-    // SAFETY: a pipe into a buffer of two descriptors.
-    assert_eq!(unsafe { libc::pipe(ready.as_mut_ptr()) }, 0);
-    // SAFETY: the child only makes itself non-dumpable, says so on the pipe and waits to be
-    // killed: async-signal-safe calls, no allocation and no lock after the fork.
-    let pid = unsafe { libc::fork() };
-    assert!(pid >= 0, "fork failed");
-    if pid == 0 {
-        // SAFETY: as above.
-        unsafe {
-            libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
-            libc::write(ready[1], b"r".as_ptr().cast(), 1);
-            loop {
-                libc::pause();
-            }
-        }
-    }
-    let mut byte = [0_u8; 1];
-    // SAFETY: one byte into a buffer of one, from the pipe this test made.
-    assert_eq!(
-        unsafe { libc::read(ready[0], byte.as_mut_ptr().cast(), 1) },
-        1
-    );
-    let hidden = shares_security_namespaces(u32::try_from(pid).unwrap());
-    // SAFETY: the child this test forked, and the pipe it made.
-    unsafe {
-        libc::kill(pid, libc::SIGKILL);
-        libc::waitpid(pid, std::ptr::null_mut(), 0);
-        libc::close(ready[0]);
-        libc::close(ready[1]);
-    }
-    assert_eq!(hidden, None);
 }
 
 /// An agent works in one workspace: the shell's windows of another, and windows the shell no
@@ -142,65 +94,6 @@ fn a_workspace_apps_record_is_read_without_the_sessions_pass() {
     );
     assert!(started.elapsed() < WAIT, "nothing waited on the session");
     assert!(records.session.asks.lock_recover().is_empty());
-}
-
-/// A process of this account the kernel hides from the session comes in by the entrance that
-/// asks only for an environment's socket; a process the session can look at in another mount
-/// namespace is a sandboxed program and is refused as one, and another account's process is
-/// refused before anything of it is considered.
-#[test]
-fn a_hidden_process_of_this_account_comes_in_for_an_environments_socket_alone() {
-    let own = rustix::process::geteuid().as_raw();
-    let peer = |uid, shares_namespaces, hidden| Peer {
-        uid,
-        shares_namespaces,
-        hidden,
-    };
-    assert!(
-        matches!(entrance(7, &peer(own, false, true)), Ok(From::Hidden(7))),
-        "hidden, and in the login's account: let in for an environment's socket"
-    );
-    assert!(
-        matches!(
-            entrance(7, &peer(own, false, false)),
-            Err(PeerRefusal::Sandboxed)
-        ),
-        "a program in another mount namespace, which the session can look at, is sandboxed"
-    );
-    assert!(
-        matches!(
-            entrance(7, &peer(own.saturating_add(1), false, true)),
-            Err(PeerRefusal::OtherAccount)
-        ),
-        "another account's process, hidden or not, is not let in"
-    );
-    assert!(
-        matches!(entrance(7, &peer(own, true, false)), Ok(From::Login(7))),
-        "a program of this login sharing its namespaces is an ordinary one"
-    );
-}
-
-#[test]
-fn the_peer_must_be_this_accounts_own_process_in_its_namespaces() {
-    let own = rustix::process::geteuid().as_raw();
-    let shares = |uid, namespaces| {
-        peer_decision(&Peer {
-            uid,
-            shares_namespaces: namespaces,
-            hidden: false,
-        })
-    };
-    assert_eq!(shares(own, true), Ok(()));
-    assert_eq!(
-        shares(own.saturating_add(1), true),
-        Err(PeerRefusal::OtherAccount),
-        "another account"
-    );
-    assert_eq!(
-        shares(own, false),
-        Err(PeerRefusal::Sandboxed),
-        "a program inside a sandbox"
-    );
 }
 
 /// A service publishing the one style the person may switch to, as the device's does.

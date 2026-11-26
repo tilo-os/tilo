@@ -85,5 +85,9 @@ tilo-test-env = { path = "../../../tools/test-env" }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
+[target.'cfg(unix)'.dependencies]
+# Who is on the other end of a session's socket: the kernel's account of the caller.
+tilo-peer-facts = { path = "../peer-facts" }
+
 [lints]
 workspace = true

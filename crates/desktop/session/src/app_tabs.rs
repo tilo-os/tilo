@@ -12,7 +12,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufReader, Write};
-use std::os::fd::{AsRawFd as _, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -2041,7 +2041,7 @@ fn admit(
 ) -> bool {
     // The process at the other end, as the socket says it: a window the app opened, or the
     // session's own connection for one it opened in the app.
-    let peer = peer_pid(&stream);
+    let peer = peer_facts::facts(&stream).ok().and_then(|facts| facts.pid);
     let Ok(mut writer) = stream.try_clone() else {
         return false;
     };
@@ -2191,32 +2191,6 @@ fn serve_window(
     })));
     wake();
     tracing::debug!(connection, %app, "shell-ui connection closed");
-}
-
-/// The process at the other end of `stream` , as the kernel names it: the app's own process, or the
-/// session itself for a window it connected.
-fn peer_pid(stream: &UnixStream) -> Option<u32> {
-    let mut credentials = libc::ucred {
-        pid: 0,
-        uid: 0,
-        gid: 0,
-    };
-    let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).ok()?;
-    // SAFETY: both pointers name initialized storage of `length` bytes and
-    // the socket stays open for the duration of `getsockopt`.
-    let result = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            std::ptr::from_mut(&mut credentials).cast(),
-            std::ptr::from_mut(&mut length),
-        )
-    };
-    if result != 0 || usize::try_from(length).ok()? < std::mem::size_of::<libc::ucred>() {
-        return None;
-    }
-    u32::try_from(credentials.pid).ok().filter(|pid| *pid > 0)
 }
 
 /// The workspace the app the connection names runs in and the process the window that speaks for it

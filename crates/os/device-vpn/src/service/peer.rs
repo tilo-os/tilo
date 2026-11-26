@@ -1,6 +1,6 @@
 //! Who may ask: the compositor of the person logged in, and nobody else.
 
-pub use peer_facts::{LogindSeat, PeerFacts};
+pub use peer_facts::{LogindSeat, Namespaces, PeerFacts};
 
 use super::Caller;
 
@@ -29,12 +29,13 @@ mod tests {
         };
         let shell = PeerFacts {
             uid: 1000,
+            pid: Some(1),
             exe: Some(PathBuf::from("/usr/bin/tilo-session")),
-            host_namespaces: true,
+            namespaces: Namespaces::Shared,
         };
         assert_eq!(decide(&seat, &shell), Ok(Caller { uid: 1000 }));
         let app = PeerFacts {
-            host_namespaces: false,
+            namespaces: Namespaces::Other,
             ..shell.clone()
         };
         assert!(decide(&seat, &app).is_err(), "a sandboxed app");

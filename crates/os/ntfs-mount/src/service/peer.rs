@@ -4,9 +4,9 @@ use std::path::PathBuf;
 
 use super::Caller;
 
-pub use peer_facts::PeerFacts;
 #[cfg(target_os = "linux")]
 pub use peer_facts::facts;
+pub use peer_facts::{Namespaces, PeerFacts};
 
 #[derive(Clone, Debug)]
 pub struct PeerPolicy {
@@ -77,8 +77,9 @@ mod tests {
     fn shell(uid: u32) -> PeerFacts {
         PeerFacts {
             uid,
+            pid: Some(1),
             exe: Some(PathBuf::from("/usr/bin/tilo-session")),
-            host_namespaces: true,
+            namespaces: Namespaces::Shared,
         }
     }
 
@@ -92,7 +93,7 @@ mod tests {
             let policy = policy(dir.path(), Some(1000));
             assert_eq!(policy.decide(&shell(1000)), Ok(Caller::Shell { uid: 1000 }));
             let sandboxed = PeerFacts {
-                host_namespaces: false,
+                namespaces: Namespaces::Other,
                 ..shell(1000)
             };
             assert_eq!(policy.decide(&sandboxed), Ok(Caller::Person { uid: 1000 }));

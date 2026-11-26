@@ -317,30 +317,16 @@ impl ServiceEndpoint {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         let stream = tilo_files::native::socket::connect(&socket)?;
-        let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
-        let mut length =
-            u32::try_from(std::mem::size_of::<libc::ucred>()).map_err(io::Error::other)?;
-        if unsafe {
-            libc::getsockopt(
-                stream.as_raw_fd(),
-                libc::SOL_SOCKET,
-                libc::SO_PEERCRED,
-                std::ptr::from_mut(&mut credentials).cast(),
-                &raw mut length,
-            )
-        } != 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        if usize::try_from(length).map_err(io::Error::other)? != std::mem::size_of::<libc::ucred>()
-            || credentials.uid != self.expected_uid
-            || credentials.pid <= 1
-        {
+        let facts = peer_facts::facts(&stream)?;
+        let Some(pid) = facts.pid.filter(|pid| *pid > 1) else {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        };
+        if facts.uid != self.expected_uid {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
-        // The held live init pidfd prevents reuse of this exact PID.
-        if u32::try_from(credentials.pid).map_err(io::Error::other)? != self.init_pid {
-            let peer = File::open(format!("/proc/{}/ns/pid", credentials.pid))?.metadata()?;
+        // The live init pidfd the endpoint keeps prevents reuse of this exact PID.
+        if pid != self.init_pid {
+            let peer = File::open(format!("/proc/{pid}/ns/pid"))?.metadata()?;
             let namespace = self.namespace.metadata()?;
             if peer.dev() != namespace.dev() || peer.ino() != namespace.ino() {
                 return Err(io::ErrorKind::PermissionDenied.into());
@@ -858,28 +844,21 @@ mod tests {
         fn orphan_handle(&self) -> OwnedFd {
             // Observe the production-authenticated writer directly.
             let stream = self.endpoint.connect().unwrap();
-            let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
-            let mut length = u32::try_from(std::mem::size_of::<libc::ucred>()).unwrap();
-            assert_eq!(
-                unsafe {
-                    libc::getsockopt(
-                        stream.as_raw_fd(),
-                        libc::SOL_SOCKET,
-                        libc::SO_PEERCRED,
-                        std::ptr::from_mut(&mut peer).cast(),
-                        &raw mut length,
-                    )
-                },
-                0
-            );
-            assert_eq!(
-                usize::try_from(length).unwrap(),
-                std::mem::size_of::<libc::ucred>()
-            );
-            let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, peer.pid, 0) };
+            let writer = peer_facts::facts(&stream)
+                .unwrap()
+                .pid
+                .expect("the kernel names the authenticated writer");
+            // SAFETY: pidfd_open takes a pid and flags and returns a new descriptor or -1.
+            let raw = unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_open,
+                    libc::pid_t::try_from(writer).unwrap(),
+                    0,
+                )
+            };
             assert!(raw >= 0, "the authenticated live writer must have a pidfd");
             let fd = unsafe { OwnedFd::from_raw_fd(i32::try_from(raw).unwrap()) };
-            let status = std::fs::read_to_string(format!("/proc/{}/status", peer.pid)).unwrap();
+            let status = std::fs::read_to_string(format!("/proc/{writer}/status")).unwrap();
             let inner_pid = status
                 .lines()
                 .find_map(|line| line.strip_prefix("NSpid:"))

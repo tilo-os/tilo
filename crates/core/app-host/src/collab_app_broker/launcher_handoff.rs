@@ -24,18 +24,23 @@ pub(super) async fn read_launcher_handoff(
     // from this user before it can attest the compositor's launch record. A
     // Windows pipe admits this account's processes alone.
     #[cfg(unix)]
-    {
-        let credentials = stream.peer_cred().map_err(|error| {
+    let pid = {
+        let facts = peer_facts::facts(&*stream).map_err(|error| {
             BrokerError::failed(format!(
                 "could not read collaboration peer credentials: {error}"
             ))
         })?;
-        if credentials.uid() != rustix::process::geteuid().as_raw() {
+        if facts.uid != rustix::process::geteuid().as_raw() {
             return Err(BrokerError::failed(
                 "collaboration service rejected a peer from another user".into(),
             ));
         }
-    }
+        facts
+            .pid
+            .filter(|pid| *pid > 0)
+            .ok_or_else(|| BrokerError::failed("collaboration peer has no usable pid".into()))?
+    };
+    #[cfg(windows)]
     let pid = tilo_socket::tokio::peer_pid(stream)
         .ok()
         .filter(|pid| *pid > 0)

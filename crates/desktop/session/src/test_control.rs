@@ -780,7 +780,7 @@ fn accept(
         };
         if who == Audience::Owner
             && let Err(refusal) =
-                mcp_server::identify(&stream).and_then(|(_, peer)| mcp_server::peer_decision(&peer))
+                mcp_server::identify(&stream).and_then(|facts| mcp_server::peer_decision(&facts))
         {
             tracing::info!(?refusal, path = %path.display(), "control: a connection is refused");
             refuse_owner(stream, &refusal);

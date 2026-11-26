@@ -314,28 +314,7 @@ fn admit(stream: &std::os::unix::net::UnixStream, proxy: &EgressProxy) {
 }
 
 fn peer_uid(stream: &std::os::unix::net::UnixStream) -> io::Result<u32> {
-    use std::os::fd::AsRawFd as _;
-    let mut credentials = libc::ucred {
-        pid: 0,
-        uid: 0,
-        gid: 0,
-    };
-    let mut len =
-        libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).map_err(io::Error::other)?;
-    // SAFETY: getsockopt writes at most `len` bytes into `credentials`, a ucred it owns.
-    let result = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            (&raw mut credentials).cast(),
-            &raw mut len,
-        )
-    };
-    if result != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(credentials.uid)
+    peer_facts::facts(stream).map(|facts| facts.uid)
 }
 
 /// Bind the control socket at `control`, in a directory only this user may enter.

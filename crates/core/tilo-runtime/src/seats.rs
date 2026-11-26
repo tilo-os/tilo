@@ -178,65 +178,12 @@ impl Peer {
     /// # Errors
     /// The kernel does not say.
     pub(crate) fn of(stream: &Stream) -> io::Result<Self> {
-        #[cfg(unix)]
-        use std::os::fd::AsRawFd as _;
-        #[cfg(unix)]
-        let fd = stream.as_raw_fd();
-        #[cfg(any(target_os = "linux", target_os = "android"))]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            // Read with libc rather than rustix: the kernel says 0 for a peer in another pid
-            // namespace, which is no pid this daemon can look up.
-            let mut credentials = libc::ucred {
-                pid: 0,
-                uid: 0,
-                gid: 0,
-            };
-            let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>())
-                .map_err(io::Error::other)?;
-            // SAFETY: `credentials` is a writable `ucred` of `length` bytes.
-            let read = unsafe {
-                libc::getsockopt(
-                    fd,
-                    libc::SOL_SOCKET,
-                    libc::SO_PEERCRED,
-                    (&raw mut credentials).cast(),
-                    &raw mut length,
-                )
-            };
-            if read != 0 {
-                return Err(io::Error::last_os_error());
-            }
+            let facts = peer_facts::facts(stream)?;
             Ok(Self {
-                uid: credentials.uid,
-                pid: u32::try_from(credentials.pid).ok().filter(|pid| *pid > 0),
-            })
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let (mut uid, mut gid) = (0, 0);
-            // SAFETY: both are writable ids.
-            if unsafe { libc::getpeereid(fd, &raw mut uid, &raw mut gid) } != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let mut pid: libc::pid_t = 0;
-            let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::pid_t>())
-                .map_err(io::Error::other)?;
-            // SAFETY: `pid` is a writable `pid_t` of `length` bytes.
-            let read = unsafe {
-                libc::getsockopt(
-                    fd,
-                    libc::SOL_LOCAL,
-                    libc::LOCAL_PEERPID,
-                    (&raw mut pid).cast(),
-                    &raw mut length,
-                )
-            };
-            Ok(Self {
-                uid,
-                pid: u32::try_from(pid)
-                    .ok()
-                    .filter(|pid| *pid > 0)
-                    .filter(|_| read == 0),
+                uid: facts.uid,
+                pid: facts.pid,
             })
         }
         // A pipe of the daemon's admits its own account's processes alone (`tilo_socket`).

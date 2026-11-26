@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 use std::io::{self, IoSliceMut};
 use std::mem::MaybeUninit;
-use std::os::fd::{AsRawFd as _, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 
 use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendFlags};
@@ -26,38 +26,15 @@ pub fn peer_allowed(peer_uid: u32, own_uid: u32) -> bool {
     peer_uid == own_uid
 }
 
-/// The uid of the process at the other end of `stream`, from the kernel (`SO_PEERCRED`).
+/// The uid of the process at the other end of `stream`, from the kernel.
 pub(crate) fn peer_uid(stream: &UnixStream) -> io::Result<u32> {
-    peer_credentials(stream).map(|credentials| credentials.uid)
+    peer_facts::facts(stream).map(|facts| facts.uid)
 }
 
-/// The peer's process id (0 when the kernel cannot name one in this namespace).
-pub(crate) fn peer_pid(stream: &UnixStream) -> io::Result<i32> {
-    peer_credentials(stream).map(|credentials| credentials.pid)
-}
-
-fn peer_credentials(stream: &UnixStream) -> io::Result<libc::ucred> {
-    let mut credentials = libc::ucred {
-        pid: 0,
-        uid: 0,
-        gid: 0,
-    };
-    let mut len =
-        libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).map_err(io::Error::other)?;
-    // SAFETY: getsockopt writes at most `len` bytes into `credentials`, a ucred it owns.
-    let result = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            (&raw mut credentials).cast(),
-            &raw mut len,
-        )
-    };
-    if result != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(credentials)
+/// The process at the other end of `stream`, when the kernel names one this namespace can look
+/// up.
+pub(crate) fn peer_pid(stream: &UnixStream) -> io::Result<Option<u32>> {
+    peer_facts::facts(stream).map(|facts| facts.pid)
 }
 
 /// The process's own uid.

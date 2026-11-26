@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+use std::os::fd::{FromRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -859,25 +859,7 @@ fn forward_to_service(cli: &Cli) -> Result<Option<String>, String> {
 }
 
 fn same_user(stream: &UnixStream) -> bool {
-    let mut credentials = std::mem::MaybeUninit::<libc::ucred>::uninit();
-    let Ok(mut length) = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()) else {
-        return false;
-    };
-    // SAFETY: `credentials` points to a correctly-sized output buffer and
-    // `stream` is a Unix-domain socket supplied by UnixListener::accept.
-    let result = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            credentials.as_mut_ptr().cast(),
-            &raw mut length,
-        )
-    };
-    result == 0
-        && usize::try_from(length).ok() == Some(std::mem::size_of::<libc::ucred>())
-        // SAFETY: getsockopt succeeded and wrote the complete ucred buffer.
-        && unsafe { credentials.assume_init().uid } == rustix::process::geteuid().as_raw()
+    peer_facts::facts(stream).is_ok_and(|facts| facts.uid == rustix::process::geteuid().as_raw())
 }
 
 /// The local command one RPC action runs here: the Hub actions and the retired ones have no

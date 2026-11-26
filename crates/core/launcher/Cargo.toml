@@ -55,6 +55,8 @@ tilo-process = { path = "../../platform/tilo-process" }
 # Where the files a person chose for the app are served (the paths only).
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-files = { path = "../../platform/tilo-files" }
+# Who is on the other end of a service's socket: the kernel's account of the caller.
+tilo-peer-facts = { path = "../peer-facts" }
 # The egress proxy's socket on the runtime: a Unix socket, or a named pipe on Windows.
 tilo-socket = { path = "../../platform/tilo-socket", features = ["tokio"] }
 # Where no session serves the clipboard, this process serves the same wire from

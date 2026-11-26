@@ -767,29 +767,8 @@ impl Kept {
 
 /// The process at the other end of `stream`.
 pub(crate) fn peer_pid(stream: &UnixStream) -> io::Result<u32> {
-    let mut cred = libc::ucred {
-        pid: 0,
-        uid: 0,
-        gid: 0,
-    };
-    let mut len =
-        libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).map_err(io::Error::other)?;
-    // SAFETY: SO_PEERCRED writes one ucred into the buffer of the length given.
-    let read = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            std::ptr::from_mut(&mut cred).cast(),
-            &raw mut len,
-        )
-    };
-    if read != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    u32::try_from(cred.pid)
-        .ok()
-        .filter(|pid| *pid != 0)
+    peer_facts::facts(stream)?
+        .pid
         .ok_or_else(|| io::Error::other("the keeper's process is unknown"))
 }
 

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Who is on the other end of a root service's local socket: the kernel's account of the caller, and whether it is the active session's compositor"
+description = "Who is on the other end of a local socket: the kernel's account of the caller, the process that opened it, its executable, and whether it shares this process's namespaces"
 
 [lib]
 name = "peer_facts"
@@ -22,6 +22,8 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# Which account the reader runs as, in its tests.
+rustix = { workspace = true, features = ["process"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]

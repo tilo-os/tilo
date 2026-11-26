@@ -343,39 +343,10 @@ fn read_request(reading: &mut BufReader<UnixStream>) -> Line {
 /// The app and workspace behind `stream`: the process at the other end,
 /// while this session's launch of it still runs.
 fn caller_of(inner: &Inner, stream: &UnixStream) -> Option<Caller> {
-    let pid = peer_pid(stream)?;
+    let pid = peer_facts::facts(stream).ok()?.pid?;
     let app = inner.launches.app_of_descendant(pid)?;
     let workspace = inner.launches.workspace_of(pid, &app)?;
     Some(Caller { app, workspace })
-}
-
-/// The pid of the process at the other end of `stream` .
-#[cfg(target_os = "linux")]
-fn peer_pid(stream: &UnixStream) -> Option<u32> {
-    use std::os::fd::AsRawFd as _;
-
-    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).ok()?;
-    // SAFETY: `getsockopt` fills the `ucred` this buffer is sized for and
-    // reports in `length` how much it wrote.
-    let asked = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            std::ptr::from_mut(&mut credentials).cast(),
-            &raw mut length,
-        )
-    };
-    if asked != 0 || usize::try_from(length).ok() != Some(std::mem::size_of::<libc::ucred>()) {
-        return None;
-    }
-    u32::try_from(credentials.pid).ok()
-}
-
-#[cfg(not(target_os = "linux"))]
-fn peer_pid(_stream: &UnixStream) -> Option<u32> {
-    None
 }
 
 /// Answer one request.

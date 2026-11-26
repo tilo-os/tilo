@@ -159,6 +159,8 @@ jiff = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["process"] }
+# Who is on the other end of a launcher's handoff: the kernel's account of the caller.
+tilo-peer-facts = { path = "../peer-facts" }
 
 [dev-dependencies]
 tilo-automerge-isolate.workspace = true

@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{IoSlice, IoSliceMut, Read, Write};
 use std::mem::MaybeUninit;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -667,14 +667,14 @@ impl LauncherAuthenticator {
     }
 
     fn authenticate(&self, stream: &UnixStream) -> Result<(), SessionError> {
-        let credentials = peer_credentials(stream)?;
-        if credentials.uid != self.expected_uid || credentials.pid <= 0 {
+        let facts = peer_facts::facts(stream).map_err(|_| SessionError::UnauthenticatedPeer)?;
+        let (Some(pid), true) = (facts.pid, facts.uid == self.expected_uid) else {
             return Err(SessionError::UnauthenticatedPeer);
-        }
-        let pid = u32::try_from(credentials.pid).map_err(|_| SessionError::UnauthenticatedPeer)?;
-        let executable = fs::read_link(format!("/proc/{pid}/exe"))?;
+        };
         let expected = fs::canonicalize(&self.expected_executable)?;
-        if executable != expected || process_parent(pid)? != self.expected_parent_pid {
+        if facts.exe.as_deref() != Some(expected.as_path())
+            || process_parent(pid)? != self.expected_parent_pid
+        {
             return Err(SessionError::UnauthenticatedPeer);
         }
         Ok(())
@@ -685,8 +685,8 @@ impl LauncherAuthenticator {
         stream: &UnixStream,
         handoff: &SessionHandoff,
     ) -> Result<(), SessionError> {
-        let credentials = peer_credentials(stream)?;
-        let pid = u32::try_from(credentials.pid).map_err(|_| SessionError::UnauthenticatedPeer)?;
+        let facts = peer_facts::facts(stream).map_err(|_| SessionError::UnauthenticatedPeer)?;
+        let pid = facts.pid.ok_or(SessionError::UnauthenticatedPeer)?;
         let start_time = process_start_time(pid)?;
         // Registration happens immediately after `Command::spawn`; the child
         // may reach connect first on another CPU. Wait briefly for that one
@@ -785,42 +785,6 @@ fn group_id(name: &str) -> Option<u32> {
         return Some(unsafe { group.assume_init() }.gr_gid);
     }
     None
-}
-
-#[derive(Clone, Copy)]
-struct PeerCredentials {
-    pid: i32,
-    uid: u32,
-}
-
-fn peer_credentials(stream: &UnixStream) -> Result<PeerCredentials, SessionError> {
-    let mut credentials = libc::ucred {
-        pid: 0,
-        uid: 0,
-        gid: 0,
-    };
-    let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>())
-        .map_err(|_| SessionError::UnauthenticatedPeer)?;
-    // Not rustix's `socket_peercred`: its `UCred` holds a non-zero `Pid`, and the
-    // kernel reports pid 0 for a peer outside this PID namespace.
-    // SAFETY: both pointers name initialized writable storage of `length`
-    // bytes and `stream` owns a valid Unix-domain socket descriptor.
-    let result = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            std::ptr::addr_of_mut!(credentials).cast(),
-            std::ptr::addr_of_mut!(length),
-        )
-    };
-    if result != 0 || usize::try_from(length).ok() != Some(std::mem::size_of::<libc::ucred>()) {
-        return Err(SessionError::UnauthenticatedPeer);
-    }
-    Ok(PeerCredentials {
-        pid: credentials.pid,
-        uid: credentials.uid,
-    })
 }
 
 fn process_parent(pid: u32) -> Result<u32, SessionError> {

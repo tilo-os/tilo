@@ -44,8 +44,8 @@ wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # Wall-clock milliseconds for synthetic pointer events.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
-# The peer's uid comes from SO_PEERCRED through libc: the kernel may report a
-# pid of 0, which rustix's credentials type cannot hold.
+# Who is on the other end of the control socket: the kernel's account of the caller.
+tilo-peer-facts = { path = "../../core/peer-facts" }
 libc.workspace = true
 # The descriptor the session hands with Attach (SCM_RIGHTS).
 rustix = { workspace = true, features = ["net", "fs", "process", "event", "rand", "pipe"] }

@@ -513,7 +513,7 @@ impl Data {
         while let Some(stream) = accept(listener) {
             let server = self.x11.as_ref().and_then(x11::XDisplay::server_pid);
             let from_server = server.is_some_and(|server| {
-                control::peer_pid(&stream).is_ok_and(|pid| u32::try_from(pid).ok() == Some(server))
+                control::peer_pid(&stream).is_ok_and(|pid| pid == Some(server))
             });
             match self
                 .display

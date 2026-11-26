@@ -468,8 +468,9 @@ fn accept(listener: &UnixListener, environment: &Arc<Environment>, serving: &Ser
                 return;
             }
         };
-        let admitted = super::identify(&stream).and_then(|(pid, peer)| {
-            environment_decision(&peer, pid, environment)?;
+        let admitted = super::identify(&stream).and_then(|facts| {
+            let pid = facts.pid.ok_or(PeerRefusal::Unidentified)?;
+            environment_decision(facts.uid, pid, environment)?;
             // Only a program of this environment is told that the socket is full.
             let place = serving.room.take().ok_or(PeerRefusal::Busy)?;
             Ok((pid, place))
@@ -491,11 +492,11 @@ fn accept(listener: &UnixListener, environment: &Arc<Environment>, serving: &Ser
 /// Decide one connection at `environment`'s socket from its peer's facts: this
 /// session's account, in a process of that environment.
 pub(super) fn environment_decision(
-    peer: &super::Peer,
+    peer_uid: u32,
     pid: u32,
     environment: &Environment,
 ) -> Result<(), PeerRefusal> {
-    if peer.uid != rustix::process::geteuid().as_raw() {
+    if peer_uid != rustix::process::geteuid().as_raw() {
         return Err(PeerRefusal::OtherAccount);
     }
     if !environment.holds(pid) {
@@ -580,26 +581,18 @@ mod tests {
             !environment(child.id()).holds(own),
             "nor is the process that started the holder"
         );
-        let peer = super::super::Peer {
-            uid: rustix::process::geteuid().as_raw(),
-            shares_namespaces: true,
-            hidden: false,
-        };
+        let peer = rustix::process::geteuid().as_raw();
         assert_eq!(
-            environment_decision(&peer, child.id(), &environment(own)),
+            environment_decision(peer, child.id(), &environment(own)),
             Ok(())
         );
         assert_eq!(
-            environment_decision(&peer, own, &environment(child.id())),
+            environment_decision(peer, own, &environment(child.id())),
             Err(PeerRefusal::OutsideEnvironment)
         );
-        let other = super::super::Peer {
-            uid: rustix::process::geteuid().as_raw().saturating_add(1),
-            shares_namespaces: false,
-            hidden: false,
-        };
+        let other = rustix::process::geteuid().as_raw().saturating_add(1);
         assert_eq!(
-            environment_decision(&other, child.id(), &environment(own)),
+            environment_decision(other, child.id(), &environment(own)),
             Err(PeerRefusal::OtherAccount)
         );
         let _ = child.kill();

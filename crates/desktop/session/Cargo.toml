@@ -234,6 +234,8 @@ tilo-live = { path = "../../core/tilo-live", features = ["relay", "iroh"] }
 tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread", "sync", "macros", "time"] }
 # Tilo's API, which the session serves its own person's programs on this computer.
 tilo-api = { path = "../../core/tilo-api" }
+# Who is on the other end of a connection: the kernel's account of the caller.
+tilo-peer-facts = { path = "../../core/peer-facts" }
 # Which app opens a file or a link: the workspace's and the person's default apps, and this
 # machine's own `mimeapps.list`, resolved in that order.
 desktop-policy = { package = "tilo-default-apps", path = "../default-apps" }

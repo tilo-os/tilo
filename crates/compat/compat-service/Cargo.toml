@@ -20,6 +20,8 @@ tilo-actions = { path = "../../core/actions" }
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-files = { path = "../../platform/tilo-files" }
+# Who is on the other end of the launcher's socket: the kernel's account of the caller.
+tilo-peer-facts = { path = "../../core/peer-facts" }
 collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 compat-catalogue = { path = "../compat-catalogue" }
 launcher = { path = "../../core/launcher" }
