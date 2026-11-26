@@ -291,7 +291,8 @@ async fn set_under_agents(
                 if doc.get_heads().is_empty() {
                     collaboration::resource::genesis(doc, &checkout, workspace, |doc| {
                         WorkspaceAgents::initialize(doc).map_err(|error| error.to_string())
-                    })?;
+                    })
+                    .map_err(|error| error.to_string())?;
                 }
                 let agents = Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc));
                 let mut agents = agents

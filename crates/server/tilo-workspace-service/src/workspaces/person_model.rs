@@ -630,6 +630,8 @@ impl std::fmt::Debug for PersonModel {
 }
 
 impl PersonModel {
+    /// Bind every provider attempt to the authority of the turn that requested it.
+    #[must_use]
     #[cfg(any(feature = "agents", test))]
     pub(crate) fn while_permitted(mut self, permission: ModelPermission) -> Self {
         self.permission = Some(permission);
