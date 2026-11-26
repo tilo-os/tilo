@@ -58425,8 +58425,7 @@
             "description": "The name of the field to set.",
             "enum": [
               "word",
-              "language",
-              "layout"
+              "language"
             ],
             "type": "string"
           },
@@ -58510,7 +58509,6 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "layout",
               "language",
               "shift"
             ],
@@ -58643,7 +58641,6 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "layout",
               "previous",
               "word",
               "language"

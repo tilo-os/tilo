@@ -22,7 +22,7 @@ pub mod touch_model;
 pub use autocorrect::{Autocorrector, KeyAdjacency};
 pub use dict::{Dictionary, Entry, Language};
 pub use futo::FutoSwipeModel;
-pub use layout::{InputPurpose, Key, KeyAction, KeyId, KeyboardLayout, ShiftState, key_rects};
+pub use layout::{Key, KeyAction, KeyId, KeyboardLayout, ShiftState, key_rects};
 pub use predict::Predictor;
 pub use swipe::{Candidate, GeometricSwipeModel, SwipeModel, is_swipe};
 pub use touch_model::{KeyOffset, NextKeyDistribution, TouchKey, TouchModel};

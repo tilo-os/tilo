@@ -516,6 +516,17 @@ mod tests {
     use super::*;
     use crate::layout::{KeyboardLayout, ShiftState, key_rects};
 
+    /// The French keyboard as the keyboard app draws it and hands it in.
+    fn azerty() -> KeyboardLayout {
+        crate::layout::from_rows(&[
+            "a:1,z:1,e:1,r:1,t:1,y:1,u:1,i:1,o:1,p:1".to_owned(),
+            "q:1,s:1,d:1,f:1,g:1,h:1,j:1,k:1,l:1,m:1".to_owned(),
+            "shift:1.5,w:1,x:1,c:1,v:1,b:1,n:1,backspace:1.5".to_owned(),
+            "symbols:1.5,emoji:1.5,space:5,.:1,layout:1.5,return:1.5".to_owned(),
+        ])
+        .unwrap()
+    }
+
     /// Build the QWERTY key geometry the widget would, at a phone-ish size.
     fn qwerty_geom() -> (KeyboardLayout, Vec<(KeyId, Rect)>) {
         let layout = KeyboardLayout::qwerty();
@@ -558,7 +569,7 @@ mod tests {
                 "quick",
             ),
             (
-                KeyboardLayout::azerty(),
+                azerty(),
                 GeometricSwipeModel::for_language(Language::French),
                 "été",
             ),
@@ -627,7 +638,7 @@ mod tests {
             }
             let mut model = model;
             model.set_language(Language::French);
-            let layout = KeyboardLayout::azerty();
+            let layout = azerty();
             let geometry = key_rects(&layout, Rect::new(0.0, 0.0, 390.0, 220.0), ShiftState::Off);
             let path = path_through("bonjour", &geometry, &layout);
             assert_eq!(
@@ -711,7 +722,7 @@ mod tests {
 
     #[test]
     fn indexed_swipes_follow_language_switches_and_folded_accents() {
-        let layout = KeyboardLayout::azerty();
+        let layout = azerty();
         let geom = key_rects(&layout, Rect::new(0.0, 0.0, 390.0, 224.0), ShiftState::Off);
         let mut model = GeometricSwipeModel::english();
         model.set_language(Language::French);

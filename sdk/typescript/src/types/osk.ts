@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.osk@4286fa454a61820c";
+export const SURFACE = "so.tilo.osk@734563f65679c498";
 
 /** Notice — `tl.tilo.host.Notice`. */
 export interface Notice extends tilo.Resource {
@@ -146,7 +146,6 @@ export function suggested(ws: tilo.Workspace, path: string): Suggested {
 export interface CorrectAsk extends tilo.Resource {
   avrdwkwu: string;  // word
   xh7nuttw: string;  // language
-  rdht4mzn: string;  // layout
   ip6lajuh: string[];  // rows
   nyu5nrfl: string[];  // kept
 }
@@ -179,7 +178,6 @@ export interface SwipeAsk extends tilo.Resource {
   vkdpd5r7: number[];  // path
   qhrbdy4q: number[];  // area
   p6t77uy7: string[];  // rows
-  udzknqo5: string;  // layout
   yhplpjdc: string;  // language
   pxdf2zfl: string;  // shift
   mocqi47p: number;  // limit
@@ -230,7 +228,6 @@ export function swiped(ws: tilo.Workspace, path: string): Swiped {
 export interface TouchAsk extends tilo.Resource {
   ilse75gf: number[];  // point
   ayis4zfh: number[];  // area
-  "25lqxg2k": string;  // layout
   yjrtaqh2: string[];  // rows
   j7nbu66f: string;  // previous
   lb64yv45: string;  // word

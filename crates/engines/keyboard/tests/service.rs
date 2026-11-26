@@ -23,32 +23,13 @@ fn ask(op: &str, input: &Value) -> Value {
 fn the_keyboard_asks_its_own_engine_and_no_other() {
     tilo_keyboard_engine::register();
     assert!(
-        tilolang_tilo::engine::answer("so.tilo.notes", "layouts", "{}").is_err(),
+        tilolang_tilo::engine::answer("so.tilo.notes", "suggest", "{}").is_err(),
         "an app's engine answers that app alone"
     );
     assert!(
         tilolang_tilo::engine::answer(APP, "no-such-op", "{}").is_err(),
         "an op the keyboard does not make is refused"
     );
-}
-
-/// The layouts the keyboard may draw: every purpose picks one, and each is keys with a label, an
-/// action and a width.
-#[test]
-fn the_layouts_are_answers_with_keys_and_the_purpose_each_purpose_starts() {
-    let answer = ask("layouts", &serde_json::json!({}));
-    let layouts = answer["layouts"].as_array().expect("layouts");
-    let qwerty = layouts
-        .iter()
-        .find(|layout| layout["name"] == "qwerty")
-        .expect("qwerty");
-    assert_eq!(qwerty["rows"].as_array().expect("rows").len(), 4);
-    assert_eq!(qwerty["rows"][0].as_array().expect("a row").len(), 10);
-    assert_eq!(
-        answer["purposes"]["telephone"], "phone",
-        "a phone field opens the dialpad"
-    );
-    assert_eq!(answer["purposes"]["password"], "qwerty");
 }
 
 /// A swipe over the letters the app draws decodes words, the caller having judged the path a
@@ -158,7 +139,7 @@ fn a_tap_answers_the_key_meant_and_only_a_field_that_may_learn_teaches() {
 fn a_word_is_corrected_by_the_keys_it_was_typed_on_and_what_it_teaches_is_answered() {
     let answer = ask(
         "correct",
-        &serde_json::json!({ "word": "quikc", "language": "en", "layout": "qwerty" }),
+        &serde_json::json!({ "word": "quikc", "language": "en" }),
     );
     assert_eq!(
         answer["correction"], "quick",
@@ -169,7 +150,6 @@ fn a_word_is_corrected_by_the_keys_it_was_typed_on_and_what_it_teaches_is_answer
         &serde_json::json!({
             "word": "quikc",
             "language": "en",
-            "layout": "qwerty",
             "kept": ["quikc"],
         }),
     );

@@ -87,7 +87,6 @@ type Suggested {
 type CorrectAsk {
     word: Text
     language: Text
-    layout: Text
     rows: List<Text>
     kept: List<Text>
 }
@@ -100,7 +99,6 @@ type SwipeAsk {
     path: List<Float>
     area: List<Float>
     rows: List<Text>
-    layout: Text
     language: Text
     shift: Text
     limit: Int
@@ -121,7 +119,6 @@ type Swiped {
 type TouchAsk {
     point: List<Float>
     area: List<Float>
-    layout: Text
     rows: List<Text>
     previous: Text
     word: Text
@@ -265,9 +262,13 @@ fn device_rows(rows: List<List<Text>>) -> List<Text> {
     rows.map(r -> r.map(key -> "{device_label(key)}:{width_of(key)}").join(","))
 }
 
+/// A key as the device reads it: a key that does something by its name, and `,` named too, since
+/// commas part the keys of a row.
 fn device_label(key: Text) -> Text {
     let what = what_of(key)
-    if what.starts_with("!") { what.slice(1, what.len()) } else { what }
+    if what.starts_with("!") {
+        what.slice(1, what.len())
+    } else if what == "," { "comma" } else { what }
 }
 
 /// What a key is, without its width.
@@ -540,7 +541,6 @@ action meant(k: session.Keyboard, t: Typing, key: Text, at: List<Float>) -> Text
         TouchAsk(
             point: at,
             area: [0.0, 0.0, 1.0, 1.0],
-            layout: shown_layout(k, t),
             rows: device_rows(rows),
             previous: t.previous,
             word: t.word.lower(),
@@ -771,7 +771,6 @@ action corrected(k: session.Keyboard, t: Typing, word: Text) -> Text {
         CorrectAsk(
             word: word,
             language: language_of(k),
-            layout: shown_layout(k, t),
             rows: device_rows(shown_rows(k, t)),
             kept: k.kept + k.personal,
         ),
@@ -853,7 +852,6 @@ action swiped(k: session.Keyboard, typing: Typing, path: List<Float>, aspect: Fl
             area: [0.0, 0.0, 1.0, 1.0],
             aspect: aspect,
             rows: device_rows(shown_rows(k, t)),
-            layout: shown_layout(k, t),
             language: language_of(k),
             shift: shift_name(t),
             limit: 5,

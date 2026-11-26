@@ -41,7 +41,7 @@ __all__ = [
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.osk@4286fa454a61820c"
+    __surface__ = "so.tilo.osk@734563f65679c498"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -102,7 +102,7 @@ class Notice(Resource):
 
 class Typing(Resource):
     """Typing — `tl.so.tilo.osk.Typing`."""
-    __surface__ = "so.tilo.osk@4286fa454a61820c"
+    __surface__ = "so.tilo.osk@734563f65679c498"
     m6tp67xz: int  # field
     xgezzsnq: str  # word
     kurpxlhy: str  # previous
@@ -151,7 +151,7 @@ class Typing(Resource):
 
 class Taught(Resource):
     """Taught — `tl.so.tilo.osk.Taught`."""
-    __surface__ = "so.tilo.osk@4286fa454a61820c"
+    __surface__ = "so.tilo.osk@734563f65679c498"
     ecaq5x2q: str  # context
     yybwwgav: str  # word
     htei6x6l: int  # count
@@ -159,7 +159,7 @@ class Taught(Resource):
 
 class SuggestAsk(Resource):
     """SuggestAsk — `tl.so.tilo.osk.SuggestAsk`."""
-    __surface__ = "so.tilo.osk@4286fa454a61820c"
+    __surface__ = "so.tilo.osk@734563f65679c498"
     u7ua3uwj: str  # word
     x64bsvli: str  # previous
     i2l5ongd: str  # language
@@ -179,7 +179,7 @@ class SuggestAsk(Resource):
 
 class Offer(Resource):
     """Offer — `tl.so.tilo.osk.Offer`."""
-    __surface__ = "so.tilo.osk@4286fa454a61820c"
+    __surface__ = "so.tilo.osk@734563f65679c498"
     sspaaf2o: str  # word
     ym3zbzik: float  # score
     o6ytofpt: bool  # personal
@@ -188,7 +188,7 @@ class Offer(Resource):
 
 class Suggested(Resource):
     """Suggested — `tl.so.tilo.osk.Suggested`."""
-    __surface__ = "so.tilo.osk@4286fa454a61820c"
+    __surface__ = "so.tilo.osk@734563f65679c498"
     @property
     def _7qgx3bze(self) -> list[Offer]:
         """completions (`7qgx3bze` on the wire)."""
@@ -202,17 +202,16 @@ class Suggested(Resource):
 
 class CorrectAsk(Resource):
     """CorrectAsk — `tl.so.tilo.osk.CorrectAsk`."""
-    __surface__ = "so.tilo.osk@4286fa454a61820c"
+    __surface__ = "so.tilo.osk@734563f65679c498"
     avrdwkwu: str  # word
     xh7nuttw: str  # language
-    rdht4mzn: str  # layout
     ip6lajuh: list[str]  # rows
     nyu5nrfl: list[str]  # kept
 
 
 class Corrected(Resource):
     """Corrected — `tl.so.tilo.osk.Corrected`."""
-    __surface__ = "so.tilo.osk@4286fa454a61820c"
+    __surface__ = "so.tilo.osk@734563f65679c498"
     @property
     def _37fhak2q(self) -> str | None:
         """correction (`37fhak2q` on the wire)."""
@@ -225,11 +224,10 @@ class Corrected(Resource):
 
 class SwipeAsk(Resource):
     """SwipeAsk — `tl.so.tilo.osk.SwipeAsk`."""
-    __surface__ = "so.tilo.osk@4286fa454a61820c"
+    __surface__ = "so.tilo.osk@734563f65679c498"
     vkdpd5r7: list[float]  # path
     qhrbdy4q: list[float]  # area
     p6t77uy7: list[str]  # rows
-    udzknqo5: str  # layout
     yhplpjdc: str  # language
     pxdf2zfl: str  # shift
     mocqi47p: int  # limit
@@ -239,14 +237,14 @@ class SwipeAsk(Resource):
 
 class Candidate(Resource):
     """Candidate — `tl.so.tilo.osk.Candidate`."""
-    __surface__ = "so.tilo.osk@4286fa454a61820c"
+    __surface__ = "so.tilo.osk@734563f65679c498"
     zsr74dix: str  # word
     mybbluwr: float  # score
 
 
 class Swiped(Resource):
     """Swiped — `tl.so.tilo.osk.Swiped`."""
-    __surface__ = "so.tilo.osk@4286fa454a61820c"
+    __surface__ = "so.tilo.osk@734563f65679c498"
     veop4uz2: bool  # swipe
     @property
     def _56adnkcz(self) -> list[Candidate]:
@@ -260,17 +258,9 @@ class Swiped(Resource):
 
 class TouchAsk(Resource):
     """TouchAsk — `tl.so.tilo.osk.TouchAsk`."""
-    __surface__ = "so.tilo.osk@4286fa454a61820c"
+    __surface__ = "so.tilo.osk@734563f65679c498"
     ilse75gf: list[float]  # point
     ayis4zfh: list[float]  # area
-    @property
-    def _25lqxg2k(self) -> str:
-        """layout (`25lqxg2k` on the wire)."""
-        return self.fields["25lqxg2k"]
-
-    @_25lqxg2k.setter
-    def _25lqxg2k(self, value: str) -> None:
-        self.edit("25lqxg2k", value=value)
     yjrtaqh2: list[str]  # rows
     j7nbu66f: str  # previous
     lb64yv45: str  # word
@@ -288,7 +278,7 @@ class TouchAsk(Resource):
 
 class Landed(Resource):
     """Landed — `tl.so.tilo.osk.Landed`."""
-    __surface__ = "so.tilo.osk@4286fa454a61820c"
+    __surface__ = "so.tilo.osk@734563f65679c498"
     gmprye6b: str  # ch
     @property
     def _7e2ewqea(self) -> float:
@@ -304,14 +294,14 @@ class Landed(Resource):
 
 class Touched(Resource):
     """Touched — `tl.so.tilo.osk.Touched`."""
-    __surface__ = "so.tilo.osk@4286fa454a61820c"
+    __surface__ = "so.tilo.osk@734563f65679c498"
     uk2nkbvx: list[int] | None  # key
     gf3rqhji: Landed | None  # taught
 
 
 class AccentsAsk(Resource):
     """AccentsAsk — `tl.so.tilo.osk.AccentsAsk`."""
-    __surface__ = "so.tilo.osk@4286fa454a61820c"
+    __surface__ = "so.tilo.osk@734563f65679c498"
     erau6win: list[str]  # keys
     wbtiabii: str  # language
     @property
@@ -326,13 +316,13 @@ class AccentsAsk(Resource):
 
 class Accents(Resource):
     """Accents — `tl.so.tilo.osk.Accents`."""
-    __surface__ = "so.tilo.osk@4286fa454a61820c"
+    __surface__ = "so.tilo.osk@734563f65679c498"
     cha7zqyr: dict[str, list[str]]  # forms
 
 
 class Osk(Resource):
     """On-Screen Keyboard — `tl.so.tilo.osk`."""
-    __surface__ = "so.tilo.osk@4286fa454a61820c"
+    __surface__ = "so.tilo.osk@734563f65679c498"
     def pressed(self,
         *,
         k: Any,

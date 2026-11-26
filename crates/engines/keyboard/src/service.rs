@@ -14,7 +14,7 @@ use vello::kurbo::{Point, Rect};
 
 use crate::autocorrect::{Autocorrector, KeyAdjacency};
 use crate::dict::{Dictionary, Language};
-use crate::layout::{InputPurpose, KeyAction, KeyboardLayout, ShiftState, key_rects};
+use crate::layout::{KeyboardLayout, ShiftState, key_rects};
 use crate::predict::Predictor;
 use crate::swipe::{GeometricSwipeModel, SwipeModel};
 use crate::touch_model::{KeyOffset, NextKeyDistribution, TouchKey, TouchModel};
@@ -52,7 +52,6 @@ const MOST_WORDS: usize = 8;
 /// The ask does not read, the op is none of this keyboard's, or the work cannot be done.
 pub fn call(op: &str, input: &str) -> Result<String, String> {
     match op {
-        "layouts" => Ok(layouts().to_string()),
         "suggest" => answered(input, suggest),
         "correct" => answered(input, correct),
         "learn" => answered(input, learn),
@@ -146,73 +145,6 @@ fn with_decoder<T>(language: Language, ask: impl FnOnce(&dyn SwipeModel) -> T) -
 fn held<T>(lock: &'static Mutex<T>) -> MutexGuard<'static, T> {
     lock.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-// ---------------------------------------------------------------- layouts
-
-/// The layouts the keyboard types on, as its app draws them: every row's keys with the label,
-/// the action and the width the key takes, plus where each purpose starts and what the app
-/// offers as settings.
-fn layouts() -> serde_json::Value {
-    let names = [
-        "qwerty", "azerty", "symbols", "numeric", "decimal", "phone", "pin", "email", "url",
-    ];
-    let built: Vec<serde_json::Value> = names
-        .iter()
-        .filter_map(|name| KeyboardLayout::by_name(name))
-        .map(|layout| {
-            let rows: Vec<Vec<serde_json::Value>> = layout
-                .rows
-                .iter()
-                .map(|row| row.iter().map(key_json).collect())
-                .collect();
-            json!({ "name": layout.name, "rows": rows })
-        })
-        .collect();
-    let purposes: serde_json::Map<String, serde_json::Value> = [
-        ("text", InputPurpose::Text),
-        ("terminal", InputPurpose::Terminal),
-        ("number", InputPurpose::Number),
-        ("decimal", InputPurpose::Decimal),
-        ("telephone", InputPurpose::Telephone),
-        ("url", InputPurpose::Url),
-        ("email", InputPurpose::Email),
-        ("pin", InputPurpose::Pin),
-        ("password", InputPurpose::Password),
-        ("date", InputPurpose::Date),
-        ("time", InputPurpose::Time),
-    ]
-    .into_iter()
-    .map(|(name, purpose)| (name.to_owned(), json!(KeyboardLayout::for_purpose(purpose))))
-    .collect();
-    json!({
-        "layouts": built,
-        "order": ["qwerty", "azerty"],
-        "names": { "qwerty": "English (QWERTY)", "azerty": "French (AZERTY)" },
-        "purposes": purposes,
-        "sizes": ["compact", "standard", "large"],
-        "typing_languages": ["layout", "en", "fr"],
-        "languages": { "en": "English", "fr": "French" },
-    })
-}
-
-fn key_json(key: &crate::layout::Key) -> serde_json::Value {
-    let action = match &key.action {
-        KeyAction::Char(text) => json!({ "a": "char", "t": text }),
-        KeyAction::Backspace => json!({ "a": "backspace" }),
-        KeyAction::Enter => json!({ "a": "enter" }),
-        KeyAction::Space => json!({ "a": "space" }),
-        KeyAction::Shift => json!({ "a": "shift" }),
-        KeyAction::SymbolsToggle => json!({ "a": "symbols" }),
-        KeyAction::Layout(name) => json!({ "a": "layout", "t": name }),
-        KeyAction::Emoji => json!({ "a": "emoji" }),
-    };
-    json!({
-        "label": key.label,
-        "action": action,
-        "width": key.width,
-        "icon": key.icon.unwrap_or_default(),
-    })
 }
 
 // ---------------------------------------------------------------- prediction
@@ -324,33 +256,20 @@ fn learn(ask: &Learn) -> String {
 
 // ---------------------------------------------------------------- autocorrection
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 #[serde(default)]
 struct Correct {
     word: String,
     language: String,
-    layout: String,
     /// The layout's rows as the app draws them (`"q:1.0,w:1.0,…"`).
     rows: Vec<String>,
     /// Words the person kept as they typed them: never corrected again.
     kept: Vec<String>,
 }
 
-impl Default for Correct {
-    fn default() -> Self {
-        Self {
-            word: String::new(),
-            language: String::new(),
-            layout: "qwerty".to_owned(),
-            rows: Vec::new(),
-            kept: Vec::new(),
-        }
-    }
-}
-
 fn correct(ask: &Correct) -> String {
     let language = language(&ask.language);
-    let layout = asked_layout(&ask.rows, &ask.layout);
+    let layout = asked_layout(&ask.rows);
     let mut corrector = held(corrector(language));
     corrector.set_adjacency(KeyAdjacency::from_layout(&layout));
     corrector.adopt_kept(&ask.kept);
@@ -432,8 +351,6 @@ struct Swipe {
     area: [f64; 4],
     /// The layout's rows as the app draws them (`"q:1.0,w:1.0,…"`).
     rows: Vec<String>,
-    /// A built-in layout's name, read where `rows` is empty.
-    layout: String,
     language: String,
     shift: String,
     limit: usize,
@@ -451,7 +368,6 @@ impl Default for Swipe {
             path: Vec::new(),
             area: [0.0, 0.0, 0.0, 0.0],
             rows: Vec::new(),
-            layout: "qwerty".to_owned(),
             language: String::new(),
             shift: String::new(),
             limit: 5,
@@ -461,16 +377,13 @@ impl Default for Swipe {
     }
 }
 
-/// The layout an ask is about: the app's own rows when it hands them in, else the built-in one
-/// its name picks.
-fn asked_layout(rows: &[String], name: &str) -> KeyboardLayout {
-    crate::layout::from_rows(rows)
-        .or_else(|| KeyboardLayout::by_name(name))
-        .unwrap_or_else(KeyboardLayout::qwerty)
+/// The layout an ask is about: the app's own rows, or QWERTY when it hands in none.
+fn asked_layout(rows: &[String]) -> KeyboardLayout {
+    crate::layout::from_rows(rows).unwrap_or_else(KeyboardLayout::qwerty)
 }
 
 fn swipe(ask: &Swipe) -> String {
-    let layout = asked_layout(&ask.rows, &ask.layout);
+    let layout = asked_layout(&ask.rows);
     let across = if ask.aspect > 0.0 { ask.aspect } else { 1.0 };
     let area = Rect::new(
         ask.area[0] * across,
@@ -529,7 +442,6 @@ struct Touch {
     point: (f64, f64),
     /// The key band the layout fills, `[x0, y0, x1, y1]` in the point's units.
     area: (f64, f64, f64, f64),
-    layout: String,
     /// The layout's rows as the app draws them (`"q:1.0,w:1.0,…"`).
     rows: Vec<String>,
     /// The word before this one, and what of this one is typed: they say which letter comes next.
@@ -546,7 +458,6 @@ impl Default for Touch {
         Self {
             point: (0.0, 0.0),
             area: (0.0, 0.0, 0.0, 0.0),
-            layout: "qwerty".to_owned(),
             rows: Vec::new(),
             previous: String::new(),
             word: String::new(),
@@ -579,7 +490,7 @@ fn narrow(value: f64) -> f32 {
 
 /// The key a finger meant, and what its landing taught this person's tap positions.
 fn touch(ask: &Touch) -> String {
-    let layout = asked_layout(&ask.rows, &ask.layout);
+    let layout = asked_layout(&ask.rows);
     let area = Rect::new(ask.area.0, ask.area.1, ask.area.2, ask.area.3);
     let geom = key_rects(&layout, area, ShiftState::Off);
     let keys: Vec<TouchKey> = geom

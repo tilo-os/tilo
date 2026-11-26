@@ -152,8 +152,6 @@ d-avrdwkwu = Wort
 
 d-xh7nuttw = Sprache
 
-d-rdht4mzn = Belegung
-
 d-ip6lajuh = Zeilen
 
 d-nyu5nrfl = Behalten
@@ -177,8 +175,6 @@ d-vkdpd5r7 = Pfad
 d-qhrbdy4q = Fläche
 
 d-p6t77uy7 = Zeilen
-
-d-udzknqo5 = Belegung
 
 d-yhplpjdc = Sprache
 
@@ -229,8 +225,6 @@ d-u2rxtyxc = Berührungsanfrage
 d-ilse75gf = Punkt
 
 d-ayis4zfh = Fläche
-
-d-25lqxg2k = Belegung
 
 d-yjrtaqh2 = Zeilen
 
