@@ -660,13 +660,27 @@ pub fn notebook_of(person: &str, titles: &[&str]) -> (ResourceService, Vec<Strin
         .unwrap();
     let mut made = Vec::new();
     for title in titles {
-        let Started::Done(note) = service
+        let Started::Done(_) = service
             .invoke(book.id.as_str(), "new_note", &Map::new())
             .unwrap()
         else {
             panic!("a tilolang action is done once committed");
         };
-        let id = note.resources.first().cloned().unwrap();
+        // The note the call made: the one Note the service lists now that it did not before. The
+        // answer names every record the run made (the Notes root among them on the first note),
+        // so it is read by its kind rather than by its place in that list.
+        let mut listed = service.resources();
+        let mut notes = Vec::new();
+        while let Some(resource) = listed.pop() {
+            if resource.kind == format!("tl.{NOTES}.Note") {
+                notes.push(resource.id.0);
+            }
+            listed.extend(resource.children);
+        }
+        let id = notes
+            .into_iter()
+            .find(|id| !made.contains(id))
+            .expect("new_note makes a note");
         service
             .invoke(
                 &id,
