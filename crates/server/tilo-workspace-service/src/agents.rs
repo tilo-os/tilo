@@ -992,7 +992,7 @@ impl ServerAgents {
             .await?
             .ok_or("the workspace keeps no list of its agents")?;
         let child = roster
-            .get(&agent.id)
+            .get(&tilo_resource::Id::from_raw(agent.id.0.clone()))
             .filter(|entry| {
                 entry.is_active()
                     && entry.is_sub()
