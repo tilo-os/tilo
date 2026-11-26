@@ -873,10 +873,7 @@ package = "tilo-runtime"
 # The app listing test builds Notes from its sources, and the environment directory test reads
 # Terminal's surface.
 inputs = ["apps/"]
-readers = [
-  "crates/core/tilo-runtime/src/device/app_listing_tests.rs",
-  "crates/core/tilo-runtime/src/device/environment_directory_tests.rs",
-]
+readers = ["crates/core/tilo-runtime/src/device/app_listing_tests.rs"]
 
 [[cargo]]
 package = "tilo-migrate"
@@ -906,6 +903,7 @@ readers = [
   "crates/lang/tilolang-runtime/tests/e2e_blocks.rs",
   "crates/lang/tilolang-runtime/tests/e2e_calculator.rs",
   "crates/lang/tilolang-runtime/tests/e2e_cleanup.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_terminal.rs",
   "crates/lang/tilolang-runtime/tests/e2e_counter.rs",
   "crates/lang/tilolang-runtime/tests/e2e_ebook.rs",
   "crates/lang/tilolang-runtime/tests/e2e_notes.rs",
@@ -1037,6 +1035,7 @@ readers = [
   "crates/lang/tilolang-tilo/tests/notes.rs",
   "crates/lang/tilolang-tilo/tests/notes_checklist.rs",
   "crates/lang/tilolang-tilo/tests/notes_export.rs",
+  "crates/lang/tilolang-tilo/tests/terminal_environments.rs",
   "crates/lang/tilolang-tilo/tests/support/export_probe.rs",
   "crates/lang/tilolang-tilo/tests/effects.rs",
   "crates/lang/tilolang-tilo/tests/policy.rs",
