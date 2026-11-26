@@ -362,8 +362,12 @@ enum SeatLink {
     /// or join one until it is the person's.
     Founding,
     /// The process acts for `person`: its connections may reach them, and its shell asks for
-    /// their link again after a restart.
-    Person([u8; 32]),
+    /// their link again after a restart. `device` is whether the link was made for the person this
+    /// device itself serves, whose own endpoint answers the seat rather than a key's.
+    Person {
+        person: [u8; 32],
+        device: bool,
+    },
 }
 
 /// The daemon's seats: its admission, and the device it answers for.
@@ -485,7 +489,10 @@ impl Seats {
         self.keys.lock_recover().remove(&uid);
         for ((held, _), link) in self.links.lock_recover().iter_mut() {
             if *held == uid && matches!(link, SeatLink::Founding) {
-                *link = SeatLink::Person(person);
+                *link = SeatLink::Person {
+                    person,
+                    device: true,
+                };
             }
         }
     }
@@ -519,11 +526,15 @@ impl Seats {
     }
 
     /// Keep that the seat `(uid, pid)` acts for `person` from now on: the session its founding
-    /// link made.
-    fn record_person(&self, uid: u32, pid: u32, person: [u8; 32]) {
-        self.links
-            .lock_recover()
-            .insert((uid, pid), SeatLink::Person(person));
+    /// link made, through the endpoint of the person `device` names when this daemon serves them.
+    fn record_person(&self, uid: u32, pid: u32, person: [u8; 32], device: bool) {
+        self.links.lock_recover().insert(
+            (uid, pid),
+            SeatLink::Person {
+                person,
+                device,
+            },
+        );
     }
 
     /// The person the seat `(uid, pid)` acts for, when a founding link or a person's link was
@@ -531,7 +542,7 @@ impl Seats {
     /// shell link became.
     pub(crate) fn seated_person(&self, uid: u32, pid: u32) -> Option<[u8; 32]> {
         match self.links.lock_recover().get(&(uid, pid)) {
-            Some(SeatLink::Person(person)) => Some(*person),
+            Some(SeatLink::Person { person, .. }) => Some(*person),
             // A founding session acts for the person it made once its certified key is theirs.
             Some(SeatLink::Founding) => self.admission.person_of(uid),
             None => None,
@@ -606,11 +617,12 @@ impl Seats {
                         admitted = Admitted::Founding { key };
                     }
                 }
-                Some(SeatLink::Person(person)) if self.device.person() == Some(person) => {
+                Some(SeatLink::Person { person, device: true }) => {
                     admitted = Admitted::Person(person);
                     founding = true;
                 }
-                Some(SeatLink::Person(_)) | None => {}
+                // Another person's link: its own admission (the key it certified) answers it.
+                Some(SeatLink::Person { .. }) | None => {}
             }
         }
         Seat {
@@ -822,7 +834,7 @@ impl Seats {
             if let Err(error) = seats.remember_seat(uid, pid, person) {
                 tracing::warn!(%error, "a seat's shell link is admitted but not kept");
             }
-            seats.record_person(uid, pid, person);
+            seats.record_person(uid, pid, person, shells.serves(person));
             *handed.lock_recover() = Some(runtime_portal::packet::descriptor_of(stream));
             Ok(Some(json!({"shell": true, "pid": pid})))
         }))
