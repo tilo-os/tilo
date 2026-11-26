@@ -17033,7 +17033,7 @@ dependencies = [
  "iroh-base",
  "serde_json",
  "tilo-accounts",
- "tilo-action-services",
+ "tilo-actions",
  "tilo-clock",
  "tilo-collab-types",
  "tilo-device-identity",

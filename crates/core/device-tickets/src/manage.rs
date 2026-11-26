@@ -12,7 +12,7 @@
 use serde_json::{Value, json};
 use tilo_user_identity::{RevocationEntry, RevocationReason};
 
-use tilo_action_services::device_tickets::device_in;
+use tilo_actions::remote::device_tickets::device_in;
 
 use super::TicketServer;
 use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices, Listed};

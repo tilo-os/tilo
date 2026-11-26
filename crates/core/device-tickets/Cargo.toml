@@ -16,7 +16,7 @@ test-support = ["tilo-workspace-service/test-support", "tilo-peer-state/test-sup
 
 [dependencies]
 tilo-workspace-service = { path = "../tilo-workspace-service" }
-tilo-action-services = { version = "0.1.0", path = "../action-services" }
+tilo-actions = { path = "../actions" }
 accounts = { package = "tilo-accounts", path = "../../integrations/accounts", features = ["person"] }
 collab-types = { package = "tilo-collab-types", path = "../collab-types" }
 tilo-device-identity = { version = "0.1.0", path = "../tilo-device-identity" }

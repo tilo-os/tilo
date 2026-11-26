@@ -12,7 +12,7 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, anyhow, bail};
 use iroh::{EndpointAddr, EndpointId};
 use serde_json::{Map, Value, json};
-use tilo_action_services::device_tickets;
+use tilo_actions::remote::device_tickets;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, RemoteActionTarget,
