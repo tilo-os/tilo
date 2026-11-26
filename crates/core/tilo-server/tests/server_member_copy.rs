@@ -395,7 +395,7 @@ const NOTE_KIND: &str = "so.tilo.notes.note";
 /// Declare what `so.tilo.notes` keeps in a workspace, as an installed package's surface does: a
 /// note whose title its editor types, and the edit that types it.
 fn declare_notes() {
-    tilo_workspace_service::apps::register_package_surface(
+    tilo_app_host::register_package_surface(
         NOTES,
         br#"{"resources":[{"fields":[{"path":"title","type":"text"}],"kind":"so.tilo.notes.note","label":"Note","verbs":[{"id":"type","kind":"undoable","label":"Edit"}],"version":1}]}"#,
     );
