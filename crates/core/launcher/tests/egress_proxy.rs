@@ -320,24 +320,7 @@ fn http_exchange<S: Read + Write>(s: &mut S) -> Outcome {
 
 /// A tiny HTTP server on loopback answering every request with `body`.
 fn serve(body: &'static str) -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind http");
-    let port = listener.local_addr().unwrap().port();
-    std::thread::spawn(move || {
-        while let Ok((mut stream, _)) = listener.accept() {
-            std::thread::spawn(move || {
-                let mut scratch = [0u8; 1024];
-                let _ = stream.read(&mut scratch);
-                let _ = stream.write_all(
-                    format!(
-                        "HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
-                        body.len()
-                    )
-                    .as_bytes(),
-                );
-            });
-        }
-    });
-    port
+    serve_on(std::net::Ipv4Addr::LOCALHOST.into(), body)
 }
 
 /// A short, process-private test directory.
