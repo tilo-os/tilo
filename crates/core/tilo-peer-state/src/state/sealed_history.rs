@@ -123,7 +123,23 @@ fn check(
         let folded = op.kind == collab_types::OpKind::Compaction
             && core.exact_admissions.covers(&admitted.key);
         if !collab_types::is_compaction_segment(op) && !exact && !folded {
-            return Err("sealed history lacks exact admission evidence".into());
+            let held = match (
+                core.exact_admissions.get(&admitted.key),
+                core.exact_admissions.mark(&admitted.key),
+            ) {
+                (Some(_), _) => "another write's bytes",
+                (None, Some(_)) => "a compaction's mark below it",
+                (None, None) => "nothing",
+            };
+            return Err(format!(
+                "sealed history lacks exact admission evidence: the {:?} write {} of author {} \
+                 to {} {}, where the index holds {held}",
+                op.kind,
+                op.seq,
+                hex::encode(&op.author.as_bytes()[..4]),
+                route.app,
+                route.record
+            ));
         }
         if document
             .channel

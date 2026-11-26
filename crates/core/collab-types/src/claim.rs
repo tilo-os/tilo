@@ -91,6 +91,17 @@ impl Invoker {
     }
 }
 
+impl Invoker {
+    /// `acting`, read from `text`, the text its signer wrote: the claim's signature is checked
+    /// over `text`, whatever this build would write for `acting`.
+    pub(crate) const fn kept(acting: tilo_action_policy::Acting, text: String) -> Self {
+        Self {
+            acting,
+            text: Some(text),
+        }
+    }
+}
+
 impl From<tilo_action_policy::Acting> for Invoker {
     fn from(acting: tilo_action_policy::Acting) -> Self {
         Self::new(acting)

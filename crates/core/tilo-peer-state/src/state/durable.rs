@@ -47,7 +47,8 @@ pub(super) const RELABELLED: u32 = 14;
 /// device's records or a placement grant, under binary markers version 15's builds refuse, and a
 /// certificate version 15 wrote reads the same here. Version 14 differs from version 15 only in
 /// what a governance row may say of a device the workspace removed: version 15 marks the row,
-/// and there is no other byte of itself to change.
+/// and there is no other byte of itself to change. Versions 13 and 12 come up through
+/// [`super::durable_before_call`], their writes kept.
 pub(super) fn brought_up(bytes: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, String> {
     let (version, rest) = postcard::take_from_bytes::<u32>(bytes).map_err(err)?;
     if (RELABELLED..=PREVIOUS).contains(&version) {
@@ -57,6 +58,17 @@ pub(super) fn brought_up(bytes: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, Str
         let mut kept = postcard::to_allocvec(&DURABLE_VERSION).map_err(err)?;
         kept.extend_from_slice(rest);
         return Ok(kept.into());
+    }
+    if super::durable_before_call::BEFORE_CALL.contains(&version) {
+        // Layouts 12 and 13: their writes' claims name no call, and come up as this build's
+        // ops with the signatures their authors made.
+        return super::durable_before_call::brought_up(bytes, DURABLE_VERSION)
+            .map(Into::into)
+            .map_err(|error| {
+                format!(
+                    "this state is of durable layout {version} and does not read as it: {error}"
+                )
+            });
     }
     Ok(bytes.into())
 }

@@ -560,6 +560,19 @@ impl ExactAdmissions {
             self.settled_mut().extend(recent);
         }
     }
+    /// Name the write `key` admitted by `to`, the hash of its bytes as this build writes them,
+    /// where the index names it by `from`, the hash of the bytes an earlier build kept it as.
+    pub(crate) fn moved(&mut self, key: &AdmissionKey, from: &[u8; 32], to: [u8; 32]) {
+        if let Some(id) = self.recent.get_mut(key) {
+            if id == from {
+                *id = to;
+            }
+            return;
+        }
+        if self.settled.get(key) == Some(from) {
+            self.settled_mut().insert(key.clone(), to);
+        }
+    }
     /// Take the entry of `key` out: the write it admitted was withdrawn.
     pub(crate) fn withdraw(&mut self, key: &AdmissionKey) -> Result<(), AdmissionError> {
         let Some(operation_id) = self.get(key).copied() else {

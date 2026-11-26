@@ -133,6 +133,8 @@ mod authority;
 pub use authority::DocumentKeysBasis;
 mod construction;
 mod durable;
+mod durable_before_call;
+pub(crate) use durable_before_call::frame_before_call;
 mod written_under;
 pub use durable::DURABLE_VERSION;
 #[cfg(test)]

@@ -222,12 +222,26 @@ fn assert_claimed(op: &SignedOp) {
 /// bytes fails, [`VerifyError::InvalidPublicKey`] if `op.author` doesn't
 /// decode to a valid curve point, or [`VerifyError::BadSignature`] if
 /// `op.signature` doesn't verify.
+///
+/// An op whose claims name no call verifies over the bytes builds before calls signed as well
+/// ([`crate::before_call::signing_bytes`]): its author's signature is never made again, and a
+/// claim with a call never verifies that way.
 pub fn verify_op(op: &SignedOp) -> Result<(), VerifyError> {
     let bytes = op.signing_bytes()?;
     let vk = op.author.to_verifying_key()?;
     let dalek_sig = ed25519_dalek::Signature::from_bytes(&op.signature.0);
-    vk.verify(&bytes, &dalek_sig)
-        .map_err(|_| VerifyError::BadSignature)
+    if vk.verify(&bytes, &dalek_sig).is_ok() {
+        return Ok(());
+    }
+    if op.claims.is_empty() {
+        return Err(VerifyError::BadSignature);
+    }
+    match crate::before_call::signing_bytes(op)? {
+        Some(before) => vk
+            .verify(&before, &dalek_sig)
+            .map_err(|_| VerifyError::BadSignature),
+        None => Err(VerifyError::BadSignature),
+    }
 }
 
 #[cfg(test)]

@@ -269,6 +269,267 @@ fn kept_state(exact: Option<&[u8]>, sealed: SealedHistory) -> Durable<'_> {
     }
 }
 
+/// A signed op as version 13 wrote it: its claims name each run's changes, action, units and
+/// invoker text, and no call.
+#[derive(Clone, serde::Serialize)]
+struct OpAt13 {
+    #[serde(with = "serde_bytes")]
+    payload: Vec<u8>,
+    artifact: collab_types::ArtifactId,
+    author: collab_types::Ed25519PublicKey,
+    attestation_id: collab_types::AttestationId,
+    kind: collab_types::OpKind,
+    timestamp: SystemTime,
+    seq: u64,
+    encryption: Option<collab_types::EncryptionMetadata>,
+    claims: Vec<RunAt13>,
+    surface: Option<[u8; 32]>,
+    governance: Vec<[u8; 4]>,
+    signature: collab_types::Signature,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct RunAt13 {
+    changes: Vec<[u8; 32]>,
+    action: collab_types::ClaimedAction,
+    units: Vec<collab_types::UnitPath>,
+    invoker: Option<String>,
+}
+
+/// What version 13's build signed: the op's fields, each claim run's invoker text, and no call.
+#[derive(serde::Serialize)]
+struct SigningAt13 {
+    #[serde(with = "serde_bytes")]
+    payload: Vec<u8>,
+    artifact: collab_types::ArtifactId,
+    author: collab_types::Ed25519PublicKey,
+    attestation_id: collab_types::AttestationId,
+    kind: collab_types::OpKind,
+    timestamp: SystemTime,
+    seq: u64,
+    encryption: Option<collab_types::EncryptionMetadata>,
+    claims: Vec<ClaimAt13>,
+    surface: Option<[u8; 32]>,
+    governance: Vec<[u8; 4]>,
+}
+
+#[derive(serde::Serialize)]
+struct ClaimAt13 {
+    change: [u8; 32],
+    action: collab_types::ClaimedAction,
+    units: Vec<collab_types::UnitPath>,
+    invoker: Option<String>,
+}
+
+/// One document write as version 13 kept it.
+#[derive(serde::Serialize)]
+struct WriteAt13 {
+    peer: neighbour_wire::PeerId,
+    app_id: String,
+    cluster_id: String,
+    document_id: String,
+    envelope: OpAt13,
+    readers: Option<String>,
+}
+
+/// `key`'s version 13 write with one claim, its op, and the bytes its signature covers: built
+/// from version 13's layout, not from this build's types.
+fn write_at_13(key: &ed25519_dalek::SigningKey) -> (Vec<u8>, OpAt13, Vec<u8>) {
+    use ed25519_dalek::Signer as _;
+
+    let acting = tilo_action_policy::Acting {
+        by: tilo_action_policy::Actor::member(tilo_action_policy::MemberId::person("ana")),
+        app: None,
+        agent_session: None,
+        cause: None,
+        foreign_device: false,
+        handed: false,
+        acted_for: Vec::new(),
+    };
+    let command = serde_json::to_string(&acting).unwrap();
+    let change = [9_u8; 32];
+    let action = collab_types::ClaimedAction::whole_resource_edit(String::new());
+    let units = vec![Vec::new()];
+    let payload = vec![7_u8; 64];
+    let artifact = collab_types::ArtifactId::new();
+    let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
+    let attestation_id = collab_types::AttestationId::new();
+    let timestamp = SystemTime::UNIX_EPOCH;
+    let encryption = Some(collab_types::EncryptionMetadata::content_key(
+        1,
+        collab_types::ContentRetention::Delta,
+    ));
+    let signed = postcard::to_stdvec(&SigningAt13 {
+        payload: payload.clone(),
+        artifact,
+        author,
+        attestation_id,
+        kind: collab_types::OpKind::Change,
+        timestamp,
+        seq: 4,
+        encryption,
+        claims: vec![ClaimAt13 {
+            change,
+            action: action.clone(),
+            units: units.clone(),
+            invoker: Some(command.clone()),
+        }],
+        surface: None,
+        governance: Vec::new(),
+    })
+    .unwrap();
+    let signature = collab_types::Signature::from_bytes(key.sign(&signed).to_bytes());
+    let op = OpAt13 {
+        payload,
+        artifact,
+        author,
+        attestation_id,
+        kind: collab_types::OpKind::Change,
+        timestamp,
+        seq: 4,
+        encryption,
+        claims: vec![RunAt13 {
+            changes: vec![change],
+            action,
+            units,
+            invoker: Some(command),
+        }],
+        surface: None,
+        governance: Vec::new(),
+        signature,
+    };
+    let mut write = vec![NeighbourMsg::APP_DOCUMENT_TAG];
+    write.extend(
+        postcard::to_stdvec(&WriteAt13 {
+            peer: 3,
+            app_id: "so.tilo.notes".into(),
+            cluster_id: KEPT_WORKSPACE.into(),
+            document_id: "uuid:1c2f".into(),
+            envelope: op.clone(),
+            readers: None,
+        })
+        .unwrap(),
+    );
+    (write, op, signed)
+}
+
+/// A state of layout `version` (12 or 13) holding `write` for a prerequisite and `op` as its one
+/// record's sealed write, with the exact index `exact`, as those layouts wrote it.
+fn written_at_13(version: u32, write: &[u8], op: &OpAt13, exact: &[u8]) -> Vec<u8> {
+    let document = kept_document();
+    let certificates = vec![kept_certificate()];
+    let revocations = vec![kept_revocation()];
+    let receipts: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let held = Durable {
+        version,
+        workspace: KEPT_WORKSPACE.into(),
+        owner: [1; 32],
+        workspace_bytes: Some(b"\x85\x6f\x4a\x83".to_vec()),
+        documents: vec![document],
+        receipts: receipts.clone(),
+        certificates: certificates.clone(),
+        revocations: revocations.clone(),
+        pending: VecDeque::new(),
+        pending_bytes: 0,
+        exact: Some(exact),
+        sealed: Vec::new(),
+    };
+    let mut bytes = postcard::to_stdvec(&(
+        version,
+        &held.workspace,
+        &held.owner,
+        &held.workspace_bytes,
+        held.documents.len(),
+    ))
+    .unwrap();
+    for document in &held.documents {
+        bytes.extend(postcard::to_stdvec(document).unwrap());
+    }
+    bytes.extend(postcard::to_stdvec(&(&receipts, &certificates, &revocations, 1_usize)).unwrap());
+    bytes.extend_from_slice(&[7; 32]);
+    bytes.extend_from_slice(write);
+    bytes.push(1);
+    bytes.extend(postcard::to_stdvec(&(write.len(), Some(exact))).unwrap());
+    bytes.extend(
+        postcard::to_stdvec(&vec![(
+            Route {
+                app: "so.tilo.chat".into(),
+                record: "lounge".into(),
+            },
+            vec![op.clone()],
+        )])
+        .unwrap(),
+    );
+    bytes
+}
+
+tilo_test_env::scenario! {
+    /// A state of layout 12 or 13, which kept its held and sealed writes with claims that name no
+    /// call, comes up with every one of them: each verifies as its author signed it, and the
+    /// exact index names the sealed write by its bytes as this build writes them.
+    fn a_state_kept_before_claims_named_a_call_comes_up_with_every_write;
+
+    phase its_held_and_sealed_writes_come_up_and_verify;
+    {
+        for version in [12_u32, 13] {
+            let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+            let (write, op, _) = write_at_13(&key);
+            let kept_id = *blake3::hash(&postcard::to_stdvec(&op).unwrap()).as_bytes();
+            let key_of = |sequence| crate::admission::AdmissionKey {
+                workspace: KEPT_WORKSPACE.into(),
+                app: "so.tilo.chat".into(),
+                record: "lounge".into(),
+                author: key.verifying_key().to_bytes(),
+                sequence,
+            };
+            let mut index = crate::admission::ExactAdmissions::default();
+            index
+                .insert(&crate::admission::DocumentAdmission {
+                    key: key_of(4),
+                    operation_id: kept_id,
+                })
+                .unwrap();
+            let exact = index.encode().unwrap();
+            let kept = written_at_13(version, &write, &op, &exact);
+            let brought = brought_up(&kept).expect("the state comes up");
+            let read = Durable::read(&brought, KEPT_WORKSPACE).expect("it reads as this build's layout");
+            assert_eq!(read.pending.len(), 1, "layout {version}: the held write comes up");
+            let NeighbourMsg::AppDocument { envelope, document_id, .. } = &read.pending[0].1 else {
+                panic!("layout {version}: the held write is a document write");
+            };
+            assert_eq!(document_id, "uuid:1c2f");
+            collab_types::verify_op(envelope).expect("the held write verifies as its author signed it");
+            let measured = crate::postcard_sink::encoded_len(&read.pending[0].1, usize::MAX).unwrap();
+            assert_eq!(read.pending_bytes, measured, "the held bytes are counted as this build writes them");
+            assert_eq!(read.sealed.len(), 1, "layout {version}: the sealed history comes up");
+            let sealed = &read.sealed[0].1;
+            assert_eq!(sealed.len(), 1);
+            collab_types::verify_op(&sealed[0]).expect("the sealed write verifies as its author signed it");
+            assert_eq!(sealed[0].signature.0, op.signature.0, "its signature is its author's");
+            let index = crate::admission::ExactAdmissions::decode(read.exact.unwrap()).unwrap();
+            let now = crate::admission::DocumentAdmission::from_op(
+                KEPT_WORKSPACE,
+                "so.tilo.chat",
+                "lounge",
+                &sealed[0],
+            )
+            .unwrap();
+            assert_ne!(now.operation_id, kept_id, "its bytes are this build's");
+            assert_eq!(
+                index.get(&key_of(4)),
+                Some(&now.operation_id),
+                "the exact index names the write by its bytes as this build writes them"
+            );
+            assert_eq!(read.documents.len(), 1, "the documents come up as they were");
+            assert_eq!(read.certificates.len(), 1);
+            assert_eq!(read.revocations.len(), 1);
+            let mut forged = sealed[0].clone();
+            forged.claims[0].units = vec![vec![tilo_actions::PathStep::Key("other".into())]];
+            assert!(collab_types::verify_op(&forged).is_err(), "a changed claim does not verify");
+        }
+    }
+}
+
 tilo_test_env::scenario! {
     fn a_kept_member_list_with_a_superseded_waiting_change_restores_without_it;
 
