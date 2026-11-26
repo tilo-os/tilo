@@ -50,18 +50,6 @@ pub trait LocalPersonServices: Send + Sync {
     }
 }
 
-/// The origin of a workspace's records on this device: it applies the change an agent's
-/// invocation was admitted for, running the action against the record as it is then.
-pub trait DocumentChangeServices: Send + Sync {
-    /// Apply `change` in `workspace` as `invoker`'s step: the origin's answer.
-    fn apply(
-        &self,
-        workspace: &str,
-        change: &tilo_actions::remote::ResourceChange,
-        invoker: &tilo_actions::ActionInvoker,
-    ) -> Result<serde_json::Value, String>;
-}
-
 /// Reads the host's committed authority in place; mutations go back to that host, and this owns
 /// no replica or persistence.
 ///

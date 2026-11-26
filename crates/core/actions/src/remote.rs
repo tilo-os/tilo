@@ -162,7 +162,7 @@ pub use resource_read::{
     DEVICE_JOBS, DEVICE_SETTINGS, DEVICE_SETTINGS_REFUSED, Decided, HeldCopies, ListedResource,
     RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS, RESOURCE_READS_UNAVAILABLE,
     RESOURCE_WRITE_REFUSED, ReadingAnswer, ReadsAnswer, ResourceAddress, ResourceAsk,
-    ResourceChange, ResourceChanges, ResourceCopy, ResourceReadings, ResourceReads, ResourceWake,
+    ResourceCopy, ResourceReadings, ResourceReads, ResourceWake,
     answer_read, answered, device_job_address, device_job_path, device_record_address,
     device_record_space, parse_device_record_space, parse_job_path, read_resources, readings_from,
     readings_of, reads_answer,
@@ -2091,11 +2091,6 @@ pub trait ActionProvider {
     /// device, its windows, its styles, Settings' sections) are read on the same API, as a
     /// [`ResourceCopy::Reading`], so a program and the shell's parts read one resource one way.
     fn resource_reads(&self) -> Option<std::sync::Arc<dyn ResourceReads>> {
-        None
-    }
-
-    /// Where an agent task's changes go to their records' origin ([`ResourceChanges`]).
-    fn resource_changes(&self) -> Option<std::sync::Arc<dyn ResourceChanges>> {
         None
     }
 

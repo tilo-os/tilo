@@ -12,12 +12,11 @@
 //!
 //! [`CertificateAuthority::own_device`]: crate::certificate_authority::CertificateAuthority::own_device
 
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
 use tilo_action_policy::{ActionKind, Answer};
 use tilo_actions::remote::{
     ActionCallError, Caller, InvokeRequest, RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS,
-    ResourceChange, ResourceChanges,
 };
 
 use super::AppBrokerState;
@@ -226,109 +225,6 @@ impl AppBrokerState {
     }
 }
 
-/// What a caller is told about a change the workspace does not allow it.
-pub const DOCUMENT_CHANGE_REFUSED: &str = "not allowed to make this change";
-
-impl AppBrokerState {
-    /// The record change api, when this host has an origin for its workspaces' records.
-    pub fn resource_changes(self: &Arc<Self>) -> Option<Arc<dyn ResourceChanges>> {
-        self.services.resource_changes.as_ref()?;
-        Some(Arc::new(BrokerDocumentChanges {
-            state: Arc::downgrade(self),
-        }))
-    }
-}
-
-struct BrokerDocumentChanges {
-    state: Weak<AppBrokerState>,
-}
-
-impl ResourceChanges for BrokerDocumentChanges {
-    fn apply(
-        &self,
-        caller: &Caller,
-        change: &ResourceChange,
-    ) -> Result<serde_json::Value, ActionCallError> {
-        let unavailable = |reason: String| ActionCallError::Unavailable { reason };
-        let state = self
-            .state
-            .upgrade()
-            .ok_or_else(|| unavailable("the broker stopped".into()))?;
-        let (Some((person, workspace)), Some(agent)) =
-            (agent_person(caller), caller.acting().agent_id())
-        else {
-            return Err(ActionCallError::Refused {
-                reason: RESOURCE_READS_FOR_AGENTS.into(),
-            });
-        };
-        super::action_provider::check_execution(caller)?;
-        let answer = state
-            .decide_for(caller, workspace, |workspace, actor, now| {
-                let node = tilo_actions::action_node(
-                    &workspace.policy.node(),
-                    &change.app,
-                    "",
-                    &change.resource,
-                    None,
-                    &change.action,
-                );
-                actor.answer_in(workspace, &node, ActionKind::Undoable, now)
-            })
-            .ok_or(ActionCallError::NotPermitted)?;
-        match answer {
-            Answer::Allow => {}
-            Answer::Ask => return Err(ActionCallError::confirmation_required()),
-            Answer::Deny => {
-                return Err(ActionCallError::Refused {
-                    reason: DOCUMENT_CHANGE_REFUSED.into(),
-                });
-            }
-        }
-        apply_document_change(
-            state,
-            workspace,
-            change,
-            (agent, person, caller.agent_name()),
-        )
-    }
-}
-
-/// Apply `change` in `workspace` at its record's origin as `agent` acting for
-/// `person`, by the name its admission gave it, admitted already.
-fn apply_document_change(
-    state: Arc<AppBrokerState>,
-    workspace: &str,
-    change: &ResourceChange,
-    (agent, person, name): (&str, &str, Option<&str>),
-) -> Result<serde_json::Value, ActionCallError> {
-    let unavailable = |reason: String| ActionCallError::Unavailable { reason };
-    let origin = state
-        .services
-        .resource_changes
-        .clone()
-        .ok_or_else(|| unavailable("this host has no origin for its records".into()))?;
-    drop(state);
-    let invoker = tilo_actions::ActionInvoker::agent(agent, person)
-        .acting_for(person)
-        .named(name.map(str::to_owned));
-    origin
-        .apply(workspace, change, &invoker)
-        .map_err(unavailable)
-}
-
-/// The person an agent acts for, when `caller` is one: an agent the host admitted as a member
-/// acting for its person, confined to a workspace.
-fn agent_person(caller: &Caller) -> Option<(&str, &str)> {
-    // An agent a person's device handed its session to reads nothing here. An agent acting under
-    // a key of its own, or a roster agent answering a person's turn, reads and changes what both
-    // its grants and its person's allow, each read and change decided at the record's node like
-    // every other caller's.
-    if !caller.acting().is_agent() || caller.is_session_delegated() {
-        return None;
-    }
-    Some((caller.acting_for_person()?, caller.workspace()?))
-}
-
 /// Whether `caller` names no person to read for: an app acting for nobody, or a person with no
 /// id, as what runs on a device nobody signed in on calls.
 fn names_nobody(caller: &Caller) -> bool {
@@ -356,6 +252,15 @@ fn person_reading(caller: &Caller) -> Option<&str> {
     }
 }
 
-#[cfg(test)]
-#[path = "resource_read_tests.rs"]
-mod tests;
+/// The person an agent acts for, when `caller` is one: an agent the host admitted as a member
+/// acting for its person, confined to a workspace.
+fn agent_person(caller: &Caller) -> Option<(&str, &str)> {
+    // An agent a person's device handed its session to reads nothing here. An agent acting under
+    // a key of its own, or a roster agent answering a person's turn, reads and changes what both
+    // its grants and its person's allow, each read and change decided at the record's node like
+    // every other caller's.
+    if !caller.acting().is_agent() || caller.is_session_delegated() {
+        return None;
+    }
+    Some((caller.acting_for_person()?, caller.workspace()?))
+}

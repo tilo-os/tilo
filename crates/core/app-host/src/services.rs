@@ -576,7 +576,6 @@ pub struct ProcessServices {
     pub agent_sessions: Option<Arc<dyn AgentSessions>>,
     pub native_certificates: Option<Arc<dyn crate::certificate_authority::CertificateAuthority>>,
     pub local_person: Option<Arc<dyn LocalPersonServices>>,
-    pub resource_changes: Option<Arc<dyn DocumentChangeServices>>,
     /// Where a host with no [`NativePeerBrokerConfig`](crate::NativePeerBrokerConfig)
     /// keeps the invocation journal; without it the broker keeps none.
     pub journal_root: Option<std::path::PathBuf>,
@@ -664,7 +663,6 @@ impl ProcessServices {
         "agent_sessions",
         "native_certificates",
         "local_person",
-        "resource_changes",
         "journal_root",
         "launcher",
         "published",

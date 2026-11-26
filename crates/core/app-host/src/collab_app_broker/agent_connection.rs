@@ -90,15 +90,12 @@ impl AgentConnection {
     }
 }
 
-/// The records an agent session reads and changes outside their apps (its programs' `find`,
-/// `read` and every action a program calls), as the session's own caller, while it goes: the
-/// broker's record api, decided by the workspace's policy for the session's agent and person as
-/// every other step of the session is. Without it a turn's programs ran no change at all ("this
-/// desktop applies no task's changes at a record's origin").
+/// The records an agent session reads outside their apps (its programs' `find` and `read`), as
+/// the session's own caller, while it goes: the broker's record api, decided by the workspace's
+/// policy for the session's agent and person as every other step of the session is.
 struct SessionRecords {
     connection: AgentConnection,
     reads: Option<Arc<dyn tilo_actions::remote::ResourceReads>>,
-    changes: Option<Arc<dyn tilo_actions::remote::ResourceChanges>>,
 }
 
 impl tilo_actions::remote::ResourceReads for SessionRecords {
@@ -137,26 +134,11 @@ impl tilo_actions::remote::ResourceReads for SessionRecords {
     }
 }
 
-impl tilo_actions::remote::ResourceChanges for SessionRecords {
-    fn apply(
-        &self,
-        caller: &Caller,
-        change: &tilo_actions::remote::ResourceChange,
-    ) -> Result<serde_json::Value, ActionCallError> {
-        self.connection.check(caller)?;
-        self.changes
-            .as_ref()
-            .ok_or(ActionCallError::NotPermitted)?
-            .apply(&self.connection.0.caller, change)
-    }
-}
-
 impl AgentConnection {
     fn session_records(&self) -> SessionRecords {
         SessionRecords {
             connection: self.clone(),
             reads: self.state().records(),
-            changes: self.state().resource_changes(),
         }
     }
 }
@@ -165,12 +147,6 @@ impl ActionProvider for AgentConnection {
     fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
         let records = self.session_records();
         records.reads.as_ref()?;
-        Some(Arc::new(records))
-    }
-
-    fn resource_changes(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceChanges>> {
-        let records = self.session_records();
-        records.changes.as_ref()?;
         Some(Arc::new(records))
     }
 
