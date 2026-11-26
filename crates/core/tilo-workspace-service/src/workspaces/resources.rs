@@ -24,6 +24,8 @@ use automerge::{Automerge, Change as AmChange, ChangeHash, ROOT, ReadDoc as _};
 use collab_types::is_store_document;
 use tilo_resource_store::{Admit, Received, Refusal, Schema, Store};
 
+use super::wanted_keys::write_with_keys;
+use super::wanted_keys::{Unkept, WantedKeys};
 use super::{HostedWorkspace, Workspaces};
 use verb_grants::VerbGrants;
 
@@ -1166,7 +1168,7 @@ impl HostedWorkspace {
         app: &str,
         write: &tilo_resource_store::Written,
         action: Option<&collab_types::WorkspaceCommit>,
-    ) -> Result<Vec<collab_types::SignedOp>, String> {
+    ) -> Result<Vec<collab_types::SignedOp>, Unkept> {
         let now = tilo_clock::wall();
         let named = (collab_types::is_store_document(&write.doc)
             && write.readers != collab_types::EVERY_MEMBER)
@@ -1190,27 +1192,23 @@ impl HostedWorkspace {
             .device
             .as_ref()
             .ok_or("this device holds no group keys")?;
-        let keys = match key_device
-            .group_keys(&group, &write.readers, isolated)
-            .await
-        {
+        // Looked up, never waited for: the workspace's lock is taken here. Keys this device has
+        // none of yet are waited for with the lock let go ([`super::wanted_keys`]): a document's own
+        // group, which its first write opens, or a reader set this device came to when the
+        // workspace gained a member, opened as its reads of it open it.
+        let keys = match key_device.group_keys(&group, &write.readers, false).await {
             Some(Ok(keys)) => keys,
-            // A record written under a reader set this device takes part in and holds no keys
-            // of yet, as one it came to when the workspace gained a member: open the group as
-            // its reads of it do, and write under the keys that brings.
-            Some(Err(_)) if !isolated => {
-                match key_device.group_keys(&group, &write.readers, true).await {
-                    Some(Ok(keys)) => keys,
-                    Some(Err(error)) => return Err(error),
-                    None => {
-                        return Err(
-                            "this device holds no keys of the document's readers yet".into()
-                        );
-                    }
-                }
+            None if !isolated => {
+                return Err("this device holds no keys of the document's readers yet".into());
             }
-            Some(Err(error)) => return Err(error),
-            None => return Err("this device holds no keys of the document's readers yet".into()),
+            // A document's group this device has not opened yet is none it knows of at all.
+            Some(Err(_)) | None => {
+                return Err(Unkept::Keys(WantedKeys::new(
+                    key_device,
+                    group,
+                    write.readers.clone(),
+                )));
+            }
         };
         let founding = !peer.holds_document(app, &write.doc);
         let bytes = if founding {
@@ -1579,7 +1577,7 @@ impl Workspaces {
         app: &str,
         write: &tilo_resource_store::Written,
         still_live: impl FnOnce(&HostedWorkspace) -> bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), Unkept> {
         let document = &write.doc;
         let author = device.device();
         let now = tilo_clock::wall();
@@ -1608,6 +1606,7 @@ impl Workspaces {
         )?;
         self.keep_resource_write(hosted, device, app, (write, true), &messages, true, true)
             .await
+            .map_err(Unkept::Refused)
     }
 
     async fn admit_resource_write(
@@ -1620,7 +1619,7 @@ impl Workspaces {
             &tilo_resource_store::Written,
             Option<&collab_types::WorkspaceCommit>,
         ),
-    ) -> Result<Vec<collab_types::SignedOp>, String> {
+    ) -> Result<Vec<collab_types::SignedOp>, Unkept> {
         use neighbour_wire::NeighbourMsg;
 
         let document = &write.doc;
@@ -1638,12 +1637,14 @@ impl Workspaces {
             .as_ref()
             .ok_or("this device holds no group keys")?;
         let scoped = hosted.peer().requires_document_keys(app, document, now)?;
+        // The draft found the keys of the document's group, so they are looked up, not waited
+        // for under the workspace's lock.
         let keys = super::sealed_documents::read_document_keys_for(
             device_keys,
             hosted.workspace(),
             (app, document),
             scoped,
-            scoped,
+            false,
             Some(write.readers.clone()),
         )
         .await?;
@@ -2176,7 +2177,7 @@ impl Workspaces {
         device: &super::MemberDevice,
         app: &str,
         command: &collab_types::store::wire::Command,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, Unkept> {
         let collab_types::store::wire::Command::Put {
             kind,
             id,
@@ -2339,15 +2340,21 @@ impl Workspaces {
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let hosted = state.lock_owned().await;
-        if let Some(viewer) = context.viewer() {
-            may_write_as_viewer(&hosted, viewer, context.app_id(), &unserved)?;
-        }
         let by_app = app_records::written_by_app(&command, context.app_id());
-        match self
-            .write_resources(hosted, device, context.app_id(), command)
-            .await
-        {
+        let (device, command, unserved) = (&device, &command, &unserved);
+        // Boxed: a write holds much across its waits for keys, and every app's command awaits it.
+        let written = Box::pin(write_with_keys(&state, move |hosted| {
+            let (device, command) = (std::sync::Arc::clone(device), command.clone());
+            async move {
+                if let Some(viewer) = context.viewer() {
+                    may_write_as_viewer(&hosted, viewer, context.app_id(), unserved)?;
+                }
+                self.write_resources(hosted, device, context.app_id(), command)
+                    .await
+            }
+        }))
+        .await;
+        match written {
             Err(error) if by_app => Err(self
                 .app_write_refused(workspace, context.app_id(), error)
                 .await),
@@ -2449,9 +2456,13 @@ impl Workspaces {
             .workspace(workspace)
             .await
             .map_err(|error| RecordFailure::Failed(error.to_string()))?;
-        let hosted = state.lock_owned().await;
         let by_app = app_records::written_by_app(&command, app);
-        match self.write_resources(hosted, device, app, command).await {
+        let (device, command) = (&device, &command);
+        let written = write_with_keys(&state, move |hosted| {
+            self.write_resources(hosted, std::sync::Arc::clone(device), app, command.clone())
+        })
+        .await;
+        match written {
             Ok(reply) => Ok(reply),
             Err(error) if by_app => Err(RecordFailure::Refused(
                 self.app_write_refused(workspace, app, error).await,
@@ -2538,7 +2549,9 @@ impl Workspaces {
     }
 
     /// Carry out the write `command` of `app` on the workspace `hosted` holds, as `device`,
-    /// holding the workspace until the last of its frames is kept.
+    /// holding the workspace until the last of its frames is kept. [`Unkept::Keys`] when it
+    /// needs keys this device does not hold yet: nothing was written, and the caller waits for
+    /// them with the lock let go ([`write_with_keys`]).
     #[cfg(any(feature = "apps", feature = "agents"))]
     async fn write_resources(
         &self,
@@ -2546,12 +2559,12 @@ impl Workspaces {
         device: std::sync::Arc<super::MemberDevice>,
         app: &str,
         command: collab_types::store::wire::Command,
-    ) -> Result<collab_types::store::wire::Reply, String> {
+    ) -> Result<collab_types::store::wire::Reply, Unkept> {
         use collab_types::store::wire::Reply;
         // Every write names who made it, the app itself where nobody is at it: one that names no
         // one is signed by nobody here, as it would be decided as this device's person.
         if app_records::names_no_one(&command) {
-            return Err(app_records::nameless(app));
+            return Err(app_records::nameless(app).into());
         }
         // The store's types and verbs are declared before the first write, not by a read that
         // came before it: a store nobody read yet places a write by what its surfaces name.
@@ -2578,6 +2591,10 @@ impl Workspaces {
     /// none. `action` is the action they are part of when its other writes come apart (an app's
     /// write of several records, one record at a time): the store takes these once the others
     /// are here.
+    ///
+    /// [`Unkept::Keys`] when a write needs keys this device does not hold yet, before any of
+    /// them is kept: the caller lets the lock go, waits for them and drafts the writes again
+    /// ([`write_with_keys`]).
     pub(super) async fn keep_writes(
         &self,
         mut hosted: tokio::sync::OwnedMutexGuard<HostedWorkspace>,
@@ -2585,7 +2602,7 @@ impl Workspaces {
         app: &str,
         writes: Vec<tilo_resource_store::Written>,
         action: Option<collab_types::WorkspaceCommit>,
-    ) -> Result<collab_types::store::wire::Reply, String> {
+    ) -> Result<collab_types::store::wire::Reply, Unkept> {
         use collab_types::store::wire::Reply;
         let app = app.to_owned();
         // The store's types and verbs are declared before the origin's leave reads them.
@@ -2697,6 +2714,7 @@ impl Workspaces {
         answer
             .await
             .map_err(|_| "the resource writer stopped".to_owned())?
+            .map_err(Unkept::Refused)
     }
 }
 

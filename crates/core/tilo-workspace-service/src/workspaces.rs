@@ -153,6 +153,7 @@ mod resources;
 pub use resources::RecordFailure;
 pub use resources::person_reading;
 mod revocations;
+mod wanted_keys;
 pub use own::OwnWorkspaceOffer;
 pub(crate) mod sealed_documents;
 /// How a workspace service holds a workspace.

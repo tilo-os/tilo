@@ -191,6 +191,9 @@ pub struct TestGroupKeys {
     /// Whether the key service is not ready: it answers no group until it is unpaused, as a
     /// device service whose persisted keys are not open yet.
     paused: std::sync::atomic::AtomicBool,
+    /// Whether opening a group waits until it is let go ([`Self::hold_openings`]), and how many
+    /// openings wait now.
+    openings: tokio::sync::watch::Sender<(bool, usize)>,
 }
 
 impl Default for TestGroupKeys {
@@ -201,11 +204,34 @@ impl Default for TestGroupKeys {
             handed: tokio::sync::watch::Sender::new(0),
             behind: Mutex::default(),
             paused: std::sync::atomic::AtomicBool::new(false),
+            openings: tokio::sync::watch::Sender::new((false, 0)),
         }
     }
 }
 
 impl TestGroupKeys {
+    /// Forget every group's keys, and hold every opening of a group back until
+    /// [`Self::let_openings_go`]: an ask that opens a group waits as the key service's does while
+    /// it founds a group or a group lets the device in, which takes seconds.
+    pub fn hold_openings(&self) {
+        self.held.lock().expect("the fixture's keys").clear();
+        self.openings.send_modify(|(waiting, _)| *waiting = true);
+    }
+
+    /// Let every opening [`Self::hold_openings`] kept back go on.
+    pub fn let_openings_go(&self) {
+        self.openings.send_modify(|(waiting, _)| *waiting = false);
+    }
+
+    /// Wait until an opening of a group waits to be let go.
+    pub async fn opening_waits(&self) {
+        let mut openings = self.openings.subscribe();
+        openings
+            .wait_for(|(_, waiting)| *waiting > 0)
+            .await
+            .expect("the fixture's openings");
+    }
+
     /// Simulate startup of a device service whose persisted keys are not open yet.
     pub fn pause(&self, paused: bool) {
         self.paused
@@ -310,6 +336,17 @@ impl GroupKeys for TestGroupKeys {
                     .load(std::sync::atomic::Ordering::Relaxed)
             {
                 return Some(Err("this channel has no keys yet".into()));
+            }
+            if self.openings.borrow().0 {
+                let mut openings = self.openings.subscribe();
+                self.openings
+                    .send_modify(|(_, waiting)| *waiting = waiting.saturating_add(1));
+                let _ = openings.wait_for(|(waiting, _)| !*waiting).await;
+                self.openings
+                    .send_modify(|(_, waiting)| *waiting = waiting.saturating_sub(1));
+                if let Some(keys) = self.held.lock().expect("the fixture's keys").get(workspace) {
+                    return Some(Ok(keys.clone()));
+                }
             }
             let keys = KeyGroup::create(
                 collab_types::WorkspaceId::parse(workspace).expect("a workspace id"),

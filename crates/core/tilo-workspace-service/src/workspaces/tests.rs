@@ -20,6 +20,8 @@ mod frames;
 #[cfg(feature = "agents")]
 mod host_address;
 mod invitation_read;
+#[cfg(feature = "apps")]
+mod keys_outside_the_lock;
 pub(crate) mod large_document;
 mod link_windows;
 #[cfg(feature = "agents")]

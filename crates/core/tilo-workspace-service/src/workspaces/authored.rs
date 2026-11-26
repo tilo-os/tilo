@@ -3,6 +3,7 @@
 //! whether or not it runs agents, so this is not part of `applications`.
 
 use super::sealed_documents::DocumentKeys;
+use super::wanted_keys::{KeyWaits, Unkept};
 use super::{CollaborationError, HostedWorkspace, Workspaces, system_time};
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::StatePeer;
@@ -47,17 +48,28 @@ impl Workspaces {
     ) -> Result<R, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
         let state = self.workspace(workspace).await?;
-        let mut hosted = state.lock().await;
-        if &hosted.record.owner != holder {
-            // Every other holder its member list names writes it too: each
-            // keeps a writable copy.
-            super::holding::require_holder(&hosted.peer(), holder)?;
-        }
-        hosted
-            .peer()
-            .workspace()
-            .check_workspace_administration(holder.device_public_key, system_time(now))?;
-        let record = self.hold_record(&hosted, (app, name)).await?;
+        // The record's keys are looked up under the lock; keys this device holds none of yet
+        // are waited for with it let go, and the lock is taken again to look once more.
+        let mut waits = KeyWaits::default();
+        let (mut hosted, record) = loop {
+            let hosted = state.lock().await;
+            if &hosted.record.owner != holder {
+                // Every other holder its member list names writes it too: each
+                // keeps a writable copy.
+                super::holding::require_holder(&hosted.peer(), holder)?;
+            }
+            hosted
+                .peer()
+                .workspace()
+                .check_workspace_administration(holder.device_public_key, system_time(now))?;
+            match self.hold_record(&hosted, (app, name)).await {
+                Ok(record) => break (hosted, record),
+                Err(unkept) => {
+                    drop(hosted);
+                    waits.wait(unkept).await.map_err(CollaborationError::new)?;
+                }
+            }
+        };
         // Build the change on the workspace as it stands, with its copy locked
         // from the build to the commit, the staging the workspace's other
         // changes use. The link takes members' writes into that same copy
@@ -123,20 +135,15 @@ impl Workspaces {
     ///
     /// # Errors
     /// The record is sealed and its keys cannot be read, or its channel cannot
-    /// be opened.
+    /// be opened; [`Unkept::Keys`] while this device holds none of them yet,
+    /// which the caller waits for with the lock let go.
     pub(super) async fn hold_record(
         &self,
         workspace: &HostedWorkspace,
         (app, name): (&str, &str),
-    ) -> Result<HeldRecord, CollaborationError> {
-        let write = self
-            .sealing_keys(workspace, app, name)
-            .await
-            .map_err(CollaborationError::new)?;
-        let read = workspace
-            .document_keys(app, name)
-            .await
-            .map_err(CollaborationError::new)?;
+    ) -> Result<HeldRecord, Unkept> {
+        let write = self.sealing_keys(workspace, app, name).await?;
+        let read = workspace.document_keys(app, name).await?;
         Ok(HeldRecord {
             workspace: workspace.workspace().to_owned(),
             app: app.to_owned(),

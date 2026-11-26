@@ -438,7 +438,12 @@ impl HostedWorkspace {
         let keys = match self.document_keys(app, document).await {
             Ok(Some(keys)) => keys,
             Ok(None) => return Err(BehindRefusal::Keys),
-            Err(error) => {
+            // Asked for with the lock let go: the compaction is taken once they are here.
+            Err(super::wanted_keys::Unkept::Keys(wanted)) => {
+                wanted.ask_later();
+                return Err(BehindRefusal::Keys);
+            }
+            Err(super::wanted_keys::Unkept::Refused(error)) => {
                 tracing::debug!(workspace = %self.workspace(), %error, "a kept compaction waits for the record's keys");
                 return Err(BehindRefusal::Keys);
             }

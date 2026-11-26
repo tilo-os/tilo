@@ -8,6 +8,7 @@ use automerge::{Change as AmChange, ChangeHash};
 use collab_types::store::wire::{Bytes, Command, Reply};
 use tilo_resource_store::Stamp;
 
+use super::super::wanted_keys::{KeyWaits, Unkept, write_with_keys};
 use super::super::{HostedWorkspace, Workspaces};
 
 /// The kind `app`'s record `record` is in `store`: `kind` when the route named one the app
@@ -307,14 +308,16 @@ impl Workspaces {
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let hosted = std::sync::Arc::clone(&state).lock_owned().await;
-        self.keep_record_change_locked(
-            hosted,
-            (workspace, device),
-            (app, kind, record),
-            (parsed, action),
-            founding_refusal,
-        )
+        let (device, parsed) = (&device, &parsed);
+        write_with_keys(&state, move |hosted| {
+            self.keep_record_change_locked(
+                hosted,
+                (workspace, std::sync::Arc::clone(device)),
+                (app, kind, record),
+                (parsed.clone(), action),
+                founding_refusal,
+            )
+        })
         .await
     }
 
@@ -328,7 +331,7 @@ impl Workspaces {
         (app, kind, record): (&str, Option<&str>, &str),
         (parsed, action): (Vec<AmChange>, Option<&collab_types::WorkspaceCommit>),
         founding_refusal: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> Result<(), Unkept> {
         let held = kind_of(
             &self.inner.host.surfaces,
             &self.store_of(&mut hosted),
@@ -338,14 +341,14 @@ impl Workspaces {
         );
         let (kind, founding) = match (held, kind) {
             (Some(held), _) => (held, false),
-            (None, None) => return Err(format!("{app} named no kind for a new record")),
+            (None, None) => return Err(format!("{app} named no kind for a new record").into()),
             (None, Some(kind)) => {
                 // A device that keeps the workspace for its owner admits no new record of its
                 // own: the owning device does.
                 if let Some(refusal) = founding_refusal
                     && !self.is_member(workspace).await?
                 {
-                    return Err(refusal.to_owned());
+                    return Err(refusal.into());
                 }
                 (kind.to_owned(), true)
             }
@@ -428,7 +431,7 @@ impl Workspaces {
         app: &str,
         writes: Vec<tilo_resource_store::Written>,
         action: Option<collab_types::WorkspaceCommit>,
-    ) -> Result<(), String> {
+    ) -> Result<(), Unkept> {
         match action {
             Some(action) => self
                 .keep_writes(hosted, device, app, writes, Some(action))
@@ -448,7 +451,7 @@ impl Workspaces {
         hosted: tokio::sync::OwnedMutexGuard<HostedWorkspace>,
         (device, app): (std::sync::Arc<super::super::MemberDevice>, &str),
         writes: Vec<tilo_resource_store::Written>,
-    ) -> Result<(), String> {
+    ) -> Result<(), Unkept> {
         self.keep_writes(hosted, device, app, writes, None)
             .await
             .map(drop)
@@ -528,14 +531,38 @@ impl Workspaces {
             (destination, std::sync::Arc::clone(&device)),
             (app, to),
             (&kind, target),
-            (stamp, content),
+            (stamp.clone(), content),
             (caller, author),
         )
         .await?;
-        let hosted = std::sync::Arc::clone(&source).lock_owned().await;
-        self.keep_writes(hosted, device, app, removal, None)
-            .await
-            .map(drop)
+        // Drafted again under the hold that keeps it, as the source stands then: a wait for keys
+        // lets the hold go before the removal is kept.
+        drop(removal);
+        let (device, kind, stamp) = (&device, &kind, &stamp);
+        write_with_keys(&source, move |mut hosted| {
+            let device = std::sync::Arc::clone(device);
+            let removal = Command::Remove {
+                kind: kind.clone(),
+                id: record.to_owned(),
+                stamp: stamp.clone(),
+            };
+            async move {
+                let removal =
+                    tilo_resource_store::wire::draft(&mut self.store_of(&mut hosted), removal)
+                        .map_err(|refused| refused.error.to_string())?;
+                self.would_keep(
+                    &mut hosted,
+                    (caller, author),
+                    (app, kind.as_str()),
+                    &removal,
+                )
+                .map_err(|refused| format!("{from} refuses the record leaving: {refused}"))?;
+                self.keep_writes(hosted, device, app, removal, None)
+                    .await
+                    .map(drop)
+            }
+        })
+        .await
     }
 
     /// Found `app`'s record `target` in `to`'s store as `destination` holds it, a moved record's
@@ -552,18 +579,25 @@ impl Workspaces {
         (stamp, content): (Stamp, Vec<AmChange>),
         (caller, author): (&tilo_actions::remote::Caller, [u8; 32]),
     ) -> Result<(), String> {
-        let mut hosted = std::sync::Arc::clone(&destination).lock_owned().await;
-        let founding = tilo_resource_store::wire::found(
-            &mut self.store_of(&mut hosted),
-            (kind, target),
-            collab_types::EVERY_MEMBER,
-            stamp,
-            content,
-        )
-        .map_err(|refused| refused.error.to_string())?;
-        self.would_keep(&mut hosted, (caller, author), (app, kind), &founding)
-            .map_err(|refused| format!("{to} refuses the record arriving: {refused}"))?;
-        self.keep_founded(hosted, (device, app), founding).await
+        let (device, stamp, content) = (&device, &stamp, &content);
+        write_with_keys(&destination, move |mut hosted| {
+            let device = std::sync::Arc::clone(device);
+            let (stamp, content) = (stamp.clone(), content.clone());
+            async move {
+                let founding = tilo_resource_store::wire::found(
+                    &mut self.store_of(&mut hosted),
+                    (kind, target),
+                    collab_types::EVERY_MEMBER,
+                    stamp,
+                    content,
+                )
+                .map_err(|refused| refused.error.to_string())?;
+                self.would_keep(&mut hosted, (caller, author), (app, kind), &founding)
+                    .map_err(|refused| format!("{to} refuses the record arriving: {refused}"))?;
+                self.keep_founded(hosted, (device, app), founding).await
+            }
+        })
+        .await
     }
 
     /// Found `app`'s record `id` of `kind` in `workspace`'s store as this device's person moving
@@ -581,62 +615,67 @@ impl Workspaces {
         (app, kind, id): (&str, &str, &str),
         (held, private): (&automerge::AutoCommit, bool),
     ) -> Result<bool, String> {
-        let device = self.signing_device();
+        let device = &self.signing_device();
         let state = self
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let mut hosted = std::sync::Arc::clone(&state).lock_owned().await;
-        if kind_of(
-            &self.inner.host.surfaces,
-            &self.store_of(&mut hosted),
-            app,
-            None,
-            id,
-        )
-        .is_some()
-        {
-            return Ok(false);
-        }
-        let person = tilo_actions::remote::Caller::authenticated(
-            device.cert.user_public_key,
-            device.device(),
-        );
-        let stamp = Stamp {
-            verb: tilo_resource_store::MOVE_VERB.to_owned(),
-            invoker: Stamp::by(&person.acting().by),
-            invocation: uuid::Uuid::new_v4().to_string(),
-            device: hex::encode(device.device()),
-            device_name: device.cert.device_label.clone(),
-            ..Stamp::default()
-        };
-        // Read by whom its type names, when it names anyone; else as the move asks.
-        let readers = if self.store_of(&mut hosted).reads_by_rule(kind) {
-            String::new()
-        } else if private {
-            collab_types::Readers::people([device.cert.user_public_key])
-                .ok_or("the person names no reader set")?
-                .text()
-        } else {
-            collab_types::EVERY_MEMBER.to_owned()
-        };
-        let mut moved = automerge::AutoCommit::new();
-        tilo_resource::evolution::copy_into(held, &mut moved).map_err(|error| error.to_string())?;
-        moved.commit_with(
-            automerge::transaction::CommitOptions::default().with_message(stamp.message()),
-        );
-        let content = moved.get_changes(&[]).into_iter().collect();
-        let writes = tilo_resource_store::wire::found(
-            &mut self.store_of(&mut hosted),
-            (kind, id),
-            &readers,
-            stamp,
-            content,
-        )
-        .map_err(|refused| refused.error.to_string())?;
-        self.keep_founded(hosted, (device, app), writes)
-            .await
-            .map(|()| true)
+        // Boxed: what a record's founding holds across its waits is large, and a branch's fill
+        // awaits a founding for every record it fills.
+        Box::pin(write_with_keys(&state, move |mut hosted| async move {
+            if kind_of(
+                &self.inner.host.surfaces,
+                &self.store_of(&mut hosted),
+                app,
+                None,
+                id,
+            )
+            .is_some()
+            {
+                return Ok(false);
+            }
+            let person = tilo_actions::remote::Caller::authenticated(
+                device.cert.user_public_key,
+                device.device(),
+            );
+            let stamp = Stamp {
+                verb: tilo_resource_store::MOVE_VERB.to_owned(),
+                invoker: Stamp::by(&person.acting().by),
+                invocation: uuid::Uuid::new_v4().to_string(),
+                device: hex::encode(device.device()),
+                device_name: device.cert.device_label.clone(),
+                ..Stamp::default()
+            };
+            // Read by whom its type names, when it names anyone; else as the move asks.
+            let readers = if self.store_of(&mut hosted).reads_by_rule(kind) {
+                String::new()
+            } else if private {
+                collab_types::Readers::people([device.cert.user_public_key])
+                    .ok_or("the person names no reader set")?
+                    .text()
+            } else {
+                collab_types::EVERY_MEMBER.to_owned()
+            };
+            let mut moved = automerge::AutoCommit::new();
+            tilo_resource::evolution::copy_into(held, &mut moved)
+                .map_err(|error| error.to_string())?;
+            moved.commit_with(
+                automerge::transaction::CommitOptions::default().with_message(stamp.message()),
+            );
+            let content = moved.get_changes(&[]).into_iter().collect();
+            let writes = tilo_resource_store::wire::found(
+                &mut self.store_of(&mut hosted),
+                (kind, id),
+                &readers,
+                stamp,
+                content,
+            )
+            .map_err(|refused| refused.error.to_string())?;
+            self.keep_founded(hosted, (std::sync::Arc::clone(device), app), writes)
+                .await
+                .map(|()| true)
+        }))
+        .await
     }
 
     /// Change `app`'s record `record` of `kind` in `workspace`'s store as this device writes it:
@@ -663,7 +702,8 @@ impl Workspaces {
             .map_err(|error| error.to_string())?;
         // Read, changed and kept under one hold of the workspace's copy: a second write of the
         // record from this device waits for the first, so two changes of one record are never
-        // built on the same heads and one number is never given to two changes.
+        // built on the same heads and one number is never given to two changes. Only a wait for
+        // keys this device does not hold yet lets the hold go before the changes are kept.
         let mut hosted = std::sync::Arc::clone(&state).lock_owned().await;
         let (mut doc, heads) = {
             let mut store = self.store_of(&mut hosted);
@@ -709,14 +749,23 @@ impl Workspaces {
         // Counted before it lands: a list of agents read from here on is known to be behind it
         // until it is read again.
         self.begins_write(workspace, app, record);
-        self.keep_record_change_locked(
-            hosted,
-            (workspace, self.signing_device()),
-            (app, Some(kind), record),
-            (changes, None),
-            None,
-        )
-        .await?;
+        // Keys the write needs and this device does not hold yet are waited for with the hold
+        // let go, and the changes are kept under the next one: a change of the record that came
+        // in meanwhile merges with them as another device's would.
+        let mut waits = KeyWaits::default();
+        while let Err(unkept) = self
+            .keep_record_change_locked(
+                hosted,
+                (workspace, self.signing_device()),
+                (app, Some(kind), record),
+                (changes.clone(), None),
+                None,
+            )
+            .await
+        {
+            waits.wait(unkept).await?;
+            hosted = std::sync::Arc::clone(&state).lock_owned().await;
+        }
         // Whoever follows the record hears of it by its id, as of a member's write.
         self.wrote(workspace, app, record);
         // The keys this host refuses and the person's devices are read from two records of their

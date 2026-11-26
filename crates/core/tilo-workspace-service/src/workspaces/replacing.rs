@@ -38,24 +38,20 @@ impl Workspaces {
                 tracing::debug!(%workspace, %kind, %id, "a misplaced record's app is unknown here");
                 continue;
             };
-            let writes = {
-                let mut hosted = std::sync::Arc::clone(&state).lock_owned().await;
-                let mut store = self.store_of(&mut hosted);
-                repair_writes(&mut store, &kind, &id, &invoker)
-            };
-            let writes = match writes {
-                Ok(writes) if !writes.is_empty() => writes,
-                Ok(_) => continue,
-                Err(reason) => {
-                    first.get_or_insert(reason);
-                    continue;
-                }
-            };
-            let hosted = std::sync::Arc::clone(&state).lock_owned().await;
-            if let Err(error) = self
-                .keep_writes(hosted, std::sync::Arc::clone(&device), &app, writes, None)
-                .await
-            {
+            // Drafted and kept under one hold, drafted again after a wait for keys let it go.
+            let (device, kind, id, invoker, app) = (&device, &kind, &id, &invoker, &app);
+            let repaired =
+                super::wanted_keys::write_with_keys(&state, move |mut hosted| async move {
+                    let writes = repair_writes(&mut self.store_of(&mut hosted), kind, id, invoker)?;
+                    if writes.is_empty() {
+                        return Ok(());
+                    }
+                    self.keep_writes(hosted, std::sync::Arc::clone(device), app, writes, None)
+                        .await
+                        .map(drop)
+                })
+                .await;
+            if let Err(error) = repaired {
                 first.get_or_insert(error);
             }
         }

@@ -99,20 +99,20 @@ async fn a_write_refused_at_its_keep_puts_no_frame_out() {
     // A note the workspace keeps is served.
     {
         let state = workspaces.workspace(&workspace).await.unwrap();
-        let mut hosted = state.lock().await;
-        let writes = {
-            let mut store = workspaces.store_of(&mut hosted);
-            tilo_resource_store::wire::draft(&mut store, write_record(NOTE, "kept"))
-                .map_err(|refused| refused.error.to_string())
-                .unwrap()
-        };
-        drop(hosted);
-        let hosted = std::sync::Arc::clone(&state).lock_owned().await;
-        workspaces
-            .keep_writes(hosted, std::sync::Arc::clone(&device), APP, writes, None)
-            .await
-            .map(|_| ())
-            .unwrap();
+        let (workspaces, device) = (&workspaces, &device);
+        crate::workspaces::wanted_keys::write_with_keys(&state, move |mut hosted| async move {
+            let writes = tilo_resource_store::wire::draft(
+                &mut workspaces.store_of(&mut hosted),
+                write_record(NOTE, "kept"),
+            )
+            .map_err(|refused| refused.error.to_string())?;
+            workspaces
+                .keep_writes(hosted, std::sync::Arc::clone(device), APP, writes, None)
+                .await
+                .map(|_| ())
+        })
+        .await
+        .unwrap();
     }
     let kept = served(&server, created.workspace_id, APP).await;
     assert!(kept > 0, "a write the workspace keeps is served");
@@ -149,7 +149,8 @@ async fn a_write_refused_at_its_keep_puts_no_frame_out() {
         let refused = workspaces
             .keep_writes(hosted, device, APP, writes, Some(commit))
             .await
-            .map(|_| ());
+            .map(|_| ())
+            .map_err(|refused| format!("{refused:?}"));
         let refused = refused.expect_err("the workspace refuses the write at its keep");
         assert!(
             refused.contains("another device") || refused.contains("signed by a device"),
@@ -177,24 +178,22 @@ async fn a_write_of_two_documents_notices_them_together() {
 
     let documents = {
         let state = workspaces.workspace(&workspace).await.unwrap();
-        let mut hosted = state.lock().await;
-        let writes = {
-            let mut store = workspaces.store_of(&mut hosted);
+        let (workspaces, device) = (&workspaces, &device);
+        crate::workspaces::wanted_keys::write_with_keys(&state, move |mut hosted| async move {
             let command =
                 Command::Batch(vec![write_record(NOTE, "one"), write_record(PAGE, "two")]);
-            tilo_resource_store::wire::draft(&mut store, command)
-                .map_err(|refused| refused.error.to_string())
-                .unwrap()
-        };
-        drop(hosted);
-        let documents: BTreeSet<String> = writes.iter().map(|write| write.doc.clone()).collect();
-        let hosted = std::sync::Arc::clone(&state).lock_owned().await;
-        workspaces
-            .keep_writes(hosted, device, APP, writes, None)
-            .await
-            .map(|_| ())
-            .unwrap();
-        documents
+            let writes =
+                tilo_resource_store::wire::draft(&mut workspaces.store_of(&mut hosted), command)
+                    .map_err(|refused| refused.error.to_string())?;
+            let documents: BTreeSet<String> =
+                writes.iter().map(|write| write.doc.clone()).collect();
+            workspaces
+                .keep_writes(hosted, std::sync::Arc::clone(device), APP, writes, None)
+                .await
+                .map(|_| documents)
+        })
+        .await
+        .unwrap()
     };
     let mut told = Vec::new();
     while let Ok(notice) = notices.try_recv() {

@@ -45,40 +45,44 @@ async fn write_misplaced_draft(workspaces: &Workspaces, workspace: &str) -> Resu
         .workspace(workspace)
         .await
         .map_err(|error| error.to_string())?;
-    let writes = {
-        let mut hosted = std::sync::Arc::clone(&state).lock_owned().await;
-        let mut store = workspaces.store_of(&mut hosted);
-        let stamp = tilo_resource_store::Stamp {
-            verb: "type".to_owned(),
-            // This device's write, as its own person: a device writes for no other member.
-            invoker: host_person(workspaces),
-            ..tilo_resource_store::Stamp::default()
-        };
-        let command = Command::Put {
-            kind: DRAFT.to_owned(),
-            id: "draft".to_owned(),
-            resource: Resource {
-                readers: collab_types::EVERY_MEMBER.to_owned(),
-                parent: None,
-                order: None,
-                fields: BTreeMap::from([
-                    (
-                        "subject".to_owned(),
-                        Cell::One(Value::from("Quarterly plan")),
-                    ),
-                    ("sent".to_owned(), Cell::One(Value::Bool(false))),
-                ]),
-            },
-            stamp,
-        };
-        tilo_resource_store::wire::draft(&mut store, command)
-            .map_err(|refused| refused.error.to_string())?
+    // Drafted and kept under one hold of the workspace, as every write of the device is: drafted
+    // again when the keys it needs were waited for with the hold let go.
+    let stamp = tilo_resource_store::Stamp {
+        verb: "type".to_owned(),
+        // This device's write, as its own person: a device writes for no other member.
+        invoker: host_person(workspaces),
+        ..tilo_resource_store::Stamp::default()
     };
-    let hosted = std::sync::Arc::clone(&state).lock_owned().await;
-    workspaces
-        .keep_writes(hosted, workspaces.signing_device(), APP, writes, None)
-        .await
-        .map(|_| ())
+    let command = Command::Put {
+        kind: DRAFT.to_owned(),
+        id: "draft".to_owned(),
+        resource: Resource {
+            readers: collab_types::EVERY_MEMBER.to_owned(),
+            parent: None,
+            order: None,
+            fields: BTreeMap::from([
+                (
+                    "subject".to_owned(),
+                    Cell::One(Value::from("Quarterly plan")),
+                ),
+                ("sent".to_owned(), Cell::One(Value::Bool(false))),
+            ]),
+        },
+        stamp,
+    };
+    let command = &command;
+    crate::workspaces::wanted_keys::write_with_keys(&state, move |mut hosted| async move {
+        let writes = tilo_resource_store::wire::draft(
+            &mut workspaces.store_of(&mut hosted),
+            command.clone(),
+        )
+        .map_err(|refused| refused.error.to_string())?;
+        workspaces
+            .keep_writes(hosted, workspaces.signing_device(), APP, writes, None)
+            .await
+            .map(|_| ())
+    })
+    .await
 }
 
 /// Whether `who` is answered the draft "draft", through the one read rule every host answers by.

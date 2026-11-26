@@ -10,6 +10,7 @@ use collab_types::sign_op;
 use tilo_peer_state::owner::{AppWrite, WriteRefusal};
 
 use super::Workspaces;
+use super::wanted_keys::{KeyWaits, Unkept};
 
 /// How long a phase of a write may wait before it is said while it still waits.
 const WAITED_LONG: std::time::Duration = std::time::Duration::from_secs(10);
@@ -106,20 +107,29 @@ impl Workspaces {
         let state = said_if_long("opening the workspace", self.workspace(workspace))
             .await
             .map_err(|_| WriteRefusal::Waiting(tilo_peer_state::MissingPrerequisite::Workspace))?;
-        let (envelopes, author) = {
+        let waiting = |why: String| {
+            tracing::debug!(%workspace, app, document, %why, "the write waits for its keys");
+            WriteRefusal::Waiting(tilo_peer_state::MissingPrerequisite::PersistedMls)
+        };
+        // The keys are looked up under the workspace's lock; keys this device holds none of yet
+        // are waited for with the lock let go, and the write is drafted under the next hold.
+        let mut waits = KeyWaits::default();
+        let (envelopes, author) = loop {
             let hosted = said_if_long("the workspace's lock", state.lock()).await;
             let picked = match sealed {
                 Some(_) => None,
-                None => self
-                    .sealing_keys(&hosted, app, document)
-                    .await
-                    .map_err(|why| {
-                        tracing::debug!(%workspace, app, document, %why, "the write waits for its keys");
-                        WriteRefusal::Waiting(tilo_peer_state::MissingPrerequisite::PersistedMls)
-                    })?,
+                None => match self.sealing_keys(&hosted, app, document).await {
+                    Ok(picked) => picked,
+                    Err(Unkept::Refused(why)) => return Err(waiting(why)),
+                    Err(unkept @ Unkept::Keys(_)) => {
+                        drop(hosted);
+                        waits.wait(unkept).await.map_err(waiting)?;
+                        continue;
+                    }
+                },
             };
             let sealed = sealed.or_else(|| picked.as_ref().map(|keys| &keys.keys));
-            tilo_peer_state::owner::draft_local_write(
+            break tilo_peer_state::owner::draft_local_write(
                 &hosted.peer(),
                 hosted.workspace(),
                 &device.device(),
@@ -134,7 +144,7 @@ impl Workspaces {
                     commit: commit.as_ref(),
                     now,
                 },
-            )?
+            )?;
         };
         // A write too large for one frame is committed a segment at a time, in order.
         let mut last = None;

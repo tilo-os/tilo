@@ -38,9 +38,12 @@ use super::{CollaborationError, HostedWorkspace, SystemTime, Workspaces};
 const COMPACTION_RETRY: usize = 256;
 
 use crate::documents::device_keys::{DeviceKeys, GroupKeysAnswer};
+use crate::documents::sealed::DocumentKeyAsk;
 pub(crate) use crate::documents::sealed::{
     DocumentKeys, read_document_keys, read_document_keys_for,
 };
+
+use super::wanted_keys::{Unkept, WantedKeys, looked_up};
 
 impl DocumentKeys {
     /// Seal content of the record under the channel's current epoch.
@@ -222,17 +225,20 @@ impl HostedWorkspace {
     }
 
     /// The keys of `document` of `app`'s channel when the document is sealed:
-    /// `None` for a document written in the clear.
+    /// `None` for a document written in the clear. Looked up and never waited
+    /// for, as the workspace's lock is taken here.
     ///
     /// # Errors
     ///
-    /// The document is sealed and this server's device does not take part in its
-    /// channel, or the channel's keys cannot be read.
+    /// [`Unkept::Keys`] when the document's own group holds no keys here yet:
+    /// they are asked for with the lock let go. Otherwise the document is sealed
+    /// and this server's device does not take part in its channel, or the
+    /// channel's keys cannot be read.
     pub(super) async fn document_keys(
         &self,
         app: &str,
         document: &str,
-    ) -> Result<Option<DocumentKeys>, String> {
+    ) -> Result<Option<DocumentKeys>, Unkept> {
         if !self.peer().publication().is_sealed_document(app, document) {
             return Ok(None);
         }
@@ -244,16 +250,23 @@ impl HostedWorkspace {
             .peer()
             .requires_document_keys(app, document, tilo_clock::wall())?;
         let named = self.resources.known_readers(document);
-        read_document_keys_for(
-            device,
-            self.workspace(),
-            (app, document),
-            scoped,
-            scoped,
-            named,
-        )
-        .await
-        .map(Some)
+        if scoped {
+            // A document's own group is founded by whichever of its devices first needs its keys:
+            // this host reads the document, so it opens the group, with the lock let go.
+            let ask = DocumentKeyAsk::of(device, self.workspace(), (app, document), true, named)?;
+            return looked_up(device, ask).await.map(Some);
+        }
+        Ok(Some(
+            read_document_keys_for(
+                device,
+                self.workspace(),
+                (app, document),
+                false,
+                false,
+                named,
+            )
+            .await?,
+        ))
     }
 }
 
@@ -627,11 +640,17 @@ impl Workspaces {
         record: &str,
     ) -> Result<Option<tilo_peer_state::OpenedHistory>, CollaborationError> {
         let state = self.workspace(workspace).await?;
-        let hosted = state.lock().await;
-        let keys = hosted
-            .document_keys(app, record)
-            .await
-            .map_err(CollaborationError::new)?;
+        let mut waits = super::wanted_keys::KeyWaits::default();
+        let (hosted, keys) = loop {
+            let hosted = state.lock().await;
+            match hosted.document_keys(app, record).await {
+                Ok(keys) => break (hosted, keys),
+                Err(unkept) => {
+                    drop(hosted);
+                    waits.wait(unkept).await.map_err(CollaborationError::new)?;
+                }
+            }
+        };
         let mut sealed_shut = |_: &SignedOp| Err("this host holds no keys of it".to_owned());
         let history = match &keys {
             Some(keys) => hosted
@@ -654,15 +673,18 @@ impl Workspaces {
     /// already holds in the clear stays so. `None` in a workspace it does
     /// not take part in, where records are written in the clear.
     ///
+    /// Looked up and never waited for: `workspace`'s lock is taken here.
+    ///
     /// # Errors
     ///
-    /// As [`HostedWorkspace::document_keys`], or the channel cannot be opened.
+    /// As [`HostedWorkspace::document_keys`], or the channel cannot be opened;
+    /// [`Unkept::Keys`] while it has no keys here yet.
     pub(super) async fn sealing_keys(
         &self,
         workspace: &HostedWorkspace,
         app: &str,
         document: &str,
-    ) -> Result<Option<DocumentKeys>, String> {
+    ) -> Result<Option<DocumentKeys>, Unkept> {
         let scoped = workspace
             .peer()
             .requires_document_keys(app, document, tilo_clock::wall())?;
@@ -671,16 +693,14 @@ impl Workspaces {
                 .device
                 .as_ref()
                 .ok_or("no keys are available for this document")?;
-            return read_document_keys_for(
+            let ask = DocumentKeyAsk::of(
                 device,
                 workspace.workspace(),
                 (app, document),
                 true,
-                true,
                 workspace.resources.known_readers(document),
-            )
-            .await
-            .map(Some);
+            )?;
+            return looked_up(device, ask).await.map(Some);
         }
         if !workspace.seals() || neighbour_wire::KeyScope::has_named_readers(document) {
             return workspace.document_keys(app, document).await;
@@ -691,10 +711,17 @@ impl Workspaces {
         let Some(device) = &workspace.device else {
             return workspace.document_keys(app, document).await;
         };
-        let keys = device
-            .group_keys(name, collab_types::EVERY_MEMBER, true)
+        let Ok(keys) = device
+            .group_keys(name, collab_types::EVERY_MEMBER, false)
             .await
-            .ok_or("the document is sealed and this host takes part in no channel")??;
+            .ok_or("the document is sealed and this host takes part in no channel")?
+        else {
+            return Err(Unkept::Keys(WantedKeys::new(
+                device,
+                name.to_owned(),
+                collab_types::EVERY_MEMBER.to_owned(),
+            )));
+        };
         Ok(Some(DocumentKeys::app_document(
             keys,
             name,
@@ -727,8 +754,13 @@ impl Workspaces {
         if workspace.checked_checkpoints.get(&route) == Some(&checkpoint.signature.0) {
             return Ok(());
         }
-        let Ok(Some(keys)) = workspace.document_keys(app, record).await else {
-            return Ok(());
+        let keys = match workspace.document_keys(app, record).await {
+            Ok(Some(keys)) => keys,
+            Err(Unkept::Keys(wanted)) => {
+                wanted.ask_later();
+                return Ok(());
+            }
+            Ok(None) | Err(Unkept::Refused(_)) => return Ok(()),
         };
         let Some((checkpoint, holds)) = workspace
             .peer()
@@ -826,7 +858,11 @@ impl Workspaces {
                     now,
                 ),
                 Ok(None) => continue,
-                Err(error) => Err(error),
+                Err(Unkept::Keys(wanted)) => {
+                    wanted.ask_later();
+                    Err("its keys are not here yet".to_owned())
+                }
+                Err(Unkept::Refused(error)) => Err(error),
             };
             match compaction {
                 Ok(frames) => written.extend(frames),

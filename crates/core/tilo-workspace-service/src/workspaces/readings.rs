@@ -1,9 +1,11 @@
 //! A hosted workspace as it is read without holding its lock: the replica
 //! every change is made in, the workspace's name, the keys of the device it
 //! is held on and the invitations its join log and its entry's addresses left
-//! it. A workspace's lock is held across what takes long — asking the key
-//! service, which settles a newcomer's access first, and a commit's writes
-//! — so every read that can answer from the replica alone reads it here.
+//! it. A workspace's lock is kept across a commit's writes, so every read that
+//! can answer from this copy alone reads it here. Nothing waits for keys under
+//! the lock: a write or read that needs a group's keys lets the lock go while
+//! the key service opens the group or settles its access, and does its work
+//! again after.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
