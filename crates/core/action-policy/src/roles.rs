@@ -137,6 +137,13 @@ pub const WORKSPACE_KIND: &str = "tilo.workspace";
 /// what a commenter may do.
 pub const COMMENTS_FIELD: &str = "comments";
 
+/// The app that holds what the workspace's people say about its resources: a comment on a task, a
+/// note or a mail is one of its records, made from what it is about, not a field of that
+/// resource. Writing there is commenting, so the Commenter preset covers it as it covers
+/// [`COMMENTS_FIELD`]; who may edit or delete a comment once it is said is the app's own rule
+/// (only its author).
+pub const DISCUSSION_APP: &str = "so.tilo.lang.discussion";
+
 /// The field holding reactions, wherever a model keeps them
 /// (`tilo_resource::Reactions`). Reacting is commenting's smallest form, so
 /// the Commenter preset covers it at any depth too.
@@ -391,6 +398,12 @@ pub fn comments(workspace: &str) -> TreePath {
     TreePath::workspace(workspace)
         .rest()
         .push(Level::Field, COMMENTS_FIELD)
+}
+
+/// Where the workspace's discussion lives: the comments [`DISCUSSION_APP`] keeps.
+#[must_use]
+pub fn discussion(workspace: &str) -> TreePath {
+    TreePath::workspace(workspace).app(DISCUSSION_APP)
 }
 
 /// Where reactions live in a workspace, at any depth.
@@ -798,7 +811,7 @@ impl Preset {
 /// | Role | Grants on the workspace |
 /// |---|---|
 /// | Viewer | Read: Allow |
-/// | Commenter | Read: Allow; comments, reactions: Allow (Undoable) |
+/// | Commenter | Read: Allow; comments, reactions, the discussion app: Allow (Undoable) |
 /// | Editor | Read, Undoable: Allow; Outside: Ask; governance, moderation, people's views of the layout: Deny |
 /// | Moderator | as Editor; moderation: Allow; `remove-member`, `ban`, `unban`, `restrict`, `unrestrict`, `rename`: Allow |
 /// | Owner | everything: Allow |
@@ -831,6 +844,7 @@ fn shown_role_rules(role: Role, workspace: &str) -> Vec<Rule> {
             Rule::new(workspace_node, KindSet::READ, Answer::Allow),
             Rule::new(comments(workspace), KindSet::UNDOABLE, Answer::Allow),
             Rule::new(reactions(workspace), KindSet::UNDOABLE, Answer::Allow),
+            Rule::new(discussion(workspace), KindSet::UNDOABLE, Answer::Allow),
         ],
         Role::Editor => editor_rules(workspace, Answer::Deny),
         Role::Moderator => {

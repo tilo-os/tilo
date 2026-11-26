@@ -841,3 +841,103 @@ fn drawer(view: &ViewInstance, prop: &str) -> Vec<String> {
         other => panic!("{prop} is {other:?}"),
     }
 }
+
+/// What a member whose role is Commenter may do with a task, through the actions the apps
+/// publish, as an API caller or an agent calls them: say something about it with Discussion's
+/// `comment`, made from the task, and nothing to the task itself.
+#[test]
+fn a_commenter_comments_on_a_task_and_changes_nothing_of_it() {
+    use tilo_action_policy::{MemberAccess, Role, WorkspacePolicy};
+    use tilolang_tilo::meta::MetaExt as _;
+
+    let mut policy = WorkspacePolicy::new("workspace-comments", "ada");
+    policy.members.insert("cyd".to_owned(), Role::Commenter);
+    let (ada, _) = Replica::access(
+        "ada",
+        Workspace::new(),
+        TASKS_SET,
+        Some(MemberAccess::person(policy.clone(), "ada")),
+    );
+    let task = task_titled(&ada, "Pay rent");
+    // Ada starts the task's thread: the workspace's discussion is there when Cyd answers.
+    comment(&ada, "ada", &task, "Due on the first");
+    ada.commit();
+    // Cyd's device holds a copy of the workspace as Ada left it.
+    let (cyd, _) = Replica::access(
+        "cyd",
+        ada.doc.fork(),
+        TASKS_SET,
+        Some(MemberAccess::person(policy, "cyd")),
+    );
+
+    let published = |app: &str, ty: &str, name: &str| {
+        let meta = cyd.host.package(app).unwrap().meta;
+        (meta.kind_of(ty), action(&cyd, app, name))
+    };
+    let said = |args: serde_json::Value| args.as_object().cloned().unwrap();
+
+    let (kind, comment) = published(DISCUSSION_APP, "Comments", "comment");
+    let all = cyd.root(DISCUSSION_APP).id_string();
+    cyd.carry(
+        DISCUSSION_APP,
+        &kind,
+        &comment,
+        Some(&all),
+        &said(serde_json::json!({ "text": "Paid on the first?" })),
+        None,
+        Some(&task),
+    )
+    .expect("a commenter comments on the task");
+    cyd.commit();
+    let thread: Vec<_> = cyd
+        .host
+        .store()
+        .linked(&task)
+        .unwrap()
+        .into_iter()
+        .filter(|link| link.how == LinkHow::CreatedFrom)
+        .collect();
+    assert_eq!(
+        thread.len(),
+        2,
+        "both comments are made from the task: {thread:?}"
+    );
+
+    // The task's own actions, at the address the API publishes them: what Cyd is refused, Ada
+    // does there, so the refusal is the role's and not a wrong address.
+    let on_task = task.id_string();
+    let on_the_task = |who: &Replica, name: &str, args: serde_json::Value| {
+        let (kind, id) = published(TASKS_APP, "Task", name);
+        who.carry(
+            TASKS_APP,
+            &kind,
+            &id,
+            Some(&on_task),
+            &said(args),
+            None,
+            None,
+        )
+    };
+    let renamed = on_the_task(
+        &cyd,
+        "retitle",
+        serde_json::json!({ "title": "Not theirs" }),
+    );
+    assert!(renamed.is_err(), "a commenter renames no task: {renamed:?}");
+    let checked = on_the_task(&cyd, "check", serde_json::json!({}));
+    assert!(
+        checked.is_err(),
+        "a commenter checks no task off: {checked:?}"
+    );
+    assert_eq!(
+        cyd.read(&task, "title"),
+        Value::text("Pay rent"),
+        "the task is as its owner left it"
+    );
+    on_the_task(
+        &ada,
+        "retitle",
+        serde_json::json!({ "title": "Pay the rent" }),
+    )
+    .expect("its owner renames it there");
+}
