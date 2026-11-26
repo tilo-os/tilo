@@ -1,0 +1,29 @@
+# notes-cli package manifest.
+#
+# Shape mirrors `tilo_app_package::Manifest`; the launcher's minimal shim also
+# decodes this file. Replace the placeholder publisher key when signing
+# with `tilo-tilo-app-package-cli sign`.
+
+[package]
+id      = "so.tilo.notes-cli"
+version = "0.1.0"
+kind    = "app"
+
+[publisher]
+identity  = "ed25519:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+bin  = "bin/notes"
+type = "cli"
+
+[cli]
+commands = ["notes"]

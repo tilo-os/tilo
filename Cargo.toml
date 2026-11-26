@@ -274,6 +274,7 @@ members = [
     "examples/apps/tree-browser",
     "examples/apps/virtual-list",
     "examples/packaging/hello",
+    "examples/packaging/notes-cli",
 
     # Platform
     "crates/integrations/account-probe",
@@ -351,6 +352,7 @@ members = [
     "crates/desktop/tilo-wallpapers",
 
     # Runtime
+    "crates/sdk/cli",
     "crates/vm/linux-vm-agent",
     "crates/vm/linux-vm-protocol",
     "crates/vm/linux-vm",

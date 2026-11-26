@@ -34,8 +34,8 @@ applications; `core/fs/` owns the collaborative filesystem service, and
 - `../tools/tilo-app-template-smoke`: compiles generated app code to validate the SDK templates.
 - `../tools/copy-lint`: the source scan that keeps English copy literals out of UI builders,
   run from the shell's and desktop's tests with their own allow-lists.
-- `../examples/packaging/hello`: an executable
-  packaging/SDK example used by walkthroughs and integration scripts.
+- `../examples/packaging/hello` and `../examples/packaging/notes-cli`: executable
+  packaging/SDK examples used by walkthroughs and integration scripts.
 - `core/launcher/tests/fixtures/hello`: independent launcher test fixture.
 
 Zero incoming Cargo dependencies do not imply that a crate is unused: binaries

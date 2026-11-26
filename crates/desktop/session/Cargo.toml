@@ -357,6 +357,8 @@ greetd-client = { path = "../../os/greetd-client" }
 # The host's own filesystem moves a paste depends on: a rename that never
 # overwrites a name, and the Trash a replaced name goes to.
 host-fs = { path = "../../core/host-fs" }
+# Where this device keeps its state: the root the record indexes are under.
+tilo-cli-kit = { path = "../../sdk/cli" }
 # The capture studio the session shows over the desktop, and the recorder
 # that feeds it the compositor's frames.
 tilo-capture-studio = { path = "../capture-studio" }

@@ -9057,6 +9057,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "notes-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "runtime-dylib",
+ "tilo-cli-kit",
+ "workspace-hack",
+]
+
+[[package]]
 name = "notify"
 version = "8.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -16011,6 +16022,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-cli-kit"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "tempfile",
+ "tilo-fs-client",
+ "tilo-paths",
+ "tilo-runtime-portal",
+ "tilo-test-env",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-clipboard"
 version = "0.1.0"
 dependencies = [
@@ -20242,6 +20266,7 @@ dependencies = [
  "tilo-callstream",
  "tilo-canonical-json",
  "tilo-capture-studio",
+ "tilo-cli-kit",
  "tilo-clipboard",
  "tilo-clock",
  "tilo-collab-types",
@@ -27428,6 +27453,7 @@ dependencies = [
  "tilo-capture-studio",
  "tilo-chip-design-engine",
  "tilo-chromium-blocker",
+ "tilo-cli-kit",
  "tilo-clipboard",
  "tilo-clock",
  "tilo-cloud-source",
