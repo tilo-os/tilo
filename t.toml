@@ -7903,7 +7903,7 @@ requires = ["arch=x86_64"]
 isolation = "nested"
 # What it found, not what it ran: each flow's pages, reports and consoles, and each of the stack's
 # own logs; the site it served is the web entry's laid-out context again.
-outputs = ["/target/e2e/*.log", "/target/e2e/state/logs/*.log", "/target/e2e/signin/**", "/target/e2e/boot/**", "/target/e2e/agent-setup/**", "/target/e2e/setup-resume/**", "/target/e2e/visa/**", "/target/e2e/entry/**", "/target/e2e/wait-list/**", "/target/e2e/onboarding/**"]
+outputs = ["/target/e2e/*.log", "/target/e2e/state/logs/*.log", "/target/e2e/signin/**", "/target/e2e/boot/**", "/target/e2e/agent-setup/**", "/target/e2e/setup-resume/**", "/target/e2e/visa/**", "/target/e2e/entry/**", "/target/e2e/passkey/**", "/target/e2e/wait-list/**", "/target/e2e/onboarding/**"]
 # What a failure keeps of why: every service's log, which says which of them did not answer.
 evidence = ["/target/e2e/state/logs/**"]
 timeout_secs = 1800
@@ -7911,8 +7911,9 @@ timeout_secs = 1800
 # A stranger's way into tilo.sh, end to end, on a whole stack of its own, brought up the way
 # production's manifests bring it up (test-onboarding.sh, one flow of the e2e check's): the wait
 # list and its confirmation mail, the invitation an owner sends from the workspace's wait list, the
-# workspace the link lands them in with the agent setup, a second workspace they make, and a
-# visitor with no invitation who still cannot get in. Nested, because the stack's services are sandboxed with bwrap (stack.sh).
+# workspace the link lands them in with the agent setup, the passkey that brings them back on a
+# browser that forgot the site, a second workspace they make, and a visitor with no invitation who
+# still cannot get in. Nested, because the stack's services are sandboxed with bwrap (stack.sh).
 # Its browsers are as bounded as the flow is, not as a developer's machine is: three people's pages
 # are open at once here (the operator's, the stranger's, and the browser that signs in), where the
 # supervisor's two-browser bound and ten-minute lifetime (tools/web/owned_browser.py) are one agent's

@@ -21371,6 +21371,8 @@ name = "tilo-user-identity"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "data-encoding",
+ "data-encoding-macro",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
@@ -21383,6 +21385,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-collab-types",
  "tilo-resource",
+ "tilo-seal",
  "tilo-test-env",
  "tilo-wire-frame",
  "workspace-hack",

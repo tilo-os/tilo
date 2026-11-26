@@ -280,7 +280,7 @@ test('a pasted invite or pairing link opens as itself; anything else is not one'
 test('the entry says what Tilo is and asks for an email where there is a wait list, else names the workspace', () => {
   assert.deepEqual(refusalCopy({workspace: 'Lounge', waitList: true}), {
     heading: 'One workspace for you, your team and your AI agents',
-    body: 'Notes, tasks, files and chat in one place, on all your devices. Claude Code and other agents work in it beside you, and you see everything they do. Tilo is invite-only during its early alpha: leave your email and we’ll send you an invite.',
+    body: 'Tilo is invite-only for now. Leave your email and we’ll send you an invite.',
   });
   assert.deepEqual(refusalCopy({workspace: 'Lounge'}), {heading: 'Lounge is invite-only for now',
     body: 'Ask someone in it for an invite link, then paste it here. If you are in it on another device, paste the link “Pair a new device” makes there.'});
@@ -301,7 +301,7 @@ test('both locales word the whole entry, its wait list and signing in', () => {
   const entry = [...en.keys()].filter(id => /^arrival-(entry|wait|sign-in|invite)/.test(id));
   assert.ok(entry.length >= 25, `${entry.length} entry messages`);
   for (const id of entry) assert.ok(de.has(id), `de-DE: ${id}`);
-  for (const [id, arg] of [['arrival-wait-inbox', 'email'], ['arrival-wait-listed', 'email'], ['arrival-wait-contact', 'contact']]) {
+  for (const [id, arg] of [['arrival-wait-inbox', 'email'], ['arrival-wait-listed', 'email'], ['arrival-wait-contact', 'contact'], ['arrival-sign-in-not-member', 'workspace']]) {
     for (const messages of [en, de]) assert.ok(messages.get(id).includes(`{ $${arg} }`), id);
   }
 });

@@ -46,7 +46,7 @@ final class EntryPageTests: PageCase {
         <section id="arrival-refusal"><div class="refusal-main">
           <h1 id="arrival-refusal-heading">Lounge is invite-only for now</h1>
           <p id="arrival-refusal-body">Ask someone in it for an invite link, then paste it here.</p>
-          <div class="refusal-alt">OWN<p id="arrival-sign-in">Already have a Tilo identity? <button type="button">Use a passkey</button></p><p><button id="arrival-invite-toggle" type="button">Have an invite link?</button></p></div>
+          <div class="refusal-alt">OWN<p class="refusal-ways"><button id="arrival-sign-in-open" type="button">Sign in</button> · <button id="arrival-invite-toggle" type="button">Have an invite link?</button></p></div>
         </div></section>
         <section id="arrival-failure"><div class="failure-main">
           <h1>You are no longer in Lounge</h1><p>Ask someone in it to invite you again.</p>
@@ -114,7 +114,7 @@ final class EntryPageTests: PageCase {
             Math.abs(scan.top - paste.top) < 1 && Math.abs(scan.width - paste.width) < 1,
             scan.height >= 40 && paste.left - scan.right >= 8,
             box(group().querySelector('p')).top >= scan.bottom + 8,
-            own.bottom <= box(document.getElementById('arrival-sign-in')).top - 16,
+            own.bottom <= box(document.getElementById('arrival-sign-in-open')).top - 16,
             document.documentElement.scrollWidth <= innerWidth].join(' ');
         })()
         """, "true true true true true true true")

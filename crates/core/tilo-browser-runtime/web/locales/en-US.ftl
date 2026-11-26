@@ -42,7 +42,7 @@ arrival-invite-placeholder = Paste an invite or pairing link
 arrival-invite-open = Open
 arrival-invite-not-a-link = That isn’t an invite or pairing link. Paste the whole link.
 arrival-refusal-wait-heading = One workspace for you, your team and your AI agents
-arrival-refusal-wait-body = Notes, tasks, files and chat in one place, on all your devices. Claude Code and other agents work in it beside you, and you see everything they do. Tilo is invite-only during its early alpha: leave your email and we’ll send you an invite.
+arrival-refusal-wait-body = Tilo is invite-only for now. Leave your email and we’ll send you an invite.
 arrival-wait-email = Email
 arrival-wait-placeholder = you@example.com
 arrival-wait-join = Join the wait list
@@ -67,9 +67,10 @@ arrival-wait-invalid = That doesn’t look like an email address.
 arrival-wait-too-many = Too many sign-ups from your network just now. Try again later.
 arrival-wait-full = The wait list is full for now. Please try again in a few days.
 arrival-wait-failed = That didn’t go through. Try again in a moment.
-arrival-sign-in-ask = Already have a Tilo identity?
-arrival-sign-in-agent = Sign in with your agent
-arrival-invite-toggle = Have an invite or pairing link?
+arrival-sign-in-open = Sign in
+arrival-sign-in-not-member = You’re signed in, but this identity isn’t in { $workspace } yet. Join the wait list, or ask someone in it for an invite.
+arrival-sign-in-not-member-unnamed = You’re signed in, but this identity isn’t in this workspace yet. Ask someone in it for an invite.
+arrival-invite-toggle = Have an invite link?
 
 ## The reconnect screen: the page was not let in yet and tries again
 # { $time } is how long until the next try, such as "40 s" or "2 min 05 s".

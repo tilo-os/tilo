@@ -3,7 +3,7 @@
 //!
 //! What a page needs before it holds a session rides it: the host's
 //! certificate and address (`/host`), joining a workspace, the public
-//! directory, profiles, the fetch proxy and the static
+//! directory, root envelopes and profiles, the fetch proxy and the static
 //! entry. Everything after that — certification, presence, membership,
 //! records, previews, calls — goes over iroh, as every device's does. Routes are listed in [`tilo_server_protocol::web`].
 //!
@@ -12,13 +12,13 @@
 
 mod content;
 pub(crate) mod control;
+mod envelopes;
 mod fetch;
 pub mod install;
 mod link;
 pub(crate) mod live;
 mod page;
 mod page_errors;
-mod profiles;
 #[cfg(test)]
 mod tests;
 mod tls;
@@ -234,8 +234,10 @@ struct Web {
     allowed_origins: Vec<String>,
     /// The workspaces this server serves, for their directory and entries.
     workspaces: Option<crate::workspaces::Workspaces>,
+    /// Members' root envelopes, for `/envelope`.
+    envelopes: envelopes::Envelopes,
     /// Members' profiles, for `/profile`.
-    profiles: Arc<profiles::Profiles>,
+    profiles: Arc<envelopes::Envelopes>,
     /// The fetch proxy, when [`WebConfig::fetch_proxy`] asked for one, and the
     /// tokens this host's pages ask for it.
     fetch: Option<tilo_net::proxy::host::FetchProxy>,
@@ -711,7 +713,11 @@ async fn serve_parts(parts: WebParts) -> Result<WebHandle, ServerError> {
         endpoint: Some(endpoint),
         allowed_origins: config.allowed_origins.clone(),
         workspaces: workspaces.clone(),
-        profiles: Arc::new(profiles::Profiles::new(state_root.join("profiles"))),
+        envelopes: envelopes::Envelopes::new(state_root.join("envelopes")),
+        profiles: Arc::new(envelopes::Envelopes::of(
+            envelopes::Kind::Profile,
+            state_root.join("profiles"),
+        )),
         fetch: fetch.proxy,
         grants: context.server.fetch_grants.clone(),
         content_links,
@@ -1395,8 +1401,8 @@ async fn body(
     Ok((parts, bytes))
 }
 
-/// Whether `user` is admitted to any workspace this server serves: a member
-/// here.
+/// Whether `user` is admitted to any workspace this server serves: whose
+/// envelope it keeps.
 async fn admitted_anywhere(web: &Web, user: [u8; 32]) -> bool {
     // The person this host runs for is its own before any workspace is bound.
     web.context.server.admits(user).await
@@ -1523,41 +1529,51 @@ async fn route(
             let client = client.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
             directory_entry(web, route, &bytes, client).await
         }
-        "/profile" => {
+        "/envelope" | "/profile" => {
             let now_ms = tilo_clock::unix_now_ms();
-            web.profiles
-                .publish(&bytes, now_ms, |root| admitted_anywhere(web, root))
+            let kept = if route == "/profile" {
+                &web.profiles
+            } else {
+                &web.envelopes
+            };
+            kept.publish(&bytes, now_ms, |root| admitted_anywhere(web, root))
                 .await
                 .map(|root| {
                     // A profile is what every surface showing them as an author reads: the
                     // members' pictures moved with it, and the apps' member lists read them
                     // again.
-                    tilo_identity::policy_change::announce();
-                    // A profile's name is the person's in every workspace here: each names them
-                    // by it from now on.
-                    let kept = (web.workspaces.clone(), web.profiles.kept_name(&root));
-                    if let (Some(workspaces), Some(name)) = kept {
-                        tokio::spawn(async move {
-                            workspaces
-                                .name_person_everywhere(root, &name, tilo_clock::unix_now_ns())
-                                .await;
-                        });
+                    if route == "/profile" {
+                        tilo_identity::policy_change::announce();
+                        // A profile's name is the person's in every workspace here: each names
+                        // them by it from now on.
+                        let kept = (web.workspaces.clone(), web.profiles.kept_name(&root));
+                        if let (Some(workspaces), Some(name)) = kept {
+                            tokio::spawn(async move {
+                                workspaces
+                                    .name_person_everywhere(root, &name, tilo_clock::unix_now_ns())
+                                    .await;
+                            });
+                        }
                     }
                     reply(StatusCode::NO_CONTENT, Vec::new())
                 })
                 .map_err(|refusal| {
                     let code = match refusal {
-                        profiles::Refusal::Malformed(_) => StatusCode::BAD_REQUEST,
-                        profiles::Refusal::BadSignature | profiles::Refusal::NotMember => {
+                        envelopes::Refusal::Malformed(_) => StatusCode::BAD_REQUEST,
+                        envelopes::Refusal::BadSignature | envelopes::Refusal::NotMember => {
                             StatusCode::FORBIDDEN
                         }
-                        profiles::Refusal::Stale => StatusCode::CONFLICT,
-                        profiles::Refusal::Storage => StatusCode::INTERNAL_SERVER_ERROR,
+                        envelopes::Refusal::Stale => StatusCode::CONFLICT,
+                        envelopes::Refusal::Storage => StatusCode::INTERNAL_SERVER_ERROR,
                     };
                     status(code, refusal.message())
                 })
         }
-        "/profile/fetch" => match web.profiles.answer(&bytes) {
+        "/envelope/fetch" | "/profile/fetch" => match if route == "/profile/fetch" {
+            web.profiles.answer(&bytes)
+        } else {
+            web.envelopes.answer(&bytes)
+        } {
             Some(json) => {
                 let mut response = reply(StatusCode::OK, json);
                 response.headers_mut().insert(

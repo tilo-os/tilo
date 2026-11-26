@@ -87,6 +87,8 @@ mod one_write_path;
 mod outbox_replay;
 #[path = "own_workspace.rs"]
 mod own_workspace;
+#[path = "passkey_root.rs"]
+mod passkey_root;
 #[path = "place_workspace.rs"]
 mod place_workspace;
 #[path = "plain_http.rs"]

@@ -15,7 +15,8 @@
 #      keys refuses them afterwards;
 #   7. a fresh visitor's entry, timed (TILO_SH_ENTRY_VISITS of them, 3 by
 #      default), against the Lounge as it is — seeded with `stack.sh up
-#      --seed` when TILO_SH_SEED=1.
+#      --seed` when TILO_SH_SEED=1;
+#   7b. a visitor keeps themselves with a passkey and signs in with it again.
 #
 # With TILO_SH_VM_HOST=1 it is the same stack with its VM host in it, and the
 # end of the check is the Browser of a hosted workspace (docs/hosted-browser.md),
@@ -98,7 +99,7 @@
 # separated) to chase one of them without the rest; the stack is brought up
 # either way and each step's own seconds are printed beside it.
 #
-#   check.sh --flow signin|visa|entry
+#   check.sh --flow signin|visa|entry|passkey
 #
 # runs one of those steps against a stack that is already up and named by
 # E2E_SITE, E2E_SERVER, E2E_API_URL and E2E_WORK, which is how test-e2e.sh runs
@@ -222,10 +223,24 @@ entry_visits() {
   echo "ok: $visits fresh visitors were in after ${entries[*]} ms (median $median ms)"
 }
 
+# 7b: a visitor keeps themselves with a passkey and signs in with it again.
+# The site's name is the passkey's relying party, as tilo.coffee is on
+# tilo.coffee: a browser registers none for an address, which the local site
+# was once.
+passkey_round() {
+  step '7b. a visitor keeps themselves with a passkey and signs in with it again'
+  local invitation
+  invitation=$(invite_link) || fail 'the Lounge made no invitation for the passkey visitor'
+  node "$here/integration/person.mjs" "$site" "$server" "$work/passkey" --invite "$invitation" --passkey \
+    > "$work/passkey.json" \
+    || fail "the passkey did not register or sign in (see $work/passkey)"
+  echo 'ok: a passkey registered, and signed the same visitor in again'
+}
+
 # -- one step, for a runner that keeps the stack up --------------------------
 
 if [[ ${1:-} == --flow ]]; then
-  flow=${2:?--flow names signin, visa or entry}
+  flow=${2:?--flow names signin, visa, entry or passkey}
   work=${E2E_WORK:?E2E_WORK names the work directory}"/$flow"
   site=${E2E_SITE:?E2E_SITE names the site} server=${E2E_SERVER:?E2E_SERVER names the server}
   api=${E2E_API_URL:?E2E_API_URL names the API server}
@@ -243,7 +258,8 @@ if [[ ${1:-} == --flow ]]; then
       reviewer_up
       visa_run ;;
     entry) entry_visits ;;
-    *) fail "no step $flow: signin, visa or entry" ;;
+    passkey) passkey_round ;;
+    *) fail "no step $flow: signin, visa, entry or passkey" ;;
   esac
   step "done ($flow)"
   exit 0
@@ -694,6 +710,7 @@ fi
 
 if runs_step 7; then
   entry_visits
+  passkey_round
 fi
 
 

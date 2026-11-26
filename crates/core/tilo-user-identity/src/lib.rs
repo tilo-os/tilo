@@ -78,6 +78,7 @@ pub mod image;
 pub mod projection;
 pub mod recovery_words;
 pub mod revocation;
+pub mod root_envelope;
 pub mod root_holder;
 pub mod root_statement;
 pub mod sign;

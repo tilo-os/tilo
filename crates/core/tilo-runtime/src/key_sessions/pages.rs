@@ -944,8 +944,59 @@ struct SearchRow {
     secondary: String,
     href: Option<String>,
     run: Option<RowRun>,
+    /// The action the page runs in the person's own browser, when it runs one: its key material
+    /// never reaches this host.
+    browser: Option<BrowserAction>,
     /// Whether the row stands under the apps.
     app: bool,
+}
+
+/// An action only the browser can take: the person's root lives there alone (`identity.mjs`), so
+/// keeping it with a passkey, or signing in with one, happens in the page, inside the person's
+/// press, and the host keeps no part of it.
+#[derive(Clone, Copy)]
+enum BrowserAction {
+    /// Add a passkey that wraps this browser's person, and have this host keep the envelope
+    /// their next browser fetches.
+    KeepWithPasskey,
+    /// Become, in this browser, the person a passkey kept elsewhere.
+    SignInWithPasskey,
+}
+
+impl BrowserAction {
+    /// What the page names it by (`data-browser`).
+    const fn name(self) -> &'static str {
+        match self {
+            Self::KeepWithPasskey => "keep-with-passkey",
+            Self::SignInWithPasskey => "sign-in-with-passkey",
+        }
+    }
+
+    /// What the row says, in the words the person's own actions use.
+    const fn label(self) -> &'static str {
+        match self {
+            Self::KeepWithPasskey => "Keep your name and work with a passkey",
+            Self::SignInWithPasskey => "Sign in with a passkey",
+        }
+    }
+
+    /// What the row is for, after its name.
+    const fn hint(self) -> &'static str {
+        match self {
+            Self::KeepWithPasskey => "So you come back as yourself on any browser",
+            Self::SignInWithPasskey => "Be the person you kept on another browser",
+        }
+    }
+
+    /// Whether what the person typed is about this action: its own words hold what was typed,
+    /// so the row appears as the word is typed on (`pass`, `passkey`, `sign in`).
+    fn found_by(self, typed: &str) -> bool {
+        let typed = typed.trim().to_lowercase();
+        !typed.is_empty()
+            && format!("{} {}", self.label(), self.hint())
+                .to_lowercase()
+                .contains(&typed)
+    }
 }
 
 /// The action a search row runs: the target a caller invokes, as the catalogue named it.
@@ -1052,6 +1103,7 @@ impl Search {
                         secondary: String::new(),
                         href: Some(format!("/w/{}/{name}", self.workspace_id)),
                         run: None,
+                        browser: None,
                         app: true,
                     });
                 }
@@ -1059,6 +1111,7 @@ impl Search {
             Err(_) => notes.push("The workspace's apps could not be listed here."),
         }
         if !typed.is_empty() {
+            self.browser_rows(typed);
             if self.found(typed).is_err() {
                 notes.push("The workspace's records could not be searched here.");
             }
@@ -1070,6 +1123,30 @@ impl Search {
             }
         }
         self.notes = (!notes.is_empty()).then(|| notes.join(" "));
+    }
+
+    /// The person's own identity actions `typed` is about, which only their browser holds: what
+    /// keeps it with a passkey, and what signs in with one, run in the page (`page.mjs`), inside
+    /// the person's press, and never here.
+    fn browser_rows(&mut self, typed: &str) {
+        for action in [
+            BrowserAction::KeepWithPasskey,
+            BrowserAction::SignInWithPasskey,
+        ] {
+            if !action.found_by(typed) {
+                continue;
+            }
+            let id = self.next_id();
+            self.rows.push(SearchRow {
+                id,
+                label: action.label().to_owned(),
+                secondary: action.hint().to_owned(),
+                href: None,
+                run: None,
+                browser: Some(action),
+                app: false,
+            });
+        }
     }
 
     /// The records the workspace's search finds for `typed`, each a row that opens its page.
@@ -1105,6 +1182,7 @@ impl Search {
                 secondary: field_title(name),
                 href: Some(href),
                 run: None,
+                browser: None,
                 app: false,
             });
         }
@@ -1142,6 +1220,7 @@ impl Search {
                     revision: listed.revision.clone(),
                     fields,
                 }),
+                browser: None,
                 app: false,
             });
         }
@@ -1435,14 +1514,23 @@ fn results_html(rows: &[SearchRow], notice: Option<&str>, notes: Option<&str>) -
                 )
             };
             let label = escape(&row.label);
-            let _ = match &row.href {
-                Some(href) => write!(
+            let _ = match (&row.href, row.browser) {
+                (Some(href), _) => write!(
                     out,
                     "<li><a class=\"tilo-search-row\" href=\"{}\">\
                      <span class=\"tilo-search-row-label\">{label}</span>{secondary}</a></li>",
                     escape(href),
                 ),
-                None => write!(
+                // A browser's own action: the page runs it, so it is drawn now and offered once
+                // the page can (`page.mjs`, the rows it arms).
+                (None, Some(browser)) => write!(
+                    out,
+                    "<li><button class=\"tilo-search-row\" type=\"button\" data-a=\"browser\" \
+                     data-browser=\"{}\" disabled><span class=\"tilo-search-row-label\">{label}\
+                     </span>{secondary}</button></li>",
+                    browser.name(),
+                ),
+                (None, None) => write!(
                     out,
                     "<li><button class=\"tilo-search-row\" type=\"button\" data-a=\"activate\" \
                      data-p=\"{}\"><span class=\"tilo-search-row-label\">{label}</span>\
@@ -1527,9 +1615,12 @@ color:var(--tilo-text);text-decoration:none;font-size:14px;}\
 .tilo-search-row:hover{background:var(--tilo-hover);}\
 .tilo-search-row:active{background:var(--tilo-press);}\
 .tilo-search-row:focus-visible{outline:2px solid var(--tilo-accent);outline-offset:-2px;}\
+.tilo-search-row:disabled{opacity:.55;cursor:default;}\
+.tilo-search-row:disabled:hover{background:none;}\
 .tilo-search-row-label{font-weight:500;}\
 .tilo-search-row-kind{margin-left:auto;font-size:12px;color:var(--tilo-text-tertiary);}\
 .tilo-search-note{margin:0;font-size:14px;color:var(--tilo-text-dim);}\
+.tilo-search-notice{margin:0;font-size:14px;color:var(--tilo-text);}\
 .tilo-search-form{display:flex;flex-direction:column;gap:12px;padding:16px;border-radius:12px;\
 background:var(--tilo-raised);}\
 .tilo-search-form h2{margin:0;font-size:15px;font-weight:600;}\

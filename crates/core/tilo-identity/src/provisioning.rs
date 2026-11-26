@@ -381,7 +381,7 @@ fn create_named_primary_identity(
     Ok(ProvisionOutcome::Created { pubkey_hex })
 }
 
-/// Keep a person's whole root, opened elsewhere (a person made on a page, a
+/// Keep a person's whole root, opened elsewhere (a page's root envelope, a
 /// person made by the command line), as this account's single-device
 /// identity: `<identity_dir>/primary.json`, made active, its secret in
 /// `storage`. The store is the one home of a root: nothing else keeps it.

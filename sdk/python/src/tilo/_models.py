@@ -258,7 +258,7 @@ class MintedKey:
 class Invitation:
     """An invitation into a workspace: the link that brings one person in.
 
-    Following `link` signs them in (by approving an agent)
+    Following `link` signs them in (with a passkey, or by approving an agent)
     and lands them in the workspace as `role`. No mail is sent: with an
     `email`, `sent` is false and `next` says to hand the link over.
     """

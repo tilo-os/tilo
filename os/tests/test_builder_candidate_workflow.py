@@ -110,7 +110,7 @@ class BuilderCandidates(unittest.TestCase):
         # Whole modules, never single tests: a regression added to one runs without the canary
         # knowing its name.
         self.assertEqual(peer[:2], ('tilo-session-client', 'it'))
-        modules = ('carriers', 'node_workspace', 'voice_browsers')
+        modules = ('carriers', 'passkey_root', 'node_workspace', 'voice_browsers')
         self.assertEqual(filterset_terms(peer[2]), {('test', f'{module}::') for module in modules})
         binary = (ROOT / 'crates/core/session-client/tests/it.rs').read_text()
         for module in modules:

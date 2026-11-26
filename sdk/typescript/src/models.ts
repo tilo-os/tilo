@@ -178,7 +178,7 @@ export function mintedKeyOf(raw: Record<string, unknown>): MintedKey {
 /**
  * An invitation into a workspace: the link that brings one person in.
  *
- * Following `link` signs them in (by approving an agent)
+ * Following `link` signs them in (with a passkey, or by approving an agent)
  * and lands them in the workspace as `role`. The host sends no mail: with an
  * `email`, `sent` is false and `next` says to hand the link over.
  */

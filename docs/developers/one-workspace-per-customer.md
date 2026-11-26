@@ -317,7 +317,7 @@ tilo do workspace/invitations#list -w "Applicant: Jane Doe"
 tilo do workspace/members#name name="Jane Doe" -w "Applicant: Jane Doe"   # what its people and your invitations call you
 ```
 
-Following the link signs them in to Tilo (by approving an agent) and lands them in the
+Following the link signs them in to Tilo (with a passkey, or by approving an agent) and lands them in the
 workspace as that role. No mail is sent: hand the link over yourself. From then on, the resource links your
 agent hands over open straight in the resource's app for them.
 

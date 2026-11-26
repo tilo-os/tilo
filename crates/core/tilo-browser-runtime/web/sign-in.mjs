@@ -42,7 +42,7 @@
 
 import {openDeviceKey as openStoredDeviceKey, idbStorage} from './device-key.mjs';
 import {enteredWorkspaces} from './entered-workspaces.mjs';
-import {browserIdentity, currentIdentity, keptIdentity} from './identity.mjs';
+import {browserIdentity, currentIdentity, fetchEnvelope, keptIdentity, signInWithPasskey} from './identity.mjs';
 import {identityProfile} from './identity-profile.mjs';
 
 /** The longest a grant may last: the identity model's bound, 90 days. */
@@ -394,6 +394,7 @@ const ELEMENT_IDS = {
   cancel: 'sign-in-cancel',
   signedOut: 'sign-in-signed-out',
   signedOutText: 'sign-in-signed-out-text',
+  passkey: 'sign-in-passkey',
   start: 'sign-in-start',
   copy: 'sign-in-copy',
 };
@@ -428,6 +429,8 @@ export async function startSignInPage({
   identity,
   loadRuntime = async () => (await import('./host.mjs')).loadRuntime('peer'),
   openDeviceKey = openStoredDeviceKey,
+  signIn = signInWithPasskey,
+  hosts = () => identityHosts({window, local}),
 } = {}) {
   const {document, location} = window;
   const card = elements ?? signInElements(document);
@@ -466,10 +469,10 @@ export async function startSignInPage({
   let listening = false;
   if (!(await keptIdentity({storage}))) {
     // Nobody is signed in here yet. The card says what the link asks, and
-    // offers the way in right where it is: Tilo itself in another tab. Once
-    // they are in, the card goes on to the question by itself: the link is
-    // not followed again.
-    return offerSignIn({window, card, show, tell, storage,
+    // offers the ways in right where it is: a passkey the person made on
+    // Tilo, or Tilo itself in another tab. Whichever way they come in, the
+    // card goes on to the question by itself: the link is not followed again.
+    return offerSignIn({window, card, show, tell, storage, signIn, hosts,
       words: requestWords(request, {locale, local, home}), then: askRequest});
   }
   return askRequest();
@@ -533,7 +536,7 @@ export async function startSignInPage({
           decided(false);
           show('request', false);
           show('actions', false);
-          return offerSignIn({window, card, show, tell, storage,
+          return offerSignIn({window, card, show, tell, storage, signIn, hosts,
             words: requestWords(request, {locale, local, home}), then: askRequest});
         }
         if (person.locked || !person.sign) throw new SignInLinkError(LOCKED);
@@ -556,12 +559,28 @@ export async function startSignInPage({
 }
 
 /**
- * The card of a browser with nobody signed in: the question's heading, and
- * the way in right on it. Tilo in another tab signs them in (a new person
- * starts there), and the card notices once they are in and goes on to the
- * question (`then`). The person never has to follow the link again.
+ * The hosts that may keep this person's envelope, for a passkey sign-in on
+ * the card: the site's own home host (`entry.json` beside the page) and the
+ * hosts of the workspaces this browser entered.
  */
-function offerSignIn({window, card, show, tell, storage, words, then}) {
+async function identityHosts({window, local}) {
+  const origins = enteredWorkspaces(local).map(entered => entered.origin);
+  try {
+    const response = await window.fetch(new URL('entry.json', window.location.href), {cache: 'no-cache'});
+    const home = response.ok ? (await response.json())?.home?.host?.origin : null;
+    if (typeof home === 'string') origins.unshift(home);
+  } catch { /* No site configuration: the entered hosts alone. */ }
+  return [...new Set(origins)];
+}
+
+/**
+ * The card of a browser with nobody signed in: the question's heading, and
+ * the ways in right on it. A passkey the person made on Tilo signs them in
+ * here; Tilo in another tab does too (a new person starts there), and the
+ * card notices once they are in, whichever way, and goes on to the question
+ * (`then`). The person never has to follow the link again.
+ */
+function offerSignIn({window, card, show, tell, storage, signIn, hosts, words, then}) {
   const {document} = window;
   document.documentElement.dataset.signIn = 'signed-out';
   card.heading.textContent = words.heading;
@@ -593,6 +612,33 @@ function offerSignIn({window, card, show, tell, storage, words, then}) {
   timer?.unref?.();
   window.addEventListener?.('focus', look);
 
+  const passkeys = typeof window.PublicKeyCredential === 'function' && window.navigator?.credentials?.get;
+  show('passkey', Boolean(passkeys));
+  if (card.passkey) {
+    card.passkey.textContent = 'Sign in with a passkey';
+    card.passkey.onclick = async () => {
+      card.passkey.disabled = true;
+      tell('');
+      try {
+        const origins = await hosts();
+        await signIn({fetchEnvelope: root => fetchEnvelope(root, origins), storage});
+        signedIn();
+      } catch (error) {
+        card.passkey.disabled = false;
+        // Closing the passkey prompt is the person's own answer.
+        if (error?.code === 'passkey-cancelled' || ['NotAllowedError', 'AbortError'].includes(error?.name)) return;
+        // Refused before anything was shown (`asked` in identity.mjs): the
+        // place cannot use passkeys, and the browser where they use Tilo can.
+        if (['passkeys-refused', 'passkeys-unavailable'].includes(error?.code)) {
+          tell('Passkeys can’t be used here. Open this page in the browser where you use Tilo.');
+          return;
+        }
+        tell(['no-envelope', 'not-tilo', 'no-wrap'].includes(error?.code)
+          ? 'That passkey doesn’t open a Tilo identity. Use one you made on Tilo, or open Tilo below.'
+          : 'Signing in didn’t work in this browser. Try again, or open Tilo below.');
+      }
+    };
+  }
   if (card.start) {
     card.start.textContent = 'Open Tilo';
     card.start.href = new URL('./', window.location.href).href;

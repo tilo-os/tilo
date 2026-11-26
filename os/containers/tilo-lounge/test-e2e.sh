@@ -37,6 +37,8 @@
 #                  run back, and the revoked keys are refused
 #   entry          fresh visitors' entry into the Lounge, timed (check.sh's
 #                  step 7)
+#   passkey        a visitor keeps themselves with a passkey and signs in with
+#                  it again (check.sh's step 7b)
 #   wait-list      a stranger at an invitation-only entry is kept on its wait
 #                  list and confirms through the mail (a second Lounge, whose
 #                  entry takes people by invitation: the one policy the stack
@@ -47,8 +49,10 @@
 #                  confirmation mail, the invitation the person who runs the
 #                  host sends from the workspace's own wait list and the mail it
 #                  carries, the workspace they land in and the agent set up
-#                  there; a second workspace they make; and a visitor with no
-#                  invitation, still refused (integration/onboarding.mjs)
+#                  there; the passkey that brings them back on a browser that
+#                  forgot the site, into a workspace of their own; a second
+#                  workspace they make; and a visitor with no invitation, still
+#                  refused (integration/onboarding.mjs)
 #
 # usage: test-e2e.sh BUNDLE WORK [FLOW…]
 # BUNDLE is the web entry bundle the wait list's Lounge serves
@@ -104,7 +108,7 @@ print("ok: the directory lists the Lounge, joined at its entry as an editor")
     boot) exec node "$integration/page-boot.mjs" "$site_origin" "$server_origin" "$out" ;;
     agent-setup|setup-resume)
       exec node "$integration/$flow.mjs" "$site_origin" "$server_origin" "$TILO_CLI_BIN" "$out" ;;
-    signin|visa|entry) exec bash "$tilo_sh/check.sh" --flow "$flow" ;;
+    signin|visa|entry|passkey) exec bash "$tilo_sh/check.sh" --flow "$flow" ;;
     wait-list)
       # A second Lounge, whose entry takes people by invitation: the one
       # deployment setting the stack above cannot have at once, on addresses
@@ -120,7 +124,7 @@ fi
 bundle=${1:?$usage}
 work=${2:?$usage}
 shift 2
-all=(signin directory boot agent-setup setup-resume visa entry wait-list onboarding)
+all=(signin directory boot agent-setup setup-resume visa entry passkey wait-list onboarding)
 asked=("$@")
 [[ ${#asked[@]} -gt 0 ]] || read -r -a asked <<< "${E2E_FLOWS:-${all[*]}}"
 for flow in "${asked[@]}"; do
@@ -313,7 +317,7 @@ fi
 # flow slower rather than the run shorter (measured: with nine flows and four
 # people cases at once, steps a run of three cases passes in 15-20 s ran out at
 # 45 s - a search opening, a composer showing, a call's channel).
-order=(setup-resume visa boot wait-list onboarding agent-setup entry directory)
+order=(setup-resume visa boot wait-list onboarding agent-setup entry passkey directory)
 queue=()
 for flow in "${order[@]}"; do [[ " ${parallel[*]} " == *" $flow "* ]] && queue+=("$flow"); done
 at_once=${E2E_PARALLEL:-4}

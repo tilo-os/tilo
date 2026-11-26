@@ -101,7 +101,9 @@ fn web_of_at(server: &Server, host: &Host, site: Option<&str>) -> Web {
         endpoint: None,
         allowed_origins: vec![],
         workspaces: server.workspaces().cloned(),
-        profiles: Arc::new(profiles::Profiles::new(
+        envelopes: envelopes::Envelopes::new(server.state_root().join("envelopes")),
+        profiles: Arc::new(envelopes::Envelopes::of(
+            envelopes::Kind::Profile,
             server.state_root().join("profiles"),
         )),
         fetch: None,
@@ -1465,7 +1467,7 @@ async fn a_persons_picture_is_served_at_a_public_address_until_they_replace_it()
     let body = serde_json::to_vec(&serde_json::json!({
         "profile": profile,
         "issued_at_ms": at,
-        "signature": hex::encode(root_statement::sign(&signer, at, &profile).unwrap()),
+        "signature": hex::encode(root_statement::sign(&signer, root_statement::Kind::Profile, at, &profile).unwrap()),
     }))
     .unwrap();
     web.profiles
@@ -1494,7 +1496,7 @@ async fn a_persons_picture_is_served_at_a_public_address_until_they_replace_it()
     let body = serde_json::to_vec(&serde_json::json!({
         "profile": replaced,
         "issued_at_ms": later,
-        "signature": hex::encode(root_statement::sign(&signer, later, &replaced).unwrap()),
+        "signature": hex::encode(root_statement::sign(&signer, root_statement::Kind::Profile, later, &replaced).unwrap()),
     }))
     .unwrap();
     web.profiles
