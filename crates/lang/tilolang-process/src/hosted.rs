@@ -26,7 +26,7 @@
 //!   and hears nothing.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::Write as _;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -3044,13 +3044,19 @@ impl Hosted {
     ///
     /// An answer stands while nothing it read moved ([`Answers`]): a scroll shows rows whose
     /// answers are known, and costs only the rows that came into view.
-    fn answer_what_the_window_shows(&mut self, descriptors: &mut [ActionDescriptor]) {
+    ///
+    /// `shown` is [`Instance::shown_resources`] as the caller read it this frame: reading it
+    /// builds a reference to every row the window shows, so a frame reads it once.
+    fn answer_what_the_window_shows(
+        &mut self,
+        shown: &BTreeSet<String>,
+        descriptors: &mut [ActionDescriptor],
+    ) {
         let Some(host) = self.instance.host() else {
             return;
         };
-        let shown = self.instance.shown_resources();
         self.forget_answers();
-        self.answers.make_room(&shown);
+        self.answers.make_room(shown);
         let at = self.moved();
         for descriptor in descriptors {
             if !shown.contains(&descriptor.address.resource) {
@@ -4365,8 +4371,13 @@ impl Hosted {
     /// row's actions are published on its own resource, and a resource publishes with what
     /// holds it (the document's tree). What the surface a window reads is bounded by.
     fn shown(&self) -> Vec<String> {
-        let mut out = std::collections::BTreeSet::new();
-        for id in self.instance.shown_resources() {
+        Self::holding(&self.instance.shown_resources())
+    }
+
+    /// `shown` with the resources that hold each of them ([`Self::shown`]).
+    fn holding(shown: &BTreeSet<String>) -> Vec<String> {
+        let mut out = BTreeSet::new();
+        for id in shown {
             let mut held = id.as_str();
             out.insert(id.clone());
             while let Some((parent, _)) = held.rsplit_once('/') {
@@ -4387,8 +4398,10 @@ impl Hosted {
         };
         // Nothing the surface is built from changed since the broker took it: a keystroke into
         // a field nothing published reads, and every turn that changed nothing, cost no more
-        // with ten thousand documents or items than with one.
-        let shown = self.shown();
+        // with ten thousand documents or items than with one. What the window shows is read
+        // once a frame: reading it builds a reference to each row it shows.
+        let rows = self.instance.shown_resources();
+        let shown = Self::holding(&rows);
         let inputs = surface.inputs(&shown);
         let whole = (inputs.0, inputs.1.clone(), inputs.2);
         if self.directory_from.as_ref() != Some(&whole) {
@@ -4402,11 +4415,11 @@ impl Hosted {
         {
             return;
         }
-        if self.relabel(&surface, inputs.clone()) {
+        if self.relabel(&surface, &rows, inputs.clone()) {
             return;
         }
         let _phase = tilo_resource::profiling::Phase::start("tl.host.publish");
-        let descriptors = match self.survey(&surface, &inputs, &shown) {
+        let descriptors = match self.survey(&surface, &inputs, &rows, &shown) {
             Ok(descriptors) => descriptors,
             Err(violations) => {
                 self.refuse(violations);
@@ -4440,14 +4453,15 @@ impl Hosted {
         }
     }
 
-    /// What the surface `surface` surveys into for the resources `shown` the window reaches,
-    /// from `inputs`: one read of the surface for what a window shows, and, when the window
-    /// comes back to a scene it showed before, the survey it kept of it. `Err` with the
-    /// violations that refuse the surface.
+    /// What the surface `surface` surveys into for the resources `shown` the window reaches (its
+    /// `rows` with what holds them), from `inputs`: one read of the surface for what a window
+    /// shows, and, when the window comes back to a scene it showed before, the survey it kept of
+    /// it. `Err` with the violations that refuse the surface.
     fn survey(
         &mut self,
         surface: &Rc<Surface>,
         inputs: &SurfaceInputs,
+        rows: &BTreeSet<String>,
         shown: &[String],
     ) -> Result<Vec<ActionDescriptor>, Vec<tilo_actions::ContractViolation>> {
         let key = (surface.generation, inputs.clone());
@@ -4478,7 +4492,7 @@ impl Hosted {
             return Err(violations);
         }
         let mut descriptors = tilo_actions::api::survey(&resources);
-        self.answer_what_the_window_shows(&mut descriptors);
+        self.answer_what_the_window_shows(rows, &mut descriptors);
         self.apply_document_grants(&mut descriptors);
         if self.surveyed.len() >= SURVEYED
             && let Some(oldest) = self.surveyed.keys().next().cloned()
@@ -4672,7 +4686,12 @@ impl Hosted {
     /// called there, the icon beside it and whether it can run — is read again and patched into
     /// the descriptors held here, since that is not a label and the change may have moved it (a
     /// task checked off, and `Clear done` can run now): the notebook is not read again for it.
-    fn relabel(&mut self, surface: &Rc<Surface>, inputs: SurfaceInputs) -> bool {
+    fn relabel(
+        &mut self,
+        surface: &Rc<Surface>,
+        rows: &BTreeSet<String>,
+        inputs: SurfaceInputs,
+    ) -> bool {
         let Some((from, taken)) = &self.published_from else {
             return false;
         };
@@ -4710,7 +4729,7 @@ impl Hosted {
         }
         self.directory_behind = true;
         if answered {
-            self.answer_what_the_window_shows(&mut descriptors);
+            self.answer_what_the_window_shows(rows, &mut descriptors);
             // What a document's own rules deny the person is read again with them, as a
             // surface read whole reads it.
             self.apply_document_grants(&mut descriptors);
