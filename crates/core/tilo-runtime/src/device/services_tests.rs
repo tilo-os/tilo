@@ -1095,7 +1095,7 @@ fn a_configured_port_is_the_one_the_endpoint_binds() {
     );
 
     let key = SigningKey::from_bytes(&[0x37; 32]);
-    let endpoint = listen_endpoint(&key, port).unwrap();
+    let endpoint = listen_endpoint(&key, port, None).unwrap();
     let bound: Vec<_> = endpoint
         .bound_sockets()
         .into_iter()
@@ -3496,4 +3496,53 @@ fn a_seat_takes_one_shell_link_at_a_time() {
     session
         .shell_token_for(person, seat)
         .expect("a seat whose link ended takes another");
+}
+
+/// A runtime's endpoint is reached through the server it logged in to, not number 0's relays: the
+/// server's relay resolves no name of its own, and a relay answering on this machine is asked no
+/// router for a port. A computer that logged in to nothing keeps the person's relays and their
+/// directory.
+#[test]
+fn a_runtimes_endpoint_relays_as_the_server_it_logged_in_to() {
+    let person = tilo_endpoint_reachability::EndpointRelays {
+        relays: iroh::RelayMap::empty(),
+        n0_dns: true,
+    };
+    let here: iroh::RelayUrl = "http://127.0.0.1:24106/".parse().unwrap();
+    assert!(relay_on_this_machine(&here));
+    assert!(relay_on_this_machine(
+        &"http://localhost:24106/".parse().unwrap()
+    ));
+    assert!(relay_on_this_machine(
+        &"http://[::1]:24106/".parse().unwrap()
+    ));
+    let (mode, portmapper, n0_dns) = endpoint_reach(Some(here.clone()), &person);
+    assert_eq!(mode.relay_map().urls::<Vec<_>>(), vec![here]);
+    assert!(
+        !n0_dns,
+        "the server's own relay needs no directory of number 0's"
+    );
+    assert!(
+        matches!(portmapper, iroh::endpoint::PortmapperConfig::Disabled),
+        "a relay on this machine is reached from no router"
+    );
+
+    let away: iroh::RelayUrl = "https://relay.example./".parse().unwrap();
+    assert!(!relay_on_this_machine(&away));
+    // A person who set a relay of their own: the portmapper is what a host at home keeps.
+    let person = tilo_endpoint_reachability::EndpointRelays {
+        relays: iroh::RelayMap::from(away.clone()),
+        n0_dns: true,
+    };
+    let (mode, portmapper, n0_dns) = endpoint_reach(Some(away.clone()), &person);
+    assert_eq!(mode.relay_map().urls::<Vec<_>>(), vec![away.clone()]);
+    assert!(!n0_dns);
+    assert!(
+        !matches!(portmapper, iroh::endpoint::PortmapperConfig::Disabled),
+        "a server reached through a public relay keeps the portmapper, as any host at home does"
+    );
+
+    let (mode, _, n0_dns) = endpoint_reach(None, &person);
+    assert_eq!(mode.relay_map().urls::<Vec<_>>(), vec![away]);
+    assert!(n0_dns);
 }
