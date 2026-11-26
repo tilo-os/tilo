@@ -901,6 +901,9 @@ fn workspace_tree_requests_naming_another_workspace_are_refused() {
 fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
     host::run(|host| async move {
         let workspace = host.workspace().to_owned();
+        // The agent is the person's, made in the workspace as the Assistant app makes one: its
+        // record is where the person's answers for it stand.
+        crate::language::hosted_turns::make_scout(&host).await;
         let free = host.turn_agent("scout", "Scout");
         let act = |path: &'static str, arguments: Value| {
             let free = &free;
@@ -1086,6 +1089,11 @@ fn a_file_a_message_carries_is_told_to_the_turn_and_read_as_content_from_outside
             !failed,
             "the person posts the file to their assistant: {wrote}"
         );
+
+        // The message starts one turn of the person's assistant, and its model is asked.
+        tokio::time::timeout(std::time::Duration::from_secs(90), model_asked(&scripted, 1))
+            .await
+            .expect("the message starts a turn");
 
         // The turn is told the file's name, its size and the address its content is kept under,
         // and how to read it.
