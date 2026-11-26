@@ -284,6 +284,17 @@ impl<T> Pending<T> {
         }
     }
 
+    /// Block the calling thread until the answer arrives, however long that takes. For threads
+    /// that do not drive the answer's producer.
+    pub fn wait(mut self) -> Option<T> {
+        loop {
+            match self.wait_timeout(Duration::from_secs(3600)) {
+                Ok(answer) => return answer,
+                Err(waiting) => self = waiting,
+            }
+        }
+    }
+
     /// Block the calling thread until the answer arrives or `timeout`
     /// passes. For threads that do not drive the answer's producer.
     pub fn wait_timeout(mut self, timeout: Duration) -> Result<Option<T>, Self> {

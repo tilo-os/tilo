@@ -21,9 +21,6 @@ use tilo_api::daemon::{DaemonPlace, PEER_STATUS};
 use super::presence::Presence;
 use super::services::{Daemon, RuntimeActionProvider};
 
-/// How long the person's part waits once this computer logged in with a ticket before it stops:
-/// the login's answer reaches the program that asked for it first.
-const ANSWERED: Duration = Duration::from_secs(2);
 /// How long a holder starting waits for one that is leaving to let go.
 const TAKING_OVER: Duration = Duration::from_secs(20);
 /// How long a holder that has the lock waits for the last one's stores to let go: the lock is
@@ -321,10 +318,6 @@ pub(crate) fn ending_step(
     }
 }
 
-/// How long a part that ends waits for the calls it serves to be answered before it ends: a
-/// call that named the server it starts again through is a person's, and its answer is theirs.
-const ANSWERING: Duration = Duration::from_secs(10);
-
 /// How often a step of the person's part ending looks whether the daemon was told to stop while
 /// it waits for the step.
 const ENDING_POLL: Duration = Duration::from_millis(100);
@@ -503,46 +496,70 @@ async fn serve_device(
     // A computer that logs in with a ticket while its daemon runs is another device now, perhaps
     // of another person: the person's part ends, and starts again as that device.
     let mut logged_in = daemon.logged_in();
+    if logged_in.borrow().is_some() {
+        logged_in.mark_changed();
+    }
     // A server the person's own workspace names after this part started (one they set up, or
-    // the first the copy took in) is entered through at once: the part starts again through it.
+    // the first the copy took in) is entered through at once, by this part as it runs: its
+    // stores, links and the calls it is answering stay as they are.
     let home_source = daemon.home_source();
     // Why this daemon ends, said in its log at error level whatever it is: one that ended
     // without its log saying why left the person's folders unmounted with nothing to read.
-    let (why, held) = tokio::select! {
-        Ok(device) = async { logged_in.wait_for(Option::is_some).await.map(|device| device.clone()) } => {
-            let device = device.map_or(super::Ended::Stopped, super::Ended::LoggedIn);
-            // The login's answer is the asking program's before this part stops.
-            tokio::time::sleep(ANSWERED).await;
-            ("this computer logged in with a ticket; it starts again as that device".to_owned(), device)
-        },
-        device = home_source.moved() => (
-            "its person's own workspace names a server it does not enter through yet; it starts \
-             again through it".to_owned(),
-            super::Ended::LoggedIn(Box::new(device)),
-        ),
-        () = stop.heard() => (
-            stop.signal().map_or_else(
-                || "it was told to stop".to_owned(),
-                |signal| format!("it was told to stop ({signal})"),
+    let (why, held) = loop {
+        tokio::select! {
+            Ok(()) = logged_in.changed() => {
+                let Some(device) = logged_in.borrow_and_update().clone() else { continue };
+                // A login at the person's server that leaves this computer the device it is
+                // (one that holds their root logs in there by itself) moves it there, as their
+                // workspace naming that server does. Only a login that makes it another device
+                // ends this part.
+                if daemon.is_this_device(&device) {
+                    daemon.move_to(*device);
+                    if socket.presence.current().is_some() {
+                        socket.presence.visit();
+                    }
+                    continue;
+                }
+                break (
+                    "this computer logged in with a ticket; it starts again as that device".to_owned(),
+                    super::Ended::LoggedIn(device),
+                );
+            },
+            device = home_source.moved() => {
+                tracing::info!(
+                    server = %hex::encode(device.server_cert.device_public_key),
+                    "the person's own workspace names a server this part does not enter through \
+                     yet; it enters through it from now on"
+                );
+                daemon.move_to(device);
+                if socket.presence.current().is_some() {
+                    socket.presence.visit();
+                }
+            },
+            () = stop.heard() => break (
+                stop.signal().map_or_else(
+                    || "it was told to stop".to_owned(),
+                    |signal| format!("it was told to stop ({signal})"),
+                ),
+                super::Ended::Stopped,
             ),
-            super::Ended::Stopped,
-        ),
+        }
     };
     tracing::error!("this daemon's person's part ends: {why}");
-    // The calls this part serves are answered before it ends: the one that named the server it
-    // starts again through, or placed a workspace on one, hears its answer rather than being
-    // cut by the part ending under it. A stop is not waited on: the daemon ends, and its calls
-    // with it.
-    tokio::select! {
-        answered = daemon.connections().answered(ANSWERING) => {
-            if !answered {
-                tracing::warn!(
-                    waited_ms = ANSWERING.as_millis(),
-                    "a call this part served did not answer before this part ends"
-                );
-            }
+    // Every call this part took is answered before it ends, however long it runs: the login
+    // itself, and any other call of the person's, hears its real answer rather than being cut
+    // by the part ending under it. A new call is answered at once with why it is not served
+    // here: the part that starts next may be another person's, and is never handed this one's
+    // connections. A stop is not waited on: the daemon ends, and its calls with it.
+    if matches!(held, super::Ended::LoggedIn(_)) {
+        tokio::select! {
+            () = daemon.connections().finish(
+                tilo_actions::remote::ActionCallError::unavailable(
+                    "this computer signed in as someone else",
+                ),
+            ) => {}
+            () = stop.heard() => {}
         }
-        () = stop.heard() => {}
     }
     // No agent's connection is handed here from now on: one that comes waits for the person's
     // part that starts next, or is told why it is not served.
@@ -627,7 +644,7 @@ fn first_request(stream: Stream, read: Vec<u8>, socket: &Socket, runtime: &tokio
     let mut read = first.into_bytes();
     read.extend_from_slice(reader.buffer());
     drop(reader);
-    let _handed = socket.agents.serve(stream, read, None, false);
+    socket.agents.serve(stream, read, None);
 }
 
 /// How long `tilo status` waits for the runtime to say how the peer stands before it is answered
@@ -989,11 +1006,21 @@ async fn keep_peer(daemon: Arc<Daemon>, home: PathBuf, state: PathBuf) {
             Some(tilo_api::daemon::enter::NOT_LOGGED_IN.to_owned());
         return;
     };
+    drop(account);
     let own = Arc::clone(daemon.serving());
     let login = daemon.home_source();
     let key = daemon.key().clone();
-    drop(daemon);
-    Box::pin(peer.keep(own, account, login, key)).await;
+    let daemon = Arc::downgrade(&daemon);
+    let accounts = move || -> super::peer::Accounts {
+        let daemon = daemon.upgrade();
+        Box::pin(async move {
+            match daemon {
+                Some(daemon) => Some(daemon.account().await),
+                None => None,
+            }
+        })
+    };
+    Box::pin(peer.keep(own, accounts, login, key)).await;
 }
 
 #[cfg(test)]

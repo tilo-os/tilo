@@ -1268,6 +1268,12 @@ pub struct WorkspaceHosted {
     /// server never writes the person's list itself.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kept: Vec<KeptWorkspace>,
+    /// The row the serving host signed for itself on the workspace's member list as it took the
+    /// workspace in, a device of a person the workspace has: its changes, postcard in hex. The
+    /// handing device takes the row in with the answer, so the server writes there once it is
+    /// answered. Empty when it signed none: listed already, or a server of another person.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub own_row: String,
 }
 
 /// A workspace of the person's a server keeps, as its [`HostedWorkspace`] answer names it.

@@ -55,6 +55,40 @@ pub fn answer_message<H: ActionProvider + Clone + Send + 'static>(
     frame_line(answer)
 }
 
+/// The line that answers `message` from `caller` once `provider` answers it, however long that
+/// takes: a call that still runs is never cut short. A look at how a call stands is the one
+/// answered within a bound, as unanswered past it. An answer the provider abandons is refused,
+/// as [`serve`] refuses it. A message that asks nothing is refused as `parse_error`.
+pub(crate) fn answer_whenever<H: ActionProvider + Clone + Send + 'static>(
+    provider: &H,
+    caller: &Caller,
+    message: RemoteActionMessage,
+) -> String {
+    let Some(unanswered) = refuse(&message, ActionCallError::Unanswered) else {
+        return line_refusal("parse_error", "a frame sent here asks something");
+    };
+    // A look at how a call stands is answered within the longest remote wait: asked again then,
+    // it goes on from where it was, while the call it looks at runs on.
+    let looks = matches!(message, RemoteActionMessage::Observe { .. });
+    let answer = serve(provider, caller, message)
+        .and_then(|pending| {
+            if looks {
+                pending
+                    .wait_timeout(MAX_REMOTE_WAIT.saturating_add(LOOK_SLACK))
+                    .ok()
+                    .flatten()
+            } else {
+                pending.wait()
+            }
+        })
+        .unwrap_or(unanswered);
+    frame_line(answer)
+}
+
+/// What a look at a call ([`answer_whenever`]) is given past the longest remote wait before it
+/// is answered as unanswered, for its provider to answer it itself.
+pub(crate) const LOOK_SLACK: Duration = Duration::from_secs(2);
+
 /// `message` as the line a socket writes.
 #[must_use]
 pub fn frame_line(message: RemoteActionMessage) -> String {
@@ -89,9 +123,7 @@ pub use carry::{Carry, CarryAnswer, answer_line as carry_answer_line, carry_line
 #[cfg(not(target_arch = "wasm32"))]
 pub use client::{LineClient, LinePut, ShellHeard};
 #[cfg(not(target_arch = "wasm32"))]
-pub use lines::{
-    CallLanes, Handover, Served, Take, serve_lines, serve_lines_handing, serve_lines_with,
-};
+pub use lines::{CallLanes, Ending, Take, serve_lines, serve_lines_with};
 
 #[cfg(test)]
 mod tests {

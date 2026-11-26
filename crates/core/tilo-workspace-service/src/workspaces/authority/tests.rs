@@ -1255,6 +1255,10 @@ async fn the_next_governance_change_rewrites_an_administrators_old_grant() {
 /// anyone else's by no entry. A workspace this server does not hold lets no one in, the server's
 /// own person included.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one workspace's members, each entering as the workspace lets them"
+)]
 async fn what_a_workspace_lets_a_member_this_server_carries_out() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = hosting_device();
@@ -1270,12 +1274,19 @@ async fn what_a_workspace_lets_a_member_this_server_carries_out() {
     // A device of a member enters as theirs, signing its own row: the owner's and Ada's are in
     // already, so they sign nothing. Someone the workspace does not have comes in by an
     // invitation, never this way.
-    assert!(!workspaces.enter(&workspace, (&owner, &key)).await.unwrap());
     assert!(
-        !workspaces
+        workspaces
+            .enter(&workspace, (&owner, &key))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        workspaces
             .enter(&workspace, (&ada, &ada_key))
             .await
             .unwrap()
+            .is_empty()
     );
     let (stranger_key, stranger) = guest_device();
     let refused = workspaces
@@ -1302,10 +1313,11 @@ async fn what_a_workspace_lets_a_member_this_server_carries_out() {
         .unwrap();
     let (phone_key, phone) = keyed_device_of(&cy, "Cy's phone", DeviceCapabilities::member());
     assert!(
-        workspaces
+        !workspaces
             .enter(&workspace, (&phone, &phone_key))
             .await
             .unwrap()
+            .is_empty()
     );
     assert!(
         workspaces

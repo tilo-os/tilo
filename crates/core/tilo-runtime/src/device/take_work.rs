@@ -49,6 +49,7 @@ use ed25519_dalek::SigningKey;
 use iroh::Endpoint;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService};
 use tilo_user_identity::DeviceCert;
 
@@ -137,6 +138,7 @@ fn named(workspace: &str) -> String {
 pub struct TakesWork {
     actions: ActionService,
     terminals: Box<dyn iroh::protocol::DynProtocolHandler>,
+    entering: Arc<Entering>,
 }
 
 impl TakesWork {
@@ -153,6 +155,12 @@ impl TakesWork {
     /// daemon answers the device actions on.
     pub(crate) fn actions(&self) -> ActionService {
         self.actions.clone()
+    }
+
+    /// What enters the workspaces its server places here: moved to another server when the
+    /// person's workspace names one ([`Entering::move_to`]).
+    pub(crate) fn entering(&self) -> Arc<Entering> {
+        Arc::clone(&self.entering)
     }
 
     /// The terminal streams of the shells it opened for its server, and their protocol.
@@ -222,6 +230,7 @@ pub(crate) fn action_service(
     Ok(TakesWork {
         terminals: (shells.terminals)(action_service.clone()),
         actions: action_service,
+        entering,
     })
 }
 
@@ -543,8 +552,8 @@ const KEPT_REFUSALS: usize = 64;
 pub(crate) struct Entering {
     workspaces: Arc<ServiceWorkspaces>,
     /// The server that places this member's work: the one host this member
-    /// enters a workspace for.
-    server: Server,
+    /// enters a workspace for, until the person's workspace names another.
+    server: Mutex<Server>,
     /// One enter at a time, so two requests for a workspace the member does
     /// not hold yet make one enter.
     turn: tokio::sync::Mutex<()>,
@@ -557,7 +566,7 @@ impl Entering {
     pub(crate) fn new(workspaces: Arc<ServiceWorkspaces>, server: Server) -> Self {
         Self {
             workspaces,
-            server,
+            server: Mutex::new(server),
             turn: tokio::sync::Mutex::new(()),
             refused: Refusals::default(),
         }
@@ -566,7 +575,15 @@ impl Entering {
     /// The device of the server this member serves: the one asker whose
     /// request may make it enter a workspace.
     pub(crate) fn server(&self) -> [u8; 32] {
-        self.server.device()
+        self.server.lock_recover().device()
+    }
+
+    /// Take work from `server` from now on, the one the person's workspace names now: what the
+    /// last one refused is asked of it again. A call the last one made that is still running
+    /// keeps running to its answer.
+    pub(crate) fn move_to(&self, server: Server) {
+        *self.server.lock_recover() = server;
+        self.refused.forget();
     }
 
     /// Enter `workspace`, which the server placed here from `placement`, its signed address for
@@ -614,7 +631,7 @@ impl Entering {
         placement: Option<&tilo_peer_state::join::TransportHint>,
     ) -> Result<(), String> {
         let placement = placement.ok_or("the server named no address for the workspace")?;
-        if placement.host.device_public_key != self.server.device() {
+        if placement.host.device_public_key != self.server() {
             return Err("the workspace was placed here from another device's address".into());
         }
         if self
@@ -662,6 +679,13 @@ impl Refusals {
             .map(|(_, reason)| reason.clone());
         drop(refused);
         fresh
+    }
+
+    /// Forget every refusal: they were another server's.
+    fn forget(&self) {
+        if let Ok(mut refused) = self.0.lock() {
+            refused.clear();
+        }
     }
 
     fn remember(&self, workspace: tilo_desktop_model::WorkspaceId, reason: String) {

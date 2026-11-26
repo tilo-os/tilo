@@ -35,12 +35,14 @@ pub(crate) const CLOSING: Duration = Duration::from_secs(5);
 /// This device in the workspace its login names.
 pub(crate) struct Session {
     pub(crate) device: Entered,
+    /// The server it entered through.
+    server: [u8; 32],
 }
 
 impl Session {
-    /// Whether it still serves.
-    fn serves(&self) -> bool {
-        self.device.is_live()
+    /// Whether it still serves, entered through `server`.
+    fn serves(&self, server: Option<[u8; 32]>) -> bool {
+        self.device.is_live() && server.is_none_or(|server| server == self.server)
     }
 }
 
@@ -98,7 +100,13 @@ impl Presence {
     /// cannot.
     pub(crate) async fn session(&self) -> Result<Arc<Session>, String> {
         let entering = self.entering.lock().await;
-        if let Some(session) = self.current().filter(|session| session.serves()) {
+        // A session entered through a server the person's workspace no longer names is left for
+        // one entered through the one it names now.
+        let server = self
+            .home
+            .known()
+            .map(|home| home.server_cert.device_public_key);
+        if let Some(session) = self.current().filter(|session| session.serves(server)) {
             return Ok(session);
         }
         // Its connection goes before another under the same key dials: a server keeps one
@@ -131,7 +139,10 @@ impl Presence {
                 enter::debug_why("entering the workspace", &error);
                 enter::enter_said(&error)
             })?;
-        Ok(Session { device: entered })
+        Ok(Session {
+            device: entered,
+            server: device.server_cert.device_public_key,
+        })
     }
 
     /// Close the session, waiting at most [`CLOSING`] for it to close.

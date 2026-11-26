@@ -463,7 +463,7 @@ impl Workspaces {
     /// under them: it signs its own row with `signer` on the member list held here
     /// ([`tilo_peer_state::own_admission::sign_further_device_row`]), and the workspace takes
     /// the row in as every member does ([`Self::take_own_row`]); this host signs nothing.
-    /// Whether the member list changed: a device listed already signs nothing.
+    /// Answers the row's changes: none when the device was listed already and signed nothing.
     ///
     /// A device the workspace met and took off its member list enters no more by asking: it is
     /// told it was removed, and comes back only where the workspace is handed to it again, by
@@ -481,7 +481,7 @@ impl Workspaces {
         &self,
         workspace: &str,
         (device, signer): (&DeviceCert, &dyn collab_types::signer::DeviceSigner),
-    ) -> Result<bool, CollaborationError> {
+    ) -> Result<Vec<Vec<u8>>, CollaborationError> {
         use tilo_peer_state::join_log::GovernanceMessages as _;
         let now = tilo_clock::unix_now_ns();
         self.inner
@@ -517,8 +517,7 @@ impl Workspaces {
         )
         .await
         .map_err(CollaborationError::new)?;
-        let changed = !row.is_empty();
-        if changed {
+        if !row.is_empty() {
             self.take_own_row(&mut hosted, device, &row, now)
                 .await
                 .map_err(CollaborationError::new)?;
@@ -531,7 +530,7 @@ impl Workspaces {
             // before answering, so the device's changes are decided against it.
             self.settle(&mut hosted).await?;
         }
-        Ok(changed)
+        Ok(row)
     }
 
     /// Take `device`, a device `workspace` removed, back onto its member list, signed by this

@@ -11,7 +11,6 @@
 use std::collections::BTreeMap;
 use std::io::BufReader;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use serde_json::Value;
 use tilo_actions::remote::{
@@ -254,14 +253,7 @@ impl Device {
                         };
                         Ok::<_, ActionCallError>((provider.clone(), caller))
                     };
-                    tilo_action_services::serve_lines(
-                        tree,
-                        &uploads,
-                        None,
-                        input,
-                        stream,
-                        Duration::from_secs(5),
-                    );
+                    tilo_action_services::serve_lines(tree, &uploads, None, input, stream);
                 });
             }
         });

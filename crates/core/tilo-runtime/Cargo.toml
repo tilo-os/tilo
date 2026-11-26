@@ -260,9 +260,8 @@ runtime-bundle = { package = "tilo-runtime-bundle", path = "../runtime-bundle" }
 libc.workspace = true
 # Who is on the other end of a connection: the kernel's account and process at the other end.
 tilo-peer-facts = { path = "../peer-facts" }
-# The log a daemon keeps trims, the socket it stops taking connections at, and the connections
-# a part that ends hands on, woken from their wait.
-rustix = { workspace = true, features = ["event", "fs", "net", "std"] }
+# The log a daemon keeps trims, and the socket it stops taking connections at.
+rustix = { workspace = true, features = ["fs", "net", "std"] }
 
 # The shell an app opens where Linux's shell runtime does not run: this computer's own login
 # shell, on a pty (ConPTY on Windows).

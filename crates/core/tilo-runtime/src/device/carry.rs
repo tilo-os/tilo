@@ -26,9 +26,6 @@ use tilo_socket::Stream;
 
 use super::services::Daemon;
 
-/// How long past the longest remote wait a carried frame's answer is waited for.
-const SLACK: Duration = Duration::from_secs(5);
-
 /// Who may have a connection carried, and why one that may not is refused.
 #[derive(Clone)]
 pub(crate) enum Carrying {
@@ -98,7 +95,7 @@ impl Carrying {
             }
             Ok((carried.clone(), caller.clone()))
         };
-        tilo_action_services::serve_lines(tree, &uploads, None, input, stream, SLACK);
+        tilo_action_services::serve_lines(tree, &uploads, None, input, stream);
     }
 }
 

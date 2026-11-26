@@ -437,7 +437,6 @@ mod tests {
                         None,
                         BufReader::new(stream),
                         output,
-                        std::time::Duration::ZERO,
                     );
                     let _ = left.send(());
                 });

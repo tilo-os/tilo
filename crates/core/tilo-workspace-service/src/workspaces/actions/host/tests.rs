@@ -275,6 +275,10 @@ async fn the_servers_person_creates_a_workspace_with_an_administrators_invitatio
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one flow: the person enters, lists their phone and lets the app author"
+)]
 async fn the_servers_person_enters_a_workspace_and_lets_an_app_author_it_as_actions() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = hosting_device();
@@ -340,13 +344,14 @@ async fn the_servers_person_enters_a_workspace_and_lets_an_app_author_it_as_acti
     sign_device_cert(&mut phone, &root).unwrap();
     let phone_key = phone.device_public_key;
     assert!(
-        workspaces
+        !workspaces
             .enter(
                 &created.workspace,
                 (&phone, &SigningKey::from_bytes(&[10; 32]))
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .is_empty(),
         "the phone lists itself under its person"
     );
     let entered: EnteredWorkspace =

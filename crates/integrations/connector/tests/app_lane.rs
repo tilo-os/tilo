@@ -161,7 +161,7 @@ fn serve(stream: UnixStream, lane: Arc<AppLane>, written: Arc<Mutex<UnixStream>>
             None,
             BufReader::new(stream),
             output,
-            Duration::from_secs(5),
+            None,
             Some(lane.as_ref() as &dyn tilo_action_services::CallLanes),
         );
     });

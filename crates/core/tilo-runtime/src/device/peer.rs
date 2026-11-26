@@ -32,7 +32,6 @@ use tilo_workspace_service::files;
 
 use tilo_api::daemon::folders;
 
-use super::account::Account;
 use super::serve::UNMOUNTING;
 use super::workspaces::ServiceWorkspaces;
 
@@ -74,6 +73,11 @@ struct Listed {
     /// Where it is entered, when the list names it.
     entered_at: Option<tilo_peer_state::join::TransportHint>,
 }
+
+/// The person's account at their server as it is now: `None` once the daemon that keeps it is
+/// gone, `Some(None)` while their workspace names no server.
+pub(crate) type Accounts =
+    std::pin::Pin<Box<dyn Future<Output = Option<Option<Arc<super::account::Account>>>> + Send>>;
 
 /// The workspaces this computer holds the files of, while this lives.
 pub(crate) struct Peer {
@@ -189,20 +193,30 @@ impl Peer {
         (kept, false)
     }
 
-    /// Keep the folders of the person's workspaces as `own` holds them and `account`, their
-    /// server's, lists them, for as long as this runs: each list the server answers is taken in
-    /// as it comes and the folders follow it at once, and `tilo folders` within [`PEER_LOOK`]. A
-    /// server not reached is asked again then, and the folders of what this device keeps stay
-    /// shown meanwhile.
+    /// Keep the folders of the person's workspaces as `own` holds them and their account at
+    /// their server, as `accounts` names it now, lists them, until it names none: each
+    /// list the server answers is taken in as it comes and the folders follow it at once, and
+    /// `tilo folders` within [`PEER_LOOK`]. A server not reached is asked again then, and the
+    /// folders of what this device keeps stay shown meanwhile. The account is asked for each
+    /// time, so a server the person's workspace names after this started is the one listed.
     pub(crate) async fn keep(
         self: Arc<Self>,
         own: Arc<ServiceWorkspaces>,
-        account: Arc<Account>,
+        accounts: impl Fn() -> Accounts + Send,
         login: Arc<super::home::Home>,
         key: SigningKey,
     ) {
         let person = own.device_cert().user_public_key;
         loop {
+            let Some(account) = accounts().await else {
+                return;
+            };
+            let Some(account) = account else {
+                *super::serve::NOT_IN.lock_recover() =
+                    Some(tilo_api::daemon::enter::NOT_LOGGED_IN.to_owned());
+                tokio::time::sleep(PEER_LOOK).await;
+                continue;
+            };
             match account
                 .listed(
                     &person,

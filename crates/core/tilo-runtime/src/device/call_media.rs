@@ -333,7 +333,7 @@ mod tests {
                 None,
                 reader,
                 far,
-                Duration::ZERO,
+                None,
                 Some(&lane),
             );
         });

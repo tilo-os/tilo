@@ -675,16 +675,14 @@ const GAINS_A_SERVER_TEST: &str =
 /// process ends, whatever step it is in, rather than hanging the run.
 const GAINS_A_SERVER_BOUND: Duration = Duration::from_secs(240);
 
-/// A person founded on this computer adds their own server: once it keeps their own workspace,
-/// the person's part ends and starts again through it, in the same process. The part that ended
-/// is gone (its services, links and stores let go), the one that starts shows the same folders,
-/// and an agent's call is answered by it rather than refused as not started. The daemon started
-/// afresh enters through the server too: the hand-over finished before the part ended, so the
-/// workspace still names it.
+/// A person founded on this computer logs it in at their own server: once it keeps their own
+/// workspace, the person's part enters through it as it runs. An agent connected before is still
+/// served, the same folders are shown, and a new agent's call is answered. The daemon started
+/// afresh enters through the server too: the workspace names it.
 #[test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one person's first server, from founding to a call answered after the restart, read top to bottom"
+    reason = "one person's first server, from founding to a call answered after the move, read top to bottom"
 )]
 fn a_person_gaining_a_server_is_served_through_it_at_once() {
     let Some(profile) = isolated_root(GAINS_A_SERVER_TEST) else {
@@ -695,8 +693,8 @@ fn a_person_gaining_a_server_is_served_through_it_at_once() {
     std::thread::spawn(|| {
         std::thread::sleep(GAINS_A_SERVER_BOUND);
         eprintln!(
-            "the test did not finish in {}s: the person's part did not start again through \
-             their server",
+            "the test did not finish in {}s: the person's part did not enter through their \
+             server",
             GAINS_A_SERVER_BOUND.as_secs()
         );
         // SAFETY: `_exit` ends this process at once, as the test's bound means: no destructor
@@ -729,7 +727,7 @@ fn a_person_gaining_a_server_is_served_through_it_at_once() {
         .cloned()
         .unwrap_or_default();
 
-    // The part that serves now, by what it holds: none of it may outlive the restart.
+    // The part that serves now: the one that serves after the move too.
     let first = Arc::downgrade(&running.services(Duration::from_secs(120)).unwrap());
 
     // The person's server: a device their root certifies, keeping workspaces on this machine.
@@ -750,8 +748,7 @@ fn a_person_gaining_a_server_is_served_through_it_at_once() {
         tilo_device_identity::login::LOG_IN,
         json!({ "server": line }),
     );
-    // It is taken up at once, and runs on as the person's part ends and starts again through
-    // the server: what it did shows below, as the part that starts serves the person.
+    // It is taken up at once, and the person's part enters through the server as it runs.
     assert!(
         matches!(
             logged_in,
@@ -761,41 +758,21 @@ fn a_person_gaining_a_server_is_served_through_it_at_once() {
         "the person's computer logs in at their server: {logged_in:?}"
     );
 
-    // The person's part starts again, as a part of its own.
-    let started = std::time::Instant::now();
-    let again = loop {
-        if let Ok(services) = running.services(Duration::from_secs(1))
-            && !std::ptr::eq(Arc::as_ptr(&services), first.as_ptr())
-        {
-            break Arc::downgrade(&services);
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(90),
-            "the person's part did not start again through their server"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    };
-    // The agent connected to the part that ended is told it ended: its connection closes, and
-    // its `tilo mcp` connects again, to the part that started.
-    let mut rest = String::new();
-    let read = std::io::BufReader::new(&connected).read_line(&mut rest);
+    // The person's part keeps running, and enters through the server from now on: the agent
+    // connected before the move is still served by it.
+    writeln!(
+        &connected,
+        "{}",
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+    )
+    .unwrap();
+    let mut listed = String::new();
+    let read = std::io::BufReader::new(&connected).read_line(&mut listed);
     assert!(
-        matches!(read, Ok(0)),
-        "the connection of the part that ended is still served: {read:?} {rest}"
+        matches!(read, Ok(n) if n > 0) && listed.contains("\"id\":2"),
+        "the agent connected before the move is not served after it: {read:?} {listed}"
     );
     drop(connected);
-    // The part that ended let go of its services: nothing of it answers or reaches out as this
-    // device any more. The endpoint they ran on outlives it, taken by the part that started.
-    let started = std::time::Instant::now();
-    while first.strong_count() > 0 {
-        assert!(
-            started.elapsed() < Duration::from_secs(30),
-            "the part that ended is still held ({} times)",
-            first.strong_count(),
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
-
     // It serves the device through the server, with every folder it showed before shown again.
     let mut status = wait_for_the_person_serving(&socket);
     let started = std::time::Instant::now();
@@ -830,7 +807,12 @@ fn a_person_gaining_a_server_is_served_through_it_at_once() {
         "the person's part answers the agent: {init}"
     );
     drop(agent);
-    assert!(again.strong_count() > 0, "the part that started still runs");
+    let now = running.services(Duration::from_secs(1)).unwrap();
+    assert!(
+        std::ptr::eq(Arc::as_ptr(&now), first.as_ptr()),
+        "the person's part started again for the move"
+    );
+    drop(now);
     running.stop().unwrap();
 
     // The daemon started afresh, the person's own workspace naming their server from its
@@ -1294,26 +1276,35 @@ fn a_person_names_their_servers_from_the_computer_they_were_just_founded_on() {
     drop(environment);
 }
 
-const ANSWERED_BEFORE_RESTART_TEST: &str = "device::founding_tests::a_call_naming_the_persons_server_is_answered_before_its_part_starts_again";
+const MOVE_TEST: &str =
+    "device::founding_tests::a_move_to_the_persons_server_keeps_their_part_and_its_calls";
 
-/// How long the whole of [`ANSWERED_BEFORE_RESTART_TEST`] may take: past it the test fails and
-/// its process ends, whatever step it is in, rather than hanging the run.
-const ANSWERED_BEFORE_RESTART_BOUND: Duration = Duration::from_secs(240);
+/// How long the whole of [`MOVE_TEST`] may take: past it the test fails and its process ends,
+/// whatever step it is in, rather than hanging the run.
+const MOVE_BOUND: Duration = Duration::from_secs(240);
 
-/// A call that names the person's server in their own workspace ends the person's part, which
-/// starts again through it. The call is answered first: the program that placed the server hears
-/// what became of it, rather than the part ending under the call and cutting its answer.
+/// How long the call that spans the move runs.
+const SPANNING: Duration = Duration::from_secs(20);
+
+/// A call that names the person's server in their own workspace moves this computer to it, while
+/// its person's part keeps running: a call that was running across the move hears its own
+/// answer, a call asked during it is answered at once, and from then on the part enters through
+/// the server the call named.
 #[test]
-fn a_call_naming_the_persons_server_is_answered_before_its_part_starts_again() {
-    let Some(profile) = isolated_root(ANSWERED_BEFORE_RESTART_TEST) else {
+#[expect(
+    clippy::too_many_lines,
+    reason = "one move, from the call that spans it to the server entered through, read top to \
+              bottom"
+)]
+fn a_move_to_the_persons_server_keeps_their_part_and_its_calls() {
+    let Some(profile) = isolated_root(MOVE_TEST) else {
         return;
     };
     std::thread::spawn(|| {
-        std::thread::sleep(ANSWERED_BEFORE_RESTART_BOUND);
+        std::thread::sleep(MOVE_BOUND);
         eprintln!(
-            "the test did not finish in {}s: the call that named the person's server was not \
-             answered",
-            ANSWERED_BEFORE_RESTART_BOUND.as_secs()
+            "the test did not finish in {}s: a call across the move was not answered",
+            MOVE_BOUND.as_secs()
         );
         // SAFETY: `_exit` ends this process at once, as the test's bound means: no destructor
         // of the step that hung runs, and 101 is the status a failed test ends with.
@@ -1336,10 +1327,66 @@ fn a_call_naming_the_persons_server_is_answered_before_its_part_starts_again() {
         .wait_for_person(Duration::from_secs(120))
         .expect("the person's services run");
     wait_for_the_person_part(&socket);
-    let first = {
-        let services = running.services(Duration::from_secs(120)).unwrap();
-        Arc::downgrade(&services)
+    let first = Arc::downgrade(&running.services(Duration::from_secs(120)).unwrap());
+
+    // An agent's watch of this computer's location that runs past the move, on one connection:
+    // each call is held until something changes or its wait runs out, and the next goes on from
+    // the cursor it answered. Who is here changes with the move (the person's devices are then
+    // present through their server), which answers the call it falls in; the watch goes on until
+    // its whole time has run, and its last call is answered by running out its wait.
+    let (agent, init) = agent_initialized(&socket);
+    assert_eq!(
+        init["result"]["serverInfo"]["name"], "tilo-runtime",
+        "the person's part answers the agent: {init}"
+    );
+    let watch = move |id: u64, cursor: Option<&str>, wait: Duration| {
+        let mut arguments = json!({"path": "location/Location",
+                                   "wait_ms": u64::try_from(wait.as_millis()).unwrap()});
+        if let Some(cursor) = cursor {
+            arguments["cursor"] = json!(cursor);
+        }
+        let mut writing = &agent;
+        writeln!(
+            writing,
+            "{}",
+            json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {
+                "name": "tilo_watch", "arguments": arguments}})
+        )
+        .unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(&agent)
+            .read_line(&mut line)
+            .expect("the watch is answered");
+        let answered: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(answered["id"], id, "{answered}");
+        assert!(
+            answered["result"].is_object() && answered["result"]["isError"] != true,
+            "a watch across the move is answered as it would be without one: {answered}"
+        );
+        answered
     };
+    let mut cursor =
+        watch(2, None, Duration::from_secs(1))["result"]["structuredContent"]["cursor"]
+            .as_str()
+            .expect("a watch answers a cursor")
+            .to_owned();
+    let spanning = std::thread::spawn(move || {
+        let asked = std::time::Instant::now();
+        let mut answers = Vec::new();
+        for id in 3.. {
+            let left = SPANNING.saturating_sub(asked.elapsed());
+            let answered = watch(id, Some(&cursor), left.max(Duration::from_millis(1)));
+            let content = &answered["result"]["structuredContent"];
+            cursor = content["cursor"].as_str().expect("a cursor").to_owned();
+            let ran_out = content["events"].as_array().is_some_and(Vec::is_empty);
+            answers.push(answered.to_string());
+            if ran_out && asked.elapsed() >= SPANNING.saturating_sub(Duration::from_secs(1)) {
+                break;
+            }
+        }
+        (asked.elapsed(), answers)
+    });
+
     // A server of the person's keeps their own workspace from now on.
     let (serving, _state, server, line) = the_persons_server(0x6c);
     let person = tilo_identity::store::load_from_path(
@@ -1355,7 +1402,7 @@ fn a_call_naming_the_persons_server_is_answered_before_its_part_starts_again() {
         &socket,
         &workspace,
         "server.add",
-        json!({"host": line}),
+        json!({"host": &line}),
         60_000,
     )
     .expect("the call that named the person's server is answered");
@@ -1363,21 +1410,57 @@ fn a_call_naming_the_persons_server_is_answered_before_its_part_starts_again() {
         matches!(named, tilo_actions::remote::ReceiptStatus::Completed { .. }),
         "the person's server keeps their workspace: {named:?}"
     );
-    // The part starts again through the server the call named.
+
+    // The part enters through the server the call named, as it runs.
+    let placed: tilo_server_protocol::web::PageHost = serde_json::from_str(&line).unwrap();
+    let server_cert = tilo_user_identity::canonical::canonical_bytes(&placed.server_cert)
+        .map(hex::encode)
+        .unwrap();
     let started = std::time::Instant::now();
-    let again = loop {
-        if let Ok(services) = running.services(Duration::from_secs(1))
-            && !std::ptr::eq(Arc::as_ptr(&services), first.as_ptr())
-        {
-            break services;
+    loop {
+        let who = ask(&socket, &json!({"native": "account#who"}));
+        if who["home"]["server_cert"] == server_cert {
+            break;
         }
         assert!(
-            started.elapsed() < Duration::from_secs(90),
-            "the person's part did not start again through the server the call named"
+            started.elapsed() < Duration::from_secs(60),
+            "the person's part does not enter through the server the call named: {who}"
         );
         std::thread::sleep(Duration::from_millis(50));
-    };
-    drop(again);
+    }
+    assert!(
+        !spanning.is_finished(),
+        "the watch across the move ended before the move was made"
+    );
+
+    // A call asked during the move is answered at once, by the same part.
+    let asked = std::time::Instant::now();
+    let (during, init) = agent_initialized(&socket);
+    assert_eq!(
+        init["result"]["serverInfo"]["name"], "tilo-runtime",
+        "the person's part answers an agent during the move: {init}"
+    );
+    assert!(
+        asked.elapsed() < Duration::from_secs(5),
+        "a call during the move waits for nothing: {:?}",
+        asked.elapsed()
+    );
+    drop(during);
+
+    // The watch across the move is answered on its one connection until its whole time ran.
+    let (took, answers) = spanning.join().unwrap();
+    assert!(
+        took >= SPANNING.saturating_sub(Duration::from_secs(1)),
+        "the watch ran its whole time: {took:?}: {answers:?}"
+    );
+
+    // No part started again: the one that served before the move serves after it.
+    let now = running.services(Duration::from_secs(1)).unwrap();
+    assert!(
+        std::ptr::eq(Arc::as_ptr(&now), first.as_ptr()),
+        "the person's part started again for the move"
+    );
+    drop(now);
     running.stop().unwrap();
     serving.block_on(server.shutdown());
     drop(environment);

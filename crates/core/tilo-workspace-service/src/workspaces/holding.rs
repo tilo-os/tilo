@@ -301,6 +301,7 @@ impl Workspaces {
         (
             TransportHint,
             Vec<tilo_server_protocol::workspaces::KeptWorkspace>,
+            Vec<Vec<u8>>,
         ),
         String,
     > {
@@ -375,16 +376,20 @@ impl Workspaces {
                     .any(|member| member.root() == Some(person) && !member.removed)
             });
         drop(hosted);
-        if theirs {
+        // The row goes back with the answer: the device that handed the workspace over takes it
+        // in at once, rather than waiting for it over a link.
+        let row = if theirs {
             let host = &self.inner.host;
             self.enter(&workspace, (&host.cert, &host.key))
                 .await
-                .map_err(|error| error.to_string())?;
-        }
+                .map_err(|error| error.to_string())?
+        } else {
+            Vec::new()
+        };
         let kept = self
             .kept_for_person_at_hand_over(&workspace, holds_keys)
             .await;
-        Ok((hint, kept))
+        Ok((hint, kept, row))
     }
 
     /// The hand-over's governance, admitted: [`replica`] of the bootstrap

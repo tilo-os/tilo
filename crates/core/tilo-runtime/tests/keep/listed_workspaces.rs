@@ -100,12 +100,13 @@ async fn create_and_enter(server: &Server, device: &TestDevice, name: &str) -> W
     // The device lists itself as its owner's, signing its own row: the host
     // signs nothing for it.
     assert!(
-        server
+        !server
             .workspaces()
             .unwrap()
             .enter(&created.workspace.workspace, (&device.cert, &device.sk))
             .await
-            .unwrap(),
+            .unwrap()
+            .is_empty(),
         "the device lists itself as the workspace's owner's"
     );
     created.workspace

@@ -163,6 +163,8 @@ pub struct Daemon {
     cert: DeviceCert,
     /// The person's account at their server, once [`Self::home`] names it.
     account: Mutex<Option<Arc<super::account::Account>>>,
+    /// What enters the workspaces the server this member takes work from places here.
+    entering: Option<Arc<take_work::Entering>>,
     /// Tilo's API as this device, once a caller needed it: one, so an invocation of the
     /// account's begun on one connection is followed on the next.
     api: std::sync::OnceLock<Arc<tilo_api::direct::Direct>>,
@@ -1629,6 +1631,28 @@ impl Daemon {
         Arc::clone(&self.home)
     }
 
+    /// Whether `device` is this computer as it is, logged in somewhere else: the device its own
+    /// certificate makes it, which a login with a ticket never answers.
+    pub(crate) fn is_this_device(&self, device: &tilo_device_identity::login::Device) -> bool {
+        device.cert.device_public_key == self.cert.device_public_key
+            && device.cert.user_public_key == self.cert.user_public_key
+            && device.cert.signature == self.cert.signature
+    }
+
+    /// Enter the person's workspaces through `device`, the server their own workspace names now,
+    /// while this part keeps running: its stores, links and calls stay as they are. The work
+    /// this member takes comes from that server from now on, and the person's account and this
+    /// computer's presence are reached there next time they are asked for.
+    pub(crate) fn move_to(&self, device: tilo_device_identity::login::Device) {
+        if let Some(entering) = &self.entering
+            && let Some(server) = take_work::Server::from_login(Some(&device))
+        {
+            entering.move_to(server);
+        }
+        self.home.enter_through(device);
+        self.account.lock_recover().take();
+    }
+
     /// The device's key.
     pub(crate) fn key(&self) -> &SigningKey {
         &self.key
@@ -2072,9 +2096,9 @@ impl Daemon {
         &self.agents
     }
 
-    /// The connections this part of the daemon serves: each is handed on or closed when it ends
-    /// ([`crate::daemon::Connections::hand_over`]), so its clients reach the part that starts
-    /// next rather than being answered by this one's services after they ended.
+    /// The connections this part of the daemon serves: each is closed when it ends
+    /// ([`crate::daemon::Connections::end`]), so its clients connect again to the part that
+    /// starts next rather than being answered by this one's services after they ended.
     pub(crate) fn connections(&self) -> &Arc<crate::daemon::Connections> {
         &self.connections
     }
@@ -2405,6 +2429,7 @@ impl Daemon {
         let taking = take_work.is_some();
         let take_work =
             take_work_action_service(root, &workspaces, take_work, &replica_slot, stage)?;
+        let entering = take_work.as_ref().map(take_work::TakesWork::entering);
         // The one action service the daemon's router answers the device actions on: the work
         // this member takes from its server when it takes any, else its workspaces'. A ticket's
         // certify call is admitted on it while a computer asks.
@@ -3080,6 +3105,7 @@ impl Daemon {
             key: identity.key.clone(),
             cert: identity.cert,
             account: Mutex::new(None),
+            entering,
             api: std::sync::OnceLock::new(),
             shell_dispatch: Arc::clone(&shell_dispatch),
             agents: super::serve::Agents::default(),

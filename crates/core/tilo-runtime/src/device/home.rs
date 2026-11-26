@@ -106,6 +106,12 @@ impl Home {
         Some(self.found.lock_recover().get_or_insert(found).clone())
     }
 
+    /// Enter through `device` from now on: the server the person's workspace names now
+    /// ([`Self::moved`]).
+    pub(crate) fn enter_through(&self, device: Device) {
+        *self.found.lock_recover() = Some(device);
+    }
+
     /// The device this home knows it enters through, without reading the copy for it.
     pub(crate) fn known(&self) -> Option<Device> {
         self.found.lock_recover().clone()

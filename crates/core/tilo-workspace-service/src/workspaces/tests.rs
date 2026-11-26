@@ -263,13 +263,14 @@ async fn an_entry_cut_off_before_its_settle_is_settled_by_the_next() {
     );
 
     assert!(
-        !workspaces
+        workspaces
             .enter(
                 &created.workspace,
                 (&page, &SigningKey::from_bytes(&[9; 32]))
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .is_empty(),
         "the device is admitted already"
     );
     assert!(

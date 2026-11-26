@@ -199,7 +199,7 @@ fn line_to(control: &'static ControlLine) -> LineClient {
             None,
             input,
             daemon,
-            Duration::from_secs(5),
+            None,
             Some(&shells),
         );
     });

@@ -254,8 +254,15 @@ impl Computer {
             cert.clone(),
             Some(login.clone()),
         ));
-        let keeping =
-            tokio::spawn(Arc::clone(&peer).keep(Arc::clone(&own), account, login, key.clone()));
+        let keeping = tokio::spawn(Arc::clone(&peer).keep(
+            Arc::clone(&own),
+            move || -> crate::device::peer::Accounts {
+                let account = Arc::clone(&account);
+                Box::pin(async move { Some(Some(account)) })
+            },
+            login,
+            key.clone(),
+        ));
         Self { own, peer, keeping }
     }
 

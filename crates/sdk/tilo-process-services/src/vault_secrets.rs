@@ -301,7 +301,6 @@ mod tests {
                 None,
                 BufReader::new(far),
                 output,
-                Duration::ZERO,
             );
         });
         VaultStore::over(

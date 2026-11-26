@@ -26,9 +26,6 @@ use tilo_actions::remote::{
 use super::services::Daemon;
 use super::unclaimed::DeviceOnly;
 
-/// How long past the longest remote wait a frame's answer is waited for.
-const SLACK: Duration = Duration::from_secs(5);
-
 /// The tree a connection's frames reach.
 type Tree = Arc<dyn ActionProvider + Send + Sync>;
 
@@ -231,34 +228,21 @@ impl Frames {
     }
 
     /// Answer `stream`'s frames, `first` and then each line `input` reads, until it ends
-    /// ([`tilo_action_services::serve_lines`]), each in the workspace it names: admitted there once, on its
-    /// first frame. `answering`, when the part counts it, is the call the connection's first
-    /// answer is: a part that ends waits for that answer, never for the connection a shell
-    /// keeps open after it.
-    pub(crate) fn serve(
-        &self,
-        stream: Stream,
-        first: &[u8],
-        input: impl BufRead,
-        answering: Option<crate::daemon::AnsweringCall>,
-    ) {
-        let _served = self.serve_handing(stream, first, input, answering, None);
-    }
-
-    /// [`Self::serve`], handing the connection on once `handover` says the part that serves it
-    /// ends ([`tilo_action_services::serve_lines_handing`]).
-    #[allow(
+    /// ([`tilo_action_services::serve_lines`]), each in the workspace it names: admitted there
+    /// once, on its first frame. `ending`, when the part serves the connection, counts each call
+    /// it answers until its answer (a part that ends waits for those, never for the connection a
+    /// shell keeps open after them) and says when the part takes no new call.
+    #[expect(
         clippy::too_many_lines,
-        reason = "one connection's lanes and its serving are read in one place"
+        reason = "one connection's lanes beside the action wire, each named where it is served"
     )]
-    pub(crate) fn serve_handing<R: BufRead>(
+    pub(crate) fn serve(
         &self,
         mut stream: Stream,
         first: &[u8],
-        input: R,
-        answering: Option<crate::daemon::AnsweringCall>,
-        handover: Option<&dyn tilo_action_services::Handover>,
-    ) -> tilo_action_services::Served<R> {
+        input: impl BufRead,
+        ending: Option<&dyn tilo_action_services::Ending>,
+    ) {
         // The tree's actions run their steps on the process's runtime, as they do for MCP.
         let _runtime = tilo_rt::app().handle().enter();
         let own = match (self.tree)(None) {
@@ -270,7 +254,7 @@ impl Frames {
                     "{}",
                     tilo_action_services::line_refusal("unavailable", &why.to_string())
                 );
-                return tilo_action_services::Served::Ended;
+                return;
             }
         };
         let trees = Arc::clone(&self.tree);
@@ -369,21 +353,17 @@ impl Frames {
             presence: presence.as_ref(),
             shells,
         });
-        tilo_action_services::serve_lines_handing(
+        tilo_action_services::serve_lines_with(
             in_workspace,
             &self.uploads,
             Some(first.to_vec()),
             input,
-            AnsweredOnce {
-                inner: stream,
-                answering,
-            },
-            SLACK,
+            stream,
+            ending,
             lanes
                 .as_ref()
                 .map(|lanes| lanes as &dyn tilo_action_services::CallLanes),
-            handover,
-        )
+        );
     }
 }
 
@@ -453,29 +433,6 @@ impl Drop for Frames {
             // Nor is the device still in a call it joined, or capturing for it.
             media.disconnect();
         }
-    }
-}
-
-/// A connection's answer, counted as the call the part serves until its first bytes are out: what
-/// a part that ends waits for is the call, not the connection a client keeps open after it.
-struct AnsweredOnce<W> {
-    inner: W,
-    answering: Option<crate::daemon::AnsweringCall>,
-}
-
-impl<W: std::io::Write> std::io::Write for AnsweredOnce<W> {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let written = self.inner.write(bytes)?;
-        if written > 0 {
-            self.answering.take();
-        }
-        Ok(written)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        let flushed = self.inner.flush();
-        self.answering.take();
-        flushed
     }
 }
 

@@ -464,6 +464,15 @@ pub(super) fn forget_member(path: &Path) -> Result<(), String> {
     }
 }
 
+/// Whether `peer`'s governance names `own` among the devices keeping the workspace: a copy it
+/// holds as itself, handed to it or made here, never a disk copied from another device.
+fn keeps_itself(peer: &StatePeer, own: &[u8; 32]) -> bool {
+    peer.governance()
+        .keeping_devices()
+        .iter()
+        .any(|hint| hint.host.device_public_key == *own)
+}
+
 /// Keep `hint`, the address of the device `path`'s member copy syncs with,
 /// beside its workspace.
 fn keep_member(path: &Path, hint: &TransportHint) -> Result<(), String> {
@@ -993,6 +1002,14 @@ impl Workspaces {
         let mut theirs = false;
         if let Some(held) = held {
             let mut hosted = held.lock().await;
+            // A copy the workspace names this device as keeping is its own: it holds the
+            // workspace, and joining it through another holder takes nothing in. The runs
+            // admitted to it go on, and no member copy replaces it.
+            if hosted.member.is_none()
+                && keeps_itself(&hosted.peer(), &self.inner.host.cert.device_public_key)
+            {
+                return Ok(workspace);
+            }
             // A disk copied from the machine that serves this workspace kept the workspace as
             // that machine does, and served it here while no link to the machine reached this
             // one. The machine serving it answered this device, so this machine holds the
@@ -1315,7 +1332,8 @@ impl Workspaces {
             .any(|cert| cert.device_public_key == own)
     }
 
-    /// The workspaces held here whose governance names no certificate of this device, each with
+    /// The workspaces held here whose governance names no certificate of this device, nor this
+    /// device among those keeping them, each with
     /// where the device serving it is reached: a machine copied from another holds them as the
     /// device it was copied from, and enters each again as itself
     /// ([`Self::hold_as_members`]).
@@ -1341,6 +1359,12 @@ impl Workspaces {
                 .iter()
                 .any(|cert| cert.device_public_key == own)
             {
+                continue;
+            }
+            // A copy the workspace names this very device as keeping was handed to it: it holds
+            // the workspace as itself, though its own row on the member list may not have
+            // arrived yet. Only a disk copied from another device is held as that device.
+            if hosted.member.is_none() && keeps_itself(&peer, &own) {
                 continue;
             }
             // A member copy syncs with the device serving it; a disk copied from that device

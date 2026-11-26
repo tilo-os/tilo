@@ -447,6 +447,15 @@ impl Workspaces {
                 )
                 .await);
         }
+        // A server of a person the workspace has signs its own row on the member list as it
+        // takes the workspace in, and answers it: whoever asked for the server writes through it
+        // once this answers, so the row is on this device's list before then.
+        if let Err(error) = self
+            .take_servers_row(workspace, &member, &hosted.own_row)
+            .await
+        {
+            return Err(self.unnamed(workspace, device, named_before, error).await);
+        }
         // Handed its person's own workspace, their own server answers the other workspaces it
         // keeps for them: this device, which holds their root, lists them under its own key, and
         // before it asks whether the server keeps every change it does, so the server takes the
@@ -490,10 +499,6 @@ impl Workspaces {
             tracing::warn!(%workspace, server = %hex::encode(device), %error, "a server handed the workspace did not say it keeps all of it; this device keeps it");
             return Err(said);
         }
-        // A server of a person the workspace has signs its own row on the member list as it
-        // takes the workspace in: whoever asked for it writes through it once this answers, so
-        // this answers once that row is here.
-        self.own_row_arrived(workspace, &member).await;
         // A device that keeps the workspace but never hears of the one just named cannot link
         // to it once this device has gone, and nothing else would tell it: each takes in the
         // change before this answers.
@@ -510,33 +515,37 @@ impl Workspaces {
         Ok(hint)
     }
 
-    /// Wait until `workspace`'s member list here holds the row `handed`, a server just handed
-    /// the workspace, signs for itself: at once when its person is no member of the workspace
-    /// (a server of another person signs none) or the workspace took the device out. A row
-    /// that does not arrive within [`OWN_ROW_WITHIN`] is said, and waited for no longer.
-    async fn own_row_arrived(&self, workspace: &str, handed: &DeviceCert) {
-        let mut changes = self.governance_changes();
-        let arrived = async {
-            loop {
-                let Ok(state) = self.workspace(workspace).await else {
-                    return;
-                };
-                if own_row_settled(&*state.lock().await, handed, tilo_clock::wall()) {
-                    return;
-                }
-                // A change may land without a word on the channel (one the link took in while
-                // this read): the list is read again after a while all the same.
-                let _ = tokio::time::timeout(Duration::from_millis(250), changes.recv()).await;
-            }
-        };
-        if tokio::time::timeout(OWN_ROW_WITHIN, arrived).await.is_err() {
-            tracing::warn!(
-                %workspace,
-                server = %hex::encode(handed.device_public_key),
-                "a server handed the workspace did not sign its row on the member list in {} s",
-                OWN_ROW_WITHIN.as_secs()
-            );
+    /// Take in `row`, the changes `server` signed listing itself on `workspace`'s member list as
+    /// it took the workspace in (hex postcard, as its [`HostedWorkspace`] answer carries them),
+    /// as every device's own row is taken in ([`Self::take_own_row`]). Nothing to take in when
+    /// it signed none, or the row is here already.
+    ///
+    /// # Errors
+    ///
+    /// The row does not decode, or the workspace refuses it.
+    async fn take_servers_row(
+        &self,
+        workspace: &str,
+        server: &DeviceCert,
+        row: &str,
+    ) -> Result<(), String> {
+        if row.is_empty() {
+            return Ok(());
         }
+        let row: Vec<Vec<u8>> = super::decode_hex(row)?;
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut governed = state.lock().await;
+        if own_row_settled(&governed, server, tilo_clock::wall()) {
+            return Ok(());
+        }
+        self.take_own_row(&mut governed, server, &row, tilo_clock::unix_now_ns())
+            .await
+            .map_err(|error| {
+                format!("the server's own row on the member list was refused: {error}")
+            })
     }
 
     /// Dial `device`, the holder that just answered this device's hand-over of
@@ -1676,10 +1685,6 @@ impl OtherHost {
         }
     }
 }
-
-/// How long a hand-over waits for the server it handed the workspace to to sign its own row on
-/// the member list.
-const OWN_ROW_WITHIN: Duration = Duration::from_secs(30);
 
 /// How long the owner's device waits for a server it takes out of a workspace
 /// to hand what it keeps on to another device keeping it.
