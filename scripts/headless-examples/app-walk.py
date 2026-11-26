@@ -650,6 +650,11 @@ class MachineDaemon:
                # (/usr/share/tilo-apps and the rest on a device): the daemon serves the person's
                # apps from them, and with none it lists no app installed.
                "TILO_APPS_SYSTEM_DIR": str(self.state / "system"),
+               # The person's apps are the daemon's own store on a device, where each
+               # `workspace/apps#install` lands; the walk installs them into the session's
+               # store (`nested-session.sh`), so that store is the daemon's here. Without it
+               # the daemon reads an empty one of its own and offers none of them.
+               "TILO_APPS_DATA_DIR": str(self.state / "apps"),
                "TILO_RUNTIME_BUNDLE_DIR": str(self.state / "runtimes"),
                "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE":
                    str(self.state / "keys/runtime-publishers.txt"),
