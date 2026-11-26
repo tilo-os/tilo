@@ -3,10 +3,11 @@
 //! what it opens resolves from any of them.
 
 use crate::IntoService as _;
+use crate::args;
 use crate::fixtures::Workspace;
-use serde_json::{Map, Value as Json, json};
+use serde_json::json;
+use tilo_service::Service;
 use tilo_service::notice::{Closed, Notice};
-use tilo_service::{Service, Started};
 use tilolang_runtime::{Actor, InvokeOutcome, Meta, Value};
 use tilolang_service::ResourceService;
 use tilolang_tilo::host::Host;
@@ -73,10 +74,6 @@ impl tilo_service::notice::Notices for Recorder {
     fn take_closed(&self) -> Vec<(String, Closed)> {
         std::mem::take(&mut *self.closures.borrow_mut())
     }
-}
-
-fn args(value: Json) -> Map<String, Json> {
-    value.as_object().cloned().unwrap()
 }
 
 /// One device of a workspace: its service over its copy of the workspace's resources.
@@ -166,26 +163,18 @@ fn ada_workspace() -> (Device, Recorder, std::rc::Rc<std::cell::RefCell<String>>
 
 /// The id of the app's published root: the tasks.
 fn tasks_root(service: &ResourceService) -> tilo_actions::ResourceId {
-    service
-        .resources()
-        .into_iter()
-        .find(|resource| resource.kind == format!("tl.{TASKS_APP}.Tasks"))
-        .expect("the tasks are published")
-        .id
+    crate::published_of(service, &format!("tl.{TASKS_APP}.Tasks"))
 }
 
 /// A task added under `title`: its id as the workspace names it.
-fn task(service: &mut Device, title: &str) -> String {
-    let root = tasks_root(&service.service);
-    let started = service
-        .service
-        .invoke(root.as_str(), "new_task", &args(json!({ "title": title })))
-        .unwrap();
-    let Started::Done(output) = started else {
-        panic!("a tilolang action is done once committed");
-    };
-    service.settle();
-    output.resources.first().cloned().expect("the task it made")
+fn task(device: &mut Device, title: &str) -> String {
+    let root = tasks_root(&device.service);
+    crate::made(
+        &mut device.service,
+        &root,
+        "new_task",
+        json!({ "title": title }),
+    )
 }
 
 /// Ada makes `call` due today and Bo's, with a reminder in an hour; then the moment comes.

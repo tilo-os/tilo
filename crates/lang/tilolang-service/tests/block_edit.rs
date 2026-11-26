@@ -2,7 +2,8 @@
 //! with (`tl:<app>:<id>#<field>.<place>`): the paragraph is spliced, the paragraphs beside it
 //! keep their ids and marks, and the change is one version of the note.
 
-use serde_json::{Map, Value as Json, json};
+use crate::args;
+use serde_json::json;
 use tilo_service::Service as _;
 use tilolang_runtime::store::{Store as _, VersionKind};
 use tilolang_runtime::{ResourceRef, Value};
@@ -22,10 +23,6 @@ const NOTES: (&str, &str) = (
     include_str!("../../../../apps/tl/notes/app.ids"),
 );
 const APP: &str = "so.tilo.notes";
-
-fn args(value: Json) -> Map<String, Json> {
-    value.as_object().cloned().unwrap()
-}
 
 /// Ada's notebook, published, and a note of three paragraphs whose first and last carry a mark:
 /// the note, its published id (what a caller names it by) and the id of its body field (what an

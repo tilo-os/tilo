@@ -41,3 +41,41 @@ impl IntoService for fixtures::Replica {
         (ResourceService::new(self.host, person), self.doc)
     }
 }
+
+/// `value`, an object, as an action's arguments.
+fn args(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    value.as_object().cloned().unwrap()
+}
+
+/// The resource of `kind` the service publishes.
+fn published_of(service: &ResourceService, kind: &str) -> tilo_actions::ResourceId {
+    use tilo_service::Service as _;
+    service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.kind == kind)
+        .unwrap_or_else(|| panic!("a {kind} is published"))
+        .id
+}
+
+/// The resource `action` on `at` made, the action done and its writes settled.
+fn made(
+    service: &mut ResourceService,
+    at: &tilo_actions::ResourceId,
+    action: &str,
+    arguments: serde_json::Value,
+) -> String {
+    use tilo_service::Service as _;
+    let started = service
+        .invoke(at.as_str(), action, &args(arguments))
+        .unwrap();
+    let tilo_service::Started::Done(output) = started else {
+        panic!("a tilolang action is done once committed");
+    };
+    service.settle();
+    output
+        .resources
+        .first()
+        .cloned()
+        .expect("the resource it made")
+}

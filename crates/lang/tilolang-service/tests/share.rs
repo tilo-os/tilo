@@ -26,8 +26,13 @@ const NOTES: (&str, &str) = (
 /// Ada's notebook, published by the session's service, with the workspace's page to mint links
 /// under.
 fn service() -> ResourceService {
-    let (ada, _) = Replica::new("ada", Workspace::new(), &[DISCUSSION, NOTES]);
-    ada.host.root_of(NOTES_APP).unwrap();
+    linked(&[DISCUSSION, NOTES], NOTES_APP)
+}
+
+/// Ada's service over `packages` with `app`'s root made, minting links at the workspace's home.
+fn linked(packages: &[(&str, &str)], app: &str) -> ResourceService {
+    let (ada, _) = Replica::new("ada", Workspace::new(), packages);
+    ada.host.root_of(app).unwrap();
     ada.commit();
     let mut service = ada.into_service("ada");
     service.set_link_home(Some(LinkHome {
@@ -41,57 +46,25 @@ fn service() -> ResourceService {
 
 /// A new note, made through the app's own action on the published notebook.
 fn new_note(service: &mut ResourceService) -> String {
-    let notebook = service
-        .resources()
-        .into_iter()
-        .find(|resource| resource.kind == format!("tl.{NOTES_APP}.Notebook"))
-        .expect("the notebook is published");
-    let Started::Done(output) = service
-        .invoke(notebook.id.as_str(), "new_note", &Map::new())
-        .unwrap()
-    else {
-        panic!("a tilolang action is done once committed");
-    };
-    service.settle();
-    output.resources.first().cloned().expect("the note it made")
+    let notebook = crate::published_of(service, &format!("tl.{NOTES_APP}.Notebook"));
+    crate::made(service, &notebook, "new_note", serde_json::json!({}))
 }
 
 /// Ada's tasks, published by the session's service, with the workspace's page to mint links
 /// under.
 fn tasks_service() -> ResourceService {
-    let (ada, _) = Replica::new("ada", Workspace::new(), crate::fixtures::TASKS_SET);
-    ada.host.root_of(TASKS_APP).unwrap();
-    ada.commit();
-    let mut service = ada.into_service("ada");
-    service.set_link_home(Some(LinkHome {
-        origin: ORIGIN.to_owned(),
-        workspace: WORKSPACE.to_owned(),
-        host_device: "ab".repeat(32),
-        web_entry: SITE.to_owned(),
-    }));
-    service
+    linked(crate::fixtures::TASKS_SET, TASKS_APP)
 }
 
 /// A new task, made through the app's own action on the published tasks.
 fn new_task(service: &mut ResourceService, title: &str) -> String {
-    let tasks = service
-        .resources()
-        .into_iter()
-        .find(|resource| resource.kind == format!("tl.{TASKS_APP}.Tasks"))
-        .expect("the tasks are published");
-    let mut args = Map::new();
-    args.insert(
-        "title".to_owned(),
-        serde_json::Value::String(title.to_owned()),
-    );
-    let Started::Done(output) = service
-        .invoke(tasks.id.as_str(), "new_task", &args)
-        .unwrap()
-    else {
-        panic!("a tilolang action is done once committed");
-    };
-    service.settle();
-    output.resources.first().cloned().expect("the task it made")
+    let tasks = crate::published_of(service, &format!("tl.{TASKS_APP}.Tasks"));
+    crate::made(
+        service,
+        &tasks,
+        "new_task",
+        serde_json::json!({ "title": title }),
+    )
 }
 
 /// The link `url` names, read back with the entry the workspace serves its page under.

@@ -3,6 +3,7 @@
 //! reads back, and a change to the note moves the reading.
 
 use crate::IntoService as _;
+use crate::args;
 use crate::fixtures::Workspace;
 use serde_json::{Map, Value as Json, json};
 use tilo_service::notice::Notice;
@@ -65,25 +66,10 @@ fn service() -> (ResourceService, tilolang_runtime::Meta) {
     )
 }
 
-fn args(value: Json) -> Map<String, Json> {
-    value.as_object().cloned().unwrap()
-}
-
 /// A new note, made through the notes app's `new_note` on the notebook the session publishes.
 fn new_note(service: &mut ResourceService) -> String {
-    let notebook = service
-        .resources()
-        .into_iter()
-        .find(|resource| resource.kind == format!("tl.{APP}.Notebook"))
-        .expect("the notebook is published");
-    let started = service
-        .invoke(notebook.id.as_str(), "new_note", &Map::new())
-        .unwrap();
-    let Started::Done(output) = started else {
-        panic!("a tilolang action is done once committed");
-    };
-    service.settle();
-    output.resources.first().cloned().expect("the note it made")
+    let notebook = crate::published_of(service, &format!("tl.{APP}.Notebook"));
+    crate::made(service, &notebook, "new_note", json!({}))
 }
 
 #[test]
@@ -345,12 +331,7 @@ fn tasks() -> (ResourceService, std::rc::Rc<std::cell::RefCell<String>>) {
 
 /// The id of the app's published root: the tasks.
 fn tasks_root(service: &ResourceService) -> tilo_actions::ResourceId {
-    service
-        .resources()
-        .into_iter()
-        .find(|resource| resource.kind == format!("tl.{TASKS_APP}.Tasks"))
-        .expect("the tasks are published")
-        .id
+    crate::published_of(service, &format!("tl.{TASKS_APP}.Tasks"))
 }
 
 /// What the packages told, as the notifications service would have shown it: the recording
@@ -369,14 +350,7 @@ impl tilo_service::notice::Notices for Told {
 /// A task added by `new_task` under `title`.
 fn task(service: &mut ResourceService, title: &str) -> String {
     let root = tasks_root(service);
-    let started = service
-        .invoke(root.as_str(), "new_task", &args(json!({ "title": title })))
-        .unwrap();
-    let Started::Done(output) = started else {
-        panic!("a tilolang action is done once committed");
-    };
-    service.settle();
-    output.resources.first().cloned().expect("the task it made")
+    crate::made(service, &root, "new_task", json!({ "title": title }))
 }
 
 #[test]
