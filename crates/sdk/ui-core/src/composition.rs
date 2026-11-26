@@ -973,6 +973,26 @@ impl Composition {
             .find_map(|root| find(root, path))
     }
 
+    /// The path of the widget whose semantic action target is `target` (a row's resource id),
+    /// over the window or in it: what a page's address names it shows.
+    #[must_use]
+    pub fn targeted(&self, target: &str) -> Option<&str> {
+        fn find<'a>(node: &'a Composed, target: &str) -> Option<&'a str> {
+            if node
+                .semantics
+                .as_ref()
+                .and_then(|semantics| semantics.action_target.as_deref())
+                == Some(target)
+            {
+                return Some(&node.path);
+            }
+            node.children.iter().find_map(|child| find(child, target))
+        }
+        std::iter::once(&self.root)
+            .chain(&self.layers)
+            .find_map(|root| find(root, target))
+    }
+
     /// Keep only each node's own fields
     /// ([`Composed::forget_semantics_children`]).
     pub(crate) fn forget_semantics_children(&mut self) {

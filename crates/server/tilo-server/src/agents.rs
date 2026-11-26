@@ -819,6 +819,10 @@ impl crate::AppActionServer for WorkspaceActionsServer {
     fn pages(&self) -> Option<&dyn crate::app_serving::AppPages> {
         Some(&self.pages)
     }
+
+    fn host_pages(&self, pages: Arc<dyn crate::app_serving::HostedPages>) {
+        self.actions.host_pages(pages);
+    }
 }
 
 /// Serve a workspace's message, placing its Browser after an answered

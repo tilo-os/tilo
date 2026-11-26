@@ -829,6 +829,13 @@ impl Instance {
         self.person_changed = true;
     }
 
+    /// Whether the package's migrations ran here, at the origin, over the document as it was had:
+    /// what they carried, or the marks that said they had run before.
+    #[must_use]
+    pub const fn has_migrated(&self) -> bool {
+        self.migrated
+    }
+
     /// Say whether this replica is the workspace's origin (the device that governs the workspace). Only
     /// the origin runs the package's migrations on what an earlier version wrote, so a migration
     /// runs once, where every change is ordered, and never as a reader elsewhere.

@@ -51,3 +51,7 @@ tilo-devices = Your devices
 tilo-devices-keep-device = Keep a device of the person's
 tilo-devices-keep-fact = Keep what a device says of itself
 tilo-devices-keep-wifi = Keep a Wi-Fi passphrase
+
+## Apps a server runs
+
+server-apps-editing-unavailable = Editing { $app } on the web isn't available yet. You can read and search here, and edit in the Tilo app.

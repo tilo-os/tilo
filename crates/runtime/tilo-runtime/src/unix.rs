@@ -106,6 +106,7 @@ impl ServiceConnections {
             workspace_id: workspace.into(),
             app_id: app_id.into(),
             surface: started_surface(),
+            call: None,
         })?;
         tilo_identity_client::wire::HANDSHAKE_FRAMING.write(&mut identity, &handshake)?;
         identity.set_write_timeout(None)?;

@@ -313,14 +313,18 @@ impl ServiceWorkspaces {
     pub(crate) fn workspaces(&self) -> Vec<Workspace> {
         self.held()
             .into_iter()
-            .filter_map(|(workspace, name, peer)| describe(workspace, &name, &peer))
+            .filter_map(|(workspace, name, peer)| {
+                tilo_workspace_service::apps::service_workspaces::describe(workspace, &name, &peer)
+            })
             .collect()
     }
 
     /// One workspace as [`Self::workspaces`] describes it, built alone.
     pub(crate) fn workspace(&self, workspace: WorkspaceId) -> Option<Workspace> {
         let copy = self.copies().copy_now(workspace)?;
-        describe(workspace, &copy.name, &copy.peer)
+        tilo_workspace_service::apps::service_workspaces::describe(
+            workspace, &copy.name, &copy.peer,
+        )
     }
 
     /// What this device is to `workspace`, for the workspace's Files endpoint:
@@ -662,26 +666,6 @@ fn vault_key(key: &SigningKey) -> key_group::VaultKey {
         "tilo device workspace key vault v1",
         &key.to_bytes(),
     ))
-}
-
-/// A workspace as the member copy's governance describes it.
-fn describe(workspace: WorkspaceId, name: &str, peer: &StatePeer) -> Option<Workspace> {
-    let document = peer.admitted_workspace()?;
-    let mut described = Workspace::new(workspace, name.to_owned());
-    tilo_peer_state::workspace::adopt_workspace(&mut described, document, &[]);
-    described.sandbox = peer.governance().governed_sandbox().ok()?;
-    // The names the workspace's governance keeps for its people: what every surface showing
-    // someone who is not here reads, from the same list the agent worker's members come from.
-    if let Ok(people) = peer.governance().governed_members(tilo_clock::wall()) {
-        described.named_people(
-            people
-                .members
-                .iter()
-                .filter(|member| !member.removed)
-                .filter_map(|member| Some((member.id.person_id()?, member.name.as_str()))),
-        );
-    }
-    Some(described)
 }
 
 impl crate::apps::LaunchGrantsSource for ServiceWorkspaces {

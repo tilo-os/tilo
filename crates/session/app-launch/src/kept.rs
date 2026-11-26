@@ -476,7 +476,7 @@ impl Kept {
 
     /// The control socket of this launch's network proxy, once it has one: the desktop that
     /// adopts the program after a restart sets the policy it enforces through it.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "keeper"))]
     pub(crate) fn network_control(&self) -> Option<PathBuf> {
         let control = self.dir.join(launcher::netproxy::CONTROL);
         control.exists().then_some(control)

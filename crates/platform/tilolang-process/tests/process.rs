@@ -32,6 +32,9 @@ use tilolang_tilo::runtime::Value;
 /// The native Notes app's notebook, carried over once by the tilolang Notes a session starts.
 #[path = "process/native_notes.rs"]
 mod native_notes;
+/// A viewer's page, laid out in the app's own process and asked for there.
+#[path = "process/page.rs"]
+mod page;
 /// A paste past a mebibyte, kept and undone.
 #[path = "process/paste.rs"]
 mod paste;

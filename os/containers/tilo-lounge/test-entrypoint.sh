@@ -12,7 +12,7 @@ set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 work=$(mktemp -d "${TMPDIR:-/tmp}/tilo-lounge.XXXXXX")
 trap 'rm -rf "$work"' EXIT
-mkdir -p "$work/bin"
+mkdir -p "$work/bin" "$work/packages"
 cat > "$work/bin/tilo-server" <<'STUB'
 #!/bin/sh
 set -eu
@@ -87,8 +87,6 @@ https://eu1.tilo.sh
 --fetch-proxy
 --chat-channel
 general
---seed-app
-so.tilo.chat
 EXPECTED
 lounge >"$work/args" || fail "the plain deployment did not start"
 subsequence "$work/want" "$work/args" || fail "the plain deployment maps other arguments"
@@ -112,7 +110,7 @@ lounge \
   TILO_WORKSPACES_SERVER_ORIGINS_ALSO='https://eu1.wifi.example:9780, https://lounge.example/' \
   TILO_WORKSPACES_CHAT_CHANNELS='general,feedback' \
   TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback \
-  TILO_WORKSPACES_SEED_APPS='so.tilo.chat,so.tilo.board' \
+  TILO_WORKSPACES_PACKAGES="$work/packages" \
   TILO_WORKSPACES_REFOUND='so.tilo.browser-desktop:desktop, so.tilo.chat:' \
   TILO_WORKSPACES_BOTS='/usr/local/share/tilo/bots/discord-bridge.json guild=1521251563828416532 server=Tilo mirror-channels=yes;/opt/echo.json a=b' \
   TILO_WORKSPACES_PERSON_STORAGE_GB=10 \
@@ -153,7 +151,7 @@ pair --http 0.0.0.0:8890 || fail "the routes listener setting did not reach the 
 pair --allowed-origin https://tilo.sh || fail "a site origin did not reach the host"
 pair --allowed-origin https://tilo.so || fail "a site origin did not reach the host"
 pair --chat-channel feedback || fail "a chat channel did not reach the host"
-pair --seed-app so.tilo.board || fail "a seeded app did not reach the host"
+pair --packages "$work/packages" || fail "the shipped packages did not reach the host"
 pair --refound so.tilo.browser-desktop/desktop || fail "a refounded record did not reach the host"
 pair --refound so.tilo.chat/ || fail "a refounded record of the app's primary did not reach the host"
 pair --feedback-channel feedback || fail "the feedback channel did not reach the host"
@@ -225,6 +223,15 @@ fails_with lounge TILO_WORKSPACES_PERSON_STORAGE_GB=lots
 grep -Fq TILO_WORKSPACES_PERSON_STORAGE_GB "$work/err" || fail "the refusal does not name the setting"
 fails_with lounge TILO_WORKSPACES_MAX_SPECTATORS=2000
 grep -Fq TILO_WORKSPACES_MAX_SPECTATORS "$work/err" || fail "the refusal does not name the setting"
+# The setting that seeded apps by name is gone: Chat is seeded with its
+# channels, and every other app is a package the image ships.
+fails_with lounge TILO_WORKSPACES_SEED_APPS=so.tilo.board
+grep -Fq TILO_WORKSPACES_SEED_APPS "$work/err" || fail "the refusal does not name the setting"
+grep -Fq TILO_WORKSPACES_PACKAGES "$work/err" || fail "the refusal does not say what to set instead"
+fails_with lounge TILO_WORKSPACES_SEED_APPS=
+grep -Fq TILO_WORKSPACES_PACKAGES "$work/err" || fail "an empty TILO_WORKSPACES_SEED_APPS is not refused"
+fails_with lounge TILO_WORKSPACES_PACKAGES="$work/no-packages"
+grep -Fq TILO_WORKSPACES_PACKAGES "$work/err" || fail "the refusal does not name the setting"
 
 # A mounted certificate replaces the development one, chain and key in the
 # host's one flag; one without the other, or a path the flag cannot carry,
@@ -287,7 +294,7 @@ if [[ -n $server ]] && "$server" --version >/dev/null 2>&1; then
     TILO_WORKSPACES_SITE_ORIGINS='https://tilo.sh,https://tilo.so' \
     TILO_WORKSPACES_CHAT_CHANNELS='general,feedback' \
     TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback \
-    TILO_WORKSPACES_SEED_APPS='so.tilo.chat' \
+    TILO_WORKSPACES_PACKAGES="$work/packages" \
     TILO_WORKSPACES_REFOUND='so.tilo.browser-desktop:desktop' \
     TILO_WORKSPACES_LAYOUT=shared \
     TILO_WORKSPACES_LIVE=0.0.0.0:9881 \

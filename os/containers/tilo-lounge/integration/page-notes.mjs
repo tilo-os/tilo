@@ -156,7 +156,7 @@ try {
 
   // A page of the workspace, by the app's name: no name is the workspace's
   // own front page.
-  const openPage = async (label, app = 'notes') => {
+  const openPage = async (label, app = 'so.tilo.notes') => {
     resetWire();
     await tab.navigate(`${site}/w/${workspace}${app ? `/${app}` : ''}`);
     const shown = await until('document.querySelector("#tilo-page [data-p]")', 60_000);
@@ -264,14 +264,14 @@ try {
   await openPage('first open');
   await look('01-notes-wide');
 
-  await press(`document.querySelector('#tilo-page [data-a=activate][aria-label="New note"]')`, 'New note');
+  await press(`[...document.querySelectorAll('#tilo-page [data-a=activate]')].find(e => e.getAttribute('aria-label') === 'New note' || e.textContent.trim() === 'New note')`, 'New note');
   if (await until(`document.activeElement === ${title}`, 15_000) === null) problems.push('a new note did not put the caret in its title');
   await type('Garden plan for the spring');
   if (await until(`${title}?.value === 'Garden plan for the spring'`, 15_000) === null) problems.push('typing a title did not show in the field');
   await sleep(800);
   await look('02-typed');
 
-  await press(`document.querySelector('#tilo-page [data-a=activate][aria-label="New note"]')`, 'New note');
+  await press(`[...document.querySelectorAll('#tilo-page [data-a=activate]')].find(e => e.getAttribute('aria-label') === 'New note' || e.textContent.trim() === 'New note')`, 'New note');
   if (await until(`document.activeElement === ${title}`, 15_000) === null) problems.push('a second new note did not put the caret in its title');
   await type('Groceries for the week');
   if (await until(`${title}?.value === 'Groceries for the week'`, 15_000) === null) problems.push('typing the second title did not show in the field');
@@ -324,10 +324,10 @@ try {
   const links = await tab.evaluate(`[...document.querySelectorAll('#tilo-page a[href^="/w/"]')].map(a => a.getAttribute('href'))`);
   step('home apps', {links});
   if (links.length < 5) problems.push(`the workspace's page offers ${links.length} apps`);
-  await press(`document.querySelector('#tilo-page a[href$="/notes"]')`, 'Notes on the workspace page');
+  await press(`document.querySelector('#tilo-page a[href$="/so.tilo.notes"]')`, 'Notes on the workspace page');
   // The page names what it opened: the app's page, and then the note inside
   // it that the app had open last.
-  if (await until(`location.pathname.includes('/notes') && document.querySelector('#tilo-page [data-p]')`, 30_000) === null) {
+  if (await until(`location.pathname.includes('/so.tilo.notes') && document.querySelector('#tilo-page [data-p]')`, 30_000) === null) {
     problems.push('an app on the workspace page did not open');
   }
   await look('12-home-to-notes');
@@ -335,7 +335,7 @@ try {
   // renders. An app that is not in this build's catalogue is said, not
   // failed: which apps the page serves is the catalogue's, and the walk is
   // here to prove the ones it does serve.
-  for (const app of ['file-explorer', 'settings', 'tasks', 'chat', 'mail']) {
+  for (const app of ['file-explorer', 'settings', 'so.tilo.lang.tasks', 'chat', 'so.tilo.mail', 'so.tilo.tube']) {
     await openPage(app, app);
     const seen = await look(`13-${app}`);
     if (seen.refused && seen.refused !== '"no_such_app"') problems.push(`${app}: refused (${seen.refused})`);
@@ -365,7 +365,7 @@ try {
     `[...document.querySelectorAll('#tilo-page .tilo-search-row')].find(a => (a.innerText || '').includes('Groceries')) ?? null`,
     'the note search found',
   );
-  if (await until(`location.pathname.includes('/notes') && ${title}?.value === 'Groceries for the week'`, 30_000) === null) {
+  if (await until(`location.pathname.includes('/so.tilo.notes') && ${title}?.value === 'Groceries for the week'`, 30_000) === null) {
     problems.push('a search row did not open the note it found');
   }
   await look('16-search-opened');

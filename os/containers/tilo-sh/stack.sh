@@ -1665,8 +1665,13 @@ lay_out_lounge() {
       "$repo/tools/ci/publish/lounge-context.sh" "$container/Containerfile" "$container/Containerfile.dockerignore" \
       "$container/entrypoint.sh" "$repo/apps/discord/bridge/program.json")
     if [[ $(cat "$native/lounge.made-from" 2>/dev/null) != "$stamp" || ! -x $native/lounge/bin/tilo-server ]]; then
+      # The apps the workspace runs: the launcher, the runtime bundles and the signed packages
+      # (lounge-apps.sh), which only t builds.
+      from_t || die "the server's apps are built on t (lounge-check-apps): build the stack with t, or name a laid-out context in TILO_SH_LOUNGE"
+      t_build "the workspace's apps" lounge-check-apps
       TILO_LOUNGE_SURFACE_COMMIT=$commit \
-        bash "$repo/tools/ci/publish/lounge-context.sh" "$native/lounge" "$programs" "$fonts" >/dev/null \
+        bash "$repo/tools/ci/publish/lounge-context.sh" "$native/lounge" "$programs" "$fonts" \
+          "$t_fetched/target/publish/lounge-check/apps" >/dev/null \
         || die 'could not lay out the server (lounge-context.sh)'
       printf '%s\n' "$stamp" > "$native/lounge.made-from"
     fi
@@ -1957,11 +1962,29 @@ start_native_tls() {
   run_native tls "$state/tls" "$caddy" run --config "$state/tls/Caddyfile" --adapter caddyfile
 }
 
+# server_runtime_dir: the server's own runtime directory, short and private: its apps' sockets
+# live under it, and a socket's path has to fit in 108 bytes, so a login's runtime directory
+# deeper than that (a container's, a build sandbox's) cannot hold them. A directory of its own
+# under /tmp is short whatever the login's is, and private to the account that made it.
+server_runtime_dir() {
+  mktemp -d /tmp/tilo-sh.XXXXXX
+}
+
 start_native_server() {
   local lounge=${lounge:-$native/lounge}
   { private_env server "$lounge/bin"
     image_env_here "$repo/os/containers/tilo-lounge/Containerfile" \
-      "TILO_WORKSPACES_STATE=$state/server" "TILO_SECRETS_DIR=$state/server/secrets"
+      "TILO_WORKSPACES_STATE=$state/server" "TILO_SECRETS_DIR=$state/server/secrets" \
+      "TILO_WORKSPACES_PACKAGES=$lounge/packages"
+    # The runtime bundles the apps execute and the key they and the packages are signed with,
+    # which the image keeps at the launcher's own paths: here the launcher (a `lounge-check`
+    # build, `dev-overrides`) is told where they are.
+    printf '%s\n' "TILO_RUNTIME_BUNDLE_DIR=$lounge/runtimes" \
+      "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$lounge/runtime-publishers.txt"
+    # The server's apps listen on sockets in its runtime directory, and a socket's path has
+    # to fit in 108 bytes: a runtime directory under a deep state folder does not leave room.
+    # So the server's is a short one of its own under this login's.
+    printf '%s\n' "XDG_RUNTIME_DIR=$(server_runtime_dir)"
     # Where the image keeps the app surfaces the server publishes at start,
     # and the product font catalog its components lay text out from.
     printf '%s\n' "TILO_SURFACES=$lounge/surfaces"

@@ -101,9 +101,9 @@ try {
   step('arrival', arrived ?? {state: null});
   if (arrived === null || arrived.state === 'stopped') problems.push('the browser did not get into the workspace');
 
-  await tab.navigate(`${site}/w/${workspace}/notes`);
+  await tab.navigate(`${site}/w/${workspace}/so.tilo.notes`);
   if (await until('document.querySelector("#tilo-page [data-p]")', 60_000) === null) problems.push('the page never showed');
-  await tab.evaluate(`document.querySelector('#tilo-page [data-a=activate][aria-label="New note"]').click()`);
+  await tab.evaluate(`[...document.querySelectorAll('#tilo-page [data-a=activate]')].find(e => e.getAttribute('aria-label') === 'New note' || e.textContent.trim() === 'New note').click()`);
   if (await until(`document.activeElement === ${title}`, 15_000) === null) problems.push('a new note did not put the caret in its title');
   await type(TITLE);
   if (await until(`${title}?.value === ${JSON.stringify(TITLE)}`, 15_000) === null) problems.push('the title typed while the app answered did not show');
@@ -139,7 +139,7 @@ try {
 
   // The page works again: a note it opens now is asked of the app as any
   // other, and what the workspace holds is what its list says.
-  await tab.evaluate(`document.querySelector('#tilo-page [data-a=activate][aria-label="New note"]').click()`);
+  await tab.evaluate(`[...document.querySelectorAll('#tilo-page [data-a=activate]')].find(e => e.getAttribute('aria-label') === 'New note' || e.textContent.trim() === 'New note').click()`);
   if (await until(`document.activeElement === ${title}`, 30_000) === null) problems.push('a new note after the reopen did not put the caret in its title');
   await type('After the wait');
   if (await until(`${title}?.value === 'After the wait'`, 30_000) === null) problems.push('typing after the reopen did not show in the field');

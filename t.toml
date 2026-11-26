@@ -6727,6 +6727,34 @@ outputs = ["/target/publish/lounge-check/binaries/**"]
 timeout_secs = 7200
 default = false
 
+# The apps the Lounge's image carries (tools/ci/publish/lounge-apps.sh): its launcher reads only
+# the image's own trust list.
+[[check]]
+name = "lounge-apps"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "bash tools/ci/publish/lounge-apps.sh /target/publish/lounge/apps /target/tilolang-runtime /target/publish/lounge/fonts release"
+needs = ["tilolang-runtime", "lounge-fonts"]
+env = { CARGO_BUILD_JOBS = "8" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/lounge/apps/**"]
+timeout_secs = 3600
+default = false
+
+# The apps the Lounge's workspace runs, for the checks that run its programs directly: the
+# launcher, beside the server, with `dev-overrides` so it trusts the key this build signs the
+# runtimes and packages with (tools/ci/publish/lounge-apps.sh), the two runtime bundles and the
+# tilolang packages the workspace installs at its start.
+[[check]]
+name = "lounge-check-apps"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "bash tools/ci/publish/lounge-apps.sh /target/publish/lounge-check/apps /target/tilolang-runtime /target/publish/lounge/fonts lounge-check"
+needs = ["tilolang-runtime", "lounge-fonts"]
+env = { CARGO_BUILD_JOBS = "8" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/lounge-check/apps/**"]
+timeout_secs = 3600
+default = false
+
 # The product font catalog, which the image's context and every check that runs the Lounge's
 # programs directly serve: built once, apart from the image's own assembly, so a check of the page
 # does not wait for the image's programs.
@@ -6740,8 +6768,8 @@ default = false
 
 [[check]]
 name = "image-lounge-context"
-run = "bash tools/ci/publish/lounge-context.sh /target/publish/lounge/context /target/publish/lounge/binaries /target/publish/lounge/fonts"
-needs = ["lounge-binaries", "lounge-fonts"]
+run = "bash tools/ci/publish/lounge-context.sh /target/publish/lounge/context /target/publish/lounge/binaries /target/publish/lounge/fonts /target/publish/lounge/apps"
+needs = ["lounge-binaries", "lounge-fonts", "lounge-apps"]
 outputs = ["/target/publish/lounge/context/**"]
 requires = ["arch=x86_64"]
 git = true
@@ -6942,9 +6970,11 @@ name = "page-notes"
 # packets are refused unless the check declares them. Exactly those two.
 egress = { to = ["169.254.1.1:53", "239.255.255.250:1900"] }
 run = "TILO_PAGE_NOTES_IN_LOG=1 bash os/containers/tilo-lounge/test-page-notes.sh /target/publish/web-entry/bundle /target/page-notes"
-needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-entry-bundle"]
-env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto" }
+needs = ["lounge-check-binaries", "lounge-check-apps", "lounge-fonts", "lounge-check-tools", "web-entry-bundle"]
+env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_LOUNGE_APPS = "/target/publish/lounge-check/apps", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto" }
 requires = ["arch=x86_64"]
+# Nested: the launcher starts each app in a bwrap sandbox of its own, which needs namespaces.
+isolation = "nested"
 outputs = ["/target/page-notes/**"]
 timeout_secs = 1800
 default = false
@@ -6955,9 +6985,11 @@ name = "page-reopen"
 # programs and fonts are its needs'.
 egress = { to = ["169.254.1.1:53", "239.255.255.250:1900"] }
 run = "TILO_PAGE_REOPEN_IN_LOG=1 bash os/containers/tilo-lounge/test-page-reopen.sh /target/publish/web-entry/bundle /target/page-reopen"
-needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-entry-bundle"]
-env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_OWNED_BROWSER_MAX_CONCURRENT = "0", TILO_OWNED_BROWSER_MAX_LIFETIME_SECS = "0" }
+needs = ["lounge-check-binaries", "lounge-check-apps", "lounge-fonts", "lounge-check-tools", "web-entry-bundle"]
+env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_LOUNGE_APPS = "/target/publish/lounge-check/apps", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_OWNED_BROWSER_MAX_CONCURRENT = "0", TILO_OWNED_BROWSER_MAX_LIFETIME_SECS = "0" }
 requires = ["arch=x86_64"]
+# Nested: the launcher starts each app in a bwrap sandbox of its own, which needs namespaces.
+isolation = "nested"
 outputs = ["/target/page-reopen/**"]
 timeout_secs = 1800
 default = false
@@ -7067,8 +7099,8 @@ on = ["main", "dispatch"]
 [[check]]
 name = "tilo-sh-binaries"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/ci/publish/tilo-sh-binaries.sh /target/publish/tilo-sh /target/publish/lounge-check/binaries /target/publish/lounge/fonts"
-needs = ["lounge-check-binaries", "lounge-fonts"]
+run = "bash tools/ci/publish/tilo-sh-binaries.sh /target/publish/tilo-sh /target/publish/lounge-check/binaries /target/publish/lounge/fonts /target/publish/lounge-check/apps"
+needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-apps"]
 env = { CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/tilo-sh/**"]

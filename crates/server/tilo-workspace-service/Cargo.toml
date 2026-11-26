@@ -32,7 +32,7 @@ files = ["content", "dep:tilo-fs", "dep:fs-protocol", "dep:iroh-blobs", "dep:byt
 session-pages = ["device-keys", "dep:tilo-session-client"]
 
 # A device serves its apps: their wire, launch, actions, invocation journal and consent.
-apps = ["dep:launcher", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json"]
+apps = ["dep:launcher", "dep:tilo-app-launch", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json"]
 
 [dependencies]
 # The device's one store, which apps write and read their resources in.
@@ -194,6 +194,10 @@ jiff = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["process"], optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The tilolang processes a device that holds a workspace runs its packages in (`apps::package_runs`).
+tilo-app-launch = { path = "../../session/app-launch", optional = true, default-features = false }
 
 [dev-dependencies]
 # The stand-in authorization server a sign-in test walks the browser through.

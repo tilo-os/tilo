@@ -27,7 +27,7 @@
 
 use std::collections::BTreeMap;
 use std::os::fd::AsFd as _;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keeper"))]
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -186,43 +186,43 @@ pub struct Spawner {
     /// What notes the kernel's OOM kills in the apps' cgroups as they happen.
     kills: Option<memory::KernelKills>,
     /// What starts an app behind a keeper, once the session has a desktop to attach keepers to.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "keeper"))]
     keeping: Option<crate::kept::Keeping>,
     /// The watch over the keepers' registry, and whether it saw a change not looked at yet.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "keeper"))]
     registry: Option<(
         tilo_files::native::ChangeWatch,
         Arc<std::sync::atomic::AtomicBool>,
     )>,
     /// Keeper directories made for launches that have not started yet ([`KeptDirs`]).
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "keeper"))]
     reserved: Reserved,
     /// The launch each kept app that ended while no desktop was there was, by the id its end is
     /// reported under, until [`Self::ended_away`] takes it.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "keeper"))]
     away: BTreeMap<u64, tilo_app_keeper::registry::KeptLaunch>,
     /// The launch each kept app whose keeper was killed outright while no desktop was there was:
     /// the app never ended, so its saved tab stays to say it stopped working
     /// ([`Self::stopped_away`]).
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "keeper"))]
     stopped: BTreeMap<u64, tilo_app_keeper::registry::KeptLaunch>,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keeper"))]
 type Reserved = Arc<Mutex<std::collections::BTreeSet<PathBuf>>>;
 
 /// Makes keeper directories for launches whose display must be known before they start (a
 /// sandbox binds the keeper's socket), on a thread other than the spawner's: a directory made
 /// is the spawner's own, never a keeper it adopts, until [`Spawner::start_handed`] starts its
 /// launch or [`Self::give_back`] removes it.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keeper"))]
 #[derive(Clone)]
 pub struct KeptDirs {
     root: PathBuf,
     reserved: Reserved,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keeper"))]
 impl KeptDirs {
     /// A new keeper directory.
     ///
@@ -247,7 +247,7 @@ impl KeptDirs {
 /// What a launch through [`Spawner::start_handed`] hands the launcher beyond its plan: a launch
 /// started behind a keeper whose directory was made before it ([`KeptDirs`]), with the command the
 /// launcher starts behind the keeper and the descriptors that command inherits.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keeper"))]
 pub struct Handed {
     /// The keeper's directory, from [`KeptDirs::reserve`].
     pub dir: PathBuf,
@@ -262,7 +262,7 @@ pub struct Handed {
 /// A kept launch whose filtered network a desktop serves: the control socket a sandboxed
 /// program's proxy answers on, or the file a Windows appliance presentation keeps for the
 /// desktop that adopts it, and the app and workspace whose grants decide what it reaches.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keeper"))]
 pub struct KeptNetwork {
     /// The launch's keeper directory, where its network lives.
     pub dir: PathBuf,
@@ -334,22 +334,22 @@ impl Spawner {
             ends,
             memory,
             kills,
-            #[cfg(target_os = "linux")]
+            #[cfg(all(target_os = "linux", feature = "keeper"))]
             keeping: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(all(target_os = "linux", feature = "keeper"))]
             registry: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(all(target_os = "linux", feature = "keeper"))]
             reserved: Reserved::default(),
-            #[cfg(target_os = "linux")]
+            #[cfg(all(target_os = "linux", feature = "keeper"))]
             away: BTreeMap::new(),
-            #[cfg(target_os = "linux")]
+            #[cfg(all(target_os = "linux", feature = "keeper"))]
             stopped: BTreeMap::new(),
         }
     }
 
     /// The X11 display of each kept launch that serves one, with the cookie file that admits a
     /// client, in display order: what the session's input method serves as XIM.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "keeper"))]
     pub fn kept_x11(&self) -> Vec<(String, PathBuf)> {
         let mut displays: Vec<(String, PathBuf)> = running(&self.running)
             .values()
@@ -361,7 +361,7 @@ impl Spawner {
 
     /// The network of each kept launch that has one, with the app and the workspace whose grants
     /// decide the policy it enforces.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "keeper"))]
     pub fn kept_networks(&self) -> Vec<KeptNetwork> {
         running(&self.running)
             .values()
@@ -393,7 +393,7 @@ impl Spawner {
     ///
     /// The registry is watched from now on: a keeper that appears there later (a service's) is
     /// taken up by [`Self::adopt_appeared`], and this spawner's loop woken for it.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "keeper"))]
     pub fn keep_behind(&mut self, keeping: crate::kept::Keeping) {
         let changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let seen = Arc::clone(&changed);
@@ -473,7 +473,7 @@ impl Spawner {
     ///
     /// # Errors
     /// The program could not be started, or the session keeps no apps.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "keeper"))]
     pub fn start_handed(
         &mut self,
         planned: &Planned,
@@ -497,8 +497,8 @@ impl Spawner {
         write_down: &dyn Fn(u32),
         workspace: &str,
         asked: Option<&str>,
-        #[cfg(target_os = "linux")] handed: Option<Handed>,
-        #[cfg(not(target_os = "linux"))] handed: Option<()>,
+        #[cfg(all(target_os = "linux", feature = "keeper"))] handed: Option<Handed>,
+        #[cfg(not(all(target_os = "linux", feature = "keeper")))] handed: Option<()>,
     ) -> Result<(Started, Option<HeldLink>), SpawnError> {
         crate::name_surface(planned);
         let mut command = Command::new(&planned.program);
@@ -546,7 +546,7 @@ impl Spawner {
             self.kept_launch(planned, workspace, asked, &mut command, handed)?;
         // A kept launch's keeper writes the same bytes it passes on here: what this desktop reads is
         // kept beside them, and the desktop that follows reads on rather than logging it again.
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", feature = "keeper"))]
         if let Some(kept) = &kept {
             output.keep_position_in(&kept.dir);
             // What the launcher said on its stderr for a launch it did not keep: a kept launch's
@@ -615,11 +615,11 @@ impl Spawner {
             .spawn(move || {
                 let end = ended(child, &ends);
                 // A kept launch the session let go of for a restart is the next run's to report.
-                #[cfg(target_os = "linux")]
+                #[cfg(all(target_os = "linux", feature = "keeper"))]
                 let Some(end) = kept_end(kept.as_deref(), heard, end) else {
                     return;
                 };
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(all(target_os = "linux", feature = "keeper")))]
                 drop(heard);
                 // What the app said before it ended, which the session keeps
                 // for the report it makes of a launch that never opened: both
@@ -673,14 +673,14 @@ impl Spawner {
         let apps = std::mem::take(&mut *running(&self.running));
         let mut decisions = Vec::with_capacity(apps.len());
         for app in apps.into_values() {
-            #[cfg(target_os = "linux")]
+            #[cfg(all(target_os = "linux", feature = "keeper"))]
             let stays = app.stays_for(teardown).is_some();
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(all(target_os = "linux", feature = "keeper")))]
             let stays = false;
             decisions.push((app, stays));
         }
         for (app, stays) in decisions {
-            #[cfg(target_os = "linux")]
+            #[cfg(all(target_os = "linux", feature = "keeper"))]
             if stays {
                 let Some(kept) = &app.kept else {
                     continue;
@@ -689,13 +689,13 @@ impl Spawner {
                 kept.release();
                 continue;
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(all(target_os = "linux", feature = "keeper")))]
             let _ = stays;
-            #[cfg(target_os = "linux")]
+            #[cfg(all(target_os = "linux", feature = "keeper"))]
             if teardown == Teardown::InPlaceRestart && app.kept.is_some() {
                 tracing::info!(target: tilo_startup_metrics::KEPT_APPS_TARGET, app = %app.name, pid = app.pid, "not kept across restart: its keeper is gone");
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(all(target_os = "linux", feature = "keeper")))]
             let _ = teardown;
             // The session ends: nothing of it is left to clear a keeper's files later.
             app.end(true);
@@ -714,7 +714,7 @@ impl Drop for Spawner {
 
 /// A kept app a run took back after an in-place restart: the launch it is, under the id this
 /// spawner reports it by, and the keeper's process its windows name.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keeper"))]
 #[derive(Clone, Debug)]
 pub struct Adopted {
     pub id: u64,
@@ -729,7 +729,7 @@ pub struct Adopted {
     pub outdated: bool,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keeper"))]
 impl Spawner {
     /// The keeper `planned` starts behind, when it is kept and the session has keepers: its
     /// directory made and the launcher told to start it there.
@@ -1251,7 +1251,7 @@ impl Spawner {
 /// driver that left its descriptor open, a saved document, a socket — every one of them would otherwise
 /// reach every app the session starts, as an inherited handle on what the session holds. Added
 /// before the launcher's own `pre_exec` steps, which hand the app what it is given after this.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keeper"))]
 fn close_inherited(command: &mut Command) {
     // SAFETY: `mark_inherited_close_on_exec` makes only async-signal-safe calls (close_range,
     // fcntl and sysconf) and allocates nothing.
@@ -1260,7 +1260,7 @@ fn close_inherited(command: &mut Command) {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(target_os = "linux", feature = "keeper")))]
 fn close_inherited(_: &mut Command) {}
 
 /// Mark every descriptor of this process beyond its standard streams close-on-exec: in a child
@@ -1302,7 +1302,7 @@ const fn mark_inherited_close_on_exec() -> std::io::Result<()> {
 }
 
 /// Tell the launcher `command` starts to start `keeper` in `dir`, keeping `launch`.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keeper"))]
 fn keep_in(
     command: &mut Command,
     keeper: &Path,
@@ -1320,7 +1320,7 @@ fn keep_in(
 
 /// Wait for the keeper the launcher `launcher` starts for `kept`, greet it and show its app on
 /// `desktop`, then drain what it says until it goes: the launch's end is the launcher's to tell.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keeper"))]
 fn watch_started(
     kept: Arc<crate::kept::Kept>,
     launcher: u32,
@@ -1353,7 +1353,7 @@ fn watch_started(
         .ok()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(target_os = "linux", feature = "keeper")))]
 impl Spawner {
     /// Only Linux keeps apps across a restart.
     #[expect(clippy::unused_self, reason = "the Linux spawner's signature")]
@@ -1382,7 +1382,7 @@ impl Spawner {
 /// exit says only that the keeper ended; the keeper said how its app did (`heard`). A keeper that
 /// said nothing was ended by a signal and took its app with it: for memory, which the launcher's
 /// end tells, or otherwise ([`End::KeeperStopped`]: the signal was the keeper's, not the app's).
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keeper"))]
 fn kept_end(kept: Option<&crate::kept::Kept>, heard: Option<Heard>, end: End) -> Option<End> {
     let Some(kept) = kept else {
         return Some(end);
@@ -1417,16 +1417,16 @@ pub(crate) struct App {
     /// The session asked this app to end, as the person's own Quit does: its end is theirs, so no
     /// notice says it stopped working ([`crate::Event::asked_to_end`]).
     asked_to_end: Arc<AtomicBool>,
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "keeper"))]
     pidfd: Option<std::os::fd::OwnedFd>,
     /// The keeper this launch runs behind, when it is kept.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "keeper"))]
     pub(crate) kept: Option<Arc<crate::kept::Kept>>,
 }
 
 impl App {
     /// The app the child `pid` runs, which must not have been reaped yet.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "keeper"))]
     fn of(pid: u32, app: &str) -> Self {
         use std::os::fd::FromRawFd as _;
         let app = app.to_owned();
@@ -1468,7 +1468,7 @@ impl App {
     /// The keeper of a launch `teardown` leaves running: a service's at any teardown; else only at
     /// an in-place restart, and only a launch whose keeper is still there to take it back
     /// ([`crate::kept::Kept::answers`]). Everything else ends.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "keeper"))]
     fn stays_for(&self, teardown: Teardown) -> Option<&Arc<crate::kept::Kept>> {
         let kept = self.kept.as_ref()?;
         // A service's keeper is the service's to end, whatever ends the session.
@@ -1481,7 +1481,7 @@ impl App {
         }
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(all(target_os = "linux", feature = "keeper")))]
     fn of(pid: u32, app: &str) -> Self {
         Self {
             pid,
@@ -1500,13 +1500,13 @@ impl App {
 
     /// The cgroup directory the launcher put this app in, while it is there.
     pub(crate) fn cgroup_dir(&self) -> Option<PathBuf> {
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", feature = "keeper"))]
         {
             let cgroup = std::fs::read_to_string(format!("/proc/{}/cgroup", self.pid)).ok()?;
             let cgroup = launcher::app_cgroup::app_cgroup_at(&cgroup)?;
             Some(launcher::app_cgroup::fs_path(&cgroup))
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(all(target_os = "linux", feature = "keeper")))]
         {
             None
         }
@@ -1524,7 +1524,7 @@ impl App {
         // crash, and the app's saved place closes quietly.
         self.asked_to_end.store(true, Ordering::Release);
         self.stop();
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", feature = "keeper"))]
         if let Some(kept) = &self.kept {
             kept.remove_awaiting(if session_ends {
                 crate::kept::Await::Here(crate::kept::KEEPER_END)
@@ -1532,7 +1532,7 @@ impl App {
                 crate::kept::Await::Aside
             });
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(all(target_os = "linux", feature = "keeper")))]
         let _ = session_ends;
     }
 
@@ -1544,7 +1544,7 @@ impl App {
             }
             return;
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", feature = "keeper"))]
         if let Some(pidfd) = &self.pidfd {
             use std::os::fd::AsRawFd as _;
             // SAFETY: the descriptor is a live pidfd this value owns, and
@@ -1625,14 +1625,14 @@ fn ended(mut child: Child, ends: &memory::Ends) -> End {
 
 /// The cgroup of the app `pid` runs in, when the launcher put it in one: the
 /// app's own scope.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keeper"))]
 fn app_cgroup(pid: u32) -> Option<PathBuf> {
     let cgroup = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
     launcher::app_cgroup::app_cgroup_at(&cgroup)
         .map(|cgroup| launcher::app_cgroup::fs_path(&cgroup))
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(target_os = "linux", feature = "keeper")))]
 fn app_cgroup(_pid: u32) -> Option<PathBuf> {
     None
 }

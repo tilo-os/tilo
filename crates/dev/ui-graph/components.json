@@ -6239,7 +6239,7 @@
       "state": [
         {
           "name": "reveal",
-          "doc": "The heading the document shows, asked by the view that places an outline beside it: the place of the heading among the document's headings (`headings` reports them in that order), then a count the view changes every time it asks (`3:1`), so asking for a heading already shown shows it again. The editor puts the caret at the heading's start and keeps it in view.",
+          "doc": "The heading the document shows, asked by the view that places an outline beside it: the place of the heading among the document's headings (`headings` reports them in that order), then a count the view changes every time it asks (`3:1`), so asking for a heading already shown shows it again. The editor puts the caret at the heading's start and keeps it in view. A block named by its place in the document instead (`¶5:2`, the sixth block from the top, counted from 0) is shown the same way: what the window asks for when a search hit on a paragraph opens the document.",
           "type": {
             "option": "text"
           }

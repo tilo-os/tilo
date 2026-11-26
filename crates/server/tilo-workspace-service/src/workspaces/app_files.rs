@@ -129,12 +129,11 @@ impl Workspaces {
     /// fetch. A server given the file in pieces of its own
     /// ([`APP_FILE_PIECE_BYTES`]) ends with the same file.
     ///
-    /// A test's way to hand the server a package without a device's session;
-    /// what a caller may do it through is the workspace's `upload-app-file`.
+    /// The host's own way to hand itself a package ([`Self::install_package`]);
+    /// a caller hands one over through the workspace's `upload-app-file`.
     ///
     /// # Errors
     /// A file that is empty or too large, or one this server could not write.
-    #[cfg(feature = "test-support")]
     pub fn keep_app_file(&self, workspace: &str, bytes: &[u8]) -> Result<String, String> {
         let file = blake3::hash(bytes).to_hex().to_string();
         let total = bytes.len() as u64;
@@ -152,5 +151,63 @@ impl Workspaces {
             };
         }
         Ok(file)
+    }
+
+    /// Install `package`, a signed `.tapp`, as the version of its app that
+    /// `workspace` runs, as `member`: the host keeps the file and the
+    /// workspace names it as the version it runs, as a member's `upload-app-file` and
+    /// `install-app` do. A workspace already running that very package is
+    /// left as it is. Answers the app's id.
+    ///
+    /// # Errors
+    /// Bytes that hold no signed package with a surface, a file the host could
+    /// not keep, and a member the workspace does not let install apps.
+    pub async fn install_package(
+        &self,
+        workspace: &str,
+        member: &tilo_user_identity::DeviceCert,
+        package: &[u8],
+    ) -> Result<String, super::CollaborationError> {
+        use super::CollaborationError;
+        use tilo_peer_state::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
+        let read =
+            tilo_app_package::tapp::read(package, &mut tilo_app_package::blobs::DiscardBlobs)
+                .map_err(|error| CollaborationError::new(format!("the package: {error}")))?;
+        let app = read.meta.manifest.package.id.clone();
+        // Checks the package is `app`'s and its signature verifies.
+        let surface = super::packaged_model::package_surface(package, &app)?;
+        let (_, kept) = collab_types::surface::SurfaceFile::kept(&surface)
+            .map_err(|error| CollaborationError::new(format!("{app}'s surface: {error}")))?;
+        let id = hex::encode(read.meta.id.0);
+        if self
+            .app_versions(workspace)
+            .await?
+            .iter()
+            .any(|installed| installed.release.app == app && installed.release.package == id)
+        {
+            return Ok(app);
+        }
+        let file = self
+            .keep_app_file(workspace, package)
+            .map_err(|error| CollaborationError::new(format!("keep {app}'s package: {error}")))?;
+        let mut request = blake3::Hasher::new();
+        request.update(b"install-package\0");
+        request.update(id.as_bytes());
+        self.govern_app(
+            workspace,
+            member,
+            *request.finalize().as_bytes(),
+            WorkspaceMembershipCommand::InstallApp(AppRelease {
+                app: app.clone(),
+                version: read.meta.manifest.package.version.clone(),
+                surface: blake3::hash(kept.as_bytes()).to_hex().to_string(),
+                package: id,
+                publisher: hex::encode(read.meta.root.publisher_identity),
+                file: Some(file),
+                dev: false,
+            }),
+        )
+        .await?;
+        Ok(app)
     }
 }

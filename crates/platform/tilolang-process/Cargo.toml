@@ -72,6 +72,10 @@ tilo-content-device = { version = "0.1.0", path = "../../system/content-device" 
 tilo-dialogs = { version = "0.1.0", path = "../tilo-dialogs" }
 # Presence as every window decodes it: who is where in a document, and who is writing there.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+# A page's window, laid out here beside the app's code and written as a page: the toolkit's window
+# half, and the connection the device that started the page asks for it on.
+tilo-app-window = { version = "0.1.0", path = "../tilo-app-window" }
+tilo-server-protocol = { version = "0.1.0", path = "../../server/tilo-server-protocol" }
 
 [dev-dependencies]
 # The fake broker these tests and examples run instances against, as the apps'

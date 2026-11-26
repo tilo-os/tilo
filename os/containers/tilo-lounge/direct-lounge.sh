@@ -11,8 +11,10 @@
 # `restart_lounge` stops the Lounge alone and starts it again on the volume it
 # kept, the site left serving, as a deployment's restart does. It needs node,
 # chromium, curl, and TILO_SERVER_BIN and TILO_CRYPTO_BIN naming built programs,
-# and TILO_FONTS_DIR the product's font catalog. The caller's EXIT trap must
-# call `stop_lounge`.
+# and TILO_FONTS_DIR the product's font catalog. TILO_LOUNGE_APPS, when set,
+# names the apps its workspace runs (tools/ci/publish/lounge-apps.sh): the
+# launcher goes beside the server, and the workspace installs the packages at
+# its start. The caller's EXIT trap must call `stop_lounge`.
 #
 # Its addresses are LOUNGE_PORT_BASE (default 19780) and the four ports after
 # it, so a second Lounge (another entry, another admission) runs beside the
@@ -52,6 +54,9 @@ run_lounge() {
   # reads `TILO_SERVER_LOG` and a worker `RUST_LOG`, both in the same syntax.
   env -i HOME="$lounge_home" PATH="$lounge_bin:/usr/bin:/bin" \
     ${LOUNGE_LOG:+RUST_LOG="$LOUNGE_LOG"} \
+    ${lounge_apps:+TILO_RUNTIME_BUNDLE_DIR="$lounge_apps/runtimes"} \
+    ${lounge_apps:+TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE="$lounge_apps/runtime-publishers.txt"} \
+    ${lounge_apps:+TILO_WORKSPACES_PACKAGES="$lounge_apps/packages"} \
     ${LOUNGE_LOG:+TILO_SERVER_LOG="$LOUNGE_LOG"} \
     TILO_SOURCE_REVISION=direct-lounge \
     TILO_SECRETS_DIR="$lounge_volume/secrets" \
@@ -134,6 +139,13 @@ start_lounge() {
   # lay text out, and a host that seeds them has no system fonts).
   cp "$server_bin" "$work/bin/tilo-server"
   cp -R "$fonts" "$work/bin/fonts"
+  lounge_apps=
+  if [[ -n ${TILO_LOUNGE_APPS:-} ]]; then
+    lounge_apps=$TILO_LOUNGE_APPS
+    [[ -x $lounge_apps/bin/tilo-launcher && -d $lounge_apps/packages ]] \
+      || lounge_fail "no Lounge apps in $lounge_apps"
+    cp "$lounge_apps/bin/tilo-launcher" "$work/bin/"
+  fi
 
   lounge_volume=$volume lounge_bin=$work/bin lounge_home=$work
   run_lounge

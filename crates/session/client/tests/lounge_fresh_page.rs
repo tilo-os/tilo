@@ -224,9 +224,6 @@ impl Lounge {
             )
             .env("TILO_WORKSPACES_ROOT_FILE", root_file)
             .env("TILO_WORKSPACES_FEEDBACK_CHANNEL", "feedback")
-            // The deployment starts without seeding Chat: the volume's record
-            // cannot be served to new members until it is founded again.
-            .env("TILO_WORKSPACES_SEED_APPS", "")
             .env("TILO_WORKSPACES_STATE", state.path())
             .env("TILO_WORKSPACES_WEB", "127.0.0.1:0")
             .env("TILO_WORKSPACES_SERVER_PLAIN", "127.0.0.1:0")

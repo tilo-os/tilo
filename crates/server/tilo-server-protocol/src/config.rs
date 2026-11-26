@@ -115,6 +115,12 @@ pub struct ServerConfig {
     /// uses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay: Option<String>,
+
+    /// A directory of signed `.tapp` packages this server ships: the system's apps, each installed
+    /// in every workspace whose apps it sets up, and run there. A server given packages runs its
+    /// workspaces' apps, and does not start when it cannot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packages: Option<PathBuf>,
 }
 
 fn default_work() -> WorkSetting {
@@ -154,6 +160,7 @@ impl Default for ServerConfig {
             web_entry: None,
             max_workspace_grants: None,
             relay: None,
+            packages: None,
         }
     }
 }

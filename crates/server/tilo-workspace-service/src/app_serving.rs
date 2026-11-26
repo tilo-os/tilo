@@ -14,6 +14,7 @@
 use tilo_actions::remote::{ActionProvider, Caller, Pending, RemoteActionMessage};
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::page::{OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal};
+pub use tilo_server_protocol::page_window::{HostedOpened, HostedPage, HostedPages};
 
 /// Answers remote-action requests addressed to this host.
 ///
@@ -164,6 +165,12 @@ pub trait AppActionServer: Send + Sync {
     /// them. None by default.
     fn pages(&self) -> Option<&dyn AppPages> {
         None
+    }
+
+    /// The pages of the apps this device runs itself, which its own pages show beside theirs
+    /// ([`HostedPages`]). Ignored by default.
+    fn host_pages(&self, pages: std::sync::Arc<dyn HostedPages>) {
+        let _ = pages;
     }
 }
 

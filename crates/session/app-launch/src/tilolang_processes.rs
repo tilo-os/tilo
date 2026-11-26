@@ -236,9 +236,9 @@ pub struct Instance {
 /// How a process is started: the command for one on `runtime` and `app_runtime`, keeping `storage`
 /// and reading what an earlier version of its app kept (the directory, and where the process sees
 /// it beneath its mount).
-type Starts = dyn Fn(&str, &str, &Path, Option<(&Path, &Path)>) -> Command + Send + Sync;
+pub type Starts = dyn Fn(&str, &str, &Path, Option<(&Path, &Path)>) -> Command + Send + Sync;
 /// How an installed app is verified for a process: the workspace it is installed in, and the app.
-type Verifies = dyn Fn(&str, &str) -> Result<VerifiedInstance, String> + Send + Sync;
+pub type Verifies = dyn Fn(&str, &str) -> Result<VerifiedInstance, String> + Send + Sync;
 
 /// The tilolang processes this session runs, by workspace, app and runtimes.
 pub struct Processes {
@@ -261,27 +261,34 @@ impl Processes {
             tilo_paths::xdg::data_home().unwrap_or_else(|| PathBuf::from("/nonexistent"));
         Self::with(
             data_home,
-            Box::new(move |runtime, app_runtime, storage, earlier| {
-                let mut command = Command::new(&launcher);
-                command
-                    .arg(launcher::run::tilolang_process::SUBCOMMAND)
-                    .arg("--runtime")
-                    .arg(runtime)
-                    .arg("--app-runtime")
-                    .arg(app_runtime)
-                    .arg("--storage")
-                    .arg(storage);
-                if let Some((dir, under)) = earlier {
-                    command
-                        .arg("--earlier")
-                        .arg(dir)
-                        .arg("--earlier-under")
-                        .arg(under);
-                }
-                command
-            }),
+            Self::started_through(launcher),
             Box::new(verified_installed),
         )
+    }
+
+    /// How a process is started through `launcher`: as `tilolang-process`, which confines it, on
+    /// the runtimes it runs and with the storage it keeps.
+    #[must_use]
+    pub fn started_through(launcher: PathBuf) -> Box<Starts> {
+        Box::new(move |runtime, app_runtime, storage, earlier| {
+            let mut command = Command::new(&launcher);
+            command
+                .arg(launcher::run::tilolang_process::SUBCOMMAND)
+                .arg("--runtime")
+                .arg(runtime)
+                .arg("--app-runtime")
+                .arg(app_runtime)
+                .arg("--storage")
+                .arg(storage);
+            if let Some((dir, under)) = earlier {
+                command
+                    .arg("--earlier")
+                    .arg(dir)
+                    .arg("--earlier-under")
+                    .arg(under);
+            }
+            command
+        })
     }
 
     /// Processes over `data_home`, started by `starts` and running what `verifies` verified.
@@ -394,6 +401,69 @@ impl Processes {
     /// # Errors
     /// The app does not verify, its module cannot be sealed, or no process takes the instance.
     pub fn hand_over_now(self: &Arc<Self>, instance: Instance) -> std::io::Result<bool> {
+        // A run with no patch connection draws nothing: it runs the app's actions for
+        // whoever invokes them.
+        let shows = if instance.patch.is_some() {
+            runtime_portal::process_link::Shows::View
+        } else {
+            runtime_portal::process_link::Shows::Nothing
+        };
+        self.hand_over_showing(instance, shows, false)
+    }
+
+    /// Run `instance`, which shows nothing and carries the package's migrations: it carries over,
+    /// once, what a native app of the package's id kept in the workspace ([`Self::keep_earlier`]). It is started as any other run of the package is, with the same
+    /// sandbox and grants.
+    ///
+    /// # Errors
+    /// As [`Self::hand_over_now`].
+    pub fn run_carrying_migrations(self: &Arc<Self>, instance: Instance) -> std::io::Result<bool> {
+        self.hand_over_showing(instance, runtime_portal::process_link::Shows::Nothing, true)
+    }
+
+    /// Keep `documents`, what a native app of the id `app` kept in `workspace` as the host that
+    /// runs this holds it, each by the key it was stored under, where a process of
+    /// `app` in `workspace` reads what an earlier version of its app kept ([`Self::earlier`]):
+    /// that app's documents of that workspace, and nothing else.
+    ///
+    /// # Errors
+    /// A key that names no document of the app, or the store does not keep one.
+    pub fn keep_earlier(
+        &self,
+        workspace: &str,
+        app: &str,
+        documents: Vec<(String, automerge::AutoCommit)>,
+    ) -> std::io::Result<()> {
+        let root = self.earlier_root(workspace, app);
+        let store: std::rc::Rc<dyn durable_store::DurableStore> =
+            std::rc::Rc::new(app_state::FsStore::provisioned(&root));
+        for (key, mut document) in documents {
+            app_state::DocStore::exclusive(
+                std::rc::Rc::clone(&store),
+                durable_store::StorageKey::document(app, workspace, &key),
+            )
+            .and_then(|mut kept| kept.save(&mut document))
+            .map_err(|error| std::io::Error::other(format!("{app}'s {key}: {error}")))?;
+        }
+        store.flush(None).map_err(std::io::Error::other)
+    }
+
+    /// Show a viewer's page of an app from its tilolang process: the process lays its view out
+    /// itself and writes it as a page for the one who looks at it, asked for on `patch`, which
+    /// is the page's connection here (`tilo_server_protocol::page_window`).
+    ///
+    /// # Errors
+    /// As [`Self::hand_over_now`].
+    pub fn show_page(self: &Arc<Self>, instance: Instance) -> std::io::Result<bool> {
+        self.hand_over_showing(instance, runtime_portal::process_link::Shows::Page, false)
+    }
+
+    fn hand_over_showing(
+        self: &Arc<Self>,
+        instance: Instance,
+        shows: runtime_portal::process_link::Shows,
+        carries_migrations: bool,
+    ) -> std::io::Result<bool> {
         let refused =
             |what: String| std::io::Error::new(std::io::ErrorKind::PermissionDenied, what);
         let began = std::time::Instant::now();
@@ -420,13 +490,7 @@ impl Processes {
             instance: instance.instance,
             person: instance.person,
             module_len,
-            // An instance with no patch connection draws nothing: it runs the app's actions for
-            // whoever invokes them.
-            shows: if instance.patch.is_some() {
-                runtime_portal::process_link::Shows::View
-            } else {
-                runtime_portal::process_link::Shows::Nothing
-            },
+            shows,
             formats: instance.locale.formats,
             // The person's language, as this session resolved it: their windows read every word in
             // it, so the process that draws them must not read its own process's language instead.
@@ -443,6 +507,7 @@ impl Processes {
                 std::collections::BTreeMap::new()
             },
             access: instance.access,
+            carries_migrations,
         };
         let fds = InstanceFds {
             broker: instance.collaboration,
@@ -674,15 +739,20 @@ impl Processes {
     /// and the native app it replaced wrote: the directory of that app's documents in the
     /// workspace, and where it lies beneath that store's root. `None` where it kept nothing.
     fn earlier(&self, key: &HostKey) -> Option<(PathBuf, PathBuf)> {
-        let root = launcher::appdir::host_app_dir(
-            &self.data_home,
-            &launcher::appdir::workspace_slug(Some(&key.workspace)),
-            &key.app,
-        )
-        .join(".local/share");
+        let root = self.earlier_root(&key.workspace, &key.app);
         let dir = app_state::workspace_index_directory(&root, &key.app, &key.workspace).ok()?;
         let under = dir.strip_prefix(&root).ok()?.to_path_buf();
         dir.is_dir().then_some((dir, under))
+    }
+
+    /// The root of the store the native app `app` wrote in `workspace` on this device.
+    fn earlier_root(&self, workspace: &str, app: &str) -> PathBuf {
+        launcher::appdir::host_app_dir(
+            &self.data_home,
+            &launcher::appdir::workspace_slug(Some(workspace)),
+            app,
+        )
+        .join(".local/share")
     }
 
     /// Start the process `key`, with its socket as its stdin, and follow it on a thread of its own
@@ -970,6 +1040,140 @@ mod tests {
                 other.display()
             );
         }
+        // A workspace the app kept nothing in grants nothing: the process reads no empty store.
+        let absent = HostKey {
+            workspace: "7a110d00-0000-4000-8000-0000000000e3".to_owned(),
+            ..key(WORKSPACE, NOTES)
+        };
+        assert!(processes.earlier(&absent).is_none());
+    }
+
+    /// What the server keeps of a native app for one workspace is what a process of the app in
+    /// that workspace reads, and nothing of another workspace's: each is kept where only its own
+    /// workspace's process is granted it.
+    #[test]
+    fn what_the_server_keeps_for_a_workspace_is_read_there_alone() {
+        use durable_store::DurableStore as _;
+        const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000e1";
+        const ELSEWHERE: &str = "7a110d00-0000-4000-8000-0000000000e2";
+        let home = tempfile::tempdir().expect("the server's data home");
+        let processes = Processes::with(
+            home.path().to_path_buf(),
+            Box::new(|_, _, _, _| Command::new("true")),
+            Box::new(|_, _| Err("no package store here".to_owned())),
+        );
+        let notebook = |title: &str| {
+            use automerge::transaction::Transactable as _;
+            let mut doc = automerge::AutoCommit::new();
+            doc.put(automerge::ROOT, "title", title).unwrap();
+            doc
+        };
+        processes
+            .keep_earlier(
+                WORKSPACE,
+                NOTES,
+                vec![("ours".to_owned(), notebook("Ours"))],
+            )
+            .unwrap();
+        processes
+            .keep_earlier(
+                ELSEWHERE,
+                NOTES,
+                vec![("theirs".to_owned(), notebook("Theirs"))],
+            )
+            .unwrap();
+        let key = HostKey {
+            workspace: WORKSPACE.to_owned(),
+            app: NOTES.to_owned(),
+            runtime: "tilolang@1".to_owned(),
+            app_runtime: "tilo@1".to_owned(),
+        };
+        let (granted, under) = processes
+            .earlier(&key)
+            .expect("the workspace's documents are kept");
+        // The process reads the store from the root its grant sits under, as its mount shows it.
+        let root = granted
+            .ancestors()
+            .nth(under.components().count())
+            .expect("the store's root")
+            .to_path_buf();
+        let store = app_state::FsStore::provisioned(&root);
+        assert_eq!(
+            store.documents(NOTES, WORKSPACE).unwrap(),
+            ["ours"],
+            "the workspace's own documents are there"
+        );
+        let elsewhere = HostKey {
+            workspace: ELSEWHERE.to_owned(),
+            ..key
+        };
+        let (theirs, _) = processes
+            .earlier(&elsewhere)
+            .expect("the other workspace's are kept");
+        assert!(
+            !theirs.starts_with(&granted) && !granted.starts_with(&theirs),
+            "another workspace's documents are no part of what the process reads"
+        );
+    }
+
+    /// Processes running in each workspace of `running`, behind its socket, each with two windows of
+    /// Notes.
+    fn running(running: Vec<(&str, OwnedFd)>) -> Arc<Processes> {
+        let processes = Processes::with(
+            std::env::temp_dir(),
+            Box::new(|_, _, _, _| Command::new("true")),
+            Box::new(|_, _| Err("no package store here".to_owned())),
+        );
+        for (workspace, socket) in running {
+            let key = HostKey {
+                workspace: workspace.to_owned(),
+                app: NOTES.to_owned(),
+                runtime: "tilolang@1".to_owned(),
+                app_runtime: "tilo@1".to_owned(),
+            };
+            let process = Host {
+                socket: Arc::new(socket),
+                instances: HashMap::from([(7, NOTES.to_owned()), (8, NOTES.to_owned())]),
+                generation: 1,
+                builds: HashMap::new(),
+            };
+            processes.running().insert(key, process);
+        }
+        processes
+    }
+
+    /// Every process running says on its socket what the person's formats now are, so the instances it
+    /// runs write their weeks and times again; a process that is not running hears nothing.
+    #[test]
+    fn a_formats_change_is_said_on_the_socket_of_every_host_running() {
+        const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000f1";
+        let (ours, theirs) = runtime_portal::process_link::pair().unwrap();
+        let (idle_ours, _idle_theirs) = runtime_portal::process_link::pair().unwrap();
+        let processes = running(vec![("7a110d00-0000-4000-8000-0000000000f1", ours)]);
+
+        let before = ui::format::region::current();
+        let sunday = ui::format::region::RegionFormats {
+            first_day: ui::format::region::FirstDayOfWeek::Sunday,
+            ..before
+        };
+        ui::format::region::install(sunday);
+        let locale = runtime_portal::process_link::Locale {
+            formats: ui::format::region::current(),
+            language: ui::i18n::preferred_language().unwrap_or_default(),
+        };
+        processes.locale_changed(&locale);
+        let handed = ToProcess::receive(&theirs).unwrap();
+        ui::format::region::install(before);
+        let Some(ToProcess::Locale(locale)) = handed else {
+            panic!("a runtime process's socket carries the formats as formats: {handed:?}");
+        };
+        assert_eq!(
+            locale.formats, sunday,
+            "the week the person starts on reaches the process its instances run in"
+        );
+        // The session keeps no other process's socket: nothing was said on it, so its end is all the
+        // process would hear.
+        drop(idle_ours);
         assert!(
             processes.earlier(&key(WORKSPACE, "so.tilo.mail")).is_none(),
             "another app's process is granted none of it"

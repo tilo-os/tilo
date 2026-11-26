@@ -63,6 +63,11 @@ pub struct Apps {
     /// What a launch into this profile's workspace is granted, once the
     /// workspace service that holds the person's grants is open.
     grants: OnceLock<Arc<dyn LaunchGrantsSource>>,
+    /// The workspace's tilolang packages as this device runs them, each in its process, once a
+    /// call that shows nothing asked for one: started as every device that holds a workspace
+    /// starts them.
+    #[cfg(target_os = "linux")]
+    package_runs: OnceLock<tilo_workspace_service::apps::package_runs::PackageRuns>,
 }
 
 /// Where a launch reads what the person granted the app it starts: the
@@ -116,7 +121,33 @@ impl Apps {
             own: Mutex::default(),
             device_grants: tilo_peer_state::DeviceGrants::unkept(),
             grants: OnceLock::new(),
+            #[cfg(target_os = "linux")]
+            package_runs: OnceLock::new(),
         }
+    }
+
+    /// The workspace's package runs on this device: through the launcher, as the person this
+    /// device's identity in the workspace is, on the profile's broker socket.
+    #[cfg(target_os = "linux")]
+    fn package_runs(&self) -> &tilo_workspace_service::apps::package_runs::PackageRuns {
+        self.package_runs.get_or_init(|| {
+            let person = tilo_identity::store::identity_for_workspace(&self.workspace)
+                .ok()
+                .flatten()
+                .map(|profile| hex::encode(profile.user_public_key))
+                .unwrap_or_default();
+            tilo_workspace_service::apps::package_runs::PackageRuns::new(
+                self.workspace.clone(),
+                tilo_workspace_service::apps::package_runs::Sockets {
+                    collab: self.root.join(COLLAB_SOCKET),
+                    identity: self.root.join(crate::IDENTITY_SOCKET),
+                    content: self.root.join(crate::BLOB_SOCKET),
+                },
+                person,
+                linux::resolve_launcher(&self.launcher_candidates)
+                    .map(tilo_workspace_service::apps::package_runs::through_launcher),
+            )
+        })
     }
 
     /// Attest this runtime's own process as the windowless endpoint of `app`
@@ -446,15 +477,43 @@ impl LauncherServices for Apps {
     }
 
     fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool {
-        self.launched.attest(pid, app, workspace) || self.serves(pid, app, workspace)
+        #[cfg(target_os = "linux")]
+        let ran = self
+            .package_runs
+            .get()
+            .is_some_and(|runs| runs.attest_process(pid, app, workspace));
+        #[cfg(not(target_os = "linux"))]
+        let ran = false;
+        ran || self.launched.attest(pid, app, workspace) || self.serves(pid, app, workspace)
+    }
+
+    /// A call that shows nothing runs the workspace's tilolang package in its process, as every
+    /// device that holds a workspace runs it.
+    #[cfg(target_os = "linux")]
+    fn windowless(
+        &self,
+        app: &str,
+        workspace: &str,
+    ) -> Result<Option<tilo_workspace_service::apps::services::WindowlessStart>, String> {
+        self.package_runs().run_showing_nothing(app, workspace)
     }
     fn authenticated_launch(
         &self,
         pid: u32,
         app: &str,
         workspace: &str,
-        _window_instance: Option<u64>,
+        tab: Option<u64>,
     ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
+        #[cfg(target_os = "linux")]
+        if let Some(ran) = self
+            .package_runs
+            .get()
+            .and_then(|runs| runs.authenticated_launch(pid, app, workspace, tab))
+        {
+            return Ok(Some(ran));
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = tab;
         if self.serves(pid, app, workspace) {
             return Ok(Some(AuthenticatedApplicationLaunch {
                 continuation_instance: None,

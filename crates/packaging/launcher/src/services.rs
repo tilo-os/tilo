@@ -320,12 +320,42 @@ pub fn resolve_identity_bind(
     resolve_identity_bind_for_contract(app_id, workspace_id, no_services, None)
 }
 
+/// [`resolve_identity_bind`] on the identity service at `path`, which the host that runs the app
+/// names itself. A connection made for the one call `call` serves that call alone: every request
+/// on it is decided as whoever made that call, and the app cannot name another.
+pub fn resolve_identity_bind_at(
+    path: &Path,
+    app_id: &str,
+    workspace_id: &str,
+    call: Option<[u8; 16]>,
+) -> Result<Option<ResolvedService>, ServiceError> {
+    resolve_identity(path, app_id, Some(workspace_id), false, None, call)
+}
+
 /// Validate a signed service requirement and use the canonical identity handshake.
 pub fn resolve_identity_bind_for_contract(
     app_id: &str,
     workspace_id: Option<&str>,
     no_services: bool,
     requirement: Option<&ServiceReq>,
+) -> Result<Option<ResolvedService>, ServiceError> {
+    resolve_identity(
+        &identity_socket(),
+        app_id,
+        workspace_id,
+        no_services,
+        requirement,
+        None,
+    )
+}
+
+fn resolve_identity(
+    path: &Path,
+    app_id: &str,
+    workspace_id: Option<&str>,
+    no_services: bool,
+    requirement: Option<&ServiceReq>,
+    call: Option<[u8; 16]>,
 ) -> Result<Option<ResolvedService>, ServiceError> {
     let presentation = requirement.is_some_and(|requirement| {
         requirement.version == tilo_identity_client::wire::PRESENTATION_SERVICE_VERSION
@@ -336,20 +366,22 @@ pub fn resolve_identity_bind_for_contract(
     if no_services {
         return Ok(None);
     }
-    let path = identity_socket();
     if !path.exists() {
         tracing::warn!("identity service is unavailable; the app runs without an identity");
         return Ok(None);
     }
-    let mut stream = match tilo_files::native::socket::connect(&path) {
+    let mut stream = match tilo_files::native::socket::connect(path) {
         Ok(stream) => stream,
         Err(error) => {
             tracing::warn!(%error, path = %path.display(), "identity service refused connection");
             return Ok(None);
         }
     };
-    write_identity_handshake_negotiated(&mut stream, app_id, workspace_id, presentation)
-        .map_err(|source| ServiceError::OpenFailed { path, source })?;
+    write_identity_handshake_negotiated(&mut stream, app_id, workspace_id, presentation, call)
+        .map_err(|source| ServiceError::OpenFailed {
+            path: path.to_path_buf(),
+            source,
+        })?;
     Ok(Some(ResolvedService {
         name: IDENTITY_SERVICE.to_string(),
         host: OwnedFd::from(stream),
@@ -364,7 +396,7 @@ pub fn write_identity_handshake(
     app_id: &str,
     workspace_id: &str,
 ) -> std::io::Result<()> {
-    write_identity_handshake_negotiated(stream, app_id, workspace_id, false)
+    write_identity_handshake_negotiated(stream, app_id, workspace_id, false, None)
 }
 
 fn write_identity_handshake_negotiated(
@@ -372,12 +404,14 @@ fn write_identity_handshake_negotiated(
     app_id: &str,
     workspace_id: &str,
     presentation: bool,
+    call: Option<[u8; 16]>,
 ) -> std::io::Result<()> {
     let handshake = tilo_identity_client::wire::PresentationHandshake {
         handshake: tilo_identity_client::wire::Handshake {
             workspace_id: workspace_id.to_owned(),
             app_id: app_id.to_owned(),
             surface: None,
+            call,
         },
         presentation_version: if presentation {
             tilo_identity_client::wire::PRESENTATION_VERSION
@@ -527,7 +561,9 @@ fn blob_scope_component(value: &str) -> bool {
         && !value.bytes().all(|byte| byte == b'.')
 }
 
-fn resolve_blob_bind_at(
+/// [`resolve_blob_bind`] on the content store at `path`, which the host that runs the app names
+/// itself.
+pub fn resolve_blob_bind_at(
     path: &Path,
     app_id: &str,
     workspace_id: Option<&str>,
@@ -1030,7 +1066,7 @@ mod tests {
         {
             for enabled in [false, true] {
                 let (mut writer, mut reader) = UnixStream::pair().unwrap();
-                write_identity_handshake_negotiated(&mut writer, "so.tilo.notes", "workspace-7", enabled)
+                write_identity_handshake_negotiated(&mut writer, "so.tilo.notes", "workspace-7", enabled, None)
                     .unwrap();
                 drop(writer);
                 let bytes = tilo_identity_client::wire::HANDSHAKE_FRAMING
@@ -1051,6 +1087,7 @@ mod tests {
                             workspace_id: "workspace-7".into(),
                             app_id: "so.tilo.notes".into(),
                             surface: None,
+                            call: None,
                         })
                         .unwrap()
                     );

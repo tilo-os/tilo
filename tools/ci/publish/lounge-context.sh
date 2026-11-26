@@ -2,19 +2,23 @@
 # The Lounge image's build context (os/containers/tilo-lounge): the programs
 # (lounge-binaries.sh), the bot programs the workspace installs by path, and
 # the product font catalog its app components lay text out from, since a
-# container has no system fonts. usage: lounge-context.sh OUT BINARIES FONTS
+# container has no system fonts, and the apps its workspace runs (lounge-apps.sh).
+# usage: lounge-context.sh OUT BINARIES FONTS APPS
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-usage='usage: lounge-context.sh OUT BINARIES FONTS'
+usage='usage: lounge-context.sh OUT BINARIES FONTS APPS'
 out=${1:?$usage}
 binaries=${2:?$usage}
 fonts=${3:?$usage}
+apps=${4:?$usage}
 cd "$repo_root"
 [[ -x $binaries/tilo-server && -x $binaries/discord-worker ]] || die "no Lounge programs in $binaries"
 [[ -f $fonts/manifest.toml ]] || die "no product font catalog in $fonts"
+[[ -x $apps/bin/tilo-launcher && -d $apps/runtimes && -d $apps/packages ]] || die "no Lounge apps in $apps"
 rm -rf "$out"
 mkdir -p "$out/bin" "$out/bots" "$out/fonts"
-cp "$binaries/tilo-server" "$binaries/discord-worker" "$out/bin/"
+cp "$binaries/tilo-server" "$binaries/discord-worker" "$apps/bin/tilo-launcher" "$out/bin/"
+cp -a "$apps/runtimes" "$apps/packages" "$apps/runtime-publishers.txt" "$out/"
 cp -a "$fonts/." "$out/fonts/"
 cp apps/discord/bridge/program.json "$out/bots/discord-bridge.json"
 # Every version of each built-in app's surface.toml the apps' history holds, one

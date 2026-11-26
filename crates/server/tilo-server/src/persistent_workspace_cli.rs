@@ -54,7 +54,8 @@ pub struct PersistentArgs {
     #[arg(long = "workspace-name", value_name = "NAME", requires = "persistent")]
     pub workspace_name: Option<String>,
     /// A channel the workspace's Chat opens with while it has none, by name
-    /// (lowercase letters, digits and `-`); repeatable, in order. Its id is
+    /// (lowercase letters, digits and `-`); repeatable, in order. Naming one
+    /// seeds the workspace's Chat at its first start. Its id is
     /// `c_<name>` with `-` as `_`, the same on every start, so what maps
     /// onto it (a bridged Discord server's channels) finds it again.
     #[arg(
@@ -220,9 +221,10 @@ pub struct PersistentArgs {
     /// of `https://api.openai.com/v1`.
     #[arg(long = "openai-api", value_name = "URL")]
     pub openai_api: Option<String>,
-    /// An app authored into the workspace at its first start; repeatable.
-    #[arg(long = "seed-app", value_name = "APP_ID")]
-    pub seed_apps: Vec<String>,
+    /// A directory of signed `.tapp` packages: the system's apps this server
+    /// ships, installed in every workspace whose apps it sets up.
+    #[arg(long = "packages", value_name = "DIR")]
+    pub packages: Option<std::path::PathBuf>,
     /// What to install at the workspace's first start, approved by the workspace's
     /// root, with its inputs (`<source> key=value …`); repeatable. The source
     /// is a bot directory entry, or a program file on this host, which the
@@ -962,33 +964,34 @@ async fn mark_settled(
         .map_err(|error| anyhow::anyhow!("note {name} as settled: {error}"))
 }
 
-/// Seed the workspace with `apps`: each one's record written from its own
-/// factory, as the workspace's governor, and noted in the workspace's
-/// [`SETTLED`] record so a later start, on this host or another serving it,
-/// seeds only what it added since.
+/// Seed the workspace's Chat: its record written from its own factory, as
+/// this server, and noted in the workspace's [`SETTLED`] record
+/// so a later start, on this host or another serving it, seeds it no more.
 ///
 /// A workspace the operator just created holds no channel yet, and its records
-/// are sealed from their first write, so each seed's genesis waits for the
+/// are sealed from their first write, so the seed's genesis waits for the
 /// group the host's channel service creates for it: the wait is bounded by the
 /// service (`crate::workspace_keys::OPEN_WAIT`, longer than the group may take to be
-/// founded), and each app is named in the error when its keys never come.
-pub(crate) async fn seed_apps(
+/// founded), and the error says so when its keys never come.
+pub(crate) async fn seed_chat(
     workspaces: &Workspaces,
     workspace: &str,
     cert: &DeviceCert,
-    apps: &[String],
 ) -> anyhow::Result<()> {
-    let seeded = settled_in(workspaces, workspace, "seeded").await?;
-    let catalogue = tilo_agent_session::AppCatalogue::native();
-    for app in apps.iter().filter(|app| !seeded.contains(*app)) {
-        let record = tilo_workspace_service::agents::workspace_resource(&catalogue, app);
-        workspaces
-            .prepare_application(workspace, cert, &catalogue, app, &record)
-            .await
-            .map_err(|error| anyhow::anyhow!("seed {app}: {error}"))?;
-        mark_settled(workspaces, workspace, cert, "seeded", app, "seeded").await?;
+    let app = crate::workspace_chat::CHAT_APP;
+    if settled_in(workspaces, workspace, "seeded")
+        .await?
+        .contains(app)
+    {
+        return Ok(());
     }
-    Ok(())
+    let catalogue = tilo_agent_session::AppCatalogue::native();
+    let record = tilo_workspace_service::agents::workspace_resource(&catalogue, app);
+    workspaces
+        .prepare_application(workspace, cert, &catalogue, app, &record)
+        .await
+        .map_err(|error| anyhow::anyhow!("seed {app}: {error}"))?;
+    mark_settled(workspaces, workspace, cert, "seeded", app, "seeded").await
 }
 
 /// What the workspace keeps of the files members post in its Chat; `None`
@@ -1016,24 +1019,20 @@ fn workspace_files(persistent: &PersistentArgs) -> chat::chat::WorkspaceFiles {
     })
 }
 
-/// Give the workspace's chat, when it is seeded and while it has only the
-/// channels every workspace opens with, the operator's starting `channels`, and
-/// tell it what the workspace keeps of members' `files`. What people wrote is
+/// Give the workspace's chat, seeded when the operator names its starting
+/// `channels`, those channels while it has only the ones every workspace
+/// opens with, and tell it what the workspace keeps of members' `files`. What people wrote is
 /// never touched, and a chat with channels keeps exactly those.
 pub(crate) async fn settle_chat(
     workspaces: &Workspaces,
     workspace: &str,
     cert: &DeviceCert,
-    apps: &[String],
     channels: &[String],
     feedback: Option<&str>,
     files: chat::chat::WorkspaceFiles,
     discussions: &[crate::workspace_discussions::Published],
 ) -> anyhow::Result<()> {
-    if !apps
-        .iter()
-        .any(|app| app == crate::workspace_chat::CHAT_APP)
-    {
+    if channels.is_empty() {
         return Ok(());
     }
     let catalogue = tilo_agent_session::AppCatalogue::native();
@@ -1429,6 +1428,7 @@ pub(crate) async fn run(
             .iroh_listen
             .unwrap_or_else(|| tilo_server::ServerConfig::default().iroh_listen),
         work: hold_for(persistent.hold_for.as_deref())?,
+        packages: persistent.packages.clone(),
         ..Default::default()
     };
     let identity = hosted_identity(&root, host, server_cert, &config.state_root)?;
@@ -1533,12 +1533,13 @@ pub(crate) async fn run(
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))?
         {
-            seed_apps(&workspaces, &workspace, &server_cert, &persistent.seed_apps).await?;
+            if !persistent.chat_channels.is_empty() {
+                seed_chat(&workspaces, &workspace, &server_cert).await?;
+            }
             settle_chat(
                 &workspaces,
                 &workspace,
                 &server_cert,
-                &persistent.seed_apps,
                 &persistent.chat_channels,
                 persistent.feedback_channel.as_deref(),
                 workspace_files(&persistent),
@@ -2236,45 +2237,33 @@ mod tests {
         (server, workspaces, server_cert, workspace)
     }
 
-    /// Seeds as the operator's start does, naming the apps it asked `--seed-app`
-    /// for, and answers with what the workspace seeded.
+    /// Seeds Chat as the operator's start does when it names a channel, and
+    /// answers with what the workspace seeded.
     async fn seeded(
         server_cert: &DeviceCert,
         workspaces: &Workspaces,
         workspace: &str,
-        apps: &[&str],
     ) -> BTreeSet<String> {
-        seed_apps(
-            workspaces,
-            workspace,
-            server_cert,
-            &apps.iter().map(|app| (*app).to_owned()).collect::<Vec<_>>(),
-        )
-        .await
-        .unwrap();
+        seed_chat(workspaces, workspace, server_cert).await.unwrap();
         settled_in(workspaces, workspace, "seeded").await.unwrap()
     }
 
-    /// A persistent workspace's first start seeds its apps: a workspace that was
-    /// just created holds no channel yet, so each seed's genesis waits for the
-    /// group the host's channel service creates for it, and a wait that is too
-    /// short stops the start.
+    /// A persistent workspace's first start seeds its Chat: a workspace that
+    /// was just created holds no channel yet, so the seed's genesis waits for
+    /// the group the host's channel service creates for it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_fresh_workspace_seeds_its_apps_and_keeps_them() {
+    async fn a_fresh_workspace_seeds_its_chat_and_keeps_it() {
         let dir = tempfile::tempdir().unwrap();
         let (server, workspaces, server_cert) =
             host_with(dir.path(), tilo_user_identity::DeviceCapabilities::member()).await;
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
-        let apps = ["so.tilo.tasks", "so.tilo.chat"];
-        let first = seeded(&server_cert, &workspaces, &workspace, &apps).await;
+        let first = seeded(&server_cert, &workspaces, &workspace).await;
         assert_eq!(
             first,
-            apps.iter()
-                .map(|app| (*app).to_owned())
-                .collect::<BTreeSet<_>>()
+            BTreeSet::from([crate::workspace_chat::CHAT_APP.to_owned()])
         );
         // A restart seeds nothing again: what the first start seeded is kept.
-        let again = seeded(&server_cert, &workspaces, &workspace, &apps).await;
+        let again = seeded(&server_cert, &workspaces, &workspace).await;
         assert_eq!(again, first);
         server.shutdown().await;
     }

@@ -15,7 +15,7 @@
 //! person's other devices ([`crate::offload`]); every other host service is absent, and the
 //! broker answers as it does for any host that does not provide one.
 
-use super::commits::{RecordCreation, ServiceCommits};
+use super::commits::{RecordCreation, service_commits};
 use super::ticket::Tickets;
 use super::workspaces::{MemberListGrants, Opening, ServiceWorkspaces, block_on_owned};
 use super::{host_runs, take_work};
@@ -674,7 +674,7 @@ fn start_broker(
         Some(Arc::clone(parts.workspaces) as Arc<dyn WorkspaceAuthority>),
         PeerPublisher::with_optional_owner_commit(
             None,
-            ServiceCommits::new(parts.workspaces, Arc::clone(&parts.creation))
+            service_commits(parts.workspaces, Arc::clone(&parts.creation))
                 as Arc<dyn OwnerCommitService>,
         ),
         None,

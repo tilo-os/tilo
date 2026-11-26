@@ -647,3 +647,27 @@ int main(void) {
     drop(collab);
     assert_eq!(launch.wait(), Some(0));
 }
+
+/// A call that shows nothing runs the workspace's tilolang package through the package runs every
+/// device that holds a workspace starts them with, a server's included: without a launcher it is
+/// refused for that, never answered as something this device runs nothing of, and a call into a
+/// workspace this runtime does not serve is refused.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_call_that_shows_nothing_starts_the_package_through_the_package_runs() {
+    let (_temp, root) = canonical_temp();
+    let apps = Apps::new(None, &root, WORKSPACE, PathBuf::new(), Vec::new());
+    let refused = apps
+        .windowless("so.tilo.notes", WORKSPACE)
+        .map(drop)
+        .unwrap_err();
+    assert!(refused.contains("tilo-launcher was not found"), "{refused}");
+    let elsewhere = apps
+        .windowless("so.tilo.notes", "4f1d0f7a-9d0e-4c43-8d3b-2f6f7b8f3a21")
+        .map(drop)
+        .unwrap_err();
+    assert!(
+        elsewhere.contains("runs here only in workspace"),
+        "{elsewhere}"
+    );
+}

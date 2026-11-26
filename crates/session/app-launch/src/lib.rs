@@ -52,7 +52,7 @@ mod i18n {
 }
 
 pub mod instance;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keeper"))]
 pub mod kept;
 pub mod launch;
 mod memory;
@@ -70,7 +70,7 @@ pub use instance::{Answer, Instance, Shown, Windows, package_identities};
 pub use launch::{Launch, Open};
 pub use links::{Connects, ContentOpen, HeldLink, HostedWindow, Links, Opens, Routed, StartAlone};
 pub use plan::{Kind, PlanContext, PlanError, Planned};
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "keeper"))]
 pub use spawner::{Adopted, Handed, KeptDirs};
 pub use spawner::{Cause, End, Event, Spawner, Started, Teardown};
 pub use workspace::Workspace;

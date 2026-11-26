@@ -12,9 +12,14 @@ description = "Starting an application from the desktop: the launch vocabulary, 
 # and hands over what this crate plans and spawns.
 
 [features]
+default = ["keeper"]
+# Apps that are not Tilo's, run behind a keeper that outlives the session. A
+# host that runs only Tilo's own apps (a server) leaves it out, and with it the
+# compositor libraries the keeper links.
+keeper = ["dep:tilo-app-keeper"]
 # The boundary a session's tests report an ending through, for the apps it did
 # not start itself.
-test-support = ["tilo-app-keeper/test-support"]
+test-support = ["keeper", "tilo-app-keeper/test-support"]
 
 [dependencies]
 # The machine's own applications: their entries, entry kinds and launch plans.
@@ -67,6 +72,11 @@ launcher = { path = "../../packaging/launcher" }
 package-store = { path = "../../packaging/package-store", features = ["store"] }
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 tilo-app-state = { path = "../../system/app-state" }
+# What a native app kept in a workspace, kept where its tilolang successor's process reads it
+# for the host that carries its migrations.
+automerge.workspace = true
+durable-store = { path = "../../system/durable-store" }
+hex.workspace = true
 # The window request the channel carries, as the app reads it.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 
@@ -80,7 +90,7 @@ libc.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The control interface of the keeper an app that is not Tilo's runs behind.
-tilo-app-keeper = { path = "../app-keeper" }
+tilo-app-keeper = { path = "../app-keeper", optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

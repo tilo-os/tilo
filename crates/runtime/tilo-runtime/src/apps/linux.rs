@@ -153,7 +153,7 @@ fn service_directory(root: &Path, sockets: &Sockets) -> io::Result<PathBuf> {
 /// # Errors
 ///
 /// Refuses the launch when none does: there is no unconfined fallback.
-fn resolve_launcher(candidates: &[PathBuf]) -> Result<PathBuf, String> {
+pub(super) fn resolve_launcher(candidates: &[PathBuf]) -> Result<PathBuf, String> {
     candidates
         .iter()
         // On Tilo OS the old name beside a program in /usr/bin is a link to

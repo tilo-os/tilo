@@ -386,3 +386,51 @@ async fn a_package_without_a_model_applies_nothing() {
     );
     server.shutdown().await;
 }
+
+/// A host installs a package it ships as the version its workspace runs: every
+/// member reads the version and fetches the file from the host by its hash, a
+/// second start leaves it as it is, and bytes that hold no signed package are
+/// refused.
+#[tokio::test]
+async fn a_host_installs_the_package_it_ships_once() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = test_host(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
+    let created = workspaces.create("Shipped").await.unwrap();
+    let package = package(TASKS, None);
+    let installed = workspaces
+        .install_package(&created.workspace, &cert, &package)
+        .await
+        .unwrap();
+    assert_eq!(installed, TASKS);
+    let runs = workspaces.app_versions(&created.workspace).await.unwrap();
+    let [running] = runs.as_slice() else {
+        panic!("the workspace runs one version: {runs:?}");
+    };
+    assert_eq!(running.release.app, TASKS);
+    assert_eq!(
+        workspaces
+            .installed_package(&created.workspace, TASKS)
+            .await
+            .as_deref(),
+        Some(package.as_slice()),
+        "the host keeps the file members fetch"
+    );
+    workspaces
+        .install_package(&created.workspace, &cert, &package)
+        .await
+        .unwrap();
+    assert_eq!(
+        workspaces.app_versions(&created.workspace).await.unwrap(),
+        runs,
+        "a second start installs nothing again"
+    );
+    assert!(
+        workspaces
+            .install_package(&created.workspace, &cert, b"not a package")
+            .await
+            .is_err()
+    );
+    server.shutdown().await;
+}

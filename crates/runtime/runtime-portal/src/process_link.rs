@@ -194,6 +194,10 @@ pub enum Shows {
     /// nothing is drawn. A call that shows nothing has no view connection, offers no verb to bring
     /// a view forward, and stays until the session ends it.
     Nothing,
+    /// A page: the process lays the view out itself and writes it as a page for someone looking
+    /// at it through the device that started it, which asks for it on the connection its
+    /// `window` is (`tilo_server_protocol::page_window`).
+    Page,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,6 +240,12 @@ pub struct InstanceRequest {
     /// where the session holds no policy for the workspace; the broker decides either way.
     #[serde(with = "policy_text")]
     pub access: Option<MemberAccess>,
+    /// Whether this run carries the package's migrations: it shows nothing and carries over, once,
+    /// what a native app of the package's id kept in the workspace (the migrations that read
+    /// `earlier(r)`). A server asks it of its own runs, as its configuration says; which run
+    /// carries them moves onto the one placement function (`work::takes_turn`) once it lands.
+    #[serde(default)]
+    pub carries_migrations: bool,
 }
 
 /// The descriptors one instance arrives with.
@@ -622,6 +632,7 @@ mod tests {
                 ),
                 "ada",
             )),
+            carries_migrations: false,
         }
     }
 

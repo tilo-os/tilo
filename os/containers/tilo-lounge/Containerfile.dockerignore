@@ -5,3 +5,6 @@
 !surfaces/
 !entrypoint.sh
 !verify-no-cisco-openh264.sh
+!runtimes/
+!packages/
+!runtime-publishers.txt

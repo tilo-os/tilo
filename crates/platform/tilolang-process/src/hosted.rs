@@ -99,6 +99,11 @@ pub struct Spec {
     /// instance that shows nothing draws no window, offers no window verb, and runs the app's
     /// actions on its document alone.
     pub shows: Shows,
+    /// Whether this run carries the package's migrations (`InstanceRequest::carries_migrations`):
+    /// it carries what a native app of the package's id kept in the workspace, though it reads the
+    /// workspace through a broker. It moves onto the one placement function (`work::takes_turn`)
+    /// once that lands.
+    pub carries_migrations: bool,
 }
 
 impl Spec {
@@ -120,6 +125,7 @@ impl Spec {
             language: String::new(),
             access: None,
             shows: Shows::View,
+            carries_migrations: false,
         }
     }
 
@@ -134,6 +140,15 @@ impl Spec {
     #[must_use]
     pub fn access(mut self, access: tilo_action_policy::MemberAccess) -> Self {
         self.access = Some(access);
+        self
+    }
+
+    /// [`Self::new`] for a run that carries the package's migrations and shows nothing
+    /// ([`Self::carries_migrations`]).
+    #[must_use]
+    pub fn carrying_migrations(mut self) -> Self {
+        self.shows = Shows::Nothing;
+        self.carries_migrations = true;
         self
     }
 
@@ -161,7 +176,7 @@ impl Transport for NoView {
 }
 
 /// The documents a native app of the package's id `app` kept in `record`'s workspace on this
-/// device, when this device governs the workspace (none elsewhere), each by the id it holds (a
+/// device, when this run `carries` the package's migrations (none elsewhere), each by the id it holds (a
 /// store keys a document by a name made from its id), else by the key it is stored under: its
 /// records, which the package now under that id carries over once with a migration of
 /// its own. They are read under `app`, not under the id of `record`'s route: a package published
@@ -176,11 +191,12 @@ fn earlier_documents(
     documents: Option<&Rc<dyn durable_store::DurableStore>>,
     app: &str,
     record: &Connection,
+    carries: bool,
 ) -> Vec<(String, automerge::AutoCommit)> {
     let Some(documents) = documents else {
         return Vec::new();
     };
-    if !record.governs() {
+    if !carries {
         return Vec::new();
     }
     let workspace = record.route().cluster_id.to_string();
@@ -1010,12 +1026,15 @@ impl Hosted {
             window,
         );
         // The device that governs the workspace is its documents' origin: the package's migrations
-        // run there, once, over what a native app of the package's id kept there too.
-        instance.set_origin(connection.governs());
+        // run there, once, over what a native app of the package's id kept there too. A run that
+        // reads its workspace through a broker says itself that it carries them.
+        let carries = connection.governs() || spec.carries_migrations;
+        instance.set_origin(carries);
         instance.set_earlier(earlier_documents(
             kept.earlier.as_ref(),
             &spec.app,
             &connection,
+            carries,
         ));
         // What its runtime offers and invokes is decided by the person's access as the session
         // says it, read at each decision.
@@ -1095,6 +1114,14 @@ impl Hosted {
     #[must_use]
     pub fn owes_a_frame(&self) -> bool {
         self.instance.owes_a_frame()
+    }
+
+    /// Whether this is a run that carries the package's migrations whose work is done: the
+    /// package's migrations ran (or found their marks) and the workspace was handed what they
+    /// wrote. Such a run is never a reader that stays, so it ends then.
+    #[must_use]
+    pub fn carried(&self) -> bool {
+        self.spec.carries_migrations && self.instance.has_migrated() && !self.owes_a_frame()
     }
 
     /// Why the instance's surface was last refused rather than published: empty while what it

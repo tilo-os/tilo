@@ -83,3 +83,127 @@ impl GroupKeySource for () {
         None
     }
 }
+
+#[cfg(unix)]
+/// Who a request to the identity service is decided as, and whose device signs it.
+pub struct Presented {
+    /// The person the workspace decides the request as.
+    pub person: [u8; 32],
+    /// What the workspace allows them now, when the source decides it itself; `None` leaves it
+    /// to the workspace's policy for the person.
+    pub access: Option<tilo_action_policy::MemberAccess>,
+    /// Whether this device is one of the person's own: what is theirs alone is reached through
+    /// such a device only.
+    pub their_device: bool,
+    /// The person's identity, on a device of theirs.
+    pub profile: Option<crate::store::IdentityProfile>,
+}
+
+#[cfg(unix)]
+/// Why a request is decided as nobody.
+#[derive(Debug)]
+pub enum Undecided {
+    /// This device has no identity to decide it with: a fault of the device, not the request's.
+    Fault(String),
+    /// Nobody who may make the request asked for it, as a person may read.
+    Refused(String),
+}
+
+#[cfg(unix)]
+/// Who this device signs as for the requests of its apps, and who each request is decided as.
+pub trait SignerSource: collab_types::signer::MaybeSendSync + 'static {
+    /// Who this device is in `workspace` when it acts for nobody in particular: joining the
+    /// workspace's collaboration, and saying who it is.
+    ///
+    /// # Errors
+    /// The device has no identity in `workspace`, as a person may read.
+    fn presented(
+        &self,
+        tree: &dyn WorkspaceMembership,
+        workspace: &WorkspaceId,
+    ) -> Result<Presented, String>;
+
+    /// Who a request `app` makes in `workspace` is decided as, for the call `call` it names when
+    /// it names one.
+    ///
+    /// # Errors
+    /// Nobody this device may act for asked for it, or this device has no identity there.
+    fn decided_as(
+        &self,
+        tree: &dyn WorkspaceMembership,
+        workspace: &WorkspaceId,
+        app: &str,
+        call: Option<[u8; 16]>,
+    ) -> Result<Presented, Undecided>;
+
+    /// The key and certificate this device signs with for `presented`, while it is trusted to.
+    ///
+    /// # Errors
+    /// This device is not, or no longer, trusted to sign.
+    fn device(
+        &self,
+        presented: &Presented,
+    ) -> std::io::Result<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)>;
+
+    /// Whether this device may hand the keys of the workspace `launch` to a request decided as
+    /// `presented`.
+    ///
+    /// # Errors
+    /// It may not, as a person may read.
+    fn hands_keys(&self, presented: &Presented, launch: &str) -> Result<(), String>;
+}
+
+#[cfg(unix)]
+/// A device of a person's own: it signs as the identity its person chose for each workspace,
+/// and decides every request as that person.
+pub struct PersonDevice;
+
+#[cfg(unix)]
+impl SignerSource for PersonDevice {
+    fn presented(
+        &self,
+        tree: &dyn WorkspaceMembership,
+        workspace: &WorkspaceId,
+    ) -> Result<Presented, String> {
+        let profile = crate::broker::identity_in(tree, workspace)?;
+        Ok(Presented {
+            person: profile.user_public_key,
+            access: None,
+            their_device: true,
+            profile: Some(profile),
+        })
+    }
+
+    fn decided_as(
+        &self,
+        tree: &dyn WorkspaceMembership,
+        workspace: &WorkspaceId,
+        _app: &str,
+        _call: Option<[u8; 16]>,
+    ) -> Result<Presented, Undecided> {
+        self.presented(tree, workspace).map_err(Undecided::Fault)
+    }
+
+    fn device(
+        &self,
+        presented: &Presented,
+    ) -> std::io::Result<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
+        let profile = presented
+            .profile
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("this device has no identity to sign in with"))?;
+        crate::broker::require_trusted_current_device(profile)
+    }
+
+    fn hands_keys(&self, presented: &Presented, launch: &str) -> Result<(), String> {
+        // The same trust check as signing, served from memory while none of the files it reads
+        // changed (`join_proof`): one `stat` of each instead of reading the device key and
+        // certificate. A changed, unreadable or just-written file, a revocation included, is
+        // checked again from disk; a refusal is never remembered. No key leaves the check.
+        match crate::join_proof::trusted_current_join_proof(launch) {
+            Ok(trusted) if trusted.certificate.user_public_key == presented.person => Ok(()),
+            Ok(_) => Err("this device certificate does not belong to the selected identity".into()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+}

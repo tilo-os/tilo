@@ -19,7 +19,7 @@ path = "src/lib.rs"
 test-support = ["tilo-workspace-service/test-support"]
 # The workspaces' records and roster agents on the host (`--workspace-documents`):
 # tilo-agent-session, which links every web app, as the app-serving protocol.
-agents = ["web", "tilo-workspace-service/agents", "tilo-workspace-service/files", "dep:tilo-agent-session", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-workspace-emoji", "dep:collaboration", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:linux-vm", "dep:tilo-server-account", "dep:tilo-mcp", "dep:tilo-workspace-agent", "dep:tilo-web-search", "dep:feed-rs", "dep:tilo-sheets"]
+agents = ["web", "tilo-workspace-service/agents", "tilo-workspace-service/apps", "tilo-workspace-service/files", "dep:tilo-app-launch", "dep:runtime-portal", "dep:tilo-agent-session", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-workspace-emoji", "dep:collaboration", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:linux-vm", "dep:tilo-server-account", "dep:tilo-mcp", "dep:tilo-workspace-agent", "dep:tilo-web-search", "dep:feed-rs", "dep:tilo-sheets"]
 web = ["tilo-workspace-service/device-keys", "dep:tilo-live", "dep:tilo-net", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:futures", "dep:hmac", "dep:ring"]
 
 [[bin]]
@@ -225,6 +225,14 @@ tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-ide
 tilo-content = { path = "../../system/content", features = ["dir"] }
 bounded-command = { path = "../../system/bounded-command" }
 launcher = { path = "../../packaging/launcher" }
+# The ids an installed app was published under before, as a device's catalogue believes them.
+app-catalogue = { path = "../../packaging/app-catalogue" }
+# The launcher contract the app broker starts and attests a workspace's apps through.
+tilo-broker-core = { path = "../../collab/broker-core" }
+# The one tilolang process per workspace and app every device runs a package's code in, and
+# the process link its windows and calls are handed on.
+tilo-app-launch = { path = "../../session/app-launch", optional = true, default-features = false }
+runtime-portal = { path = "../../runtime/runtime-portal", default-features = false, optional = true }
 # Installed packages and their integrity records.
 package-store = { path = "../../packaging/package-store", features = ["store"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }

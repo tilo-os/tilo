@@ -241,6 +241,7 @@ tilo_test_env::scenario! {
             web_entry: None,
             max_workspace_grants: None,
             relay: None,
+            packages: None,
         };
         let encoded = r#"identity_root = "/var/lib/tilo"
 state_root = "/var/lib/tilo-server"

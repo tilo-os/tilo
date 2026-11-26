@@ -142,6 +142,10 @@ pub mod wire {
         pub app_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub surface: Option<String>,
+        /// The one call this connection serves, when the launcher opened it for one: every
+        /// request on it is decided as whoever made that call, and it names no other.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub call: Option<[u8; 16]>,
     }
 
     /// Additive JSON negotiation: zero serializes exactly the older handshake, and
@@ -186,6 +190,13 @@ pub mod wire {
             app_id: String,
             document_id: String,
             known_generation: u64,
+        },
+        /// `request`, made while the app serves the invocation `invocation`: decided as the one
+        /// who made that call, where a device runs apps for the people who call them. Appended,
+        /// so earlier requests keep their encoding.
+        ForCall {
+            invocation: [u8; 16],
+            request: Box<Self>,
         },
     }
 
@@ -267,6 +278,7 @@ mod presentation_wire_tests {
                 workspace_id: "w1".into(),
                 app_id: "app".into(),
                 surface: None,
+                call: None,
             };
             let legacy_bytes = serde_json::to_vec(&legacy).unwrap();
             let compatibility = PresentationHandshake {

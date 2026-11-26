@@ -19,7 +19,10 @@ use tilo_clock::unix_now;
 use tilo_identity_client::wire::{FRAMING, HANDSHAKE_FRAMING, Request, Response};
 use wire_frame::FrameError;
 
-pub use crate::sources::{GroupKeySource, GroupKeys, PersonResourceTypes, WorkspaceMembership};
+pub use crate::sources::{
+    GroupKeySource, GroupKeys, PersonDevice, PersonResourceTypes, Presented, SignerSource,
+    Undecided, WorkspaceMembership,
+};
 use tilo_desktop_model::{Workspace, WorkspaceId};
 
 use tilo_lock::MutexRecover as _;
@@ -49,7 +52,7 @@ fn read_workspace<T>(
 /// workspace has them in it. A workspace without them is a membership bug,
 /// answered as a fault here, never as something an app chooses its way out
 /// of; the person's own cluster has no roster and is theirs.
-fn identity_in(
+pub(crate) fn identity_in(
     tree: &dyn WorkspaceMembership,
     workspace: &WorkspaceId,
 ) -> Result<crate::store::IdentityProfile, String> {
@@ -120,6 +123,19 @@ pub fn spawn(
     groups: Arc<dyn GroupKeySource>,
     person: Arc<dyn PersonResourceTypes>,
 ) -> io::Result<IdentityBrokerHandle> {
+    spawn_signing(path, tree, groups, person, Arc::new(PersonDevice))
+}
+
+/// [`spawn`], signing as `signer` says: a device of a person's own signs as that person's
+/// identity, and a device that runs apps for the people who call them signs as itself, deciding
+/// each request as the caller it names.
+pub fn spawn_signing(
+    path: PathBuf,
+    tree: Arc<dyn WorkspaceMembership>,
+    groups: Arc<dyn GroupKeySource>,
+    person: Arc<dyn PersonResourceTypes>,
+    signer: Arc<dyn SignerSource>,
+) -> io::Result<IdentityBrokerHandle> {
     let _ = std::fs::remove_file(&path);
     let listener = tilo_files::native::socket::bind(&path)?;
     let stop = Arc::new(AtomicBool::new(false));
@@ -138,6 +154,7 @@ pub fn spawn(
                         let tree = Arc::clone(&tree);
                         let groups = Arc::clone(&groups);
                         let person = Arc::clone(&person);
+                        let signer = Arc::clone(&signer);
                         let cancellation = match stream.try_clone() {
                             Ok(cancellation) => cancellation,
                             Err(error) => {
@@ -153,7 +170,7 @@ pub fn spawn(
                         match thread::Builder::new()
                             .name("tilo-identity-client".into())
                             .spawn(move || {
-                                serve(stream, &*tree, &*groups, &*person);
+                                serve(stream, &*tree, &*groups, &*person, &*signer);
                                 drop(connection);
                             })
                         {
@@ -189,6 +206,7 @@ fn serve(
     tree: &dyn WorkspaceMembership,
     groups: &dyn GroupKeySource,
     person: &dyn PersonResourceTypes,
+    signer: &dyn SignerSource,
 ) {
     // Darwin inherits the listener's nonblocking flag on accept. This worker
     // uses blocking framed I/O; an empty receive is not the end of a session.
@@ -223,16 +241,40 @@ fn serve(
         return;
     };
     while let Ok(request) = read_action_frame::<Request>(&mut stream) {
+        // A request an app makes while it serves a call names the call: it is decided as the
+        // one who made it. A connection the launcher opened for one call serves that call alone.
+        let (call, request) = match (handshake.call, request) {
+            (
+                None,
+                Request::ForCall {
+                    invocation,
+                    request,
+                },
+            ) => (Some(invocation), *request),
+            (Some(_), Request::ForCall { .. }) => {
+                let _ = write_action_frame(
+                    &mut stream,
+                    &Response::Denied("this connection serves one call and names no other".into()),
+                );
+                continue;
+            }
+            (call, request) => (call, request),
+        };
+        let bound = Bound {
+            workspace: &workspace,
+            app_id: &handshake.app_id,
+            person,
+            signer,
+            call,
+        };
         let response = match request {
+            Request::ForCall { .. } => {
+                Response::Denied("a request names the call it is made for once".into())
+            }
             Request::Metadata => {
-                metadata_response(tree, &workspace, negotiated.presentation_version != 0)
+                metadata_response(tree, &bound, negotiated.presentation_version != 0)
             }
             Request::CollaborationJoin { workspace_id } => {
-                let bound = Bound {
-                    workspace: &workspace,
-                    app_id: &handshake.app_id,
-                    person,
-                };
                 sign_collaboration_join(tree, &bound, &workspace_id)
             }
             Request::CollaborationOp {
@@ -242,11 +284,7 @@ fn serve(
                 unsigned_op,
             } => sign_collaboration_op(
                 tree,
-                &Bound {
-                    workspace: &workspace,
-                    app_id: &handshake.app_id,
-                    person,
-                },
+                &bound,
                 &workspace_id,
                 &app_id,
                 &document_id,
@@ -261,11 +299,7 @@ fn serve(
                 tree,
                 groups,
                 &GroupKeyRoute {
-                    bound: Bound {
-                        workspace: &workspace,
-                        app_id: &handshake.app_id,
-                        person,
-                    },
+                    bound,
                     workspace_id: &workspace_id,
                     app_id: &app_id,
                     document_id: &document_id,
@@ -281,23 +315,42 @@ fn serve(
 
 fn metadata_response(
     tree: &dyn WorkspaceMembership,
-    workspace: &WorkspaceId,
+    bound: &Bound<'_>,
     presentation: bool,
 ) -> Response {
-    let profile = match identity_in(tree, workspace) {
-        Ok(profile) => profile,
+    let presented = match bound.signer.presented(tree, bound.workspace) {
+        Ok(presented) => presented,
         Err(reason) => return Response::Error(reason),
     };
-    let record = match tilo_identity_client::load_metadata_from_path(&profile.record_path) {
-        Ok(record) => record,
-        Err(error) => return Response::Error(error.to_string()),
-    };
-    if record.group_public_key != profile.user_public_key {
-        return Response::Denied("identity record no longer matches the selected actor".into());
-    }
-    let (device, cert) = match require_trusted_current_device(&profile) {
+    let (device, cert) = match bound.signer.device(&presented) {
         Ok(material) => material,
         Err(error) => return Response::Denied(error.to_string()),
+    };
+    // A person's device says who they are; a device that runs apps for the people who call them
+    // says only what it is: its certificate's name, signing for itself alone.
+    let record = match &presented.profile {
+        Some(profile) => {
+            let record = match tilo_identity_client::load_metadata_from_path(&profile.record_path) {
+                Ok(record) => record,
+                Err(error) => return Response::Error(error.to_string()),
+            };
+            if record.group_public_key != profile.user_public_key {
+                return Response::Denied(
+                    "identity record no longer matches the selected actor".into(),
+                );
+            }
+            record
+        }
+        None => tilo_identity_client::IdentityMetadata {
+            display_name: cert.device_label.clone(),
+            avatar_color: [0; 3],
+            group_public_key: cert.user_public_key,
+            threshold: 1,
+            total_shares: 1,
+            share_index: 1,
+            single_device: true,
+            profile_photo: None,
+        },
     };
     let device_certificate = match serde_json::to_vec(&cert) {
         Ok(bytes) => bytes,
@@ -328,12 +381,24 @@ fn metadata_response(
     }
 }
 
+/// What a request decided as nobody is answered: a fault of this device, or a denial.
+fn refusal(undecided: Undecided) -> Response {
+    match undecided {
+        Undecided::Fault(reason) => Response::Error(reason),
+        Undecided::Refused(reason) => Response::Denied(reason),
+    }
+}
+
 /// What a client's launch bound it to: its workspace and app, and the
 /// records of the person's that app declares.
 struct Bound<'a> {
     workspace: &'a WorkspaceId,
     app_id: &'a str,
     person: &'a dyn PersonResourceTypes,
+    /// Who the device signs as, and who each request is decided as.
+    signer: &'a dyn SignerSource,
+    /// The call the request is made for, when it names one.
+    call: Option<[u8; 16]>,
 }
 
 impl Bound<'_> {
@@ -355,13 +420,16 @@ impl Bound<'_> {
 
     /// Whether `workspace_id` is the own cluster of the person the bound
     /// workspace's identity is, and the app keeps records of theirs there.
-    fn in_personal_cluster(
-        &self,
-        profile: &crate::store::IdentityProfile,
-        workspace_id: &str,
-    ) -> bool {
-        collab_types::personal_cluster(&profile.user_public_key).to_string() == workspace_id
+    fn in_personal_cluster(&self, presented: &Presented, workspace_id: &str) -> bool {
+        presented.their_device
+            && collab_types::personal_cluster(&presented.person).to_string() == workspace_id
             && !self.person.person_resource_types(self.app_id).is_empty()
+    }
+
+    /// Who a request of the bound app is decided as.
+    fn decided_as(&self, tree: &dyn WorkspaceMembership) -> Result<Presented, Undecided> {
+        self.signer
+            .decided_as(tree, self.workspace, self.app_id, self.call)
     }
 
     /// Whether the app declares the person's record `document_id`.
@@ -382,23 +450,23 @@ fn sign_collaboration_join(
 ) -> Response {
     // The launch workspace, or the person's own cluster for the records of
     // theirs the app declares; the broker admits each of those records alone.
-    let foreign = |profile: &crate::store::IdentityProfile| {
+    let foreign = |presented: &Presented| {
         workspace_id != bound.workspace.to_string()
-            && !bound.in_personal_cluster(profile, workspace_id)
+            && !bound.in_personal_cluster(presented, workspace_id)
     };
     if workspace_id != bound.workspace.to_string()
         && bound.person.person_resource_types(bound.app_id).is_empty()
     {
         return Response::Denied("collaboration join requested for a different workspace".into());
     }
-    let profile = match identity_in(tree, bound.workspace) {
-        Ok(profile) => profile,
+    let presented = match bound.signer.presented(tree, bound.workspace) {
+        Ok(presented) => presented,
         Err(reason) => return Response::Error(reason),
     };
-    if foreign(&profile) {
+    if foreign(&presented) {
         return Response::Denied("collaboration join requested for a different workspace".into());
     }
-    match require_trusted_current_device(&profile) {
+    match bound.signer.device(&presented) {
         Ok((device, _)) => match tilo_identity_client::collaboration_join_digest(workspace_id) {
             Ok(digest) => {
                 match tilo_user_identity::StatementSigner::sign_digest(&device, &digest) {
@@ -435,7 +503,7 @@ fn denial(
 /// receiver decides it.
 fn decide_written(
     workspace: &Workspace,
-    actor_key: &str,
+    (actor_key, decided): (&str, Option<&tilo_action_policy::MemberAccess>),
     (app_id, document_id): (&str, &str),
     op: &collab_types::SignedOp,
 ) -> Result<collab_types::Receipt, collab_types::ReceiptRefusal> {
@@ -445,11 +513,17 @@ fn decide_written(
         document: document_id,
     };
     let access = std::cell::OnceCell::new();
+    let context = || tilo_desktop_model::context_at(unix_now());
     let allows = |invoker: Option<&tilo_action_policy::Acting>,
                   node: &tilo_action_policy::TreePath,
-                  kind| match invoker {
-        None => workspace.answer_at(actor_key, node, kind, unix_now()) == Answer::Allow,
-        Some(invoker) => {
+                  kind| match (invoker, decided) {
+        // What the source decided the caller may do, and nothing beyond it.
+        (None, Some(decided)) => decided.answer(node, kind, &context()) == Answer::Allow,
+        (Some(invoker), Some(decided)) => {
+            decided.invoked_by(invoker).answer(node, kind, &context()) == Answer::Allow
+        }
+        (None, None) => workspace.answer_at(actor_key, node, kind, unix_now()) == Answer::Allow,
+        (Some(invoker), None) => {
             let access = access.get_or_init(|| {
                 tilo_action_policy::MemberAccess::person(workspace.policy.clone(), actor_key)
             });
@@ -498,16 +572,16 @@ fn sign_collaboration_op(
             "collaboration operation requested for a different launch route".into(),
         );
     }
-    let profile = match identity_in(tree, bound_workspace) {
-        Ok(profile) => profile,
-        Err(reason) => return Response::Error(reason),
+    let presented = match bound.decided_as(tree) {
+        Ok(presented) => presented,
+        Err(undecided) => return refusal(undecided),
     };
-    if !launch_workspace && !bound.in_personal_cluster(&profile, workspace_id) {
+    if !launch_workspace && !bound.in_personal_cluster(&presented, workspace_id) {
         return Response::Denied(
             "collaboration operation requested for a different launch route".into(),
         );
     }
-    let (device, _) = match require_trusted_current_device(&profile) {
+    let (device, _) = match bound.signer.device(&presented) {
         Ok(material) => material,
         Err(error) => return Response::Denied(error.to_string()),
     };
@@ -548,12 +622,14 @@ fn sign_collaboration_op(
             Err(error) => Response::Error(error.to_string()),
         };
     }
-    let actor_key = hex::encode(profile.user_public_key);
+    let actor_key = hex::encode(presented.person);
     let decided = read_workspace(tree, bound_workspace, |workspace| {
-        workspace.role_of(&actor_key)?;
+        if presented.access.is_none() {
+            workspace.role_of(&actor_key)?;
+        }
         Some(decide_written(
             workspace,
-            &actor_key,
+            (&actor_key, presented.access.as_ref()),
             (app_id, document_id),
             &op,
         ))
@@ -607,32 +683,21 @@ fn group_keys(
         return Response::Denied("group keys requested for a different launch route".into());
     }
     let launch = bound.workspace.to_string();
-    let profile = match identity_in(tree, bound.workspace) {
-        Ok(profile) => profile,
-        Err(reason) => return Response::Error(reason),
+    let presented = match bound.decided_as(tree) {
+        Ok(presented) => presented,
+        Err(undecided) => return refusal(undecided),
     };
-    if !launch_workspace && !bound.in_personal_cluster(&profile, route.workspace_id) {
+    if !launch_workspace && !bound.in_personal_cluster(&presented, route.workspace_id) {
         return Response::Denied("group keys requested for a different launch route".into());
     }
-    // The same trust check as signing, served from memory while none of the
-    // files it reads changed (`join_proof`): one `stat` of each instead of
-    // reading the device key and certificate. A changed, unreadable or
-    // just-written file, a revocation included, is checked again from disk;
-    // a refusal is never remembered. No key leaves the check.
-    match crate::join_proof::trusted_current_join_proof(&launch) {
-        Ok(trusted) if trusted.certificate.user_public_key == profile.user_public_key => {}
-        Ok(_) => {
-            return Response::Denied(
-                "this device certificate does not belong to the selected identity".into(),
-            );
-        }
-        Err(error) => return Response::Denied(error.to_string()),
+    if let Err(reason) = bound.signer.hands_keys(&presented, &launch) {
+        return Response::Denied(reason);
     }
-    let actor_key = hex::encode(profile.user_public_key);
+    let actor_key = hex::encode(presented.person);
     // The person reads their own cluster, the launch workspace of an app
     // opened there included; a workspace, as its policy says.
-    let own_cluster =
-        collab_types::personal_cluster(&profile.user_public_key).to_string() == route.workspace_id;
+    let own_cluster = presented.their_device
+        && collab_types::personal_cluster(&presented.person).to_string() == route.workspace_id;
     let reads = own_cluster
         || read_workspace(tree, bound.workspace, |workspace| {
             let node = collab_types::validator::document_node(
@@ -640,7 +705,16 @@ fn group_keys(
                 route.app_id,
                 route.document_id,
             );
-            workspace.answer_at(&actor_key, &node, ActionKind::Read, unix_now()) == Answer::Allow
+            presented.access.as_ref().map_or_else(
+                || workspace.answer_at(&actor_key, &node, ActionKind::Read, unix_now()),
+                |decided| {
+                    decided.answer(
+                        &node,
+                        ActionKind::Read,
+                        &tilo_desktop_model::context_at(unix_now()),
+                    )
+                },
+            ) == Answer::Allow
         })
         .unwrap_or(false);
     if !reads {
@@ -701,7 +775,7 @@ pub fn sign_external_moderation(
 /// Root-key operations are available only while this machine is covered by
 /// a valid, non-revoked `identity -> device` certificate. Apps never receive
 /// either key; this check makes revocation effective at the local broker too.
-fn require_trusted_current_device(
+pub(crate) fn require_trusted_current_device(
     profile: &crate::store::IdentityProfile,
 ) -> io::Result<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
     let paths = crate::provisioning::collaboration_identity_paths();
@@ -787,6 +861,8 @@ mod tests {
             workspace,
             app_id,
             person: &(),
+            signer: &PersonDevice,
+            call: None,
         }
     }
 
@@ -1079,6 +1155,8 @@ mod tests {
                 workspace: &workspace,
                 app_id: "so.tilo.notebook",
                 person: &renamed,
+                signer: &PersonDevice,
+                call: None,
             };
             assert!(matches!(
                 sign_collaboration_op(
@@ -1439,6 +1517,7 @@ params = []
                             workspace_id: workspace.to_string(),
                             app_id: "so.tilo.notes".into(),
                             surface: None,
+                            call: None,
                         },
                         presentation_version: version,
                     },
@@ -1539,6 +1618,7 @@ params = []
                     workspace_id: workspace.to_string(),
                     app_id: "so.tilo.notes".into(),
                     surface: None,
+                    call: None,
                 },
             )
             .expect("handshake");
@@ -1726,6 +1806,7 @@ params = []
                     workspace_id: WorkspaceId::new().to_string(),
                     app_id: "so.tilo.file-explorer".into(),
                     surface: None,
+                    call: None,
                 },
             )
             .unwrap();
@@ -1795,6 +1876,8 @@ params = []
                         workspace: &own_cluster,
                         app_id,
                         person: &NotesKeepsWatched,
+                        signer: &PersonDevice,
+                        call: None,
                     },
                     workspace_id: &own,
                     app_id,
@@ -1827,6 +1910,8 @@ params = []
                             workspace: &workspace,
                             app_id: "so.tilo.lang.today",
                             person: &TodayReadsTasks,
+                            signer: &PersonDevice,
+                            call: None,
                         },
                         workspace_id: &launch,
                         app_id: owner,
