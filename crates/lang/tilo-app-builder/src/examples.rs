@@ -240,7 +240,9 @@ pub(crate) fn overlay(
     let kinds = crate::resource_kinds::declared_in_sources(
         rendered
             .iter()
-            .filter(|(path, _)| path.starts_with("src") && path.extension().is_some_and(|ext| ext == "rs"))
+            .filter(|(path, _)| {
+                path.starts_with("src") && path.extension().is_some_and(|ext| ext == "rs")
+            })
             .map(|(path, source)| (path.as_path(), source.as_str())),
     )?;
     let manifest = crate::app_manifest_for(spec, &kinds, false)?;

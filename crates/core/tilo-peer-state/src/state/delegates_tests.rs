@@ -80,7 +80,8 @@ fn edit(
         key.verifying_key().to_bytes().to_vec(),
     ));
     let before = doc.get_heads();
-    doc.put(ROOT, "by agent", cert.device_label.as_str()).unwrap();
+    doc.put(ROOT, "by agent", cert.device_label.as_str())
+        .unwrap();
     let invocation = InvocationId::new();
     let mut request = InvokeRequest {
         invocation,
@@ -645,7 +646,10 @@ fn one_agent_on_two_devices_is_one_agent_in_permissions_and_in_history() {
 
     // The certificate's grant bounds where the agent acts: a key granted another workspace alone
     // is not listed here, and acts in none.
-    assert!(!admitted, "a key granted another workspace is not listed here");
+    assert!(
+        !admitted,
+        "a key granted another workspace is not listed here"
+    );
     assert!(
         peer.permissions(elsewhere.1.device_public_key, now)
             .is_err(),

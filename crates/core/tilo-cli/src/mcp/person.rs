@@ -75,9 +75,7 @@ async fn open(key_file: Option<&Path>, named: Option<&str>) -> Opened {
         key_file,
         json: false,
     };
-    let signed_in = key_file.is_some()
-        || crate::login::desktop_runs()
-        || crate::login::logged_in();
+    let signed_in = key_file.is_some() || crate::login::desktop_runs() || crate::login::logged_in();
     if !signed_in {
         return Opened::Refused {
             reason: NOT_SIGNED_IN,

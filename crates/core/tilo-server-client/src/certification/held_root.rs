@@ -459,7 +459,10 @@ mod tests {
         .unwrap();
         assert_eq!(verify_device_cert_at(&grant, grant.issued_at_ns), Ok(()));
         assert_eq!(grant.user_public_key, root.verifying_key().to_bytes());
-        assert_eq!(grant.capabilities, DeviceCapabilities::agent_grant(scope.clone()));
+        assert_eq!(
+            grant.capabilities,
+            DeviceCapabilities::agent_grant(scope.clone())
+        );
         assert!(grant.capabilities.agent_grant_holds());
         assert_eq!(grant.expires_at_ns, Some(now + week));
         assert_eq!(grant.device_label, "Claude Code via entry.example");

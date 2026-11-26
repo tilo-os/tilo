@@ -5,9 +5,7 @@
 //! winner. No credentials or histories live here.
 
 use serde::{Deserialize, Serialize};
-use tilo_resource::{
-    Collection, Id, JsonSchema, Model, Refusal, SharedResource, resource,
-};
+use tilo_resource::{Collection, Id, JsonSchema, Model, Refusal, SharedResource, resource};
 
 /// How many people one projection may carry, so a large imported book stays one
 /// reasonable payload.

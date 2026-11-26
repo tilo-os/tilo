@@ -120,10 +120,9 @@ impl Member {
     /// actor alone where the store kept no row.
     #[must_use]
     pub fn from_roster_row(row: &serde_json::Value, me: &MemberId) -> Option<Self> {
-        let who: tilo_action_policy::Actor = serde_json::from_value(
-            row.get("actor").cloned().unwrap_or_else(|| row.clone()),
-        )
-        .ok()?;
+        let who: tilo_action_policy::Actor =
+            serde_json::from_value(row.get("actor").cloned().unwrap_or_else(|| row.clone()))
+                .ok()?;
         let id = who.member_id()?;
         let name = row
             .get("name")

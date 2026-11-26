@@ -34,7 +34,6 @@ fn shell(workspace: &str) -> Layout {
     }
 }
 
-
 /// A session in `WORKSPACE` with no transport, and what it would have said.
 fn session(label: &str, user: Option<u8>) -> (Client, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
     let own = OwnPresence {

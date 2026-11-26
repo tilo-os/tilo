@@ -79,11 +79,13 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         &mut self,
         address: tilo_actions::ActionAddress,
         arguments: serde_json::Map<String, serde_json::Value>,
-        then: impl FnOnce(&mut H, Result<ActionOutput, String>, &mut Self) -> EffectAnswer
-        + 'static,
+        then: impl FnOnce(&mut H, Result<ActionOutput, String>, &mut Self) -> EffectAnswer + 'static,
     ) -> Effected {
         let action = address.action.clone();
-        let answer = self.env.dispatch.call_own(self.inv.delivered, address, arguments);
+        let answer = self
+            .env
+            .dispatch
+            .call_own(self.inv.delivered, address, arguments);
         self.wait_answer(answer, move |called| called_outcome(called, &action), then)
     }
 

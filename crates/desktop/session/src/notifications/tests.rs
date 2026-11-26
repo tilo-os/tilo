@@ -1194,8 +1194,7 @@ impl PersonsWorkspace {
 
     /// The record of the person's devices, followed as the session follows it.
     fn record(&self) -> crate::followed_resource::FollowedResource<Devices> {
-        let member =
-            tilo_action_policy::PersonId::from_root(self.root.verifying_key().to_bytes());
+        let member = tilo_action_policy::PersonId::from_root(self.root.verifying_key().to_bytes());
         crate::followed_resource::FollowedResource::follow(
             &self.daemon.shell(),
             (&self.workspace, DEVICES.0, DEVICES.1),

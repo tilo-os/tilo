@@ -3,8 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use tilo_resource::{
-    self, ActionCx, Id, Identified, JsonSchema, Keyed, MemberId, Model, NonBlank,
-    Refusal, resource,
+    self, ActionCx, Id, Identified, JsonSchema, Keyed, MemberId, Model, NonBlank, Refusal, resource,
 };
 
 pub const MAX_REASON_CHARS: usize = 500;

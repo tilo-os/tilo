@@ -25,10 +25,10 @@ use super::section::{SectionApi, SectionKind};
 use super::workspace::{Unopened, WorkspaceResource};
 use tilo_resource::{Invoke, Resource};
 use tilo_ui_base::LocalState;
+use tilo_ui_base::{Arrival, FollowedRead, InvocationCall, RemoteActions};
 use ui_core::history_mode::HistoryOwner;
 use ui_core::resource::StoredResource;
 use ui_core::resource::workspace::WorkspaceResources;
-use tilo_ui_base::{Arrival, FollowedRead, InvocationCall, RemoteActions};
 
 /// A record the person keeps for themselves, in their own workspace rather than the one the
 /// window shows: the signature they sign with. The same on each of the person's devices, and no
@@ -232,11 +232,7 @@ fn step_as(record: &StoredResource, author: &tilo_resource::MemberId, undo: bool
 /// as the copy this window follows holds its history: the record is undone where it is kept,
 /// so what it holds decides whether that is asked at all. A redo can only bring back an undo
 /// taken where the record is kept, so it is always asked, and the keeper answers what it took.
-fn step_held<P: Resource>(
-    there: &There<P>,
-    author: &tilo_resource::MemberId,
-    undo: bool,
-) -> bool {
+fn step_held<P: Resource>(there: &There<P>, author: &tilo_resource::MemberId, undo: bool) -> bool {
     // Opening a history opens an undo step on this thread; this one takes no step, so the
     // step open before it stays open.
     let open = tilo_actions::current_step();
@@ -914,7 +910,6 @@ impl PersonState {
         }
     }
 
-
     /// The record `P` in the person's own workspace, which this window is in: the app's record
     /// there, published with each invoker's undo and redo of it.
     fn open_here<P: Resource>(
@@ -995,8 +990,7 @@ impl PersonState {
     ) -> Option<PersonResource<P>> {
         let kind = P::KIND;
         let Some(remote_actions) = self.remote.clone() else {
-            let _ =
-                self.note_unavailable(self.app_id, of, "this window reaches no workspace");
+            let _ = self.note_unavailable(self.app_id, of, "this window reaches no workspace");
             return None;
         };
         // The record is the keeper's: this window reads a replica of it, and writes no

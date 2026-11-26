@@ -576,9 +576,9 @@ impl YouTubeOrigin {
                         Err(error) => Delivery::Rejected(error.0.clone()),
                     }
                 }
-                Err(error) => Delivery::Rejected(format!(
-                    "what YouTube said could not be written: {error}"
-                )),
+                Err(error) => {
+                    Delivery::Rejected(format!("what YouTube said could not be written: {error}"))
+                }
             };
             self.outcomes
                 .entry(waiting.key)

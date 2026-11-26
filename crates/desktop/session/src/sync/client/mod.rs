@@ -15,9 +15,13 @@ use iroh::{EndpointAddr, EndpointId};
 #[cfg(target_os = "linux")]
 use tilo_desktop_model::Layout;
 #[cfg(target_os = "linux")]
+use tilo_identity::identity_store::DeviceIdentity;
+#[cfg(target_os = "linux")]
 use tilo_live::live::Track;
 #[cfg(target_os = "linux")]
 use tilo_live::live_session::Heard;
+#[cfg(target_os = "linux")]
+use tilo_network_actor::WorkspaceId;
 #[cfg(target_os = "linux")]
 use tilo_server_protocol::live::{LiveFrame, OpsFrame};
 use tilo_session_client::client::Host;
@@ -32,10 +36,6 @@ use tilo_session_client::{Cmd, Event, Outbox};
 use tilo_session_core::desktop::here::{Here, LiveMember, Person};
 #[cfg(target_os = "linux")]
 use tilo_session_core::desktop::state::DesktopHandle;
-#[cfg(target_os = "linux")]
-use tilo_identity::identity_store::DeviceIdentity;
-#[cfg(target_os = "linux")]
-use tilo_network_actor::WorkspaceId;
 #[cfg(target_os = "linux")]
 /// Everything this device keeps of the peer network beside the client's boards: who is here as the bar
 /// lists them, the workspaces' state and channels, the live session, the fabric and the transfers.

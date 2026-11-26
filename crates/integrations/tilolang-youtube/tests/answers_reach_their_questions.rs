@@ -56,7 +56,9 @@ impl Held {
                 )]
                 .into_iter()
                 .collect(),
-                streams: [(VIDEO.to_owned(), STREAM.to_owned())].into_iter().collect(),
+                streams: [(VIDEO.to_owned(), STREAM.to_owned())]
+                    .into_iter()
+                    .collect(),
                 ..Scripted::default()
             },
             searches: AtomicUsize::new(0),
@@ -128,9 +130,10 @@ impl Service for Held {
 
 /// Ada's workspace with the tilolang Tube, as the app's window opens it.
 fn opened() -> Host {
-    let host = Host::new(Actor::Member(tilolang_tilo::runtime::ids::MemberId::person("Ada")), || {
-        None
-    })
+    let host = Host::new(
+        Actor::Member(tilolang_tilo::runtime::ids::MemberId::person("Ada")),
+        || None,
+    )
     .expect("the workspace");
     // The session the app plays through, which its `use` names.
     host.load_builtin(
@@ -186,10 +189,7 @@ fn videos(host: &Host, field: &str) -> Vec<Value> {
 }
 
 /// Poll the origin once, as the instance's frame does, with the workspace it writes into.
-fn poll(
-    host: &Host,
-    origin: &std::rc::Rc<std::cell::RefCell<tilolang_youtube::YouTubeOrigin>>,
-) {
+fn poll(host: &Host, origin: &std::rc::Rc<std::cell::RefCell<tilolang_youtube::YouTubeOrigin>>) {
     let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
     let cx = OriginCx {
         host,

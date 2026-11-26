@@ -239,9 +239,7 @@ pub(crate) fn account_is_admin(user: &str) -> bool {
     })
 }
 
-pub(crate) fn enroll(
-    request: &DeviceUnlockEnrol,
-) -> Result<DeviceUnlockEnrolResult, DaemonError> {
+pub(crate) fn enroll(request: &DeviceUnlockEnrol) -> Result<DeviceUnlockEnrolResult, DaemonError> {
     request.validate().map_err(DaemonError::InvalidParams)?;
     let (device, volume_uuid) = current_volume().map_err(|_| refusal())?;
     let key = private_key_file(&request.passphrase).map_err(|_| refusal())?;

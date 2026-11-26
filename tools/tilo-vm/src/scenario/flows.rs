@@ -599,12 +599,7 @@ fn answer_as_person(
     if entered.is_none() {
         return Ok(());
     }
-    let session = fleet
-        .ssh(
-            from,
-            &format!("tilo do {resolve}"),
-        )
-        .err();
+    let session = fleet.ssh(from, &format!("tilo do {resolve}")).err();
     match session {
         None => Ok(()),
         Some(why) => Err(format!(

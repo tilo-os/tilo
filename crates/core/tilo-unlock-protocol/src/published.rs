@@ -237,9 +237,7 @@ impl UnlockDecisionEntry {
     ///
     /// [`PublishedError::ForeignAuthorship`] otherwise.
     pub fn validate(&self, owner: &[u8; 32]) -> Result<(), PublishedError> {
-        if owner != &self.decided_by
-            || self.valid_until_ns <= self.decided_at_ns
-        {
+        if owner != &self.decided_by || self.valid_until_ns <= self.decided_at_ns {
             return Err(PublishedError::ForeignAuthorship);
         }
         Ok(())

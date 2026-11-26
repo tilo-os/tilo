@@ -12,6 +12,6 @@ mod i18n {
 pub mod fabric;
 pub mod workspace_sync;
 
+pub use tilo_desktop_model::WorkspaceId;
 /// A device's identity: the certificate it presents and the key it signs with.
 pub use tilo_identity::identity_store::DeviceIdentity;
-pub use tilo_desktop_model::WorkspaceId;

@@ -1202,7 +1202,6 @@ mod tests {
         }
     }
 
-
     /// The notice that a workspace did not take the window layout names the workspace by
     /// the name the person gave it. One nobody named, and one that left the shell since, are said
     /// to be that: the title never opens with an empty name, or with a word in place of one.

@@ -289,7 +289,9 @@ pub(crate) fn start_collaboration(
     };
     let publisher = iroh::EndpointId::from_bytes(&identity.device_cert.device_public_key).ok()?;
     let saying = live.borrow().as_ref().map(|live| {
-        tilo_session_client::Saying::Word(Arc::new(live.telling()) as Arc<dyn tilo_session_client::TellWord>)
+        tilo_session_client::Saying::Word(
+            Arc::new(live.telling()) as Arc<dyn tilo_session_client::TellWord>
+        )
     });
     // Nothing this session says leaves on the peer network itself: what it says of the person
     // goes to the daemon's word, and the rest of the network is the daemon's.

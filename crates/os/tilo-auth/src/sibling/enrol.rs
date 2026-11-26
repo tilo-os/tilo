@@ -175,7 +175,9 @@ impl Registrar for DaemonRegistrar {
             .and_then(|enrolled| hex::decode(enrolled).ok())
             .and_then(|enrolled| postcard::from_bytes(&enrolled).ok())
             .ok_or_else(|| {
-                NotEnrolled::Failed(format!("the device service answered no enrolment: {answer}"))
+                NotEnrolled::Failed(format!(
+                    "the device service answered no enrolment: {answer}"
+                ))
             })
     }
 }
@@ -687,10 +689,9 @@ pub fn register(dir: &Path, registrar: &impl Registrar) -> Result<()> {
     let read = read_small(&asked);
     let _ = std::fs::remove_file(&asked);
     let asked: Asked = serde_json::from_slice(&read?).context("what was handed over")?;
-    let request: EnrolRequest = postcard::from_bytes(
-        &hex::decode(&asked.request).context("the request is not hex")?,
-    )
-    .context("the request")?;
+    let request: EnrolRequest =
+        postcard::from_bytes(&hex::decode(&asked.request).context("the request is not hex")?)
+            .context("the request")?;
     let half = Half::from_bytes(
         zeroize::Zeroizing::new(hex::decode(&asked.half).context("the half is not hex")?)
             .as_slice()

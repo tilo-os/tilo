@@ -5,8 +5,8 @@
 //! surface it publishes, `--bench` captures its fixtures, and `--data-dir`
 //! and `--shots` open it on a profile of their own.
 
-use std::fmt::Write as _;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Mutex, OnceLock};
@@ -562,17 +562,27 @@ fn serve_persons_own<A: ResourceApp>(
         Box::new(move |request| {
             let id = DocumentId::parse(&request.record)
                 .ok_or_else(|| format!("`{}` names no record", request.record))?;
-            let held = read.try_borrow().map_err(|_| "the app is busy".to_owned())?;
+            let held = read
+                .try_borrow()
+                .map_err(|_| "the app is busy".to_owned())?;
             // The record as the app there holds it now: a step it has not committed yet is
             // committed first, as a save is, so a reader in another workspace sees what the app
             // shows.
-            let reading = held.records.replication_snapshot(&id).ok().map(|(document, mut heads)| {
-                heads.sort_unstable();
-                (
-                    heads.iter().map(ToString::to_string).collect::<Vec<_>>().join("."),
-                    document,
-                )
-            });
+            let reading =
+                held.records
+                    .replication_snapshot(&id)
+                    .ok()
+                    .map(|(document, mut heads)| {
+                        heads.sort_unstable();
+                        (
+                            heads
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect::<Vec<_>>()
+                                .join("."),
+                            document,
+                        )
+                    });
             Ok(match reading {
                 Some((revision, document)) => serde_json::json!({
                     "revision": revision,
