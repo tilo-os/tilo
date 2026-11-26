@@ -39,25 +39,3 @@ pub(crate) use widgets::TwoWindows;
 pub(crate) use widgets::{
     Seen, TestLeaf, delegate_widget_methods, inert_widget_methods, test_app_widget,
 };
-
-/// Write the frame a regression test drew, when a run asks for the evidence: a PNG under
-/// `$TILO_DRAW_REGRESSION_DIR` named `<case>-<theme>-<phase>.png`, where the phase is
-/// `$TILO_DRAW_REGRESSION_PHASE` (the run's before or after state). A plain test run sets
-/// neither variable and writes nothing, so no frame is ever rasterised for it.
-#[cfg(test)]
-pub(crate) fn capture_regression(
-    case: &str,
-    theme: &str,
-    scene: &vello::Scene,
-    width: u32,
-    height: u32,
-    background: vello::peniko::Color,
-) {
-    let Some(dir) = std::env::var_os("TILO_DRAW_REGRESSION_DIR") else {
-        return;
-    };
-    let phase = std::env::var("TILO_DRAW_REGRESSION_PHASE").unwrap_or_else(|_| "after".to_owned());
-    let path = std::path::Path::new(&dir).join(format!("{case}-{theme}-{phase}.png"));
-    let mut renderer = crate::offscreen::OffscreenRenderer::new(width, height);
-    renderer.render_png(scene, background, path);
-}

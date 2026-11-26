@@ -1093,37 +1093,6 @@ impl GroupRow {
         self.sibling_fade_drawn_moving || self.sibling_fade_in_flight()
     }
 
-    #[cfg(test)]
-    pub(crate) fn sibling_fade_value(&self) -> f32 {
-        crate::motion::unit_opacity(self.sibling_fade.progress(crate::motion::frame_now()))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn sibling_fade_is_animating(&self) -> bool {
-        self.sibling_fade.is_moving(crate::motion::frame_now())
-    }
-
-    /// Rewind the live fade so a test can sample it mid-flight without sleeping, rebuilt
-    /// from the current hide intent.
-    #[cfg(test)]
-    pub(crate) fn advance_sibling_fade(&mut self, elapsed: Duration) {
-        let now = crate::time::now();
-        let started = now.checked_sub(elapsed).unwrap_or(now);
-        let hide = self.siblings_should_hide();
-        self.sibling_fade = if hide {
-            crate::motion::Presence::opened()
-        } else {
-            crate::motion::Presence::closed()
-        };
-        self.sibling_fade.show(
-            !hide,
-            crate::motion::WindowMotion::SIBLINGS,
-            crate::tokens::EffectiveMotion::default(),
-            crate::tokens::MotionSource::Pointer,
-            started,
-        );
-    }
-
     /// Freeze the sibling fade at `elapsed` along `durations.fast`: offscreen paints cost more wall
     /// time than the curve, so a capture harness would only ever see the endpoints. Not depending on
     /// `debug_assertions`, since `shots` ships in release.
@@ -5938,7 +5907,3 @@ mod sharing_tests;
 #[cfg(test)]
 #[path = "group_row_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "group_row_making_way_tests.rs"]
-mod making_way_tests;

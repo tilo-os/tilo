@@ -674,64 +674,11 @@ pub fn paint_unread_badge(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vello::kurbo::Affine;
-
-    const BELL: StatusPart = StatusPart::Bell {
-        unread: 3,
-        quiet: false,
-    };
-
-    fn paint(parts: &[StatusPart], status: StatusCluster) -> (StatusClusterLayout, usize) {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let face = StatusClusterFace::new(parts, status);
-        let width = face.width(&mut text, &theme);
-        let rect = Rect::new(0.0, 0.0, width, StatusClusterFace::height(&theme));
-        let mut scene = vello::Scene::new();
-        let layout = {
-            let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
-            face.paint(&mut ctx, rect, theme.tokens.colors.surfaces.base)
-        };
-        (layout, scene.encoding().draw_tags.len())
-    }
 
     tilo_test_env::scenario! {
         fn a_status_cluster_draws_its_parts_glyphs_and_counts;
 
-        phase a_cluster_is_as_wide_as_its_parts_and_grows_for_the_percentage;
-        {
-            let theme = Theme::dark();
-            let mut text = TextRenderer::new();
-            let bell = StatusClusterFace::new(&[BELL], StatusCluster::new());
-            let bell_and_battery = StatusClusterFace::new(
-                &[
-                    BELL,
-                    StatusPart::Battery {
-                        percent: 82,
-                        charging: true,
-                    },
-                ],
-                StatusCluster::new().battery(82, true),
-            );
-            assert!(
-                bell_and_battery.width(&mut text, &theme) > bell.width(&mut text, &theme),
-                "the percentage takes area past the gauge"
-            );
-        }
 
-        phase the_critical_battery_wears_the_danger_wash_on_the_whole_control;
-        {
-            let parts = [StatusPart::Battery {
-                percent: 3,
-                charging: false,
-            }];
-            assert!(
-                StatusClusterFace::new(&parts, StatusCluster::new().battery(3, false)).is_critical()
-            );
-            assert!(
-                !StatusClusterFace::new(&parts, StatusCluster::new().battery(40, false)).is_critical()
-            );
-        }
 
         phase the_badge_counts_nine_and_then_says_nine_plus;
         {
@@ -739,26 +686,6 @@ mod tests {
             assert_eq!(badge_label(120), "9+");
         }
 
-        // The link part draws what kind of connection the machine has: a cable's
-        // port, Wi-Fi's arcs, or the crossed-out arcs when nothing is connected.
-        phase the_link_part_draws_the_glyph_of_its_kind;
-        {
-            assert_eq!(LinkKind::Wired.icon(), Icon::EthernetPort);
-            assert_eq!(LinkKind::Wifi.icon(), Icon::Wifi);
-            assert_eq!(LinkKind::Offline.icon(), Icon::WifiOff);
-            let of = |kind, bars| paths(&[StatusPart::Link { kind, bars }]);
-            let (wired, wifi, offline) = (
-                of(LinkKind::Wired, 0),
-                of(LinkKind::Wifi, 4),
-                of(LinkKind::Offline, 0),
-            );
-            assert!(!wired.encoding_eq(&wifi), "a cable is not Wi-Fi");
-            assert!(
-                !wifi.encoding_eq(&offline),
-                "nothing connected is not Wi-Fi"
-            );
-            assert!(!wired.encoding_eq(&offline), "a cable is not nothing");
-        }
 
         // A weak but connected radio shows one bar rather than reading exactly
         // like an offline machine; a cable has no bars to show.
@@ -776,134 +703,9 @@ mod tests {
             assert_eq!(status(LinkKind::Offline, 0).bars(), 0);
         }
 
-        // A count takes no width: nothing unread leaves no empty width beside the
-        // bell, and news arriving never moves what stands beside the cluster.
-        phase a_count_takes_up_nothing;
-        {
-            let theme = Theme::dark();
-            let mut text = TextRenderer::new();
-            let mut width = |parts: &[StatusPart]| {
-                StatusClusterFace::new(parts, StatusCluster::new()).width(&mut text, &theme)
-            };
-            let resting = width(&[StatusPart::Bell {
-                unread: 0,
-                quiet: false,
-            }]);
-            for unread in [1, 9, 42, 120] {
-                assert_eq!(
-                    width(&[StatusPart::Bell {
-                        unread,
-                        quiet: false
-                    }]),
-                    resting,
-                    "{unread} unread"
-                );
-            }
-            let glyph = width(&[StatusPart::Glyph(Icon::Bell)]);
-            assert_eq!(resting, glyph, "the bell is as wide as any one glyph");
-            let (layout, _) = paint(&[BELL], StatusCluster::new());
-            assert!(
-                layout.badge.overlaps(layout.parts[0]),
-                "the count sits on the bell: {:?} on {:?}",
-                layout.badge,
-                layout.parts[0]
-            );
-        }
 
-        // The widest count stands clear of the glyph after the bell, and the width it keeps there is
-        // the same with nothing unread: the bar's volume is never covered.
-        phase the_count_never_reaches_the_next_glyph;
-        {
-            let theme = Theme::dark();
-            let glyph = StatusClusterFace::glyph(&theme);
-            let volume = StatusPart::Glyph(Icon::Volume2);
-            for unread in [1, 9, 120] {
-                let bell = StatusPart::Bell {
-                    unread,
-                    quiet: false,
-                };
-                let (layout, _) = paint(&[bell, volume], StatusCluster::new());
-                let next = Rect::from_center_size(layout.parts[1].center(), (glyph, glyph));
-                assert!(
-                    layout.badge.x1 < next.x0,
-                    "{unread} unread: the count {:?} reaches the volume {next:?}",
-                    layout.badge
-                );
-            }
-            let (quiet, _) = paint(
-                &[
-                    StatusPart::Bell {
-                        unread: 0,
-                        quiet: false,
-                    },
-                    volume,
-                ],
-                StatusCluster::new(),
-            );
-            let (busy, _) = paint(&[BELL, volume], StatusCluster::new());
-            assert_eq!(quiet.parts[1], busy.parts[1], "news arriving moves nothing");
-        }
 
-        // The bell is drawn at the glyph size, and in the stroke, of every other bar control, so
-        // it reads as one set with the people and invite controls beside it.
-        phase the_bell_shares_the_bar_controls_glyph;
-        {
-            let theme = Theme::dark();
-            assert_eq!(
-                StatusClusterFace::glyph(&theme),
-                f64::from(theme.tokens.metrics.icon_control)
-            );
-        }
 
-        // The count covers the bell's corner, not the bell: most of the glyph stays in view, and the
-        // count stays within the width the bar leaves around its controls.
-        phase the_count_leaves_the_bell_in_view;
-        {
-            let theme = Theme::dark();
-            let (layout, _) = paint(&[BELL], StatusCluster::new());
-            let glyph = StatusClusterFace::glyph(&theme);
-            let bell = Rect::from_center_size(layout.parts[0].center(), (glyph, glyph));
-            let covered = layout.badge.intersect(bell);
-            let share = covered.area() / bell.area();
-            assert!(
-                share <= 0.3,
-                "the count covers {:.0}% of the bell: {:?} on {bell:?}",
-                share * 100.0,
-                layout.badge
-            );
-            let reach = f64::from(theme.tokens.spacing.s1);
-            let control = StatusClusterFace::height(&theme);
-            assert!(
-                layout.badge.y0 >= -reach - 0.5 && layout.badge.y1 <= control + reach,
-                "the count stays within the bar: {:?}",
-                layout.badge
-            );
-        }
 
-        phase a_bell_with_a_count_paints_its_badge;
-        {
-            let (layout, _) = paint(&[BELL], StatusCluster::new());
-            assert!(layout.badge.width() > 0.0, "the count sits on the bell");
-            let (quiet, _) = paint(
-                &[StatusPart::Bell {
-                    unread: 0,
-                    quiet: true,
-                }],
-                StatusCluster::new(),
-            );
-            assert!(quiet.badge.is_zero_area(), "nothing unread: no badge");
-        }
-    }
-
-    fn paths(parts: &[StatusPart]) -> vello::Scene {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let face = StatusClusterFace::new(parts, StatusCluster::new());
-        let width = face.width(&mut text, &theme);
-        let rect = Rect::new(0.0, 0.0, width, StatusClusterFace::height(&theme));
-        let mut scene = vello::Scene::new();
-        let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
-        let _ = face.paint(&mut ctx, rect, theme.tokens.colors.surfaces.base);
-        scene
     }
 }

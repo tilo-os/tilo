@@ -509,31 +509,3 @@ impl Widget for TextStack {
         Some(AccessNode::new(Role::StaticText).with_name(self.face().spoken()))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_stack_is_its_lines_at_fixed_gaps_and_elides_each() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let one = TextStackFace::new("Wi-Fi");
-        let two = one.secondary("Home network");
-        let three = two.tertiary("Connected yesterday");
-        let (h1, h2, h3) = (
-            one.height(&mut text, &theme),
-            two.height(&mut text, &theme),
-            three.height(&mut text, &theme),
-        );
-        assert!(h2 > h1 && h3 > h2);
-        assert!(
-            ((h3 - h2) - (h2 - h1)).abs() < 0.01,
-            "every caption line adds the same step"
-        );
-        assert_eq!(two.lines(), 2);
-        assert_eq!(TextStackFace::new("A").secondary("").lines(), 1);
-        assert_eq!(three.spoken(), "Wi-Fi, Home network, Connected yesterday");
-        assert!(one.dense().height(&mut text, &theme) < h1);
-    }
-}

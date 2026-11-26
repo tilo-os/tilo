@@ -1679,11 +1679,6 @@ impl ToggleGroup {
         }
     }
 
-    #[cfg(test)]
-    fn shown_labels(&self) -> Vec<String> {
-        self.shown_segments().into_iter().map(|s| s.label).collect()
-    }
-
     fn shown_segments(&self) -> Vec<Segment> {
         self.segments
             .iter()
@@ -1941,22 +1936,6 @@ impl ToggleGroup {
         self.cache_dirty = true;
         *handled = true;
     }
-}
-
-#[cfg(test)]
-fn tab_label_span(
-    seg: &Rect,
-    label: &str,
-    metrics: &StripMetrics,
-    text: &mut TextRenderer,
-) -> (f64, f64) {
-    let lead = metrics.pad_x.min(seg.width() / 4.0);
-    let width = f64::from(
-        text.measure_style(label, None, &metrics.label.clone().strong())
-            .0,
-    );
-    let x0 = seg.x0 + lead;
-    (x0, (x0 + width).min(seg.x1))
 }
 
 impl ToggleGroup {

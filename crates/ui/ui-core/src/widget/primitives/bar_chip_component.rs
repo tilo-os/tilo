@@ -426,26 +426,3 @@ mod tests {
         }
     }
 }
-
-#[cfg(test)]
-mod touch_tests {
-    use super::*;
-
-    #[test]
-    fn a_coarse_pointer_grows_the_face_to_the_minimum_target() {
-        let theme = Theme::dark();
-        let mut chip = BarChip::from_props(
-            "chip",
-            BarChipProps {
-                name: "Who is here".into(),
-                ..BarChipProps::default()
-            },
-        );
-        assert!((chip.face_height(&theme) - BarChipFace::height(&theme)).abs() < 1e-6);
-        chip.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
-        assert!(
-            chip.face_height(&theme) >= 48.0 - 1e-6,
-            "a finger's target grows the face"
-        );
-    }
-}

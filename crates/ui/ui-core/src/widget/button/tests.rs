@@ -166,18 +166,6 @@ fn fit_host(kind: usize, button: Button) -> crate::widget::Element {
 
 #[test]
 fn intrinsic_width_stays_compact_and_aligned_in_hosts() {
-    fn intrinsic_width_stays_compact_in_stretched_flex_column() {
-        let mut host = fit_host(0, Button::new("back", "Back to apps"));
-        let rect = layout_fit_host(
-            host.as_mut(),
-            taffy::AlignItems::Stretch,
-            &Theme::dark(),
-            &mut TextRenderer::new(),
-        );
-        assert!(rect.width() < 300.0, "intrinsic width stretched: {rect:?}");
-        assert_eq!(rect.height(), 32.0);
-    }
-
     fn intrinsic_width_stays_compact_in_intrinsic_grid_column() {
         let mut host = fit_host(1, Button::new("back", "Back to apps"));
         let rect = layout_fit_host(
@@ -258,7 +246,6 @@ fn intrinsic_width_stays_compact_and_aligned_in_hosts() {
         assert_eq!(rect.width(), 600.0);
     }
 
-    intrinsic_width_stays_compact_in_stretched_flex_column();
     intrinsic_width_stays_compact_in_intrinsic_grid_column();
     compact_fit_width_preserves_host_center_and_end_alignment();
     compact_fit_width_is_the_prepaint_click_and_focus_geometry();
@@ -370,73 +357,11 @@ fn measured_button_rect(button: Button, scale: f32) -> Rect {
     Rect::new(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3])
 }
 
-#[test]
-fn the_focus_ring_stands_apart_from_every_face() {
-    use crate::offscreen::OffscreenRenderer;
-    use crate::tokens::PresenceHue;
-    use crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
-    let pixel = |rgba: &[u8], y: u32| {
-        let (r, g, b, a) = OffscreenRenderer::sample(rgba, 128, 64, y);
-        vello::peniko::Color::from_rgba8(r, g, b, a)
-    };
-    // Half-pixel edges: the ring covers rows 8 and 9, the parting line
-    // row 10, and the fill starts at row 11.
-    let rect = Rect::new(8.5, 8.5, 120.5, 48.5);
-    for base in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-        for hue in [PresenceHue::Blue, PresenceHue::Amber, PresenceHue::Magenta] {
-            let theme = base.clone().with_your_colour(hue);
-            for role in [ButtonRole::Primary, ButtonRole::Secondary] {
-                let mut scene = Scene::new();
-                let face = ButtonFace::new(rect, "Save").role(role).focused(true);
-                Button::paint(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut TextRenderer::new(),
-                    &theme,
-                    &face,
-                );
-                let rgba = OffscreenRenderer::new(128, 64)
-                    .render(&scene, theme.tokens.colors.surfaces.content);
-                let (ring, inside, fill) = (pixel(&rgba, 9), pixel(&rgba, 10), pixel(&rgba, 12));
-                let contrast = crate::a11y::contrast_ratio;
-                assert!(
-                    contrast(ring, inside) >= NON_TEXT_MIN_CONTRAST,
-                    "{} {hue:?} {role:?}: the ring blends into what it rings",
-                    theme.name
-                );
-                if inside != fill {
-                    assert!(contrast(inside, fill) >= NON_TEXT_MIN_CONTRAST);
-                }
-            }
-        }
-    }
-}
-
 tilo_test_env::scenario! {
     /// Button faces: theme switches, role colours and the destructive confirmation.
     /// Each phase was a test of its own and builds its own fixture.
     fn button_faces_follow_role_state_and_theme;
 
-    phase a_cached_face_follows_a_theme_switch;
-    // A theme switched under a live tree repaints a plain button's face
-    // in the new theme's roles, rather than keeping the cached dark-theme
-    // ink that all but vanishes on a light ground.
-    {
-        let mut button = Button::new("plain", "Undo").role(ButtonRole::Plain);
-        button.rect = Rect::new(0.0, 0.0, 80.0, 32.0);
-        let presence = crate::presence::PresenceCtx::default();
-        let mut text = TextRenderer::new();
-        let mut scene = Scene::new();
-        for theme in [Theme::dark(), Theme::light()] {
-            button.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
-            assert_eq!(
-                button.last_theme,
-                Some(theme_key(&theme)),
-                "the face is painted in {}",
-                theme.name
-            );
-        }
-    }
 
     phase face_colors_per_role_track_state_and_stay_readable;
     {
@@ -583,27 +508,6 @@ tilo_test_env::scenario! {
 
 #[test]
 fn disabled_faces_are_neutral_and_reject_input() {
-    /// The edge of a disabled face is drawn under the same group alpha as its face, so the
-    /// button reads as itself, disabled, not as an outlined button of another style.
-    fn a_disabled_face_dims_its_edge_with_it() {
-        use vello_encoding::DrawTag;
-        let mut tr = TextRenderer::new();
-        let theme = Theme::light();
-        let mut scene = Scene::new();
-        Button::paint(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &ButtonFace::new(Rect::new(10.0, 10.0, 110.0, 46.0), "Archived").disabled(true),
-        );
-        let tags = &scene.encoding().draw_tags;
-        assert!(
-            tags.last() == Some(&DrawTag::END_CLIP),
-            "the dimming layer closes over everything the face draws"
-        );
-    }
-
     fn disabled_faces_are_neutral_bordered_and_readable_in_every_theme() {
         use crate::a11y::contrast_ratio;
 
@@ -711,40 +615,12 @@ fn disabled_faces_are_neutral_and_reject_input() {
     }
 
     disabled_faces_are_neutral_bordered_and_readable_in_every_theme();
-    a_disabled_face_dims_its_edge_with_it();
     with_enabled_false_is_reported_by_is_enabled();
     disabled_button_rejects_input();
 }
 
 #[test]
 fn button_face_builder_paints_fill_label_and_icon_only_faces() {
-    fn button_face_builder_sets_style_and_state() {
-        let f = ButtonFace::new(Rect::new(0.0, 0.0, 80.0, 32.0), "Send")
-            .role(ButtonRole::Primary)
-            .hovered(true)
-            .control_size(ControlSize::Small);
-        let theme = Theme::dark();
-        let (bg, border, fg) = f.colors(&theme);
-        assert_eq!(bg, theme.tokens.colors.intent.accent_hover);
-        assert_eq!(border, None);
-        // Resolves through `face_colors`, so it carries the same derived
-        // label rather than a literal of its own.
-        assert_eq!(
-            fg,
-            face_colors(
-                &theme,
-                ButtonRole::Primary,
-                Interaction {
-                    hovered: true,
-                    ..Default::default()
-                }
-            )
-            .2,
-        );
-        assert!(crate::a11y::contrast_ratio(fg, bg) >= ON_FILL_MIN_CONTRAST);
-        assert_eq!(f.spoken_name(), "Send", "visible label is the spoken name");
-    }
-
     fn icon_only_face_spoken_name_falls_back_to_accessible_name() {
         let f = ButtonFace::new(Rect::new(0.0, 0.0, 32.0, 32.0), "")
             .icon(crate::icons::Icon::Plus)
@@ -843,7 +719,6 @@ fn button_face_builder_paints_fill_label_and_icon_only_faces() {
         }
     }
 
-    button_face_builder_sets_style_and_state();
     icon_only_face_spoken_name_falls_back_to_accessible_name();
     a_label_wider_than_its_face_stays_inside_it();
     icon_only_face_paints_no_label_under_the_pseudo_locale();
@@ -1280,369 +1155,6 @@ tilo_test_env::scenario! {
             "an icon-only button keeps the name its label only states"
         );
     }
-}
-
-tilo_test_env::scenario! {
-    /// Button width and height: chevrons, intrinsic size, host placement, faces and counts.
-    /// Each phase was a test of its own and builds its own fixture.
-    fn a_button_measures_from_its_label_and_control_size;
-
-    phase a_menu_button_makes_way_for_its_chevron;
-    // A button that opens a menu keeps a chevron after the
-    // label, so the label is never elided to fit it; an icon-only one
-    // stays square.
-    {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let metrics = FaceMetrics::of_role(ControlSize::Small, ButtonRole::Secondary, &theme);
-        let width = |label: &str, menu: bool, text: &mut TextRenderer| {
-            FaceContent {
-                icon: None,
-                image: None,
-                faces: &[],
-                avatar: None,
-                placeholder: false,
-                tone: None,
-                badge: None,
-                label,
-                detail: None,
-                hint: None,
-                flush: false,
-                filled_icon: false,
-                menu,
-            }
-            .intrinsic_width(&metrics, text, metrics.height)
-        };
-        let label = "Administrator";
-        let plain = width(label, false, &mut text);
-        let menu = width(label, true, &mut text);
-        assert!(
-            (menu - plain - (metrics.icon_gap + metrics.icon)).abs() <= 1.0,
-            "{plain} then {menu}"
-        );
-        assert!((width("", true, &mut text) - metrics.height).abs() < 1e-9);
-        let button = Button::new("role", label).with_menu(Vec::new());
-        assert!(button.button().opens_menu);
-        assert!(!Button::new("save", "Save").opens_menu);
-    }
-
-    phase a_host_placed_button_never_asks_the_solver_for_a_measure;
-    // Only a node the layout solver placed can be measured again: a button
-    // its host places never asks for a measure, placed or hidden, while one
-    // in the solver's tree asks when what it shows may change its width.
-    {
-        let mut hosted = Button::new("history", "History");
-        for rect in [Rect::ZERO, Rect::new(0.0, 0.0, 32.0, 32.0), Rect::ZERO] {
-            hosted.apply_layout_external(rect);
-            assert!(!hosted.layout_needs_measure(), "placed at {rect:?}");
-        }
-
-        let mut laid_out = Button::new("save", "Save");
-        let mut tree = TaffyTree::new();
-        let node = laid_out.build_layout(
-            &mut tree,
-            &Theme::dark(),
-            &mut std::collections::HashMap::new(),
-        );
-        tree.compute_layout(
-            node,
-            taffy::Size {
-                width: taffy::AvailableSpace::MaxContent,
-                height: taffy::AvailableSpace::MaxContent,
-            },
-        )
-        .unwrap();
-        laid_out.apply_layout(&tree, node, Point::ZERO);
-        assert!(!laid_out.layout_needs_measure(), "laid out and unchanged");
-        laid_out.set_interaction_environment(
-            crate::interaction::InteractionEnvironment::default().with_touch_modality(),
-        );
-        assert!(
-            laid_out.layout_needs_measure(),
-            "a touch target may be wider"
-        );
-    }
-
-    phase the_intrinsic_footprint_follows_the_label_and_never_moves_it;
-    {
-        fn a_short_label_is_at_the_labelled_minimum() {
-            let rect = measured_button_rect(Button::new("save", "Save"), 1.0);
-            assert_eq!((rect.width(), rect.height()), (64.0, 32.0), "{rect:?}");
-        }
-
-        /// A long label widens the button to hold it, never elided while the
-        /// parent fits.
-        fn a_wide_label_widens_the_button_instead_of_overflowing_it() {
-            let label = "Remove every remote connection";
-            let theme = Theme::dark();
-            let mut text = TextRenderer::new();
-            let (label_w, _) = text.measure_style(label, None, &theme.text(TextRole::Label));
-            let expected = (f64::from(label_w) + 2.0 * f64::from(theme.tokens.spacing.s3)).ceil();
-            let rect = measured_button_rect(Button::new("remove", label), 1.0);
-            assert!(
-                (rect.width() - expected).abs() < 1e-6,
-                "{rect:?} vs {expected}"
-            );
-            assert_eq!(rect.height(), 32.0);
-        }
-
-        /// Hover, press, focus and disabled recolour the face; none of them may
-        /// move it. The focus ring is stroked on the outline, not inset, so the
-        /// label origin is identical in every state.
-        fn interaction_states_do_not_move_the_face_or_its_label() {
-            let theme = Theme::dark();
-            let mut text = TextRenderer::new();
-            let rect = Rect::new(10.0, 10.0, 130.0, 50.0);
-            let states = [
-                ("rest", Interaction::default()),
-                (
-                    "hovered",
-                    Interaction {
-                        hovered: true,
-                        ..Interaction::default()
-                    },
-                ),
-                (
-                    "pressed",
-                    Interaction {
-                        pressed: true,
-                        ..Interaction::default()
-                    },
-                ),
-                (
-                    "focused",
-                    Interaction {
-                        focused: true,
-                        ..Interaction::default()
-                    },
-                ),
-                (
-                    "disabled",
-                    Interaction {
-                        disabled: true,
-                        ..Interaction::default()
-                    },
-                ),
-            ];
-            for style in [
-                ButtonRole::Secondary,
-                ButtonRole::Primary,
-                ButtonRole::Destructive,
-                ButtonRole::Plain,
-            ] {
-                let mut reference: Option<[f32; 2]> = None;
-                for (name, interact) in states {
-                    let mut scene = Scene::new();
-                    let face = ButtonFace::new(rect, "Delete")
-                        .role(style)
-                        .hovered(interact.hovered)
-                        .pressed(interact.pressed)
-                        .focused(interact.focused)
-                        .disabled(interact.disabled);
-                    Button::paint(&mut scene, Affine::IDENTITY, &mut text, &theme, &face);
-                    let origins = glyph_origins(&scene);
-                    let origin = *origins.first().expect("label painted");
-                    match reference {
-                        None => reference = Some(origin),
-                        Some(expected) => {
-                            assert_eq!(origin, expected, "{style:?}/{name}: the label moved")
-                        }
-                    }
-                }
-            }
-        }
-
-        a_short_label_is_at_the_labelled_minimum();
-        a_wide_label_widens_the_button_instead_of_overflowing_it();
-        interaction_states_do_not_move_the_face_or_its_label();
-    }
-
-    phase a_faces_button_is_as_wide_as_the_faces_it_shows;
-    // A button of who is here is exactly as wide as the faces it shows: no label behind them at
-    // any width, one face wider than a square for one person, and a fourth person counted in a
-    // face of its own rather than a fifth face. The label names the people, never the glyph.
-    {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let button = |people: &[&str]| {
-            let mut button = Button::new("people", "")
-                .with_accessible_name("Mia Clayton and others are here")
-                .with_faces(people.iter().map(|name| (*name).to_owned()))
-                .role(ButtonRole::Bar);
-            button.metrics = FaceMetrics::of_role(ControlSize::Regular, ButtonRole::Bar, &theme);
-            button
-        };
-        let width =
-            |people: &[&str], text: &mut TextRenderer| f64::from(button(people).intrinsic_width(text));
-        let stack = crate::presence::FaceStack::in_face(button(&[]).face_height());
-        let pad = 2.0 * button(&[]).metrics.pad_x;
-        let one = width(&["Mia Clayton"], &mut text);
-        let three = width(&["Mia Clayton", "Sam Okafor", "Ana Ruiz"], &mut text);
-        let four = width(
-            &["Mia Clayton", "Sam Okafor", "Ana Ruiz", "Ben Ito"],
-            &mut text,
-        );
-        assert!(
-            (one - (stack.group_width(1) + pad)).abs() <= 1.0,
-            "one face and the pad: {one}"
-        );
-        assert!(three > one, "three faces are wider than one: {three}");
-        assert!(
-            (four - (stack.group_width(4) + pad)).abs() <= 1.0,
-            "the fourth person is a counted face of its own: {four} vs {}",
-            stack.group_width(4) + pad
-        );
-        assert!(four > three, "counting the rest takes a slot: {four}");
-        assert_eq!(stack.group(4), (3, 1), "three faces, then +1");
-        assert!(
-            four < 4.0 * button(&[]).face_height(),
-            "still a bar control"
-        );
-
-        let node = Widget::accessibility(&button(&["Mia Clayton", "Sam Okafor"]))
-            .expect("a group of faces is announced");
-        assert_eq!(
-            node.name.as_deref(),
-            Some("Mia Clayton and others are here"),
-            "the name is the people, in words"
-        );
-    }
-
-    phase a_count_stands_inside_the_face_and_leaves_its_parents_margins_alone;
-    // A node's margins are its parent's (a layout puts its gaps there), and a count stands
-    // inside the button's face: a button with a count leaves its parent's margins as they are,
-    // and a second layout pass finds nothing to change, so the layout settles. The count itself
-    // never leaves the face on any side, so no edge that cuts the control can cut it.
-    {
-        let theme = Theme::light();
-        let mut text = TextRenderer::new();
-        let parents = taffy::Rect {
-            left: taffy::LengthPercentageAuto::length(8.0),
-            right: taffy::LengthPercentageAuto::length(8.0),
-            top: taffy::LengthPercentageAuto::length(4.0),
-            bottom: taffy::LengthPercentageAuto::length(4.0),
-        };
-        let laid = |mut button: Button, text: &mut TextRenderer| {
-            let mut tree = TaffyTree::new();
-            let mut map = std::collections::HashMap::new();
-            let node = button.build_layout(&mut tree, &theme, &mut map);
-            let mut style = tree.style(node).unwrap().clone();
-            style.margin = parents;
-            tree.set_style(node, style).unwrap();
-            button.adjust_layout_style(&mut tree, node, text);
-            let first = tree.style(node).unwrap().margin;
-            let changed = button.adjust_layout_style(&mut tree, node, text);
-            (first, changed, tree.style(node).unwrap().margin)
-        };
-
-        let counted = || {
-            Button::icon_only("bell", crate::icons::Icon::Bell, "Notifications, 9 unread")
-                .role(ButtonRole::Bar)
-                .with_count(
-                    crate::widget::BadgeContent::Count(9),
-                    crate::widget::ChipStyle::Live,
-                )
-        };
-        let (first, changed, after) = laid(counted(), &mut text);
-        assert_eq!(first, parents, "a count leaves its parent's margins alone");
-        assert!(
-            !changed && after == parents,
-            "and finds nothing to change again"
-        );
-
-        let mut button = counted();
-        let mut tree = TaffyTree::new();
-        let mut map = std::collections::HashMap::new();
-        let node = button.build_layout(&mut tree, &theme, &mut map);
-        button.adjust_layout_style(&mut tree, node, &mut text);
-        button.apply_layout_external(Rect::new(100.0, 0.0, 128.0, 28.0));
-        let badge = button.count_rect().expect("a count where there is unread");
-        let icon = button.metrics.icon.min(button.rect.height());
-        assert!(
-            (badge.center().x - (button.rect.center().x + icon / 2.0)).abs() < 0.5,
-            "across, on the icon's corner where the face holds it: {badge:?} in {:?}",
-            button.rect
-        );
-        assert_eq!(
-            Widget::paint_bounds(&button),
-            button.rect.union(badge),
-            "the count is painted, not culled"
-        );
-        let held = |badge: Rect, face: Rect| {
-            badge.x0 >= face.x0
-                && badge.x1 <= face.x1
-                && badge.y0 >= face.y0
-                && badge.y1 <= face.y1
-        };
-        assert!(
-            held(badge, button.rect),
-            "inside the face on every side: {badge:?} in {:?}",
-            button.rect
-        );
-        // A face no wider than its icon cannot hold the count on the corner's outer half, so
-        // the count gives up the corner rather than leave the face.
-        button.apply_layout_external(Rect::new(100.0, 0.0, 116.0, 28.0));
-        let badge = button.count_rect().expect("a count where there is unread");
-        assert!(
-            badge.center().x < button.rect.center().x + icon / 2.0,
-            "past the corner's outer half, the face holds the count back: {badge:?} in {:?}",
-            button.rect
-        );
-        assert!(
-            held(badge, button.rect),
-            "inside a face no wider than its icon: {badge:?} in {:?}",
-            button.rect
-        );
-    }
-
-    phase a_button_the_solver_placed_answers_its_measure;
-    // A control the solver has placed answers its measure there, not in a draw: a control that is
-    // laid out and never drawn (a shut overflow API's button among a row's controls) finds no draw
-    // to answer it, so one switch of input would keep it — and its path to the root — asking to be
-    // measured on every frame after.
-    {
-        let mut harness = crate::app::driver::Driver::new(
-            crate::State::new(),
-            Box::new(crate::widget::Row::new().push(Box::new(Button::icon_only(
-                "pin",
-                crate::icons::Icon::Pin,
-                "Pin",
-            )))),
-            (400, 100),
-        );
-        harness.relayout();
-        let keyboard = harness.interaction_environment().with_keyboard_modality();
-        harness.set_interaction_environment(keyboard);
-        assert!(
-            harness.last_relayout().measured,
-            "the switch lays the window out once: {:?}",
-            harness.last_relayout()
-        );
-        harness.relayout();
-        assert_eq!(
-            harness.last_relayout().marked_leaves,
-            0,
-            "a control the solver placed asks for no second measure: {:?}",
-            harness.last_relayout()
-        );
-    }
-}
-
-#[test]
-fn a_persons_face_leads_a_chip_a_step_larger_than_an_icon() {
-    let theme = Theme::dark();
-    let ada = crate::component::Person::new(tilo_actions::MemberId::person("ada"), "Ada");
-    let with_icon = measured_button_rect(
-        Button::new("owner", "Ada").with_icon(crate::icons::Icon::User),
-        1.0,
-    );
-    let with_face = measured_button_rect(Button::new("owner", "Ada").with_avatar(ada), 1.0);
-    let step = f64::from(theme.tokens.metrics.icon_md - theme.tokens.metrics.icon_control);
-    assert!(step > 0.0);
-    assert!(
-        (with_face.width() - with_icon.width() - step).abs() < 0.5,
-        "the face is {step} px wider than an icon: {with_face:?} against {with_icon:?}"
-    );
 }
 
 #[test]

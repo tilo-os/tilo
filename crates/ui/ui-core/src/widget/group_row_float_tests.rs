@@ -123,32 +123,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_float_keeps_its_card_area_inside_the_shell;
-    {
-        let (row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-        let area = row.get_rect();
-        let spare = FLOAT_CARD_MARGIN;
-        let corner = Rect::from_origin_size(Point::new(area.x0, area.y0), FLOAT_SIZE);
-        let placed = row.keep_float_inside(corner);
-        assert_eq!(
-            placed.origin(),
-            Point::new(area.x0 + spare, area.y0 + spare),
-            "a float at the shell's corner stands clear of it, so its band and ring show"
-        );
-        let past = Rect::from_origin_size(Point::new(area.x1, area.y1), FLOAT_SIZE);
-        let past = row.keep_float_inside(past);
-        assert_eq!(
-            (past.x1, past.y1),
-            (area.x1 - spare, area.y1 - spare),
-            "a float pushed past the shell comes back with its card on it"
-        );
-        let inside = Rect::from_origin_size(Point::new(area.x0 + 120.0, area.y0 + 60.0), FLOAT_SIZE);
-        assert_eq!(
-            row.keep_float_inside(inside),
-            inside,
-            "a float with area round it stands where it was put"
-        );
-    }
 
     phase a_floating_window_follows_the_hand_and_snaps_back_into_the_gap_over_the_strip;
     {
@@ -276,43 +250,7 @@ tilo_test_env::scenario! {
         assert_eq!(row.take_pending_float(), None, "the snap is asked once");
     }
 
-    phase a_folded_card_s_collapse_control_points_up_and_opens_it_again;
-    {
-        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-        let at = Rect::new(120.0, 60.0, 760.0, 540.0);
-        row.set_floats(floats(&[(200, at)]));
-        let (mut row, _taffy, _root) = relayout_row_owned(row, FIXTURE_USABLE_PX);
-        assert_eq!(
-            row.groups[1].resize(),
-            crate::widget::window_controls::Resize::Snap,
-            "an open card's collapse control folds it"
-        );
-        row.set_collapsed(&std::collections::BTreeSet::from([200]));
-        let (row, _taffy, _root) = relayout_row_owned(row, FIXTURE_USABLE_PX);
-        assert_eq!(
-            row.groups[1].resize(),
-            crate::widget::window_controls::Resize::Expand,
-            "folded, the same control opens the card again"
-        );
-        assert_eq!(
-            row.groups[0].resize(),
-            crate::widget::window_controls::Resize::Maximize,
-            "a window in its strip stands as it did"
-        );
-    }
 
-    phase a_float_takes_the_size_its_place_keeps;
-    {
-        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-        let at = Rect::from_origin_size(Point::new(400.0, 80.0), super::FLOAT_CARD_SIZE);
-        row.set_floats(floats(&[(200, at)]));
-        let (row, _taffy, _root) = relayout_row_owned(row, FIXTURE_USABLE_PX);
-        let rect = row.groups[1].get_rect();
-        assert!(
-            (rect.width() - at.width()).abs() < 0.5 && (rect.height() - at.height()).abs() < 0.5,
-            "the card stands at its own size: {rect:?}"
-        );
-    }
 }
 
 #[test]

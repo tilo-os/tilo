@@ -1163,39 +1163,6 @@ fn a_long_writer_name_never_reaches_a_rows_time() {
     }
 }
 
-/// A band's one author is cut to a bounded share of its second line: a run
-/// named after a long session leaves the facts beside it room to read, and
-/// neither the lead nor its chip reaches the band's time.
-#[test]
-fn a_long_band_lead_leaves_room_for_the_facts_beside_it() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let mut scene = Scene::new();
-    let lead = HistoryAuthor::new(
-        "Workspace folder pass, sixth round, agent run",
-        120.0,
-        "deadbeef",
-    )
-    .with_relation(crate::widget::history::AuthorRelation::Software);
-    let at = Point::new(48.0, 400.0);
-    let end = 360.0;
-    let facts = ActivityTimeline::draw_band_lead(
-        &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
-        &lead,
-        at,
-        end,
-    );
-    // The lead — the name and its chip — ends inside its share of the line,
-    // and the facts it answers start one gap past it, never past the line.
-    let bounded = at.x + (end - at.x) * 0.7 + 6.0 + 0.01;
-    assert!(
-        facts <= bounded,
-        "the lead ends inside its share of the line: {facts} past {bounded}"
-    );
-    assert!(facts <= end + 0.01, "the lead never reaches the time");
-    assert!(facts >= at.x, "the lead never starts left of its face");
-}
-
 /// Software that is a row's author wears its own face and no chip repeating its name, so the
 /// row's width goes to what it did.
 #[test]

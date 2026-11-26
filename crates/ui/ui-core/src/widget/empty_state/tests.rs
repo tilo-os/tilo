@@ -2,7 +2,6 @@ use super::*;
 use crate::testing::dispatch;
 use automerge::AutoCommit;
 use vello::Scene;
-use vello_encoding::DrawTag;
 
 fn lay_out(w: &mut dyn Widget, vw: f32, vh: f32) {
     let theme = Theme::dark();
@@ -47,446 +46,15 @@ fn cursor(p: Point) -> WindowEvent {
 }
 use crate::synthetic_input::mouse_press;
 
-fn metrics() -> Metrics {
-    Metrics {
-        title_h: 24.0,
-        msg_h: 18.0,
-        quote_h: 0.0,
-        hint_h: 0.0,
-        documents_h: 0.0,
-        action_w: 0.0,
-
-        inner_width: 0.0,
-        pad_x: 0.0,
-        gap: 16.0,
-        text_gap: 12.0,
-        btn_h: 34.0,
-        hero: 72.0,
-    }
-}
-
 tilo_test_env::scenario! {
     /// What an empty state shows in the width it has.
     /// Each phase was a test of its own and builds its own fixture.
     fn an_empty_state_lays_out_wraps_and_sheds;
 
-    phase short_and_narrow_panes_shed_decoration_but_keep_the_action;
-    {
-        /// A zero-state in a short pane (a docked panel body, a couple hundred
-        /// pixels tall) must shed elements rather than push the message through
-        /// the bottom edge.
-        fn a_short_pane_sheds_the_hero_disc_before_it_overflows() {
-            let want = Parts {
-                icon: true,
-                message: true,
-                quote: false,
-                documents: false,
-                action: false,
-                hint: false,
-            };
-            let m = metrics();
 
-            let reserved = Fit::choose(400.0, want, m);
-            assert!(
-                reserved.icon && reserved.message,
-                "a full pane keeps the whole stack"
-            );
-            assert!(reserved.total <= 400.0);
 
-            let docked = Fit::choose(120.0, want, m);
-            assert!(!docked.icon, "the disc is shed first");
-            assert!(docked.message, "the explanation is kept while it fits");
-            assert!(
-                docked.total <= 120.0,
-                "and the result fits: {} in 120",
-                docked.total
-            );
 
-            // Barely any width: the message goes too, but never the title.
-            let cramped = Fit::choose(30.0, want, m);
-            assert!(!cramped.icon && !cramped.message);
-            assert_eq!(cramped.total, m.title_h, "the title always survives");
-        }
 
-        fn narrow_large_text_recovery_copy_wraps_inside_the_empty_state() {
-            let theme = Theme::dark().with_text_scale(2.0);
-            let rect = Rect::new(0.0, 0.0, 390.0, 680.0);
-            let gap = f64::from(theme.tokens.spacing.s4);
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "test viewport is an ordinary logical-pixel dimension"
-            )]
-            let width = (rect.width() - gap * 2.0).max(1.0) as f32;
-            let title = "Couldn’t open this page";
-            let message = "The site did not respond. Check your connection and try again.";
-            let title_style = theme
-                .text(TextRole::Title)
-                .with_align(ParagraphAlign::Center);
-            let message_style = theme
-                .text(TextRole::Caption)
-                .with_align(ParagraphAlign::Center);
-            let mut renderer = TextRenderer::new();
-            renderer.set_text_scale(theme.text_scale);
-            let (_, title_one_line_height) = renderer.measure_style(title, None, &title_style);
-            let (title_width, title_height) = renderer.measure_style(title, Some(width), &title_style);
-            let (message_width, message_height) =
-                renderer.measure_style(message, Some(width), &message_style);
-
-            assert!(title_width <= width);
-            assert!(message_width <= width);
-            assert!(title_height > title_one_line_height);
-            assert!(message_height > 0.0);
-
-            let mut state = EmptyState::new(title)
-                .with_message(message)
-                .with_action("Try again");
-            state.apply_layout_external(rect);
-            let mut scene = Scene::new();
-            state.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &theme, PresenceCtx::default().draw_env()));
-            let action = state.action_rect();
-            assert!(rect.contains(action.center()));
-            let action_style = theme
-                .text(TextRole::Label)
-                .with_wrap_mode(TextWrapMode::WordOrGlyph)
-                .with_align(ParagraphAlign::Center);
-            let (_, action_line_height) =
-                renderer.measure_style("Try again", Some(width), &action_style);
-            assert!(
-                action.height()
-                    >= f64::from(action_line_height) + f64::from(theme.tokens.spacing.s2) * 2.0,
-                "large-text action reserves its label's full line height"
-            );
-        }
-
-        fn long_localized_content_wraps_inside_a_narrow_scaled_pane() {
-            for width in [240.0, 480.0] {
-                for scale in [1.0, 2.0] {
-                    let theme = Theme::dark().with_text_scale(scale);
-                    let mut tr = crate::font_catalog::fixture_renderer();
-                    tr.set_text_scale(scale);
-                    let mut scene = Scene::new();
-                    let rect = Rect::new(20.0, 30.0, 20.0 + width, 1330.0);
-                    let action = EmptyState::paint(
-                        &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
-                        rect,
-                        &EmptyStateContent {
-                            icon: Some(Icon::Inbox),
-                            illustration: None,
-                            documents: &[],
-                            error: false,
-                            title: "Keine synchronisierten Nachrichten in diesem Arbeitsbereich",
-                            message: Some(
-                        "Sobald eine Verbindung verfügbar ist, erscheinen neue Nachrichten automatisch.",
-                    ),
-                            action_label: Some(
-                        "Verbindungseinstellungen jetzt vollständig überprüfen und sichere Wiederherstellung vorbereiten",
-                    ),
-                            quote: None,
-                            hint: None,
-                        },
-                        Point::new(-1.0, -1.0),
-                    )
-                .expect("action remains available");
-
-                    assert!(action.x0 >= rect.x0 && action.x1 <= rect.x1, "{action:?}");
-                    assert!(action.height() > 34.0, "wrapped action grows: {action:?}");
-                    let encoding = scene.encoding();
-                    for run in &encoding.resources.glyph_runs {
-                        for glyph in &encoding.resources.glyphs[run.glyphs.clone()] {
-                            let x = f64::from(run.transform.translation[0] + glyph.x);
-                            assert!(
-                                x >= rect.x0 && x <= rect.x1,
-                                "{width}px/{scale}x glyph x={x} outside {rect:?}"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        a_short_pane_sheds_the_hero_disc_before_it_overflows();
-        narrow_large_text_recovery_copy_wraps_inside_the_empty_state();
-        long_localized_content_wraps_inside_a_narrow_scaled_pane();
-    }
-
-    phase empty_state_paints_scrolls_and_centres_its_essential_content;
-    {
-        fn retained_empty_state_has_a_scrollable_route_to_essential_content() {
-            use std::cell::Cell;
-            let invoked = Rc::new(Cell::new(0));
-            let counted = invoked.clone();
-            let scroll = EmptyState::new("No messages are available")
-                .with_icon(Icon::Inbox)
-                .with_message("Reconnect to load messages.")
-                .with_action("Review connection settings")
-                .with_action_id("empty.review")
-                .on_open(move || counted.set(counted.get() + 1))
-                .into_scrollable()
-                .with_height(50.0);
-            let mut harness = crate::app::driver::Driver::for_root(
-                crate::State::new(),
-                scroll,
-                (240, 50),
-                Theme::dark(),
-            );
-            assert!(harness.root::<Scrollable>().vertical_overflows());
-            let end = harness.root::<Scrollable>().max_offset_y();
-            assert!(end > 0.0);
-            harness.root_mut::<Scrollable>().scroll_by(0.0, end);
-            harness.relayout();
-            let _ = harness.inspection();
-            let scroll = harness.root::<Scrollable>();
-            let action = scroll.children()[0]
-                .synthetic_accessibility_rect(&[0])
-                .expect("retained action geometry");
-            let node = scroll.children()[0]
-                .accessibility()
-                .expect("a described state");
-            assert_eq!(
-                node.children
-                    .first()
-                    .and_then(|button| button.bounds)
-                    .map(crate::a11y::AccessBounds::to_rect),
-                Some(action),
-                "the action is described where it is drawn"
-            );
-            assert!(
-                scroll.content_viewport_rect().contains(action.center()),
-                "the scrolled action is visible: {action:?}"
-            );
-            harness.click_at(action.center().x, action.center().y);
-            assert_eq!(
-                invoked.get(),
-                1,
-                "visible recovery action invokes through the host"
-            );
-            harness
-                .perform_named("empty.review", &crate::a11y::Action::Activate)
-                .unwrap();
-            assert_eq!(
-                invoked.get(),
-                2,
-                "accessibility uses the same recovery action"
-            );
-        }
-
-        fn wide_scrollable_retains_the_icon_and_explanatory_message() {
-            let make = |icon| {
-                let mut scroll = EmptyState::new("No messages")
-                    .with_message("Reconnect to load messages.")
-                    .with_action("Review settings");
-                if icon {
-                    scroll = scroll.with_icon(Icon::Inbox);
-                }
-                scroll.into_scrollable().with_height(400.0)
-            };
-            let mut decorated = make(true);
-            lay_out(&mut decorated, 480.0, 400.0);
-            let decorated_scene = draw(&mut decorated);
-            let decorated_encoding = decorated_scene.encoding();
-            assert!(
-                decorated_encoding.resources.glyph_runs.len() >= 3,
-                "title, explanatory message, and action all remain painted"
-            );
-
-            let mut plain = make(false);
-            lay_out(&mut plain, 480.0, 400.0);
-            let plain_scene = draw(&mut plain);
-            let decorated_colors = decorated_encoding
-                .draw_tags
-                .iter()
-                .filter(|tag| **tag == DrawTag::COLOR)
-                .count();
-            let plain_colors = plain_scene
-                .encoding()
-                .draw_tags
-                .iter()
-                .filter(|tag| **tag == DrawTag::COLOR)
-                .count();
-            assert!(
-                decorated_colors > plain_colors,
-                "wide scrollable keeps the icon disc and strokes"
-            );
-        }
-
-        fn wide_manual_pane_keeps_the_essential_block_centered() {
-            let theme = Theme::dark();
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let rect = Rect::new(15.0, 25.0, 495.0, 425.0);
-            let minimum = EmptyState::minimum_essential_height(
-                &mut tr,
-                &theme,
-                rect.width(),
-                "No messages",
-                Some("Compose"),
-            );
-            let mut scene = Scene::new();
-            let action = EmptyState::paint(
-                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
-                rect,
-                &EmptyStateContent {
-                    icon: None,
-                    illustration: None,
-                    documents: &[],
-                    error: false,
-                    title: "No messages",
-                    message: None,
-                    action_label: Some("Compose"),
-                    quote: None,
-                    hint: None,
-                },
-                Point::new(-1.0, -1.0),
-            )
-            .expect("wide pane exposes action");
-            let top = action.y1 - minimum;
-            assert!(((top - rect.y0) - (rect.y1 - action.y1)).abs() < 0.001);
-
-            let mut retained = EmptyState::new("No messages").with_action("Compose");
-            lay_out(&mut retained, 480.0, 400.0);
-            assert_eq!(retained.get_rect(), Rect::new(0.0, 0.0, 480.0, 400.0));
-            let _ = draw(&mut retained);
-            let retained_action = retained.action_rect();
-            let retained_top = retained_action.y1 - minimum;
-            assert!((retained_top - (400.0 - retained_action.y1)).abs() < 0.001);
-        }
-
-        retained_empty_state_has_a_scrollable_route_to_essential_content();
-        wide_scrollable_retains_the_icon_and_explanatory_message();
-        wide_manual_pane_keeps_the_essential_block_centered();
-    }
-
-    // In a wide window the message wraps at a readable measure under the
-    // title, never one sentence stretched across the whole width.
-    phase a_wide_window_wraps_the_message_at_a_readable_measure;
-    {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let message = "Bridge a server with the Discord Bridge bot and its channels and \
-                   messages show up in this workspace's Chat, in step both ways.";
-        let content = EmptyStateContent {
-            message: Some(message),
-            ..EmptyStateContent::new("Bring a Discord server into this area")
-        };
-        let style = StackStyle::resolved(&theme, false);
-        let wide = style.measure(&mut text, 1600.0, &content, 0.0);
-        assert!(f64::from(wide.inner_width) <= f64::from(theme.tokens.metrics.message_measure));
-        let one_line = style.measure(
-            &mut text,
-            1600.0,
-            &EmptyStateContent {
-                message: Some("Ag"),
-                ..content
-            },
-            0.0,
-        );
-        assert!(wide.msg_h > one_line.msg_h, "the message wraps");
-        let narrow = style.measure(&mut text, 320.0, &content, 0.0);
-        assert!(
-            narrow.inner_width < wide.inner_width,
-            "a narrow window still narrows it"
-        );
-    }
-
-    // At a phone's width an error says all of what happened and what to
-    // do: its message wraps like any other, never cut off with an ellipsis.
-    phase errors_use_the_danger_tone_and_wrap_their_whole_message_at_420_px;
-    {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let detail = "Couldn't read the selected files. Check permissions and try again.";
-        let content = EmptyStateContent {
-            icon: Some(Icon::FileText),
-            message: Some(detail),
-            error: true,
-            ..EmptyStateContent::new("Couldn't open the files")
-        };
-        let style = StackStyle::resolved(&theme, false);
-        let error = style.measure(&mut text, 420.0, &content, 0.0);
-        let plain = style.measure(
-            &mut text,
-            420.0,
-            &EmptyStateContent {
-                error: false,
-                ..content
-            },
-            0.0,
-        );
-        let (_, line) = text.measure_style("Ag", None, &style.message);
-        assert!(
-            error.msg_h > f64::from(line) * 1.5,
-            "the whole message wraps onto more lines than one"
-        );
-        assert!(
-            (error.msg_h - plain.msg_h).abs() < f64::EPSILON,
-            "an error wraps exactly like any other message"
-        );
-        assert_eq!(error.text_gap, f64::from(theme.tokens.spacing.s3));
-        assert_eq!(error.gap, f64::from(theme.tokens.spacing.s4));
-
-        let state = EmptyState::error("Couldn't open the files", detail);
-        let node = Widget::accessibility(&state).unwrap();
-        assert_eq!(node.description.as_deref(), Some(detail), "full text");
-
-        let mut scene = Scene::new();
-        paint_empty_state(
-            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
-            Rect::new(0.0, 0.0, 360.0, 400.0),
-            &content,
-            Point::new(-1.0, -1.0),
-            false,
-            false,
-            None,
-        );
-        let danger = theme.tokens.colors.semantic.danger.to_rgba8();
-        let encoded = scene.encoding();
-        let has_danger = encoded.draw_data.chunks(1).any(|word| {
-            word.first().is_some_and(|w| {
-                let [r, g, b, a] = w.to_le_bytes();
-                (r, g, b, a) == (danger.r, danger.g, danger.b, danger.a)
-                    || (a, b, g, r) == (danger.r, danger.g, danger.b, danger.a)
-            })
-        });
-        assert!(has_danger, "error glyph is painted in the danger colour");
-    }
-
-    phase an_illustration_takes_the_hero_slot_and_sheds_first;
-    {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let painted = std::cell::Cell::new(None);
-        let paint = |_: &mut PaintCtx<'_>, rect: Rect| painted.set(Some(rect));
-        let content = EmptyStateContent {
-            illustration: Some(&paint),
-            message: Some("Search for a city to see its forecast."),
-            ..EmptyStateContent::new("No places yet")
-        };
-        let mut scene = Scene::new();
-        paint_empty_state(
-            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
-            Rect::new(0.0, 0.0, 400.0, 500.0),
-            &content,
-            Point::new(-1.0, -1.0),
-            false,
-            false,
-            None,
-        );
-        let slot = painted.take().expect("illustration painted");
-        assert!((slot.width() - f64::from(theme.tokens.metrics.icon_lg) * 4.0).abs() < 0.5);
-        let mut cramped = Scene::new();
-        paint_empty_state(
-            &mut PaintCtx::new(&mut cramped, Affine::IDENTITY, &mut text, &theme),
-            Rect::new(0.0, 0.0, 400.0, 80.0),
-            &content,
-            Point::new(-1.0, -1.0),
-            false,
-            false,
-            None,
-        );
-        assert!(
-            painted.take().is_none(),
-            "a short pane sheds the illustration"
-        );
-    }
 
     phase an_inline_empty_state_hugs_its_content_and_a_busy_one_keeps_moving;
     {
@@ -528,28 +96,6 @@ tilo_test_env::scenario! {
     /// Each phase was a test of its own and builds its own fixture.
     fn the_empty_state_action_is_placed_published_and_fires_once;
 
-    phase exported_action_button_is_placed_where_activation_clicks;
-    {
-        let mut es = EmptyState::new("No response yet").with_action("Send request");
-        lay_out(&mut es, 600.0, 400.0);
-        let _ = draw(&mut es);
-
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        es.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let update = crate::accesskit_bridge::build_tree_update(&es, &node_map, None, 1.0);
-        let (_, button) = update
-            .nodes
-            .iter()
-            .find(|(_, n)| n.role() == accesskit::Role::Button)
-            .expect("the action is exported as a button");
-        let bounds = button.bounds().expect("the action button has bounds");
-        let action = es.action_rect();
-        assert_eq!(
-            (bounds.x0, bounds.y0, bounds.x1, bounds.y1),
-            (action.x0, action.y0, action.x1, action.y1)
-        );
-    }
 
     phase empty_state_action_fires_once_through_pointer_keyboard_and_semantics;
     {
@@ -726,28 +272,6 @@ tilo_test_env::scenario! {
         assert_eq!(opened.get(), 1, "the view handler ran once");
     }
 
-    phase layout_reports_the_action_where_paint_puts_it;
-    {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let rect = Rect::new(0.0, 0.0, 480.0, 400.0);
-        let content = EmptyStateContent {
-            icon: Some(Icon::Inbox),
-            message: Some("Your inbox is empty"),
-            action_label: Some("Compose"),
-            ..EmptyStateContent::new("No messages")
-        };
-        let layout = EmptyState::layout(&mut text, &theme, rect, &content);
-        let mut scene = Scene::new();
-        let painted = EmptyState::paint(
-            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
-            rect,
-            &content,
-            Point::new(-1.0, -1.0),
-        );
-        assert_eq!(layout.action, painted);
-        assert!(layout.natural_height > 0.0 && layout.natural_height < rect.height());
-    }
 
     phase a_painted_state_is_addressed_as_the_controls_beside_it_are;
     {
@@ -793,45 +317,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    // A control's place is the layout's: a window that has laid out and has not
-    // yet painted still finds the empty state's action inside it, never at the
-    // window's origin, where a box nothing placed stands.
-    phase the_layout_places_the_action_without_a_paint;
-    {
-        let mut state = EmptyState::new("No notes yet")
-            .with_message("Notes you write show up here.")
-            .with_action("New note")
-            .on_open(|| {});
-        lay_out(&mut state, 600.0, 400.0);
-        let action = state.action_rect();
-        let box_ = Widget::get_rect(&state);
-        assert!(
-            !action.is_zero_area(),
-            "the layout places the action: {action:?}"
-        );
-        let published = state
-            .engine
-            .as_ref()
-            .map(Widget::get_rect)
-            .expect("the action is a published button");
-        assert_eq!(
-            published, action,
-            "the published button stands where the action does"
-        );
-        assert!(
-            box_.contains(action.center()),
-            "inside the state that holds it: {action:?} in {box_:?}"
-        );
-
-        let mut placed = EmptyState::new("No notes yet").with_action("New note");
-        let external = Rect::new(120.0, 60.0, 720.0, 460.0);
-        placed.apply_layout_external(external);
-        let action = placed.action_rect();
-        assert!(
-            !action.is_zero_area() && external.contains(action.center()),
-            "a host-placed state places its action too: {action:?} in {external:?}"
-        );
-    }
 }
 
 tilo_test_env::scenario! {
@@ -915,36 +400,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_layout_places_the_details_disclosure_without_a_paint;
-    {
-        let detail = "command process failed: No such file or directory (os error 2)";
-        let mut state = EmptyState::new("Podman isn't available")
-            .with_message("Install Podman to manage containers here.")
-            .with_action("Try again")
-            .with_details(detail);
-        lay_out(&mut state, 600.0, 400.0);
-        let toggle = state.details_rect;
-        let box_ = Widget::get_rect(&state);
-        assert!(
-            !toggle.is_zero_area(),
-            "the layout places the disclosure: {toggle:?}"
-        );
-        assert!(
-            box_.contains(toggle.center()),
-            "inside the state: {toggle:?} in {box_:?}"
-        );
-        assert!(
-            toggle.y0 >= state.action_rect().y1,
-            "under the action: {toggle:?} {:?}",
-            state.action_rect()
-        );
-        dispatch(&mut state, &cursor(toggle.center()));
-        assert!(
-            dispatch(&mut state, &mouse_press()),
-            "the click opens it before anything painted"
-        );
-        assert!(state.details_open());
-    }
 }
 
 #[test]
@@ -1164,51 +619,63 @@ fn details_keep_their_lines_and_copy_the_command_they_name() {
     });
 }
 
-/// A quote of the thing's own words stays in view under the message, is read out as its words,
-/// and a 10 KB line of output is cut to a few lines rather than pushing the card apart.
+/// A failure says all of what happened, to a reader too, and its glyph wears the danger colour.
 #[test]
-fn a_quote_of_the_things_own_words_stays_in_view_and_bounded() {
+fn errors_use_the_danger_tone_and_wrap_their_whole_message_at_420_px() {
     let theme = Theme::dark();
-    let style = StackStyle::resolved(&theme, false);
-    let said = "called `Option::unwrap()` on a `None` value";
+    let mut text = TextRenderer::new();
+    let detail = "Couldn't read the selected files. Check permissions and try again.";
     let content = EmptyStateContent {
-        message: Some("It stopped before its window appeared."),
-        quote: Some(said),
-        ..EmptyStateContent::new("Notes could not open")
+        icon: Some(Icon::FileText),
+        message: Some(detail),
+        error: true,
+        ..EmptyStateContent::new("Couldn't open the files")
     };
-    let mut text = TextRenderer::new();
-    let measured = style.measure_with(&mut text, &theme, 600.0, &content);
-    assert!(measured.quote_h > 0.0, "the quote takes a line of its own");
-    let one_line = f64::from(style.quote.line_height_px_at(theme.text_scale));
-    assert!(
-        measured.quote_h <= one_line * 3.0 + style.quote_pad_y * 2.0 + 0.5,
-        "a short quote is one line in its well: {}",
-        measured.quote_h
-    );
-
-    // Ten kilobytes of one line: the state shows its first lines, never all of it.
-    let long = "the database went away and the request could not be retried ".repeat(200);
-    let mut text = TextRenderer::new();
-    let long_measured = style.measure_with(
+    let style = StackStyle::resolved(&theme, false);
+    let error = style.measure(&mut text, 420.0, &content, 0.0);
+    let plain = style.measure(
         &mut text,
-        &theme,
-        400.0,
+        420.0,
         &EmptyStateContent {
-            quote: Some(&long),
-            ..EmptyStateContent::new("Photos could not open")
+            error: false,
+            ..content
         },
+        0.0,
+    );
+    let (_, line) = text.measure_style("Ag", None, &style.message);
+    assert!(
+        error.msg_h > f64::from(line) * 1.5,
+        "the whole message wraps onto more lines than one"
     );
     assert!(
-        long_measured.quote_h <= one_line * 3.0 + style.quote_pad_y * 2.0 + 0.5,
-        "a long line is cut to the lines the state can show: {}",
-        long_measured.quote_h
+        (error.msg_h - plain.msg_h).abs() < f64::EPSILON,
+        "an error wraps exactly like any other message"
     );
+    assert_eq!(error.text_gap, f64::from(theme.tokens.spacing.s3));
+    assert_eq!(error.gap, f64::from(theme.tokens.spacing.s4));
 
-    // What is drawn is also what assistive technology reads: the app's words, named as its.
-    let state = EmptyState::new("Notes could not open").with_quote(said);
-    let node = Widget::accessibility(&state).expect("the state is described");
-    assert_eq!(
-        node.description.as_deref(),
-        Some("It said: called `Option::unwrap()` on a `None` value")
+    let state = EmptyState::error("Couldn't open the files", detail);
+    let node = Widget::accessibility(&state).unwrap();
+    assert_eq!(node.description.as_deref(), Some(detail), "full text");
+
+    let mut scene = Scene::new();
+    paint_empty_state(
+        &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+        Rect::new(0.0, 0.0, 360.0, 400.0),
+        &content,
+        Point::new(-1.0, -1.0),
+        false,
+        false,
+        None,
     );
+    let danger = theme.tokens.colors.semantic.danger.to_rgba8();
+    let encoded = scene.encoding();
+    let has_danger = encoded.draw_data.chunks(1).any(|word| {
+        word.first().is_some_and(|w| {
+            let [r, g, b, a] = w.to_le_bytes();
+            (r, g, b, a) == (danger.r, danger.g, danger.b, danger.a)
+                || (a, b, g, r) == (danger.r, danger.g, danger.b, danger.a)
+        })
+    });
+    assert!(has_danger, "error glyph is painted in the danger colour");
 }

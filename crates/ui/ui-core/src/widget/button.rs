@@ -409,15 +409,6 @@ impl Button {
         self.detail.as_deref()
     }
 
-    /// Whose avatar the face leads with, by name, and whether it shows a group of faces.
-    #[cfg(test)]
-    pub(crate) fn people_shown(&self) -> (Option<&str>, bool) {
-        (
-            self.avatar.as_ref().map(|who| who.name.as_str()),
-            !self.faces.is_empty(),
-        )
-    }
-
     /// Take the words and glyph of `fresh`, keeping this button's place and press; a shape apart
     /// (icon-only for a label, another role or size) can only change by building it again. A
     /// button a row has compacted takes `fresh`'s words as what it shows when the row gives it
@@ -1780,10 +1771,6 @@ impl<'a> ButtonFace<'a> {
     pub fn role(mut self, role: ButtonRole) -> Self {
         self.role = role;
         self
-    }
-    #[cfg(test)]
-    pub(crate) const fn role_of(&self) -> ButtonRole {
-        self.role
     }
     #[must_use]
     pub fn tone(mut self, tone: Tone) -> Self {

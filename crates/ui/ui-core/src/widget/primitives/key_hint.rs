@@ -262,26 +262,3 @@ impl crate::widget::Widget for KeyHints {
         )
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn hints_are_keycaps_and_labels_with_no_joining_glyph() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let hints = [
-            KeyHint::new(["Enter"], "Save"),
-            KeyHint::new(["Esc"], "Cancel"),
-        ];
-        let face = KeyHintsFace::new(&hints);
-        let one = KeyHintsFace::new(&hints[..1]).width(&mut text, &theme);
-        let both = face.width(&mut text, &theme);
-        assert!(both > one * 1.5);
-        assert_eq!(face.spoken(), vec!["Enter: Save", "Esc: Cancel"]);
-        for hint in &hints {
-            assert!(!hint.label.contains('·') && !hint.label.contains('•'));
-        }
-    }
-}

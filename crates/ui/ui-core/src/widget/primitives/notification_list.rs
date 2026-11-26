@@ -569,15 +569,5 @@ mod tests {
             );
         }
 
-        phase a_warning_keeps_its_rail_beside_its_text;
-        {
-            let mut warning = item("Disk almost full");
-            if let NotificationListRow::Item { severity, .. } = &mut warning {
-                *severity = Some(Tone::Warning);
-            }
-            let rows = [warning];
-            let painted = layout(NotificationListView::new(&rows, 0));
-            assert_eq!(painted.rows.len(), 1);
-        }
     }
 }

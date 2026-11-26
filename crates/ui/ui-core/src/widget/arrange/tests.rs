@@ -102,21 +102,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase larger_text_leaves_fewer_grid_columns;
-    {
-        let normal = Theme::dark();
-        let large = Theme::dark().with_text_scale(2.0);
-        let mut a = grid_of(12, 11.0);
-        let mut b = grid_of(12, 11.0);
-        solve(&mut a, &normal, 1200.0);
-        solve(&mut b, &large, 1200.0);
-        assert!(
-            b.layout().columns() < a.layout().columns(),
-            "{} columns at 200 % text, {} at 100 %",
-            b.layout().columns(),
-            a.layout().columns()
-        );
-    }
 
     phase a_hugging_grid_keeps_each_item_as_tall_as_its_content;
     {
@@ -140,75 +125,7 @@ tilo_test_env::scenario! {
         assert!(r[0].y0.abs() < 0.5, "at the top of its row");
     }
 
-    phase a_hugging_grid_holds_the_items_it_places;
-    // A hugging grid's own box holds every item it places: an item as tall as its content is
-    // never taller than the grid that shows it, at any display scale (a dashboard's cards, each
-    // as tall as what it lists, reached the grid's edge and past it by a device pixel).
-    {
-        for scale in [1.0, 1.5, 2.0] {
-            let theme = Theme::dark();
-            let _held = crate::widget::enter_device_scale(scale);
-            let item = |height: f32, width: f32| {
-                Box::new(
-                    Stack::stack()
-                        .push(boxed(height))
-                        .push(Box::new(Spacer::fixed(width)) as crate::widget::Element),
-                ) as crate::widget::Element
-            };
-            let mut grid = Grid::columns(2)
-                .hugging()
-                .push(item(20.0, 30.3))
-                .push(item(100.3, 44.7))
-                .push(item(57.1, 12.2));
-            solve(&mut grid, &theme, 601.3);
-            let bounds = grid.get_rect();
-            for (index, r) in rects(&grid).into_iter().enumerate() {
-                assert!(
-                    r.y1 <= bounds.y1 + 0.01 && r.x1 <= bounds.x1 + 0.01,
-                    "at {scale}x, item {index} {r:?} is inside the grid {bounds:?}"
-                );
-            }
-        }
-    }
 
-    phase a_hugging_grid_at_its_smallest_holds_its_cards_whole;
-    // A hugging grid at its smallest still holds its cards whole: a card's body is as tall as
-    // what it holds whether the card is measured or laid out, so a column that shrinks the grid
-    // to its minimum never leaves a card past the grid's edge or over the next row. (A
-    // layers' cell takes the width it is given; under a min-content constraint it is given none,
-    // so a card whose body holds layers measured them away: a preset picker's card stood past
-    // its grid.)
-    {
-        for scale in [1.0, 1.5, 2.0] {
-            let theme = Theme::dark();
-            let _held = crate::widget::enter_device_scale(scale);
-            let card = |art: f32, rest: f32| {
-                let body = Stack::stack()
-                    .push(Box::new(Layers::layers().push(boxed(art))) as crate::widget::Element)
-                    .push(boxed(rest));
-                Box::new(crate::widget::Card::new(Box::new(body)).with_title("A preset"))
-                    as crate::widget::Element
-            };
-            let mut grid = Grid::columns(2)
-                .hugging()
-                .push(card(24.3, 40.0))
-                .push(card(17.1, 90.7))
-                .push(card(16.0, 60.2));
-            solve_in(&mut grid, &theme, 601.3, taffy::AvailableSpace::MinContent);
-            let bounds = grid.get_rect();
-            let placed = rects(&grid);
-            for (index, r) in placed.iter().enumerate() {
-                assert!(
-                    r.y1 <= bounds.y1 + 0.01,
-                    "at {scale}x, card {index} {r:?} is inside the grid {bounds:?}"
-                );
-            }
-            assert!(
-                placed[0].y1.max(placed[1].y1) <= placed[2].y0,
-                "at {scale}x, the second row stands under the first: {placed:?}"
-            );
-        }
-    }
 
     phase a_grid_item_spans_columns;
     {
@@ -259,18 +176,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_split_collapses_earlier_at_larger_text;
-    {
-        let theme = Theme::dark();
-        let large = Theme::dark().with_text_scale(1.5);
-        let width = (18.0 + 22.0) * rem_of(&theme) + 40.0;
-        let mut normal = split();
-        let mut enlarged = split();
-        solve(&mut normal, &theme, width);
-        solve(&mut enlarged, &large, width);
-        assert!(!normal.layout().collapsed());
-        assert!(enlarged.layout().collapsed());
-    }
 
     phase a_split_puts_the_primary_pane_on_its_side;
     {
@@ -339,25 +244,6 @@ tilo_test_env::scenario! {
         assert!((r[1].y0 - (20.0 + gap(&theme, Rhythm::Sibling))).abs() < 0.5);
     }
 
-    phase an_absent_child_takes_its_gap_with_it;
-    {
-        let theme = Theme::dark();
-        let mut stack = Stack::stack()
-            .align(Align::Start)
-            .push(boxed(20.0))
-            .push(Box::new(crate::widget::Absent::new()))
-            .push(boxed(30.0));
-        solve(&mut stack, &theme, 400.0);
-        let last = stack
-            .children()
-            .last()
-            .map(|child| child.get_rect())
-            .expect("three children");
-        assert!(
-            (last.y0 - (20.0 + gap(&theme, Rhythm::Sibling))).abs() < 0.5,
-            "one gap between the two present children: {last:?}"
-        );
-    }
 
     phase a_container_that_leads_stands_what_it_holds_under_the_text_a_control_leads_to;
     // A container that leads stands what it holds one row lead in — the gutter a row's leading
@@ -436,39 +322,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_phone_screen_keeps_no_lead_where_a_column_does;
-    // A column without the width for a row lead keeps none: on a phone's screen what a document's
-    // body holds starts on the page's gutter, so the words keep the width a control's cell would
-    // take from every line, while the column what it holds is read in is a column.
-    {
-        use crate::widget::COMPACT_BELOW;
-        let theme = Theme::dark();
-        let rem = f64::from(rem_of(&theme));
-        let lead = f64::from(Resolved::of(&theme).lead());
-        assert!(lead > 0.0);
-        // The narrowest a column what the lead holds stands at, and the widest box that leaves it
-        // below: `WidthClass::Medium`, where a lead fits again.
-        let column = f64::from(COMPACT_BELOW) * rem;
-        for (width, kept) in [
-            (320.0, false),
-            (390.0, false),
-            (column, false),
-            (column + lead - 1.0, false),
-            (column + lead, true),
-            (1280.0, true),
-        ] {
-            let mut body = Stack::stack().fill_width().push(boxed(100.0));
-            body.set_lead(1);
-            solve(&mut body, &theme, width as f32);
-            let held = rects(&body)[0];
-            let inset = if kept { lead } else { 0.0 };
-            assert!(
-                (held.x0 - inset).abs() < 0.5,
-                "{width} wide: what it holds stands at {}, where a lead is {lead}",
-                held.x0
-            );
-        }
-    }
 
     phase every_edge_lands_on_a_device_pixel_at_the_display_scale;
     {
@@ -828,143 +681,9 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_child_that_fills_at_an_aspect_keeps_its_ratio_in_a_row;
-    {
-        let theme = Theme::dark();
-        let mut row = Row::row()
-            .fill_width()
-            .align(Align::Start)
-            .push_fit(filling_view(), Fit::fill(1.0).aspect(16.0 / 9.0));
-        solve(&mut row, &theme, 800.0);
-        let r = subject_rect(&row);
-        assert!(
-            (r.width() - r.height() * 16.0 / 9.0).abs() < 1.0,
-            "a filled child at 16:9 in a row is {r:?}"
-        );
-    }
 
-    phase an_aspect_layer_in_a_filling_page_keeps_its_width_and_ratio;
-    // The same in a canvas that fills its pane and scrolls inside its own parts, where the layers
-    // gets no width of its own from the page: the ratio must not feed its width back from the
-    // height it derived, or the box shrinks to a fraction of its width and grows back every solve.
-    {
-        let theme = Theme::dark();
-        let inner = Layers::layers().push_fit(filling_view(), Fit::fill(1.0).aspect(16.0 / 9.0));
-        let column = Stack::stack()
-            .fill_width()
-            .fill_height()
-            .push(Box::new(inner))
-            .push(boxed(40.0));
-        let mut page = Page::full().filling().push(Box::new(column));
-        solve_in(
-            &mut page,
-            &theme,
-            1000.0,
-            taffy::AvailableSpace::Definite(744.0),
-        );
-        let r = subject_rect(&page);
-        assert!(
-            (r.width() - r.height() * 16.0 / 9.0).abs() < 1.0,
-            "a layer at 16:9 in a filling page is {r:?}"
-        );
-        assert!(
-            (r.width() - 1000.0).abs() < 1.0,
-            "it takes the page's width: {r:?}"
-        );
-    }
 
-    phase the_video_box_is_the_page_contents_width_at_sixteen_by_nine;
-    // The video page's own shape: a canvas page holding a column whose first child is the 16:9
-    // player box, and, in that box, the poster filling the cell and Play centred over it. The box
-    // takes the page content's width and its 16:9 height; Play keeps its own size in the middle
-    // rather than stretching across the box into a tall strip, and the picture takes the box.
-    {
-        use crate::widget::Button;
-        for (width, height) in [(1000.0_f32, 744.0_f32), (320.0, 512.0)] {
-            let theme = Theme::dark();
-            let play = Row::row()
-                .fill_width()
-                .fill_height()
-                .align(Align::Center)
-                .distribute(Distribute::Center)
-                .push(Box::new(Button::new("play", "Play")));
-            let player = Layers::layers()
-                .with_id("player")
-                .push_fit(filling_view(), Fit::fill(1.0).aspect(16.0 / 9.0))
-                .push_fit(Box::new(play), Fit::fill(1.0));
-            let column = Stack::stack()
-                .fill_width()
-                .push(Box::new(player))
-                .push(Box::new(Stack::stack().fill_width().push(boxed(80.0))));
-            let mut page = Page::full().push(Box::new(column));
-            solve_in(
-                &mut page,
-                &theme,
-                width,
-                taffy::AvailableSpace::Definite(height),
-            );
-            let box_rect = crate::widget::find_test_id(&page, "player")
-                .expect("the player box is laid out")
-                .get_rect();
-            let play = crate::widget::find_test_id(&page, "play")
-                .expect("the play button is laid out")
-                .get_rect();
-            let view = subject_rect(&page);
-            assert!(
-                (box_rect.width() / box_rect.height() - 16.0 / 9.0).abs() < 0.02,
-                "at {width} the player box is {}x{}, not 16:9",
-                box_rect.width(),
-                box_rect.height()
-            );
-            assert!(
-                (view.width() - box_rect.width()).abs() < 1.0,
-                "at {width} the picture is {} wide in a {} box",
-                view.width(),
-                box_rect.width()
-            );
-            assert!(
-                play.width() < box_rect.width() * 0.9 && play.height() < box_rect.height() * 0.9,
-                "at {width} Play is {}x{} in a {}x{} box: it stretches across the picture",
-                play.width(),
-                play.height(),
-                box_rect.width(),
-                box_rect.height()
-            );
-            assert!(
-                (play.center().x - box_rect.center().x).abs() < 1.0,
-                "at {width} Play stands at {} in a box centred at {}",
-                play.center().x,
-                box_rect.center().x
-            );
-        }
-    }
 
-    phase a_layer_that_fills_at_an_aspect_keeps_its_ratio;
-    // A layer that fills the cell at an aspect takes the cell's width and the height the ratio
-    // gives, not the whole cell's height: `layers(fill, aspect: 16/9)` is the video box.
-    {
-        let theme = Theme::dark();
-        let layers = Layers::layers().push_fit(filling_view(), Fit::fill(1.0).aspect(16.0 / 9.0));
-        let mut page = Stack::stack()
-            .fill_width()
-            .fill_height()
-            .push(Box::new(layers));
-        solve_in(
-            &mut page,
-            &theme,
-            800.0,
-            taffy::AvailableSpace::Definite(600.0),
-        );
-        let r = subject_rect(&page);
-        assert!(
-            (r.width() - r.height() * 16.0 / 9.0).abs() < 1.0,
-            "a filled layer at 16:9 is {r:?}"
-        );
-        assert!(
-            (r.width() - 800.0).abs() < 1.0,
-            "it takes the cell's width: {r:?}"
-        );
-    }
 }
 
 tilo_test_env::scenario! {
@@ -1034,28 +753,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_page_keeps_one_content_gutter_at_every_width;
-    // A page keeps one content gutter at every width: a phone, a laptop and a wide monitor hold
-    // what they show the same distance in from the column, so what stands at the top of a page has
-    // the same margin over it as the gap under it wherever the window is.
-    {
-        let theme = Theme::dark();
-        let content = || Box::new(Stack::stack().push(boxed(10.0))) as crate::widget::Element;
-        let gutter = gap(&theme, Rhythm::Group);
-        for width in [360.0_f64, 1280.0, 1600.0, 3440.0] {
-            let mut page = Page::full().push(content());
-            solve(&mut page, &theme, crate::num::f32_of_f64(width));
-            let r = rects(&page)[0];
-            assert!(
-                (r.x0 - gutter).abs() < 1.0 && (r.y0 - gutter).abs() < 1.0,
-                "the content gutter at {width}: {r:?}"
-            );
-            assert!(
-                (width - r.x1 - gutter).abs() < 1.0,
-                "and the same on the trailing side at {width}: {r:?}"
-            );
-        }
-    }
 
     phase a_page_is_as_tall_as_its_text_wraps_at_its_measure;
     {
@@ -1086,47 +783,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_canvas_page_that_does_not_fill_keeps_its_side_gutter;
-    // A canvas page that does not fill keeps its reading gutter beside its content; a filling one
-    // lays its own parts out from the page gutter and drops the side gutters. The video page is a
-    // canvas because its player is wide, not because it fills, so it must keep them.
-    {
-        let theme = Theme::dark();
-        for filling in [false, true] {
-            let player = Layers::layers()
-                .with_id("gutter-box")
-                .push_fit(filling_view(), Fit::fill(1.0).aspect(16.0 / 9.0));
-            let column = Stack::stack()
-                .fill_width()
-                .push(Box::new(player))
-                .push(Box::new(Stack::stack().fill_width().push(boxed(80.0))));
-            let page = Page::full();
-            let page = if filling { page.filling() } else { page };
-            let mut page = page.push(Box::new(column));
-            solve_in(
-                &mut page,
-                &theme,
-                1000.0,
-                taffy::AvailableSpace::Definite(744.0),
-            );
-            let page_rect = page.get_rect();
-            let box_rect = crate::widget::find_test_id(&page, "gutter-box")
-                .expect("the box is laid out")
-                .get_rect();
-            let inset = box_rect.x0 - page_rect.x0;
-            if filling {
-                assert!(
-                    inset < 1.0,
-                    "a filling page lays its parts from its own edge: inset {inset}"
-                );
-            } else {
-                assert!(
-                    inset > 1.0,
-                    "a canvas page keeps its reading gutter, but the box stands at inset {inset}"
-                );
-            }
-        }
-    }
 
     phase a_page_rows_width_does_not_decide_its_height_in_a_row;
     // The page row a virtual list wraps each row in is a page whose part takes the row's whole

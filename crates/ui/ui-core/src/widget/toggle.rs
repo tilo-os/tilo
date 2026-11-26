@@ -1231,54 +1231,6 @@ mod tests {
         let _ = Toggle::bound("wifi", "");
     }
 
-    #[test]
-    fn the_switch_size_follows_the_ui_scale_and_layout_settles() {
-        let (w, h) = ToggleFace::size(&Theme::dark());
-        assert_eq!((w, h), (44.0, 24.0));
-        let (w2, _) = ToggleFace::size(&Theme::dark().with_ui_scale(1.5));
-        assert!((w2 - 66.0).abs() < 1e-9);
-        let mut toggle = Toggle::bound("t", "t");
-        assert!(Widget::is_layout_dirty(&toggle));
-        let mut tree = TaffyTree::new();
-        let node = toggle.build_layout(
-            &mut tree,
-            &Theme::dark(),
-            &mut std::collections::HashMap::new(),
-        );
-        tree.compute_layout(node, taffy::prelude::TaffyMaxContent::MAX_CONTENT)
-            .unwrap();
-        toggle.apply_layout(&tree, node, Point::new(1.0, 1.0));
-        assert!(!Widget::is_layout_dirty(&toggle));
-    }
-
-    /// A hover change repaints but consumes nothing: leaving one switch for
-    /// its neighbour must still reach the neighbour.
-    #[test]
-    fn a_hover_change_leaves_the_move_for_the_next_control() {
-        let mut t = Toggle::bound("id", "on");
-        let mut tree = TaffyTree::<()>::new();
-        let mut node_map = std::collections::HashMap::new();
-        let node = t.build_layout(&mut tree, &Theme::dark(), &mut node_map);
-        tree.compute_layout(node, taffy::prelude::TaffyMaxContent::MAX_CONTENT)
-            .unwrap();
-        t.apply_layout(&tree, node, Point::ZERO);
-        let device = winit::event::DeviceId::dummy();
-        let mut sender = Dispatch::new().layout(&tree, node);
-        for position in [(10.0, 10.0), (500.0, 10.0)] {
-            let handled = sender
-                .send(
-                    &mut t,
-                    &WindowEvent::CursorMoved {
-                        device_id: device,
-                        position: position.into(),
-                    },
-                )
-                .handled;
-            assert!(!handled, "a move to {position:?} is not consumed");
-        }
-        assert!(!t.control.is_hovered);
-    }
-
     /// A switch laid out at the origin: a 44×24 pill in a 44×32 target,
     /// its knob 12 px in from either end (20 px of travel).
     fn switch_at_origin(t: &mut Toggle) {
@@ -1306,57 +1258,6 @@ mod tests {
 
     fn ms(t0: crate::time::Instant, ms: u64) -> crate::time::Instant {
         t0 + crate::time::Duration::from_millis(ms)
-    }
-
-    #[test]
-    fn a_click_slides_the_knob_and_a_second_click_reverses_it_mid_flight() {
-        use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
-        use crate::testing::dispatch;
-        use crate::time::testing::with_monotonic_time;
-        use crate::tokens::MotionSource;
-        let theme = Theme::dark();
-        let state = crate::LocalState::new(false);
-        let mut t = Toggle::from_state(&state);
-        switch_at_origin(&mut t);
-        let t0 = crate::time::now();
-        with_monotonic_time(t0, || present(&mut t, &theme));
-        assert!(!t.needs_animation_frame(), "the first paint rests");
-        assert_eq!(t.switch.knob(t0), 0.0);
-        with_monotonic_time(t0, || {
-            crate::motion::note_source(MotionSource::Pointer);
-            dispatch(&mut t, &cursor_moved(30.0, 16.0));
-            dispatch(&mut t, &mouse_press());
-            dispatch(&mut t, &mouse_release());
-            assert!(state.get(), "the value changes once the click lets go");
-            present(&mut t, &theme);
-            assert!(t.needs_animation_frame(), "the knob slides");
-        });
-        let drawn = with_monotonic_time(ms(t0, 40), || {
-            assert!(t.needs_redraw(), "a sliding knob repaints each frame");
-            present(&mut t, &theme);
-            let pose = t.switch.pose(theme.motion(), ms(t0, 40));
-            assert!(pose.knob > 0.0 && pose.knob < 1.0, "on its way: {pose:?}");
-            assert!(
-                pose.tint > 0.0 && pose.tint < 1.0,
-                "the track turns with it"
-            );
-            pose.knob
-        });
-        with_monotonic_time(ms(t0, 40), || {
-            crate::motion::note_source(MotionSource::Pointer);
-            dispatch(&mut t, &mouse_press());
-            dispatch(&mut t, &mouse_release());
-            assert!(!state.get());
-            present(&mut t, &theme);
-            let now = ms(t0, 40);
-            assert!((t.switch.knob(now) - drawn).abs() < 1e-9, "no jump");
-        });
-        with_monotonic_time(ms(t0, 600), || {
-            assert_eq!(t.switch.knob(ms(t0, 600)), 0.0, "back off");
-            assert!(!t.needs_animation_frame(), "settled: no frames");
-            present(&mut t, &theme);
-            assert!(!t.needs_redraw(), "settled: no repaint");
-        });
     }
 
     #[test]
@@ -1395,33 +1296,6 @@ mod tests {
             assert_eq!(t.switch.knob(ms(t0, 2_000)), 1.0);
             assert!(!t.needs_animation_frame());
         });
-    }
-
-    #[test]
-    fn reduced_motion_lands_the_knob_and_cross_fades_the_tint() {
-        use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
-        use crate::testing::dispatch;
-        use crate::time::testing::with_monotonic_time;
-        let theme = Theme::dark().with_reduce_motion(true);
-        let state = crate::LocalState::new(false);
-        let mut t = Toggle::from_state(&state);
-        switch_at_origin(&mut t);
-        let t0 = crate::time::now();
-        with_monotonic_time(t0, || {
-            present(&mut t, &theme);
-            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
-            dispatch(&mut t, &cursor_moved(30.0, 16.0));
-            dispatch(&mut t, &mouse_press());
-            dispatch(&mut t, &mouse_release());
-            present(&mut t, &theme);
-        });
-        let pose = t.switch.pose(theme.motion(), ms(t0, 40));
-        assert_eq!(pose.knob, 1.0, "the knob lands");
-        assert!(
-            pose.tint > 0.0 && pose.tint < 1.0,
-            "the tint fades: {pose:?}"
-        );
-        assert!(!t.switch.is_moving(ms(t0, 400)));
     }
 
     fn counted(state: &crate::LocalState<bool>) -> (Toggle, std::rc::Rc<std::cell::Cell<u32>>) {

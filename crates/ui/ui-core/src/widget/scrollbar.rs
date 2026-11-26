@@ -743,6 +743,3 @@ mod tests {
         Rect::new(92.0, 0.0, 100.0, 300.0)
     }
 }
-
-#[cfg(test)]
-mod primary_region_tests {}
