@@ -18,7 +18,8 @@ filled a form and wrote a letter is two steps: one in the PDF, one in Writer. Th
 ## History
 
 Each record keeps its own history: what changed, in words, who did it, when, and which group it was part
-of. An app publishes it as the `history` action on the record, so every way in can read it.
+of. The workspace's Activity window shows it, and its changes are the steps an invocation can take back:
+its listing says how many stand.
 
 ```text
 tilo.framework/1 genesis
@@ -26,9 +27,8 @@ Added a paragraph            Write the cover letter
 Undid earlier steps
 ```
 
-Versions come newest-last, `last` says how many. `undone` marks the ones taken back. For an agent's
-change, the version names the actor: its kind (`agent`), the name of its key, the colour it shows in, and
-the person it acted for.
+Changes come newest-first, and one an agent made names the actor: its kind (`agent`), the name of its
+key, the colour it shows in, and the person it acted for.
 
 ## Undo
 
@@ -54,16 +54,14 @@ with workspace.invocation("Write the cover letter") as invocation:
     workspace.do("word-processor#append_paragraph", text="Dear Visa Officer,")
     workspace.do("word-processor#append_paragraph", text="Yours faithfully, Jane Doe")
 
-history = workspace.do("word-processor#history", last=10)
-print("one invocation:", invocation.title)
-for version in history["versions"]:
-    print(" ", version.get("sentence"), "| undone:", version.get("undone", False))
+listed = next(i for i in workspace.invocations() if i.title == "Write the cover letter")
+print("one invocation:", invocation.title, "|", listed.changes, "changes")
 
 # Take the invocation back: exactly what its calls changed.
 invocation.undo()
 
-after = workspace.do("word-processor#history", last=10)
-print("undone:", sum(1 for version in after["versions"] if version.get("undone")), "steps")
+listed = next(i for i in workspace.invocations() if i.title == "Write the cover letter")
+print("undone:", listed.undone, "of", listed.changes, "changes")
 ```
 
 ```typescript example=invocation-and-undo
@@ -71,7 +69,6 @@ import { Tilo } from "tilo-sdk";
 
 const tilo = new Tilo();
 const workspace = tilo.workspace((await tilo.workspaces.create("Invocations and history")).id);
-type History = { versions: Record<string, unknown>[] };
 
 // One invocation: every call inside it is one step of this app's history.
 const invocation = await workspace.invocation("Write the cover letter", async (group) => {
@@ -80,17 +77,18 @@ const invocation = await workspace.invocation("Write the cover letter", async (g
   return group;
 });
 
-const history = (await workspace.do("word-processor#history", { last: 10 })) as History;
-console.log("one invocation:", invocation.title);
-for (const version of history.versions) {
-  console.log(" ", version.sentence, "| undone:", version.undone ?? false);
-}
+let listed = (await workspace.invocations()).items.find(
+  (item) => item.title === "Write the cover letter",
+);
+console.log("one invocation:", invocation.title, "|", listed?.changes ?? 0, "changes");
 
 // Take the invocation back: exactly what its calls changed.
 await invocation.undo();
 
-const after = (await workspace.do("word-processor#history", { last: 10 })) as History;
-console.log("undone:", after.versions.filter((version) => version.undone === true).length, "steps");
+listed = (await workspace.invocations()).items.find(
+  (item) => item.title === "Write the cover letter",
+);
+console.log("undone:", listed?.undone ?? 0, "of", listed?.changes ?? 0, "changes");
 ```
 
 ```curl example=invocation-and-undo
@@ -111,8 +109,9 @@ done
 # Take the invocation back, by any of its calls: exactly what it changed.
 curl -sS --fail-with-body -X POST "$api/workspaces/$workspace/invocations/$invocation/undo" -H "$auth" \
   | jq -r '"status: \(.status)"'
-curl -sS --fail-with-body "$word/history" -H "$auth" -H "$json" -d '{"last": 10}' \
-  | jq -r '"undone: \([.result.versions[] | select(.undone)] | length) steps"'
+curl -sS --fail-with-body "$api/workspaces/$workspace/resources/record%3Atilo.invocations%3A" -H "$auth" \
+  | jq -r '.fields.items[] | select(.title == "Write the cover letter")
+      | "undone: \(.undone) of \(.changes) changes"'
 ```
 
 ## Every invocation you may read
