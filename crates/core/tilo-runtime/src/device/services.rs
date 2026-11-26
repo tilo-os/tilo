@@ -4168,6 +4168,35 @@ impl PersonDispatch {
         self.provider_at(workspace, self.caller(workspace), (None, false))
     }
 
+    /// The dispatch the calls of `agent` in `workspace` reach: an agent the person admitted on
+    /// their shell, under the key this device made it there, which the shell names as each call's
+    /// caller. Its calls are a run of the person's admission delegated to that agent, its key
+    /// brought into the workspace as every agent key of the person's is, and decided by what both
+    /// the agent and the person may do there.
+    ///
+    /// # Errors
+    /// The workspace does not admit the person, `agent` is no agent this device made a key for,
+    /// or the workspace does not let its key in.
+    pub(super) fn agent_provider(
+        &self,
+        workspace: &str,
+        agent: &Caller,
+    ) -> io::Result<RuntimeActionProvider> {
+        let id = agent
+            .acting()
+            .agent_id()
+            .ok_or_else(|| io::Error::other("the shell names no agent"))?
+            .to_owned();
+        let name = agent.agent_called().unwrap_or(&id).to_owned();
+        let person = self.provider(workspace)?;
+        let admission = person
+            .admission()
+            .ok_or_else(|| io::Error::other("this dispatch admitted no run to delegate"))?;
+        let (run, _, _) =
+            person.agent_session_as(admission, &self.policy_time, |_| (id, name), Some(agent))?;
+        Ok(run)
+    }
+
     /// The dispatch the person's own shell's calls in `workspace` reach, on the link the daemon
     /// made for it alone: where the call was pressed at `pressed` on their shell's screen, the
     /// question it may wait in stands over that window. The shell is the system's view, so its
@@ -5427,8 +5456,16 @@ impl AdmittedRuntimeSession {
         let Some(projection) = &self.projection else {
             // A run with no projection admits the device's own admission, and the agent the run
             // was made for: the connection of an unnamed agent presents the agent itself.
+            // Each call the person's shell carries for its agent comes in an execution of its
+            // own: that narrows what the call owns, never who makes it.
             return caller == self.admission.caller()
-                || self.agent.as_ref().is_some_and(|agent| caller == agent);
+                || self.agent.as_ref().is_some_and(|agent| {
+                    caller == agent
+                        || match (agent.execution_lease(), caller.execution_lease()) {
+                            (None, Some(lease)) => *caller == agent.clone().in_execution(lease),
+                            _ => false,
+                        }
+                });
         };
         match (projection.execution_lease(), caller.execution_lease()) {
             (None, Some(lease)) => *caller == projection.clone().in_execution(lease),
@@ -5952,6 +5989,20 @@ impl RuntimeActionProvider {
         policy_time: &tilo_app_host::policy_clock::PolicyTime,
         agent: impl FnOnce(&[u8; 32]) -> (String, String),
     ) -> io::Result<(Self, Caller, DeviceCert)> {
+        self.agent_session_as(admission, policy_time, agent, None)
+    }
+
+    /// [`Self::agent_session_of`], the run admitting the agent as `carried` names it where it
+    /// is given: the agent the person's shell admitted under the key this device made it, whose
+    /// connection the shell names in its own words (its session there, the name it goes by).
+    /// A caller the shell names under another key than this device made the agent is refused.
+    fn agent_session_as(
+        &self,
+        admission: Arc<tilo_workspace_service::workspaces::SessionAdmission>,
+        policy_time: &tilo_app_host::policy_clock::PolicyTime,
+        agent: impl FnOnce(&[u8; 32]) -> (String, String),
+        carried: Option<&Caller>,
+    ) -> io::Result<(Self, Caller, DeviceCert)> {
         let caller = admission.caller().clone();
         let (Some(person), Some(user), Some(workspace)) = (
             caller.acting().person_id(),
@@ -5972,6 +6023,21 @@ impl RuntimeActionProvider {
         }
         let (signer, agent) = AgentSigner::grant(keys, workspace, (&agent, &name), person)
             .map_err(io::Error::other)?;
+        let agent = match carried {
+            None => agent,
+            Some(carried)
+                if carried.device_public_key() == agent.device_public_key()
+                    && carried.user_public_key() == agent.user_public_key()
+                    && carried.acting().agent_id() == agent.acting().agent_id() =>
+            {
+                carried.kept().restored()
+            }
+            Some(_) => {
+                return Err(io::Error::other(
+                    "the shell names an agent under another key than this device made it",
+                ));
+            }
+        };
         admission
             .check(self.workspaces.copies())
             .map_err(io::Error::other)?;

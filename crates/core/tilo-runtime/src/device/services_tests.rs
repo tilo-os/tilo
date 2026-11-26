@@ -3591,3 +3591,86 @@ fn a_runtimes_endpoint_relays_as_the_server_it_logged_in_to() {
     assert_eq!(mode.relay_map().urls::<Vec<_>>(), vec![away]);
     assert!(n0_dns);
 }
+
+const SHELL_AGENT_TEST: &str =
+    "device::services::tests::an_agent_the_shell_names_lists_in_a_run_of_its_own";
+
+/// An agent the person admitted on their shell, under the key this device made it, reaches the
+/// device's dispatch through the shell's link, which names it as each call's caller: in its
+/// session on the shell, each call in an execution of its own. The person's own run takes no
+/// call of another caller; the agent's calls go in a run of its own, delegated by the person,
+/// whose every call is the agent's, whatever execution it comes in.
+#[test]
+fn an_agent_the_shell_names_lists_in_a_run_of_its_own() {
+    use tilo_actions::remote::{ActionCallError, ActionProvider as _, CatalogueQuery};
+
+    let Some(root) = isolated_root(SHELL_AGENT_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let workspace = daemon.workspace().unwrap();
+    let person = daemon.person().unwrap();
+    let persons = person.provider(&workspace).unwrap();
+    let person_id = persons
+        .admission_caller()
+        .and_then(|caller| caller.acting().person_id().map(str::to_owned))
+        .expect("the person's run names its person");
+    // The session lists the agent in the workspace as it admits it, then has this daemon make
+    // and certify its key (`AgentKeyCall::Grant`); the shell's link names it as each call's
+    // caller.
+    let root = daemon.workspaces.device_cert().user_public_key;
+    let name = "cargo headless check";
+    let id = tilo_actions::remote::device_agent_id(&root, name);
+    let listed_as = Caller::delegated_agent(id.clone(), root, [7; 32]).named(name);
+    let person_caller = persons.admission_caller().unwrap();
+    tilo_rt::app()
+        .handle()
+        .block_on(tilo_app_host::agents::workspace_agent(
+            daemon.workspaces.copies(),
+            WorkspaceId::parse(&workspace).unwrap(),
+            &listed_as,
+            &person_caller,
+        ));
+    let keys = tilo_app_host::agents::agent_keys::this_device().unwrap();
+    let (_, agent) = tilo_app_host::agents::agent_keys::AgentSigner::grant(
+        keys,
+        &workspace,
+        (&id, name),
+        &person_id,
+    )
+    .unwrap();
+    let named = || {
+        agent
+            .clone()
+            .in_agent_session("so.tilo.session/agent-session/test")
+            .kept()
+            .carried()
+            .in_new_execution()
+            .in_workspace(workspace.clone())
+    };
+    let everything: CatalogueQuery = serde_json::from_value(json!({})).unwrap();
+    let listed = |provider: &RuntimeActionProvider, caller: &Caller| {
+        provider
+            .query(caller, everything.clone())
+            .wait_timeout(tilo_test_env::hang_bound())
+            .ok()
+            .flatten()
+            .expect("the daemon answers the listing")
+    };
+
+    assert!(
+        matches!(
+            listed(&persons, &named()),
+            Err(ActionCallError::NotPermitted)
+        ),
+        "the person's own run takes no call of their agent's"
+    );
+    let run = person.agent_provider(&workspace, &named()).unwrap();
+    for call in 0..2 {
+        let page = listed(&run, &named());
+        assert!(
+            page.is_ok(),
+            "call {call} of the agent's lists in its run: {page:?}"
+        );
+    }
+}

@@ -94,6 +94,7 @@ pub(crate) fn services(
             }),
             dispatching,
             by_workspace: Mutex::default(),
+            agents: Arc::default(),
         }),
         standing,
         published: Some(published),
@@ -153,7 +154,13 @@ struct Actions {
     dispatching: Arc<Dispatching>,
     /// The dispatch of each workspace a shell called in, admitted once.
     by_workspace: Mutex<HashMap<String, Arc<dyn ActionProvider + Send + Sync>>>,
+    /// The run of each agent the shell named as a caller, in each workspace, admitted once.
+    agents: Arc<AgentRuns>,
 }
+
+/// The runs of the agents the person admitted on their shell, by workspace and agent as the
+/// shell names it ([`PersonDispatch::agent_provider`]).
+type AgentRuns = Mutex<HashMap<String, Arc<dyn ActionProvider + Send + Sync>>>;
 
 impl ShellActions for Actions {
     fn dispatch(
@@ -172,6 +179,7 @@ impl ShellActions for Actions {
                     kept,
                     caller: shell,
                     workspace: None,
+                    agents: None,
                 }) as Arc<dyn ActionProvider + Send + Sync>,
                 person,
             ))));
@@ -189,6 +197,7 @@ impl ShellActions for Actions {
                             kept,
                             caller: shell,
                             workspace: Some(host),
+                            agents: None,
                         }) as Arc<dyn ActionProvider + Send + Sync>,
                         device,
                     )
@@ -216,6 +225,11 @@ impl ShellActions for Actions {
                 .cloned()
         });
         let caller = person.caller(&workspace);
+        let agents = AgentsHere {
+            person: person.clone(),
+            workspace: workspace.clone(),
+            runs: Arc::clone(&self.agents),
+        };
         let admitted = match cached.flatten() {
             Some(dispatch) => Ok(dispatch),
             None => person
@@ -237,6 +251,7 @@ impl ShellActions for Actions {
                     kept,
                     caller: shell,
                     workspace: Some(dispatch),
+                    agents: Some(agents),
                 }) as Arc<dyn ActionProvider + Send + Sync>,
                 caller,
             )
@@ -251,6 +266,46 @@ struct Shell {
     kept: Arc<Kept>,
     caller: ShellCaller,
     workspace: Option<Arc<dyn ActionProvider + Send + Sync>>,
+    /// Where the calls the shell makes for an agent its person admitted go, in the workspace
+    /// it names.
+    agents: Option<AgentsHere>,
+}
+
+/// The runs of the person's agents in the one workspace a shell's call names.
+struct AgentsHere {
+    person: PersonDispatch,
+    workspace: String,
+    runs: Arc<AgentRuns>,
+}
+
+impl AgentsHere {
+    /// The run `agent` calls in, admitted the first time it calls here.
+    fn run_of(
+        &self,
+        agent: &Caller,
+    ) -> Result<Arc<dyn ActionProvider + Send + Sync>, ActionCallError> {
+        let key = format!("{}\n{:?}", self.workspace, agent.kept());
+        if let Some(run) = self
+            .runs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&key)
+        {
+            return Ok(Arc::clone(run));
+        }
+        let run: Arc<dyn ActionProvider + Send + Sync> = Arc::new(
+            self.person
+                .agent_provider(&self.workspace, agent)
+                .map_err(|error| ActionCallError::Refused {
+                    reason: error.to_string(),
+                })?,
+        );
+        self.runs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key, Arc::clone(&run));
+        Ok(run)
+    }
 }
 
 impl Shell {
@@ -260,6 +315,20 @@ impl Shell {
             .ok_or_else(|| ActionCallError::Refused {
                 reason: "the shell calls that in a workspace, and named none".into(),
             })
+    }
+
+    /// The dispatch `caller`'s calls reach: an agent the person admitted on their shell calls in
+    /// a run of its own, delegated by them; the person, and an app acting for them, in theirs.
+    fn reaching(
+        &self,
+        caller: &Caller,
+    ) -> Result<Arc<dyn ActionProvider + Send + Sync>, ActionCallError> {
+        match &self.agents {
+            Some(agents) if caller.acting().is_agent() && caller.is_session_delegated() => {
+                agents.run_of(caller)
+            }
+            _ => self.in_workspace().map(Arc::clone),
+        }
     }
 }
 
@@ -284,7 +353,7 @@ impl ActionProvider for Shell {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        let dispatch = match self.in_workspace() {
+        let dispatch = match self.reaching(caller) {
             Ok(dispatch) => dispatch,
             Err(refused) => return Pending::ready(Err(refused)),
         };
@@ -313,18 +382,18 @@ impl ActionProvider for Shell {
         if kept_here(&request) {
             return self.kept.invoke(self.caller, request);
         }
-        match self.in_workspace() {
+        match self.reaching(caller) {
             Ok(dispatch) => dispatch.invoke(caller, request),
             Err(refused) => Pending::ready(Err(refused)),
         }
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        self.workspace.as_ref()?.observe(caller, id)
+        self.reaching(caller).ok()?.observe(caller, id)
     }
 
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
-        self.workspace.as_ref()?.next_change(caller, id)
+        self.reaching(caller).ok()?.next_change(caller, id)
     }
 
     fn cancel(
@@ -332,7 +401,7 @@ impl ActionProvider for Shell {
         caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Pending<Result<(), ActionCallError>> {
-        match self.in_workspace() {
+        match self.reaching(caller) {
             Ok(dispatch) => dispatch.cancel(caller, id),
             Err(refused) => Pending::ready(Err(refused)),
         }
@@ -348,7 +417,7 @@ impl ActionProvider for Shell {
             // The device answers this one itself: it starts nothing that outlives the answer.
             return self.kept.invoke(self.caller, request);
         }
-        match self.in_workspace() {
+        match self.reaching(caller) {
             Ok(dispatch) => dispatch.run(caller, request, admitted),
             Err(refused) => Pending::ready(Err(refused)),
         }
@@ -363,7 +432,7 @@ impl ActionProvider for Shell {
         if kept_here(request) {
             return None;
         }
-        self.in_workspace()
+        self.reaching(caller)
             .ok()
             .and_then(|dispatch| dispatch.asks_first(caller, request, admitted))
     }
@@ -376,7 +445,7 @@ impl ActionProvider for Shell {
         if kept_here(request) {
             return Err("what this device answers itself has no live result".to_owned());
         }
-        match self.in_workspace() {
+        match self.reaching(caller) {
             Ok(dispatch) => dispatch.watch(caller, request),
             Err(refused) => Err(refused.to_string()),
         }
