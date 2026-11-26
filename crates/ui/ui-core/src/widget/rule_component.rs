@@ -25,6 +25,13 @@ impl Described for Rule {
             Some(length) if length > 0.0 => Self::sized(length),
             _ => Self::filling(),
         };
-        rule.with_ticks(props.ticks)
+        rule.with_ticks(props.ticks).with_label(props.label)
+    }
+
+    /// The size, ticks and name are taken where the rule stands: a change to them keeps the
+    /// room the row gives it and the person's place.
+    fn set_props(&mut self, props: RuleProps) -> bool {
+        self.take((props.length, props.ticks, props.label));
+        true
     }
 }

@@ -33,6 +33,8 @@ pub struct Rule {
     length: Option<f64>,
     /// A tick stands down at each end.
     ticks: bool,
+    /// What it is, for assistive technology.
+    label: Option<String>,
     thickness: f32,
 }
 
@@ -42,6 +44,7 @@ impl Default for Rule {
             rect: Rect::ZERO,
             length: None,
             ticks: false,
+            label: None,
             thickness: THICKNESS,
         }
     }
@@ -71,6 +74,23 @@ impl Rule {
         self
     }
 
+    /// What it is called, for assistive technology: a map's scale bar says what it measures.
+    #[must_use]
+    pub fn with_label(mut self, label: Option<String>) -> Self {
+        self.label = label.filter(|label| !label.trim().is_empty());
+        self
+    }
+
+    /// Take `label`, `length` and `ticks` as another view gives them.
+    pub(crate) fn take(&mut self, (length, ticks, label): (Option<f64>, bool, Option<String>)) {
+        if self.length != length {
+            self.length = length.map(|length| length.max(0.0));
+            self.rect = Rect::ZERO;
+        }
+        self.ticks = ticks;
+        self.label = label.filter(|label| !label.trim().is_empty());
+    }
+
     /// The ink it draws in: the person's own text ink, which reads on every surface and theme.
     fn ink(theme: &Theme) -> vello::peniko::Color {
         theme.tokens.colors.text_primary
@@ -78,6 +98,8 @@ impl Rule {
 }
 
 impl Widget for Rule {
+    tilo_ui_base::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -133,6 +155,13 @@ impl Widget for Rule {
 
     fn name(&self) -> &'static str {
         "Rule"
+    }
+
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        Some(
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Separator)
+                .with_optional_name(self.label.clone()),
+        )
     }
 }
 
