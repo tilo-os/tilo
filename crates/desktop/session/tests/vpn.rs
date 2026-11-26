@@ -107,12 +107,6 @@ fn published() -> Option<ProfileBlockStatus> {
 #[test]
 fn a_profile_that_drops_blocks_traffic_and_says_so() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
-    PROFILE_KILL_SWITCHES
-        .set(BTreeMap::from([(
-            PROFILE.to_owned(),
-            ProfileKillSwitch { allow_local: false },
-        )]))
-        .expect("the kill switch is on");
     let runtime = tilo_test_env::runtime_tempdir().expect("a runtime directory");
     let socket: PathBuf = runtime.path().join("helper.sock");
     let helper = Helper::at(&socket);
@@ -129,6 +123,14 @@ fn a_profile_that_drops_blocks_traffic_and_says_so() {
             ..Options::default()
         },
     );
+    // The settings are the session's own: it installs their source as it starts, and writes a
+    // setting through it rather than through a desktop's socket, which a test has none of.
+    PROFILE_KILL_SWITCHES
+        .set(BTreeMap::from([(
+            PROFILE.to_owned(),
+            ProfileKillSwitch { allow_local: false },
+        )]))
+        .expect("the kill switch is on");
     session.step(Duration::from_millis(1)).expect("a frame");
     assert!(status_path().is_some(), "this session can publish");
     tilo_test_env::wait_until("the session to publish its status", || {
