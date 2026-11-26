@@ -437,7 +437,7 @@ fn a_members_watch_history_is_their_own() {
     ada.commit();
     bo.commit();
     ada.send_to(&bo);
-    bo.send_to(&ada);
+    bo.send_to(ada);
 
     // Each entry is sealed to its watcher's devices: the other's replica has none of it.
     assert!(
