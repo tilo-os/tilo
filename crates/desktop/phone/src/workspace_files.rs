@@ -120,7 +120,7 @@ pub fn create(
 ) -> Result<Entry, String> {
     let name = free_name(device, workspace, folder, name)?;
     let path = if folder.is_empty() {
-        name.clone()
+        name
     } else {
         format!("{}/{}", folder.trim_end_matches('/'), name)
     };

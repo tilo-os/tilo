@@ -220,14 +220,14 @@ impl Files {
                 }
             }
             let told = moved;
-            let watched = chosen.clone();
+            let changed_in = chosen.clone();
             // The watch is started with no lock held: opening the workspace's tree takes a while
             // and a cursor closing meanwhile has no reason to wait for it.
             let files = crate::workspace_files::watch(device, &chosen, move |folders| {
                 // The worker tells the provider, on the thread Java's calls already run on; an
                 // ask after the worker ended has no one to answer it.
                 let _ = told.send(Ask::FilesChanged {
-                    workspace: watched.clone(),
+                    workspace: changed_in.clone(),
                     folders,
                 });
             })?;
@@ -330,7 +330,7 @@ fn serve(
                 && tapped.as_deref() != Some(link.as_str())
             {
                 tapped = Some(link.clone());
-                tap(&device, Some(chosen), &mut watching, &link, open);
+                tap(&device, Some(chosen), &watching, &link, open);
             }
         }
         let apps = match &workspace {
@@ -407,7 +407,7 @@ fn register(device: &Device, workspace: &str, watching: &mut Watching) {
 fn tap(
     device: &Device,
     workspace: Option<&str>,
-    watching: &mut Watching,
+    watching: &Watching,
     link: &str,
     open: &Mutex<Option<String>>,
 ) {

@@ -234,9 +234,9 @@ pub fn endpoint_file() -> Option<PathBuf> {
     }
     #[cfg(target_os = "android")]
     {
-        return tilo_paths::data_dir()?
+        tilo_paths::data_dir()?
             .parent()
-            .map(|files| files.join("tilo-push").join("endpoint"));
+            .map(|files| files.join("tilo-push").join("endpoint"))
     }
     #[cfg(not(target_os = "android"))]
     None
@@ -250,9 +250,9 @@ pub fn tap_file() -> Option<PathBuf> {
     }
     #[cfg(target_os = "android")]
     {
-        return tilo_paths::data_dir()?
+        tilo_paths::data_dir()?
             .parent()
-            .map(|files| files.join("tilo-push").join("tapped"));
+            .map(|files| files.join("tilo-push").join("tapped"))
     }
     #[cfg(not(target_os = "android"))]
     None

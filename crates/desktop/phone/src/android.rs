@@ -60,7 +60,7 @@ fn text(env: &mut JNIEnv<'_>, value: &JString<'_>) -> Result<String, String> {
         return Err("a required string was null".to_owned());
     }
     env.get_string(value)
-        .map(|text| text.into())
+        .map(Into::into)
         .map_err(|error| error.to_string())
 }
 
@@ -86,7 +86,7 @@ struct Java {
 static JAVA: OnceLock<Java> = OnceLock::new();
 
 /// Keep how to reach the provider from a thread that Java did not start.
-fn reachable(env: &mut JNIEnv<'_>, class: &JClass<'_>) {
+fn reachable(env: &JNIEnv<'_>, class: &JClass<'_>) {
     if JAVA.get().is_some() {
         return;
     }
@@ -169,11 +169,11 @@ fn strings<'local>(
 fn files_dir(env: &mut JNIEnv<'_>, context: &JObject<'_>) -> Result<PathBuf, String> {
     let dir = env
         .call_method(context, "getFilesDir", "()Ljava/io/File;", &[])
-        .and_then(|dir| dir.l())
+        .and_then(jni::objects::JValueGen::l)
         .map_err(|error| format!("the app's files directory: {error}"))?;
     let path = env
         .call_method(&dir, "getAbsolutePath", "()Ljava/lang/String;", &[])
-        .and_then(|path| path.l())
+        .and_then(jni::objects::JValueGen::l)
         .map_err(|error| format!("the app's files directory: {error}"))?;
     let path: String = env
         .get_string(&JString::from(path))
@@ -207,7 +207,7 @@ pub extern "system" fn Java_so_tilo_android_TiloWorkspaceFiles_nativeStart(
     })();
     match started {
         Ok(()) => {
-            reachable(&mut env, &class);
+            reachable(&env, &class);
             jboolean::from(true)
         }
         Err(why) => {
@@ -318,7 +318,7 @@ pub extern "system" fn Java_so_tilo_android_TiloWorkspaceFiles_nativeChildren(
         let id = text(&mut env, &parent_document_id)?;
         let (workspace, folder) = workspace_files::split_document_id(&id)?;
         let entries = {
-            let (workspace, folder) = (workspace.clone(), folder.clone());
+            let workspace = workspace.clone();
             ask(move |device| workspace_files::list(device, &workspace, &folder))??
         };
         entries
@@ -403,7 +403,7 @@ pub extern "system" fn Java_so_tilo_android_TiloWorkspaceFiles_nativeCreate(
         let name = text(&mut env, &name)?;
         let (workspace, folder) = workspace_files::split_document_id(&id)?;
         let made = {
-            let (workspace, folder, name) = (workspace.clone(), folder.clone(), name.clone());
+            let workspace = workspace.clone();
             ask(move |device| {
                 workspace_files::create(device, &workspace, &folder, &name, directory != 0)
             })??

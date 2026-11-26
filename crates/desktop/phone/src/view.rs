@@ -292,12 +292,11 @@ pub fn open(
         let last = app.rsplit('.').next().unwrap_or_default();
         bundles.get(last)
     });
-    let bundle = match found {
-        Some(bundle) => Arc::clone(bundle),
-        None => {
-            let payload = tilo_runtime::device::package_runs::verified_payload(app)?;
-            Arc::new(Bundle::read(&payload).map_err(|error| format!("{app}: {error}"))?)
-        }
+    let bundle = if let Some(bundle) = found {
+        Arc::clone(bundle)
+    } else {
+        let payload = tilo_runtime::device::package_runs::verified_payload(app)?;
+        Arc::new(Bundle::read(&payload).map_err(|error| format!("{app}: {error}"))?)
     };
     let id = uuid::Uuid::parse_str(workspace)
         .unwrap_or_else(|_| uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, workspace.as_bytes()));
