@@ -102,12 +102,16 @@ impl AppBrokerState {
         self.retain_host_action(&actor, owner, admission, start)
     }
 
-    /// Who owns `request` when another device brought it for its caller, who signed it: that
-    /// caller, as the signature it carries proves and the device action service checked when it
-    /// came in, their own or the one an app's call serves. Nothing of it is kept but its owner.
-    /// `None` for any call this device's own connections brought.
+    /// Who owns `request` when another device brought it for its caller, or a turn this device's
+    /// agent engine runs here made it, and its caller signed it: that caller, as the signature it
+    /// carries proves and its admission checked (an agent's turn's by `signed_by_agent`), their
+    /// own or the one an app's call serves. Nothing of it is kept but its owner. `None` for any
+    /// other call this device's own connections brought.
     fn forwarded_owner(caller: &Caller, request: &InvokeRequest) -> Option<InvocationOwner> {
-        caller.forwarder()?;
+        let engine_turn = caller.is_engine_turn_here() && caller.roster_created_at().is_some();
+        if caller.forwarder().is_none() && !engine_turn {
+            return None;
+        }
         let (Some(root), Some(device), Some(signed)) = (
             caller.user_public_key(),
             caller.device_public_key(),

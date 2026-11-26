@@ -645,10 +645,13 @@ fn agent_caller(
         Caller::delegated_agent(agent.id.0.clone(), root, key)
     };
     // The agent carries the bound its record keeps, which the device's broker holds it to.
+    // The engine runs the turn on this device, so its calls come from here: that says where
+    // they come from and grants nothing, the agent's grants still decide each one.
     Ok(caller
         .in_workspace(workspace.to_string())
         .named(&agent.name)
-        .on_roster(agent.created_at, person))
+        .on_roster(agent.created_at, person)
+        .in_engine_turn_here())
 }
 
 /// [`agent_caller`], awaited: the agent's key can wait for its person's root to certify it, which

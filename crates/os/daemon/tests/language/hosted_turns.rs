@@ -592,6 +592,11 @@ fn a_reminder_the_assistant_set_up_itself_starts_its_turn_with_its_person_closed
             ("Call home", Sort::Scheduled, 0),
             "it is on a clock and has not run: {reminder:?}"
         );
+        assert_eq!(
+            reminder.by,
+            tilo_action_policy::MemberId::agent(SCOUT_ID, host.person()),
+            "the reminder is the assistant's own, not its person's: {reminder:?}"
+        );
 
         // The moment comes with nothing of hers on. The host asks her assistant itself, as her
         // reminder and for her.

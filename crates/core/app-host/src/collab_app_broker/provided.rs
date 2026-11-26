@@ -151,6 +151,11 @@ pub(super) fn is_local_host_caller(
     if caller.is_foreign_device() {
         return false;
     }
+    // A turn this device's agent engine runs here calls from this device, as the agent with
+    // its own key: where it runs, never a grant. Its calls are decided on the agent's grants.
+    if caller.is_engine_turn_here() {
+        return caller.acting().is_agent() && caller.device_public_key().is_some();
+    }
     // A shortcut's run this host started on its saver's approval, in the workspace it was
     // approved for, by a saver whose own devices are not foreign here.
     if let Some(super::published_invocation::InvocationCaller::Shortcut(approval)) = origin {
@@ -1466,6 +1471,102 @@ mod identity_admin_tests {
                 "a person reaches a native host's steps only with the device's ownership"
             );
             assert!(host.started.lock().unwrap().is_empty());
+        }
+
+        phase a_turn_reaches_this_devices_steps_only_when_it_runs_here_and_only_as_granted;
+        // A step only this device's callers reach is reached by a turn this device's engine
+        // runs, and decided by its agent's grants like anyone's: running here grants nothing.
+        // The same agent calling from a turn another device runs does not find the step.
+        {
+            use tilo_user_identity::{AgentScope, DeviceCapabilities};
+            let host = Arc::new(Host::default());
+            let root = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+            let person = root.verifying_key().to_bytes();
+            let owner = hex::encode(person);
+            let id = WorkspaceId::from_u128(9);
+            let mut workspace = Workspace::new(id, "Identities");
+            workspace.policy.set_owner(owner.clone());
+            // Its person lets it read, and refuses it what changes things outside the workspace.
+            let planner = crate::test_support::Grantee::agent("planner", owner.as_str());
+            let everywhere = crate::test_support::TreePath::root();
+            workspace.allow(planner.clone(), &everywhere, crate::test_support::KindSet::READ);
+            workspace.deny(planner, &everywhere, crate::test_support::KindSet::OUTSIDE);
+            let workspace_id = workspace.id().to_string();
+            let mut tree = WorkspaceTree::default();
+            tree.workspaces.push(workspace);
+            let (state, _bridge_rx) = AppBrokerState::test_state(
+                Some(tree.shared().authority()),
+                crate::services::ProcessServices {
+                    providers: Some(providers(host.clone())),
+                    ..Default::default()
+                },
+            );
+            // The journal that keeps who asked each of the device's steps.
+            let kept = tempfile::tempdir().unwrap();
+            *state.journal.lock().unwrap() = Ok(Some(
+                tilo_invocation_journal::InvocationJournal::open(&kept.path().join("journal"))
+                    .unwrap(),
+            ));
+            // The agent's own key, certified by its person for this workspace, signs each of
+            // its calls as the engine signs them.
+            let now = tilo_clock::unix_now_ns();
+            let key = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+            let mut grant = tilo_user_identity::DeviceCert {
+                user_public_key: person,
+                device_public_key: key.verifying_key().to_bytes(),
+                device_label: "Planner".into(),
+                capabilities: DeviceCapabilities::agent_grant(AgentScope::agent_in(
+                    *uuid::Uuid::parse_str(&id.to_string()).unwrap().as_bytes(),
+                    "planner",
+                )),
+                issued_at_ns: now - 1_000_000_000,
+                expires_at_ns: Some(now + 3_600_000_000_000),
+                signature: [0; 64],
+                issuer: None,
+            };
+            tilo_user_identity::sign_device_cert(&mut grant, &root).unwrap();
+            let signed = |step: &str| {
+                let mut asked = request(step, None);
+                let signature = tilo_server_protocol::invocation::sign_invocation_now(
+                    &workspace_id,
+                    &asked,
+                    &grant,
+                    &key,
+                    now,
+                );
+                asked.signed = Some(Box::new(signature.unwrap()));
+                asked
+            };
+            let elsewhere = Caller::delegated_agent("planner", person, grant.device_public_key)
+                .in_workspace(workspace_id.clone())
+                .on_roster(1, person);
+            let here = elsewhere.clone().in_engine_turn_here();
+            let unfound = invoked(&state, &elsewhere, &signed(device_tickets::IDENTITIES));
+            assert!(
+                matches!(unfound, Err(ActionCallError::UnknownAction)),
+                "a turn another device runs does not find this device's step: {unfound:?}"
+            );
+            let refused = invoked(&state, &here, &signed(device_tickets::REMOVE_IDENTITY));
+            assert!(
+                matches!(
+                    refused,
+                    Err(ActionCallError::NotPermitted | ActionCallError::Refused { .. })
+                ),
+                "a turn running here is refused a step its agent's grants don't cover: {refused:?}"
+            );
+            assert!(
+                host.started.lock().unwrap().is_empty(),
+                "neither call started a step"
+            );
+            let read = invoked(&state, &here, &signed(device_tickets::IDENTITIES));
+            assert!(read.is_ok(), "a turn running here takes the step its agent may: {read:?}");
+            let started = host.started.lock().unwrap().clone();
+            assert!(
+                matches!(started.as_slice(), [(_, actor, step)]
+                    if step == device_tickets::IDENTITIES
+                        && actor.agent_id() == Some("planner")),
+                "the step is the agent's own, not its person's: {started:?}"
+            );
         }
 
         phase a_host_service_is_listed_when_only_publishers_are_asked;

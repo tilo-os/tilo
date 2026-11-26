@@ -45,6 +45,8 @@ enum Came {
     OwnConnection,
     /// From the device's own code, in process.
     InProcess,
+    /// From a turn this device's agent engine runs here, as the agent.
+    EngineTurnHere,
 }
 
 /// The authenticated actor behind a request.
@@ -347,6 +349,23 @@ impl Caller {
     #[must_use]
     pub const fn is_in_process(&self) -> bool {
         matches!(self.came, Came::InProcess)
+    }
+
+    /// The same caller, calling from a turn this device's agent engine runs here: where the
+    /// call comes from, never what it may do. Its identity stays the agent's, and its calls are
+    /// decided on the agent's grants as any other's. Only the engine that runs the turn sets
+    /// this.
+    #[must_use]
+    pub const fn in_engine_turn_here(mut self) -> Self {
+        self.came = Came::EngineTurnHere;
+        self
+    }
+
+    /// Whether this call comes from a turn this device's agent engine runs here
+    /// ([`Self::in_engine_turn_here`]).
+    #[must_use]
+    pub const fn is_engine_turn_here(&self) -> bool {
+        matches!(self.came, Came::EngineTurnHere)
     }
 
     /// The device's operating system on a local connection the provider admitted as its
