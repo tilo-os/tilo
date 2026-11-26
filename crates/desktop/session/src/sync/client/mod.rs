@@ -265,6 +265,10 @@ pub(crate) struct Local {
     /// This device's fabric, when it is a certified device of the person's: `None` on a session
     /// that takes part as nobody.
     fabric: Option<Arc<SessionFabric>>,
+    /// What is the person's alone, in their own workspace: the session's view of it, written
+    /// through the device's daemon ([`crate::person_store::DaemonPersonStore`]), whether this
+    /// session keeps a fabric or not.
+    person: crate::PersonResources,
     /// The workspaces' live resources, told which devices this session reaches in each: a row
     /// live on a device that went away goes with it.
     live_rows: tilo_workspace_service::live::LiveRows,
@@ -631,12 +635,13 @@ impl Local {
             .map(|fabric| Arc::clone(fabric) as crate::platform::fabric::SharedLink)
     }
 
-    /// The person's own workspace's resources, read and written through this device's service when
-    /// it holds the workspace.
+    /// The person's own workspace's resources, read and written through this device's daemon,
+    /// which keeps the workspace: the one place what is theirs alone is read and written,
+    /// whether this session keeps a fabric or not.
     #[must_use]
     #[cfg(target_os = "linux")]
     pub(crate) fn person_resources(&self) -> Option<crate::PersonResources> {
-        self.fabric.as_ref()?.person_resources()
+        Some(self.person.clone())
     }
 
     /// The actions one of the person's devices sent this one since the last call, for the session's
@@ -1125,7 +1130,7 @@ impl Client {
         let person = crate::PersonResources::default();
         let fabric = fabric_of(
             identity.as_ref(),
-            person,
+            person.clone(),
             host_outbox,
             entry.continuity,
             lan.clone(),
@@ -1183,6 +1188,7 @@ impl Client {
             desktop_events: desktop_arrived,
             versions,
             fabric,
+            person,
             live_rows,
             reachability,
             live,
@@ -1723,6 +1729,7 @@ struct Hosted {
     desktop_events: std::sync::mpsc::Receiver<DesktopEvent>,
     versions: std::sync::mpsc::Receiver<crate::network::VersionMismatch>,
     fabric: Option<Arc<SessionFabric>>,
+    person: crate::PersonResources,
     live_rows: tilo_workspace_service::live::LiveRows,
     reachability: Reachability,
     live: Option<crate::live::Live>,
@@ -1737,6 +1744,7 @@ impl Local {
             desktop_events,
             versions,
             fabric,
+            person,
             live_rows,
             reachability,
             live,
@@ -1757,6 +1765,7 @@ impl Local {
                 versions,
                 topologies: RefCell::new(std::collections::BTreeMap::new()),
                 fabric,
+                person,
                 live_rows,
                 reachability: RefCell::new(reachability),
                 live: RefCell::new(live),
@@ -1790,6 +1799,7 @@ impl Local {
             versions,
             topologies: RefCell::new(std::collections::BTreeMap::new()),
             fabric: None,
+            person: crate::PersonResources::default(),
             live_rows: tilo_workspace_service::live::LiveRows::default(),
             reachability: RefCell::new(Reachability::default()),
             live: RefCell::new(None),
