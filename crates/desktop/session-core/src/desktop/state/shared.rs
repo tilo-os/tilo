@@ -82,6 +82,7 @@ impl Shared {
             holders: HashMap::new(),
             opened_by: std::collections::BTreeMap::new(),
             authors: std::collections::BTreeMap::new(),
+            pointer_faces: HashMap::new(),
             ended: std::collections::BTreeMap::new(),
             opened_for: std::collections::BTreeMap::new(),
             resources: std::collections::BTreeMap::new(),

@@ -1361,6 +1361,74 @@ mod tests {
         assert!(!windows(&tree, &handle)[0].not_responding);
     }
 
+    /// A window's state is read from the desktop's own sources: a window whose surface has not
+    /// come is starting, one whose app asked for the person waits for them, those at it are its
+    /// presence, and a bar that says its document changed marks it.
+    #[test]
+    fn a_windows_state_is_read_from_the_desktops_sources() {
+        fn foreign(
+            minter: &mut tilo_desktop_model::IdMinter,
+            surface: u64,
+            title: &str,
+        ) -> tilo_desktop_model::Tab {
+            tilo_desktop_model::Tab {
+                id: minter.mint(),
+                title: title.to_owned(),
+                tile: tilo_desktop_model::TileContent::Foreign {
+                    app_id: "so.tilo.notes".to_owned(),
+                    surface_id: surface,
+                },
+                app_title: None,
+                view: String::new(),
+                pinned: false,
+            }
+        }
+        let mut minter = tilo_desktop_model::IdMinter::new(5);
+        let first = foreign(&mut minter, 9, "Notes");
+        let second = foreign(&mut minter, 10, "Mail");
+        let tree = tilo_session_core::desktop::seed_tree(&mut minter, "Shell", vec![first, second]);
+        let handle = DesktopHandle::new(tree.clone(), 5);
+        let read = windows(&tree, &handle);
+        assert!(
+            read[0].busy,
+            "a window whose surface has not come yet is still starting"
+        );
+        assert!(!read[0].attention);
+        assert!(!read[0].modified);
+        assert!(read[0].presence.is_empty());
+
+        // Its surface maps: it is no longer starting.
+        assert!(handle.set_window_sizes(vec![(9, (640, 480))]));
+        assert!(!windows(&tree, &handle)[0].busy);
+
+        // Its app asked for the person: the window behind the one they look at wears it.
+        let behind: u64 = read[1].key.parse().expect("a tab id");
+        assert!(handle.ask_attention(behind));
+        assert!(windows(&tree, &handle)[1].attention);
+
+        // Someone else is at it now.
+        handle.set_pointer_faces(std::collections::HashMap::from([(
+            behind,
+            vec![("Bo".to_owned(), "#3366cc".to_owned())],
+        )]));
+        let read = windows(&tree, &handle);
+        assert_eq!(read[1].presence.len(), 1, "one person is one face");
+        assert_eq!(read[1].presence[0].name, "Bo");
+        assert_eq!(read[1].presence[0].colour, "#3366cc");
+
+        // Its document has changes it has not saved, as its bar declares.
+        handle.declare_bar(
+            behind,
+            1,
+            Some(ui::window_toolbar::WindowToolbar {
+                modified: true,
+                ..ui::window_toolbar::WindowToolbar::default()
+            }),
+        );
+        handle.follow_bars();
+        assert!(windows(&tree, &handle)[1].modified);
+    }
+
     fn surfaces() -> Surfaces {
         Surfaces {
             overlays: Overlays::new(),

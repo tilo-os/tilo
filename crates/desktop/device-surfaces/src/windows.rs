@@ -71,6 +71,18 @@ pub struct Window {
     pub height: i32,
     /// Whether its app stopped answering the compositor's pings.
     pub not_responding: bool,
+    /// Whether its app waits for the person — a refusal, a dialog they are not looking at, a
+    /// background open — as the compositor says and the tab and bar mark.
+    pub attention: bool,
+    /// Whether its window has not shown here yet, its app still starting: a turning mark on its
+    /// tab and bar while it has no surface.
+    pub busy: bool,
+    /// Whether what it shows has changes its app has not saved, as its bar declares: the close
+    /// mark stands on its tab.
+    pub modified: bool,
+    /// Who else is at this window now, their pointer over it: their faces on its tab.
+    #[serde(default)]
+    pub presence: Vec<WindowFace>,
     /// Whether its window covers its display.
     pub fullscreen: bool,
     /// Whether its window floats above its workspace's windows, rather than standing in its strip.
@@ -99,6 +111,17 @@ pub struct Window {
     pub author: Option<Author>,
     /// What it says in place of its app, when the app could not open or stopped.
     pub ended: Option<Ended>,
+}
+
+/// One face at a window: who else is there now, drawn on the window's tab.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct WindowFace {
+    /// What the workspace calls them.
+    pub name: String,
+    /// The presence colour they wear, as `#rrggbb`.
+    pub colour: String,
 }
 
 /// What a window says in the place its app left, when the app could not open or stopped: the

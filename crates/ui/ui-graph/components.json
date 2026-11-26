@@ -11971,6 +11971,13 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "colour",
+          "doc": "The colour the face wears, as `#rrggbb`, where the view knows it without a person: who else is at a window, from presence. Without it, the hue their identity gives them.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "semantics": {

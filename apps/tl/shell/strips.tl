@@ -407,7 +407,16 @@ view standing_window(a: Layout, s: LayoutStrip, lists: Bool) {
                                     title: place_title(p),
                                     name: place_own_title(p),
                                     icon: w.icon,
-                                )
+                                    attention: w.attention,
+                                    modified: w.modified,
+                                    busy: w.busy,
+                                ) {
+                                    // Who else is at the window now: their faces, in their
+                                    // presence colour, on its tab.
+                                    for f in w.presence {
+                                        ui.TabFace(name: f.name, colour: f.colour)
+                                    }
+                                }
                             } else {
                                 ui.TabItem(
                                     the_place(p.key),
@@ -868,6 +877,23 @@ view share_control(shown: Option<LayoutPlace>) {
 /// the same app, the window's own search, and the way back and forward through what it showed.
 /// Each is one session action, so a press, a key and an agent move the window the same way.
 view window_bar_actions(w: device.Window) {
+    // Where the window is, when its app names a place where that is not already its title: a
+    // folder's path, the note it shows. The old bar read it beside the window's name, and a
+    // person sees where they are without opening the field that edits it.
+    if w.bar_location != "" and w.bar_location != w.title {
+        ui.Text(w.bar_location, role: .caption, secondary: true, lines: 1, truncate)
+    }
+    // What its app is doing: a turning mark while its window has not shown yet, a dot while it
+    // waits for the person, and the mark of changes it has not saved.
+    if w.busy {
+        ui.Spinner("Starting {w.title}", beside: .caption)
+    }
+    if w.attention {
+        ui.Badge(dot: true, tone: .info)
+    }
+    if w.modified {
+        ui.Badge(dot: true, tone: .warning)
+    }
     // Whose hands opened the window, person or agent, with the live presence of whoever is here:
     // whose window it is, never who may close it.
     if let a = w.author {

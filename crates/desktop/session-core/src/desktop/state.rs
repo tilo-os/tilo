@@ -211,6 +211,9 @@ pub struct Shared {
     /// ([`DesktopHandle::set_authors`]): whose hands opened it, which the shell shows and no
     /// permission reads.
     pub authors: std::collections::BTreeMap<TabId, String>,
+    /// Who else is at each window now, by tab: the faces (`name`, `#rrggbb` colour) of the
+    /// members whose pointer stands over it ([`DesktopHandle::set_pointer_faces`]).
+    pub pointer_faces: HashMap<TabId, Vec<(String, String)>>,
     /// The person each of those agents opened its window for, by tab, by the name its server knows
     /// them by ([`DesktopHandle::set_opened_for`]).
     pub opened_for: std::collections::BTreeMap<TabId, String>,
@@ -697,6 +700,30 @@ impl DesktopHandle {
     #[must_use]
     pub fn asks_attention(&self, tab: TabId) -> bool {
         self.shared.borrow().asking.contains(&tab)
+    }
+
+    /// Say who else is at each window now, by tab: the members whose pointer stands over it, with
+    /// the name and colour their face wears. Whether that changed anything.
+    pub fn set_pointer_faces(&self, faces: HashMap<TabId, Vec<(String, String)>>) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        if shared.pointer_faces == faces {
+            return false;
+        }
+        shared.pointer_faces = faces;
+        shared.changed();
+        true
+    }
+
+    /// Who else is at window `tab` now, as its tab draws them: each face's name and `#rrggbb`
+    /// colour.
+    #[must_use]
+    pub fn pointer_faces(&self, tab: TabId) -> Vec<(String, String)> {
+        self.shared
+            .borrow()
+            .pointer_faces
+            .get(&tab)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn set_holders(&self, holders: HashMap<TabId, ui::widget::TabHolder>) -> bool {

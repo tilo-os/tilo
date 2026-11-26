@@ -10,7 +10,7 @@ use tilo_session_core::desktop::state::DesktopHandle;
 
 pub use tilo_device_surfaces::windows::{
     Author, Bar, BarAction, BarNotice, BarReaction, BarReactions, BarView, BarViews, Ended, Window,
-    WindowDisplay, Windows,
+    WindowDisplay, WindowFace, Windows,
 };
 
 /// What a window with no title is called.
@@ -132,6 +132,27 @@ fn window_reading(
             TileContent::Foreign { surface_id, .. } => handle.is_unresponsive(*surface_id),
             _ => false,
         },
+        // Its app waits for the person, as the compositor says when something of it asks: a
+        // refusal, a dialog they are not looking at, a background open.
+        attention: handle.asks_attention(tab.id),
+        // A window of its own that has not shown here yet: its app is starting, and its place
+        // shows what is coming.
+        busy: !elsewhere
+            && size.is_none()
+            && matches!(
+                &tab.tile,
+                TileContent::Foreign { .. } | TileContent::LocalApp { .. }
+            ),
+        // What it shows has changes its app has not saved, as its bar says.
+        modified: handle
+            .bar_toolbar(tab.id)
+            .is_some_and(|toolbar| toolbar.modified),
+        // Who else is at it now, their pointer over it.
+        presence: handle
+            .pointer_faces(tab.id)
+            .into_iter()
+            .map(|(name, colour)| WindowFace { name, colour })
+            .collect(),
         fullscreen,
         floating: at.workspace.layout.float_of(at.group.id).is_some(),
         renameable: matches!(

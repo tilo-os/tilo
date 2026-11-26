@@ -1753,7 +1753,10 @@ impl TabBar {
         for part in 0..faces.faces {
             let rect = face_rect(part);
             if let Some(face) = given.and_then(|given| given.get(part)) {
-                let colour = ctx.theme.tokens.colors.presence.hue(face.hue);
+                let colour = face.rgb.map_or_else(
+                    || ctx.theme.tokens.colors.presence.hue(face.hue),
+                    |rgb| ctx.theme.tokens.colors.presence.of_rgb(rgb),
+                );
                 paint_tab_face(ctx, rect, &face.name, colour, face.agent, ring);
                 continue;
             }
@@ -2701,6 +2704,13 @@ impl TabBar {
             self.given_faces.insert(id, faces);
         }
         self.face_demand_stale = true;
+    }
+
+    /// The faces a view gave the pill `id`, as the strip draws them: who is there now, and the
+    /// colour each wears.
+    #[must_use]
+    pub fn given_faces(&self, id: u64) -> Option<&Vec<TabFaceSpec>> {
+        self.given_faces.get(&id)
     }
 
     /// How many faces a pill shows: the ones its view gave it, else the live presence feed's.

@@ -813,6 +813,17 @@ impl Panel {
                 );
             }
         }
+        // Who is at each window now, for its tab: each face's name and colour, read by the shell's
+        // tab strip. A window nobody else is at clears.
+        let mut faces: HashMap<u64, Vec<(String, String)>> = HashMap::new();
+        for (cursor, tab) in pointers.drawn.iter().zip(&pointers.tabs) {
+            let colour = cursor.color.to_rgba8();
+            faces.entry(*tab).or_default().push((
+                cursor.label.clone(),
+                format!("#{:02x}{:02x}{:02x}", colour.r, colour.g, colour.b),
+            ));
+        }
+        self.handle.set_pointer_faces(faces);
         if let Some(until) = pointers.motion_until {
             self.motion_until.set(self.motion_until.get().max(until));
         }

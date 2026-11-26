@@ -70,6 +70,9 @@ pub struct PresenceFaceProps {
     pub who: Option<Person>,
     /// What the workspace calls them, when it differs from their name here.
     pub name: Option<String>,
+    /// The colour the face wears, as `#rrggbb`, where the view knows it without a person: who
+    /// else is at a window, from presence. Without it, the hue their identity gives them.
+    pub colour: Option<String>,
 }
 
 tilo_ui_base::part_type!(PresenceFaceProps);
@@ -284,23 +287,43 @@ impl Tabs {
                     || a.presence
                         .iter()
                         .zip(&b.presence)
-                        .any(|(x, y)| x.who != y.who || x.name != y.name)
+                        .any(|(x, y)| x.who != y.who || x.name != y.name || x.colour != y.colour)
             })
     }
 }
 
-/// One face a tab's view gave its pill: who they are, what they are called here and the hue
-/// they wear. A tab given no face falls back to the live presence feed's people.
+/// One face a tab's view gave its pill: who they are, what they are called here and the colour
+/// they wear. A face needs a name: its own, or the person's it stands for. A tab given no face
+/// falls back to the live presence feed's people.
 fn face_spec(face: &PresenceFaceProps) -> Option<TabFaceSpec> {
-    let who = face.who.as_ref()?;
+    let who = face.who.as_ref();
+    let name = face
+        .name
+        .clone()
+        .or_else(|| who.map(|who| who.name.clone()))?;
+    if name.is_empty() {
+        return None;
+    }
     Some(TabFaceSpec {
-        name: face.name.clone().unwrap_or_else(|| who.name.clone()),
-        hue: who.hue,
-        agent: !who
-            .identity
-            .member_id()
-            .is_some_and(tilo_action_policy::MemberId::is_person),
+        name,
+        hue: who.map_or(tilo_ui_base::tokens::PresenceHue::Violet, |who| who.hue),
+        agent: who.is_some_and(|who| {
+            !who.identity
+                .member_id()
+                .is_some_and(tilo_action_policy::MemberId::is_person)
+        }),
+        rgb: face.colour.as_deref().and_then(hex_rgb),
     })
+}
+
+/// The colour `#rrggbb` names, where it names one.
+fn hex_rgb(hex: &str) -> Option<(u8, u8, u8)> {
+    let digits = hex.strip_prefix('#').unwrap_or(hex);
+    if digits.len() != 6 {
+        return None;
+    }
+    let byte = |at: usize| u8::from_str_radix(digits.get(at..at + 2)?, 16).ok();
+    Some((byte(0)?, byte(2)?, byte(4)?))
 }
 
 /// A frame's tab strip.

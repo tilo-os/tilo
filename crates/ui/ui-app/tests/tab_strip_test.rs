@@ -84,6 +84,7 @@ tilo_test_env::scenario! {
                 picture: None,
             }),
             name: None,
+            colour: None,
         }];
         tabs[1].modified = true;
         let strip = TabStrip::from_props("frame", props(tabs, 0));
@@ -100,6 +101,59 @@ tilo_test_env::scenario! {
         assert!(
             strip.bar().is_modified(changed),
             "and the changed tab keeps its dot"
+        );
+    }
+
+    // A tab its app is still starting turns an arc on its pill, one waiting for the person
+    // carries a dot, and one whose document has unsaved changes keeps its close chip as the
+    // mark.
+    phase busy_attention_and_changes_show_on_the_pill;
+    {
+        let mut tabs = vec![tab("a", "A"), tab("b", "B")];
+        tabs[0].busy = true;
+        tabs[0].attention = true;
+        tabs[1].modified = true;
+        let strip = TabStrip::from_props("frame", props(tabs, 0));
+        let starting = strip.bar().tabs()[0].id;
+        let changed = strip.bar().tabs()[1].id;
+        assert_eq!(
+            strip.bar().mark(starting),
+            Some(tilo_ui::widget::TabMark::Busy),
+            "a window still starting turns a mark on its tab"
+        );
+        assert!(
+            strip.bar().tabs()[0].attention,
+            "a window waiting for the person wears its dot"
+        );
+        assert!(
+            strip.bar().is_modified(changed),
+            "a changed document's tab keeps its mark"
+        );
+    }
+
+    // Who else is at a window is a face its view names by name and colour, without a person:
+    // presence read from the session's pointer feed.
+    phase a_face_named_by_colour_is_drawn_on_the_pill;
+    {
+        let mut tabs = vec![tab("a", "A")];
+        tabs[0].presence = vec![tilo_ui::widget::PresenceFaceProps {
+            key: "bo".to_owned(),
+            who: None,
+            name: Some("Bo".to_owned()),
+            colour: Some("#3366cc".to_owned()),
+        }];
+        let strip = TabStrip::from_props("frame", props(tabs, 0));
+        let id = strip.bar().tabs()[0].id;
+        let faces = strip
+            .bar()
+            .given_faces(id)
+            .expect("a face named by colour reaches the pill");
+        assert_eq!(faces.len(), 1, "one person is one face");
+        assert_eq!(faces[0].name, "Bo");
+        assert_eq!(
+            faces[0].rgb,
+            Some((0x33, 0x66, 0xcc)),
+            "the face wears the colour the view gave it"
         );
     }
 }

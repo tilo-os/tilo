@@ -65,6 +65,10 @@ pub struct WindowToolbar {
     pub notice: Option<ToolbarNotice>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reactions: Option<ToolbarReactions>,
+    /// What the window shows has changes its app has not saved: the close mark stands on its
+    /// tab, and its bar says so.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub modified: bool,
 }
 
 /// The reactions to the one thing a window shows (a shared document), as its bar shows

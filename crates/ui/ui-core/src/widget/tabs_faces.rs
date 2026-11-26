@@ -14,6 +14,8 @@ pub struct TabFaceSpec {
     pub name: String,
     pub hue: tilo_ui_base::tokens::PresenceHue,
     pub agent: bool,
+    /// The colour the face wears where its view gave one (`#rrggbb`), over the hue's.
+    pub rgb: Option<(u8, u8, u8)>,
 }
 
 /// Peer faces on a pill: at most this many faces before a "+N" disc.
