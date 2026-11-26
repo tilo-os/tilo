@@ -8080,8 +8080,8 @@ timeout_secs = 600
 name = "wait-list"
 # No egress: the page, the entry, its mail sink and the security it serves meet on loopback.
 run = "bash os/containers/tilo-lounge/test-wait-list.sh /target/publish/web-entry/bundle /target/wait-list"
-needs = ["lounge-check-binaries", "lounge-check-apps", "lounge-fonts", "lounge-check-tools", "web-entry-bundle"]
-env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-runtime", TILO_LOUNGE_APPS = "/target/publish/lounge-check/apps", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_OWNED_BROWSER_MAX_CONCURRENT = "0", TILO_OWNED_BROWSER_MAX_LIFETIME_SECS = "0" }
+needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-entry-bundle"]
+env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-runtime", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_OWNED_BROWSER_MAX_CONCURRENT = "0", TILO_OWNED_BROWSER_MAX_LIFETIME_SECS = "0" }
 requires = ["arch=x86_64"]
 outputs = ["/target/wait-list/**"]
 timeout_secs = 1800
