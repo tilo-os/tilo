@@ -77,6 +77,9 @@ pub mod i18n;
 pub mod live;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod metrics;
+/// The person's model providers: their actions, declared once, and what they read as.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod models;
 #[cfg(not(target_arch = "wasm32"))]
 mod own_workspaces;
 #[cfg(not(target_arch = "wasm32"))]

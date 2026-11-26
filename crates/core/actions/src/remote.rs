@@ -66,7 +66,6 @@ pub mod environment_commands;
 pub mod environment_machines;
 pub mod environment_terminals;
 pub mod formats;
-pub mod model_providers;
 mod nodes;
 pub mod own_device;
 mod pending;
@@ -446,6 +445,48 @@ pub const MODERATION_UNDO: &str = "undo";
 /// The app whose record a moderation turn reads and takes changes back in: the workspace's chat.
 pub const MODERATED_APP: &str = "so.tilo.chat";
 
+/// The provider a workspace's model providers answer under. Their provider declares their
+/// actions (`tilo_workspace_service::models`); what this crate knows of them is that a
+/// workspace's host keeps them ([`WORKSPACE_KEPT_PROVIDERS`]) and what each writes in the
+/// workspace's vault ([`MODEL_VAULT_STEPS`]).
+pub const MODELS_PROVIDER: &str = "tilo.models";
+
+/// What each model provider action writes in the workspace's vault, by its id, as the host
+/// answering it takes it: a key typed in is kept, a removed key goes (as does the one a vault
+/// item's key replaces), and a provider asked with a key the vault keeps writes down that use, a
+/// key just kept included. Signing in on the provider's own page keeps the key or grant it left.
+/// An action not named writes nothing there.
+pub const MODEL_VAULT_STEPS: [(&str, &[&str]); 11] = {
+    use person_vault::{KEEP_SEALED, KEEP_USES, REMOVE_SEALED};
+    const KEEPS: &[&str] = &[KEEP_SEALED, REMOVE_SEALED, KEEP_USES];
+    [
+        ("begin-sign-in", &[KEEP_SEALED]),
+        ("add-provider", KEEPS),
+        ("add-preset", KEEPS),
+        ("set-key", KEEPS),
+        ("set-key-from-item", &[KEEP_USES, REMOVE_SEALED]),
+        ("remove-key", &[REMOVE_SEALED]),
+        ("remove-provider", &[REMOVE_SEALED]),
+        ("refresh-models", &[KEEP_USES]),
+        ("search-hub-models", &[KEEP_USES]),
+        ("show-hub-model", &[KEEP_USES]),
+        ("install-hub-model", &[KEEP_USES]),
+    ]
+};
+
+/// [`MODEL_VAULT_STEPS`] of the model provider action `action`.
+fn model_vault_steps(action: &str) -> Vec<crate::ActionEffect> {
+    MODEL_VAULT_STEPS
+        .iter()
+        .find(|(id, _)| *id == action)
+        .map_or_else(Vec::new, |(_, steps)| {
+            steps
+                .iter()
+                .map(|verb| person_vault::vault_step(verb))
+                .collect()
+        })
+}
+
 /// What the action `target` names declares it writes besides its own resource
 /// ([`crate::ActionContract::effects`]), from its declaration: a device reading a record checks
 /// here whether a step a call's change takes there is one the called action takes. Every action
@@ -490,7 +531,7 @@ pub fn declared_effects(target: &RemoteActionTarget) -> Vec<crate::ActionEffect>
             },
         ),
         person_accounts::PROVIDER => person_accounts::effects(&address.resource, &address.action),
-        model_providers::PROVIDER => model_providers::effects(&address.action),
+        MODELS_PROVIDER => model_vault_steps(&address.action),
         person_connections::PROVIDER => person_connections::effects(&address.action),
         // A moderation undo takes a person's changes back in the chat's record.
         MODERATION_PROVIDER
@@ -1330,7 +1371,7 @@ pub const ACTIONS_PROVIDER: &str = "tilo.actions";
 /// and its own dispatch answers nothing of them locally.
 pub const WORKSPACE_KEPT_PROVIDERS: [&str; 6] = [
     person_accounts::PROVIDER,
-    model_providers::PROVIDER,
+    MODELS_PROVIDER,
     person_vault::PROVIDER,
     person_telling::PROVIDER,
     person_connections::PROVIDER,

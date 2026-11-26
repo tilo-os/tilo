@@ -239,7 +239,9 @@ pub use tilo_action_policy::edits::Weaker;
 pub use tilo_action_policy::{DIRECT_CONVERSATION_PREFIX, MemberId, PersonId};
 pub use tilo_actions::surface::{FieldType, TypeSet};
 pub use tilo_actions::{Acting, Availability};
-pub use tilo_resource_macros::{Effect, JsonSchema, Model, Row, committed_surface, resource};
+pub use tilo_resource_macros::{
+    Effect, JsonSchema, Model, Row, bindings, committed_surface, resource,
+};
 pub use tilo_sort::{Frecency, frecency};
 pub use unreadable::withhold_document_actions;
 pub use vocabulary::{Built, Declaration, Vocabulary, vocabulary};

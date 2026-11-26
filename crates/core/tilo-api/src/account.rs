@@ -35,7 +35,7 @@
 //! Turning a workspace's unattended runs on asks the person on their approving device, and the
 //! invocation waits for them; off is done at once. On, a key for that workspace alone runs
 //! commands in its Linux machine without the person being asked each time. A model asked is the
-//! person's own, kept by the server that keeps the workspace ([`model_providers::ASK`]): while it
+//! person's own, kept by the server that keeps the workspace (`tilo.models`, `ask`): while it
 //! writes, the invocation's newest item holds the answer so far.
 
 use crate::grant_key::GrantKey;
@@ -52,7 +52,7 @@ use tilo_actions::remote::invocation_record::Invocations;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument,
-    InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget, model_providers, pending,
+    InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget, pending,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionFailure, ActionKind, ActionOutput,
@@ -66,6 +66,14 @@ use tilo_server_protocol::workspaces::{
 };
 use tilo_session_actions::SessionActions;
 use tilo_user_identity::AgentScope;
+
+/// The workspace's model providers, as the service that keeps them publishes their actions.
+mod model_providers {
+    tilo_resource_macros::bindings!(
+        provider = "tilo.models",
+        surface = "../tilo-workspace-service/models-surface.json"
+    );
+}
 
 /// The app the account is published as: `account` names it.
 pub const PROVIDER: &str = "tilo.account";
@@ -1495,7 +1503,7 @@ impl Account {
                 "pass {workspace, request: {messages, …}}",
             );
         };
-        let target = model_providers::target(model_providers::ASK);
+        let target = model_providers::models::ask();
         match self
             .ask_host(key, workspace, id, target, request.clone(), None)
             .await
@@ -2648,7 +2656,7 @@ fn account_target(
                 ));
             };
             arguments.clone_from(request);
-            model_providers::target(model_providers::ASK)
+            model_providers::models::ask()
         }
         _ => tilo_actions::remote::server_account::target(
             tilo_actions::remote::server_account::ACCOUNT,

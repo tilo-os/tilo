@@ -24,12 +24,10 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::models::{AccountUse, ProviderView, SignInStarted, SignInState};
 use agent_provider_config::presets::{CHATGPT_ENDPOINT, Preset};
 use agent_provider_config::{ProviderConfig, ProviderProfile, SignInIssuer, transform};
 use serde::{Deserialize, Serialize};
-use tilo_actions::remote::model_providers::{
-    AccountUse, BeginSignIn, ProviderView, SignInStarted, SignInState, WaitSignIn,
-};
 use tilo_lock::MutexRecover as _;
 use tilo_net::proxy::host::guarded_client;
 use zeroize::Zeroizing;
@@ -234,11 +232,11 @@ impl Workspaces {
     /// and keep the grant in the workspace's vault. A person signs in once
     /// at a time: one begun before is let go.
     ///
-    /// [`BEGIN_SIGN_IN`]: tilo_actions::remote::model_providers::BEGIN_SIGN_IN
+    /// [`BEGIN_SIGN_IN`]: crate::models::BEGIN_SIGN_IN
     pub(super) async fn begin_openai_sign_in(
         &self,
         (person, workspace): ([u8; 32], &str),
-        beginning: BeginSignIn,
+        using: AccountUse,
         reach: Reach,
         call: Option<tilo_actions::remote::InvokeRequest>,
     ) -> Result<SignInStarted, String> {
@@ -267,7 +265,7 @@ impl Workspaces {
                     (&workspace, person),
                     &openai,
                     &device,
-                    beginning.using,
+                    using,
                     &reach,
                     call.as_ref(),
                 )
@@ -312,11 +310,11 @@ impl Workspaces {
     /// it changed, or after a while as still waiting. A sign-in that ended
     /// is answered once and then forgotten.
     ///
-    /// [`WAIT_SIGN_IN`]: tilo_actions::remote::model_providers::WAIT_SIGN_IN
+    /// [`WAIT_SIGN_IN`]: crate::models::WAIT_SIGN_IN
     pub(super) async fn wait_openai_sign_in(
         &self,
         person: [u8; 32],
-        waiting: &WaitSignIn,
+        sign_in: &str,
     ) -> Result<SignInState, String> {
         let mut state = self
             .inner
@@ -324,7 +322,7 @@ impl Workspaces {
             .sign_ins
             .pending
             .lock_recover()
-            .get(&waiting.sign_in)
+            .get(sign_in)
             .filter(|pending| pending.person == person)
             .map(|pending| pending.state.clone())
             .ok_or_else(|| "That sign-in has ended. Begin it again.".to_owned())?;
@@ -338,20 +336,20 @@ impl Workspaces {
                 .sign_ins
                 .pending
                 .lock_recover()
-                .remove(&waiting.sign_in);
+                .remove(sign_in);
         }
         Ok(now)
     }
 
     /// Let go of `person`'s sign-in ([`CANCEL_SIGN_IN`]).
     ///
-    /// [`CANCEL_SIGN_IN`]: tilo_actions::remote::model_providers::CANCEL_SIGN_IN
-    pub(super) fn cancel_openai_sign_in(&self, person: [u8; 32], cancelling: &WaitSignIn) {
+    /// [`CANCEL_SIGN_IN`]: crate::models::CANCEL_SIGN_IN
+    pub(super) fn cancel_openai_sign_in(&self, person: [u8; 32], sign_in: &str) {
         let mut pending = self.inner.models.sign_ins.pending.lock_recover();
         if pending
-            .get(&cancelling.sign_in)
+            .get(sign_in)
             .is_some_and(|pending| pending.person == person)
-            && let Some(pending) = pending.remove(&cancelling.sign_in)
+            && let Some(pending) = pending.remove(sign_in)
         {
             pending.task.abort();
         }

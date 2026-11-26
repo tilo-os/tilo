@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use super::reading::{Changes, Read, Served};
 
-pub use tilo_actions::remote::model_providers::RESOURCE as MODELS;
+pub use tilo_workspace_service::models::RESOURCE as MODELS;
 
 /// The workspace's model providers, published to the apps this device serves, read where the
 /// workspaces keep them.

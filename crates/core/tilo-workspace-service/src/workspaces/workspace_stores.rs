@@ -58,8 +58,8 @@ impl Store {
     };
     /// The workspace's model providers and their keys.
     pub const MODELS: Self = Self {
-        app: tilo_actions::remote::model_providers::PROVIDER,
-        kind: tilo_actions::remote::model_providers::RESOURCE,
+        app: crate::models::PROVIDER,
+        kind: crate::models::RESOURCE,
     };
     /// The services the workspace connected.
     pub const CONNECTIONS: Self = Self {

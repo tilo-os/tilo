@@ -13,6 +13,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::models as model_providers;
 use serde_json::{Value, json};
 use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet, Rule, TreePath};
 use tilo_actions::InvocationId;
@@ -21,7 +22,7 @@ use tilo_actions::remote::ActionCallError::NotPermitted;
 use tilo_actions::remote::ActionCallError::{self, InvalidRequest, Refused, UnknownAction};
 use tilo_actions::remote::asked::{AskedBy, AskedFacts, Named};
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
-use tilo_actions::remote::{model_providers, person_accounts, person_vault};
+use tilo_actions::remote::{person_accounts, person_vault};
 use tilo_user_identity::DeviceCert;
 
 use super::super::tests::{admit, caller, hosted};

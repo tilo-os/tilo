@@ -28,14 +28,15 @@ mod sign_in;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use serde_json::{Map, Value};
-use tilo_account_probe::AccountTester;
-use tilo_actions::remote::model_providers::{
+use crate::models as model_providers;
+use crate::models::{
     Assignment, ModelProviders, OfferedModel, ProviderView, SetAssignment, SetKey,
 };
+use serde_json::Value;
+use tilo_account_probe::AccountTester;
 use tilo_actions::remote::person_accounts::{AddMailAccount, MailAccount, MailAccounts};
 use tilo_actions::remote::{
-    ActionCallError, Caller, InvokeArgument, InvokeRequest, model_providers, person_accounts,
+    ActionCallError, Caller, InvokeArgument, InvokeRequest, person_accounts,
 };
 use tilo_net::proxy::host::Destinations;
 use tilo_user_identity::DeviceCert;
@@ -634,17 +635,6 @@ pub(crate) fn services_of(account: &accounts::Account) -> person_accounts::Servi
     person_mail::services_of(account, person_mail::provider_of_account(account))
 }
 
-/// The `provider` a removing action names.
-pub(super) fn provider_argument(request: &InvokeRequest) -> Result<String, ActionCallError> {
-    let value: Map<String, Value> = argument(request, "the provider")?;
-    value
-        .get("provider")
-        .and_then(Value::as_str)
-        .filter(|provider| !provider.trim().is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| ActionCallError::invalid_request("the provider is named by its id"))
-}
-
 /// The account `adding` describes, as the store keeps it before its sign-in is proved: its
 /// settings, which of its services its person uses, and the calendar account `linked` keeps
 /// beside it.
@@ -1174,23 +1164,24 @@ pub(super) fn add_provider(
 /// to it follow the default again, so no work runs on a provider the person stopped.
 pub(super) fn set_enabled(
     root: &Path,
-    setting: &model_providers::SetEnabled,
+    provider: &str,
+    enabled: bool,
 ) -> Result<ProviderView, String> {
     let mut config = provider_config(root);
     let profile = config
         .profiles
         .iter_mut()
-        .find(|profile| profile.id == setting.provider)
+        .find(|profile| profile.id == provider)
         .ok_or_else(|| "That provider is not kept here".to_owned())?;
-    profile.enabled = setting.enabled;
+    profile.enabled = enabled;
     let view = view_of(profile);
-    if !setting.enabled {
-        if config.default_profile.as_deref() == Some(setting.provider.as_str()) {
+    if !enabled {
+        if config.default_profile.as_deref() == Some(provider) {
             config.default_profile = None;
         }
         config
             .interaction_models
-            .retain(|_, chosen| chosen.profile != setting.provider);
+            .retain(|_, chosen| chosen.profile != provider);
     }
     save_provider_config(root, &config)?;
     Ok(view)

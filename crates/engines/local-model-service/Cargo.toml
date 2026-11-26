@@ -79,6 +79,8 @@ agent-provider-config = { package = "tilo-agent-provider-config", path = "../../
 account-credentials = { path = "../../integrations/account-credentials", default-features = false, features = ["hugging-face"] }
 # The one dispatch: the published `models` actions a terminal sign-in calls as the person.
 tilo-actions = { path = "../../core/actions" }
+# Those actions, bound at build time to the surface the service that keeps them publishes.
+tilo-resource-macros = { path = "../../core/tilo-resource-macros" }
 # The signed desired-state half of the extension helper.
 tilo-extension = { path = "../../os/extension-helper" }
 tilo-files = { path = "../../platform/tilo-files" }

@@ -778,9 +778,9 @@ async fn the_workspaces_owners_and_moderators_rename_it() {
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn the_persons_vault_models_and_mail_are_paths_of_the_workspace() {
+    use crate::models as model_providers;
     use tilo_actions::remote::{
-        WORKSPACE_MAIL_ACCOUNTS, WORKSPACE_MODELS, WORKSPACE_VAULT, model_providers,
-        person_accounts, person_vault,
+        WORKSPACE_MAIL_ACCOUNTS, WORKSPACE_MODELS, WORKSPACE_VAULT, person_accounts, person_vault,
     };
 
     let dir = tempfile::tempdir().unwrap();
@@ -1972,7 +1972,7 @@ pub(super) async fn ask_own(
     argument: Value,
 ) -> Result<Value, ActionCallError> {
     let mut request = request("", "", argument);
-    request.target = tilo_actions::remote::model_providers::target(verb);
+    request.target = crate::models::target(verb);
     let provider = host.device_page(workspace_id, device);
     let asking = caller(device);
     let invocation = request.invocation;
@@ -2020,7 +2020,7 @@ fn files_holding(dir: &std::path::Path, needle: &[u8]) -> Vec<std::path::PathBuf
 /// Every request of a person's model providers, the ones that name a
 /// provider naming `provider`.
 fn model_requests(provider: &str) -> Vec<(&'static str, Value)> {
-    use tilo_actions::remote::model_providers;
+    use crate::models as model_providers;
 
     vec![
         (model_providers::LIST, json!({})),
@@ -2073,7 +2073,7 @@ async fn reaches_none_of_it(
     other: &DeviceCert,
     provider: &str,
 ) {
-    use tilo_actions::remote::model_providers;
+    use crate::models as model_providers;
 
     let listed = ask_own(host, workspace_id, other, model_providers::LIST, json!({}))
         .await
@@ -2105,7 +2105,7 @@ async fn reaches_none_of_it(
 /// it through any request, nor finds its key in a store of its own.
 #[tokio::test]
 async fn a_workspaces_key_is_sealed_and_no_other_workspace_reaches_it() {
-    use tilo_actions::remote::model_providers;
+    use crate::models as model_providers;
     const SECRET: &str = "sk-ada-own-secret";
 
     let dir = tempfile::tempdir().unwrap();
@@ -2197,8 +2197,8 @@ async fn a_workspaces_key_is_sealed_and_no_other_workspace_reaches_it() {
 /// forbidden are the same answer, and nothing of the workspace's changed.
 #[tokio::test]
 async fn no_agent_with_no_device_behind_it_reaches_the_model_providers() {
+    use crate::models as model_providers;
     use agent_provider_config::protocol::{Message, ModelRequest, Role, ToolChoice};
-    use tilo_actions::remote::model_providers;
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = hosting_device();
@@ -2324,7 +2324,7 @@ async fn asks_for_level(
         actions,
         workspace_id,
         person,
-        tilo_actions::remote::model_providers::SET_REASONING,
+        crate::models::SET_REASONING,
         setting,
     )
     .await
@@ -2356,7 +2356,7 @@ async fn ready_made(
         actions,
         workspace_id,
         person,
-        tilo_actions::remote::model_providers::ADD_PRESET,
+        crate::models::ADD_PRESET,
         json!({"preset": name}),
     )
     .await
@@ -2374,9 +2374,9 @@ async fn ready_made(
 /// says so and keeps nothing.
 #[tokio::test]
 async fn a_thinking_level_reaches_the_workspaces_provider_with_the_next_ask() {
+    use crate::models as model_providers;
     use agent_provider_config::{ReasoningParam, ReasoningSetting};
     use test_http::{Reply, Responder};
-    use tilo_actions::remote::model_providers;
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = hosting_device();
@@ -2494,7 +2494,7 @@ async fn links_a_provider(
     adding: &Value,
     key: &str,
 ) -> String {
-    use tilo_actions::remote::model_providers;
+    use crate::models as model_providers;
 
     let added = ask_own(
         host,
@@ -2564,7 +2564,7 @@ fn model_for(reads: &Value, kind: &str) -> Option<Value> {
 /// other's or chooses from them.
 #[tokio::test]
 async fn each_workspace_links_a_provider_and_chooses_its_own_models() {
-    use tilo_actions::remote::model_providers;
+    use crate::models as model_providers;
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = hosting_device();
@@ -2663,7 +2663,7 @@ async fn each_workspace_links_a_provider_and_chooses_its_own_models() {
 /// the leave is no longer asked.
 #[tokio::test]
 async fn a_host_reaches_its_own_network_only_with_its_operators_leave() {
-    use tilo_actions::remote::model_providers;
+    use crate::models as model_providers;
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = hosting_device();

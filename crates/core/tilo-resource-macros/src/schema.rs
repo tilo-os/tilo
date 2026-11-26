@@ -586,13 +586,22 @@ fn field_type_body(input: &DeriveInput, options: &ContainerOptions) -> syn::Resu
                 let fields = typed_fields(&variant.fields, variant_options.rename_all.as_ref())?;
                 cases.push(quote!((#case, "", &[#(#fields),*])));
             }
-            quote!(#krate::surface::enum_type(
+            let declared = quote!(#krate::surface::enum_type(
                 types,
                 ::core::any::type_name::<Self>(),
                 #name,
                 #doc,
                 &[#(#cases),*],
-            ))
+            ));
+            // An internally tagged enum writes its case's name under its tag, beside its fields.
+            match (&options.tag, &options.content) {
+                (Some(tag), None) => quote!({
+                    let ty = #declared;
+                    types.tag(&ty, #tag);
+                    ty
+                }),
+                _ => declared,
+            }
         }
         Data::Union(_) => quote!({
             let _ = types;

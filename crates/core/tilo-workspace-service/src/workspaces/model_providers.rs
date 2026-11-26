@@ -23,6 +23,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::models::{
+    self as model_providers, AddModel, AddProvider, ListedModels, ListingProblem, ModelProviders,
+    ModelsAction, ProviderView, SetAssignment, SetAssignments, SetDefault, SetKey,
+};
 use agent_provider_config::presets::{Authentication, Preset};
 use agent_provider_config::protocol::{ModelError, ModelRequest, ModelResponse};
 use agent_provider_config::{
@@ -30,24 +34,19 @@ use agent_provider_config::{
     capabilities, transform,
 };
 use serde_json::Value;
-use tilo_actions::remote::model_providers::{
-    self, AddModel, AddPreset, BeginSignIn, InstallHubModel, ListedModels, ListingProblem,
-    ModelProviders, ProviderView, SearchHubModels, SetAssignment, SetAssignments, SetDefault,
-    SetEnabled, SetKey, SetReasoning, ShowHubModel, WaitSignIn,
-};
 use tilo_actions::remote::workspace_invocations::Spend;
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_net::proxy::host::{
     Destinations, Lookup, check_destination, guarded_client, system_lookup,
 };
+use tilo_resource::Effect as _;
 use tilo_user_identity::DeviceCert;
 
 use super::Workspaces;
 use super::model_answers::Models;
 use super::person_settings::{
-    ProviderKeys, add_provider, answer, argument, provider_argument, provider_config, providers,
-    remove_key, remove_provider, save_provider_config, set_assignment, set_enabled, set_key,
-    view_of,
+    ProviderKeys, add_provider, answer, argument, provider_config, providers, remove_key,
+    remove_provider, save_provider_config, set_assignment, set_enabled, set_key, view_of,
 };
 use super::workspace_stores::Store;
 
@@ -98,58 +97,6 @@ impl Workspaces {
         Reach::of(&self.inner.models)
     }
 
-    /// A provider's sign-in, as the person's page drives it: begun, waited for or stopped. Answers
-    /// the action's answer for one of those, and nothing for any other action.
-    async fn sign_in_invoke(
-        &self,
-        action: &str,
-        person: [u8; 32],
-        here: &str,
-        reach: &Reach,
-        request: &InvokeRequest,
-    ) -> Option<Result<Value, ActionCallError>> {
-        match action {
-            model_providers::BEGIN_SIGN_IN => {
-                // Named nothing, a sign-in is to the plan.
-                let beginning: BeginSignIn =
-                    if matches!(request.argument, tilo_actions::remote::InvokeArgument::None) {
-                        BeginSignIn::default()
-                    } else {
-                        match argument(request, "a sign-in to begin") {
-                            Ok(beginning) => beginning,
-                            Err(error) => return Some(Err(error)),
-                        }
-                    };
-                Some(answer(
-                    &self
-                        .begin_openai_sign_in(
-                            (person, here),
-                            beginning,
-                            reach.clone(),
-                            Some(request.clone()),
-                        )
-                        .await,
-                ))
-            }
-            model_providers::WAIT_SIGN_IN => {
-                let waiting: WaitSignIn = match argument(request, "a sign-in to wait for") {
-                    Ok(waiting) => waiting,
-                    Err(error) => return Some(Err(error)),
-                };
-                Some(answer(&self.wait_openai_sign_in(person, &waiting).await))
-            }
-            model_providers::CANCEL_SIGN_IN => {
-                let cancelling: WaitSignIn = match argument(request, "a sign-in to stop") {
-                    Ok(cancelling) => cancelling,
-                    Err(error) => return Some(Err(error)),
-                };
-                self.cancel_openai_sign_in(person, &cancelling);
-                Some(answer(&Ok(())))
-            }
-            _ => None,
-        }
-    }
-
     /// Answer a [`model_providers::PROVIDER`] request.
     pub(super) async fn model_providers_invoke(
         &self,
@@ -159,16 +106,12 @@ impl Workspaces {
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
         let action = request.target.address.action.as_str();
-        let effect = match action {
-            // Asking a model, a search or a model's description reads with the key the
-            // workspace keeps.
-            model_providers::LIST
-            | model_providers::ASK
-            | model_providers::WAIT_SIGN_IN
-            | model_providers::SEARCH_HUB_MODELS
-            | model_providers::SHOW_HUB_MODEL => tilo_action_policy::ActionKind::Read,
-            _ => tilo_action_policy::ActionKind::Undoable,
-        };
+        // What the action is, as its declaration states it: asking a model, a search or a
+        // model's description reads with the key the workspace keeps.
+        let effect = model_providers::declaration(action)
+            .map_or(tilo_action_policy::ActionKind::Undoable, |decl| {
+                decl.action_kind
+            });
         let reach = self
             .reaching_allowed(
                 (workspace_id, caller, certificate),
@@ -189,120 +132,149 @@ impl Workspaces {
                 )
                 .await;
         }
+        let asked = asked_of(request)?;
         let here = reach.workspace.to_string();
         let root = self.workspace_root(&here);
         let person = reach.person;
         let by = reach.by();
         let keys = ProviderKeys::of(self.vault_for(&here, &reach.acting).serving(request), &by);
-        // Hugging Face searches and downloads go to this computer's model manager, which holds
-        // no key of its own: the workspace's local model provider key goes with each request.
-        match action {
-            model_providers::SEARCH_HUB_MODELS => {
-                let asked: SearchHubModels = argument(request, "a Hugging Face search")?;
-                return answer(
-                    &local_hub::ask((keys, &root), local_hub::Wanted::Search(asked)).await,
-                );
-            }
-            model_providers::SHOW_HUB_MODEL => {
-                let asked: ShowHubModel = argument(request, "a Hugging Face model")?;
-                return answer(
-                    &local_hub::ask((keys, &root), local_hub::Wanted::Show(asked)).await,
-                );
-            }
-            model_providers::INSTALL_HUB_MODEL => {
-                let asked: InstallHubModel = argument(request, "a Hugging Face model to download")?;
-                return answer(
-                    &local_hub::ask((keys, &root), local_hub::Wanted::Install(asked)).await,
-                );
-            }
-            _ => {}
-        }
         let reach = self.model_reach();
-        if let Some(answered) = self
-            .sign_in_invoke(action, person, &here, &reach, request)
-            .await
-        {
-            return answered;
+        match asked {
+            // Hugging Face searches and downloads go to this computer's model manager, which
+            // holds no key of its own: the workspace's local model provider key goes with each.
+            ModelsAction::SearchHubModels { .. }
+            | ModelsAction::ShowHubModel { .. }
+            | ModelsAction::InstallHubModel { .. } => {
+                answer(&local_hub::ask((keys, &root), asked).await)
+            }
+            // Listing the providers changes nothing, so the person's settings are not said to
+            // have changed by it, and neither does a sign-in until it is granted.
+            ModelsAction::List => answer(&Ok(providers(&root))),
+            ModelsAction::BeginSignIn { using } => answer(
+                &self
+                    .begin_openai_sign_in(
+                        (person, &here),
+                        using.unwrap_or_default(),
+                        reach,
+                        Some(request.clone()),
+                    )
+                    .await,
+            ),
+            ModelsAction::WaitSignIn { sign_in } => {
+                answer(&self.wait_openai_sign_in(person, &sign_in).await)
+            }
+            ModelsAction::CancelSignIn { sign_in } => {
+                self.cancel_openai_sign_in(person, &sign_in);
+                answer(&Ok(()))
+            }
+            changing => {
+                let changed = self
+                    .model_providers_changed(changing, &here, &root, keys, reach)
+                    .await;
+                if changed.is_ok() {
+                    self.person_settings_changed();
+                }
+                changed
+            }
         }
-        // Listing the providers changes nothing, so the person's settings are not said to have
-        // changed by it.
-        if action == model_providers::LIST {
-            return answer(&Ok(providers(&root)));
-        }
-        let changed = self
-            .model_providers_changed(action, request, &here, &root, keys, reach)
-            .await;
-        if changed.is_ok() {
-            self.person_settings_changed();
-        }
-        changed
     }
 
-    /// The [`model_providers::PROVIDER`] action of `request` that changes `workspace`'s
-    /// providers under `root`, or their keys, made with `keys` and the `reach` the policy
-    /// allowed.
+    /// The [`model_providers::PROVIDER`] action `asked` that changes `workspace`'s providers
+    /// under `root`, or their keys, made with `keys` and the `reach` the policy allowed.
     async fn model_providers_changed(
         &self,
-        action: &str,
-        request: &InvokeRequest,
+        asked: ModelsAction,
         here: &str,
         root: &Path,
         keys: ProviderKeys<'_>,
         reach: Reach,
     ) -> Result<Value, ActionCallError> {
-        match action {
-            model_providers::ADD_PROVIDER => {
-                let adding: model_providers::AddProvider = argument(request, "a provider to add")?;
+        match asked {
+            ModelsAction::AddProvider {
+                name,
+                protocol,
+                endpoint,
+                headers,
+            } => {
+                let adding = AddProvider {
+                    name,
+                    protocol,
+                    endpoint,
+                    headers: headers.unwrap_or_default(),
+                };
                 answer(&add_provider(root, &adding, reach.destinations))
             }
-            model_providers::ADD_PRESET => {
-                let adding: AddPreset = argument(request, "a provider to add")?;
-                answer(&add_preset(root, &adding))
+            ModelsAction::AddPreset { preset } => answer(&add_preset(root, &preset)),
+            ModelsAction::SetEnabled { provider, enabled } => {
+                answer(&set_enabled(root, &provider, enabled))
             }
-            model_providers::SET_ENABLED => {
-                let setting: SetEnabled = argument(request, "a provider to offer to agents")?;
-                answer(&set_enabled(root, &setting))
-            }
-            model_providers::SET_KEY => {
-                let setting: SetKey = argument(request, "a key to keep")?;
+            ModelsAction::SetKey { provider, key } => {
+                let setting = SetKey { provider, key };
                 answer(&take_key((keys, root), setting, None, &reach).await)
             }
-            model_providers::REMOVE_KEY => {
-                let provider = provider_argument(request)?;
+            ModelsAction::RemoveKey { provider } => {
                 answer(&remove_key((keys, root), &provider).await)
             }
-            model_providers::REMOVE_PROVIDER => {
-                let provider = provider_argument(request)?;
+            ModelsAction::RemoveProvider { provider } => {
                 answer(&remove_provider((keys, root), &provider).await)
             }
-            model_providers::REFRESH_MODELS => {
-                let provider = provider_argument(request)?;
+            ModelsAction::RefreshModels { provider } => {
                 answer(&refresh_models((keys, root), &provider, &reach).await)
             }
-            model_providers::ADD_MODEL => {
-                let adding: AddModel = argument(request, "a model to add")?;
-                answer(&add_model(root, &adding))
+            ModelsAction::AddModel { provider, model } => {
+                answer(&add_model(root, &AddModel { provider, model }))
             }
-            model_providers::SET_DEFAULT => {
-                let choosing: SetDefault = argument(request, "a model choice")?;
-                answer(&set_default(root, &choosing))
+            ModelsAction::SetDefault { provider, model } => {
+                answer(&set_default(root, &SetDefault { provider, model }))
             }
-            model_providers::SET_ASSIGNMENT => {
-                let choosing: SetAssignment = argument(request, "a model choice")?;
-                answer(&set_assignment(root, choosing))
+            ModelsAction::SetAssignment {
+                kind,
+                provider,
+                model,
+            } => answer(&set_assignment(
+                root,
+                SetAssignment {
+                    kind,
+                    provider,
+                    model,
+                },
+            )),
+            ModelsAction::SetAssignments {
+                kinds,
+                provider,
+                model,
+            } => answer(&set_assignments(
+                root,
+                SetAssignments {
+                    kinds,
+                    provider,
+                    model,
+                },
+            )),
+            ModelsAction::SetReasoning { provider, effort } => {
+                answer(&set_reasoning(root, &provider, effort.as_deref()))
             }
-            model_providers::SET_ASSIGNMENTS => {
-                let choosing: SetAssignments = argument(request, "a model choice")?;
-                answer(&set_assignments(root, choosing))
-            }
-            model_providers::SET_REASONING => {
-                let setting: SetReasoning = argument(request, "a thinking level to keep")?;
-                answer(&set_reasoning(root, &setting))
-            }
-            model_providers::LINK_THIS_COMPUTER => answer(&self.link_from_this_computer(here)),
+            ModelsAction::LinkThisComputer => answer(&self.link_from_this_computer(here)),
+            // A key named by its vault item is a use of the vault, answered there.
             _ => Err(ActionCallError::UnknownAction),
         }
     }
+}
+
+/// The action `request` asks of the providers, its arguments read as the action declares them.
+/// A refusal names the argument that does not read, never what it held: it may be a key.
+fn asked_of(request: &InvokeRequest) -> Result<ModelsAction, ActionCallError> {
+    let arguments = match &request.argument {
+        tilo_actions::remote::InvokeArgument::Json(arguments) => arguments.clone(),
+        _ => serde_json::Map::new(),
+    };
+    ModelsAction::decode(&request.target.address.action, &arguments).map_err(|error| match error {
+        tilo_resource::EffectDecodeError::Unknown(_) => ActionCallError::UnknownAction,
+        tilo_resource::EffectDecodeError::Argument { name, .. } => {
+            ActionCallError::invalid_request(format!("The `{name}` argument is not readable"))
+        }
+        other => ActionCallError::invalid_request(other.to_string()),
+    })
 }
 
 impl Workspaces {
@@ -439,8 +411,8 @@ fn added_by_name(preset: &Preset) -> bool {
         && !preset.endpoint_editable()
 }
 
-fn add_preset(root: &Path, adding: &AddPreset) -> Result<ProviderView, String> {
-    let preset = Preset::from_slug(adding.preset.trim())
+fn add_preset(root: &Path, preset: &str) -> Result<ProviderView, String> {
+    let preset = Preset::from_slug(preset.trim())
         .filter(added_by_name)
         .ok_or_else(|| "That provider is not one this host adds by name".to_owned())?;
     let profile = preset.profile();
@@ -758,16 +730,20 @@ fn add_model(root: &Path, adding: &AddModel) -> Result<ProviderView, String> {
 /// nothing else writes it, and where none is kept the provider is told
 /// nothing. A provider is told in the field it takes a level in; one spoken
 /// to in a way that has no such field here says so and keeps nothing.
-fn set_reasoning(root: &Path, setting: &SetReasoning) -> Result<ProviderView, String> {
+fn set_reasoning(
+    root: &Path,
+    provider: &str,
+    effort: Option<&str>,
+) -> Result<ProviderView, String> {
     use agent_provider_config::{REASONING_EFFORTS, ReasoningParam, ReasoningSetting};
 
     let mut config = provider_config(root);
     let profile = config
         .profiles
         .iter_mut()
-        .find(|profile| profile.id == setting.provider)
+        .find(|profile| profile.id == provider)
         .ok_or_else(not_kept)?;
-    profile.reasoning = match setting.effort.as_deref().map(str::trim) {
+    profile.reasoning = match effort.map(str::trim) {
         None => None,
         Some(effort) => {
             if !REASONING_EFFORTS.contains(&effort) {
@@ -859,8 +835,8 @@ mod tests {
 
     use std::net::IpAddr;
 
+    use crate::models::Protocol;
     use test_http::{Reply, Responder};
-    use tilo_actions::remote::model_providers::Protocol;
 
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -990,13 +966,8 @@ mod tests {
                 "https://openrouter.ai/api/v1",
             ),
         ] {
-            let added = add_preset(
-                root.path(),
-                &AddPreset {
-                    preset: slug.into(),
-                },
-            )
-            .expect("a provider of the catalogue is added");
+            let added =
+                add_preset(root.path(), slug).expect("a provider of the catalogue is added");
             assert_eq!(
                 (added.name.as_str(), added.protocol, added.endpoint.as_str()),
                 (name, protocol, endpoint)
@@ -1032,12 +1003,7 @@ mod tests {
             "nowhere",
             "",
         ] {
-            let refused = add_preset(
-                root.path(),
-                &AddPreset {
-                    preset: slug.into(),
-                },
-            );
+            let refused = add_preset(root.path(), slug);
             assert!(refused.is_err(), "{slug} is not added by name on a host");
         }
         assert_eq!(providers(root.path()).providers.len(), 4);
@@ -1674,28 +1640,20 @@ mod tests {
             }
         });
 
-        let download = |accept_license| InstallHubModel {
+        let download = |accept_license| ModelsAction::InstallHubModel {
             repo: "acme/Chat-GGUF".into(),
             revision: "abc".into(),
             variant: "Q4_K_M".into(),
-            accept_license,
+            accept_license: Some(accept_license),
         };
         let (keys, path) = at(root.path());
-        super::local_hub::ask_at(
-            (keys, path),
-            &socket,
-            super::local_hub::Wanted::Install(download(true)),
-        )
-        .await
-        .expect("the manager takes the download");
+        super::local_hub::ask_at((keys, path), &socket, download(true))
+            .await
+            .expect("the manager takes the download");
         let (keys, path) = at(anonymous.path());
-        super::local_hub::ask_at(
-            (keys, path),
-            &socket,
-            super::local_hub::Wanted::Install(download(true)),
-        )
-        .await
-        .expect("the manager takes the download");
+        super::local_hub::ask_at((keys, path), &socket, download(true))
+            .await
+            .expect("the manager takes the download");
         serving.join().expect("the model service answered both");
 
         let asked = asked.lock().unwrap();

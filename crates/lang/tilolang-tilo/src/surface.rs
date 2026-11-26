@@ -105,6 +105,7 @@ fn field_type_of(meta: &Meta, ty: &Ty, types: &mut TypeSet) -> FieldType {
             };
             types.named(&format!("{}.{}", key.app, key.name), &key.name, |types| {
                 NamedType {
+                    tag: None,
                     name: declared.name.clone(),
                     doc: declared.doc.clone(),
                     fields: Vec::new(),

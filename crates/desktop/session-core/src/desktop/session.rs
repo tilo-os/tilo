@@ -46,10 +46,10 @@ use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, ActionProvider, Caller,
     CataloguePage, CatalogueQuery, Completer, InvocationReceipt, InvocationState, InvokeArgument,
-    InvokeRequest, NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, Pending, ReceiptStatus,
-    SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, application_provider, application_provider_resource,
-    formats, mcp_server, model_providers, pending, person_accounts, person_telling, person_vault,
-    provider_workspace, server_account, session_actions, workspace_activity as wire,
+    InvokeRequest, MODELS_PROVIDER, NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, Pending,
+    ReceiptStatus, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, application_provider,
+    application_provider_resource, formats, mcp_server, pending, person_accounts, person_telling,
+    person_vault, provider_workspace, server_account, session_actions, workspace_activity as wire,
 };
 
 use tilo_lock::MutexRecover as _;
@@ -224,7 +224,7 @@ pub const PERSON_PROVIDERS: [&str; 1] = [mcp_server::PROVIDER];
 /// devices online.
 pub const WORKSPACE_SERVER_PROVIDERS: [&str; 6] = [
     person_accounts::PROVIDER,
-    model_providers::PROVIDER,
+    MODELS_PROVIDER,
     person_vault::PROVIDER,
     person_telling::PROVIDER,
     server_account::PROVIDER,

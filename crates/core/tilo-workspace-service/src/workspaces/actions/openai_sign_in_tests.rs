@@ -11,13 +11,14 @@
     reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the server it drives"
 )]
 
+use crate::models as model_providers;
+use crate::models::{SignInStarted, SignInState};
 use agent_provider_config::protocol::{
     Content, Message, ModelError, ModelRequest, ModelResponse, Role, ToolChoice,
 };
 use fake_model_providers::FakeProviders;
 use serde_json::{Value, json};
-use tilo_actions::remote::model_providers::{SignInStarted, SignInState};
-use tilo_actions::remote::{ActionCallError, Caller, model_providers};
+use tilo_actions::remote::{ActionCallError, Caller};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 

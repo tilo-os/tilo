@@ -16,12 +16,20 @@ use account_credentials::hugging_face;
 use agent_provider_config::local::hub::HUB_ORIGIN;
 use local_model_service::hub::HubApi;
 use local_model_service::{HttpsTransport, ServiceError};
-use tilo_actions::remote::model_providers::{self, ModelProviders, ProviderView};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, InvokeRequest, LineClient, ReceiptStatus,
     RemoteActionTarget,
 };
 use zeroize::Zeroizing;
+
+/// The workspace's model providers, as the service that keeps them publishes their actions.
+mod model_providers {
+    tilo_resource_macros::bindings!(
+        provider = "tilo.models",
+        surface = "../../core/tilo-workspace-service/models-surface.json"
+    );
+}
+use model_providers::{Models, ProviderView, models};
 
 /// How long the terminal waits for the workspace to answer one action.
 const ANSWER_WAIT: Duration = Duration::from_secs(60);
@@ -38,12 +46,17 @@ fn daemon() -> Result<LineClient, String> {
     })
 }
 
-/// One `models` action of the person's own workspace, and what it answered.
+/// One `models` action of the person's own workspace, with its arguments `argument`, and what
+/// it answered.
 fn invoke(
     line: &dyn ActionProvider,
     target: RemoteActionTarget,
-    argument: serde_json::Map<String, serde_json::Value>,
+    argument: &impl serde::Serialize,
 ) -> Result<serde_json::Value, String> {
+    let argument = match serde_json::to_value(argument) {
+        Ok(serde_json::Value::Object(argument)) => argument,
+        _ => serde_json::Map::new(),
+    };
     let request = InvokeRequest::plain(target, argument);
     // The daemon decides who calls by the connection; the call names nobody.
     let caller = Caller::local_person("");
@@ -86,12 +99,9 @@ fn provider_named(line: &dyn ActionProvider, named: Option<&str>) -> Result<Stri
     if let Some(named) = named {
         return Ok(named.to_owned());
     }
-    let listed: ModelProviders = serde_json::from_value(invoke(
-        line,
-        model_providers::target(model_providers::LIST),
-        serde_json::Map::new(),
-    )?)
-    .map_err(|error| format!("the workspace's providers do not read: {error}"))?;
+    let listed: Models =
+        serde_json::from_value(invoke(line, models::list(), &serde_json::Map::new())?)
+            .map_err(|error| format!("the workspace's providers do not read: {error}"))?;
     let mut local: Vec<ProviderView> = listed
         .providers
         .into_iter()
@@ -118,15 +128,11 @@ fn provider_named(line: &dyn ActionProvider, named: Option<&str>) -> Result<Stri
 /// Keep `token` as `provider`'s key in the workspace's `tilo.models`, through the published
 /// `models#set-key` action: the same place Settings' AI page sets a provider's key.
 fn keep_key(line: &dyn ActionProvider, provider: &str, token: &str) -> Result<(), String> {
-    let mut argument = serde_json::Map::new();
-    argument.insert("provider".into(), provider.into());
-    argument.insert("key".into(), token.into());
-    invoke(
-        line,
-        model_providers::target(model_providers::SET_KEY),
-        argument,
-    )
-    .map(|_| ())
+    let keeping = models::SetKey {
+        provider: provider.to_owned(),
+        key: token.to_owned(),
+    };
+    invoke(line, models::set_key(), &keeping).map(|_| ())
 }
 
 /// Sign in with Hugging Face by device code, for a device without a browser: the code and its
@@ -157,13 +163,10 @@ pub(crate) fn sign_in_with_code(named: Option<&str>) -> Result<Option<String>, S
 pub(crate) fn sign_out(named: Option<&str>) -> Result<Option<String>, String> {
     let line = daemon()?;
     let provider = provider_named(&line, named)?;
-    let mut argument = serde_json::Map::new();
-    argument.insert("provider".into(), provider.clone().into());
-    invoke(
-        &line,
-        model_providers::target(model_providers::REMOVE_KEY),
-        argument,
-    )?;
+    let removing = models::RemoveKey {
+        provider: provider.clone(),
+    };
+    invoke(&line, models::remove_key(), &removing)?;
     Ok(Some(format!("Signed out of Hugging Face for {provider}")))
 }
 
@@ -461,10 +464,7 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             asked.last().cloned().expect("the key is kept")
         };
-        assert_eq!(
-            request.target,
-            model_providers::target(model_providers::SET_KEY)
-        );
+        assert_eq!(request.target, models::set_key());
         let tilo_actions::remote::InvokeArgument::Json(argument) = &request.argument else {
             panic!("the key is kept with its provider");
         };

@@ -1032,6 +1032,7 @@ fn named_root(
         })
         .collect();
     surface.types.push(tilo_actions::surface::NamedType {
+        tag: None,
         name: name.to_owned(),
         doc: doc.to_owned(),
         fields,

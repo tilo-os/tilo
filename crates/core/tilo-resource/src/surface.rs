@@ -405,6 +405,7 @@ pub fn resource_type(
     shape: Shape,
 ) -> FieldType {
     types.named(identity, name, |types| NamedType {
+        tag: None,
         name: name.to_owned(),
         doc: doc.to_owned(),
         fields: shape
@@ -436,6 +437,7 @@ pub fn resource_of(
     fields: &[(&str, FieldTypeOf)],
 ) -> FieldType {
     types.named(identity, name, |types| NamedType {
+        tag: None,
         name: name.to_owned(),
         doc: doc.to_owned(),
         fields: fields
@@ -467,6 +469,7 @@ pub fn enum_type(
     cases: &[CaseOf<'_>],
 ) -> FieldType {
     types.named(identity, name, |types| NamedType {
+        tag: None,
         name: name.to_owned(),
         doc: doc.to_owned(),
         fields: Vec::new(),

@@ -8,10 +8,10 @@
 //! yet, so an item it never read loses it nothing. The turn's whole answer is
 //! the invocation's output once it ends, as for any other action.
 
+use crate::models as model_providers;
 use serde_json::json;
 use tilo_actions::remote::{
     ActionCallError, Caller, InvocationReceipt, InvocationState, InvokeRequest, Pending,
-    model_providers,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;

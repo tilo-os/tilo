@@ -18,7 +18,7 @@
 
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
-use tilo_actions::remote::{model_providers, person_vault};
+use tilo_actions::remote::person_vault;
 use tilo_server_protocol::WorkspaceId as ServerWorkspaceId;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_server_protocol::workspaces::{
@@ -26,6 +26,7 @@ use tilo_server_protocol::workspaces::{
 };
 use tilo_session_client::Link;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, UserIdentity};
+use tilo_workspace_service::models as model_providers;
 
 use crate::support::flow;
 use crate::support::{Device, TestHost, enrol, start_workspace_host_relaying};

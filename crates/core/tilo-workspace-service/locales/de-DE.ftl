@@ -152,3 +152,27 @@ tilo-servers-floor-set-floor-key = Grenzschlüssel festlegen
 tilo-servers-floor-request-floor-advance = Anheben der Grenze erbitten
 tilo-servers-floor-approve-floor-advance = Anheben der Grenze erlauben
 tilo-servers-floor-refuse-floor-advance = Anheben der Grenze ablehnen
+
+# A workspace's model providers, kept by the host that keeps the workspace.
+tilo-models-list = Modellanbieter auflisten
+tilo-models-add-provider = Einen Modellanbieter hinzufügen
+tilo-models-set-key = Den Schlüssel eines Anbieters aufbewahren
+tilo-models-set-key-from-item = Den Schlüssel eines Anbieters aus dem Tresor übernehmen
+tilo-models-remove-key = Den Schlüssel eines Anbieters entfernen
+tilo-models-remove-provider = Einen Modellanbieter entfernen
+tilo-models-add-preset = Einen vorbereiteten Anbieter hinzufügen
+tilo-models-set-enabled = Einen Anbieter Agenten anbieten oder nicht mehr
+tilo-models-refresh-models = Einen Anbieter nach seinen Modellen fragen
+tilo-models-add-model = Ein Modell hinzufügen, das ein Anbieter nirgends auflistet
+tilo-models-set-default = Das Modell für die Arbeit wählen
+tilo-models-set-assignment = Das Modell für eine Art von Arbeit wählen
+tilo-models-set-assignments = Ein Modell für mehrere Arten von Arbeit wählen
+tilo-models-set-reasoning = Wählen, wie gründlich die Modelle eines Anbieters nachdenken
+tilo-models-begin-sign-in = Die Anmeldung bei einem Anbieter beginnen
+tilo-models-wait-sign-in = Auf die Anmeldung bei einem Anbieter warten
+tilo-models-cancel-sign-in = Nicht mehr auf die Anmeldung bei einem Anbieter warten
+tilo-models-search-hub-models = Hugging Face nach Modellen für diesen Computer durchsuchen
+tilo-models-show-hub-model = Ein Hugging-Face-Modell für diesen Computer beschreiben
+tilo-models-install-hub-model = Ein Hugging-Face-Modell auf diesen Computer laden
+tilo-models-link-this-computer = Den Arbeitsbereich mit dem Modell dieses Computers betreiben
+tilo-models-ask = Das Modell des Arbeitsbereichs fragen

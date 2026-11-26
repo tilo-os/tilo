@@ -10,12 +10,12 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+use crate::models::SetKey;
 use agent_provider_config::protocol::{
     Content, ErrorKind, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason,
     StreamEvent, ToolCall, Usage,
 };
 use agent_provider_config::{AgentModel, ModelDescriptor, ProviderProfile, ProviderProtocol};
-use tilo_actions::remote::model_providers::SetKey;
 use tilo_lock::MutexRecover as _;
 
 use super::{Events, Interaction, ModelProvider, ProviderCall, ProviderFuture};

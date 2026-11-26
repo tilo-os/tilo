@@ -33,7 +33,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{ActionAddress, CatalogueRow, RemoteActionTarget, model_providers, person_accounts};
+use super::{ActionAddress, CatalogueRow, MODELS_PROVIDER, RemoteActionTarget, person_accounts};
 
 /// The provider that answers the person's vault under.
 pub const PROVIDER: &str = "tilo.vault";
@@ -874,15 +874,8 @@ pub fn use_rows() -> Vec<CatalogueRow> {
             ],
         ),
         use_row(
-            (
-                model_providers::PROVIDER,
-                model_providers::RESOURCE,
-                "Model providers",
-            ),
-            (
-                model_providers::SET_KEY_FROM_ITEM,
-                "Keep provider key from vault",
-            ),
+            (MODELS_PROVIDER, "models", "Model providers"),
+            ("set-key-from-item", "Keep provider key from vault"),
             format!(
                 "Keep the API key of one of your person's model providers from a key their \
                  vault keeps. You never hold the key. To get it, call the vault's `ask` with \
@@ -1955,7 +1948,13 @@ mod tests {
         }
         assert!(use_of(&target(LIST)).is_none());
         assert!(use_of(&person_accounts::target(person_accounts::ADD_MAIL)).is_none());
-        assert!(use_of(&model_providers::target(model_providers::SET_KEY)).is_none());
+        assert!(
+            use_of(&RemoteActionTarget {
+                provider: MODELS_PROVIDER.to_owned(),
+                address: ActionAddress::new("models", "set-key"),
+            })
+            .is_none()
+        );
 
         // A review of a use shows the reference withheld, as it shows a secret.
         let mail = use_of(&person_accounts::target(

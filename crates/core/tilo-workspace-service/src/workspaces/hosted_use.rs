@@ -67,6 +67,7 @@
 
 use std::path::Path;
 
+use crate::models::{self as model_providers, SetKeyFromItem};
 use accounts::vault_items::{self, Allowance, ItemId, Place, UsedFor, VaultItems};
 use serde_json::{Map, Value, json};
 use tilo_action_policy::{ActionKind, Answer, Context, Grantee, Party, TreePath, WorkspacePolicy};
@@ -74,7 +75,6 @@ use tilo_actions::remote::ActionCallError::{self, InvalidRequest, NotPermitted, 
 #[cfg(feature = "agents")]
 use tilo_actions::remote::CatalogueRow;
 use tilo_actions::remote::asked::{AskedFacts, Fact};
-use tilo_actions::remote::model_providers::{self, SetKeyFromItem};
 use tilo_actions::remote::person_accounts::{self, AddMailWithItem};
 #[cfg(feature = "agents")]
 use tilo_actions::remote::person_vault::FillPage;

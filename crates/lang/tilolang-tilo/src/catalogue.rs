@@ -947,6 +947,7 @@ impl Reader<'_> {
             own.to_owned(),
             (
                 NamedType {
+                    tag: None,
                     name: own.to_owned(),
                     doc: if surface.label == own {
                         String::new()

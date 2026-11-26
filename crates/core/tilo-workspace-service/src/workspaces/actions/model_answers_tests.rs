@@ -16,9 +16,10 @@ use agent_provider_config::protocol::{Content, Message, ModelRequest, Role, Tool
 use serde_json::{Value, json};
 use test_http::Responder;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, ReceiptStatus, RemoteActionTarget,
-    model_providers, person_vault,
+    ActionCallError, ActionProvider as _, Caller, ReceiptStatus, RemoteActionTarget, person_vault,
 };
+
+use crate::models as model_providers;
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 

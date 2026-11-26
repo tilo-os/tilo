@@ -435,7 +435,10 @@ impl Schema {
     pub fn of_app(app: &str, surface: &Surface) -> Self {
         let mut schema = Self::from_surface(surface);
         for verb in &mut schema.verbs {
-            if let Some(declared) = surface.verbs.iter().find(|declared| declared.id == verb.name)
+            if let Some(declared) = surface
+                .verbs
+                .iter()
+                .find(|declared| declared.id == verb.name)
             {
                 verb.declared.insert(
                     app.to_owned(),
@@ -570,6 +573,7 @@ fn held_records(surface: &Surface) -> Vec<(String, String)> {
 fn own_type(surface: &Surface) -> NamedType {
     let by_title = surface.verbs.iter().any(|verb| verb.id == CREATE_ACTION);
     NamedType {
+        tag: None,
         name: surface.kind.clone(),
         doc: String::new(),
         fields: surface

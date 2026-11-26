@@ -10,7 +10,7 @@
 //! links it once into each workspace it keeps, filling only what the workspace has not chosen
 //! itself. Afterwards a new choice in the pane follows into the workspaces that still run on
 //! this computer's last one. And a person who wants their computer's choice in a workspace that
-//! chose another says so ([`tilo_actions::remote::model_providers::LINK_THIS_COMPUTER`]).
+//! chose another says so ([`crate::models::LINK_THIS_COMPUTER`]).
 //!
 //! Only a provider that is asked without a key is linked: a computer keeps no provider keys, and a
 //! sign-in made on it stays on it. A choice of anything else is left where it is.

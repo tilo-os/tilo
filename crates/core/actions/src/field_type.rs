@@ -221,6 +221,11 @@ pub struct NamedType {
     pub fields: Vec<TypeField>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cases: Vec<TypeCase>,
+    /// For an enum whose cases carry fields: the key its case's name is written under, beside
+    /// the fields (`{"state": "done", "provider": …}`). Without one, a case with fields is
+    /// written as an object of its one key, the case's name, holding its fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
 }
 
 impl NamedType {
@@ -301,6 +306,14 @@ impl TypeSet {
             *slot = body;
         }
         FieldType::Named(unique)
+    }
+
+    /// Write the enum `ty` names with its case's name under `tag`, beside the case's fields.
+    pub fn tag(&mut self, ty: &FieldType, tag: &str) {
+        let FieldType::Named(name) = ty else { return };
+        if let Some((_, declared)) = self.declared.iter_mut().find(|(_, ty)| ty.name == *name) {
+            declared.tag = Some(tag.to_owned());
+        }
     }
 
     /// The type declared as `name`, when one is.

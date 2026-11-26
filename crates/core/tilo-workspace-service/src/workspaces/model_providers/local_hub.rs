@@ -8,10 +8,10 @@
 
 use std::path::Path;
 
+use crate::models::ModelsAction;
 use agent_provider_config::{EndpointLocation, ProviderConfig, ProviderProfile};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use tilo_actions::remote::model_providers::{InstallHubModel, SearchHubModels, ShowHubModel};
 
 use super::super::person_settings::{ProviderKeys, provider_config};
 
@@ -20,43 +20,45 @@ const RPC_VERSION: u16 = 1;
 /// The manager's framing: a big-endian `u32` length, then JSON.
 const RPC_FRAMING: wire_frame::Framing = wire_frame::Framing::big_endian(1024 * 1024);
 
-/// One request the workspace's models provider sends this computer's model manager.
-pub(super) enum Wanted {
-    Search(SearchHubModels),
-    Show(ShowHubModel),
-    Install(InstallHubModel),
-}
-
-impl Wanted {
-    /// The request's body, with the workspace's sign-in when it keeps one.
-    fn body(self, token: Option<&str>) -> Value {
-        let mut action = Map::new();
-        match self {
-            Self::Search(asked) => {
-                action.insert("verb".into(), "hub_search".into());
-                action.insert("query".into(), asked.query.into());
-                action.insert(
-                    "format".into(),
-                    asked.format.unwrap_or_else(|| "gguf".into()).into(),
-                );
-            }
-            Self::Show(asked) => {
-                action.insert("verb".into(), "hub_model".into());
-                action.insert("reference".into(), asked.model.into());
-            }
-            Self::Install(asked) => {
-                action.insert("verb".into(), "hub_install".into());
-                action.insert("repo".into(), asked.repo.into());
-                action.insert("revision".into(), asked.revision.into());
-                action.insert("variant".into(), asked.variant.into());
-                action.insert("accept_license".into(), asked.accept_license.into());
-            }
+/// The request's body for the Hugging Face action `wanted` (a search, a model's description
+/// or a download), with the workspace's sign-in when it keeps one.
+fn body(wanted: ModelsAction, token: Option<&str>) -> Value {
+    let mut action = Map::new();
+    match wanted {
+        ModelsAction::SearchHubModels { query, format } => {
+            action.insert("verb".into(), "hub_search".into());
+            action.insert("query".into(), query.into());
+            action.insert(
+                "format".into(),
+                format.unwrap_or_else(|| "gguf".into()).into(),
+            );
         }
-        if let Some(token) = token {
-            action.insert("token".into(), token.into());
+        ModelsAction::ShowHubModel { model } => {
+            action.insert("verb".into(), "hub_model".into());
+            action.insert("reference".into(), model.into());
         }
-        json!({ "version": RPC_VERSION, "action": action })
+        ModelsAction::InstallHubModel {
+            repo,
+            revision,
+            variant,
+            accept_license,
+        } => {
+            action.insert("verb".into(), "hub_install".into());
+            action.insert("repo".into(), repo.into());
+            action.insert("revision".into(), revision.into());
+            action.insert("variant".into(), variant.into());
+            action.insert(
+                "accept_license".into(),
+                accept_license.unwrap_or_default().into(),
+            );
+        }
+        // The providers send the manager only these three.
+        _ => {}
     }
+    if let Some(token) = token {
+        action.insert("token".into(), token.into());
+    }
+    json!({ "version": RPC_VERSION, "action": action })
 }
 
 /// The manager's answer.
@@ -72,7 +74,7 @@ struct Answer {
 /// Send `wanted` to this login's model manager with the workspace's local model provider key.
 pub(super) async fn ask(
     (keys, root): (ProviderKeys<'_>, &Path),
-    wanted: Wanted,
+    wanted: ModelsAction,
 ) -> Result<Value, String> {
     ask_at(
         (keys, root),
@@ -87,10 +89,10 @@ pub(super) async fn ask(
 pub(super) async fn ask_at(
     (keys, root): (ProviderKeys<'_>, &Path),
     socket: &Path,
-    wanted: Wanted,
+    wanted: ModelsAction,
 ) -> Result<Value, String> {
     let token = key_of(keys, root).await?;
-    let body = wanted.body(token.as_deref().map(String::as_str));
+    let body = body(wanted, token.as_deref().map(String::as_str));
     send_at(socket, &body).await
 }
 

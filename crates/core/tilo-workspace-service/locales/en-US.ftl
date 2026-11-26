@@ -152,3 +152,27 @@ tilo-servers-floor-set-floor-key = Set the floor key
 tilo-servers-floor-request-floor-advance = Ask to raise the floor
 tilo-servers-floor-approve-floor-advance = Approve raising the floor
 tilo-servers-floor-refuse-floor-advance = Refuse raising the floor
+
+# A workspace's model providers, kept by the host that keeps the workspace.
+tilo-models-list = List model providers
+tilo-models-add-provider = Add a model provider
+tilo-models-set-key = Keep a provider's key
+tilo-models-set-key-from-item = Keep a provider's key from the vault
+tilo-models-remove-key = Remove a provider's key
+tilo-models-remove-provider = Remove a model provider
+tilo-models-add-preset = Add a ready-made provider
+tilo-models-set-enabled = Offer a provider to agents, or stop
+tilo-models-refresh-models = Ask a provider for its models
+tilo-models-add-model = Add a model a provider lists nowhere
+tilo-models-set-default = Choose the model work runs on
+tilo-models-set-assignment = Choose the model one kind of work runs on
+tilo-models-set-assignments = Choose one model for several kinds of work
+tilo-models-set-reasoning = Choose how hard a provider's models think
+tilo-models-begin-sign-in = Begin signing in to a provider
+tilo-models-wait-sign-in = Wait for a provider sign-in
+tilo-models-cancel-sign-in = Stop waiting for a provider sign-in
+tilo-models-search-hub-models = Search Hugging Face for models this computer runs
+tilo-models-show-hub-model = Describe a Hugging Face model this computer runs
+tilo-models-install-hub-model = Download a Hugging Face model to this computer
+tilo-models-link-this-computer = Run the workspace on this computer's model
+tilo-models-ask = Ask the workspace's model

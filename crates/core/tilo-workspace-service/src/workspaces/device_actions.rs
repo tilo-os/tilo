@@ -10,7 +10,7 @@
 //! dispatch — the same one that answers its apps and engines — and answers with
 //! what it produced. And a workspace's governance
 //! actions (inviting someone, listing and cancelling invitations) and the
-//! models its work runs on ([`tilo_actions::remote::model_providers`]) are
+//! models its work runs on ([`crate::models`]) are
 //! decided as the workspace's governance decides them for the asking device's
 //! certificate, and so are the host's own operations (`account/…`: the person's
 //! workspace list, making and deleting workspaces) for a device that asks them
@@ -889,7 +889,7 @@ pub(crate) const APP_CONNECTION_PROVIDERS: [&str; 2] = [
 
 fn hosted(provider: &str) -> bool {
     provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
-        || provider == tilo_actions::remote::model_providers::PROVIDER
+        || provider == tilo_actions::remote::MODELS_PROVIDER
 }
 
 impl ActionProvider for Answers {

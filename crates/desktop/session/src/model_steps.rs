@@ -1,5 +1,5 @@
 //! The models a workspace's work runs on, answered by this session's broker for the person at
-//! this device ([`tilo_actions::remote::model_providers`]).
+//! this device ([`tilo_workspace_service::models`]).
 //!
 //! A workspace keeps its model providers and the model each kind of its work runs on itself,
 //! wherever it is held: a host keeps them for a page, and a person's computer keeps them for
@@ -18,122 +18,25 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 use tilo_actions::remote::admitted::top_level;
-use tilo_actions::remote::{
-    Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending, model_providers,
-};
+use tilo_actions::remote::{Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending};
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionFailure, ActionOutput, ActionState,
     ExecutionLocus, InputSpec, OperationKind,
 };
 use tilo_broker_core::BrokerActor;
 use tilo_desktop_model::WorkspaceId;
+use tilo_resource::Effect as _;
+use tilo_workspace_service::models::{self as model_providers, ModelsAction};
 
 use crate::workspace_view::WorkspaceView;
 
-/// Each step, with what it is called and whether it only reads.
-const STEPS: [(&str, &str, bool); 21] = [
-    (
-        model_providers::LIST,
-        "List the workspace's model providers",
-        true,
-    ),
-    (model_providers::ADD_PROVIDER, "Add a model provider", false),
-    (
-        model_providers::ADD_PRESET,
-        "Add a known model provider",
-        false,
-    ),
-    (
-        model_providers::SET_ENABLED,
-        "Offer a model provider to agents, or stop",
-        false,
-    ),
-    (
-        model_providers::SET_KEY,
-        "Keep a model provider's key",
-        false,
-    ),
-    (
-        model_providers::SET_KEY_FROM_ITEM,
-        "Use a key the vault keeps for a provider",
-        false,
-    ),
-    (
-        model_providers::REMOVE_KEY,
-        "Forget a provider's key",
-        false,
-    ),
-    (
-        model_providers::REMOVE_PROVIDER,
-        "Remove a model provider",
-        false,
-    ),
-    (
-        model_providers::REFRESH_MODELS,
-        "Read a provider's models again",
-        false,
-    ),
-    (
-        model_providers::ADD_MODEL,
-        "Add a model to a provider",
-        false,
-    ),
-    (
-        model_providers::SET_DEFAULT,
-        "Choose the workspace's model",
-        false,
-    ),
-    (
-        model_providers::SET_ASSIGNMENT,
-        "Choose the model for a kind of work",
-        false,
-    ),
-    (
-        model_providers::SET_ASSIGNMENTS,
-        "Choose the models for each kind of work",
-        false,
-    ),
-    (
-        model_providers::SET_REASONING,
-        "Choose how long a model thinks",
-        false,
-    ),
-    (
-        model_providers::LINK_THIS_COMPUTER,
-        "Run the workspace on this computer's model",
-        false,
-    ),
-    (
-        model_providers::BEGIN_SIGN_IN,
-        "Sign in to a model provider",
-        false,
-    ),
-    (
-        model_providers::WAIT_SIGN_IN,
-        "Wait for a sign-in to a model provider",
-        true,
-    ),
-    (
-        model_providers::CANCEL_SIGN_IN,
-        "Stop signing in to a model provider",
-        false,
-    ),
-    (
-        model_providers::SEARCH_HUB_MODELS,
-        "Search Hugging Face for a model this computer runs",
-        true,
-    ),
-    (
-        model_providers::SHOW_HUB_MODEL,
-        "Describe a Hugging Face model this computer runs",
-        true,
-    ),
-    (
-        model_providers::INSTALL_HUB_MODEL,
-        "Download a Hugging Face model to this computer",
-        false,
-    ),
-];
+/// The steps the holder answers for this device: each action the providers declare but a turn
+/// of the model, which a window asks of the workspace's host itself.
+fn steps() -> impl Iterator<Item = tilo_resource::EffectDecl> {
+    ModelsAction::declarations()
+        .into_iter()
+        .filter(|decl| decl.id != model_providers::ASK)
+}
 
 /// The workspace's models, answered by its holder for the person at this device.
 pub(crate) struct ModelSteps {
@@ -148,9 +51,9 @@ impl ModelSteps {
     }
 }
 
-/// The step `action`, described for the broker's catalogue.
-fn descriptor((action, label, reads): (&str, &str, bool)) -> ActionDescriptor {
-    let (kind, contract) = if reads {
+/// The step `decl` declares, described for the broker's catalogue.
+fn descriptor(decl: tilo_resource::EffectDecl) -> ActionDescriptor {
+    let (kind, contract) = if decl.action_kind == tilo_actions::ActionKind::Read {
         (OperationKind::View, ActionContract::view())
     } else {
         (OperationKind::Effect, ActionContract::default())
@@ -159,10 +62,10 @@ fn descriptor((action, label, reads): (&str, &str, bool)) -> ActionDescriptor {
         did: None,
         state: ActionState::default(),
         semantic_identity: None,
-        address: ActionAddress::new(model_providers::RESOURCE, action),
+        address: ActionAddress::new(model_providers::RESOURCE, decl.id),
         resource_kind: model_providers::RESOURCE.into(),
         resource_label: "Agent models".into(),
-        action_label: label.into(),
+        action_label: decl.label.read(),
         keywords: Vec::new(),
         icon: None,
         description: None,
@@ -206,7 +109,7 @@ impl tilo_actions::remote::Admits for ModelSteps {
     const APP: &'static str = settings_sections::APP_ID;
 
     fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
-        top_level(STEPS.into_iter().map(descriptor).collect())
+        top_level(steps().map(descriptor).collect())
     }
 
     /// Carry out an invocation the device's dispatch admitted for `caller`.
@@ -216,9 +119,9 @@ impl tilo_actions::remote::Admits for ModelSteps {
         request: &InvokeRequest,
         _admitted: &Admitted,
     ) -> Result<Pending<Outcome>, String> {
-        let (action, _, _) = STEPS
-            .into_iter()
-            .find(|(action, _, _)| {
+        let action = steps()
+            .map(|decl| decl.id)
+            .find(|action| {
                 request.target.address.resource == model_providers::RESOURCE
                     && request.target.address.action == *action
             })

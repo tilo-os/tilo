@@ -46,6 +46,8 @@
 use std::future::Future;
 use std::sync::{Arc, Mutex, OnceLock};
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::models as model_providers;
 use serde_json::{Map, Value, json};
 use tilo_action_policy::roles::{self, governance};
 use tilo_action_policy::{Answer, EntryPolicy, ListingPolicy};
@@ -56,9 +58,9 @@ use tilo_actions::remote::{
     WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE,
     WORKSPACE_INVITATIONS, WORKSPACE_INVITE, WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED,
     WORKSPACE_MEMBERS, WORKSPACE_READ_GRANT, WORKSPACE_READ_REVOKE, WORKSPACE_REGISTRIES,
-    WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, formats, mcp_server, model_providers,
-    person_accounts, person_connections, person_telling, person_vault, server_account,
-    workspace_app, workspace_app_named, workspace_governance_address, workspace_governance_child,
+    WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, formats, mcp_server, person_accounts,
+    person_connections, person_telling, person_vault, server_account, workspace_app,
+    workspace_app_named, workspace_governance_address, workspace_governance_child,
     workspace_governance_operation, workspace_governance_resource, workspace_member,
     workspace_person,
 };
@@ -1279,49 +1281,84 @@ impl Verb {
     }
 
     fn row(&self, publisher: Publisher, resource: &str, label: &str) -> CatalogueRow {
-        let params = (self.params)();
-        CatalogueRow {
-            offered: None,
-            provider: publisher.provider.into(),
-            app_id: publisher.provider.into(),
-            parent_resource: String::new(),
-            resource: CatalogueResource {
-                id: resource.into(),
-                kind: publisher.kind.into(),
-                label: label.into(),
-                presentation: None,
-            },
-            action: Some(ActionDescriptor {
-                did: None,
-                state: tilo_actions::ActionState::default(),
-                semantic_identity: None,
-                address: ActionAddress::new(resource, self.id),
-                resource_kind: publisher.kind.into(),
-                resource_label: label.into(),
-                action_label: self.label.into(),
-                keywords: Vec::new(),
-                icon: None,
-                description: None,
-                locus: ExecutionLocus::ServerPreferred,
-                kind: OperationKind::Effect,
-                contract: ActionContract {
-                    kind: self.kind,
-                    risk: if self.kind == ActionKind::Read {
-                        RiskLevel::None
-                    } else {
-                        RiskLevel::Privileged
-                    },
-                    tags: tags_of(self.id),
-                    ..ActionContract::default()
+        action_row(
+            publisher,
+            (resource, label),
+            (self.id, self.label, self.kind),
+            (self.params)(),
+        )
+    }
+}
+
+/// A provider's [`tilo_resource::Effect`] declaration as the catalogue row a [`Verb`] is, so a
+/// provider the workspace answers lists its actions as it declares them rather than from a table.
+#[cfg(not(target_arch = "wasm32"))]
+trait DeclaredRow {
+    /// The row of this action of the workspace's own, at `resource`, labelled `label`.
+    fn row(&self, resource: &str, label: &str) -> CatalogueRow;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl DeclaredRow for tilo_resource::EffectDecl {
+    fn row(&self, resource: &str, label: &str) -> CatalogueRow {
+        action_row(
+            GOVERNANCE,
+            (resource, label),
+            (self.id, &self.label.read(), self.action_kind),
+            self.params.clone(),
+        )
+    }
+}
+
+/// The catalogue row of the action `id`, labelled `action_label`, of kind `kind`, taking
+/// `params`, published by `publisher` at `resource`, a resource labelled `label`.
+fn action_row(
+    publisher: Publisher,
+    (resource, label): (&str, &str),
+    (id, action_label, kind): (&str, &str, ActionKind),
+    params: Vec<ActionParam>,
+) -> CatalogueRow {
+    CatalogueRow {
+        offered: None,
+        provider: publisher.provider.into(),
+        app_id: publisher.provider.into(),
+        parent_resource: String::new(),
+        resource: CatalogueResource {
+            id: resource.into(),
+            kind: publisher.kind.into(),
+            label: label.into(),
+            presentation: None,
+        },
+        action: Some(ActionDescriptor {
+            did: None,
+            state: tilo_actions::ActionState::default(),
+            semantic_identity: None,
+            address: ActionAddress::new(resource, id),
+            resource_kind: publisher.kind.into(),
+            resource_label: label.into(),
+            action_label: action_label.into(),
+            keywords: Vec::new(),
+            icon: None,
+            description: None,
+            locus: ExecutionLocus::ServerPreferred,
+            kind: OperationKind::Effect,
+            contract: ActionContract {
+                kind: kind,
+                risk: if kind == ActionKind::Read {
+                    RiskLevel::None
+                } else {
+                    RiskLevel::Privileged
                 },
-                input: InputSpec::None,
-                params,
-                view: None,
-            }),
-            has_children: false,
-            visibility: None,
-            surface: None,
-        }
+                tags: tags_of(id),
+                ..ActionContract::default()
+            },
+            input: InputSpec::None,
+            params,
+            view: None,
+        }),
+        has_children: false,
+        visibility: None,
+        surface: None,
     }
 }
 
@@ -4557,7 +4594,7 @@ const PROVIDERS: [&str; 10] = [
     // The person's own mail accounts and model providers: a page asks here
     // because it has no mail connection and no vault of its own.
     person_accounts::PROVIDER,
-    model_providers::PROVIDER,
+    tilo_actions::remote::MODELS_PROVIDER,
     // What the person keeps to sign in with, in the same vault.
     person_vault::PROVIDER,
     // What the person calls important, and what may interrupt them.

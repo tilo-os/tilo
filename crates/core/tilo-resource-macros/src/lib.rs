@@ -81,6 +81,20 @@ pub fn committed_surface(_input: TokenStream) -> TokenStream {
     .into()
 }
 
+/// A provider's actions as a Rust caller calls them, from the compiled surface its provider
+/// publishes: `bindings!(provider = "tilo.environment", surface = "../ush/environment.json")`,
+/// the surface's path from the calling crate's manifest. See `bindings.rs`.
+#[proc_macro]
+pub fn bindings(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as bindings::Input);
+    match bindings::expand(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+mod bindings;
+
 /// What `tilo_resource::word!` expands to: the word `key` of the catalogue
 /// beside the crate being built, named through `krate`, the path that crate
 /// reaches `tilo_resource` by, its placeables filled with the arguments the

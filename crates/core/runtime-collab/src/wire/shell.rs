@@ -375,14 +375,14 @@ pub const SHELL_PROVIDERS: &str = "session.";
 /// machines it plans, and the workspace's events and its assistant's look-round, which read the shortcuts this session saves.
 pub const SEAT_PROVIDERS: &[(&str, &str)] = {
     use tilo_actions::remote::{
-        machines, model_providers, server_account, settings_resources, workspace_activity,
+        MODELS_PROVIDER, machines, server_account, settings_resources, workspace_activity,
         workspace_events, workspace_initiative,
     };
     const SETTINGS: &str = "so.tilo.settings";
     &[
         (workspace_activity::PROVIDER, workspace_activity::APP_ID),
         (machines::PROVIDER, "so.tilo.imager"),
-        (model_providers::PROVIDER, SETTINGS),
+        (MODELS_PROVIDER, SETTINGS),
         (server_account::PROVIDER, SETTINGS),
         (settings_resources::PROVIDER, SETTINGS),
         (workspace_events::PROVIDER, workspace_events::PROVIDER),

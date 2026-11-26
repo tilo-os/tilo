@@ -10,6 +10,14 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 
+/// The workspace's model providers, as the service that keeps them publishes their actions.
+mod model_providers {
+    tilo_resource::bindings!(
+        provider = "tilo.models",
+        surface = "../../core/tilo-workspace-service/models-surface.json"
+    );
+}
+
 /// An action host that admits every ask and keeps what it admitted.
 #[derive(Default)]
 pub struct Host {
@@ -258,15 +266,15 @@ pub fn a_window_asks_the_shell_for_the_persons_connect_setup_or_pairing_link() {
 /// devices serving nothing changes nothing.
 #[test]
 pub fn workspace_accounts_and_models_reach_the_workspace_host_with_no_device() {
-    use tilo_actions::remote::{model_providers, person_accounts, server_account};
+    use tilo_actions::remote::{person_accounts, server_account};
 
     let (session, _openings) = super::serve("workspace", Arc::default());
     let person = Caller::local_person("ada").in_workspace("workspace");
     let server = Arc::new(Host::default());
     session.serve_workspace_api(server.clone());
     for target in [
-        model_providers::target(model_providers::LIST),
-        model_providers::target(model_providers::ADD_PRESET),
+        model_providers::models::list(),
+        model_providers::models::add_preset(),
         person_accounts::target(person_accounts::WATCH),
         server_account::target(server_account::ACCOUNT),
     ] {

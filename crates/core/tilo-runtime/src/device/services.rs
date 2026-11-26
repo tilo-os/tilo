@@ -3364,7 +3364,7 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
             )
             .serving(&[super::mcp_server::SERVER], Arc::clone(&mcp_server))
             .serving(
-                &[tilo_actions::remote::model_providers::RESOURCE],
+                &[tilo_workspace_service::models::RESOURCE],
                 Arc::clone(&models),
             )
             .serving_prefix("vault.item:", Arc::clone(&vault_codes))

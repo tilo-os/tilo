@@ -533,6 +533,7 @@ mod surface_tests {
 
     fn record(name: &str, doc: &str, fields: &[(&str, FieldType, &str)]) -> NamedType {
         NamedType {
+            tag: None,
             name: name.to_owned(),
             doc: doc.to_owned(),
             fields: fields
@@ -550,6 +551,7 @@ mod surface_tests {
     /// The kind of service an account is, one case per value the reading serialises.
     fn account_kind() -> NamedType {
         NamedType {
+            tag: None,
             name: "AccountKind".to_owned(),
             doc: "The kind of service an account is.".to_owned(),
             fields: Vec::new(),
@@ -572,6 +574,7 @@ mod surface_tests {
     /// How an account's last sync went, one case per value the reading serialises.
     fn account_status() -> NamedType {
         NamedType {
+            tag: None,
             name: "AccountStatus".to_owned(),
             doc: "How an account's last sync went, as its row says.".to_owned(),
             fields: Vec::new(),
