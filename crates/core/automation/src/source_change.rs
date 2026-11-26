@@ -610,8 +610,8 @@ mod tests {
             Value::Object(told(WEB_FEED, &found)),
             json!({
                 "kind": "tilo.web.feed",
-                "at": "ada@example.com",
-                "item": "ada@example.com:7:4",
+                "at": "https://example.org/feed.xml",
+                "item": "entry-1",
                 "found_ms": 1_800_000_000_000_i64,
                 "facts": {"from": "bo@example.com"},
             })

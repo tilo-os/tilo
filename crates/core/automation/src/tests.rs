@@ -522,7 +522,7 @@ fn run_approved(host: &FakeHost, shortcut: &Shortcut) -> InvocationReport {
         InvocationRequest {
             shortcut,
             invocation: AutomationInvocationId::new(),
-            caller: caller(),
+            caller: caller().running_shortcut(shortcut.id.clone()),
             mode: InvocationMode::Interactive,
             trigger: InvocationTrigger::Manual,
             inputs: serde_json::Map::new(),
@@ -563,7 +563,9 @@ fn run_chained(
         InvocationRequest {
             shortcut,
             invocation: invocation_id,
-            caller: caller(),
+            // A run hands its host the caller a Shortcut's steps come as, as the runner that
+            // keeps it in a workspace does.
+            caller: caller().running_shortcut(shortcut.id.clone()),
             mode,
             trigger: InvocationTrigger::Manual,
             inputs: serde_json::Map::new(),
