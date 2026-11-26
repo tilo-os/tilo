@@ -425,7 +425,6 @@ fn start_user_manager() -> UserManager {
         .expect("the account's session bus starts");
     let manager = UserManager { bus };
     let deadline = Instant::now() + Duration::from_secs(240);
-    let mut said = String::new();
     loop {
         // Each ask is bounded: a manager that takes a message and never answers one would
         // otherwise leave this waiting with no deadline of its own.
@@ -438,7 +437,7 @@ fn start_user_manager() -> UserManager {
                 "is-system-running",
             ])
             .output_locked();
-        said = state.as_ref().map_or_else(
+        let said = state.as_ref().map_or_else(
             |error| error.to_string(),
             |state| {
                 format!(
@@ -448,12 +447,12 @@ fn start_user_manager() -> UserManager {
                 )
             },
         );
-        if let Ok(state) = &state {
-            if state.status.success() || String::from_utf8_lossy(&state.stdout).trim() == "degraded"
-            {
-                eprintln!("approved checks: the account's user manager answers: {said}");
-                return manager;
-            }
+        if let Ok(state) = &state
+            && (state.status.success()
+                || String::from_utf8_lossy(&state.stdout).trim() == "degraded")
+        {
+            eprintln!("approved checks: the account's user manager answers: {said}");
+            return manager;
         }
         // A message to the manager's name is what the bus starts it for; systemctl reaches a
         // manager already running, so the first request asks it into being.
