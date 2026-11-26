@@ -4,14 +4,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ui::LocalState;
-use ui::icons::Icon;
+use tilo_ui_base::LocalState;
+use tilo_ui_base::icons::Icon;
 use ui::widget::toggle_group::Segment;
-use ui::widget::{
-    Actions, Banner, Button, ButtonRole, Element, EmptyState, Field, Form, FormPage, FormSection,
-    ListRow, NavItem, NavList, NavSection, Section, SectionHeader, TextInput, TextInputKind,
-    ToggleGroup,
-};
+use ui::{widget::Actions, widget::Banner, widget::Button, widget::ButtonRole, widget::EmptyState, widget::Field, widget::Form, widget::FormPage, widget::FormSection, widget::ListRow, widget::NavItem, widget::NavList, widget::NavSection, widget::Section, widget::SectionHeader, widget::TextInput, widget::TextInputKind, widget::ToggleGroup};
+use tilo_ui_base::widget::Element;
 
 use crate::actions::RemoteEffect;
 use crate::app::Action;

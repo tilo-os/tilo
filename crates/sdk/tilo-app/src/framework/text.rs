@@ -3,9 +3,8 @@
 use tilo_resource::text::splice_between;
 use tilo_resource::{Doc, Model, Path, PlainText, Resource, Segment, TextEdit};
 use ui_core::automerge::{ObjId, ReadDoc as _};
-use ui_core::widget::{
-    AppModel, Autocomplete, CodeEditor, Decorator, EventCtx, ModelPath, TextInput, Widget,
-};
+use ui_core::{widget::Autocomplete, widget::CodeEditor, widget::TextInput};
+use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::EventCtx, widget::ModelPath, widget::Widget};
 use ui_core::winit::event::WindowEvent;
 
 use super::dispatch::Dispatcher;
@@ -86,7 +85,7 @@ type Locate = Box<dyn Fn(&Doc) -> Option<ObjId>>;
 type Splice<R> = Box<
     dyn Fn(
         &Dispatcher<R>,
-        &mut ui_core::widget::Edits<'_>,
+        &mut tilo_ui_base::widget::Edits<'_>,
         TextEdit,
     ) -> Result<(), tilo_actions::ActionError>,
 >;
@@ -192,7 +191,7 @@ pub(crate) fn bound_field(input: TextInput, path: Vec<Segment>) -> TextInput {
     });
     let presence = path
         .iter()
-        .map(|segment| ui_core::presence::PathSegment::Field(segment.to_string()))
+        .map(|segment| tilo_ui_base::presence::PathSegment::Field(segment.to_string()))
         .collect();
     let input = input
         .with_presence_path(presence)
@@ -249,7 +248,7 @@ impl<W: EditsText, R: Resource> TextControl<W, R> {
 
     /// Submit the control's edit since the last call as one splice: for a
     /// host outside the widget tree, after it handed the control an event.
-    pub fn submit(&mut self, edits: &mut ui_core::widget::Edits<'_>) {
+    pub fn submit(&mut self, edits: &mut tilo_ui_base::widget::Edits<'_>) {
         let Some(edited) = self.control.take_edited() else {
             return;
         };
@@ -302,7 +301,7 @@ impl<W: EditsText + 'static, R: Resource> Decorator for TextControl<W, R> {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         {
-            let (doc, _) = ui_core::doc::document_ref(state, path);
+            let (doc, _) = tilo_ui_base::doc::document_ref(state, path);
             self.follow(doc);
         }
         self.control.sync(state, path);
@@ -316,9 +315,9 @@ impl<W: EditsText + 'static, R: Resource> Decorator for TextControl<W, R> {
 
     fn perform_action(
         &mut self,
-        action: &ui_core::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        state: &mut ui_core::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let handled = self.control.perform_action(action, key_path, state, path);
@@ -329,8 +328,8 @@ impl<W: EditsText + 'static, R: Resource> Decorator for TextControl<W, R> {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &ui_core::a11y::Action,
-        state: &mut ui_core::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let handled = self

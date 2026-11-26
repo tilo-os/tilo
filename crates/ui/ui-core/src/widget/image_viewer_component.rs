@@ -1,11 +1,11 @@
 //! [`ImageViewer`] as a described component: a picture to pan and zoom.
 
-use crate::component::{Component, Described};
+use tilo_ui_base::{component::Component, component::Described};
 use crate::pictures::{Pictures, Shown};
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 use super::{ImageViewer, PictureSource};
-use crate::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 
 /// A picture to look at closely: scroll to zoom at the pointer, drag to pan, and a reset to
 /// the whole picture.
@@ -71,7 +71,7 @@ impl ZoomableImage {
     /// Put the view's zoom on the viewer, once the picture is here.
     fn apply_zoom(&mut self) {
         if let (Some(viewer), Some(zoom)) = (&mut self.viewer, self.zoom) {
-            viewer.set_zoom(crate::num::f32_of_f64(zoom));
+            viewer.set_zoom(tilo_ui_base::num::f32_of_f64(zoom));
         }
     }
 
@@ -111,14 +111,14 @@ impl Widget for ZoomableImage {
         Some(self)
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
         self.take_picture();
         if let Some(viewer) = &mut self.viewer {
             viewer.sync(state, path);
         }
     }
 
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
         let arrived = self.take_picture();
         let forwarded = self
             .viewer
@@ -139,7 +139,7 @@ impl Widget for ZoomableImage {
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
-        theme: &crate::theme::Theme,
+        theme: &tilo_ui_base::theme::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         // One leaf of its own, whether or not the picture is here: the viewer paints into the
@@ -147,7 +147,7 @@ impl Widget for ZoomableImage {
         // scrolling page whose height is its content's, never resolves). The box takes the
         // width it is given and stands at its aspect until the picture's shape is known.
         let _ = theme;
-        use crate::widget::TaffyTreeExt;
+        use tilo_ui_base::widget::TaffyTreeExt;
         let aspect = self.aspect.unwrap_or(4.0 / 3.0);
         taffy.widget_leaf(
             taffy::Style {
@@ -157,7 +157,7 @@ impl Widget for ZoomableImage {
                 },
                 // A box with no shape still stands at 4:3, so a leaf that is not yet sized
                 // does not collapse to nothing.
-                aspect_ratio: Some(crate::num::f32_of_f64(aspect)),
+                aspect_ratio: Some(tilo_ui_base::num::f32_of_f64(aspect)),
                 flex_shrink: 0.0,
                 ..taffy::Style::default()
             },
@@ -172,13 +172,13 @@ impl Widget for ZoomableImage {
         node: taffy::NodeId,
         origin: crate::kurbo::Point,
     ) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if let Some(viewer) = &mut self.viewer {
             viewer.apply_layout(taffy, node, origin);
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -193,7 +193,7 @@ impl Widget for ZoomableImage {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         if let Some(viewer) = &mut self.viewer {
             viewer.handle_event(event, ctx);
@@ -208,7 +208,7 @@ impl Widget for ZoomableImage {
         "ImageViewer"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.viewer.as_ref().and_then(Widget::accessibility)
     }
 }
@@ -275,8 +275,8 @@ mod tests {
             "data:image/png;base64,{}",
             base64::engine::general_purpose::STANDARD.encode(&png)
         );
-        let fetch: crate::image_store::Fetcher = std::sync::Arc::new(move |_| Some(png.clone()));
-        let pictures = Pictures::new(crate::ImageStore::new(&fetch));
+        let fetch: tilo_ui_base::image_store::Fetcher = std::sync::Arc::new(move |_| Some(png.clone()));
+        let pictures = Pictures::new(tilo_ui_base::ImageStore::new(&fetch));
         let props = ImageViewerProps {
             image: PictureSource { src },
             alt: None,

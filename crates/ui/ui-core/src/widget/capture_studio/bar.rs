@@ -40,13 +40,13 @@ pub(super) struct BarMetrics {
 
 impl Default for BarMetrics {
     fn default() -> Self {
-        let spacing = crate::tokens::Spacing::BASE;
-        let metrics = crate::tokens::Metrics::BASE;
+        let spacing = tilo_ui_base::tokens::Spacing::BASE;
+        let metrics = tilo_ui_base::tokens::Metrics::BASE;
         Self {
             pad: f64::from(spacing.s2),
             gap: f64::from(spacing.s4),
             margin: f64::from(spacing.s6),
-            radius: f64::from(crate::tokens::Radii::default().panel),
+            radius: f64::from(tilo_ui_base::tokens::Radii::default().panel),
             strip_h: 56.0,
             output_w: 96.0,
             target_w: 80.0,
@@ -60,11 +60,11 @@ impl Default for BarMetrics {
 }
 
 pub(super) fn studio_text(key: &str) -> String {
-    crate::i18n::widget_format(key, &[])
+    tilo_ui_base::i18n::widget_format(key, &[])
 }
 
 pub(super) fn skipped_sentence(skipped: u64) -> String {
-    crate::i18n::widget_format("widget-recording-skipped", &[("count", skipped.into())])
+    tilo_ui_base::i18n::widget_format("widget-recording-skipped", &[("count", skipped.into())])
 }
 
 pub(super) fn failed_sentence(reason: &str, kept: bool) -> String {
@@ -73,7 +73,7 @@ pub(super) fn failed_sentence(reason: &str, kept: bool) -> String {
     } else {
         "widget-recording-not-saved"
     };
-    crate::i18n::widget_format(key, &[("reason", reason.into())])
+    tilo_ui_base::i18n::widget_format(key, &[("reason", reason.into())])
 }
 
 pub(super) fn output_key(mode: CaptureMode) -> &'static str {
@@ -137,7 +137,7 @@ pub(super) fn delay_choice(seconds: u8) -> String {
     if seconds == 0 {
         studio_text("widget-capture-delay-none")
     } else {
-        crate::i18n::widget_format(
+        tilo_ui_base::i18n::widget_format(
             "widget-capture-delay-choice",
             &[("seconds", i64::from(seconds).into())],
         )
@@ -153,7 +153,7 @@ pub(super) fn layout_key(layout: PipLayout) -> &'static str {
 }
 
 pub(super) fn ui_count(n: usize) -> f64 {
-    crate::num::f64_of_usize(n)
+    tilo_ui_base::num::f64_of_usize(n)
 }
 
 impl CaptureStudio {
@@ -537,14 +537,14 @@ impl CaptureStudio {
             );
             // Two separate choices with the shutter between them, set off
             // by a rule on each side: what comes out, then what it is of.
-            let ground = crate::chrome::panel_ground(theme);
+            let ground = tilo_ui_base::chrome::panel_ground(theme);
             let inset = f64::from(theme.tokens.spacing.s2);
             for (left, right) in [
                 (BarItem::Output(OUTPUTS.len() - 1), BarItem::Shutter),
                 (BarItem::Shutter, BarItem::Target(0)),
             ] {
                 let x = (self.bar_item(left).x1 + self.bar_item(right).x0) / 2.0;
-                crate::surface::vertical_separator(
+                tilo_ui_base::surface::vertical_separator(
                     scene, transform, x, bar.y0, bar.y1, inset, ground,
                 );
             }
@@ -568,7 +568,7 @@ impl CaptureStudio {
                             );
                             left.as_secs_f64().ceil().max(1.0).to_string()
                         }
-                        None => crate::format::timecode(self.recording_elapsed().as_secs()),
+                        None => tilo_ui_base::format::timecode(self.recording_elapsed().as_secs()),
                     };
                     let style = on.text(TextRole::Label);
                     let (w, h) = tr.measure_style(&text, None, &style);
@@ -603,7 +603,7 @@ impl CaptureStudio {
                     // that lost frames says so without a word.
                     let ink = on.tokens.colors.semantic.warning;
                     let glyph = f64::from(on.tokens.spacing.s4);
-                    let text = crate::format::count(self.recording_skipped);
+                    let text = tilo_ui_base::format::count(self.recording_skipped);
                     let style = on.text(TextRole::Label);
                     let (w, h) = tr.measure_style(&text, None, &style);
                     let w = f64::from(w);

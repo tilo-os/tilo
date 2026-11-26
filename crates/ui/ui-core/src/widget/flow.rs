@@ -4,12 +4,12 @@
 //! replays a stable subtree as one append.
 
 #[cfg(feature = "model")]
-use crate::permissions::PermissionScope;
-use crate::presence::PathSegment;
-use crate::theme::Theme;
-use crate::tokens::Rhythm;
-use crate::widget::DrawChild;
-use crate::widget::Widget;
+use tilo_ui_base::permissions::PermissionScope;
+use tilo_ui_base::presence::PathSegment;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::Rhythm;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::Widget;
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -37,14 +37,14 @@ pub(super) struct Flow {
     cache_rect: Rect,
     cache_theme: Option<Box<DrawnTheme>>,
     cache_permissions: u64,
-    /// The cache holds a write's mark on text ([`crate::presence::PresenceCtx::shows_writes`]).
+    /// The cache holds a write's mark on text ([`tilo_ui_base::presence::PresenceCtx::shows_writes`]).
     cache_writes: bool,
     /// What writes were held when the cache was drawn
-    /// ([`crate::presence::PresenceCtx::written_generation`]).
+    /// ([`tilo_ui_base::presence::PresenceCtx::written_generation`]).
     cache_written: u64,
     /// The input generation the cache was painted at
-    /// ([`crate::input_generation`]), and whether that drawing read state
-    /// outside the widgets that made it ([`crate::outside_paint`]): such a
+    /// ([`tilo_ui_base::input_generation`]), and whether that drawing read state
+    /// outside the widgets that made it ([`tilo_ui_base::outside_paint`]): such a
     /// drawing paints other pixels once input has been handed to the tree,
     /// with nothing in the tree marking it, so only that cache is stale on
     /// input. One that read nothing outside keeps across it.
@@ -56,7 +56,7 @@ pub(super) struct Flow {
     cache_present: bool,
     descendant_caches_released: bool,
     cache_carries_material: bool,
-    cache_parts: Option<crate::scene_parts::SectionParts>,
+    cache_parts: Option<tilo_ui_base::scene_parts::SectionParts>,
     cache_shows_secret: bool,
     pub style_dirty: bool,
     pub vertical: bool,
@@ -64,8 +64,8 @@ pub(super) struct Flow {
     pub content_sized: bool,
     drawn_shifted: bool,
     /// Bands its view stopped building, drawn leaving (a column only).
-    ghosts: super::Ghosts,
-    motion: crate::tokens::EffectiveMotion,
+    ghosts: tilo_ui_base::widget::Ghosts,
+    motion: tilo_ui_base::tokens::EffectiveMotion,
     stacked: bool,
     reach: f64,
     extents: Vec<(f64, f64)>,
@@ -83,8 +83,8 @@ pub(super) struct Flow {
 
 #[derive(Debug, PartialEq)]
 struct DrawnTheme {
-    colors: crate::tokens::Colors,
-    radii: crate::tokens::Radii,
+    colors: tilo_ui_base::tokens::Colors,
+    radii: tilo_ui_base::tokens::Radii,
     reduce_transparency: bool,
 }
 
@@ -137,8 +137,8 @@ impl Flow {
             laid_gap: 0.0,
             content_sized: false,
             drawn_shifted: false,
-            ghosts: super::Ghosts::default(),
-            motion: crate::tokens::EffectiveMotion::default(),
+            ghosts: tilo_ui_base::widget::Ghosts::default(),
+            motion: tilo_ui_base::tokens::EffectiveMotion::default(),
             stacked: false,
             reach: 0.0,
             extents: Vec::new(),
@@ -156,7 +156,7 @@ impl Flow {
             return None;
         }
         let gap = self.laid_gap;
-        let shifts = super::follower_shifts(self.children.iter().map(|child| &**child), |_| gap);
+        let shifts = tilo_ui_base::widget::follower_shifts(self.children.iter().map(|child| &**child), |_| gap);
         self.ghosts.shift(shifts, self.children.len())
     }
 
@@ -171,13 +171,13 @@ impl Flow {
 
     /// While a band moves in a content-sized column, how much taller the column is drawn
     /// than laid out.
-    pub fn disclosing(&self) -> Option<super::Disclosing> {
+    pub fn disclosing(&self) -> Option<tilo_ui_base::widget::Disclosing> {
         if !self.content_sized {
             return None;
         }
         let shifts = self.follower_shifts()?;
         let gap = self.laid_gap;
-        Some(super::Disclosing::of_column(
+        Some(tilo_ui_base::widget::Disclosing::of_column(
             &shifts,
             self.children.iter().map(|child| &**child),
             |_| gap,
@@ -246,7 +246,7 @@ impl Flow {
     pub fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         #[cfg(test)]
         let _probe = crate::frame_probe::span("flow.apply");
-        (self.rect, self.paint_rect) = super::layout::flow_rects(taffy, node, origin);
+        (self.rect, self.paint_rect) = tilo_ui_base::widget::layout::flow_rects(taffy, node, origin);
         if self.place_again(taffy) {
             return;
         }
@@ -256,8 +256,8 @@ impl Flow {
         }
         if self.vertical {
             let gap = self.laid_gap;
-            let content = super::content_box(taffy, node, self.rect);
-            super::place_bands(&mut self.children, content, |_| gap);
+            let content = tilo_ui_base::widget::content_box(taffy, node, self.rect);
+            tilo_ui_base::widget::place_bands(&mut self.children, content, |_| gap);
             self.ghosts
                 .find("Column", &mut self.children, content, |_| gap, self.motion);
         }
@@ -285,18 +285,18 @@ impl Flow {
                 .fold(0.0, f64::max);
         }
         self.placed = None;
-        self.near_placed = self.children_near(super::layout_clip());
+        self.near_placed = self.children_near(tilo_ui_base::widget::layout_clip());
     }
 
     /// Place again only the children near the view, when the layout they
-    /// were last placed from is unchanged ([`super::placing_again`]) and
+    /// were last placed from is unchanged ([`tilo_ui_base::widget::placing_again`]) and
     /// only the column moved: a scroll, a glide. The children that were
     /// near the view before are placed once more, so the copy and the
     /// pointer find them where they now stand, and so is any child asking
     /// for a layout of its own (a row whose paint grew). Returns whether it
     /// did; otherwise every child is placed.
     fn place_again(&mut self, taffy: &TaffyTree<()>) -> bool {
-        if !super::placing_again(taffy)
+        if !tilo_ui_base::widget::placing_again(taffy)
             || !self.stacked
             || self.disclosing_any
             || !self.ghosts.is_empty()
@@ -305,7 +305,7 @@ impl Flow {
         {
             return false;
         }
-        let clip = super::layout_clip();
+        let clip = tilo_ui_base::widget::layout_clip();
         let mut near = self.children_near(clip);
         let before = std::mem::replace(&mut self.near_placed, 0..0);
         let asking: Vec<usize> = (0..self.children.len())
@@ -407,7 +407,7 @@ impl Flow {
         let Some(placed) = &self.placed else {
             return all;
         };
-        if !super::layout::at_a_place(event)
+        if !tilo_ui_base::widget::layout::at_a_place(event)
             || self
                 .children
                 .iter()
@@ -419,7 +419,7 @@ impl Flow {
     }
 
     /// Draw the children through the subtree cache.
-    pub fn draw_cached(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
+    pub fn draw_cached(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) -> bool {
         #[allow(
             unused_variables,
             unused_mut,
@@ -429,7 +429,7 @@ impl Flow {
         if env.should_cull(self.paint_rect) {
             return false;
         }
-        if self.draw_near_view(&mut crate::draw::DrawCtx::new(
+        if self.draw_near_view(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -460,14 +460,14 @@ impl Flow {
             .cache_theme
             .as_deref()
             .is_none_or(|drawn| !drawn.is(theme));
-        let tracked = crate::scene_parts::is_tracked(scene);
+        let tracked = tilo_ui_base::scene_parts::is_tracked(scene);
         let permissions_moved = self.cache_permissions != env.paint_permissions;
         // A write's mark arrives on the text it landed in and then rests or goes: while one
         // changes, on the frame after, and once one comes or goes, the drawing is made again.
         let writes = env.marks_changing;
         let written = env.marks_generation;
         let input_moved =
-            self.cache_outside && self.cache_input != crate::input_generation::generation();
+            self.cache_outside && self.cache_input != tilo_ui_base::input_generation::generation();
         let needs_rebuild = !self.cache_present
             || size_changed
             || theme_changed
@@ -486,14 +486,14 @@ impl Flow {
         if needs_rebuild
             && self.ghosts.is_empty()
             && self.follower_shifts().is_none()
-            && crate::draw_cull::culls_into(scene)
+            && tilo_ui_base::draw_cull::culls_into(scene)
         {
             self.cache_present = false;
             self.descendant_caches_released = false;
             self.drawn_shifted = false;
-            let enclosing = crate::outside_paint::begin();
+            let enclosing = tilo_ui_base::outside_paint::begin();
             for (index, child) in self.children.iter_mut().enumerate() {
-                super::draw_child_at(
+                tilo_ui_base::widget::draw_child_at(
                     child.as_mut(),
                     Some(index),
                     scene,
@@ -503,7 +503,7 @@ impl Flow {
                     &env,
                 );
             }
-            crate::outside_paint::end(enclosing);
+            tilo_ui_base::outside_paint::end(enclosing);
             return true;
         }
         if needs_rebuild {
@@ -522,8 +522,8 @@ impl Flow {
             let prev_vp = env.viewport.take();
             let mut local = std::mem::take(&mut self.subtree_cache);
             local.reset();
-            crate::part_paint::backdrop::nest_scene(&local);
-            let secrets = crate::secret_paint::SecretPaint::begin();
+            tilo_ui_base::part_paint::backdrop::nest_scene(&local);
+            let secrets = tilo_ui_base::secret_paint::SecretPaint::begin();
             self.ghosts.retain_drawn();
             let shifts = self.follower_shifts();
             self.drawn_shifted = shifts.is_some();
@@ -545,14 +545,14 @@ impl Flow {
                         .and_then(|shifts| shifts.get(index).copied())
                         .unwrap_or(0.0);
                     let child_transform = Affine::translate((0.0, dy));
-                    let begun = crate::scene_parts::begin_widget(
+                    let begun = tilo_ui_base::scene_parts::begin_widget(
                         local,
                         child.as_ref(),
                         Some(index),
                         child_transform,
                     );
                     child.draw_child(local, child_transform, text_renderer, theme, &env);
-                    crate::scene_parts::end_widget(local, begun);
+                    tilo_ui_base::scene_parts::end_widget(local, begun);
                 }
                 ghosts.draw(local, Affine::IDENTITY, shifts.as_deref());
                 if clip.is_some() {
@@ -563,22 +563,22 @@ impl Flow {
             // drawn into this cache would otherwise vanish from it.
             // The cache lands on screen through `transform`; a scroller
             // drawn into it offers copies in screen space.
-            let enclosing = crate::outside_paint::begin();
-            self.cache_parts = crate::scroll_copy::drawing_into_cache(transform, || {
+            let enclosing = tilo_ui_base::outside_paint::begin();
+            self.cache_parts = tilo_ui_base::scroll_copy::drawing_into_cache(transform, || {
                 if tracked {
-                    crate::scene_parts::record(&mut local, draw_children).1
+                    tilo_ui_base::scene_parts::record(&mut local, draw_children).1
                 } else {
                     draw_children(&mut local);
                     None
                 }
             });
-            self.cache_outside = crate::outside_paint::end(enclosing);
+            self.cache_outside = tilo_ui_base::outside_paint::end(enclosing);
             self.cache_shows_secret = secrets.finish();
-            self.cache_carries_material = crate::scene_parts::append_with(
+            self.cache_carries_material = tilo_ui_base::scene_parts::append_with(
                 scene,
                 self.cache_parts.as_ref(),
                 Some(transform),
-                |scene| crate::part_paint::backdrop::append_nested(scene, &local, transform),
+                |scene| tilo_ui_base::part_paint::backdrop::append_nested(scene, &local, transform),
             ) > 0;
             self.subtree_cache = local;
             self.cache_rect = self.rect;
@@ -588,7 +588,7 @@ impl Flow {
             self.cache_permissions = env.paint_permissions;
             self.cache_writes = writes;
             self.cache_written = written;
-            self.cache_input = crate::input_generation::generation();
+            self.cache_input = tilo_ui_base::input_generation::generation();
             self.updated = false;
             self.cache_present = true;
             self.descendant_caches_released = false;
@@ -603,17 +603,17 @@ impl Flow {
                 reason = "Affine composition is float matrix math and cannot panic"
             )]
             let cache_transform = transform * Affine::translate((dx, dy));
-            crate::scene_parts::append(
+            tilo_ui_base::scene_parts::append(
                 scene,
                 &self.subtree_cache,
                 self.cache_parts.as_ref(),
                 Some(cache_transform),
             );
             if self.cache_shows_secret {
-                crate::secret_paint::note_secret_painted();
+                tilo_ui_base::secret_paint::note_secret_painted();
             }
             if self.cache_outside {
-                crate::outside_paint::note();
+                tilo_ui_base::outside_paint::note();
             }
             if !self.descendant_caches_released {
                 for child in &mut self.children {
@@ -629,10 +629,10 @@ impl Flow {
     /// near the view, each as it draws itself, instead of a cache of all of
     /// them: a frame costs what is shown, not what the column holds. A
     /// child whose pixels the frame keeps where they were, or moves by a
-    /// copy, is not drawn at all ([`crate::draw_cull`]). Returns whether it
+    /// copy, is not drawn at all ([`tilo_ui_base::draw_cull`]). Returns whether it
     /// drew so; a column shown whole, or with a band moving, draws through
     /// the cache.
-    fn draw_near_view(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
+    fn draw_near_view(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) -> bool {
         #[allow(
             unused_variables,
             unused_mut,
@@ -668,11 +668,11 @@ impl Flow {
             if !updated
                 && !child.needs_redraw()
                 && !child.needs_animation_frame()
-                && crate::draw_cull::kept(scene, transform, child.paint_bounds())
+                && tilo_ui_base::draw_cull::kept(scene, transform, child.paint_bounds())
             {
                 continue;
             }
-            super::draw_child_at(
+            tilo_ui_base::widget::draw_child_at(
                 child.as_mut(),
                 Some(first + offset),
                 scene,
@@ -710,7 +710,7 @@ fn paint_reach(child: &dyn Widget) -> f64 {
 macro_rules! flow_builders {
     () => {
         #[must_use]
-        pub fn push(mut self, child: Box<dyn $crate::widget::Widget>) -> Self {
+        pub fn push(mut self, child: Box<dyn $tilo_ui_base::widget::Widget>) -> Self {
             self.flow.children.push(child);
             self
         }
@@ -723,12 +723,12 @@ macro_rules! flow_builders {
         }
 
         /// Take ownership of the child list for identity-preserving reconcile.
-        pub fn take_children(&mut self) -> Vec<Box<dyn $crate::widget::Widget>> {
+        pub fn take_children(&mut self) -> Vec<Box<dyn $tilo_ui_base::widget::Widget>> {
             self.flow.take_children()
         }
 
         /// Replace the child list after a graph reconcile pass.
-        pub fn set_children(&mut self, children: Vec<Box<dyn $crate::widget::Widget>>) {
+        pub fn set_children(&mut self, children: Vec<Box<dyn $tilo_ui_base::widget::Widget>>) {
             self.flow.set_children(children);
         }
 
@@ -737,7 +737,7 @@ macro_rules! flow_builders {
         /// `Sibling` for items of equal weight, `Section` between sections, `Group` between
         /// groups of sections.
         #[must_use]
-        pub fn with_rhythm(mut self, rhythm: $crate::tokens::Rhythm) -> Self {
+        pub fn with_rhythm(mut self, rhythm: $tilo_ui_base::tokens::Rhythm) -> Self {
             self.flow.rhythm = Some(rhythm);
             self.flow.gap_override = None;
             self
@@ -748,8 +748,8 @@ macro_rules! flow_builders {
         #[must_use]
         pub fn with_padding_rhythm(
             mut self,
-            horizontal: impl Into<Option<$crate::tokens::Rhythm>>,
-            vertical: impl Into<Option<$crate::tokens::Rhythm>>,
+            horizontal: impl Into<Option<$tilo_ui_base::tokens::Rhythm>>,
+            vertical: impl Into<Option<$tilo_ui_base::tokens::Rhythm>>,
         ) -> Self {
             self.flow.padding_rhythm = Some((horizontal.into(), vertical.into()));
             self
@@ -757,7 +757,7 @@ macro_rules! flow_builders {
 
         /// Opt this layout into presence tracking by binding it to a CRDT-style path.
         #[must_use]
-        pub fn with_presence(mut self, path: Vec<$crate::presence::PathSegment>) -> Self {
+        pub fn with_presence(mut self, path: Vec<$tilo_ui_base::presence::PathSegment>) -> Self {
             self.flow.presence_path = path;
             self
         }
@@ -765,7 +765,7 @@ macro_rules! flow_builders {
         /// Check this layout behind a permission scope.
         #[must_use]
         #[cfg(feature = "model")]
-        pub fn with_permission_scope(mut self, scope: crate::permissions::PermissionScope) -> Self {
+        pub fn with_permission_scope(mut self, scope: tilo_ui_base::permissions::PermissionScope) -> Self {
             self.flow.permission_scope = Some(scope);
             self
         }
@@ -778,8 +778,8 @@ macro_rules! flow_widget_methods {
 
         fn update(
             &mut self,
-            state: &$crate::widget::AppModel,
-            path: &$crate::widget::ModelPath,
+            state: &$tilo_ui_base::widget::AppModel,
+            path: &$tilo_ui_base::widget::ModelPath,
         ) -> bool {
             let mut changed = false;
             for child in &mut self.flow.children {
@@ -798,18 +798,18 @@ macro_rules! flow_widget_methods {
             self.flow.apply_layout(taffy, node, origin);
         }
 
-        fn draw(&mut self, ctx: &mut $crate::draw::DrawCtx<'_>) {
+        fn draw(&mut self, ctx: &mut $tilo_ui_base::draw::DrawCtx<'_>) {
             let (scene, transform, text_renderer, theme, env) = ctx.parts();
-            if self.flow.draw_cached(&mut $crate::draw::DrawCtx::new(
+            if self.flow.draw_cached(&mut $tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text_renderer,
                 theme,
                 env.clone(),
             )) {
-                $crate::widget::draw_over(
+                $tilo_ui_base::widget::draw_over(
                     self,
-                    &mut $crate::draw::DrawCtx::new(
+                    &mut $tilo_ui_base::draw::DrawCtx::new(
                         scene,
                         transform,
                         text_renderer,
@@ -823,12 +823,12 @@ macro_rules! flow_widget_methods {
         fn handle_event(
             &mut self,
             event: &winit::event::WindowEvent,
-            ctx: &mut $crate::widget::EventCtx<'_>,
+            ctx: &mut $tilo_ui_base::widget::EventCtx<'_>,
         ) {
             let shifts = self.flow.follower_shifts();
             let reached = self.flow.children_reached(event);
             if reached.len() == self.flow.children.len() {
-                $crate::widget::route_to_shifted_children(
+                $tilo_ui_base::widget::route_to_shifted_children(
                     &mut self.flow.children,
                     &self.flow.child_nodes,
                     shifts.as_deref(),
@@ -841,7 +841,7 @@ macro_rules! flow_widget_methods {
             ) {
                 // Only the children near the view stand where they are
                 // drawn; none is moving (`Flow::children_reached`).
-                $crate::widget::route_to_children(children, nodes, event, ctx);
+                $tilo_ui_base::widget::route_to_children(children, nodes, event, ctx);
             }
         }
 
@@ -859,7 +859,7 @@ macro_rules! flow_widget_methods {
 
         fn needs_animation_frame(&self) -> bool {
             self.flow.has_ghosts()
-                || $crate::widget::defaults::needs_animation_frame(&|visit| {
+                || $tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| {
                     self.for_each_child(visit)
                 })
         }
@@ -868,7 +868,7 @@ macro_rules! flow_widget_methods {
             self.flow.children.iter().any(|c| c.is_layout_dirty())
         }
 
-        fn children(&self) -> Vec<&dyn $crate::widget::Widget> {
+        fn children(&self) -> Vec<&dyn $tilo_ui_base::widget::Widget> {
             self.flow
                 .children
                 .iter()
@@ -876,24 +876,24 @@ macro_rules! flow_widget_methods {
                 .collect()
         }
 
-        fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn $crate::widget::Widget)) {
+        fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn $tilo_ui_base::widget::Widget)) {
             for child in &self.flow.children {
                 visitor(child.as_ref());
             }
         }
 
-        fn for_each_child_in_clip(&self, visitor: &mut dyn FnMut(&dyn $crate::widget::Widget)) {
-            let near = self.flow.children_placed_near($crate::widget::layout_clip());
+        fn for_each_child_in_clip(&self, visitor: &mut dyn FnMut(&dyn $tilo_ui_base::widget::Widget)) {
+            let near = self.flow.children_placed_near($tilo_ui_base::widget::layout_clip());
             for child in self.flow.children.get(near).unwrap_or_default() {
                 visitor(child.as_ref());
             }
         }
 
-        fn children_mut(&mut self) -> Vec<&mut (dyn $crate::widget::Widget + '_)> {
+        fn children_mut(&mut self) -> Vec<&mut (dyn $tilo_ui_base::widget::Widget + '_)> {
             self.flow
                 .children
                 .iter_mut()
-                .map(|c| c.as_mut() as &mut (dyn $crate::widget::Widget + '_))
+                .map(|c| c.as_mut() as &mut (dyn $tilo_ui_base::widget::Widget + '_))
                 .collect()
         }
 
@@ -903,11 +903,11 @@ macro_rules! flow_widget_methods {
             }
         }
 
-        fn take_structure_change(&mut self) -> $crate::widget::StructureChange {
+        fn take_structure_change(&mut self) -> $tilo_ui_base::widget::StructureChange {
             let mut change = if std::mem::take(&mut self.flow.style_dirty) {
-                $crate::widget::StructureChange::Rebuild
+                $tilo_ui_base::widget::StructureChange::Rebuild
             } else {
-                $crate::widget::StructureChange::None
+                $tilo_ui_base::widget::StructureChange::None
             };
             for child in &mut self.flow.children {
                 change = change.join(child.take_structure_change());
@@ -949,15 +949,15 @@ pub(super) use flow_widget_methods;
 
 macro_rules! flow_capabilities {
     ($ty:ty) => {
-        impl $crate::presence::capability::PublishesPresence for $ty {
-            fn presence_key(&self) -> Option<$crate::presence::PresenceKey> {
-                $crate::presence::PresenceKey::widget(&self.flow.presence_path)
+        impl $tilo_ui_base::presence::capability::PublishesPresence for $ty {
+            fn presence_key(&self) -> Option<$tilo_ui_base::presence::PresenceKey> {
+                $tilo_ui_base::presence::PresenceKey::widget(&self.flow.presence_path)
             }
         }
 
         #[cfg(feature = "model")]
-        impl $crate::widget::permission::PermissionGuarded for $ty {
-            fn permission_scope(&self) -> Option<crate::permissions::PermissionScope> {
+        impl $tilo_ui_base::widget::permission::PermissionGuarded for $ty {
+            fn permission_scope(&self) -> Option<tilo_ui_base::permissions::PermissionScope> {
                 self.flow.permission_scope.clone()
             }
         }

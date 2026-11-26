@@ -30,7 +30,7 @@ mod server;
 mod support;
 
 use server::Server;
-use ui::widget::Widget as _;
+use tilo_ui_base::widget::Widget as _;
 
 #[test]
 fn a_fresh_phone_lists_its_workspaces_apps() {

@@ -142,7 +142,7 @@ impl App {
         // Only ActionEmitter controls consume this address projection. Semantic,
         // document and legacy controls still use their normal invocation APIs.
         // Recheck presence: widget-local changes can add/remove emitters.
-        if !crate::widget::controls::has_action_control_bindings(self.root_widget.as_ref()) {
+        if !tilo_ui_base::widget::controls::has_action_control_bindings(self.root_widget.as_ref()) {
             // A replacement emitter must not inherit a prior refresh stamp.
             self.actions.last_control_availability = None;
             return;
@@ -152,7 +152,7 @@ impl App {
         #[cfg(not(feature = "model"))]
         {
             let _ = history_api;
-            crate::widget::controls::refresh_control_action_availability(
+            tilo_ui_base::widget::controls::refresh_control_action_availability(
                 self.root_widget.as_mut(),
                 &std::collections::HashSet::new(),
             );
@@ -190,7 +190,7 @@ impl App {
         allowed.insert(crate::widget::search_request::search_address());
         // So is the window's History API, wherever History serves it.
         allowed.extend(history_api);
-        crate::widget::controls::refresh_control_action_availability(
+        tilo_ui_base::widget::controls::refresh_control_action_availability(
             self.root_widget.as_mut(),
             &allowed,
         );

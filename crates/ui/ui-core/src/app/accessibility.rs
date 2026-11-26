@@ -3,9 +3,9 @@
 use crate::state::StateHistory as _;
 
 impl App {
-    fn configured_screen_reader() -> crate::screen_reader::ScreenReader {
-        let mut reader = crate::screen_reader::ScreenReader::new();
-        reader.configure(&crate::screen_reader::settings());
+    fn configured_screen_reader() -> tilo_ui_base::screen_reader::ScreenReader {
+        let mut reader = tilo_ui_base::screen_reader::ScreenReader::new();
+        reader.configure(&tilo_ui_base::screen_reader::settings());
         reader
     }
 
@@ -18,9 +18,9 @@ impl App {
             return false;
         };
         match request {
-            crate::a11y::AccessibilityRequest::TextScale(factor) => self.set_text_scale(factor),
-            crate::a11y::AccessibilityRequest::HighContrast(on) => self.set_high_contrast(on),
-            crate::a11y::AccessibilityRequest::ScreenReader(on) => {
+            tilo_ui_base::a11y::AccessibilityRequest::TextScale(factor) => self.set_text_scale(factor),
+            tilo_ui_base::a11y::AccessibilityRequest::HighContrast(on) => self.set_high_contrast(on),
+            tilo_ui_base::a11y::AccessibilityRequest::ScreenReader(on) => {
                 self.set_screen_reader_enabled(on);
             }
         }
@@ -57,7 +57,7 @@ impl App {
     /// shells and deterministic tests; normal apps do not need to call it.
     pub fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         let _entry = self.enter_wake_scope();
         if self.input.interaction == environment {
@@ -81,13 +81,13 @@ impl App {
         }
     }
 
-    pub fn interaction_environment(&self) -> crate::interaction::InteractionEnvironment {
+    pub fn interaction_environment(&self) -> tilo_ui_base::interaction::InteractionEnvironment {
         self.input.interaction
     }
 
     /// Override platform HIG conventions for a native shell or deterministic
     /// cross-platform test. Ordinary apps use the host default.
-    pub fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+    pub fn set_platform_conventions(&mut self, conventions: tilo_ui_base::platform::PlatformConventions) {
         let _entry = self.enter_wake_scope();
         if self.input.platform == conventions {
             return;
@@ -100,7 +100,7 @@ impl App {
         self.layout.request_rebuild();
     }
 
-    pub fn platform_conventions(&self) -> crate::platform::PlatformConventions {
+    pub fn platform_conventions(&self) -> tilo_ui_base::platform::PlatformConventions {
         self.input.platform
     }
 
@@ -186,7 +186,7 @@ impl App {
     /// sign-in comforts.
     pub fn apply_screen_reader_settings(
         &mut self,
-        settings: &crate::screen_reader::ScreenReaderSettings,
+        settings: &tilo_ui_base::screen_reader::ScreenReaderSettings,
     ) {
         self.set_screen_reader_enabled(settings.enabled);
         if let Some(reader) = self.accessibility.screen_reader.as_mut() {
@@ -209,7 +209,7 @@ impl App {
     /// Feed a key event to the screen reader chord. `true` when it toggled
     /// the screen reader, which then consumes the event.
     fn handle_screen_reader_chord(&mut self, event: &WindowEvent) -> bool {
-        use crate::screen_reader_chord::{ChordEvent, ChordKey, ChordModifiers};
+        use tilo_ui_base::{screen_reader_chord::ChordEvent, screen_reader_chord::ChordKey, screen_reader_chord::ChordModifiers};
         match event {
             WindowEvent::Focused(false) => {
                 // Releases arrive at whoever has focus next.
@@ -273,7 +273,7 @@ impl App {
             // The new state first, then what has focus.
             let mut reader = Self::configured_screen_reader();
             reader.announce(
-                crate::screen_reader_chord::state_words(true),
+                tilo_ui_base::screen_reader_chord::state_words(true),
                 tts::Priority::Important,
                 true,
             );
@@ -282,7 +282,7 @@ impl App {
             self.announce_current_focus();
         } else if let Some(mut reader) = self.accessibility.screen_reader.take() {
             reader.announce(
-                crate::screen_reader_chord::state_words(false),
+                tilo_ui_base::screen_reader_chord::state_words(false),
                 tts::Priority::Important,
                 true,
             );
@@ -294,13 +294,13 @@ impl App {
         if let Some(observer) = self.accessibility.on_screen_reader_chord.as_mut() {
             observer(on);
         } else if self.watch_system_settings {
-            let origin = crate::settings_source::ChangeOrigin::local(SCREEN_READER_CHORD_ORIGIN);
+            let origin = tilo_ui_base::settings_source::ChangeOrigin::local(SCREEN_READER_CHORD_ORIGIN);
             let mut leaf = serde_json::Map::new();
             leaf.insert(
                 settings_model::accessibility::SCREEN_READER_KEY.to_owned(),
                 serde_json::Value::Bool(on),
             );
-            let saved = crate::settings_source::source()
+            let saved = tilo_ui_base::settings_source::source()
                 .ok_or_else(|| std::io::Error::other("no settings to keep it in"))
                 .and_then(|source| {
                     source.update_section_by(settings_model::accessibility::SECTION, leaf, &origin)
@@ -314,13 +314,13 @@ impl App {
     /// Installs a caller-provided reader (e.g. over a test `NullSpeaker` so
     /// headless tests can assert on spoken phrases).
     #[doc(hidden)]
-    pub fn set_screen_reader(&mut self, reader: Option<crate::screen_reader::ScreenReader>) {
+    pub fn set_screen_reader(&mut self, reader: Option<tilo_ui_base::screen_reader::ScreenReader>) {
         let _entry = self.enter_wake_scope();
         self.accessibility.screen_reader = reader;
     }
 
     #[doc(hidden)]
-    pub fn screen_reader(&self) -> Option<&crate::screen_reader::ScreenReader> {
+    pub fn screen_reader(&self) -> Option<&tilo_ui_base::screen_reader::ScreenReader> {
         self.accessibility.screen_reader.as_ref()
     }
 
@@ -379,7 +379,7 @@ impl App {
             match c.to_ascii_lowercase().as_str() {
                 "h" => {
                     self.with_screen_reader_order(|sr, order| {
-                        let is_heading = crate::screen_reader::is_heading;
+                        let is_heading = tilo_ui_base::screen_reader::is_heading;
                         if shift {
                             sr.read_prev_matching_in(order, is_heading);
                         } else {
@@ -390,7 +390,7 @@ impl App {
                 }
                 "f" => {
                     self.with_screen_reader_order(|sr, order| {
-                        let is_field = crate::screen_reader::is_form_field;
+                        let is_field = tilo_ui_base::screen_reader::is_form_field;
                         if shift {
                             sr.read_prev_matching_in(order, is_field);
                         } else {
@@ -487,21 +487,21 @@ impl App {
     }
 
     #[cfg(feature = "model")]
-    /// The decode lives on [`crate::presence::PresenceCtx`] so the
+    /// The decode lives on [`tilo_ui_base::presence::PresenceCtx`] so the
     /// compositor reads presence the same way an app does; what stays here
     /// is what only a document holder can do (follow a peer's viewport,
     /// answer a late joiner with full state).
     fn apply_remote_presence(
         &mut self,
-        member: crate::permissions::MemberId,
-        key: crate::presence::PresenceKey,
-        payload: crate::collaboration::PresencePayload,
+        member: tilo_ui_base::permissions::MemberId,
+        key: tilo_ui_base::presence::PresenceKey,
+        payload: tilo_ui_base::collaboration::PresencePayload,
     ) {
-        use crate::presence::RemotePresenceEffect;
+        use tilo_ui_base::presence::RemotePresenceEffect;
         // Keep canonical anchors intact. Resolve against each presented layout,
         // never retain an arrival-time layout id across a rebuild.
         let interaction = match &payload {
-            crate::collaboration::PresencePayload::Interaction(update) => Some((**update).clone()),
+            tilo_ui_base::collaboration::PresencePayload::Interaction(update) => Some((**update).clone()),
             _ => None,
         };
         match self
@@ -549,7 +549,7 @@ impl App {
                 self.set_focused_node(Some(id));
                 if let Some(metadata) = entry.widget_metadata {
                     let _ = self.mutate_node(id, |widget| {
-                        crate::widget::undo_points::set_state(widget, &metadata)
+                        tilo_ui_base::widget::undo_points::set_state(widget, &metadata)
                     });
                     self.focus_history.stable_metadata = Some(metadata);
                 }
@@ -607,10 +607,10 @@ impl App {
         let _probe = crate::frame_probe::span("history.nodes");
         let mut embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
         let mut local_status =
-            crate::widget::undo_access::local_undo_status(self.root_widget.as_ref());
+            tilo_ui_base::widget::undo_access::local_undo_status(self.root_widget.as_ref());
         let mut bound_statuses: Vec<(
             crate::bound_dispatch::CallbackBinding,
-            crate::widget::undo_access::UndoStatus,
+            tilo_ui_base::widget::undo_access::UndoStatus,
         )> = Vec::new();
         let mut history_exists: Option<bool> = None;
         // The nodes the sweep skips are outside any bound component: what
@@ -638,15 +638,15 @@ impl App {
             let _ = held.enter(binding.as_ref());
             // SAFETY: no target reference escapes and this layout is unchanged.
             let control = unsafe {
-                crate::widget::bound_nodes::mutate_bound_node(
+                tilo_ui_base::widget::bound_nodes::mutate_bound_node(
                     &self.bindings,
                     &self.layout.node_map,
                     node,
                     |widget| {
-                        crate::widget::capability::capability_mut::<
-                            dyn crate::widget::undo_access::UndoControl,
+                        tilo_ui_base::widget::capability::capability_mut::<
+                            dyn tilo_ui_base::widget::undo_access::UndoControl,
                         >(widget)
-                        .map(crate::widget::undo_access::UndoControl::take_undo_request)
+                        .map(tilo_ui_base::widget::undo_access::UndoControl::take_undo_request)
                     },
                 )
             }
@@ -666,10 +666,10 @@ impl App {
                 } else {
                     let author = Some(&self.local_author);
                     match request {
-                        crate::widget::undo_access::UndoRequest::Undo => {
+                        tilo_ui_base::widget::undo_access::UndoRequest::Undo => {
                             self.state.undo_as(author, None, None)
                         }
-                        crate::widget::undo_access::UndoRequest::Redo => {
+                        tilo_ui_base::widget::undo_access::UndoRequest::Redo => {
                             self.state.redo_as(author, None, None)
                         }
                     }
@@ -677,7 +677,7 @@ impl App {
                 };
                 embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
                 local_status =
-                    crate::widget::undo_access::local_undo_status(self.root_widget.as_ref());
+                    tilo_ui_base::widget::undo_access::local_undo_status(self.root_widget.as_ref());
                 bound_statuses.clear();
                 history_exists = None;
             }
@@ -704,10 +704,10 @@ impl App {
                 bound_status.clone().unwrap_or_else(|| {
                     if let Some(local) = &local_status {
                         return match local {
-                            crate::widget::undo_access::LocalUndoStatus::Ready(status) => {
+                            tilo_ui_base::widget::undo_access::LocalUndoStatus::Ready(status) => {
                                 status.clone()
                             }
-                            crate::widget::undo_access::LocalUndoStatus::Pending => {
+                            tilo_ui_base::widget::undo_access::LocalUndoStatus::Pending => {
                                 Default::default()
                             }
                         };
@@ -721,11 +721,11 @@ impl App {
             };
             // SAFETY: the same unique admitted node remains live and exclusive.
             let _ = unsafe {
-                crate::widget::bound_nodes::mutate_bound_node(
+                tilo_ui_base::widget::bound_nodes::mutate_bound_node(
                     &self.bindings,
                     &self.layout.node_map,
                     node,
-                    |widget| crate::widget::undo_access::set_undo_status(widget, &mut status),
+                    |widget| tilo_ui_base::widget::undo_access::set_undo_status(widget, &mut status),
                 )
             };
         }
@@ -763,17 +763,17 @@ impl App {
             // SAFETY: the admitted layout is unchanged and nothing escapes.
             let takes_part = self.bindings.has_owner(node)
                 || unsafe {
-                    crate::widget::bound_nodes::inspect_bound_node(
+                    tilo_ui_base::widget::bound_nodes::inspect_bound_node(
                         &self.bindings,
                         &self.layout.node_map,
                         node,
                         |widget| {
-                            crate::widget::capability::capability::<
-                                dyn crate::widget::undo_access::UndoControl,
+                            tilo_ui_base::widget::capability::capability::<
+                                dyn tilo_ui_base::widget::undo_access::UndoControl,
                             >(widget)
                             .is_some()
-                                || crate::widget::capability::capability::<
-                                    dyn crate::widget::undo_access::CommittedActions,
+                                || tilo_ui_base::widget::capability::capability::<
+                                    dyn tilo_ui_base::widget::undo_access::CommittedActions,
                                 >(widget)
                                 .is_some()
                         },
@@ -861,7 +861,7 @@ impl App {
                 .focused_node
                 .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
             self.focus_history.stable_metadata = self.focused_node.and_then(|id| {
-                self.inspect_node(id, |widget| crate::widget::undo_points::get_state(widget))
+                self.inspect_node(id, |widget| tilo_ui_base::widget::undo_points::get_state(widget))
                     .ok()
                     .flatten()
             });
@@ -1040,7 +1040,7 @@ impl App {
             .inspect_node(id, |widget| widget.accessibility())
             .ok()
             .flatten()?;
-        Some((id, crate::screen_reader::describe_state(&node)))
+        Some((id, tilo_ui_base::screen_reader::describe_state(&node)))
     }
 
     /// Only fires if focus did NOT move — a move is narrated separately by
@@ -1062,7 +1062,7 @@ impl App {
         else {
             return;
         };
-        let now = crate::screen_reader::describe_state(&node);
+        let now = tilo_ui_base::screen_reader::describe_state(&node);
         if now.is_empty() || now == pre_state {
             return;
         }
@@ -1125,7 +1125,7 @@ impl App {
         }
     }
 
-    /// Announces changed [live regions](crate::a11y::AccessNode::live)
+    /// Announces changed [live regions](tilo_ui_base::a11y::AccessNode::live)
     /// without moving focus.
     ///
     /// The regions come from the tree the window publishes — the
@@ -1140,11 +1140,11 @@ impl App {
         // A live region without an accessible name can't be tracked stably
         // across frames, so it's skipped.
         let mut regions = LiveRegionScan(Vec::new());
-        crate::a11y_walk::walk::<true, _>(&mut regions, self.root_widget.as_ref(), None, &mut ());
+        tilo_ui_base::a11y_walk::walk::<true, _>(&mut regions, self.root_widget.as_ref(), None, &mut ());
         let seen = regions.0;
 
         let mut current_keys = std::collections::HashSet::new();
-        let mut to_announce: Vec<(crate::a11y::Politeness, String)> = Vec::new();
+        let mut to_announce: Vec<(tilo_ui_base::a11y::Politeness, String)> = Vec::new();
         for LiveRegion {
             name,
             politeness,
@@ -1172,8 +1172,8 @@ impl App {
                 let (priority, interrupt) = match politeness {
                     // Assertive cuts in; polite is queued at notification
                     // priority and never interrupts in-flight speech.
-                    crate::a11y::Politeness::Assertive => (tts::Priority::Important, true),
-                    crate::a11y::Politeness::Polite => (tts::Priority::Notification, false),
+                    tilo_ui_base::a11y::Politeness::Assertive => (tts::Priority::Important, true),
+                    tilo_ui_base::a11y::Politeness::Polite => (tts::Priority::Notification, false),
                 };
                 sr.announce(text, priority, interrupt);
             }
@@ -1208,7 +1208,7 @@ impl App {
         self.place_all();
         let exported = self.bindings.exported_nodes(&self.layout.node_map);
         if self.palette_presented() {
-            return crate::accesskit_bridge::build_presentation_with_resources_bound(
+            return tilo_ui_base::accesskit_bridge::build_presentation_with_resources_bound(
                 &self.history_presentation_roots(),
                 &exported.nodes,
                 exported.focus(self.focused_node),
@@ -1219,7 +1219,7 @@ impl App {
         // The box with no menu around it is read over the app, as it is drawn.
         if self.window_box.is_drawn() && !self.presents_history() {
             let roots: [&dyn Widget; 2] = [self.root_widget.as_ref(), &self.window_box];
-            return crate::accesskit_bridge::build_presentation_with_resources_bound(
+            return tilo_ui_base::accesskit_bridge::build_presentation_with_resources_bound(
                 &roots,
                 &exported.nodes,
                 exported.focus(self.focused_node),
@@ -1234,7 +1234,7 @@ impl App {
             } else {
                 vec![]
             };
-            return crate::accesskit_bridge::build_presentation_with_resources_bound(
+            return tilo_ui_base::accesskit_bridge::build_presentation_with_resources_bound(
                 &self.history_presentation_roots(),
                 &exported.nodes,
                 exported.focus(self.focused_node),
@@ -1245,12 +1245,12 @@ impl App {
         let mut resources = self.collect_declared_resources();
         resources.extend(self.history_local_resources());
         self.with_native_presentation(|root, nodes, focused, _, _| {
-            crate::accesskit_bridge::build_tree_update_with_resources_bound(
+            tilo_ui_base::accesskit_bridge::build_tree_update_with_resources_bound(
                 root, nodes, focused, scale, &resources,
             )
         })
         .unwrap_or_else(|_| {
-            crate::accesskit_bridge::build_tree_update_with_resources_bound(
+            tilo_ui_base::accesskit_bridge::build_tree_update_with_resources_bound(
                 self.root_widget.as_ref(),
                 &self.layout.node_map,
                 self.focused_node,
@@ -1268,7 +1268,7 @@ impl App {
                 .actions
                 .iter()
                 .find(|spec| {
-                    crate::accesskit_bridge::resource_action_node_id(resource.id.as_str(), &spec.id)
+                    tilo_ui_base::accesskit_bridge::resource_action_node_id(resource.id.as_str(), &spec.id)
                         == target
                 })
                 .map(|spec| tilo_actions::ActionAddress::new(resource.id.as_str(), &spec.id))
@@ -1279,9 +1279,9 @@ impl App {
     fn dispatch_resource_a11y_action(
         &mut self,
         target: accesskit::NodeId,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
     ) -> bool {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
 
         let argument = match action {
             Action::Activate | Action::ToggleCheck => Some(None),
@@ -1355,7 +1355,7 @@ impl App {
     pub fn dispatch_a11y_action(
         &mut self,
         target: accesskit::NodeId,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
     ) -> Option<(f64, f64)> {
         self.dispatch_a11y_action_checked(target, action)
             .ok()
@@ -1371,7 +1371,7 @@ impl App {
     pub fn dispatch_a11y_action_checked(
         &mut self,
         target: accesskit::NodeId,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
     ) -> Result<Option<(f64, f64)>, String> {
         #[cfg(feature = "model")]
         let capture = self.begin_local_input_capture();
@@ -1387,10 +1387,10 @@ impl App {
     fn dispatch_local_a11y_action(
         &mut self,
         target: accesskit::NodeId,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
     ) -> Result<Option<(f64, f64)>, String> {
-        use crate::a11y::Action;
-        use crate::accesskit_bridge::A11yTarget;
+        use tilo_ui_base::a11y::Action;
+        use tilo_ui_base::accesskit_bridge::A11yTarget;
 
         let _entry = self.enter_wake_scope();
         // The target is resolved through the layout's map: widgets replaced since it was built
@@ -1423,7 +1423,7 @@ impl App {
             if self.window_box.perform_semantic_action(
                 &control,
                 action,
-                &mut crate::widget::Edits::lend(&mut self.state.doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
                 &self.state.root,
             ) {
                 self.layout.layout_dirty = true;
@@ -1473,7 +1473,7 @@ impl App {
                     palette.perform_semantic_action(
                         target,
                         action,
-                        &mut crate::widget::Edits::lend(&mut self.state.doc),
+                        &mut tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
                         &self.state.root,
                     )
                 });
@@ -1495,7 +1495,7 @@ impl App {
         // admitted, unchanged maps.
         let mut acted = matches!(action, Action::Focus)
             .then(|| unsafe {
-                crate::widget::layout::CompositionFocus::capture(
+                tilo_ui_base::widget::layout::CompositionFocus::capture(
                     Some(taffy_id),
                     &self.layout.node_map,
                     &self.bindings,
@@ -1654,9 +1654,9 @@ impl App {
             return false;
         }
         let events = [
-            crate::synthetic_input::cursor_moved(x, y),
-            crate::synthetic_input::mouse_input(ElementState::Pressed, button),
-            crate::synthetic_input::mouse_input(ElementState::Released, button),
+            tilo_ui_base::synthetic_input::cursor_moved(x, y),
+            tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, button),
+            tilo_ui_base::synthetic_input::mouse_input(ElementState::Released, button),
         ];
         let mut handled_any = false;
         for event in events {
@@ -1731,7 +1731,7 @@ impl App {
     fn semantic_tree_current(&self) -> bool {
         !self.accessibility.semantic_tree_stale
             && self.accessibility.semantic_tree_presentation
-                == crate::widget::resource_presentation_epoch()
+                == tilo_ui_base::widget::resource_presentation_epoch()
             && !self.root_widget.needs_animation_frame()
             && !self.needs_sync
             && !self.layout.layout_dirty
@@ -1797,7 +1797,7 @@ impl App {
         self.accessibility.semantic_tree_stale =
             self.semantic_tree_untracked() || self.root_widget.needs_animation_frame();
         self.accessibility.semantic_tree_presentation =
-            crate::widget::resource_presentation_epoch();
+            tilo_ui_base::widget::resource_presentation_epoch();
         #[cfg(feature = "model")]
         if let Some(palette) = self
             .actions
@@ -1956,7 +1956,7 @@ impl App {
     /// dispatch (see `Self::dispatch_encoded_semantic`).
     pub fn invoke_semantic_action(
         &mut self,
-        id: &crate::a11y::SemanticId,
+        id: &tilo_ui_base::a11y::SemanticId,
         name: &str,
         arg: Option<&str>,
     ) -> Result<bool, String> {
@@ -2020,8 +2020,8 @@ impl App {
             }
             SemanticActionKind::Verb(verb) => {
                 let verb = match verb {
-                    crate::a11y::Action::SetValue(_) => {
-                        crate::a11y::Action::SetValue(arg.unwrap_or_default().to_string())
+                    tilo_ui_base::a11y::Action::SetValue(_) => {
+                        tilo_ui_base::a11y::Action::SetValue(arg.unwrap_or_default().to_string())
                     }
                     other => other,
                 };
@@ -2041,8 +2041,8 @@ impl App {
     /// Returns `Err` when the owning widget's component refuses dispatch.
     pub(crate) fn perform_semantic_verb(
         &mut self,
-        id: &crate::a11y::SemanticId,
-        verb: crate::a11y::Action,
+        id: &tilo_ui_base::a11y::SemanticId,
+        verb: tilo_ui_base::a11y::Action,
         press_unhandled: bool,
     ) -> Result<bool, String> {
         if self.window_box.is_open()
@@ -2055,7 +2055,7 @@ impl App {
             let handled = self.window_box.perform_semantic_action(
                 &target,
                 &verb,
-                &mut crate::widget::Edits::lend(&mut self.state.doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
                 &self.state.root,
             );
             self.layout.layout_dirty |= handled;
@@ -2083,7 +2083,7 @@ impl App {
                         palette.perform_semantic_action(
                             &semantic_target,
                             &verb,
-                            &mut crate::widget::Edits::lend(&mut self.state.doc),
+                            &mut tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
                             &self.state.root,
                         )
                     });
@@ -2094,7 +2094,7 @@ impl App {
             // native accessibility. Resolve only current admissions;
             // an expired alias must never fall back to a raw layout id.
             let exported = self.bindings.exported_nodes(&self.layout.node_map);
-            let Some(crate::accesskit_bridge::A11yTarget::Widget(taffy_id)) = exported.resolve(
+            let Some(tilo_ui_base::accesskit_bridge::A11yTarget::Widget(taffy_id)) = exported.resolve(
                 self.root_widget.as_ref(),
                 accesskit::NodeId(taffy_raw.saturating_add(1)),
             ) else {
@@ -2110,7 +2110,7 @@ impl App {
                 .unwrap_or(false);
             let handled = self.perform_semantic_target(taffy_id, &semantic_target, &verb)?;
             if handled {
-                if matches!(verb, crate::a11y::Action::Focus) {
+                if matches!(verb, tilo_ui_base::a11y::Action::Focus) {
                     self.set_focused_node(Some(taffy_id));
                 }
                 // An action-bound control queues what the verb asked for;
@@ -2128,7 +2128,7 @@ impl App {
             // A Focus no control of the node's own implements still means the keyboard goes
             // there: an assistive technology asks it of the node it read, and the control needs
             // no verb of its own to take the keyboard.
-            if matches!(verb, crate::a11y::Action::Focus) && self.takes_keyboard(taffy_id) {
+            if matches!(verb, tilo_ui_base::a11y::Action::Focus) && self.takes_keyboard(taffy_id) {
                 self.set_focused_node(Some(taffy_id));
                 return Ok(true);
             }
@@ -2150,7 +2150,7 @@ impl App {
         // The action may have run without the widget's own verb; the keyboard still goes where
         // the person asked it to.
         let widget = NodeId::from(taffy_raw);
-        if matches!(verb, crate::a11y::Action::Focus)
+        if matches!(verb, tilo_ui_base::a11y::Action::Focus)
             && self.takes_keyboard(widget)
             && self.focused_node != Some(widget)
         {
@@ -2203,12 +2203,12 @@ impl App {
 /// The change origin the screen reader chord records in the settings file.
 const SCREEN_READER_CHORD_ORIGIN: &str = "screen-reader-chord";
 
-/// A [live region](crate::a11y::AccessNode::live) of the tree a window
+/// A [live region](tilo_ui_base::a11y::AccessNode::live) of the tree a window
 /// publishes: the name that tracks it across frames, how urgently it speaks,
 /// and what the reader says for it now.
 struct LiveRegion {
     name: String,
-    politeness: crate::a11y::Politeness,
+    politeness: tilo_ui_base::a11y::Politeness,
     text: String,
 }
 
@@ -2218,20 +2218,20 @@ struct LiveRegion {
 struct LiveRegionScan(Vec<LiveRegion>);
 
 impl LiveRegionScan {
-    fn note(&mut self, node: &crate::a11y::AccessNode) {
+    fn note(&mut self, node: &tilo_ui_base::a11y::AccessNode) {
         if let (Some(politeness), Some(name)) = (node.live, node.name.clone()) {
             self.0.push(LiveRegion {
                 name,
                 politeness,
-                text: crate::screen_reader::describe(node),
+                text: tilo_ui_base::screen_reader::describe(node),
             });
         }
     }
 }
 
-impl crate::a11y_walk::A11yVisitor for LiveRegionScan {
+impl tilo_ui_base::a11y_walk::A11yVisitor for LiveRegionScan {
     type Scope = ();
-    type Pending = crate::a11y::AccessNode;
+    type Pending = tilo_ui_base::a11y::AccessNode;
     type SyntheticPending = ();
 
     fn open(
@@ -2239,24 +2239,24 @@ impl crate::a11y_walk::A11yVisitor for LiveRegionScan {
         w: &dyn Widget,
         _slot: Option<(&dyn Widget, usize)>,
         (): &mut (),
-    ) -> crate::a11y_walk::Visit<crate::a11y::AccessNode, ()> {
+    ) -> tilo_ui_base::a11y_walk::Visit<tilo_ui_base::a11y::AccessNode, ()> {
         let Some(node) = w.accessibility() else {
-            return crate::a11y_walk::Visit::Collapse;
+            return tilo_ui_base::a11y_walk::Visit::Collapse;
         };
         self.note(&node);
-        crate::a11y_walk::Visit::Node(node, ())
+        tilo_ui_base::a11y_walk::Visit::Node(node, ())
     }
 
     fn close<'w>(
         &mut self,
         owner: &'w dyn Widget,
-        node: crate::a11y::AccessNode,
+        node: tilo_ui_base::a11y::AccessNode,
         (): (),
-        hosted: crate::a11y_walk::HostedByIndex<'w>,
+        hosted: tilo_ui_base::a11y_walk::HostedByIndex<'w>,
         _represented: Vec<&'w dyn Widget>,
         (): &mut (),
     ) {
-        crate::a11y_walk::walk_synthetic_children::<true, Self, _>(
+        tilo_ui_base::a11y_walk::walk_synthetic_children::<true, Self, _>(
             self,
             owner,
             &node.children,
@@ -2269,7 +2269,7 @@ impl crate::a11y_walk::A11yVisitor for LiveRegionScan {
         &mut self,
         _owner: &dyn Widget,
         _path: &[usize],
-        node: &crate::a11y::AccessNode,
+        node: &tilo_ui_base::a11y::AccessNode,
         (): &mut (),
     ) -> ((), ()) {
         self.note(node);
@@ -2280,7 +2280,7 @@ impl crate::a11y_walk::A11yVisitor for LiveRegionScan {
         &mut self,
         _owner: &dyn Widget,
         _path: &[usize],
-        _node: &crate::a11y::AccessNode,
+        _node: &tilo_ui_base::a11y::AccessNode,
         (): (),
         (): (),
         (): &mut (),
@@ -2304,7 +2304,7 @@ mod history_sweep_tests;
 
 /// What the box with no menu around it calls the control `node` describes: the target of
 /// its own control of the same name, which its keys and pointer reach as well.
-fn box_control(described: &crate::a11y::AccessNode, node: &accesskit::Node) -> Option<String> {
+fn box_control(described: &tilo_ui_base::a11y::AccessNode, node: &accesskit::Node) -> Option<String> {
     described.children.iter().find_map(|child| {
         child
             .action_target
@@ -2318,13 +2318,13 @@ fn box_control(described: &crate::a11y::AccessNode, node: &accesskit::Node) -> O
 /// the person last used the mouse or the keys, which no widget builds from (a finger's target, a
 /// hover and the devices at hand stay as they were).
 fn builds_alike(
-    before: crate::interaction::InteractionEnvironment,
-    after: crate::interaction::InteractionEnvironment,
+    before: tilo_ui_base::interaction::InteractionEnvironment,
+    after: tilo_ui_base::interaction::InteractionEnvironment,
 ) -> bool {
-    use crate::interaction::InputModality::{Keyboard, Pointer};
+    use tilo_ui_base::{interaction::InputModality::Keyboard, interaction::InputModality::Pointer};
     matches!(before.modality, Keyboard | Pointer)
         && matches!(after.modality, Keyboard | Pointer)
-        && crate::interaction::InteractionEnvironment {
+        && tilo_ui_base::interaction::InteractionEnvironment {
             modality: before.modality,
             ..after
         } == before

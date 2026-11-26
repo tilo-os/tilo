@@ -22,7 +22,7 @@ pub fn go_to(handle: &crate::desktop::state::DesktopHandle, people: &[Person], w
 /// `narrated` drawn into this shell's `presence`: each action moves its agent's cursor to the
 /// control it is bound to, over the window that shows its record. Whether it drew any.
 pub fn apply_narrated(
-    presence: &mut ui::presence::PresenceCtx,
+    presence: &mut tilo_ui_base::presence::PresenceCtx,
     narrated: &[SemanticInteraction],
 ) -> bool {
     let mut shown = false;

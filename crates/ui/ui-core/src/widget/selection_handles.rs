@@ -13,8 +13,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke, Vec2};
 use vello::peniko::Fill;
 
-use crate::theme::Theme;
-use crate::tokens::Metrics;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::Metrics;
 
 /// Feedback over authored canvas content. The contrasting under-stroke keeps
 /// a brush footprint or erased boundary visible over either light or dark paint.

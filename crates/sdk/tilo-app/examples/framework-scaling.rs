@@ -84,14 +84,14 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use tilo_app::framework::testing::{drive_live_embedded, drive_live_window};
-use tilo_app::i18n::EmbeddedCatalog;
+use tilo_ui_base::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
 use tilo_app::tilo_resource::profiling::observe;
 use tilo_app::time::Instant;
 use tilo_app::winit::dpi::{PhysicalPosition, PhysicalSize};
 use tilo_app::winit::event::{DeviceId, WindowEvent};
 use tilo_app::winit::window::CursorIcon;
-use ui_core::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 
 static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",
@@ -315,7 +315,7 @@ fn publication(tasks: u32) -> Result<Publication, Box<dyn std::error::Error>> {
             let before = HELD.load(Ordering::Relaxed);
             let start = Instant::now();
             let published =
-                tilo_app::widget::resources::resources_for(app.harness().root_widget(), None, &doc);
+                tilo_ui_base::widget::resources::resources_for(app.harness().root_widget(), None, &doc);
             let elapsed = millis(start);
             held = HELD.load(Ordering::Relaxed).saturating_sub(before);
             resources = count(&published);
@@ -346,7 +346,7 @@ fn per_frame(tasks: u32) -> Result<[(f64, f64); 2], Box<dyn std::error::Error>> 
     use tilo_app::profiling::{PerfScenario, PerfStep, run_scenario};
     let mut app = checklist(tasks)?;
     app.harness()
-        .perform_named("draft", &tilo_app::a11y::Action::Focus)?;
+        .perform_named("draft", &tilo_ui_base::a11y::Action::Focus)?;
     let sync = |app: &mut HeadlessApp<Scaling>, name: &str, steps| {
         let report = run_scenario(
             app.harness(),
@@ -467,7 +467,7 @@ fn host_frame(app: &mut tilo_app::App) {
 fn draft_value(app: &tilo_app::App) -> Option<String> {
     app.semantic_tree()
         .iter()
-        .find(|node| node.role == tilo_app::a11y::Role::TextInput)
+        .find(|node| node.role == tilo_ui_base::a11y::Role::TextInput)
         .and_then(|node| node.value.clone())
 }
 
@@ -499,7 +499,7 @@ fn keys_to_time() -> u32 {
 /// Type into the draft of the live window. A frame runs between press and
 /// release, as on a display: a key is held for longer than a frame lasts.
 fn keystrokes(app: &mut tilo_app::App) -> Result<Keystrokes, String> {
-    use tilo_app::synthetic_input::key_input;
+    use tilo_ui_base::synthetic_input::key_input;
     use tilo_app::winit::event::ElementState;
     let key = tilo_app::winit::keyboard::Key::Character("a".into());
     app.init_layout();
@@ -627,7 +627,7 @@ const PEER_AT: [f32; 2] = [420.0, 360.0];
 /// [`tilo_app::App::surface_frame_with_damage`]), and present each frame on
 /// an offscreen GPU target as a window does: only where it changed, after
 /// copying what a scroll keeps on screen when `copying`
-/// ([`tilo_app::scroll_copy`]). With `peer`, a member's pointer rests
+/// ([`tilo_ui_base::scroll_copy`]). With `peer`, a member's pointer rests
 /// over the list, painted over the widgets as a window paints it
 /// ([`tilo_app::app::SurfaceDamage::painting_peers`]).
 #[allow(
@@ -636,7 +636,7 @@ const PEER_AT: [f32; 2] = [420.0, 360.0];
 )]
 fn scrolling(app: &mut tilo_app::App, step: f64, copying: bool, peer: bool) -> Scrolling {
     use tilo_app::app::{AppSurface, SurfaceDamage};
-    use tilo_app::offscreen::OffscreenRenderer;
+    use tilo_ui_base::offscreen::OffscreenRenderer;
     use tilo_app::winit::event::{MouseScrollDelta, TouchPhase};
     let size = Surface.inner_size();
     let background = app.theme.tokens.colors.surfaces.content;
@@ -648,7 +648,7 @@ fn scrolling(app: &mut tilo_app::App, step: f64, copying: bool, peer: bool) -> S
     .painting_peers();
     if peer {
         app.presence_ctx_mut().upsert_remote_cursor(
-            tilo_app::permissions::MemberId::person("ada"),
+            tilo_ui_base::permissions::MemberId::person("ada"),
             PEER_AT,
             Some("Ada Lovelace"),
         );
@@ -751,21 +751,21 @@ fn scrolling(app: &mut tilo_app::App, step: f64, copying: bool, peer: bool) -> S
 /// bands of its own, tracked for damage parts as the shell's workspace is.
 fn host_section(
     tile: &mut tilo_app::app::EmbeddedApp,
-    text: &mut tilo_app::text_render::TextRenderer,
+    text: &mut tilo_ui_base::text_render::TextRenderer,
 ) -> (
     Box<tilo_app::advanced::Scene>,
-    tilo_app::scene_parts::SectionParts,
+    tilo_ui_base::scene_parts::SectionParts,
 ) {
     use tilo_app::app::AppSurface as _;
     use tilo_app::kurbo::{Affine, RoundedRect};
     use tilo_app::peniko::{BlendMode, Fill};
-    use tilo_app::scene_parts::{PartKey, part};
+    use tilo_ui_base::{scene_parts::PartKey, scene_parts::part};
     let theme = tile.app().theme.clone();
     let size = Surface.inner_size();
     let region = Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
-    let recording = tilo_app::scene_parts::Recording::begin();
+    let recording = tilo_ui_base::scene_parts::Recording::begin();
     let mut scene = Box::new(tilo_app::advanced::Scene::new());
-    tilo_app::scene_parts::track(&scene);
+    tilo_ui_base::scene_parts::track(&scene);
     let shape = RoundedRect::from_rect(region, f64::from(theme.tokens.radii.tile));
     scene.fill(
         Fill::NonZero,
@@ -791,7 +791,7 @@ fn host_section(
                 Affine::IDENTITY,
                 text,
                 &theme,
-                &tilo_app::presence::PresenceCtx::empty().draw_env(),
+                &tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
             );
         },
     );
@@ -824,32 +824,32 @@ fn host_section(
 /// [`scrolling`] for the app shown in a region of a host's scene, as the
 /// shell shows an in-process app ([`tilo_app::app::EmbeddedApp`]): each
 /// frame's section is compared with the last
-/// ([`tilo_app::scene_parts::damage_with_copies`]) and presented over it as
+/// ([`tilo_ui_base::scene_parts::damage_with_copies`]) and presented over it as
 /// a host that keeps its target does, copies first
-/// ([`tilo_app::scene_parts::present_copies`]), when `copying`.
+/// ([`tilo_ui_base::scene_parts::present_copies`]), when `copying`.
 #[allow(
     clippy::too_many_lines,
     reason = "one measured scroll loop: input, frame, damage, presentation and its parity check"
 )]
 fn hosted_scrolling(tile: &mut tilo_app::app::EmbeddedApp, step: f64, copying: bool) -> Scrolling {
     use tilo_app::app::AppSurface as _;
-    use tilo_app::offscreen::OffscreenRenderer;
-    use tilo_app::scene_parts::{DrawBounds, damage, damage_with_copies, present_copies};
-    use tilo_app::widget::Widget as _;
+    use tilo_ui_base::offscreen::OffscreenRenderer;
+    use tilo_ui_base::{scene_parts::DrawBounds, scene_parts::damage, scene_parts::damage_with_copies, scene_parts::present_copies};
+    use tilo_ui_base::widget::Widget as _;
     use tilo_app::winit::event::{MouseScrollDelta, TouchPhase};
     let size = Surface.inner_size();
     tile.set_accepts_scroll_copies(copying);
-    let mut text = tilo_app::text_render::TextRenderer::new();
+    let mut text = tilo_ui_base::text_render::TextRenderer::new();
     let mut taffy = tilo_app::taffy::TaffyTree::new();
     let theme = tile.app().theme.clone();
     let node = tile.build_layout(&mut taffy, &theme, &mut std::collections::HashMap::new());
     let _ = taffy.compute_layout(
         node,
         tilo_app::taffy::Size {
-            width: tilo_app::taffy::AvailableSpace::Definite(tilo_app::num::f32_of_f64(f64::from(
+            width: tilo_app::taffy::AvailableSpace::Definite(tilo_ui_base::num::f32_of_f64(f64::from(
                 size.width,
             ))),
-            height: tilo_app::taffy::AvailableSpace::Definite(tilo_app::num::f32_of_f64(
+            height: tilo_app::taffy::AvailableSpace::Definite(tilo_ui_base::num::f32_of_f64(
                 f64::from(size.height),
             )),
         },

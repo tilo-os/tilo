@@ -9,7 +9,7 @@ impl SearchProvider for OneHit {
         "Notes"
     }
     fn search(&self, query: &str) -> Vec<SearchResult> {
-        if crate::text_match::fold_search_text(query).contains("note") {
+        if tilo_ui_base::text_match::fold_search_text(query).contains("note") {
             vec![
                 SearchResult::new("Notes", self.0, "ignore")
                     .with_subtitle("Message")
@@ -43,7 +43,7 @@ fn published_tree(actions: Vec<(&'static str, &'static str)>) -> Vec<ResourceSpe
 }
 
 fn search_palette(resources: &[ResourceSpec], provider: Box<dyn SearchProvider>) -> ActionPalette {
-    let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+    let mut palette = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
         SearchField::with_language("en_US")
     });
     palette.load_open_resources(resources);
@@ -180,17 +180,17 @@ tilo_test_env::scenario! {
             .expect("Undo is a row");
         assert_eq!(
             undo.icon,
-            Some(crate::icons::Icon::Undo2),
+            Some(tilo_ui_base::icons::Icon::Undo2),
             "a host command is drawn as the toolkit draws it"
         );
-        let platform = crate::platform::PlatformConventions::default();
+        let platform = tilo_ui_base::platform::PlatformConventions::default();
         let Some(crate::search::SearchRow::Command(command)) = &undo.row else {
             panic!("a command row is painted from its command: {undo:?}");
         };
         assert_eq!(
             command.keycaps,
             Some(
-                crate::platform::HostShortcut::Undo
+                tilo_ui_base::platform::HostShortcut::Undo
                     .shortcut(platform)
                     .keycap_labels(platform)
             ),
@@ -214,7 +214,7 @@ tilo_test_env::scenario! {
                 )
                 .with_action(an_action("pin", "Pin", Vec::new())),
         ];
-        let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+        let mut palette = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
             SearchField::with_language("en_US")
         });
         palette.load_open_resources(&resources);
@@ -252,7 +252,7 @@ tilo_test_env::scenario! {
                 ],
             )),
         ];
-        let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+        let mut palette = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
             SearchField::with_language("en_US")
         });
         palette.load_open_resources(&resources);

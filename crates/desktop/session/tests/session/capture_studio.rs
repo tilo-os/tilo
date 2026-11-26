@@ -80,7 +80,7 @@ fn run_for(session: &mut Session, time: Duration) {
 
 #[test]
 fn the_studio_takes_a_screenshot_of_the_display_as_the_compositor_draws_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let pictures = tempfile::tempdir().unwrap();
     let mut session = studio_session(pictures.path());
     settle(&mut session, 4);
@@ -135,7 +135,7 @@ fn print_key(session: &mut Session) -> u32 {
 
 #[test]
 fn the_print_key_brings_the_studio_up_to_choose_what_it_takes() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // The shell is the frame the bar's arrival must change: with the clock held, a minute turning
     // over cannot pass for it.
     let _clock = held_clock();
@@ -157,7 +157,7 @@ fn the_print_key_brings_the_studio_up_to_choose_what_it_takes() {
 
 #[test]
 fn shift_and_the_print_key_take_the_whole_display_at_once() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // The shell is the frame the card's arrival must change: with the clock held, a minute turning
     // over cannot pass for it.
     let _clock = held_clock();
@@ -201,7 +201,7 @@ fn shift_and_the_print_key_take_the_whole_display_at_once() {
 
 #[test]
 fn a_shot_answers_after_the_studio_was_up_and_put_away() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // The shell is the frame the card's arrival must change: with the clock held, a minute turning
     // over cannot pass for it.
     let _clock = held_clock();
@@ -235,7 +235,7 @@ fn a_shot_answers_after_the_studio_was_up_and_put_away() {
 
 #[test]
 fn the_shots_card_and_the_markup_editor_name_the_controls_a_screen_reader_reaches() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // The card's arrival and the editor's are frames the test's clock decides.
     let _clock = held_clock();
     let pictures = tempfile::tempdir().unwrap();
@@ -282,7 +282,7 @@ fn published_control(session: &Session, name: &str) -> Option<ui::window_targets
 
 #[test]
 fn the_studio_takes_a_screenshot_of_one_window_as_its_client_drew_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let pictures = tempfile::tempdir().unwrap();
     let mut session = studio_session(pictures.path());
     let _client = mapped(&mut session, "org.example.Terminal");
@@ -335,7 +335,7 @@ fn the_studio_takes_a_screenshot_of_one_window_as_its_client_drew_it() {
 
 #[test]
 fn a_region_capture_with_no_selection_is_refused() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let pictures = tempfile::tempdir().unwrap();
     let mut session = studio_session(pictures.path());
     settle(&mut session, 4);
@@ -371,7 +371,7 @@ fn a_region_capture_with_no_selection_is_refused() {
 
 #[test]
 fn the_studio_records_the_display_into_a_file_until_it_is_stopped() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // Machines whose media stack cannot encode skip this, as the recorder's own tests do.
     if media::gst::init().is_err()
         || tilo_capture_studio::Recorder::new(tilo_capture_studio::Settings::for_size(
@@ -406,7 +406,7 @@ fn the_studio_records_the_display_into_a_file_until_it_is_stopped() {
 
 #[test]
 fn the_studios_open_action_puts_the_bar_over_the_desktop() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // The shell is the frame the bar's arrival must change: with the clock held, a minute turning
     // over cannot pass for it.
     let _clock = held_clock();
@@ -646,7 +646,7 @@ fn middle(picture: &image::RgbaImage) -> (i32, i32) {
 
 #[test]
 fn a_portal_area_request_is_the_rectangle_the_person_draws_on_that_display() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = held_clock();
     let pictures = tempfile::tempdir().unwrap();
     let directory = tempfile::tempdir().unwrap();
@@ -700,7 +700,7 @@ fn a_portal_area_request_is_the_rectangle_the_person_draws_on_that_display() {
 
 #[test]
 fn a_portal_window_request_is_the_window_the_person_picks() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = held_clock();
     let pictures = tempfile::tempdir().unwrap();
     let directory = tempfile::tempdir().unwrap();
@@ -743,7 +743,7 @@ fn a_portal_window_request_is_the_window_the_person_picks() {
 
 #[test]
 fn a_selection_the_person_closes_is_cancelled_and_the_next_request_still_works() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = held_clock();
     let pictures = tempfile::tempdir().unwrap();
     let directory = tempfile::tempdir().unwrap();
@@ -780,7 +780,7 @@ fn a_selection_the_person_closes_is_cancelled_and_the_next_request_still_works()
 
 #[test]
 fn a_request_the_app_closes_takes_the_studio_down_and_leaves_nothing_behind() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = held_clock();
     let pictures = tempfile::tempdir().unwrap();
     let directory = tempfile::tempdir().unwrap();

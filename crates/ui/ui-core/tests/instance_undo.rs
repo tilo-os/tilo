@@ -5,8 +5,9 @@ use std::collections::HashMap;
 use tilo_ui::application::{LaunchTarget, RestoreInput};
 use tilo_ui::bound_dispatch::invoke_bound_node;
 use tilo_ui::state::UndoLog;
-use tilo_ui::widget::bound_nodes::BoundNodeMap;
-use tilo_ui::widget::{TileHost, Widget};
+use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
+use tilo_ui::widget::TileHost;
+use tilo_ui_base::widget::Widget;
 
 struct BoundProbe {
     _tile: Box<TileHost>,
@@ -20,7 +21,7 @@ impl BoundProbe {
         let mut tile = Box::new(TileHost::from_component(component));
         let mut tree = taffy::TaffyTree::new();
         let mut nodes = HashMap::new();
-        let layout = tile.build_layout(&mut tree, &tilo_ui::Theme::dark(), &mut nodes);
+        let layout = tile.build_layout(&mut tree, &tilo_ui_base::Theme::dark(), &mut nodes);
         // Select the actual probe leaf, not a nondeterministic retained wrapper.
         let node = *nodes
             .keys()
@@ -140,7 +141,7 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
         for (tile, value) in [(&mut first, "a1"), (&mut second, "b1")] {
             let mut tree = taffy::TaffyTree::new();
             let mut nodes = HashMap::new();
-            let layout = tile.build_layout(&mut tree, &tilo_ui::Theme::dark(), &mut nodes);
+            let layout = tile.build_layout(&mut tree, &tilo_ui_base::Theme::dark(), &mut nodes);
             let mut bindings = BoundNodeMap::new();
             let node = *nodes.keys().next().unwrap();
             // SAFETY: this test exclusively owns the matching live tree and node map.
@@ -222,13 +223,13 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
             .with(&checkout.id, AutoCommit::get_heads)
             .unwrap();
         a.invoke(&mut outer, |widget, doc, _| {
-            tilo_ui::widget::undo_points::set_state(widget, "A metadata");
+            tilo_ui_base::widget::undo_points::set_state(widget, "A metadata");
             doc.put(ROOT, "a", "first").unwrap();
         })
         .unwrap();
         // B reports an action that wrote nothing while A's burst is pending.
         b.invoke(&mut outer, |widget, doc, _| {
-            tilo_ui::widget::undo_points::set_state(widget, "B metadata");
+            tilo_ui_base::widget::undo_points::set_state(widget, "B metadata");
             report_probe_action(doc.get_heads());
         })
         .unwrap();
@@ -491,7 +492,7 @@ fn instance_history_selects_only_its_own_attributed_entries() {
         assert!(history.next_undo_in(&doc, &author(), 11).is_none());
         assert!(
             history
-                .next_undo_in(&doc, &tilo_ui::permissions::MemberId::person("other"), 12)
+                .next_undo_in(&doc, &tilo_ui_base::permissions::MemberId::person("other"), 12)
                 .is_none()
         );
         assert_eq!(

@@ -191,7 +191,7 @@ fn open_menu(session: &mut Session, key: &str) -> String {
 
 #[test]
 fn the_window_menu_offers_every_row_a_window_can_choose() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
@@ -233,7 +233,7 @@ fn the_window_menu_offers_every_row_a_window_can_choose() {
 
 #[test]
 fn the_menus_rows_change_the_window_through_published_actions() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
@@ -306,7 +306,7 @@ fn the_menus_rows_change_the_window_through_published_actions() {
 
 #[test]
 fn a_windows_menu_carries_a_window_into_another_window_and_another_display() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session_on(&[
         OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT),
         OutputConfig::new("HEADLESS-2", WIDTH, HEIGHT).at(WIDTH, 0),
@@ -358,7 +358,7 @@ fn a_windows_menu_carries_a_window_into_another_window_and_another_display() {
 
 #[test]
 fn the_strip_menu_lists_the_workspaces_bands_and_makes_one() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
@@ -426,7 +426,7 @@ fn the_strip_menu_lists_the_workspaces_bands_and_makes_one() {
 
 #[test]
 fn the_empty_shell_shows_its_start_cards() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, _notes) = session();
     until(&mut session, "the start cards", |session| {
         on_screen(session, "Start something").is_some()
@@ -453,7 +453,7 @@ fn the_empty_shell_shows_its_start_cards() {
 
 #[test]
 fn the_passing_notice_says_what_closed_and_undoes_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
@@ -503,7 +503,7 @@ fn the_passing_notice_says_what_closed_and_undoes_it() {
 
 #[test]
 fn the_window_bar_carries_its_tab_a_new_tab_its_search_and_history() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
@@ -559,7 +559,7 @@ fn the_window_bar_carries_its_tab_a_new_tab_its_search_and_history() {
 
 #[test]
 fn the_dock_leaves_the_windows_their_room() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
@@ -581,7 +581,7 @@ fn the_dock_leaves_the_windows_their_room() {
 
 #[test]
 fn the_tilo_menu_holds_the_layouts_history_and_the_devices_own_pages() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, _notes) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
@@ -621,7 +621,7 @@ fn band_of(session: &Session, key: &str) -> Option<String> {
 
 #[test]
 fn a_window_moves_to_a_strip_of_its_own_through_the_window_menu() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
@@ -650,7 +650,7 @@ fn a_window_moves_to_a_strip_of_its_own_through_the_window_menu() {
 
 #[test]
 fn deleting_a_strip_carries_its_windows_into_the_next_one() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
@@ -730,7 +730,7 @@ fn host_window_session() -> Session {
 
 #[test]
 fn a_host_windows_name_is_changed_from_its_menu() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = host_window_session();
     read_land(&mut session, "20");
     open_menu(&mut session, "20");
@@ -757,7 +757,7 @@ fn a_host_windows_name_is_changed_from_its_menu() {
 fn a_window_that_stops_answering_says_so_on_the_window_itself() {
     use crate::common::window::{Client, window_of};
 
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, _notes) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
@@ -803,7 +803,7 @@ fn a_window_that_stops_answering_says_so_on_the_window_itself() {
 
 #[test]
 fn a_window_that_controls_the_desktop_offers_to_stop() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
@@ -858,7 +858,7 @@ fn a_window_that_controls_the_desktop_offers_to_stop() {
 
 #[test]
 fn a_windows_author_is_who_opened_it_person_or_agent() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
@@ -916,7 +916,7 @@ fn ended(what: &str, why: &str) -> tilo_session_core::desktop::state::EndedAnswe
 
 #[test]
 fn a_window_whose_app_ended_says_what_became_of_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
@@ -941,7 +941,7 @@ fn a_window_whose_app_ended_says_what_became_of_it() {
 /// everything the launch printed behind its Details.
 #[test]
 fn the_crashed_windows_card_offers_reopen_and_dismiss() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
@@ -963,7 +963,7 @@ fn the_crashed_windows_card_offers_reopen_and_dismiss() {
 
 #[test]
 fn reopening_a_crashed_window_keeps_its_place() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
@@ -995,7 +995,7 @@ fn reopening_a_crashed_window_keeps_its_place() {
 
 #[test]
 fn dismissing_the_crashed_windows_card_closes_its_tab() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()

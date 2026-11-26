@@ -6,13 +6,13 @@ use std::collections::HashMap;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Circle, Point, Rect};
 
-use crate::icons::Icon;
-use crate::paint::PaintCtx;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
 
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::{TaffyTreeExt, Tone, Widget};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Tone, widget::Widget};
 
 #[path = "facts_component.rs"]
 mod component;
@@ -246,7 +246,7 @@ impl<'a> FactsFace<'a> {
                 // The value is the thing itself, so the label gives way first: it is
                 // elided to what the value and its gap leave.
                 let value = f64::from(ctx.text.measure_style(&fact.text, None, &m.style).0);
-                let spare = crate::num::f32_of_f64((rect.x1 - x - value - m.label_gap).max(0.0));
+                let spare = tilo_ui_base::num::f32_of_f64((rect.x1 - x - value - m.label_gap).max(0.0));
                 let label = ctx.text.elide_to_width_style(named, spare, &m.style);
                 let w = f64::from(ctx.text.measure_style(&label, None, &m.style).0);
                 ctx.text.draw_style(
@@ -259,7 +259,7 @@ impl<'a> FactsFace<'a> {
                 );
                 x += w + m.label_gap;
             }
-            let spare = crate::num::f32_of_f64((rect.x1 - x).max(0.0));
+            let spare = tilo_ui_base::num::f32_of_f64((rect.x1 - x).max(0.0));
             let label = ctx.text.elide_to_width_style(&fact.text, spare, &m.style);
             let w = f64::from(ctx.text.measure_style(&label, None, &m.style).0);
             // A field's value is the thing itself, in the ink a value reads
@@ -330,7 +330,7 @@ impl Facts {
 }
 
 impl Widget for Facts {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -363,7 +363,7 @@ impl Widget for Facts {
     ) -> Size<f32> {
         let face = FactsFace::new(&self.items);
         let theme = &self.layout_theme;
-        let natural = crate::num::f32_of_f64(face.natural_width(text, theme));
+        let natural = tilo_ui_base::num::f32_of_f64(face.natural_width(text, theme));
         let width = match available.width {
             taffy::AvailableSpace::Definite(w) => natural.min(w),
             _ => natural,
@@ -371,9 +371,9 @@ impl Widget for Facts {
         // The solver rounds every edge onto the display's device pixels, so a row measured at
         // its text's exact width is handed a box up to a pixel narrower than that and the last
         // fact elides a letter it has the width to draw ("1 he…" for "1 here").
-        let grid = crate::widget::device_scale();
+        let grid = tilo_ui_base::widget::device_scale();
         let width = if grid > 0.0 {
-            crate::num::f32_of_f64((f64::from(width) * f64::from(grid)).ceil() / f64::from(grid))
+            tilo_ui_base::num::f32_of_f64((f64::from(width) * f64::from(grid)).ceil() / f64::from(grid))
         } else {
             width
         };
@@ -381,13 +381,13 @@ impl Widget for Facts {
             width: known.width.unwrap_or(width),
             height: known
                 .height
-                .unwrap_or(crate::num::f32_of_f64(face.height(text, theme))),
+                .unwrap_or(tilo_ui_base::num::f32_of_f64(face.height(text, theme))),
         }
     }
 
-    crate::rect_geometry!(measured);
+    tilo_ui_base::rect_geometry!(measured);
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -400,14 +400,14 @@ impl Widget for Facts {
         );
     }
 
-    crate::redraw_flag!();
+    tilo_ui_base::redraw_flag!();
 
     fn name(&self) -> &'static str {
         "Facts"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         let children = self
             .items
             .iter()
@@ -458,7 +458,7 @@ mod tests {
                 Fact::with_icon(Icon::Users, "3 here"),
                 Fact::text("12 files"),
             ] {
-                let natural = crate::num::f32_of_f64(
+                let natural = tilo_ui_base::num::f32_of_f64(
                     FactsFace::new(std::slice::from_ref(&fact)).natural_width(&mut text, &theme),
                 );
                 let mut row = Facts::new(vec![fact.clone()]);
@@ -473,11 +473,11 @@ mod tests {
                     },
                     &mut text,
                 );
-                let grid = f64::from(crate::widget::device_scale());
+                let grid = f64::from(tilo_ui_base::widget::device_scale());
                 let boxed = f64::from(measured.width) * grid;
                 let boxed = boxed.round() / grid;
                 let inset = m.mark_width(fact.mark);
-                let spare = crate::num::f32_of_f64(boxed - inset);
+                let spare = tilo_ui_base::num::f32_of_f64(boxed - inset);
                 assert_eq!(
                     text.elide_to_width_style(&fact.text, spare, &m.style),
                     fact.text,
@@ -494,7 +494,7 @@ mod tests {
             let theme = Theme::dark();
             let mut text = TextRenderer::new();
             let m = FactsMetrics::of(&theme);
-            let hue = crate::tokens::PresenceHue::Orange;
+            let hue = tilo_ui_base::tokens::PresenceHue::Orange;
             let live = Fact::dot(Tone::Presence(hue), "Working now");
             assert_eq!(live.mark, Some(FactMark::Dot(Tone::Presence(hue))));
             let face = FactsFace::new(std::slice::from_ref(&live));

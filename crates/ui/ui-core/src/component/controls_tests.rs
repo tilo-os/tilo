@@ -7,22 +7,19 @@
     reason = "in a test these are the assertion"
 )]
 
-use super::testing::*;
-use super::*;
-use crate::component::{Component, Described, Value};
+use tilo_ui_base::component::testing::*;
+use tilo_ui_base::component::*;
+use tilo_ui_base::{component::Component, component::Described, component::Value};
 use crate::testing::harness;
-use crate::widget::{
-    Checkbox, CheckboxProps, Dropdown, DropdownProps, NumberInput, NumberInputProps, Slider,
-    SliderProps, Stepper, StepperProps, Toggle, ToggleGroup, ToggleGroupProps, ToggleProps,
-    ViewTabs, ViewTabsProps, Widget,
-};
+use crate::{widget::Checkbox, widget::CheckboxProps, widget::Dropdown, widget::DropdownProps, widget::NumberInput, widget::NumberInputProps, widget::Slider, widget::SliderProps, widget::Stepper, widget::StepperProps, widget::Toggle, widget::ToggleGroup, widget::ToggleGroupProps, widget::ToggleProps, widget::ViewTabs, widget::ViewTabsProps};
+use tilo_ui_base::widget::Widget;
 
 tilo_test_env::scenario! {
     fn the_controls_read_their_props_and_report_what_a_person_does;
 
     phase a_checkbox_shows_what_it_binds_and_reports_a_press_of_the_whole_row;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut node = Node::new("Checkbox", "email", &queue)
             .bound(flag_bound("Send by email", false, edits(&queue, "email")))
             .prop("label", text("Send by email"));
@@ -40,7 +37,7 @@ tilo_test_env::scenario! {
 
     phase a_toggle_knot_turns_where_it_is_told_and_reports_a_press;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut node = Node::new("Toggle", "repeat", &queue)
             .bound(flag_bound("Repeat", false, edits(&queue, "repeat")))
             .prop("label", text("Repeat weekly"));
@@ -57,7 +54,7 @@ tilo_test_env::scenario! {
 
     phase a_slider_reads_its_range_and_reports_the_value_it_is_let_go_at;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut node = Node::new("Slider", "share", &queue)
             .bound(number_bound("Share", 0.2, edits(&queue, "share")))
             .prop("max", Value::Float(1.0))
@@ -78,7 +75,7 @@ tilo_test_env::scenario! {
 
     phase a_number_input_takes_a_value_its_view_gives_and_keeps_the_range;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let props = |number: f64| {
             let mut node = Node::new("NumberInput", "seats", &queue)
                 .bound(number_bound("Seats", number, edits(&queue, "seats")))
@@ -94,7 +91,7 @@ tilo_test_env::scenario! {
 
     phase a_dropdown_offers_its_options_and_reports_the_one_chosen;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let options = || Value::List(vec![text("Studio"), text("Gallery"), text("Annex")]);
         let mut node = Node::new("Dropdown", "venue", &queue)
             .bound(text_bound("Venue", "Studio", edits(&queue, "venue")))
@@ -109,7 +106,7 @@ tilo_test_env::scenario! {
 
     phase a_dropdown_shows_words_and_reports_the_ids_behind_them;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut node = Node::new("Dropdown", "shortcut", &queue)
             .bound(text_bound(
                 "Shortcut",
@@ -140,7 +137,7 @@ tilo_test_env::scenario! {
 
     phase a_strip_of_choices_is_a_slot_of_segments_and_reports_the_one_chosen;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let segment =
             |key: &str, label: &str| Node::new("Segment", key, &queue).prop("label", text(label));
         let mut node = Node::new("ToggleGroup", "arrange", &queue)
@@ -158,7 +155,7 @@ tilo_test_env::scenario! {
 
     phase a_strip_holds_only_segments;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut node = Node::new("ToggleGroup", "arrange", &queue).holding(
             "options",
             Node::new("Badge", "n", &queue).prop("count", Value::Int(1)),
@@ -172,7 +169,7 @@ tilo_test_env::scenario! {
 
     phase tabs_are_a_slot_of_segments_and_show_the_one_chosen;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let tab = |key: &str, label: &str| Node::new("Segment", key, &queue).prop("label", text(label));
         let mut node = Node::new("ViewTabs", "views", &queue)
             .prop("selected", Value::Int(2))
@@ -188,7 +185,7 @@ tilo_test_env::scenario! {
 
     phase a_stepper_shows_where_it_is_and_reports_a_station_gone_back_to;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut node = Node::new("Stepper", "run", &queue)
             .prop(
                 "steps",

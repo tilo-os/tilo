@@ -1,5 +1,5 @@
 use super::*;
-use crate::collection_transition::ListModelChange;
+use tilo_ui_base::collection_transition::ListModelChange;
 use crate::time::Duration;
 use automerge::AutoCommit;
 use std::cell::{Cell, RefCell};
@@ -148,7 +148,7 @@ impl crate::widget::RowActionRects for ProbeRow {
 }
 
 impl Widget for ProbeRow {
-    crate::provides!(dyn crate::widget::RowActionRects);
+    tilo_ui_base::provides!(dyn crate::widget::RowActionRects);
 
     fn build_layout(
         &mut self,
@@ -166,9 +166,9 @@ impl Widget for ProbeRow {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if self.consumes_press
             && matches!(
                 event,
@@ -188,8 +188,8 @@ impl Widget for ProbeRow {
         "ProbeRow"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        Some(crate::a11y::AccessNode::new(crate::a11y::Role::Button).with_name(&self.label))
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        Some(tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button).with_name(&self.label))
     }
 }
 
@@ -216,11 +216,11 @@ pub(super) fn lay_out<M: ListModel + 'static>(
 }
 
 fn cursor(y: f64) -> WindowEvent {
-    crate::synthetic_input::cursor_moved(20.0, y)
+    tilo_ui_base::synthetic_input::cursor_moved(20.0, y)
 }
 
 fn left(state: ElementState) -> WindowEvent {
-    crate::synthetic_input::mouse_input(state, MouseButton::Left)
+    tilo_ui_base::synthetic_input::mouse_input(state, MouseButton::Left)
 }
 
 fn dispatch<M: ListModel + 'static>(
@@ -265,16 +265,16 @@ tilo_test_env::scenario! {
             assert!(Widget::perform_semantic_action(
                 &mut list,
                 "key:20",
-                &crate::a11y::Action::Focus,
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                &tilo_ui_base::a11y::Action::Focus,
+                &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(list.focused_key(), Some(&20));
             assert!(Widget::perform_semantic_action(
                 &mut list,
                 "key:20",
-                &crate::a11y::Action::Activate,
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                &tilo_ui_base::a11y::Action::Activate,
+                &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert!(list.selection().is_selected(&20));
@@ -302,8 +302,8 @@ tilo_test_env::scenario! {
             assert!(Widget::perform_semantic_action(
                 &mut list,
                 "key:20",
-                &crate::a11y::Action::Activate,
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                &tilo_ui_base::a11y::Action::Activate,
+                &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert!(list.selection().is_selected(&20));
@@ -345,7 +345,7 @@ tilo_test_env::scenario! {
                 first
                     .children
                     .iter()
-                    .all(|node| node.role != crate::a11y::Role::Button),
+                    .all(|node| node.role != tilo_ui_base::a11y::Role::Button),
                 "the row's own widget is not handed over a second time"
             );
         }
@@ -426,14 +426,14 @@ tilo_test_env::scenario! {
             assert!(!list.selection().is_selected(&7));
 
             let semantics = list.accessibility().unwrap();
-            assert_eq!(semantics.role, crate::a11y::Role::List);
-            assert_eq!(semantics.children[0].role, crate::a11y::Role::ListItem);
+            assert_eq!(semantics.role, tilo_ui_base::a11y::Role::List);
+            assert_eq!(semantics.children[0].role, tilo_ui_base::a11y::Role::ListItem);
             assert_eq!(semantics.children[0].name.as_deref(), Some("action 7"));
             assert!(
                 semantics.children[0]
                     .children
                     .iter()
-                    .all(|node| node.role != crate::a11y::Role::Button),
+                    .all(|node| node.role != tilo_ui_base::a11y::Role::Button),
                 "the row's own widget is not handed over a second time"
             );
         }
@@ -481,7 +481,7 @@ tilo_test_env::scenario! {
             list.reduce_motion = true;
 
             dispatch(&mut list, &cursor(50.0), &taffy, node);
-            let wheel = crate::synthetic_input::mouse_wheel(0.0, -1.0);
+            let wheel = tilo_ui_base::synthetic_input::mouse_wheel(0.0, -1.0);
             assert!(dispatch(&mut list, &wheel, &taffy, node));
             assert_eq!(list.scroll_offset(), 60.0);
             assert!(!list.scroll.momentum.is_active());
@@ -533,8 +533,8 @@ tilo_test_env::scenario! {
         assert!(list.mounted.len() < 80, "a list mounts only what it shows");
 
         list.set_scroll_offset(1200.0);
-        let tree = crate::widget::layout::TreeId::of(&taffy);
-        crate::widget::layout::placing_again_in(tree, || {
+        let tree = tilo_ui_base::widget::layout::TreeId::of(&taffy);
+        tilo_ui_base::widget::layout::placing_again_in(tree, || {
             list.apply_layout(&taffy, node, Point::ZERO);
         });
 
@@ -671,9 +671,9 @@ tilo_test_env::scenario! {
             })
         };
         send(&mut list, &touch(winit::event::TouchPhase::Started, at));
-        send(&mut list, &crate::synthetic_input::cursor_moved(at.x, at.y));
-        send(&mut list, &crate::synthetic_input::mouse_press());
-        send(&mut list, &crate::synthetic_input::mouse_release());
+        send(&mut list, &tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y));
+        send(&mut list, &tilo_ui_base::synthetic_input::mouse_press());
+        send(&mut list, &tilo_ui_base::synthetic_input::mouse_release());
         send(&mut list, &touch(winit::event::TouchPhase::Ended, at));
         assert!(
             list.selection().is_selected(&1),
@@ -728,7 +728,7 @@ tilo_test_env::scenario! {
             Dispatch::new()
                 .modifiers(modifiers)
                 .layout(taffy, node)
-                .send(list, &crate::synthetic_input::named_key(key))
+                .send(list, &tilo_ui_base::synthetic_input::named_key(key))
                 .handled
         }
         let ctrl = winit::keyboard::ModifiersState::CONTROL;
@@ -786,7 +786,7 @@ tilo_test_env::scenario! {
                 .layout(&taffy, node)
                 .send(
                     &mut list,
-                    &crate::synthetic_input::named_key(NamedKey::Enter)
+                    &tilo_ui_base::synthetic_input::named_key(NamedKey::Enter)
                 )
                 .handled
         );
@@ -813,7 +813,7 @@ tilo_test_env::scenario! {
                     .layout(&taffy, node)
                     .send(
                         &mut list,
-                        &crate::synthetic_input::named_key(NamedKey::ArrowDown)
+                        &tilo_ui_base::synthetic_input::named_key(NamedKey::ArrowDown)
                     )
                     .handled,
                 "the list takes the extended walk"
@@ -833,7 +833,7 @@ tilo_test_env::scenario! {
                 .layout(&taffy, node)
                 .send(
                     &mut list,
-                    &crate::synthetic_input::named_key(NamedKey::Escape)
+                    &tilo_ui_base::synthetic_input::named_key(NamedKey::Escape)
                 )
                 .handled,
             "Escape belongs to a list that holds a choice"
@@ -911,7 +911,7 @@ tilo_test_env::scenario! {
                     .layout(&taffy, node)
                     .send(
                         &mut list,
-                        &crate::synthetic_input::named_key(NamedKey::ArrowDown)
+                        &tilo_ui_base::synthetic_input::named_key(NamedKey::ArrowDown)
                     )
                     .handled,
                 "the list takes the extended walk"
@@ -934,7 +934,7 @@ tilo_test_env::scenario! {
         let (taffy, node) = lay_out(&mut list, 300.0);
         list.set_focus(true);
         assert!(list.reveal(&2));
-        let down = crate::synthetic_input::named_key(NamedKey::ArrowDown);
+        let down = tilo_ui_base::synthetic_input::named_key(NamedKey::ArrowDown);
         assert!(dispatch(&mut list, &down, &taffy, node));
         assert_eq!(list.focused_key(), Some(&3));
         assert!(
@@ -966,8 +966,8 @@ fn click_row(
             position: (at.x, at.y).into(),
         },
     );
-    dispatch(list, &crate::synthetic_input::mouse_press());
-    dispatch(list, &crate::synthetic_input::mouse_release());
+    dispatch(list, &tilo_ui_base::synthetic_input::mouse_press());
+    dispatch(list, &tilo_ui_base::synthetic_input::mouse_release());
 }
 
 fn plain_rows(count: u32) -> VirtualList<VecListModel<u32, u32>> {
@@ -989,7 +989,7 @@ tilo_test_env::scenario! {
         let mut list = plain_rows(100);
         let _ = lay_out(&mut list, 300.0);
         let theme = Theme::dark();
-        let bleed = crate::chrome::row_bleed(&theme);
+        let bleed = tilo_ui_base::chrome::row_bleed(&theme);
         let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
         let row = list.mounted[0].widget.get_rect();
         assert!(row.x0.abs() < 0.5, "on the list's edge, where the page's words start: {row:?}");
@@ -1014,9 +1014,9 @@ tilo_test_env::scenario! {
     phase a_columns_rows_start_on_its_content_edge_and_leave_the_bar_its_gutter;
     {
         let theme = Theme::dark();
-        let edge = crate::chrome::column_gutter(&theme);
+        let edge = tilo_ui_base::chrome::column_gutter(&theme);
         let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
-        let lift = crate::chrome::row_bleed(&theme);
+        let lift = tilo_ui_base::chrome::row_bleed(&theme);
         let mut list = plain_rows(100).in_column();
         let _ = lay_out(&mut list, 300.0);
         let row = list.mounted[0].widget.get_rect();
@@ -1043,7 +1043,7 @@ tilo_test_env::scenario! {
             (0..3_u32).collect(),
             40.0,
             |item| *item,
-            |_, _, _| Box::new(crate::widget::Spacer::fixed(40.0)) as Element,
+            |_, _, _| Box::new(tilo_ui_base::widget::Spacer::fixed(40.0)) as Element,
         )
         .unwrap()
         .with_viewport_height(200.0)
@@ -1143,7 +1143,7 @@ tilo_test_env::scenario! {
             (0..10_000_u32).collect(),
             40.0,
             |item| *item,
-            |_, _, _| Box::new(crate::widget::Spacer::fixed(40.0)) as Element,
+            |_, _, _| Box::new(tilo_ui_base::widget::Spacer::fixed(40.0)) as Element,
         )
         .unwrap()
         .with_viewport_height(200.0)
@@ -1191,7 +1191,7 @@ tilo_test_env::scenario! {
     // yet is shown as soon as it does.
     {
         let keys = Rc::new(RefCell::new((0_u64..1000).collect::<Vec<_>>()));
-        let shown: crate::LocalState<Option<u64>> = crate::LocalState::new(None);
+        let shown: tilo_ui_base::LocalState<Option<u64>> = tilo_ui_base::LocalState::new(None);
         let mut list = VirtualList::new(
             SharedOrder {
                 keys: Rc::clone(&keys),
@@ -1248,7 +1248,7 @@ tilo_test_env::scenario! {
 #[test]
 fn a_reveal_a_click_asked_for_glides_and_the_wheel_takes_over() {
     use crate::time::testing::with_monotonic_time;
-    use crate::tokens::MotionSource;
+    use tilo_ui_base::tokens::MotionSource;
     let start = crate::time::now();
     let at = |ms: u64| start + Duration::from_millis(ms);
     let doc = AutoCommit::new();
@@ -1257,7 +1257,7 @@ fn a_reveal_a_click_asked_for_glides_and_the_wheel_takes_over() {
     let mut list = plain_rows(1000);
     let (taffy, node) = lay_out(&mut list, 300.0);
     with_monotonic_time(start, || {
-        crate::motion::note_source(MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(MotionSource::Pointer);
         assert!(list.reveal(&12));
     });
     assert_eq!(list.scroll_offset(), 0.0, "it starts where it is");
@@ -1286,7 +1286,7 @@ fn a_reveal_a_click_asked_for_glides_and_the_wheel_takes_over() {
     assert_eq!(list.scroll_offset(), drawn);
 
     with_monotonic_time(at(1000), || {
-        crate::motion::note_source(MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(MotionSource::Pointer);
         assert!(list.reveal(&20));
     });
     let bottom_of = |list: &VirtualList<VecListModel<u32, u32>>, index: usize| {
@@ -1301,7 +1301,7 @@ fn a_reveal_a_click_asked_for_glides_and_the_wheel_takes_over() {
     assert_eq!(list.scroll_offset(), target);
 
     with_monotonic_time(at(2000), || {
-        crate::motion::note_source(MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(MotionSource::Pointer);
         assert!(list.reveal(&900));
         assert_eq!(
             list.scroll_offset(),
@@ -1341,12 +1341,12 @@ fn a_wheels_glide_steps_on_the_frames_instant_not_the_clock() {
     for frame in 1..=12_u64 {
         let instant = at(frame * 16);
         with_monotonic_time(instant, || {
-            let _frame = crate::motion::pin_frame_at(instant);
+            let _frame = tilo_ui_base::motion::pin_frame_at(instant);
             punctual.update(&doc, &automerge::ROOT);
         });
         // The same frame, its update reached 11 ms after the frame began.
         with_monotonic_time(instant + Duration::from_millis(11), || {
-            let _frame = crate::motion::pin_frame_at(instant);
+            let _frame = tilo_ui_base::motion::pin_frame_at(instant);
             late.update(&doc, &automerge::ROOT);
         });
         assert_eq!(
@@ -1367,13 +1367,13 @@ where
     let at = list.rect.y0
         + list.viewport.item_view_top(row).unwrap()
         + list.viewport.item_height(row).unwrap() / 2.0;
-    let press = crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
+    let press = tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
     crate::widget::context_menu::note_input(&press);
     dispatch(list, &cursor(at), &taffy, node);
     dispatch(list, &press, &taffy, node);
     dispatch(
         list,
-        &crate::synthetic_input::mouse_input(ElementState::Released, MouseButton::Right),
+        &tilo_ui_base::synthetic_input::mouse_input(ElementState::Released, MouseButton::Right),
         &taffy,
         node,
     );
@@ -1411,7 +1411,7 @@ fn a_rows_send_box_takes_the_typing_and_the_pointer() {
     let (taffy, node) = lay_out(&mut list, 300.0);
     dispatch(
         &mut list,
-        &crate::synthetic_input::char_key("!"),
+        &tilo_ui_base::synthetic_input::char_key("!"),
         &taffy,
         node,
     );
@@ -1465,7 +1465,7 @@ tilo_test_env::scenario! {
         dispatch(&mut list, &cursor(row_three), &taffy, node);
         assert!(dispatch(
             &mut list,
-            &crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
+            &tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
             &taffy,
             node,
         ));
@@ -1506,7 +1506,7 @@ tilo_test_env::scenario! {
                 .send(list, event)
                 .handled
         };
-        let menu = crate::synthetic_input::named_key(NamedKey::ContextMenu);
+        let menu = tilo_ui_base::synthetic_input::named_key(NamedKey::ContextMenu);
         assert!(send(
             &mut list,
             &menu,
@@ -1515,7 +1515,7 @@ tilo_test_env::scenario! {
         assert_eq!(menus.borrow().len(), 1);
         assert_eq!(menus.borrow()[0], Some(2), "the row the keyboard is on");
         list.close_context_menu();
-        let f10 = crate::synthetic_input::named_key(NamedKey::F10);
+        let f10 = tilo_ui_base::synthetic_input::named_key(NamedKey::F10);
         assert!(send(
             &mut list,
             &f10,
@@ -1559,7 +1559,7 @@ tilo_test_env::scenario! {
         dispatch(&mut list, &cursor(row_three), &taffy, node);
         assert!(dispatch(
             &mut list,
-            &crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
+            &tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
             &taffy,
             node,
         ));
@@ -1579,7 +1579,7 @@ tilo_test_env::scenario! {
 
         list.set_focus(true);
         assert!(list.reveal(&5));
-        let menu = crate::synthetic_input::named_key(NamedKey::ContextMenu);
+        let menu = tilo_ui_base::synthetic_input::named_key(NamedKey::ContextMenu);
         assert!(
             Dispatch::new()
                 .layout(&taffy, node)
@@ -1614,7 +1614,7 @@ tilo_test_env::scenario! {
         dispatch(&mut list, &cursor(row_one), &taffy, node);
         assert!(dispatch(
             &mut list,
-            &crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
+            &tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
             &taffy,
             node,
         ));
@@ -1663,7 +1663,7 @@ fn a_selection_delegate_receives_its_neighbours_and_list_rows_join() {
     list.select_only(Some(1));
     list.selection_mut().toggle(ListKey::new(2u32));
     list.push_row_selection();
-    let joins: Vec<crate::chrome::RowJoin> = list
+    let joins: Vec<tilo_ui_base::chrome::RowJoin> = list
         .mounted
         .iter_mut()
         .take(4)
@@ -1675,8 +1675,8 @@ fn a_selection_delegate_receives_its_neighbours_and_list_rows_join() {
                 .join()
         })
         .collect();
-    assert_eq!(joins[1], crate::chrome::RowJoin::new(false, true));
-    assert_eq!(joins[2], crate::chrome::RowJoin::new(true, false));
+    assert_eq!(joins[1], tilo_ui_base::chrome::RowJoin::new(false, true));
+    assert_eq!(joins[2], tilo_ui_base::chrome::RowJoin::new(true, false));
     assert!(list.row_selection(0).below);
     assert!(list.row_selection(3).above);
 }
@@ -1712,7 +1712,7 @@ fn a_selection_delegate_wrapped_in_its_swipe_takes_its_selection() {
 
 #[test]
 fn rows_the_person_moves_glide_and_a_sync_lands_at_once() {
-    use crate::tokens::MotionSource;
+    use tilo_ui_base::tokens::MotionSource;
     let model = VecListModel::new(vec![1_u64, 2, 3], |key| *key).unwrap();
     let mut list = VirtualList::new(model, 20.0, |_, _, key| {
         Box::new(ProbeRow::new(
@@ -1734,7 +1734,7 @@ fn rows_the_person_moves_glide_and_a_sync_lands_at_once() {
     list.start_row_motion(motion);
     assert!(list.row_motion.is_empty(), "a sync lands at once");
 
-    crate::motion::note_source(MotionSource::Pointer);
+    tilo_ui_base::motion::note_source(MotionSource::Pointer);
     list.update_model_changes(
         &[ListModelChange::RowsMoved {
             from: 3,
@@ -1758,7 +1758,7 @@ fn rows_the_person_moves_glide_and_a_sync_lands_at_once() {
     let later = now + Duration::from_millis(600);
     assert!(!list.row_motion.is_moving(later), "and lands");
 
-    crate::motion::note_source(MotionSource::Keyboard);
+    tilo_ui_base::motion::note_source(MotionSource::Keyboard);
     list.update_model_changes(
         &[ListModelChange::RowsMoved {
             from: 0,
@@ -1775,7 +1775,7 @@ fn rows_the_person_moves_glide_and_a_sync_lands_at_once() {
 /// pinned frame reads the motion at the clock.
 #[test]
 fn a_frames_rows_glide_on_the_frames_instant() {
-    use crate::tokens::MotionSource;
+    use tilo_ui_base::tokens::MotionSource;
     let model = VecListModel::new(vec![1_u64, 2, 3], |key| *key).unwrap();
     let mut list = VirtualList::new(model, 20.0, |_, _, key| {
         Box::new(ProbeRow::new(
@@ -1789,7 +1789,7 @@ fn a_frames_rows_glide_on_the_frames_instant() {
     let _ = lay_out(&mut list, 300.0);
     let motion = Theme::dark().motion();
 
-    crate::motion::note_source(MotionSource::Pointer);
+    tilo_ui_base::motion::note_source(MotionSource::Pointer);
     list.update_model_changes(
         &[ListModelChange::RowsMoved {
             from: 2,
@@ -1802,7 +1802,7 @@ fn a_frames_rows_glide_on_the_frames_instant() {
 
     let first = crate::time::now();
     {
-        let _frame = crate::motion::pin_frame_at(first);
+        let _frame = tilo_ui_base::motion::pin_frame_at(first);
         list.start_row_motion(motion);
         let moved = list
             .row_motion
@@ -1817,7 +1817,7 @@ fn a_frames_rows_glide_on_the_frames_instant() {
     // The next frame draws that same glide further on, at the instant it is pinned at.
     let next = first + Duration::from_millis(40);
     {
-        let _frame = crate::motion::pin_frame_at(next);
+        let _frame = tilo_ui_base::motion::pin_frame_at(next);
         list.start_row_motion(motion);
         let moved = list
             .row_motion
@@ -1858,9 +1858,9 @@ fn a_list_fitting_its_rows_is_as_tall_as_they_are() {
         crate::State::new(),
         page,
         (300, 800),
-        crate::theme::Theme::light(),
+        tilo_ui_base::theme::Theme::light(),
     );
-    for _ in 0..crate::widget::SETTLE_FRAMES {
+    for _ in 0..tilo_ui_base::widget::SETTLE_FRAMES {
         h.relayout();
     }
     let inspection = h.inspection();
@@ -1891,7 +1891,7 @@ fn a_transcript_offers_the_way_to_what_is_unread_or_to_what_is_now() {
         (0..300_u32).collect(),
         40.0,
         |item| *item,
-        |_, _, _| Box::new(crate::widget::Spacer::fixed(40.0)) as Element,
+        |_, _, _| Box::new(tilo_ui_base::widget::Spacer::fixed(40.0)) as Element,
     )
     .unwrap()
     .with_viewport_height(200.0)
@@ -1904,11 +1904,11 @@ fn a_transcript_offers_the_way_to_what_is_unread_or_to_what_is_now() {
     assert!(list.pill_rect().is_some(), "the pill has a rectangle");
     let _ = dispatch(
         &mut list,
-        &crate::synthetic_input::named_key(NamedKey::Home),
+        &tilo_ui_base::synthetic_input::named_key(NamedKey::Home),
         &taffy,
         node,
     );
-    crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+    tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
     list.jump_to_unread();
     let _ = lay_out(&mut list, 300.0);
     assert!(
@@ -1922,7 +1922,7 @@ fn a_transcript_offers_the_way_to_what_is_unread_or_to_what_is_now() {
         (0..300_u32).collect(),
         40.0,
         |item| *item,
-        |_, _, _| Box::new(crate::widget::Spacer::fixed(40.0)) as Element,
+        |_, _, _| Box::new(tilo_ui_base::widget::Spacer::fixed(40.0)) as Element,
     )
     .unwrap()
     .with_viewport_height(200.0)
@@ -1944,7 +1944,7 @@ fn a_transcript_offers_the_way_to_what_is_unread_or_to_what_is_now() {
 /// first row the person has not seen.
 #[test]
 fn the_way_back_is_a_control_a_reader_or_an_agent_can_find_and_take() {
-    use crate::a11y::Action;
+    use tilo_ui_base::a11y::Action;
     use crate::app::driver::Driver;
     use crate::widget::ListRow;
     use crate::widget::conversation::Jump;
@@ -2054,7 +2054,7 @@ fn the_way_back_is_as_wide_as_its_words_need() {
         (0..300_u32).collect(),
         40.0,
         |item| *item,
-        |_, _, _| Box::new(crate::widget::Spacer::fixed(40.0)) as Element,
+        |_, _, _| Box::new(tilo_ui_base::widget::Spacer::fixed(40.0)) as Element,
     )
     .unwrap()
     .with_viewport_height(200.0)
@@ -2064,7 +2064,7 @@ fn the_way_back_is_as_wide_as_its_words_need() {
     let _ = lay_out(&mut list, 200.0);
     let theme = Theme::dark();
     let needs =
-        crate::text_render::with_layout_renderer(&theme, |text| Jump::Unread.width(text, &theme));
+        tilo_ui_base::text_render::with_layout_renderer(&theme, |text| Jump::Unread.width(text, &theme));
     let rect = list
         .pill_rect()
         .expect("the pill shows over rows read away from");
@@ -2085,7 +2085,7 @@ fn the_way_back_is_as_wide_as_its_words_need() {
 }
 
 fn page_column() -> VirtualList<VecListModel<u32, u32>> {
-    use crate::tokens::Rhythm;
+    use tilo_ui_base::tokens::Rhythm;
     use crate::widget::Text;
     use crate::widget::arrange::{Page, Part, Stack};
     VirtualList::from_items(
@@ -2220,12 +2220,12 @@ pub(super) fn within(within: accesskit::Rect, covered: accesskit::Rect) -> bool 
 
 #[test]
 fn a_closed_rows_own_controls_are_where_the_row_is() {
-    use crate::a11y::Action;
+    use tilo_ui_base::a11y::Action;
     use crate::app::driver::Driver;
     use crate::widget::{Checkbox, Column, Text};
     use accesskit::Role as AkRole;
 
-    let done = crate::LocalState::new(false);
+    let done = tilo_ui_base::LocalState::new(false);
     let model = VecListModel::new(vec![7_u64], |key| *key).unwrap();
     let state = done.clone();
     let list = VirtualList::new(model, 40.0, move |_, _, _| {
@@ -2261,7 +2261,7 @@ fn a_closed_rows_own_controls_are_where_the_row_is() {
 
 #[test]
 fn a_closed_rows_checkbox_is_one_control_under_one_row() {
-    use crate::a11y::Action;
+    use tilo_ui_base::a11y::Action;
     use crate::app::driver::Driver;
     use crate::widget::ListRow;
     use accesskit::Role as AkRole;
@@ -2388,7 +2388,7 @@ fn a_finger_held_on_a_row_lifts_it_and_moves_it_in_the_list() {
     let at = list.row_rect(&0).expect("the first row is placed").center();
     assert_eq!(
         list.touch_claim(at),
-        crate::interaction::TouchClaim::HoldDrag,
+        tilo_ui_base::interaction::TouchClaim::HoldDrag,
         "a row of a list that reorders claims a held finger"
     );
 
@@ -2401,11 +2401,11 @@ fn a_finger_held_on_a_row_lifts_it_and_moves_it_in_the_list() {
             .send(list, event)
             .handled
     };
-    send(&mut list, &crate::synthetic_input::cursor_moved(at.x, at.y));
+    send(&mut list, &tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y));
     send(&mut list, &left(ElementState::Pressed));
     send(
         &mut list,
-        &crate::synthetic_input::cursor_moved(at.x, at.y + 45.0),
+        &tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y + 45.0),
     );
     send(&mut list, &left(ElementState::Released));
 

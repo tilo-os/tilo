@@ -1,6 +1,6 @@
 //! A disk the installer can write to, as one selectable row.
 
-use ui::icons::Icon;
+use tilo_ui_base::icons::Icon;
 use ui::widget::ListRow;
 
 use crate::setup::destination::control::{Bound, Control};
@@ -8,7 +8,7 @@ use imager_backend::destination::disks::Disk;
 
 pub fn capacity(disk: &Disk) -> String {
     if disk.size_bytes > 0 {
-        ui::format::memory(disk.size_bytes)
+        tilo_ui_base::format::memory(disk.size_bytes)
     } else {
         disk.size.trim().to_string()
     }
@@ -20,7 +20,7 @@ pub fn too_small() -> String {
         "installer-blocked-disk-too-small",
         &[(
             "minimum",
-            ui::i18n::ArgValue::Text(ui::format::memory(imager_backend::MIN_TARGET_BYTES)),
+            tilo_ui_base::i18n::ArgValue::Text(tilo_ui_base::format::memory(imager_backend::MIN_TARGET_BYTES)),
         )],
     )
 }
@@ -59,7 +59,7 @@ pub fn disk_row(disk: &Disk, control: &Control, selected: bool) -> Bound {
     let title = if model.is_empty() {
         crate::resource::CATALOG.t_args(
             "imager-storage-device",
-            &[("size", ui::i18n::ArgValue::Text(capacity(disk)))],
+            &[("size", tilo_ui_base::i18n::ArgValue::Text(capacity(disk)))],
         )
     } else {
         model.to_string()
@@ -97,9 +97,9 @@ mod tests {
 
     use automerge::{AutoCommit, ROOT, ReadDoc};
     use taffy::TaffyTree;
-    use ui::synthetic_input::named_key;
-    use ui::theme::Theme;
-    use ui::widget::Widget;
+    use tilo_ui_base::synthetic_input::named_key;
+    use tilo_ui_base::theme::Theme;
+    use tilo_ui_base::widget::Widget;
     use winit::keyboard::NamedKey;
 
     use super::*;
@@ -174,7 +174,7 @@ mod tests {
             let mut row = disk_row(&disk(), &control, false);
             let mut doc = AutoCommit::new();
 
-            crate::setup::destination::press(&mut row, &ui::a11y::Action::Activate, &mut doc);
+            crate::setup::destination::press(&mut row, &tilo_ui_base::a11y::Action::Activate, &mut doc);
             assert!(
                 presses.take().map(|press| press.effect)
                     == Some(DestinationEffect::SelectDisk {
@@ -185,11 +185,11 @@ mod tests {
         }
         {
             let row = row(&disk(), false);
-            let bindings = ui::widget::controls::control_action_bindings(&row);
+            let bindings = tilo_ui_base::widget::controls::control_action_bindings(&row);
             assert_eq!(bindings.len(), 1, "the row is listed as its select action");
             assert!(matches!(
                 bindings[0].kind,
-                ui::widget::ControlBindingKind::Action(_)
+                tilo_ui_base::widget::ControlBindingKind::Action(_)
             ));
             assert_eq!(row.test_id(), Some("/dev/vdb"));
         }
@@ -242,9 +242,9 @@ mod tests {
 
             let mut doc = AutoCommit::new();
             assert!(!row.perform_action(
-                &ui::a11y::Action::Activate,
+                &tilo_ui_base::a11y::Action::Activate,
                 &[],
-                &mut ui::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &ROOT
             ));
             assert!(presses.take().is_none());

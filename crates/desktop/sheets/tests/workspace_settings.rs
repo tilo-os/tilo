@@ -7,7 +7,7 @@ use tilo_sheets::SheetState as _;
 use tilo_sheets::workspace_settings::{
     Settings, WorkspaceSettingsApp, WorkspaceSettingsEffect, WorkspaceSettingsState, scenario,
 };
-use ui::a11y::Action as A11yAction;
+use tilo_ui_base::a11y::Action as A11yAction;
 
 const VIEWPORT: (u32, u32) = (1280, 900);
 
@@ -567,7 +567,7 @@ tilo_test_env::scenario! {
         };
         let top = at(&mut app).expect("the row is laid out");
         app.harness()
-            .send(&ui::synthetic_input::cursor_moved(640.0, 450.0));
+            .send(&tilo_ui_base::synthetic_input::cursor_moved(640.0, 450.0));
         for _ in 0..6 {
             app.harness().scroll(0.0, -3.0);
         }

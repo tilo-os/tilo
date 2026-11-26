@@ -1,7 +1,7 @@
 //! [`TextStack`] as a described component.
 
-use crate::component::{Component, Described};
-use crate::widget::Tone;
+use tilo_ui_base::{component::Component, component::Described};
+use tilo_ui_base::widget::Tone;
 
 use super::{StackSize, TextStack};
 

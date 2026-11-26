@@ -4,11 +4,11 @@
 use super::BoundDispatchError;
 #[cfg(feature = "model")]
 use super::{CallbackBinding, CallbackScopeGuard, DocumentEditStamp};
-use crate::widget::Widget;
-use crate::widget::bound_nodes::BoundNodeMap;
-use crate::widget::component_walk::WalkError;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
+use tilo_ui_base::widget::component_walk::WalkError;
 #[cfg(feature = "model")]
-use crate::widget::component_walk::{ComponentScope, ScopeEntry};
+use tilo_ui_base::{widget::component_walk::ComponentScope, widget::component_walk::ScopeEntry};
 use automerge::{AutoCommit, ObjId};
 #[cfg(feature = "model")]
 use std::cell::RefCell;
@@ -188,7 +188,7 @@ pub unsafe fn invoke_bound_node<R>(
 /// The bound target of `control`, a control one of the window's components registered.
 #[cfg(feature = "model")]
 pub(crate) fn bound_target(
-    control: &crate::control_domain::ComponentControl,
+    control: &tilo_ui_base::control_domain::ComponentControl,
 ) -> super::BoundActionTarget {
     let binding = callback_binding_of(&*control.binding).clone();
     super::BoundActionTarget {
@@ -205,8 +205,8 @@ pub(crate) fn bound_target(
 #[cfg(feature = "model")]
 pub(crate) fn component_control(
     target: super::BoundActionTarget,
-) -> crate::control_domain::ComponentControl {
-    crate::control_domain::ComponentControl {
+) -> tilo_ui_base::control_domain::ComponentControl {
+    tilo_ui_base::control_domain::ComponentControl {
         input: target.input,
         address: target.address.address,
         binding: std::rc::Rc::new(target.binding),

@@ -29,6 +29,7 @@ tilo-app-fleet = { path = "../app-fleet" }
 tilo-locale = { path = "../../platform/tilo-locale" }
 # The shipped wallpapers a wallpaper choice is checked against.
 tilo-wallpapers = { version = "0.1.0", path = "../../desktop/tilo-wallpapers" }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 # The session's settings service: each section published with a setter per field.
 tilo-actions = { path = "../../core/actions" }

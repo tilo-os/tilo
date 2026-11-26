@@ -9,7 +9,7 @@ use crate::focus_navigation::Direction;
 
 /// The app root and what dispatching an event to it needs.
 pub(crate) struct RootEvent<'a> {
-    pub(crate) root: &'a mut dyn crate::widget::Widget,
+    pub(crate) root: &'a mut dyn tilo_ui_base::widget::Widget,
     pub(crate) state: &'a mut crate::State,
     pub(crate) modifiers: &'a winit::event::Modifiers,
     pub(crate) taffy: &'a TaffyTree<()>,
@@ -25,13 +25,13 @@ impl RootEvent<'_> {
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
     ) {
-        crate::input_generation::note();
+        tilo_ui_base::input_generation::note();
         self.root.handle_event(
             event,
-            &mut crate::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 scale_factor: self.scale_factor,
                 modifiers: self.modifiers,
-                state: crate::widget::Edits::lend(&mut self.state.doc),
+                state: tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
                 path: &self.state.root,
                 handled,
                 focus_target,
@@ -161,7 +161,7 @@ impl crate::app::App {
             return;
         };
         if self
-            .perform_node_action(focused, &crate::a11y::Action::Activate)
+            .perform_node_action(focused, &tilo_ui_base::a11y::Action::Activate)
             .unwrap_or(false)
         {
             *handled = true;
@@ -203,7 +203,7 @@ impl crate::app::App {
     /// A focused range control steps on Left and Right no widget consumed: one step, four with Shift,
     /// to its ends with the command modifier.
     pub(crate) fn handle_unconsumed_range_key(&mut self, event: &WindowEvent, handled: &mut bool) {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         if *handled {
             return;
         }
@@ -273,18 +273,18 @@ impl crate::app::App {
     }
 
     /// The control of `order` that takes the keyboard when its app does without one of its own choosing
-    /// ([`crate::widget::keyboard_entry_rank`]).
+    /// ([`tilo_ui_base::widget::keyboard_entry_rank`]).
     pub(crate) fn keyboard_entry(&self, order: &[NodeId]) -> Option<NodeId> {
         // Every control of a long list is asked its entry rank: the scope of the component they
         // belong to is held for the walk, not opened and closed for each of them.
         let tree = self.tree();
-        let mut sweep = crate::widget::bound_nodes::NodeSweep::new(tree.bindings, tree.node_map);
+        let mut sweep = tilo_ui_base::widget::bound_nodes::NodeSweep::new(tree.bindings, tree.node_map);
         order
             .iter()
             .copied()
             .filter_map(|node| {
                 // SAFETY: the host owns this stable tree; no target reference escapes.
-                let rank = unsafe { sweep.inspect(node, crate::widget::keyboard_entry_rank) }
+                let rank = unsafe { sweep.inspect(node, tilo_ui_base::widget::keyboard_entry_rank) }
                     .ok()
                     .flatten()?;
                 Some((rank, node))

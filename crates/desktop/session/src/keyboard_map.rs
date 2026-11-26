@@ -175,8 +175,8 @@ fn drawing(
         }
         Err(error) => return Err(error.to_string()),
     };
-    let keycaps = ui::Keycaps::from_xkb(layout, variant);
-    let english = ui::Keycaps::from_xkb("us", "");
+    let keycaps = tilo_ui_base::Keycaps::from_xkb(layout, variant);
+    let english = tilo_ui_base::Keycaps::from_xkb("us", "");
     let mut levels = 0;
     let keys = native
         .iter()

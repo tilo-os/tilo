@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 const APP: &str = "so.tilo.test-person";
 const ROOT_KEY: [u8; 32] = [42; 32];
 
-fn person() -> crate::permissions::MemberId {
-    crate::permissions::MemberId::person(hex::encode(ROOT_KEY))
+fn person() -> tilo_ui_base::permissions::MemberId {
+    tilo_ui_base::permissions::MemberId::person(hex::encode(ROOT_KEY))
 }
 
 /// One device's copy of the person's watched list in their own scope.
@@ -53,7 +53,7 @@ struct Holds {
     owner: crate::history_mode::HistoryOwner,
 }
 
-impl crate::widget::Decorator for Holds {
+impl tilo_ui_base::widget::Decorator for Holds {
     type Inner = crate::widget::Text;
     fn inner(&self) -> &crate::widget::Text {
         &self.text
@@ -61,19 +61,19 @@ impl crate::widget::Decorator for Holds {
     fn inner_mut(&mut self) -> &mut crate::widget::Text {
         &mut self.text
     }
-    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+    fn provide<'a>(&'a self, request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn crate::bound_dispatch::BoundWidget>() {
             request.provide::<dyn crate::bound_dispatch::BoundWidget>(self);
-        } else if request.wants::<dyn crate::widget::Decorated>() {
-            request.provide::<dyn crate::widget::Decorated>(self);
+        } else if request.wants::<dyn tilo_ui_base::widget::Decorated>() {
+            request.provide::<dyn tilo_ui_base::widget::Decorated>(self);
         } else {
             self.text.provide(request);
         }
     }
 }
 
-impl crate::widget::component_walk::ComponentBoundary for Holds {
-    fn component_scope(&self) -> Option<crate::widget::component_walk::Binding> {
+impl tilo_ui_base::widget::component_walk::ComponentBoundary for Holds {
+    fn component_scope(&self) -> Option<tilo_ui_base::widget::component_walk::Binding> {
         None
     }
 }
@@ -95,8 +95,8 @@ fn app_holding(record: &StoredResource) -> App {
     app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
     // The app shows a record of a shared workspace; the record kept beside it
     // is not in it.
-    app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
-        route: crate::collaboration::RouteSpec::document(APP, uuid::Uuid::new_v4(), "shown"),
+    app.actions.bound_broker_route_for_test = Some(tilo_ui_base::collaboration::AcceptedRoute {
+        route: tilo_ui_base::collaboration::RouteSpec::document(APP, uuid::Uuid::new_v4(), "shown"),
         epoch: uuid::Uuid::new_v4(),
     });
     app.refresh_document_routes();
@@ -117,7 +117,7 @@ fn app_holding(record: &StoredResource) -> App {
     app
 }
 
-fn snapshots(app: &mut App) -> Vec<(crate::collaboration::RouteSpec, Vec<u8>)> {
+fn snapshots(app: &mut App) -> Vec<(tilo_ui_base::collaboration::RouteSpec, Vec<u8>)> {
     std::mem::take(&mut app.document_routes.sent)
         .into_iter()
         .filter_map(|(route, request)| match request {
@@ -132,7 +132,7 @@ fn snapshots(app: &mut App) -> Vec<(crate::collaboration::RouteSpec, Vec<u8>)> {
 
 /// `document` whole on `route`, as the device's store sends what it holds of
 /// the record.
-fn from_device(route: &crate::collaboration::RouteSpec, document: Vec<u8>) -> CollabEvent {
+fn from_device(route: &tilo_ui_base::collaboration::RouteSpec, document: Vec<u8>) -> CollabEvent {
     CollabEvent::Document {
         route: route.clone(),
         mutation: collab_types::DocumentMutation::Snapshot(document),
@@ -183,7 +183,7 @@ tilo_test_env::scenario! {
     // itself, as it does without a root identity.
     {
         let mut owners = ResourceOwners::in_memory();
-        let record = PersonResources::open(&mut owners, APP, crate::permissions::MemberId::person("local"))
+        let record = PersonResources::open(&mut owners, APP, tilo_ui_base::permissions::MemberId::person("local"))
             .unwrap()
             .open_resource(ResourceType::new("test.watched"), &|doc| {
                 doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
@@ -290,25 +290,25 @@ tilo_test_env::scenario! {
 /// writes (per route), and whether it was asked to join.
 #[derive(Default)]
 struct Recording {
-    route: Option<crate::collaboration::RouteSpec>,
+    route: Option<tilo_ui_base::collaboration::RouteSpec>,
     /// The announced primary route, until it is reported once: a broker
     /// acknowledges the route it was joined with.
     acknowledged: bool,
-    writes: Vec<crate::collaboration::RouteSpec>,
-    joins: Vec<crate::collaboration::RouteSpec>,
+    writes: Vec<tilo_ui_base::collaboration::RouteSpec>,
+    joins: Vec<tilo_ui_base::collaboration::RouteSpec>,
 }
 
 struct RecordingTransport(Arc<Mutex<Recording>>);
 
-impl crate::collaboration::CollabTransport for RecordingTransport {
-    fn status(&self) -> crate::collaboration::TransportStatus {
-        crate::collaboration::TransportStatus::Ready
+impl tilo_ui_base::collaboration::CollabTransport for RecordingTransport {
+    fn status(&self) -> tilo_ui_base::collaboration::TransportStatus {
+        tilo_ui_base::collaboration::TransportStatus::Ready
     }
     fn submit(
         &mut self,
-        command: crate::collaboration::TransportCommand,
-    ) -> Result<(), crate::collaboration::TransportError> {
-        use crate::collaboration::TransportCommand as Command;
+        command: tilo_ui_base::collaboration::TransportCommand,
+    ) -> Result<(), tilo_ui_base::collaboration::TransportError> {
+        use tilo_ui_base::collaboration::TransportCommand as Command;
         match command {
             Command::Primary(CollabRequest::Document { .. }) => {
                 let route = self
@@ -328,10 +328,10 @@ impl crate::collaboration::CollabTransport for RecordingTransport {
         }
         Ok(())
     }
-    fn drain(&mut self, _: &mut Vec<crate::collaboration::CollabEvent>) {}
+    fn drain(&mut self, _: &mut Vec<tilo_ui_base::collaboration::CollabEvent>) {}
     fn take_primary_route_result(
         &mut self,
-    ) -> Option<Result<crate::collaboration::RouteSpec, String>> {
+    ) -> Option<Result<tilo_ui_base::collaboration::RouteSpec, String>> {
         let mut recording = self.0.lock().unwrap();
         if recording.acknowledged {
             return None;
@@ -341,7 +341,7 @@ impl crate::collaboration::CollabTransport for RecordingTransport {
     }
     fn take_action_directory_requests(
         &mut self,
-        _: &mut Vec<crate::collaboration::ActionDirectoryRequest>,
+        _: &mut Vec<tilo_ui_base::collaboration::ActionDirectoryRequest>,
     ) {
     }
     // A transport whose routes all take documents, as the broker's do once
@@ -386,12 +386,12 @@ fn owned_and_read(kind: &str) -> (StoredResource, StoredResource) {
 /// `Recording` transport that stands in for its broker.
 #[cfg(unix)]
 fn recording_window(app: &str, record: &StoredResource) -> (App, Arc<Mutex<Recording>>) {
-    let primary = crate::collaboration::RouteSpec::document(app, uuid::Uuid::new_v4(), "shown");
+    let primary = tilo_ui_base::collaboration::RouteSpec::document(app, uuid::Uuid::new_v4(), "shown");
     let recording = Arc::new(Mutex::new(Recording {
         route: Some(primary.clone()),
         ..Recording::default()
     }));
-    let transport: Box<dyn crate::collaboration::CollabTransport> =
+    let transport: Box<dyn tilo_ui_base::collaboration::CollabTransport> =
         Box::new(RecordingTransport(Arc::clone(&recording)));
     let mut manager = CollaborationManager::with_transport(transport);
     assert!(manager.send(CollabRequest::Hello {

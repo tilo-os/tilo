@@ -5,7 +5,7 @@ use vello::kurbo::Point;
 use winit::keyboard::{Key, NamedKey};
 
 use super::{ListKey, VirtualRows};
-use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
+use tilo_ui_base::{reorder::DropPlacement, reorder::DropTarget, reorder::ReorderDrop};
 use crate::time::Instant;
 
 impl VirtualRows {

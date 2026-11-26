@@ -5,13 +5,13 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use tilo_ui::widget::TaffyTreeExt;
+use tilo_ui_base::widget::TaffyTreeExt;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use tilo_ui::State;
 use tilo_ui::headless::Driver;
-use tilo_ui::theme::Theme;
-use tilo_ui::widget::Widget;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
 use tilo_ui::widget::context_menu::{ContextMenu, MenuItem};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, TouchPhase, WindowEvent};
@@ -41,9 +41,9 @@ impl Widget for Probe {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    tilo_ui::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = Point::new(position.x, position.y);

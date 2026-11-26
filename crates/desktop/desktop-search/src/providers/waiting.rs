@@ -9,7 +9,7 @@
 
 use tilo_actions::ResourceSpec;
 use ui::search::system::{ResourceKind, rank_fields};
-use ui::text_match::FieldWeight;
+use tilo_ui_base::text_match::FieldWeight;
 
 use crate::model::{DESKTOP_APP, Hit, InvokeTarget, Source, Target};
 
@@ -107,7 +107,7 @@ impl Source for Waiting {
                     subtitle: body,
                     facts: from.into_iter().collect(),
                     score,
-                    icon: Some(ui::icons::Icon::Bell),
+                    icon: Some(tilo_ui_base::icons::Icon::Bell),
                     target: Target::Invoke(Box::new(target)),
                 })
             })

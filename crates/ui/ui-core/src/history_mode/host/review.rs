@@ -4,12 +4,8 @@
     reason = "private implementation module shares its enclosing host types"
 )]
 use super::*;
-use crate::{
-    State,
-    i18n::I18nManager,
-    permissions::{MemberId, PermissionContext},
-    widget::ModalDialog,
-};
+use crate::{State, widget::ModalDialog};
+use tilo_ui_base::{i18n::I18nManager, permissions::MemberId, permissions::PermissionContext};
 
 #[derive(Clone, Copy)]
 pub(super) enum ReviewCommand {
@@ -350,8 +346,8 @@ impl HistoryHost {
                 }
             }
             ReviewedWrite::Name(request) => HistoryEdit::Name {
-                from: crate::HistoryEntryId::hex(&request.start),
-                to: crate::HistoryEntryId::hex(&request.end),
+                from: tilo_ui_base::HistoryEntryId::hex(&request.start),
+                to: tilo_ui_base::HistoryEntryId::hex(&request.end),
                 name: request.label.clone(),
                 replaces: request.document_id.clone(),
             },
@@ -410,7 +406,7 @@ impl HistoryHost {
 #[derive(Clone, Copy)]
 enum ReviewedWrite<'a> {
     Whole,
-    Changes(&'a [crate::widget::HistoryEntryId]),
+    Changes(&'a [tilo_ui_base::widget::HistoryEntryId]),
     Name(&'a crate::GroupNameRequest),
 }
 
@@ -428,7 +424,7 @@ fn check_restore_authority(
     app_id: &str,
     record: Option<&crate::resource::DocumentId>,
 ) -> Result<(), RestoreRefusal> {
-    use crate::permissions::{Access, ActionKind, MemberId};
+    use tilo_ui_base::{permissions::Access, permissions::ActionKind, permissions::MemberId};
     // The installed solo-workspace person is the runner's existing local-author mapping.
     // Other contexts must name the actual author.
     let acting = current.acting();
@@ -437,11 +433,11 @@ fn check_restore_authority(
         .into_iter()
         .filter_map(|node| node.by.member_id())
         .any(|member| match member {
-            MemberId::Person(id) => member == author || id == crate::permissions::LOCAL_USER,
+            MemberId::Person(id) => member == author || id == tilo_ui_base::permissions::LOCAL_USER,
             MemberId::Agent { .. } | MemberId::Bot(_) => false,
         });
     if !mapped
-        || !current.check(&crate::permissions::PermissionScope::app(
+        || !current.check(&tilo_ui_base::permissions::PermissionScope::app(
             app_id.to_owned(),
             ActionKind::Undoable,
         ))
@@ -449,7 +445,7 @@ fn check_restore_authority(
         return Err(RestoreRefusal::App);
     }
     if let Some(path) = record.and_then(crate::resource::DocumentId::file_path)
-        && !current.check(&crate::permissions::PermissionScope::path(
+        && !current.check(&tilo_ui_base::permissions::PermissionScope::path(
             path.to_string_lossy().into_owned(),
             Access::Write,
         ))

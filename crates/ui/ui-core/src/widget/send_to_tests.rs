@@ -3,7 +3,7 @@
 //! one request the session acts on.
 
 use super::*;
-use crate::widget::{Edits, EventCtx, TaffyTreeExt};
+use tilo_ui_base::{widget::Edits, widget::EventCtx, widget::TaffyTreeExt};
 use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::NamedKey;
 
@@ -30,10 +30,10 @@ fn send(send_to: &mut SendToBox, event: &WindowEvent) -> bool {
 
 /// Give `send_to` a key with `modifiers` held.
 fn key(send_to: &mut SendToBox, key: Key, modifiers: Modifiers) -> bool {
-    let event = crate::synthetic_input::key_event(key, None, winit::event::ElementState::Pressed);
+    let event = tilo_ui_base::synthetic_input::key_event(key, None, winit::event::ElementState::Pressed);
     send_held(
         send_to,
-        &crate::synthetic_input::keyboard_input(event),
+        &tilo_ui_base::synthetic_input::keyboard_input(event),
         modifiers,
     )
 }
@@ -73,7 +73,7 @@ fn tab(send_to: &mut SendToBox, shift: bool) -> bool {
 /// Type `text` into the field the keyboard is in.
 fn type_text(send_to: &mut SendToBox, text: &str) {
     for ch in text.chars() {
-        send(send_to, &crate::synthetic_input::char_key(&ch.to_string()));
+        send(send_to, &tilo_ui_base::synthetic_input::char_key(&ch.to_string()));
     }
 }
 
@@ -178,7 +178,7 @@ tilo_test_env::scenario! {
         assert_eq!(node.role, Role::Dialog);
         assert_eq!(
             node.name.as_deref(),
-            Some(crate::i18n::I18nManager::lookup_plain("send-to-name").as_str()),
+            Some(tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-name").as_str()),
             "the box is named for what it does"
         );
         let targets: Vec<&str> = node
@@ -206,7 +206,7 @@ tilo_test_env::scenario! {
             .collect();
         assert_eq!(
             read,
-            [crate::i18n::I18nManager::lookup_plain("send-to-new-agent").as_str()],
+            [tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-new-agent").as_str()],
             "whom it goes to is read where it stands: a chip the agent a message makes is no control of its own"
         );
         let field = node
@@ -216,7 +216,7 @@ tilo_test_env::scenario! {
             .expect("the field that adds someone is read");
         assert_eq!(
             field.name.as_deref(),
-            Some(crate::i18n::I18nManager::lookup_plain("send-to-recipients-name").as_str()),
+            Some(tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-recipients-name").as_str()),
             "named as it reads"
         );
         assert_eq!(
@@ -341,7 +341,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             subject_glyph(&one),
-            crate::icons::Icon::ListChecks,
+            tilo_ui_base::icons::Icon::ListChecks,
             "and leads with the glyph of the app that holds it"
         );
 
@@ -356,10 +356,10 @@ tilo_test_env::scenario! {
 
         let file = SharedSelection::of_items([("row-1", "Budget for Friday.txt")])
             .in_kind("files.folder")
-            .with_icon(crate::icons::Icon::FileText);
+            .with_icon(tilo_ui_base::icons::Icon::FileText);
         assert_eq!(
             subject_glyph(&file),
-            crate::icons::Icon::FileText,
+            tilo_ui_base::icons::Icon::FileText,
             "a listed file's chip shows the file, not the Files window it sits in"
         );
     }
@@ -381,7 +381,7 @@ tilo_test_env::scenario! {
                  file a minute later.";
         assert!(send_to.perform_semantic_action(
             "send-to:message",
-            &crate::a11y::Action::SetValue(words.to_owned()),
+            &tilo_ui_base::a11y::Action::SetValue(words.to_owned()),
         ));
         send_to.place(menu, Some(viewport));
         let grown = send_to.layout.message.height();
@@ -404,7 +404,7 @@ tilo_test_env::scenario! {
             reason = "a finite widget width in CSS pixels fits the f32 shaping API"
         )]
         let width = (send_to.layout.message.width() - 2.0 * f64::from(theme.tokens.spacing.s2)) as f32;
-        let (natural, one_line) = crate::text_render::with_layout_renderer(theme, |renderer| {
+        let (natural, one_line) = tilo_ui_base::text_render::with_layout_renderer(theme, |renderer| {
             (
                 renderer.measure_style(words, None, &style),
                 renderer.measure_style(words, Some(width), &style),
@@ -443,9 +443,9 @@ tilo_test_env::scenario! {
             .expect("the field that searches is read");
         let drawn = field
             .bounds
-            .map(crate::a11y::AccessBounds::to_rect)
+            .map(tilo_ui_base::a11y::AccessBounds::to_rect)
             .expect("where it is drawn");
-        let hint = crate::i18n::I18nManager::lookup_plain("send-to-search-placeholder");
+        let hint = tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-search-placeholder");
         let mut text = TextRenderer::new();
         let (hint_width, _) = text.measure_style(&hint, None, &Theme::dark().text(TextRole::Body));
         // The hint is set in from the field's edge as a chip's mark is, so the
@@ -478,7 +478,7 @@ tilo_test_env::scenario! {
                 node.children
                     .iter()
                     .find(|child| child.action_target.as_deref() == Some(target))
-                    .and_then(|child| child.bounds.map(crate::a11y::AccessBounds::to_rect))
+                    .and_then(|child| child.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect))
                     .expect("where it is drawn")
             };
             (at("send-to:recipients"), at("send-to:message"))
@@ -494,12 +494,12 @@ tilo_test_env::scenario! {
             node.children
                 .iter()
                 .find(|child| child.action_target.as_deref() == Some(target))
-                .and_then(|child| child.bounds.map(crate::a11y::AccessBounds::to_rect))
+                .and_then(|child| child.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect))
                 .expect("where it is drawn")
         };
         assert_eq!(
             node.bounds
-                .map(crate::a11y::AccessBounds::to_rect)
+                .map(tilo_ui_base::a11y::AccessBounds::to_rect)
                 .expect("the box's own bounds")
                 .y1,
             at("send-to:send").y1 + plain.padding(),
@@ -532,7 +532,7 @@ tilo_test_env::scenario! {
                 .map(|child| {
                     (
                         child.name.clone(),
-                        child.bounds.map(crate::a11y::AccessBounds::to_rect),
+                        child.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect),
                     )
                 })
         };
@@ -548,7 +548,7 @@ tilo_test_env::scenario! {
         let (name, bounds) = target(&send_to).expect("something selected: the button that adds it");
         assert_eq!(
             name.as_deref(),
-            Some(crate::i18n::I18nManager::lookup_plain("send-to-add-subject").as_str()),
+            Some(tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-add-subject").as_str()),
             "it is read as what it adds"
         );
         let bounds = bounds.expect("where it is drawn");
@@ -666,7 +666,7 @@ tilo_test_env::scenario! {
         // recipient found takes the place of the place reports go.
         assert!(send_to.perform_semantic_action(
             "send-to:recipients",
-            &crate::a11y::Action::SetValue("ada".to_owned())
+            &tilo_ui_base::a11y::Action::SetValue("ada".to_owned())
         ));
         let ada = Recipient::found(RecipientKind::Person, "ad".repeat(32), "Ada");
         send_to.choose_for_test(ada.clone());
@@ -730,7 +730,7 @@ tilo_test_env::scenario! {
 
         assert_eq!(
             send_to.name(),
-            crate::i18n::I18nManager::lookup_plain("send-to-report-name"),
+            tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-report-name"),
             "a report is what the box is doing"
         );
         let node = send_to.accessibility().expect("an open box is read");
@@ -740,7 +740,7 @@ tilo_test_env::scenario! {
         let message = box_beside(Rect::new(40.0, 120.0, 212.0, 320.0), viewport);
         assert_eq!(
             message.name(),
-            crate::i18n::I18nManager::lookup_plain("send-to-name"),
+            tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-name"),
             "and a message it sends anywhere is a message"
         );
     }
@@ -784,7 +784,7 @@ fn a_reports_box_carries_its_files_as_chips_the_person_may_take_off() {
         "each stands as a chip of its own"
     );
     // The picture is taken off its chip, as a screen reader takes it off.
-    assert!(send_to.perform_semantic_action("send-to:subject:2", &crate::a11y::Action::Activate));
+    assert!(send_to.perform_semantic_action("send-to:subject:2", &tilo_ui_base::a11y::Action::Activate));
     type_text(&mut send_to, "The send button does nothing");
     send_to.send();
     let requests = crate::shared_selection::take_send_to();

@@ -12,10 +12,10 @@ use winit::event::WindowEvent;
 
 use super::Choosing;
 use super::{AnyModel, ListKey, VirtualRows};
-use crate::a11y::AccessNode;
+use tilo_ui_base::a11y::AccessNode;
 
 use crate::widget::context_menu::{ContextMenu, MenuItem};
-use crate::widget::{Edits, Widget};
+use tilo_ui_base::{widget::Edits, widget::Widget};
 
 /// The prefix a list's menu targets carry, namespacing them into the list's own semantics.
 pub(super) const MENU_TARGET: &str = "menu:";
@@ -201,7 +201,7 @@ impl VirtualRows {
             opened.push(item);
         }
         // What the menu is about is the row's item under the press, which the window names.
-        opened.open_at([crate::num::f32_of_f64(at.x), crate::num::f32_of_f64(at.y)]);
+        opened.open_at([tilo_ui_base::num::f32_of_f64(at.x), tilo_ui_base::num::f32_of_f64(at.y)]);
         menu.menu = opened;
         menu.target = key.cloned();
         true
@@ -241,7 +241,7 @@ impl VirtualRows {
     pub(super) fn route_menu(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         let Some(menu) = self.menus.owned_mut() else {
             return false;
@@ -252,7 +252,7 @@ impl VirtualRows {
         let mut consumed = false;
         menu.menu.handle_event(
             event,
-            &mut crate::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 handled: &mut consumed,
                 ..ctx.reborrow(ctx.path, ctx.node_id)
             },
@@ -285,7 +285,7 @@ impl VirtualRows {
     }
 
     /// Paint the open menu over the rows.
-    pub(super) fn paint_menu(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub(super) fn paint_menu(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -293,7 +293,7 @@ impl VirtualRows {
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let Some(menu) = self.menus.owned_mut() {
-            menu.menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+            menu.menu.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text_renderer,
@@ -327,9 +327,9 @@ impl VirtualRows {
     pub(super) fn perform_menu_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         state: &mut Edits<'_>,
-        path: &crate::widget::ModelPath,
+        path: &tilo_ui_base::widget::ModelPath,
     ) -> Option<bool> {
         let target = target.strip_prefix(MENU_TARGET)?;
         let menu = self.menus.owned_mut()?;
@@ -365,6 +365,6 @@ fn namespace(node: &mut AccessNode) {
 impl ListMenu {
     /// The menu was drawn: its arrival, its highlight and its layout are on screen.
     pub(super) fn menu_drawn(&mut self) {
-        crate::widget::Widget::mark_drawn(&mut self.menu);
+        tilo_ui_base::widget::Widget::mark_drawn(&mut self.menu);
     }
 }

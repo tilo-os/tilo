@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use crate::component::File;
+use tilo_ui_base::component::File;
 
 /// The most a file a person hands a window may be: what a `File` value reads
 /// (`tilo_content_types::MAX_FILE_BYTES`).
@@ -32,7 +32,7 @@ impl FileRefusal {
     /// Why the file was not handed over, in the person's words.
     #[must_use]
     pub fn words(&self) -> String {
-        use crate::i18n::{widget_text, widget_text_with};
+        use tilo_ui_base::{i18n::widget_text, i18n::widget_text_with};
         match self {
             Self::TooLarge => widget_text("file-too-large"),
             Self::NoStore => widget_text("file-no-store"),

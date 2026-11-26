@@ -84,7 +84,7 @@ fn lists_places(app: &App) -> bool {
     PLACES.iter().all(|place| {
         app.semantic_tree()
             .iter()
-            .any(|node| node.role == ui::a11y::Role::TreeItem && node.answers_to(place))
+            .any(|node| node.role == tilo_ui_base::a11y::Role::TreeItem && node.answers_to(place))
     })
 }
 
@@ -96,7 +96,7 @@ fn row(app: &mut App, place: &str) -> (f64, f64) {
         let bounds = app
             .semantic_tree()
             .iter()
-            .find(|node| node.role == ui::a11y::Role::TreeItem && node.answers_to(place))
+            .find(|node| node.role == tilo_ui_base::a11y::Role::TreeItem && node.answers_to(place))
             .and_then(|node| node.bounds)
             .unwrap_or_else(|| panic!("the sidebar has a row for {place}"));
         let middle = (
@@ -109,10 +109,10 @@ fn row(app: &mut App, place: &str) -> (f64, f64) {
         let lines = if bounds.y1 > height { -1.0 } else { 1.0 };
         app.surface_input(
             &Window,
-            ui::synthetic_input::cursor_moved(middle.0, height / 2.0),
+            tilo_ui_base::synthetic_input::cursor_moved(middle.0, height / 2.0),
             false,
         );
-        app.surface_input(&Window, ui::synthetic_input::mouse_wheel(0.0, lines), false);
+        app.surface_input(&Window, tilo_ui_base::synthetic_input::mouse_wheel(0.0, lines), false);
         rest(app);
     }
     panic!("the sidebar never brings {place} into the window");
@@ -123,18 +123,18 @@ fn row(app: &mut App, place: &str) -> (f64, f64) {
 fn shown(app: &App) -> Option<String> {
     app.semantic_tree()
         .iter()
-        .filter(|node| node.role != ui::a11y::Role::TreeItem)
+        .filter(|node| node.role != tilo_ui_base::a11y::Role::TreeItem)
         .filter_map(|node| node.name.clone())
         .find(|name| PLACES.contains(&name.as_str()))
 }
 
 fn mouse(app: &mut App, state: ElementState) {
-    let event = ui::synthetic_input::mouse_input(state, MouseButton::Left);
+    let event = tilo_ui_base::synthetic_input::mouse_input(state, MouseButton::Left);
     app.surface_input(&Window, event, false);
 }
 
 /// Where `name` stands as `role` in the window, when it shows one.
-fn named(app: &App, role: ui::a11y::Role, name: &str) -> Option<(f64, f64)> {
+fn named(app: &App, role: tilo_ui_base::a11y::Role, name: &str) -> Option<(f64, f64)> {
     let bounds = app
         .semantic_tree()
         .iter()
@@ -148,7 +148,7 @@ fn named(app: &App, role: ui::a11y::Role, name: &str) -> Option<(f64, f64)> {
 
 /// One press at `(x, y)`, and the frames after it.
 fn press(app: &mut App, (x, y): (f64, f64)) {
-    app.surface_input(&Window, ui::synthetic_input::cursor_moved(x, y), false);
+    app.surface_input(&Window, tilo_ui_base::synthetic_input::cursor_moved(x, y), false);
     mouse(app, ElementState::Pressed);
     mouse(app, ElementState::Released);
     rest(app);
@@ -162,7 +162,7 @@ fn one_press_on_a_place_shows_its_page() {
         for (turn, place) in PLACES.iter().rev().enumerate() {
             let framed = turn % 2 == 1;
             let (x, y) = row(app, place);
-            app.surface_input(&Window, ui::synthetic_input::cursor_moved(x, y), false);
+            app.surface_input(&Window, tilo_ui_base::synthetic_input::cursor_moved(x, y), false);
             if framed {
                 frame(app);
             }
@@ -179,11 +179,11 @@ fn one_press_on_a_place_shows_its_page() {
         // A press on the next place before the page of the last one arrived.
         for (first, then) in [("Controls", "Data"), ("Media", "Backlog")] {
             let (x, y) = row(app, first);
-            app.surface_input(&Window, ui::synthetic_input::cursor_moved(x, y), false);
+            app.surface_input(&Window, tilo_ui_base::synthetic_input::cursor_moved(x, y), false);
             mouse(app, ElementState::Pressed);
             mouse(app, ElementState::Released);
             let (x, y) = row(app, then);
-            app.surface_input(&Window, ui::synthetic_input::cursor_moved(x, y), false);
+            app.surface_input(&Window, tilo_ui_base::synthetic_input::cursor_moved(x, y), false);
             mouse(app, ElementState::Pressed);
             frame(app);
             mouse(app, ElementState::Released);
@@ -210,15 +210,15 @@ fn a_phone_pushes_the_chosen_page_over_the_places() {
                 &format!("one press shows {place}, over the places, with Back"),
                 |app| {
                     shown(app).as_deref() == Some(place)
-                        && named(app, ui::a11y::Role::Button, "Back").is_some()
+                        && named(app, tilo_ui_base::a11y::Role::Button, "Back").is_some()
                 },
             );
-            let back = named(app, ui::a11y::Role::Button, "Back").expect("Back");
+            let back = named(app, tilo_ui_base::a11y::Role::Button, "Back").expect("Back");
             press(app, back);
             until(
                 app,
                 &format!("Back from {place} shows the places again"),
-                |app| named(app, ui::a11y::Role::Button, "Hide sidebar").is_some(),
+                |app| named(app, tilo_ui_base::a11y::Role::Button, "Hide sidebar").is_some(),
             );
         }
     })

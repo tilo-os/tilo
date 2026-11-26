@@ -51,13 +51,13 @@ fn shoot(app: &mut Session, name: &str) {
     let Some(dir) = shots_dir() else {
         return;
     };
-    for (shade, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
+    for (shade, theme) in [("light", tilo_ui_base::Theme::light()), ("dark", tilo_ui_base::Theme::dark())] {
         app.harness().set_theme(theme);
         settle(app);
         app.harness()
             .render_png(&dir.join(format!("{name}-{shade}.png")));
     }
-    app.harness().set_theme(ui::Theme::light());
+    app.harness().set_theme(tilo_ui_base::Theme::light());
     settle(app);
 }
 

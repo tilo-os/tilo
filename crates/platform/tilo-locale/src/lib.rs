@@ -15,10 +15,10 @@
 //! unknown value falls back to the default, key by key.
 
 use serde::{Deserialize, Serialize};
-use ui::clock::TimeStyle;
+use tilo_ui_base::clock::TimeStyle;
 /// The date, number and week formats are the toolkit's
-/// ([`ui::format::region`]), so formatters and this section share them.
-pub use ui::format::{DateStyle, FirstDayOfWeek, NumberStyle};
+/// ([`tilo_ui_base::format::region`]), so formatters and this section share them.
+pub use tilo_ui_base::{format::DateStyle, format::FirstDayOfWeek, format::NumberStyle};
 use ui::tilo_resource;
 
 /// The world's currencies, shared with every formatter: [`tilo_formats::Currency`].

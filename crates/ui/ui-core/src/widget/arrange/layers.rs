@@ -109,7 +109,7 @@ impl Arranged<LayersLayout> {
     }
 
     #[must_use]
-    pub fn push_at(mut self, child: crate::widget::Element, at: super::units::At) -> Self {
+    pub fn push_at(mut self, child: tilo_ui_base::widget::Element, at: super::units::At) -> Self {
         let mut part = Part::new(child);
         part.at = Some(at);
         self.parts.push(part);
@@ -119,7 +119,7 @@ impl Arranged<LayersLayout> {
     /// Add a child at `at`, centred on that edge of the cell rather than inside it: half over
     /// the cell, half outside (at a top position, on the top edge).
     #[must_use]
-    pub fn push_straddling(self, child: crate::widget::Element, at: super::units::At) -> Self {
+    pub fn push_straddling(self, child: tilo_ui_base::widget::Element, at: super::units::At) -> Self {
         let index = self.parts.len();
         let mut layers = self.push_at(child, at);
         layers.layout.straddling.push(index);

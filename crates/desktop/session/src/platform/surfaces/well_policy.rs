@@ -35,7 +35,7 @@ use super::gestures::GestureReader;
 const OFFSTAGE: i32 = -(1 << 20);
 
 /// A window's smallest width, in `rem`: an app's compact layout, one screen at a time
-/// (`ui::tokens::Metrics::window_min_width` at the stock text size).
+/// (`tilo_ui_base::tokens::Metrics::window_min_width` at the stock text size).
 const MIN_WIDTH_REM: f64 = 20.0;
 
 /// A window's smallest height, in `rem`: a bar over a couple of lines of content.
@@ -187,7 +187,7 @@ fn initial_extent(window: &WindowInfo, outputs: &[LayoutRect]) -> (i32, i32) {
         extent(f64::from(share).max(least))
     };
     // The stock text size the toolkit draws with, until a tree is laid out.
-    let rem = rem_of(&ui::Theme::dark());
+    let rem = rem_of(&tilo_ui_base::Theme::dark());
     let min_width = f64::from(rem) * MIN_WIDTH_REM;
     let min_height = f64::from(rem) * MIN_HEIGHT_REM;
     let mut size = (

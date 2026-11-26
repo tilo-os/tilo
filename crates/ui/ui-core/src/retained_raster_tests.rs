@@ -1,11 +1,11 @@
 use super::*;
 
-use crate::scene_parts::{PartKey, Recording, part, track};
+use tilo_ui_base::{scene_parts::PartKey, scene_parts::Recording, scene_parts::part, scene_parts::track};
 use vello::kurbo::Affine;
 use vello::peniko::Fill;
 
 /// A 400x200 frame (drawn at twice its size on the target) with a part in each corner.
-fn corners() -> (Box<Scene>, crate::scene_parts::SectionParts) {
+fn corners() -> (Box<Scene>, tilo_ui_base::scene_parts::SectionParts) {
     let recording = Recording::begin();
     let mut scene = Box::new(Scene::new());
     track(&scene);
@@ -153,7 +153,7 @@ tilo_test_env::scenario! {
                 damage_regions: &[],
                 scroll_copies: &[],
                 full_redraw: true,
-                backdrop: &crate::part_paint::backdrop::BackdropFrame::default(),
+                backdrop: &tilo_ui_base::part_paint::backdrop::BackdropFrame::default(),
             })
             .expect("the CPU draws the frame");
         let cpu = raster.cpu_frame().expect("the frame is on the CPU");
@@ -188,7 +188,7 @@ tilo_test_env::scenario! {
                     damage_regions: &[],
                     scroll_copies: &[],
                     full_redraw: true,
-                    backdrop: &crate::part_paint::backdrop::BackdropFrame::default(),
+                    backdrop: &tilo_ui_base::part_paint::backdrop::BackdropFrame::default(),
                 })
                 .is_err()
         );

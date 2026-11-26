@@ -13,10 +13,10 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::floating_surface::Recipient;
-use crate::shared_subject::SharedSelection;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::shared_subject::SharedSelection;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 
 /// How far a highlight stands off the part it outlines.
 const OUTSET: f64 = 3.0;
@@ -58,7 +58,7 @@ impl Pointing {
     }
 
     /// Where the pointer is now, in the window's logical pixels.
-    pub(crate) fn hover(&mut self, root: &dyn crate::widget::Widget, at: Point) {
+    pub(crate) fn hover(&mut self, root: &dyn tilo_ui_base::widget::Widget, at: Point) {
         self.chain = crate::pick::targets_at(root, at);
     }
 
@@ -96,7 +96,7 @@ impl Pointing {
     pub(crate) fn event(
         &mut self,
         event: &WindowEvent,
-        root: &dyn crate::widget::Widget,
+        root: &dyn tilo_ui_base::widget::Widget,
         scale: f64,
         focused: Option<SharedSelection>,
     ) -> Taken {
@@ -276,8 +276,8 @@ fn hint(
     let style = theme.text(TextRole::Label);
     let quiet = theme.text(TextRole::Caption);
     let spare = (bounds.width() - 64.0).max(0.0) as f32;
-    let line = crate::i18n::I18nManager::lookup_plain("send-to-point-hint");
-    let leaving = crate::i18n::I18nManager::lookup_plain("send-to-point-escape");
+    let line = tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-point-hint");
+    let leaving = tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-point-escape");
     let shown = text.elide_to_width_style(&line, spare, &style);
     let leaving = text.elide_to_width_style(&leaving, spare, &quiet);
     let (w, h) = text.measure_style(&shown, None, &style);
@@ -340,7 +340,7 @@ mod tests {
         let pointing = super::Pointing::new(Vec::new(), Vec::new(), "Notes".to_owned());
         let part = |name: Option<&str>, kind: Option<&str>| crate::pick::PickTarget {
             path: String::new(),
-            role: crate::a11y::Role::Group,
+            role: tilo_ui_base::a11y::Role::Group,
             name: name.map(str::to_owned),
             interface: false,
             kind: kind.map(str::to_owned),

@@ -14,11 +14,11 @@ use winit::keyboard::{Key, NamedKey};
 
 use super::{ListKey, VirtualRows};
 use super::{RowGroup, RowStance};
-use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
-use crate::theme::Theme;
+use tilo_ui_base::{reorder::DropPlacement, reorder::DropTarget, reorder::ReorderDrop};
+use tilo_ui_base::theme::Theme;
 
 pub const TREE_INDENT: f64 =
-    (crate::tokens::Metrics::BASE.icon_sm + crate::tokens::Spacing::BASE.rhythm.related) as f64;
+    (tilo_ui_base::tokens::Metrics::BASE.icon_sm + tilo_ui_base::tokens::Spacing::BASE.rhythm.related) as f64;
 const TREE_DEPTH_GUARD: u32 = 64;
 
 #[derive(Clone, Copy)]
@@ -107,9 +107,9 @@ impl Chevrons {
             return;
         };
         let icon = if folded {
-            crate::icons::Icon::ChevronRight
+            tilo_ui_base::icons::Icon::ChevronRight
         } else {
-            crate::icons::Icon::ChevronDown
+            tilo_ui_base::icons::Icon::ChevronDown
         };
         icon.draw(scene, transform, chevron, theme.text_dim);
     }
@@ -365,7 +365,7 @@ impl VirtualRows {
             .mounted
             .iter()
             .find(|row| row.index == index && row.state == super::MountedRowState::Ready)?;
-        crate::widget::capability::capability::<dyn super::RowActionRects>(row.widget.as_ref())?
+        tilo_ui_base::widget::capability::capability::<dyn super::RowActionRects>(row.widget.as_ref())?
             .row_action_rects()
             .get(action)
             .copied()
@@ -747,7 +747,7 @@ impl VirtualRows {
         key: &ListKey,
         row: Rect,
         cursor: vello::kurbo::Point,
-    ) -> Option<crate::reorder::DropCandidate<ListKey>> {
+    ) -> Option<tilo_ui_base::reorder::DropCandidate<ListKey>> {
         let marks = self.tree.clone()?;
         let fraction = ((cursor.y - row.y0) / row.height().max(1.0)).clamp(0.0, 1.0);
         let depth = self.depth_of(key);
@@ -784,7 +784,7 @@ impl VirtualRows {
         let folded = placement == DropPlacement::Inside
             && marks.is_branch(&target)
             && marks.is_folded(&target);
-        Some(crate::reorder::DropCandidate {
+        Some(tilo_ui_base::reorder::DropCandidate {
             target: DropTarget::new(target, placement),
             preview,
             can_hover_expand: folded,

@@ -4,9 +4,10 @@
 //! personal default or name an app of its own. A press moves either to the
 //! next app that can open the kind.
 
-use ui::icons::Icon;
-use ui::tokens::Rhythm;
-use ui::widget::{Button, Column, ControlSize, Element, EmptyState, ListRow, Row, Section};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::tokens::Rhythm;
+use ui::{widget::Button, widget::Column, widget::ControlSize, widget::EmptyState, widget::ListRow, widget::Row, widget::Section};
+use tilo_ui_base::widget::Element;
 
 use super::agents::{Intro, column, intro};
 use super::general::caption;

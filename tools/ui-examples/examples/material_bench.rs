@@ -5,12 +5,12 @@
 
 use std::time::{Duration, Instant};
 
-use tilo_ui::TextRole;
-use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::part_paint::backdrop::{BackdropFrame, BackdropRecording, layer_scene};
-use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::Theme;
-use tilo_ui::tokens::SurfaceRole;
+use tilo_ui_base::TextRole;
+use tilo_ui_base::offscreen::OffscreenRenderer;
+use tilo_ui_base::{part_paint::backdrop::BackdropFrame, part_paint::backdrop::BackdropRecording, part_paint::backdrop::layer_scene};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::SurfaceRole;
 use tilo_ui::widget::primitives::{SurfaceLevel, paint_surface};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
@@ -107,13 +107,13 @@ fn frame(theme: &Theme, text: &mut TextRenderer, shift: f64) -> (Scene, Backdrop
     // The top bar.
     let bar = RoundedRect::from_rect(Rect::new(0.0, 0.0, f64::from(WIDTH), BAR), 0.0);
     if theme.tokens.finishes.bar.is_some() {
-        tilo_ui::part_paint::backdrop::fill_role(
+        tilo_ui_base::part_paint::backdrop::fill_role(
             &mut scene,
             Affine::IDENTITY,
             &bar,
             SurfaceRole::Bar,
             theme,
-            tilo_ui::chrome::panel_ground(theme),
+            tilo_ui_base::chrome::panel_ground(theme),
         );
     }
     label(&mut scene, text, theme, Point::new(16.0, 10.0), "Workspace");
@@ -130,14 +130,14 @@ fn window(scene: &mut Scene, text: &mut TextRenderer, theme: &Theme, at: Affine)
     let on_window = paint_surface(scene, at, window, SurfaceLevel::Window, theme);
     let radius = f64::from(theme.tokens.radii.tile);
     let content = window.inset(-0.0);
-    tilo_ui::surface::region(
+    tilo_ui_base::surface::region(
         scene,
         at,
         Rect::new(content.x0 + 240.0, content.y0, content.x1, content.y1),
-        tilo_ui::surface::Region::Content,
+        tilo_ui_base::surface::Region::Content,
         &on_window,
     );
-    tilo_ui::surface::region(
+    tilo_ui_base::surface::region(
         scene,
         at,
         Rect::new(
@@ -146,7 +146,7 @@ fn window(scene: &mut Scene, text: &mut TextRenderer, theme: &Theme, at: Affine)
             content.x0 + 240.0,
             content.y1 - radius,
         ),
-        tilo_ui::surface::Region::Sidebar,
+        tilo_ui_base::surface::Region::Sidebar,
         &on_window,
     );
     for (i, name) in (0u8..).zip(["Inbox", "Drafts", "Sent", "Archive"]) {
@@ -193,9 +193,9 @@ fn window(scene: &mut Scene, text: &mut TextRenderer, theme: &Theme, at: Affine)
 fn floating(scene: &mut Scene, text: &mut TextRenderer, theme: &Theme) {
     let menu = Rect::new(940.0, 260.0, 1300.0, 600.0);
     let panel_radius = f64::from(theme.tokens.radii.panel);
-    tilo_ui::surface::floating_shadow(scene, Affine::IDENTITY, menu, panel_radius, 1.0, theme);
-    tilo_ui::surface::panel(scene, Affine::IDENTITY, menu, panel_radius, theme);
-    let on_menu = tilo_ui::chrome::shell::on_panel(theme);
+    tilo_ui_base::surface::floating_shadow(scene, Affine::IDENTITY, menu, panel_radius, 1.0, theme);
+    tilo_ui_base::surface::panel(scene, Affine::IDENTITY, menu, panel_radius, theme);
+    let on_menu = tilo_ui_base::chrome::shell::on_panel(theme);
     for (i, name) in (0u8..).zip([
         "Open",
         "Open in new window",
@@ -215,8 +215,8 @@ fn floating(scene: &mut Scene, text: &mut TextRenderer, theme: &Theme) {
 
     // A notification at the top right.
     let note = Rect::new(1180.0, 56.0, 1580.0, 156.0);
-    tilo_ui::surface::floating_shadow(scene, Affine::IDENTITY, note, panel_radius, 1.0, theme);
-    tilo_ui::surface::panel(scene, Affine::IDENTITY, note, panel_radius, theme);
+    tilo_ui_base::surface::floating_shadow(scene, Affine::IDENTITY, note, panel_radius, 1.0, theme);
+    tilo_ui_base::surface::panel(scene, Affine::IDENTITY, note, panel_radius, theme);
     label(
         scene,
         text,
@@ -274,14 +274,14 @@ pub fn run(args: &[String]) {
             Some(theme) => theme,
             None if std::path::Path::new(&name).is_dir() => {
                 let dir = std::path::Path::new(&name);
-                let document = std::fs::read_to_string(dir.join(tilo_ui::theme_bundle::DOCUMENT))
+                let document = std::fs::read_to_string(dir.join(tilo_ui_base::theme_bundle::DOCUMENT))
                     .unwrap_or_else(|e| crate::registry::fatal(format!("{name}: {e}")));
-                tilo_ui::theme_bundle::load(&document, |set| {
+                tilo_ui_base::theme_bundle::load(&document, |set| {
                     let path = dir.join(format!("{set}.wasm"));
                     match std::fs::read(&path) {
                         Ok(bytes) => Ok(Some(bytes)),
                         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                        Err(e) => Err(tilo_ui::theme_bundle::BundleError::Read(format!(
+                        Err(e) => Err(tilo_ui_base::theme_bundle::BundleError::Read(format!(
                             "{}: {e}",
                             path.display()
                         ))),
@@ -313,7 +313,7 @@ pub fn run(args: &[String]) {
         // The timing: every frame built and rendered from scratch. The parts
         // are settled, so after the shot each one is replayed from the
         // toolkit's cache: `drawn anew` counts any that were not.
-        let held = tilo_ui::part_paint::cached_parts();
+        let held = tilo_ui_base::part_paint::cached_parts();
         let mut time = |text: &mut TextRenderer, shift: &dyn Fn(usize) -> f64| {
             let mut samples = Vec::with_capacity(frames);
             let mut reused = 0;
@@ -329,7 +329,7 @@ pub fn run(args: &[String]) {
             (samples, reused)
         };
         let (idle, idle_reused) = time(&mut text, &|_| 0.0);
-        let drawn_anew = tilo_ui::part_paint::cached_parts().saturating_sub(held);
+        let drawn_anew = tilo_ui_base::part_paint::cached_parts().saturating_sub(held);
         #[allow(clippy::cast_precision_loss, reason = "an index below 60")]
         let (moving, moving_reused) = time(&mut text, &|index| (index % 60) as f64 * 3.0 + 3.0);
         let ms = |samples: &[Duration], p: f64| percentile(samples, p).as_secs_f64() * 1000.0;

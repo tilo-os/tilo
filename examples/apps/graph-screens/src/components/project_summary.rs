@@ -1,5 +1,6 @@
-use ui::tokens::TextRole;
-use ui::widget::{Element, Text};
+use tilo_ui_base::tokens::TextRole;
+use ui::widget::Text;
+use tilo_ui_base::widget::Element;
 use ui::{GraphPropKind, UiBuildContext, UiComponentRequest};
 
 /// The props a serialized UI graph node names, and what each must hold. `tilolang doctor` reads it.
@@ -60,7 +61,7 @@ pub fn register_ui_graph(context: UiBuildContext) -> UiBuildContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::a11y::Role;
+    use tilo_ui_base::a11y::Role;
     use ui::headless::SemanticExpectation;
 
     #[test]
@@ -92,7 +93,7 @@ mod tests {
         )
         .expect("valid component graph");
         let context = register_ui_graph(UiBuildContext::default());
-        let widget = ui::UiDocumentExt::build_with(&document, &ui::Theme::default(), &context)
+        let widget = ui::UiDocumentExt::build_with(&document, &tilo_ui_base::Theme::default(), &context)
             .expect("registered component");
         let mut app = ui::headless::Driver::new(ui::State::new(), widget, (480, 240));
         app.expect(
@@ -107,7 +108,7 @@ mod tests {
         )
         .expect("structurally valid component graph");
         assert!(matches!(
-            ui::UiDocumentExt::build_with(&invalid, &ui::Theme::default(), &context),
+            ui::UiDocumentExt::build_with(&invalid, &tilo_ui_base::Theme::default(), &context),
             Err(ui::UiGraphError::ComponentBuild { message, .. })
                 if message == "detail must be a string"
         ));

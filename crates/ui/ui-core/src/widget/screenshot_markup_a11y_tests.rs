@@ -6,10 +6,10 @@
 use std::sync::Arc;
 
 use super::*;
-use crate::a11y::Action;
+use tilo_ui_base::a11y::Action;
 use crate::app::driver::Driver;
 use crate::state::State;
-use crate::theme::Theme;
+use tilo_ui_base::theme::Theme;
 
 fn harness(width: u32) -> Driver {
     let rgba: Arc<[u8]> = Arc::from(vec![20_u8; 64 * 64 * 4]);

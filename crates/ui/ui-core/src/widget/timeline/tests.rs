@@ -2,12 +2,12 @@
 
 use super::widget::ItemEvents;
 use super::*;
-use crate::component::{Event, Fired, Intent, Value};
+use tilo_ui_base::{component::Event, component::Fired, component::Intent, component::Value};
 use crate::composition::Composed;
-use crate::paint::PaintCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::Widget;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
 use jiff::civil::Date;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -50,7 +50,7 @@ fn center_of(column: usize, minute: i64) -> Point {
     )
 }
 
-fn grid_events(queue: &crate::Intents<Fired>) -> (Event, Event, Event) {
+fn grid_events(queue: &tilo_ui_base::Intents<Fired>) -> (Event, Event, Event) {
     (
         Event::View(Intent::new(queue, "timeline", "created")),
         Event::View(Intent::new(queue, "timeline", "open_day")),
@@ -58,7 +58,7 @@ fn grid_events(queue: &crate::Intents<Fired>) -> (Event, Event, Event) {
     )
 }
 
-fn item_events(queue: &crate::Intents<Fired>) -> ItemEvents {
+fn item_events(queue: &tilo_ui_base::Intents<Fired>) -> ItemEvents {
     ItemEvents {
         press: Event::View(Intent::new(queue, "item", "pressed")),
         moved: Event::View(Intent::new(queue, "item", "moved")),
@@ -97,7 +97,7 @@ tilo_test_env::scenario! {
 
     phase dragging_empty_hours_creates_an_event_at_the_snapped_times;
     {
-        let queue: crate::Intents<Fired> = crate::Intents::default();
+        let queue: tilo_ui_base::Intents<Fired> = tilo_ui_base::Intents::default();
         let mut timeline = week(Date::new(2026, 8, 31).unwrap());
         timeline.set_events_for_test(grid_events(&queue));
         let target = timeline.days[2];
@@ -120,7 +120,7 @@ tilo_test_env::scenario! {
 
     phase dragging_an_event_moves_it_to_the_day_and_time_it_lands_on;
     {
-        let queue: crate::Intents<Fired> = crate::Intents::default();
+        let queue: tilo_ui_base::Intents<Fired> = tilo_ui_base::Intents::default();
         let mut timeline = week(Date::new(2026, 8, 31).unwrap());
         timeline.set_events_for_test(grid_events(&queue));
         let (from_day, to_day) = (timeline.days[1], timeline.days[4]);
@@ -146,7 +146,7 @@ tilo_test_env::scenario! {
 
     phase dragging_an_events_bottom_edge_resizes_only_its_end;
     {
-        let queue: crate::Intents<Fired> = crate::Intents::default();
+        let queue: tilo_ui_base::Intents<Fired> = tilo_ui_base::Intents::default();
         let mut timeline = week(Date::new(2026, 8, 31).unwrap());
         timeline.set_events_for_test(grid_events(&queue));
         let day = timeline.days[2];
@@ -171,7 +171,7 @@ tilo_test_env::scenario! {
 
     phase pressing_an_event_reports_it_and_pressing_empty_hours_opens_the_day;
     {
-        let queue: crate::Intents<Fired> = crate::Intents::default();
+        let queue: tilo_ui_base::Intents<Fired> = tilo_ui_base::Intents::default();
         let mut timeline = week(Date::new(2026, 8, 31).unwrap());
         timeline.set_events_for_test(grid_events(&queue));
         let first = timeline.days[0];
@@ -210,7 +210,7 @@ tilo_test_env::scenario! {
         let theme = Theme::dark();
         let mut scene = vello::Scene::new();
         let mut text = TextRenderer::new();
-        timeline.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, crate::presence::PresenceCtx::empty().draw_env()));
+        timeline.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, tilo_ui_base::presence::PresenceCtx::empty().draw_env()));
         assert!(timeline.painted() > 0, "the week shows its events");
         assert!(
             timeline.painted() < 2_000,
@@ -332,21 +332,21 @@ tilo_test_env::scenario! {
         let sections: Vec<_> = access
             .children
             .iter()
-            .filter(|child| child.role == crate::a11y::Role::Group)
+            .filter(|child| child.role == tilo_ui_base::a11y::Role::Group)
             .collect();
         assert_eq!(sections.len(), 7, "a week is seven day groups");
         let mut buttons = Vec::new();
         for (column, section) in sections.iter().enumerate() {
             let day = days[column];
             let iso = day.to_string();
-            let heading = crate::format::day_heading(day, false);
+            let heading = tilo_ui_base::format::day_heading(day, false);
             assert_eq!(section.value.as_deref(), Some(iso.as_str()));
             assert_eq!(section.name.as_deref(), Some(heading.as_str()));
             buttons.extend(
                 section
                     .children
                     .iter()
-                    .filter(|part| part.role == crate::a11y::Role::Button),
+                    .filter(|part| part.role == tilo_ui_base::a11y::Role::Button),
             );
         }
         assert!(buttons.len() > 10, "the events the viewport shows are buttons");
@@ -366,13 +366,13 @@ tilo_test_env::scenario! {
         let html = crate::composition::page::Page::new().render(&composition);
         assert_eq!(html.matches("<section").count(), 7, "a day is a section: {html}");
         assert!(html.contains(&crate::composition::page::escape(
-            &crate::format::day_heading(days[0], false)
+            &tilo_ui_base::format::day_heading(days[0], false)
         )));
         assert!(html.contains("a title long enough to run past the width of one day"));
         assert!(html.contains("data-a=\"activate\" data-t=\"tilo.key-action:timeline:"));
         // Each day and each event tells the browser the time it stands for.
         for day in &days {
-            let heading = crate::composition::page::escape(&crate::format::day_heading(*day, false));
+            let heading = crate::composition::page::escape(&tilo_ui_base::format::day_heading(*day, false));
             assert!(
                 html.contains(&format!("<time datetime=\"{day}\">{heading}</time>")),
                 "{day} is a time on the page: {html}"
@@ -393,7 +393,7 @@ tilo_test_env::scenario! {
 
     phase activating_an_events_element_presses_what_a_click_on_it_presses;
     {
-        let queue: crate::Intents<Fired> = crate::Intents::default();
+        let queue: tilo_ui_base::Intents<Fired> = tilo_ui_base::Intents::default();
         let anchor = Date::new(2026, 8, 31).unwrap();
         let mut timeline = Timeline::new(TimelineMode::Week, anchor, Vec::new());
         timeline.show_now = false;
@@ -416,7 +416,7 @@ tilo_test_env::scenario! {
             .expect("the grid says what it is")
             .nodes()
             .into_iter()
-            .find(|part| part.role == crate::a11y::Role::Button && part.action_target.is_some())
+            .find(|part| part.role == tilo_ui_base::a11y::Role::Button && part.action_target.is_some())
             .expect("the event is a button");
         let target = button.action_target.clone().expect("the button names its event");
         let bounds = button.bounds.expect("the event stands somewhere");
@@ -431,7 +431,7 @@ tilo_test_env::scenario! {
         host.perform_semantic_named(
             "Timeline",
             Some(target.as_str()),
-            &crate::a11y::Action::Activate,
+            &tilo_ui_base::a11y::Action::Activate,
         )
         .expect("the event's element takes the activation");
         let pressed = queue.take();
@@ -449,13 +449,13 @@ tilo_test_env::scenario! {
         timeline.layout_for(Rect::new(0.0, 0.0, 980.0, 760.0), &Theme::dark());
         let access = timeline.accessibility().expect("the month says what it is");
         assert_eq!(access.children.len(), 42, "six weeks of day cells");
-        let heading = crate::format::day_heading(day, false);
+        let heading = tilo_ui_base::format::day_heading(day, false);
         let cell = access
             .children
             .iter()
             .find(|cell| cell.value.as_deref() == Some("2026-11-03"))
             .expect("the day's own cell");
-        assert_eq!(cell.role, crate::a11y::Role::Group);
+        assert_eq!(cell.role, tilo_ui_base::a11y::Role::Group);
         assert_eq!(cell.name.as_deref(), Some(heading.as_str()));
         assert!(cell.bounds.is_some(), "a cell stands somewhere");
         assert_eq!(cell.children.len(), 1, "the day's event");

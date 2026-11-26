@@ -38,7 +38,7 @@ const WHOLE: f64 = 1e-3;
 fn whole(value: f64) -> Option<u32> {
     let rounded = value.round();
     ((value - rounded).abs() <= WHOLE && rounded >= 0.0 && rounded <= f64::from(u32::MAX))
-        .then(|| crate::num::u32_of_f64(rounded))
+        .then(|| tilo_ui_base::num::u32_of_f64(rounded))
 }
 
 /// One frame drawn as layers, on this thread, from [`Self::begin`] until [`Self::finish`]
@@ -171,7 +171,7 @@ pub fn draw_strip(
 pub fn tiles(damage: &[Rect], (width, height): (u32, u32)) -> Vec<FineDamageRect> {
     let edge = f64::from(TILE);
     let at = |value: f64, round: fn(f64) -> f64, high: u32| {
-        crate::num::u32_of_f64((round(value / edge) * edge).clamp(0.0, f64::from(high)))
+        tilo_ui_base::num::u32_of_f64((round(value / edge) * edge).clamp(0.0, f64::from(high)))
     };
     damage
         .iter()
@@ -200,7 +200,7 @@ const TILE: u32 = 16;
 /// Put what `cache` draws under its chrome below every surface of `backdrop`: a floating
 /// surface drawn in the chrome recorded only the chrome drawn before it as what is behind
 /// it.
-pub fn put_under(cache: &FrameCache, backdrop: &mut crate::part_paint::backdrop::BackdropFrame) {
+pub fn put_under(cache: &FrameCache, backdrop: &mut tilo_ui_base::part_paint::backdrop::BackdropFrame) {
     if backdrop.is_empty() {
         return;
     }

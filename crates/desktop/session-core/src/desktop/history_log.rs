@@ -88,7 +88,7 @@ pub fn register_authors(
             None => ui::history_source::author_coloured(
                 name.clone(),
                 ui::history_source::short_id(&identity),
-                ui::presence::identity_color(name),
+                tilo_ui_base::presence::identity_color(name),
             ),
         };
         directory.register(actor, author);
@@ -139,13 +139,13 @@ mod tests {
             let author = directory.resolve("aa");
             assert_eq!(author.name, "Eager Dolphin");
             assert_eq!(author.rgb(), pink);
-            assert_eq!(ui::widget::avatar_face::initials_for_name(&author.name), "ED");
+            assert_eq!(tilo_ui_base::widget::avatar_face::initials_for_name(&author.name), "ED");
 
             let mut unknown = ui::AuthorDirectory::new();
             register_authors(&mut unknown, &authors, &|_| None);
             assert_eq!(
                 unknown.resolve("aa").name,
-                ui::presence::unnamed_person_label(),
+                tilo_ui_base::presence::unnamed_person_label(),
                 "nobody to name them by: never their key"
             );
         }

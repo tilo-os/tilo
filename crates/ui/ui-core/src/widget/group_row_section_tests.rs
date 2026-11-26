@@ -134,7 +134,8 @@ tilo_test_env::scenario! {
     phase a_window_reaching_past_its_display_takes_no_pointer_on_the_next;
     {
         use crate::widget::app_widget::{AppWidget, IconDescriptor};
-        use crate::widget::{AppKind, EventCtx};
+        use crate::widget::AppKind;
+        use tilo_ui_base::widget::EventCtx;
         use std::cell::RefCell;
         use std::rc::Rc;
         use winit::event::MouseScrollDelta;
@@ -161,7 +162,7 @@ tilo_test_env::scenario! {
             ) -> NodeId {
                 taffy.fill_leaf(node_map, self)
             }
-            crate::rect_geometry!();
+            tilo_ui_base::rect_geometry!();
             fn name(&self) -> &'static str {
                 "Hears"
             }

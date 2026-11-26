@@ -117,7 +117,7 @@ fn a_writer_whose_window_vanished_stops_reading_as_typing_when_they_go_quiet_wit
         .wakes_in()
         .expect("Bo's host wakes when Ada's typing runs out");
     assert!(
-        wait <= ui::presence::COMPOSING_LINGER,
+        wait <= tilo_ui_base::presence::COMPOSING_LINGER,
         "it wakes within the time a quiet writer lingers: {wait:?}"
     );
     let woke_at = ui::time::now() + wait;

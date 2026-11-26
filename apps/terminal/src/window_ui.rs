@@ -445,7 +445,7 @@ impl TerminalWidget {
         format!("terminal.restart:{}", self.pane_id)
     }
 
-    fn route_restart(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
+    fn route_restart(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) -> bool {
         let target = self.life.restart_action.get();
         if target.is_zero_area() || !self.can_restart() {
             return false;
@@ -506,7 +506,7 @@ impl TerminalWidget {
     fn route_start_failure(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         let reconnecting = self.life.reconnect.is_some();
         if self.start_failure().is_none() && !reconnecting {
@@ -588,8 +588,8 @@ impl TerminalWidget {
         })
     }
 
-    fn start_failure_accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Politeness, Role};
+    fn start_failure_accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Politeness, a11y::Role};
         let (key, name, reason, bounds, politeness) = if let Some(banner) = self.reconnect_banner()
         {
             let reason = self

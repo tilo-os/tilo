@@ -31,9 +31,9 @@ use jiff::civil::Date;
 use vello::kurbo::Rect;
 use vello::peniko::Color;
 
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::TimelineDensity;
 
 /// A quarter hour: the default slot a drag snaps to.
@@ -80,7 +80,7 @@ impl TimelineMode {
     }
 }
 
-crate::choice!(TimelineMode, "TimelineMode", {
+tilo_ui_base::choice!(TimelineMode, "TimelineMode", {
     Day => "day",
     Week => "week",
     Month => "month",
@@ -118,11 +118,11 @@ impl TimelineTone {
             Self::Seventh => 6,
             Self::Eighth => 7,
         };
-        crate::chart_palette::ChartPalette::from_theme(theme).categorical(index)
+        tilo_ui_base::chart_palette::ChartPalette::from_theme(theme).categorical(index)
     }
 }
 
-crate::choice!(TimelineTone, "TimelineTone", {
+tilo_ui_base::choice!(TimelineTone, "TimelineTone", {
     First => "first",
     Second => "second",
     Third => "third",
@@ -301,7 +301,7 @@ impl TimelineTokens {
     #[must_use]
     pub fn default_dark() -> Self {
         let theme = Theme::dark();
-        crate::text_render::with_layout_renderer(&theme, |text| Self::of(&theme, text))
+        tilo_ui_base::text_render::with_layout_renderer(&theme, |text| Self::of(&theme, text))
     }
 }
 
@@ -486,7 +486,7 @@ pub struct Split {
 /// event's chip shows and a reader is told.
 pub(crate) fn minute_text(minute: i64) -> String {
     let minute = u32::try_from(minute.clamp(0, MINUTES_PER_DAY)).unwrap_or(0);
-    crate::clock::hour_minute(minute / 60, minute % 60)
+    tilo_ui_base::clock::hour_minute(minute / 60, minute % 60)
 }
 
 /// The same translation from a block to its share of the column, as the app's hit-testing used.
@@ -577,7 +577,7 @@ pub fn hour_label(hour: u32) -> String {
     i8::try_from(hour)
         .ok()
         .and_then(|hour| jiff::civil::Time::new(hour, 0, 0, 0).ok())
-        .map(crate::format::time)
+        .map(tilo_ui_base::format::time)
         .unwrap_or_default()
 }
 
@@ -585,7 +585,7 @@ pub fn hour_label(hour: u32) -> String {
 #[must_use]
 pub fn month_grid(anchor: Date) -> Vec<Date> {
     let first = anchor.first_of_month();
-    let first_weekday = crate::format::first_weekday();
+    let first_weekday = tilo_ui_base::format::first_weekday();
     let into_week = i64::from(first.weekday().since(first_weekday));
     let start = first - jiff::Span::new().days(into_week);
     (0..42).map(|i| start + jiff::Span::new().days(i)).collect()
@@ -607,9 +607,9 @@ pub fn all_day_rows(items: &[TimelineItem]) -> usize {
 
 /// The `day` an item starts on and the minute of its first day, read from the instant it carries.
 #[must_use]
-pub fn local_day_minute(at: crate::component::Moment) -> (Date, i64) {
+pub fn local_day_minute(at: tilo_ui_base::component::Moment) -> (Date, i64) {
     let stamp = jiff::Timestamp::from_second(at.0).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
-    let zoned = crate::clock::at(stamp);
+    let zoned = tilo_ui_base::clock::at(stamp);
     (
         zoned.date(),
         i64::from(zoned.hour()) * 60 + i64::from(zoned.minute()),

@@ -1,4 +1,4 @@
-//! Pixel-level test for `tilo_ui::presence::draw_remote_cursors`. Renders a
+//! Pixel-level test for `tilo_ui_base::presence::draw_remote_cursors`. Renders a
 //! single remote cursor at a known position into an offscreen surface,
 //! then samples pixels around the apex to assert that *something*
 //! non-background was painted there — the lightest possible proof the
@@ -8,10 +8,10 @@
 use vello::Scene;
 use vello::peniko::Color;
 
-use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::presence::{PresenceCtx, draw_remote_cursors};
-use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::Theme;
+use tilo_ui_base::offscreen::OffscreenRenderer;
+use tilo_ui_base::{presence::PresenceCtx, presence::draw_remote_cursors};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 
 #[test]
 #[allow(
@@ -33,7 +33,7 @@ fn ghost_cursor_paints_only_remote_presence() {
         let apex_x: f32 = 30.0;
         let apex_y: f32 = 30.0;
         presence.upsert_remote_cursor(
-            tilo_ui::permissions::MemberId::person("alice"),
+            tilo_ui_base::permissions::MemberId::person("alice"),
             [apex_x, apex_y],
             None,
         );
@@ -42,7 +42,7 @@ fn ghost_cursor_paints_only_remote_presence() {
         let mut text_renderer = TextRenderer::new();
         let theme = Theme::dark();
 
-        draw_remote_cursors(&mut tilo_ui::draw::DrawCtx::new(
+        draw_remote_cursors(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             vello::kurbo::Affine::IDENTITY,
             &mut text_renderer,
@@ -103,7 +103,7 @@ fn ghost_cursor_paints_only_remote_presence() {
         let mut text_renderer = TextRenderer::new();
         let theme = Theme::dark();
 
-        draw_remote_cursors(&mut tilo_ui::draw::DrawCtx::new(
+        draw_remote_cursors(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             vello::kurbo::Affine::IDENTITY,
             &mut text_renderer,

@@ -272,10 +272,10 @@ fn arrival() -> ui::time::Duration {
 /// How long a closed window's frame keeps its place in the reading: the window motion's exit, the
 /// time the shell takes to draw it back into its control.
 fn departure() -> ui::time::Duration {
-    ui::motion::WindowMotion::OPEN.settle_time(
-        ui::motion::Direction::Exit,
-        ui::tokens::EffectiveMotion::default(),
-        ui::tokens::MotionSource::Pointer,
+    tilo_ui_base::motion::WindowMotion::OPEN.settle_time(
+        tilo_ui_base::motion::Direction::Exit,
+        tilo_ui_base::tokens::EffectiveMotion::default(),
+        tilo_ui_base::tokens::MotionSource::Pointer,
     )
 }
 

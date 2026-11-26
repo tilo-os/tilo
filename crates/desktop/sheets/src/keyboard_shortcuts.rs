@@ -61,15 +61,15 @@ pub fn label(entry: &ShortcutEntry) -> String {
 #[must_use]
 pub fn chord_text(chord: &KeyChord) -> String {
     let (modifiers, key) =
-        ui::keycaps::as_typed(chord.modifiers.iter().map(String::as_str), &chord.key);
-    ui::keycaps::active().chord(modifiers.iter().map(String::as_str), &key)
+        tilo_ui_base::keycaps::as_typed(chord.modifiers.iter().map(String::as_str), &chord.key);
+    tilo_ui_base::keycaps::active().chord(modifiers.iter().map(String::as_str), &key)
 }
 
 /// `chord` in the desktop's canonical US spelling, whatever layout is
 /// active: the form callers read back and pass to `rebind`.
 #[must_use]
 pub fn canonical_chord_text(chord: &KeyChord) -> String {
-    ui::Keycaps::US.chord(chord.modifiers.iter().map(String::as_str), &chord.key)
+    tilo_ui_base::Keycaps::US.chord(chord.modifiers.iter().map(String::as_str), &chord.key)
 }
 
 /// One catalogue row as the action API returns it.

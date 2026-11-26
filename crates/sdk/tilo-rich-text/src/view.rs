@@ -6,11 +6,11 @@
 
 use tilo_doc::snapshot::BlockView;
 use ui::kurbo::{Affine, Rect};
-use ui::presence::PresenceCtx;
+use tilo_ui_base::presence::PresenceCtx;
 use ui::rich_edit::{BlockContent, BlockEditor};
 use ui::vello::Scene;
 use ui::widget::Embedded;
-use ui::{TextRenderer, Theme};
+use tilo_ui_base::{TextRenderer, Theme};
 
 use crate::convert::content_of;
 
@@ -112,7 +112,7 @@ impl RichTextView {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.draw_with_presence(&mut ui::DrawCtx::new(
+        self.draw_with_presence(&mut tilo_ui_base::DrawCtx::new(
             scene,
             transform,
             text,
@@ -124,14 +124,14 @@ impl RichTextView {
     /// [`Self::draw`] with members' carets and selections in the
     /// words, where `presence` places them by paragraph id: text shown,
     /// not edited, here while someone else edits it.
-    pub fn draw_with_presence(&mut self, ctx: &mut ui::DrawCtx<'_>) {
+    pub fn draw_with_presence(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.host.draw(&mut ui::DrawCtx::new(
+        self.host.draw(&mut tilo_ui_base::DrawCtx::new(
             scene,
             transform,
             text,
@@ -175,7 +175,7 @@ mod tests {
         let mut small = RichTextView::new();
         let mut large = RichTextView::new();
         large.editor_mut().set_body_size(48.0);
-        large.editor_mut().set_text_align(ui::TextAlign::Center);
+        large.editor_mut().set_text_align(tilo_ui_base::TextAlign::Center);
         for view in [&mut small, &mut large] {
             view.show(&[BlockContent::paragraph("a", "Title")]);
         }
@@ -186,6 +186,6 @@ mod tests {
         assert!(large_h > small_h * 2.0, "{large_h} vs {small_h}");
         assert!((large.rect().x0 - 50.0).abs() < 1e-9);
         assert!((large.rect().width() - 300.0).abs() < 1e-9);
-        assert_eq!(large.editor_mut().text_align(), ui::TextAlign::Center);
+        assert_eq!(large.editor_mut().text_align(), tilo_ui_base::TextAlign::Center);
     }
 }

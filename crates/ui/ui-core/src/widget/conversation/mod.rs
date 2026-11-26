@@ -40,7 +40,7 @@ pub use list::{
 /// namespace per module (`conversation-`), so a language that ships the toolkit
 /// ships these too and an app can override any key in its own catalogue.
 pub(crate) fn t(key: &str) -> String {
-    crate::i18n::widget_format(key, &[])
+    tilo_ui_base::i18n::widget_format(key, &[])
 }
 
 #[cfg(test)]

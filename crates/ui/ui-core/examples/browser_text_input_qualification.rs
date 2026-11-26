@@ -11,10 +11,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tilo_ui::time::Duration;
 
 use serde_json::Value;
-use tilo_ui::Widget;
+use tilo_ui_base::Widget;
 use tilo_ui::app::driver::Framed;
 use tilo_ui::state::State;
-use tilo_ui::theme::Theme;
+use tilo_ui_base::theme::Theme;
 use tilo_ui::widget::WebView;
 use tilo_webview::chromium::ChromiumEngine;
 use tilo_webview::text_input::{Failure, Receipt};
@@ -23,7 +23,7 @@ use tilo_webview::{KeyInput, KeyModifiers, SharedEngine, WebViewCommand, WebView
 // Exercise the production decorator blanket implementation, which stands in for
 // its inner widget in retained layout and focused dispatch.
 struct GuardedView(WebView);
-impl tilo_ui::widget::Decorator for GuardedView {
+impl tilo_ui_base::widget::Decorator for GuardedView {
     type Inner = WebView;
     fn inner(&self) -> &WebView {
         &self.0

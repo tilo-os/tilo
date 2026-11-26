@@ -116,9 +116,9 @@ struct Waiter {
 }
 
 impl Widget for Waiter {
-    crate::provides!(
-        dyn crate::widget::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn tilo_ui_base::widget::ResourceOperations
     );
     fn build_layout(
         &mut self,
@@ -128,13 +128,13 @@ impl Widget for Waiter {
     ) -> NodeId {
         taffy.widget_node(taffy::Style::default(), &[], node_map, self)
     }
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
     fn name(&self) -> &'static str {
         "Waiter"
     }
 }
 
-impl crate::widget::resources::PublishesResources for Waiter {
+impl tilo_ui_base::widget::resources::PublishesResources for Waiter {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         vec![
             ResourceSpec::new("test.waiter", "test.waiter", "Waiter").with_action(
@@ -147,19 +147,19 @@ impl crate::widget::resources::PublishesResources for Waiter {
     }
 }
 
-impl crate::widget::ResourceOperations for Waiter {
+impl tilo_ui_base::widget::ResourceOperations for Waiter {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[WAITER_TYPE]
     }
 
     fn start_operation(
         &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        _doc: &mut crate::widget::Edits<'_>,
+        op: &tilo_ui_base::widget::ResourceOperation<'_>,
+        _doc: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
         self.running.push(op.invocation());
-        Ok(Some(crate::widget::ResourceOperationStart::Accepted))
+        Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Accepted))
     }
 
     fn poll_resource_operation(

@@ -6,7 +6,7 @@
 
 use tilo_app::framework::testing::TEST_WORKSPACE;
 use tilo_app::framework::{AttachedView, Chained, definition};
-use tilo_app::permissions::PermissionContext;
+use tilo_ui_base::permissions::PermissionContext;
 use tilo_app::prelude::*;
 use tilo_app::resource::{DocumentCheckout, DocumentId, chain_resource_id};
 use tilo_app::tilo_resource::Collection;

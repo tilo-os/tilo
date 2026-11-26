@@ -4,12 +4,10 @@
 
 use std::fmt::Write as _;
 
-use tilo_ui::i18n::I18nManager;
+use tilo_ui_base::i18n::I18nManager;
 use tilo_ui::widget::toggle_group::Segment;
-use tilo_ui::widget::{
-    Avatar, AvatarSize, Badge, Button, Column, ProgressBar, Row, ScrollAxis, Scrollable, Spinner,
-    Text, ToggleGroup, Widget,
-};
+use tilo_ui::{widget::Avatar, widget::Badge, widget::Button, widget::Column, widget::ProgressBar, widget::Row, widget::Scrollable, widget::Spinner, widget::Text, widget::ToggleGroup};
+use tilo_ui_base::{widget::AvatarSize, widget::ScrollAxis, widget::Widget};
 
 fn leak_label(s: &str) -> &'static str {
     Box::leak(s.to_string().into_boxed_str())
@@ -28,7 +26,7 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
     // ~0 px and the dashboard fits the window in one frame —
     // which would defeat the whole point of having a Scrollable.
     let mut col = Column::new().with_intrinsic_height().push(Box::new(
-        Text::new(title_key).with_role(tilo_ui::TextRole::Heading),
+        Text::new(title_key).with_role(tilo_ui_base::TextRole::Heading),
     ));
     for i in 0..ROWS_PER_PANEL {
         let row_idx = idx.saturating_mul(ROWS_PER_PANEL).saturating_add(i);
@@ -85,7 +83,7 @@ pub fn build() -> Box<dyn Widget> {
 
     let header = Row::new()
         .push(Box::new(
-            Text::new("dash_title").with_role(tilo_ui::TextRole::LargeTitle),
+            Text::new("dash_title").with_role(tilo_ui_base::TextRole::LargeTitle),
         ))
         .push(Box::new(ToggleGroup::new(
             vec![

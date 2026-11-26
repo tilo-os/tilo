@@ -64,7 +64,7 @@ fn a_titled_graph_shows_its_title_over_its_nodes() {
     );
     let inspection = harness.inspection();
     let output = target(&inspection.root, "output").expect("the node");
-    let theme = crate::Theme::light();
+    let theme = tilo_ui_base::Theme::light();
     let band = crate::widget::chart_navigation::title_band(&theme, "Release pipeline");
     assert!(
         (output.rect[1] - band).abs() < 1.0,

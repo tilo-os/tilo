@@ -152,6 +152,7 @@ tilo-dialogs = { version = "0.1.0", path = "../../platform/tilo-dialogs" }
 # The person's clipboard, over the connection the session opens for each instance: what an app
 # copies and pastes, since its process holds no display of its own.
 tilo-clipboard = { version = "0.1.0", path = "../../platform/tilo-clipboard" }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # Presence as every window decodes it: who is where in a document, and who is writing there.
 ui-core = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 # An app's windows (`app-launch`): the toolkit's framework, the app window's half of each window,
@@ -207,6 +208,7 @@ tilo-workspace-search = { path = "../../core/workspace-search" }
 tempfile.workspace = true
 # The replies the test's broker awaits from the instance's action directory.
 tokio = { workspace = true, features = ["sync"] }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # An app's windows as the framework runs them, in the headless frame harness. The window tests
 # drive them embedded in a host's scene (`ui::app::EmbeddedApp`, `drive_live_embedded`, the
 # window controls), which only the desktop toolkit has; the process itself links none of it.

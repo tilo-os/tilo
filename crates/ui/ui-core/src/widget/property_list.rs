@@ -12,16 +12,16 @@ use vello::kurbo::{Point, Rect, RoundedRect};
 use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::a11y::{AccessNode, AccessState, Role};
-use crate::chrome::row_bleed;
-use crate::icons::Icon;
-use crate::paint::PaintCtx;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+use tilo_ui_base::chrome::row_bleed;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
 
-use crate::text_render::{TextKind, TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::tokens::colors::{Colors, SMALL_TEXT_MIN_CONTRAST};
-use crate::widget::{TaffyTreeExt, Tone, Widget};
+use tilo_ui_base::{text_render::TextKind, text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{tokens::colors::Colors, tokens::colors::SMALL_TEXT_MIN_CONTRAST};
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Tone, widget::Widget};
 
 pub const MAX_PROPERTY_ACTIONS: usize = 2;
 
@@ -323,7 +323,7 @@ fn lay_out(
             let label_h = f64::from(
                 text.measure_style(
                     row.label,
-                    label_wrap.map(crate::num::f32_of_f64),
+                    label_wrap.map(tilo_ui_base::num::f32_of_f64),
                     label_style,
                 )
                 .1,
@@ -346,7 +346,7 @@ fn lay_out(
             } else {
                 value_width.min(readable)
             };
-            let wrap = crate::num::f32_of_f64(value_width.max(1.0));
+            let wrap = tilo_ui_base::num::f32_of_f64(value_width.max(1.0));
             let (elided, value_h) = if row.unbreakable() {
                 let (w, h) = text.measure_style(row.value, None, &value_style);
                 let elided = (f64::from(w) > value_width + 0.5)
@@ -599,7 +599,7 @@ fn paint_layout(
             label_style,
             theme.text_dim,
             geo.label,
-            geo.label_wrap.map(crate::num::f32_of_f64),
+            geo.label_wrap.map(tilo_ui_base::num::f32_of_f64),
         );
         let ink = match row.tone {
             Tone::Neutral => theme.text_primary,
@@ -619,7 +619,7 @@ fn paint_layout(
                 &style,
                 ink,
                 geo.value,
-                Some(crate::num::f32_of_f64(geo.value_width.max(1.0))),
+                Some(tilo_ui_base::num::f32_of_f64(geo.value_width.max(1.0))),
             );
         }
         for (action_index, (action, target)) in row.actions.iter().zip(&geo.actions).enumerate() {
@@ -669,7 +669,7 @@ enum PropertyAction {
     Bound {
         icon: Icon,
         label: String,
-        action: crate::widget::ActionEmitter<()>,
+        action: tilo_ui_base::widget::ActionEmitter<()>,
     },
 }
 
@@ -681,14 +681,14 @@ impl PropertyAction {
         }
     }
 
-    fn emitter(&self) -> Option<&crate::widget::ActionEmitter<()>> {
+    fn emitter(&self) -> Option<&tilo_ui_base::widget::ActionEmitter<()>> {
         match self {
             Self::Bound { action, .. } => Some(action),
             _ => None,
         }
     }
 
-    fn emitter_mut(&mut self) -> Option<&mut crate::widget::ActionEmitter<()>> {
+    fn emitter_mut(&mut self) -> Option<&mut tilo_ui_base::widget::ActionEmitter<()>> {
         match self {
             Self::Bound { action, .. } => Some(action),
             _ => None,
@@ -775,7 +775,7 @@ impl Property {
             self.actions.push(PropertyAction::Bound {
                 icon,
                 label: label.into(),
-                action: crate::widget::ActionEmitter::new(binding),
+                action: tilo_ui_base::widget::ActionEmitter::new(binding),
             });
         }
         self
@@ -975,7 +975,7 @@ impl PropertyList {
 }
 
 impl Widget for PropertyList {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls);
 
     fn build_layout(
         &mut self,
@@ -1010,26 +1010,26 @@ impl Widget for PropertyList {
         };
         let width = known.width.unwrap_or(match available.width {
             taffy::AvailableSpace::Definite(w) => w,
-            _ => crate::num::f32_of_f64(self.natural_width_at(text_renderer, &metrics)),
+            _ => tilo_ui_base::num::f32_of_f64(self.natural_width_at(text_renderer, &metrics)),
         });
         let outer = f64::from(width) + 2.0 * metrics.pad_x;
         let layout = self.lay_out_at(text_renderer, &metrics, Point::ZERO, outer);
         self.laid_column = self.column.as_ref().map_or(0.0, PropertyColumn::get);
         taffy::Size {
             width,
-            height: crate::num::f32_of_f64(layout.height),
+            height: tilo_ui_base::num::f32_of_f64(layout.height),
         }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.dirty = true;
         }
         self.rect = rect;
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1058,7 +1058,7 @@ impl Widget for PropertyList {
         self.layout = layout;
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let target_at = |layout: &ListLayout, point: Point| {
             targets(layout)
                 .into_iter()
@@ -1125,7 +1125,7 @@ impl Widget for PropertyList {
         Some((rect, property.actions.get(action)?.label().to_owned()))
     }
 
-    crate::redraw_flag!();
+    tilo_ui_base::redraw_flag!();
 
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
@@ -1192,13 +1192,13 @@ impl Widget for PropertyList {
     /// action]`.
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &crate::widget::ModelPath,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         match key_path {
-            [row, index] if matches!(action, crate::a11y::Action::Activate) => {
+            [row, index] if matches!(action, tilo_ui_base::a11y::Action::Activate) => {
                 match (usize::try_from(*row), usize::try_from(*index)) {
                     (Ok(row), Ok(index)) => self.run_action(row, index),
                     _ => false,
@@ -1211,7 +1211,7 @@ impl Widget for PropertyList {
 
 impl PropertyList {
     /// The person clicked row `row`'s action `action`, which they may not run here: the press is
-    /// sent, to be refused with why ([`crate::widget::ActionEmitter::press`]).
+    /// sent, to be refused with why ([`tilo_ui_base::widget::ActionEmitter::press`]).
     fn press_refused(&mut self, row: usize, action: usize) {
         if let Some(PropertyAction::Bound { action, .. }) = self
             .groups
@@ -1237,7 +1237,7 @@ impl PropertyList {
         let value = property.value.clone();
         match property.actions.get_mut(action) {
             Some(PropertyAction::Copy) => {
-                crate::text_selection::clipboard_copy(&value);
+                tilo_ui_base::text_selection::clipboard_copy(&value);
                 true
             }
             Some(PropertyAction::Custom { on_activate, .. }) => {
@@ -1266,7 +1266,7 @@ impl PropertyList {
         )
     }
 
-    fn emitters_mut(&mut self) -> impl Iterator<Item = &mut crate::widget::ActionEmitter<()>> {
+    fn emitters_mut(&mut self) -> impl Iterator<Item = &mut tilo_ui_base::widget::ActionEmitter<()>> {
         self.groups
             .iter_mut()
             .flat_map(|(_, rows)| rows.iter_mut())
@@ -1275,11 +1275,11 @@ impl PropertyList {
     }
 }
 
-impl crate::widget::controls::ActionControls for PropertyList {
+impl tilo_ui_base::widget::controls::ActionControls for PropertyList {
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         for emitter in self.emitters_mut() {
             let _ = emitter.attach(domain, attachment);
@@ -1288,11 +1288,11 @@ impl crate::widget::controls::ActionControls for PropertyList {
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.emitters_mut()
-            .find_map(crate::widget::ActionEmitter::take)
+            .find_map(tilo_ui_base::widget::ActionEmitter::take)
     }
 
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        let mut bindings = crate::widget::controls::default_bindings(self);
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
+        let mut bindings = tilo_ui_base::widget::controls::default_bindings(self);
         for (row, property) in self.properties().enumerate() {
             for (index, action) in property.actions.iter().enumerate() {
                 if let Some(emitter) = action.emitter() {
@@ -1328,7 +1328,7 @@ impl crate::widget::controls::ActionControls for PropertyList {
 /// A read-only value as a control: the value a [`Field`](crate::widget::Field) shows where it
 /// cannot be edited (an account id, a generated key), in primary ink with its kind's text
 /// treatment and an optional trailing copy action.
-#[crate::component::not_a_component(part, "a value of `ui.PropertyList`, from its `ui.Property`")]
+#[tilo_ui_base::component::not_a_component(part, "a value of `ui.PropertyList`, from its `ui.Property`")]
 pub struct PropertyValue {
     id: Option<String>,
     value: String,
@@ -1453,7 +1453,7 @@ impl Widget for PropertyValue {
         let style = m.value_style(&self.row());
         let width = known.width.unwrap_or(match available.width {
             taffy::AvailableSpace::Definite(w) => w,
-            _ => crate::num::f32_of_f64(
+            _ => tilo_ui_base::num::f32_of_f64(
                 f64::from(text.measure_style(&self.value, None, &style).0) + self.action_w(&m),
             ),
         });
@@ -1461,13 +1461,13 @@ impl Widget for PropertyValue {
         let h = if self.row().unbreakable() {
             text.measure_style(&self.value, None, &style).1
         } else {
-            text.measure_style(&self.value, Some(crate::num::f32_of_f64(spare)), &style)
+            text.measure_style(&self.value, Some(tilo_ui_base::num::f32_of_f64(spare)), &style)
                 .1
         };
         let min = if self.copyable { m.action } else { 0.0 };
         taffy::Size {
             width,
-            height: crate::num::f32_of_f64(f64::from(h).max(min)),
+            height: tilo_ui_base::num::f32_of_f64(f64::from(h).max(min)),
         }
     }
 
@@ -1482,7 +1482,7 @@ impl Widget for PropertyValue {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.copy_rect = self.metrics.as_ref().filter(|_| self.copyable).map(|m| {
             let cy = self.rect.center().y;
             Rect::new(
@@ -1494,7 +1494,7 @@ impl Widget for PropertyValue {
         });
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1509,7 +1509,7 @@ impl Widget for PropertyValue {
         if self.row().unbreakable() {
             let shown =
                 ctx.text
-                    .elide_to_width_style(&self.value, crate::num::f32_of_f64(spare), &style);
+                    .elide_to_width_style(&self.value, tilo_ui_base::num::f32_of_f64(spare), &style);
             let y = self.rect.center().y - f64::from(h) / 2.0;
             ctx.text(
                 &shown,
@@ -1524,7 +1524,7 @@ impl Widget for PropertyValue {
                 &style,
                 theme.text_primary,
                 self.rect.origin(),
-                Some(crate::num::f32_of_f64(spare)),
+                Some(tilo_ui_base::num::f32_of_f64(spare)),
             );
         }
         if let Some(target) = self.copy_rect {
@@ -1547,7 +1547,7 @@ impl Widget for PropertyValue {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         let Some(target) = self.copy_rect else {
             return;
@@ -1579,7 +1579,7 @@ impl Widget for PropertyValue {
                         let release = self.pressed.release(at);
                         *ctx.handled |= release.ended();
                         if release == Release::Click(()) {
-                            crate::text_selection::clipboard_copy(&self.value);
+                            tilo_ui_base::text_selection::clipboard_copy(&self.value);
                         }
                     }
                 }
@@ -1601,11 +1601,11 @@ impl Widget for PropertyValue {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -1626,7 +1626,7 @@ impl Widget for PropertyValue {
             node = node.with_children(vec![
                 AccessNode::new(Role::Button)
                     .with_key(0)
-                    .with_name(crate::i18n::widget_format("widget-copy", &[]))
+                    .with_name(tilo_ui_base::i18n::widget_format("widget-copy", &[]))
                     .with_state(AccessState::new().focusable(true)),
             ]);
         }
@@ -1638,13 +1638,13 @@ impl Widget for PropertyValue {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &crate::widget::ModelPath,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
-        if self.copyable && key_path == [0] && matches!(action, crate::a11y::Action::Activate) {
-            crate::text_selection::clipboard_copy(&self.value);
+        if self.copyable && key_path == [0] && matches!(action, tilo_ui_base::a11y::Action::Activate) {
+            tilo_ui_base::text_selection::clipboard_copy(&self.value);
             return true;
         }
         false

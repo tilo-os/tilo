@@ -7,15 +7,15 @@ use tilo_actions::reaction::{ReactionGroup, Reactor};
 use vello::kurbo::{Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
-use crate::a11y::{AccessNode, AccessState, Role};
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 use crate::color_compat::ColorCompat as _;
-use crate::icons::Icon;
-use crate::num::f32_of_f64;
-use crate::paint::PaintCtx;
-use crate::presence::{Face, FaceStack};
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::{EffectiveMotion, MotionSource, TextRole};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::{presence::Face, presence::FaceStack};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource, tokens::TextRole};
 use crate::widget::ChipStyle;
 use tilo_action_policy::MemberId;
 
@@ -125,7 +125,7 @@ fn emoji_width(emoji: &str, metrics: &StripMetrics, text: &mut TextRenderer) -> 
 /// window's workspace has and it is decoded.
 fn custom_picture(emoji: &str) -> Option<vello::peniko::ImageData> {
     let name = tilo_actions::custom_emoji_name(emoji)?;
-    crate::workspace_emoji::emoji().image(name)
+    tilo_ui_base::workspace_emoji::emoji().image(name)
 }
 
 /// What the count of `count` reactions reads.
@@ -418,7 +418,7 @@ impl StripLayout {
         name: &dyn Fn(&Reactor) -> String,
     ) -> Option<(Rect, String)> {
         if let Some(add) = self.add.filter(|add| add.contains(point)) {
-            return Some((add, crate::i18n::widget_format("reaction-strip-add", &[])));
+            return Some((add, tilo_ui_base::i18n::widget_format("reaction-strip-add", &[])));
         }
         let pill = self.pills.iter().find(|pill| pill.rect.contains(point))?;
         Some((pill.rect, who_reacted(pill, self.me.as_ref(), name)))
@@ -448,7 +448,7 @@ impl StripLayout {
         if let Some(add) = self.add {
             nodes.push(
                 AccessNode::new(Role::Button)
-                    .with_name(crate::i18n::widget_format("reaction-strip-add", &[]))
+                    .with_name(tilo_ui_base::i18n::widget_format("reaction-strip-add", &[]))
                     .with_bounds(self.target(add))
                     .with_hashed_key("reaction-add")
                     .with_state(AccessState::new().focusable(true)),
@@ -460,12 +460,12 @@ impl StripLayout {
 
 #[must_use]
 pub fn pill_count(count: usize) -> String {
-    crate::i18n::widget_format("reaction-strip-count", &[("count", count.into())])
+    tilo_ui_base::i18n::widget_format("reaction-strip-count", &[("count", count.into())])
 }
 
 #[must_use]
 pub fn pill_name(emoji: &str, mine: bool) -> String {
-    crate::i18n::widget_format(
+    tilo_ui_base::i18n::widget_format(
         if mine {
             "reaction-strip-unreact"
         } else {
@@ -497,7 +497,7 @@ fn who_reacted(
         }
     }
     if own {
-        names.insert(0, crate::i18n::widget_format("reaction-strip-you", &[]));
+        names.insert(0, tilo_ui_base::i18n::widget_format("reaction-strip-you", &[]));
     }
     // Who reacted elsewhere, under a name of their own: they read as any other reactor.
     names.extend(
@@ -506,14 +506,14 @@ fn who_reacted(
             .filter(|shown| !shown.trim().is_empty())
             .cloned(),
     );
-    let emoji = crate::emoji_catalogue::emoji_name(&pill.emoji);
+    let emoji = tilo_ui_base::emoji_catalogue::emoji_name(&pill.emoji);
     let arg = |names: &[String], at: usize| names.get(at).cloned().unwrap_or_default();
     match names.len() {
-        0 | 1 => crate::i18n::widget_format(
+        0 | 1 => tilo_ui_base::i18n::widget_format(
             "reaction-strip-reacted-one",
             &[("first", arg(&names, 0).into()), ("emoji", emoji.into())],
         ),
-        2 => crate::i18n::widget_format(
+        2 => tilo_ui_base::i18n::widget_format(
             "reaction-strip-reacted-two",
             &[
                 ("first", arg(&names, 0).into()),
@@ -521,7 +521,7 @@ fn who_reacted(
                 ("emoji", emoji.into()),
             ],
         ),
-        3 => crate::i18n::widget_format(
+        3 => tilo_ui_base::i18n::widget_format(
             "reaction-strip-reacted-three",
             &[
                 ("first", arg(&names, 0).into()),
@@ -530,7 +530,7 @@ fn who_reacted(
                 ("emoji", emoji.into()),
             ],
         ),
-        n => crate::i18n::widget_format(
+        n => tilo_ui_base::i18n::widget_format(
             "reaction-strip-reacted-more",
             &[
                 ("first", arg(&names, 0).into()),
@@ -544,8 +544,8 @@ fn who_reacted(
 
 #[derive(Clone, Debug)]
 struct PillMotion {
-    presence: crate::motion::Presence,
-    count: crate::motion::CrossFade<usize>,
+    presence: tilo_ui_base::motion::Presence,
+    count: tilo_ui_base::motion::CrossFade<usize>,
 }
 
 /// One strip's pills and how they move: what a host keeps per strip it
@@ -558,7 +558,7 @@ pub struct ReactionStrip {
     seen: bool,
     /// Who the members that reacted are, for the faces a strip that shows them draws: their
     /// name, colour and picture.
-    people: HashMap<MemberId, crate::component::Person>,
+    people: HashMap<MemberId, tilo_ui_base::component::Person>,
 }
 
 impl ReactionStrip {
@@ -600,7 +600,7 @@ impl ReactionStrip {
     }
 
     /// Who the members that reacted are, as their faces show them.
-    pub fn set_people(&mut self, people: HashMap<MemberId, crate::component::Person>) {
+    pub fn set_people(&mut self, people: HashMap<MemberId, tilo_ui_base::component::Person>) {
         self.people = people;
     }
 
@@ -610,8 +610,8 @@ impl ReactionStrip {
     }
 
     fn follow(&mut self, motion: EffectiveMotion) {
-        let now = crate::motion::frame_now();
-        let source = crate::motion::recent_input(now).unwrap_or(MotionSource::Pointer);
+        let now = tilo_ui_base::motion::frame_now();
+        let source = tilo_ui_base::motion::recent_input(now).unwrap_or(MotionSource::Pointer);
         let seen = self.seen;
         self.motion
             .retain(|emoji, _| self.layout.pills.iter().any(|pill| pill.emoji == *emoji));
@@ -619,14 +619,14 @@ impl ReactionStrip {
         for pill in &self.layout.pills {
             let state = self.motion.entry(pill.emoji.clone()).or_insert_with(|| {
                 let mut presence = if seen {
-                    crate::motion::Presence::closed()
+                    tilo_ui_base::motion::Presence::closed()
                 } else {
-                    crate::motion::Presence::opened()
+                    tilo_ui_base::motion::Presence::opened()
                 };
-                presence.show(true, crate::motion::Appear::SPEC, motion, source, now);
+                presence.show(true, tilo_ui_base::motion::Appear::SPEC, motion, source, now);
                 PillMotion {
                     presence,
-                    count: crate::motion::CrossFade::new(pill.count),
+                    count: tilo_ui_base::motion::CrossFade::new(pill.count),
                 }
             });
             state.count.show(pill.count, motion, source, now);
@@ -637,7 +637,7 @@ impl ReactionStrip {
                 .max();
         }
         if let Some(until) = settles {
-            crate::motion::want_frames_until(until);
+            tilo_ui_base::motion::want_frames_until(until);
         }
         self.seen = true;
     }
@@ -681,7 +681,7 @@ impl ReactionStrip {
 
     #[must_use]
     pub fn is_moving(&self) -> bool {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.motion
             .values()
             .any(|pill| pill.presence.is_moving(now) || pill.count.is_moving(now))
@@ -690,16 +690,16 @@ impl ReactionStrip {
     /// Paint the last layout; `hover` is the pointer, `focus` the control
     /// keyboard focus is on.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, hover: Option<Point>, focus: Option<&StripHit>) {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let metrics = StripMetrics::of(ctx.theme);
         let motion = ctx.theme.motion();
         let hovered = |rect: Rect| self.layout.can_react && hover.is_some_and(|p| rect.contains(p));
         for pill in &self.layout.pills {
             let state = self.motion.get(&pill.emoji);
-            let pose = state.map_or(crate::motion::Pose::REST, |state| {
-                crate::motion::Appear::pose(
+            let pose = state.map_or(tilo_ui_base::motion::Pose::REST, |state| {
+                tilo_ui_base::motion::Appear::pose(
                     state.presence.progress(now),
-                    crate::motion::Direction::of(state.presence.is_open()),
+                    tilo_ui_base::motion::Direction::of(state.presence.is_open()),
                     pill.rect,
                     pill.rect.center(),
                     motion,
@@ -758,11 +758,11 @@ impl ReactionStrip {
 /// colour, and each name given elsewhere in the colour that name derives.
 fn pill_faces<'a>(
     pill: &'a StripPill,
-    people: &'a HashMap<MemberId, crate::component::Person>,
+    people: &'a HashMap<MemberId, tilo_ui_base::component::Person>,
     theme: &Theme,
 ) -> Vec<Face<'a>> {
     let palette = &theme.tokens.colors.presence;
-    let derived = |identity: &str| palette.hue(crate::tokens::PresenceHue::of_identity(identity));
+    let derived = |identity: &str| palette.hue(tilo_ui_base::tokens::PresenceHue::of_identity(identity));
     pill.reactors
         .iter()
         .map(|reactor| {
@@ -825,7 +825,7 @@ fn paint_body(ctx: &mut PaintCtx<'_>, rect: Rect, fill: Color, edge: Option<Colo
             ctx.transform,
             edge,
             None,
-            &crate::surface::edge_outline(rect, radius),
+            &tilo_ui_base::surface::edge_outline(rect, radius),
         );
     }
 }
@@ -864,13 +864,13 @@ fn paint_add(ctx: &mut PaintCtx<'_>, rect: Rect, hovered: bool, metrics: &StripM
     let colors = ChipStyle::Neutral.colors(ctx.theme, ground, false, hovered);
     paint_body(ctx, rect, colors.fill, colors.edge);
     let ink = if hovered { colors.ink } else { colors.lead };
-    crate::icons::draw_icon(
+    tilo_ui_base::icons::draw_icon(
         ctx.scene,
         ctx.transform,
         Rect::from_center_size(rect.center(), (metrics.icon, metrics.icon)),
         Icon::SmilePlus,
         ink,
-        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+        tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
     );
 }
 
@@ -881,7 +881,7 @@ pub fn paint_emoji(ctx: &mut PaintCtx<'_>, rect: Rect, emoji: &str, style: &Text
     if tilo_actions::custom_emoji_name(emoji).is_some() {
         if let Some(picture) = custom_picture(emoji) {
             let side = rect.width().min(rect.height());
-            crate::image_store::paint_image_contain(
+            tilo_ui_base::image_store::paint_image_contain(
                 ctx.scene,
                 ctx.transform,
                 Rect::from_center_size(rect.center(), (side, side)),
@@ -907,7 +907,7 @@ pub fn paint_emoji(ctx: &mut PaintCtx<'_>, rect: Rect, emoji: &str, style: &Text
     let mut glyph = style.clone();
     glyph.size = size;
     glyph.line_height = size;
-    glyph.scaling = crate::text_render::TextScaling::Resolved;
+    glyph.scaling = tilo_ui_base::text_render::TextScaling::Resolved;
     let (w, h) = ctx.text.measure_style(emoji, None, &glyph);
     ctx.text(
         emoji,

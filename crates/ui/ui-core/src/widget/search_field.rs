@@ -1,8 +1,8 @@
 //! `SearchField` — the in-content filter: a field with a leading magnifier, an editable
 //! [`TextInput`], a trailing clear button and a reserved slot for the match count.
 
-use crate::i18n::widget_text;
-use crate::widget::ModelPath;
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::widget::ModelPath;
 use std::collections::HashMap;
 
 use taffy::style_helpers::{length, percent};
@@ -12,17 +12,19 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::icons::Icon;
-use crate::platform::PlatformConventions;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::DrawChild;
-use crate::widget::capability::capability_mut;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::platform::PlatformConventions;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::capability::capability_mut;
 use crate::widget::search_request::{ScopeDecl, SearchOpener, SearchRequest};
 use crate::widget::text::centered_text_top;
-use crate::widget::{ControlSize, TaffyTreeExt};
-use crate::widget::{TextInput, TextInputKind, Widget};
+use crate::widget::ControlSize;
+use tilo_ui_base::widget::TaffyTreeExt;
+use crate::{widget::TextInput, widget::TextInputKind};
+use tilo_ui_base::widget::Widget;
 
 const ICON_GUTTER: f64 = 32.0;
 const CLEAR_GUTTER: f64 = 28.0;
@@ -47,7 +49,7 @@ impl FilterCount {
     #[must_use]
     pub fn label(self) -> String {
         if self.shown == 0 {
-            crate::i18n::widget_format("search-no-matches", &[])
+            tilo_ui_base::i18n::widget_format("search-no-matches", &[])
         } else {
             format!("{} of {}", self.shown, self.total)
         }
@@ -57,7 +59,7 @@ impl FilterCount {
 /// A view a [`SearchField`] can narrow: a list, a table, a grid of cards.
 pub trait Filterable {
     /// Show only what matches `query`; an empty query shows everything.
-    /// Match the way search does ([`crate::text_match::ListIndex`]) so a filter
+    /// Match the way search does ([`tilo_ui_base::text_match::ListIndex`]) so a filter
     /// and the platform search agree on what "matches" means.
     fn set_filter(&mut self, query: &str);
 
@@ -128,7 +130,7 @@ pub fn sync_filter(field: &mut SearchField, content: &mut dyn Widget) {
               reserves the count slot, a removed scope token), set and read on its own \
               schedule, so an enum encoding would not simplify the call sites"
 )]
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     system,
     "no search fields in apps; the search button opens system search (AGENTS.md principle 3)"
 )]
@@ -198,7 +200,7 @@ impl SearchField {
     /// A search input bound to `state`: what the person types updates it, and a change to it
     /// through any clone shows here, as [`TextInput::from_state`] does for an ordinary field.
     #[must_use]
-    pub fn from_state(state: &crate::LocalState<String>) -> Self {
+    pub fn from_state(state: &tilo_ui_base::LocalState<String>) -> Self {
         Self::with_input(TextInput::from_state(state))
     }
 
@@ -207,7 +209,7 @@ impl SearchField {
     /// reserved so the text never runs under the count.
     pub fn filter() -> Self {
         let mut field =
-            Self::new().with_placeholder(&crate::i18n::widget_format("search-field-filter", &[]));
+            Self::new().with_placeholder(&tilo_ui_base::i18n::widget_format("search-field-filter", &[]));
         field.escalation = Some(SearchRequest::this_app());
         field.reserve_count = true;
         field
@@ -227,7 +229,7 @@ impl SearchField {
                 input
                     .with_plain_chrome()
                     .with_kind(TextInputKind::Search)
-                    .with_placeholder(crate::i18n::widget_format("search-field-placeholder", &[])),
+                    .with_placeholder(tilo_ui_base::i18n::widget_format("search-field-placeholder", &[])),
             ),
             leading: Icon::Search,
             clearable: true,
@@ -352,7 +354,7 @@ impl SearchField {
 
     #[must_use]
     pub fn bound(mut self, path: &str) -> Self {
-        *self.input = TextInput::new(vec![crate::presence::PathSegment::Field(path.to_owned())])
+        *self.input = TextInput::new(vec![tilo_ui_base::presence::PathSegment::Field(path.to_owned())])
             .with_plain_chrome()
             .with_kind(TextInputKind::Search);
         self
@@ -392,9 +394,9 @@ impl SearchField {
     #[must_use]
     pub fn query_name_and_description(&self) -> (String, Option<String>) {
         let name = if self.escalation.is_some() {
-            crate::i18n::widget_format("search-field-filter-name", &[])
+            tilo_ui_base::i18n::widget_format("search-field-filter-name", &[])
         } else {
-            crate::i18n::widget_format("search-field-name", &[])
+            tilo_ui_base::i18n::widget_format("search-field-name", &[])
         };
         let mut description = Vec::new();
         if !self.placeholder.is_empty() {
@@ -593,7 +595,7 @@ impl SearchField {
             let clear = self.clear_visible();
             let escalation = self.escalation_shows();
             let trailing = self.trailing_gutter();
-            let placed = crate::text_render::with_layout_renderer(&theme, |text| {
+            let placed = tilo_ui_base::text_render::with_layout_renderer(&theme, |text| {
                 let (token_rect, token_w) = token.as_deref().map_or((Rect::ZERO, 0.0), |token| {
                     place_scope_token(text, &theme, rect, token, icon)
                 });
@@ -915,7 +917,7 @@ impl Widget for SearchField {
         Some(self)
     }
 
-    crate::provides!(dyn crate::widget::controls::ActionControls, SearchField);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls, SearchField);
 
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
@@ -967,7 +969,7 @@ impl Widget for SearchField {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if let Some(&child_node) = taffy.children(node).unwrap_or_default().first() {
             self.input
                 .apply_layout(taffy, child_node, self.rect.origin());
@@ -985,7 +987,7 @@ impl Widget for SearchField {
             || self.placed_collapsed != self.collapsed(&self.layout_theme)
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1021,7 +1023,7 @@ impl Widget for SearchField {
         if !self.embedded {
             let shape = RoundedRect::from_rect(self.rect, radius);
             let fill = theme.tokens.colors.surfaces.raised;
-            let bordered = crate::surface::control_face(scene, transform, &shape, fill, theme);
+            let bordered = tilo_ui_base::surface::control_face(scene, transform, &shape, fill, theme);
             if theme.colors_are_forced() && !bordered {
                 let focused = self.input.is_focused();
                 scene.stroke(
@@ -1030,10 +1032,10 @@ impl Widget for SearchField {
                     if focused {
                         theme.border_focus
                     } else {
-                        crate::surface::edge_on(fill)
+                        tilo_ui_base::surface::edge_on(fill)
                     },
                     None,
-                    &crate::surface::edge_outline(self.rect, radius),
+                    &tilo_ui_base::surface::edge_outline(self.rect, radius),
                 );
             }
         }
@@ -1061,7 +1063,7 @@ impl Widget for SearchField {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = ctx.logical(position);
@@ -1163,7 +1165,7 @@ impl Widget for SearchField {
         self.input.ime_edit_fingerprint(key)
     }
 
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
         Widget::ime_content(&*self.input)
     }
 
@@ -1180,11 +1182,11 @@ impl Widget for SearchField {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -1195,7 +1197,7 @@ impl Widget for SearchField {
         self.rect
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let (name, description) = self.query_name_and_description();
         let mut node = self.input.accessibility()?.with_name(name);
         if let Some(description) = description {
@@ -1206,37 +1208,37 @@ impl Widget for SearchField {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         Widget::perform_action(&mut *self.input, action, &[], state, path)
     }
 }
 
-impl crate::widget::controls::ActionControls for SearchField {
+impl tilo_ui_base::widget::controls::ActionControls for SearchField {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.opener
             .take()
-            .or_else(|| crate::widget::controls::take_control_invocation(&mut *self.input))
+            .or_else(|| tilo_ui_base::widget::controls::take_control_invocation(&mut *self.input))
     }
 
     fn has_pending_control_invocation(&self) -> bool {
         self.opener.is_pending()
-            || crate::widget::controls::has_pending_control_invocation(&*self.input)
+            || tilo_ui_base::widget::controls::has_pending_control_invocation(&*self.input)
     }
 }
 
 /// Content with a filter: a [`SearchField::filter`] in a band above the content, narrowing the
 /// first [`Filterable`] inside it. Ctrl+F (⌘F) focuses the field.
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     system,
     "no search fields in apps; the search button opens system search (AGENTS.md principle 3)"
 )]
 pub struct Filtered {
     field: SearchField,
-    content: crate::widget::Element,
+    content: tilo_ui_base::widget::Element,
     rect: Rect,
     field_node: Option<NodeId>,
     content_node: Option<NodeId>,
@@ -1244,7 +1246,7 @@ pub struct Filtered {
 }
 
 impl Filtered {
-    pub fn new(content: crate::widget::Element) -> Self {
+    pub fn new(content: tilo_ui_base::widget::Element) -> Self {
         Self {
             field: SearchField::filter(),
             content,
@@ -1324,17 +1326,17 @@ impl Widget for Filtered {
             size: taffy::Size::from_percent(1.0_f32, 1.0_f32),
             ..Default::default()
         };
-        let style = crate::widget::layout::filling(style, 1.0);
+        let style = tilo_ui_base::widget::layout::filling(style, 1.0);
         taffy.widget_node(style, &[band, content], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
         if let Some(field) = self.field_node {
             let band = taffy.parent(field);
             let band_origin = band.map_or(inner, |band| {
-                crate::widget::layout_rect(taffy, band, inner).origin()
+                tilo_ui_base::widget::layout_rect(taffy, band, inner).origin()
             });
             self.field.apply_layout(taffy, field, band_origin);
         }
@@ -1343,7 +1345,7 @@ impl Widget for Filtered {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1356,7 +1358,7 @@ impl Widget for Filtered {
             .draw_child(scene, transform, text_renderer, theme, &env);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -1425,7 +1427,7 @@ impl Widget for Filtered {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::presence::PresenceCtx;
+    use tilo_ui_base::presence::PresenceCtx;
     use crate::testing::Dispatch;
 
     fn ctx_event(
@@ -1439,13 +1441,13 @@ mod tests {
     }
 
     fn move_to(point: Point) -> WindowEvent {
-        crate::synthetic_input::cursor_moved(point.x, point.y)
+        tilo_ui_base::synthetic_input::cursor_moved(point.x, point.y)
     }
 
-    use crate::synthetic_input::mouse_press;
+    use tilo_ui_base::synthetic_input::mouse_press;
 
     pub(crate) fn key(named: NamedKey) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+        tilo_ui_base::synthetic_input::keyboard_input(tilo_ui_base::synthetic_input::key_event(
             Key::Named(named),
             None,
             ElementState::Pressed,
@@ -1492,7 +1494,7 @@ mod tests {
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
-        w.draw(&mut crate::draw::DrawCtx::new(
+        w.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
@@ -1572,7 +1574,7 @@ mod tests {
 
         phase enter_and_search_everywhere_escalate_the_query_to_platform_search;
         {
-            use crate::widget::controls::take_control_invocation;
+            use tilo_ui_base::widget::controls::take_control_invocation;
 
             let mut plain = SearchField::new();
             plain.input.set_text("x");
@@ -1646,11 +1648,11 @@ mod tests {
             theme
                 .tokens
                 .typography
-                .set_face(crate::tokens::UiFace::Hyperlegible.name());
+                .set_face(tilo_ui_base::tokens::UiFace::Hyperlegible.name());
             let mut sf = SearchField::new();
             sf.set_scope_token(Some("Only Inbox".into()));
             let (taffy, node) = lay_out_in(&mut sf, 460.0, &theme);
-            let field = crate::widget::layout_rect(&taffy, node, Point::ZERO);
+            let field = tilo_ui_base::widget::layout_rect(&taffy, node, Point::ZERO);
 
             // The same measurement, taken the way a caller outside the layout takes
             // it: in the theme's own type.
@@ -1698,7 +1700,7 @@ mod tests {
 
         phase accessibility_names_the_field_and_reads_its_count;
         {
-            use crate::a11y::Role;
+            use tilo_ui_base::a11y::Role;
             let mut sf = SearchField::filter();
             sf.input.set_text("abc");
             sf.set_count(Some(FilterCount::new(2, 9)));
@@ -1776,7 +1778,7 @@ mod tests {
     }
 
     impl Widget for Rows {
-        crate::provides!(dyn Filterable);
+        tilo_ui_base::provides!(dyn Filterable);
         crate::testing::inert_widget_methods!(leaf_layout);
         fn name(&self) -> &'static str {
             "rows"

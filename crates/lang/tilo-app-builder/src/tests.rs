@@ -1611,7 +1611,7 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
             ["de-DE", "en-US"]
         );
         assert!(
-            registry.contains(r#"ui::embedded_catalog!(pub static CATALOG, ["de-DE", "en-US"]);"#)
+            registry.contains(r#"tilo_ui_base::embedded_catalog!(pub static CATALOG, ["de-DE", "en-US"]);"#)
         );
         syn::parse_file(&registry).expect("generated locale registry is Rust");
 
@@ -1889,7 +1889,7 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         assert_eq!(std::fs::read_to_string(&catalog).unwrap(), translated);
         let registry = std::fs::read_to_string(app.join("src/locales.rs")).unwrap();
         assert!(
-            registry.contains(r#"ui::embedded_catalog!(pub static CATALOG, ["de-DE", "en-US"]);"#),
+            registry.contains(r#"tilo_ui_base::embedded_catalog!(pub static CATALOG, ["de-DE", "en-US"]);"#),
             "the existing translation is registered: {registry}"
         );
     }

@@ -16,14 +16,14 @@
 use ui::kurbo::{Affine, Point, Rect};
 use ui::vello::Scene;
 
-use ui::icons::Icon;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 use ui::widget::{ButtonFace, ButtonRole, ChipStyle, FloatingPanelFace, ListRowFace, RowLeading};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::winit::keyboard::{Key, NamedKey};
 
-use ui::TextRole;
+use tilo_ui_base::TextRole;
 
 use tilo_session_core::desktop::here::Screen;
 
@@ -199,9 +199,9 @@ pub struct PeopleOverlay {
     shown_waved: Vec<String>,
     /// When the wave it shows stops showing, so the row that carries it is drawn again without one.
     shown_waved_until: Option<ui::time::Instant>,
-    motion: ui::tokens::EffectiveMotion,
+    motion: tilo_ui_base::tokens::EffectiveMotion,
     /// How the host draws the roster now, while it arrives: input is hit-tested there (`Pose::to_local`), not where it will rest.
-    drawn: ui::motion::Pose,
+    drawn: tilo_ui_base::motion::Pose,
     /// When someone here was first seen in a call, so their ring breathes from its start.
     call_since: Option<ui::time::Instant>,
 }
@@ -223,7 +223,7 @@ fn mirror_height(model: &PeopleModel<'_>, width: f64, row_h: f64, theme: &Theme)
     let room = (model.host.height() * 0.5 - row_h).max(0.0);
     // Software has no screen to mirror, so its rows take none of the room people's mirrors share.
     let people = model.rows.iter().filter(|row| !row.is_agent()).count();
-    let each = room / ui::num::f64_of_usize(people.max(1));
+    let each = room / tilo_ui_base::num::f64_of_usize(people.max(1));
     let natural = (width - 2.0 * FloatingPanelFace::body_inset(theme)) / 1.6;
     if each < 64.0 { 0.0 } else { each.min(natural) }
 }
@@ -397,7 +397,7 @@ impl PeopleOverlay {
         } else {
             let heading = if labelled { heading_h } else { 0.0 };
             let gap = if labelled {
-                f64::from(spacing.s2) * ui::num::f64_of_usize(sections.saturating_sub(1))
+                f64::from(spacing.s2) * tilo_ui_base::num::f64_of_usize(sections.saturating_sub(1))
             } else {
                 0.0
             };
@@ -440,7 +440,7 @@ impl PeopleOverlay {
         // Never taller than the output under the bar: the list scrolls.
         let chrome_h = face.height_for(1.0, theme) - 1.0;
         let room = (model.host.y1 - f64::from(spacing.s3) - anchor_top - chrome_h).max(row_h);
-        let visible_body = (heading_h * 2.0 + card_h * ui::num::f64_of_usize(VISIBLE_ROWS))
+        let visible_body = (heading_h * 2.0 + card_h * tilo_ui_base::num::f64_of_usize(VISIBLE_ROWS))
             .min(self.body_height)
             .min(room);
         let panel_h = face.height_for(visible_body, theme);
@@ -505,7 +505,7 @@ impl PeopleOverlay {
         self.headings.clear();
         self.mirrors.clear();
         let gap = f64::from(spacing.s2);
-        let bleed = ui::chrome::row_bleed(theme);
+        let bleed = tilo_ui_base::chrome::row_bleed(theme);
         let mut y = self.body.y0;
         let widths = self.measure_trailing(text, theme);
         for (key, group) in groups {
@@ -614,7 +614,7 @@ impl PeopleOverlay {
             return true;
         };
         let inset = FloatingPanelFace::body_inset(theme);
-        let bleed = ui::chrome::row_bleed(theme);
+        let bleed = tilo_ui_base::chrome::row_bleed(theme);
         let rect = Rect::new(
             inset - bleed,
             0.0,
@@ -650,7 +650,7 @@ impl PeopleOverlay {
         let probe = ListRowFace::new(label).trailing_width(self.trailing_w);
         let right = probe
             .trailing_rect(rect, text, theme)
-            .map_or_else(|| rect.x1 - ui::chrome::row_bleed(theme), |slot| slot.x1);
+            .map_or_else(|| rect.x1 - tilo_ui_base::chrome::row_bleed(theme), |slot| slot.x1);
         let follow = Rect::new(
             right - follow_w,
             rect.center().y - control / 2.0,
@@ -734,7 +734,7 @@ impl PeopleOverlay {
         ui::widget::TextStackFace::new(model.workspace)
             .secondary(&here_text)
             .paint(
-                &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+                &mut tilo_ui_base::paint::PaintCtx::new(scene, transform, text, theme),
                 title,
             );
         if self.pin.area() > 0.0 {
@@ -760,7 +760,7 @@ impl PeopleOverlay {
             ui::peniko::BlendMode::default(),
             1.0,
             transform,
-            &self.body.inflate(ui::chrome::row_bleed(theme), 0.0),
+            &self.body.inflate(tilo_ui_base::chrome::row_bleed(theme), 0.0),
         );
         let scrolled = transform.pre_translate((0.0, -self.scroll_offset()).into());
         let cursor = cursor.map(|p| Point::new(p.x, p.y + self.scroll_offset()));
@@ -768,7 +768,7 @@ impl PeopleOverlay {
             let empty = t("people-panel-empty");
             ui::widget::TextLineFace::styled(&empty, &theme.text(TextRole::Body), TextRole::Body)
                 .paint(
-                    &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+                    &mut tilo_ui_base::paint::PaintCtx::new(scene, transform, text, theme),
                     self.body,
                     colors.text_dim,
                 );
@@ -776,9 +776,9 @@ impl PeopleOverlay {
         for heading in &self.headings {
             let style = theme
                 .text(TextRole::Caption)
-                .with_weight(ui::text_render::TextWeight::Medium);
+                .with_weight(tilo_ui_base::text_render::TextWeight::Medium);
             ui::widget::TextLineFace::styled(&heading.text, &style, TextRole::Caption).paint(
-                &mut ui::paint::PaintCtx::new(scene, scrolled, text, theme),
+                &mut tilo_ui_base::paint::PaintCtx::new(scene, scrolled, text, theme),
                 heading.rect,
                 colors.text_dim,
             );
@@ -794,7 +794,7 @@ impl PeopleOverlay {
         if !in_call {
             self.call_since = None;
         }
-        let sweep = ui::motion::Sweep::at(now.saturating_duration_since(since), theme.motion());
+        let sweep = tilo_ui_base::motion::Sweep::at(now.saturating_duration_since(since), theme.motion());
         for place in self.rows.clone() {
             let Some(row) = model.rows.get(place.index) else {
                 continue;
@@ -835,11 +835,11 @@ impl PeopleOverlay {
                 focused: false,
                 disabled: false,
             };
-            let paint_face = |ctx: &mut ui::paint::PaintCtx<'_>, rect: Rect| {
-                let mut face = ui::presence::Face::member(&row.label, &row.member, row.color);
+            let paint_face = |ctx: &mut tilo_ui_base::paint::PaintCtx<'_>, rect: Rect| {
+                let mut face = tilo_ui_base::presence::Face::member(&row.label, &row.member, row.color);
                 face.dimmed = row.availability.dims();
                 face.active = row.call.as_ref().map(|_| sweep);
-                ui::presence::FaceStack {
+                tilo_ui_base::presence::FaceStack {
                     side: FACE - 6.0,
                     overlap: 0.0,
                     max: 1,
@@ -877,7 +877,7 @@ impl PeopleOverlay {
             // Words software wrote about someone are marked as such: never shown as if they had
             // said them.
             if says_automatically(row) {
-                face = face.mark(ui::icons::Icon::Sparkles);
+                face = face.mark(tilo_ui_base::icons::Icon::Sparkles);
             }
             if row.is_agent() {
                 face = face.tags(&tags);
@@ -889,7 +889,7 @@ impl PeopleOverlay {
                 .trailing_width(self.row_trailing(row, theme))
                 .interaction(interaction);
             face.paint(
-                &mut ui::paint::PaintCtx::new(scene, scrolled, text, theme),
+                &mut tilo_ui_base::paint::PaintCtx::new(scene, scrolled, text, theme),
                 place.rect,
             );
             // A wave just sent stays shown as sent, so the waver knows it went.
@@ -959,7 +959,7 @@ impl PeopleOverlay {
                     disabled: false,
                 })
                 .paint(
-                    &mut ui::paint::PaintCtx::new(scene, scrolled, text, theme),
+                    &mut tilo_ui_base::paint::PaintCtx::new(scene, scrolled, text, theme),
                     place.working_in,
                 );
             }
@@ -976,7 +976,7 @@ impl PeopleOverlay {
                 ui::widget::TextLineFace::styled(&line, &style, TextRole::Caption)
                     .start()
                     .paint(
-                        &mut ui::paint::PaintCtx::new(scene, scrolled, text, theme),
+                        &mut tilo_ui_base::paint::PaintCtx::new(scene, scrolled, text, theme),
                         place.said,
                         colors.text_dim,
                     );
@@ -1017,7 +1017,7 @@ impl PeopleOverlay {
         if note_rect.area() > 0.0 {
             let style = theme.text(TextRole::Caption);
             ui::widget::TextBlockFace::new(note, &style).paint(
-                &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+                &mut tilo_ui_base::paint::PaintCtx::new(scene, transform, text, theme),
                 *note_rect,
                 theme.tokens.colors.text_dim,
             );
@@ -1073,7 +1073,7 @@ impl PeopleOverlay {
         self.keyboard_focus = None;
     }
 
-    fn scroll_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
+    fn scroll_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) -> bool {
         let Some(theme) = self.scroll_theme.clone() else {
             return false;
         };
@@ -1091,7 +1091,7 @@ impl PeopleOverlay {
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
         open: bool,
         cursor: Option<Point>,
     ) -> Option<PeopleHit> {
@@ -1116,7 +1116,7 @@ impl PeopleOverlay {
             WindowEvent::CursorMoved { position, .. } if !drawn.is_rest() => {
                 let scale = ctx.scale_factor;
                 let local = drawn.to_local(Point::new(position.x / scale, position.y / scale));
-                posed = ui::synthetic_input::cursor_moved(local.x * scale, local.y * scale);
+                posed = tilo_ui_base::synthetic_input::cursor_moved(local.x * scale, local.y * scale);
                 &posed
             }
             _ => event,
@@ -1126,7 +1126,7 @@ impl PeopleOverlay {
             WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. }
         ) && let Some(point) = cursor
         {
-            let moved = ui::synthetic_input::cursor_moved(
+            let moved = tilo_ui_base::synthetic_input::cursor_moved(
                 point.x * ctx.scale_factor,
                 point.y * ctx.scale_factor,
             );
@@ -1170,7 +1170,7 @@ impl PeopleOverlay {
         &mut self,
         event: &WindowEvent,
         key: &ui::winit::event::KeyEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> Option<PeopleHit> {
         if key.logical_key == Key::Named(NamedKey::Escape) && key.state == ElementState::Pressed {
             self.interrupt();
@@ -1330,8 +1330,8 @@ impl PeopleOverlay {
     }
 
     /// The roster for assistive technology: who is here, each with where they are and what they are doing, then every control.
-    pub fn accessibility_snapshot(&self) -> ui::a11y::AccessNode {
-        use ui::a11y::{AccessNode, AccessState, Role};
+    pub fn accessibility_snapshot(&self) -> tilo_ui_base::a11y::AccessNode {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let mut children = vec![self.spoken_people()];
 
         for hit in self.focus_order() {
@@ -1402,8 +1402,8 @@ impl PeopleOverlay {
     }
 
     /// [`Self::accessibility_snapshot`] with each control's bounds and its focus place as the reader's target (`people:<n>`), which [`Self::hit_for_target`] turns back into what it does.
-    fn spoken_people(&self) -> ui::a11y::AccessNode {
-        use ui::a11y::{AccessNode, Role};
+    fn spoken_people(&self) -> tilo_ui_base::a11y::AccessNode {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         let present: Vec<&RosterRow> = self.shown_rows.iter().collect();
         let people = present
             .iter()
@@ -1420,17 +1420,17 @@ impl PeopleOverlay {
             .with_children(people)
     }
 
-    pub fn accessibility_with_targets(&self) -> ui::a11y::AccessNode {
+    pub fn accessibility_with_targets(&self) -> tilo_ui_base::a11y::AccessNode {
         let order = self.focus_order();
         let mut node = self.accessibility_snapshot().with_bounds(self.panel_rect());
         let controls = node
             .children
             .iter_mut()
             .skip(1)
-            .filter(|child| child.role == ui::a11y::Role::Button);
+            .filter(|child| child.role == tilo_ui_base::a11y::Role::Button);
         for (index, (child, hit)) in controls.zip(&order).enumerate() {
             let mut control =
-                std::mem::replace(child, ui::a11y::AccessNode::new(ui::a11y::Role::Button))
+                std::mem::replace(child, tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button))
                     .with_action_target(format!("people:{index}"));
             let rect = self.rect_for_hit(*hit).map(|rect| match hit {
                 PeopleHit::Invite | PeopleHit::Pin => rect,
@@ -1460,7 +1460,7 @@ fn text_width(text: &mut TextRenderer, label: &str, theme: &Theme) -> f64 {
             None,
             &theme
                 .text(TextRole::Label)
-                .with_weight(ui::text_render::TextWeight::Medium),
+                .with_weight(tilo_ui_base::text_render::TextWeight::Medium),
         )
         .0,
     )

@@ -9,9 +9,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, RoundedRectRadii};
 use vello::peniko::{Color, Fill};
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::cartesian_plot::{AxisLabelFormat, format_axis_tick, format_axis_value};
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::draw_title;
@@ -112,7 +112,7 @@ impl CategorySeries {
     }
     fn color_in(&self, theme: &Theme) -> Color {
         self.palette.map_or(self.color, |index| {
-            crate::chart_palette::ChartPalette::from_theme(theme).categorical(index)
+            tilo_ui_base::chart_palette::ChartPalette::from_theme(theme).categorical(index)
         })
     }
 }
@@ -245,8 +245,8 @@ impl CategoryMarks {
     /// The column category `index` stands in, across the plot's height.
     fn column(&self, index: usize) -> Rect {
         let plot = self.plot_rect();
-        let width = plot.width() / crate::num::f64_of_usize(self.categories.len().max(1));
-        let x0 = plot.x0 + crate::num::f64_of_usize(index) * width;
+        let width = plot.width() / tilo_ui_base::num::f64_of_usize(self.categories.len().max(1));
+        let x0 = plot.x0 + tilo_ui_base::num::f64_of_usize(index) * width;
         Rect::new(x0, plot.y0, x0 + width, plot.y1)
     }
 
@@ -256,8 +256,8 @@ impl CategoryMarks {
         if self.categories.is_empty() || !plot.contains(point) || plot.width() <= 0.0 {
             return None;
         }
-        let width = plot.width() / crate::num::f64_of_usize(self.categories.len());
-        Some(crate::num::usize_of_f64((point.x - plot.x0) / width).min(self.categories.len() - 1))
+        let width = plot.width() / tilo_ui_base::num::f64_of_usize(self.categories.len());
+        Some(tilo_ui_base::num::usize_of_f64((point.x - plot.x0) / width).min(self.categories.len() - 1))
     }
 
     /// `value` as the chart reads it out: its own detail, else in the chart's format and unit.
@@ -535,7 +535,7 @@ fn label_stride(needed: f64, spare: f64) -> usize {
     if spare <= 0.0 || !needed.is_finite() {
         return 1;
     }
-    crate::num::usize_of_f64((needed / spare).ceil()).max(1)
+    tilo_ui_base::num::usize_of_f64((needed / spare).ceil()).max(1)
 }
 
 impl CategoryMarks {
@@ -852,7 +852,7 @@ impl PlotMarks for CategoryMarks {
             if !(last - index).is_multiple_of(every) {
                 continue;
             }
-            let label_width = group_width * crate::num::f64_of_usize(every);
+            let label_width = group_width * tilo_ui_base::num::f64_of_usize(every);
             let x =
                 plot.x0 + (f64::from(u32::try_from(index).unwrap_or(u32::MAX)) + 0.5) * group_width;
             let (width, _) =
@@ -866,7 +866,7 @@ impl PlotMarks for CategoryMarks {
                         x - f64::from(width) / 2.0,
                         plot.y1 + f64::from(theme.tokens.spacing.s2),
                     )),
-                Some(crate::num::f32_of_f64(label_width.max(0.0))),
+                Some(tilo_ui_base::num::f32_of_f64(label_width.max(0.0))),
                 &theme.text(TextRole::Caption),
             );
         }
@@ -953,7 +953,7 @@ impl PlotMarks for CategoryMarks {
         {
             readout.value(
                 None,
-                crate::i18n::widget_text("widget-chart-total"),
+                tilo_ui_base::i18n::widget_text("widget-chart-total"),
                 self.spoken(&CategoryValue::new(total)),
                 false,
             );
@@ -987,7 +987,7 @@ mod tests {
         )
         .layout(CategoryLayout::Stacked);
         chart.marks.frame.rect = Rect::new(0.0, 0.0, 400.0, 300.0);
-        crate::text_render::with_layout_renderer(&theme, |tr| chart.marks.place(tr, &theme));
+        tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| chart.marks.place(tr, &theme));
         let column = chart.marks.column(1);
         // High over the stack, where no bar stands: the nearest bar, the top one.
         chart.marks.frame.inspection.pointer = Point::new(column.center().x, column.y0 + 2.0);

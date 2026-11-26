@@ -3,8 +3,8 @@ use automerge::AutoCommit;
 use std::collections::HashMap;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use tilo_rich_edit::{Block, BlockEditor, CursorPlacement};
-use tilo_ui::widget::Widget;
-use tilo_ui::widget::bound_nodes::BoundNodeMap;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, RawKeyEvent, WindowEvent};
@@ -16,8 +16,8 @@ struct RetainedCode {
     nodes: HashMap<NodeId, *mut dyn Widget>,
     bindings: BoundNodeMap,
     root: NodeId,
-    text: tilo_ui::TextRenderer,
-    theme: tilo_ui::Theme,
+    text: tilo_ui_base::TextRenderer,
+    theme: tilo_ui_base::Theme,
     doc: AutoCommit,
 }
 
@@ -29,8 +29,8 @@ impl RetainedCode {
             Block::paragraph("Following paragraph"),
         ]);
         editor.focus_block(0, CursorPlacement::Start);
-        let theme = tilo_ui::Theme::dark().with_text_scale(scale);
-        let mut text = tilo_ui::font_catalog::fixture_renderer();
+        let theme = tilo_ui_base::Theme::dark().with_text_scale(scale);
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
         text.set_text_scale(scale);
         let mut tree = TaffyTree::new();
         let mut nodes = HashMap::new();
@@ -58,7 +58,7 @@ impl RetainedCode {
     fn frame(&mut self) {
         // SAFETY: no topology change is allowed between keystrokes in this test.
         unsafe {
-            tilo_ui::widget::compute_widget_layout(
+            tilo_ui_base::widget::compute_widget_layout(
                 &mut self.tree,
                 self.root,
                 Size {
@@ -72,12 +72,12 @@ impl RetainedCode {
             .unwrap();
         }
         self.editor.apply_layout(&self.tree, self.root, Point::ZERO);
-        self.editor.draw(&mut tilo_ui::DrawCtx::new(
+        self.editor.draw(&mut tilo_ui_base::DrawCtx::new(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut self.text,
             &self.theme,
-            tilo_ui::presence::PresenceCtx::empty().draw_env(),
+            tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
         ));
         self.editor.mark_drawn();
     }
@@ -106,10 +106,10 @@ impl RetainedCode {
                 event,
                 is_synthetic: true,
             },
-            &mut tilo_ui::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: tilo_ui::widget::Edits::lend(&mut self.doc),
+                state: tilo_ui_base::widget::Edits::lend(&mut self.doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut None,

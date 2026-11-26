@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use tilo_actions::ActionBinding;
 use tilo_resource::{Invoke, Params, Path, Resource, Segment};
-use ui_core::LocalState;
+use tilo_ui_base::LocalState;
 
 use super::controls::Actions;
 use super::dispatch::Submit;

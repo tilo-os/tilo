@@ -2,7 +2,7 @@
 //! local edits, CRDT reconciliation and callers without a mutation observation all
 //! take the same conservative path. No display text/spans are built on a hit.
 use super::{Arc, TextAlign, TextInput, TextStyle};
-use crate::tokens::SyntaxPalette;
+use tilo_ui_base::tokens::SyntaxPalette;
 
 pub(super) struct Preparation {
     text: Arc<str>,
@@ -26,7 +26,7 @@ impl Preparation {
         if input.secret
             || matches!(
                 style.hyphenation,
-                crate::text_render::Hyphenation::Custom(_)
+                tilo_ui_base::text_render::Hyphenation::Custom(_)
             )
         {
             return None;
@@ -55,7 +55,7 @@ impl Preparation {
         !input.secret
             && !matches!(
                 style.hyphenation,
-                crate::text_render::Hyphenation::Custom(_)
+                tilo_ui_base::text_render::Hyphenation::Custom(_)
             )
             && self.text.as_ref() == input.text
             && self.preedit == input.core.preedit()

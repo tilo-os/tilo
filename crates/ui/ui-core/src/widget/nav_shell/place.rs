@@ -9,9 +9,9 @@ use vello::kurbo::Rect;
 use super::band::{self, plan};
 use super::status_action::place_status_action;
 use super::{Column, Inputs, NavGeometry, Part, at_mut};
-use crate::num::{f32_of_f64, f64_of_usize};
-use crate::widget::WidgetLayoutError;
-use crate::widget::manual::{ManualContext, MeasureConstraint};
+use tilo_ui_base::{num::f32_of_f64, num::f64_of_usize};
+use tilo_ui_base::widget::WidgetLayoutError;
+use tilo_ui_base::{widget::manual::ManualContext, widget::manual::MeasureConstraint};
 
 /// The layout policy the host runs: place every built part at the rect the
 /// plan gives it, and lay each header row out from what its parts measure.

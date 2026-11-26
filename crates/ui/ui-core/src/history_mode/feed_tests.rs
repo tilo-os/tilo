@@ -75,7 +75,7 @@ tilo_test_env::scenario! {
 /// Software names whom it acted for.
 #[test]
 fn software_names_whom_it_acted_for() {
-    crate::i18n::I18nManager::init("en-US");
+    tilo_ui_base::i18n::I18nManager::init("en-US");
     let mut served = entry(1, 1, "Planner", 0);
     served.author.relation = wire::Relation::Software;
     served.author.on_behalf_of = Some("Ben".into());

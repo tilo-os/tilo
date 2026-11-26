@@ -157,6 +157,6 @@ fn serve_remote_pictures() {
     let Some(tiles) = tilo_tiles::Tiles::of_app(&name) else {
         return;
     };
-    let fetch: ui::Fetcher = std::sync::Arc::new(move |url: &str| tiles.bytes(url));
+    let fetch: tilo_ui_base::Fetcher = std::sync::Arc::new(move |url: &str| tiles.bytes(url));
     ui::set_remote_fetcher(Some(fetch));
 }

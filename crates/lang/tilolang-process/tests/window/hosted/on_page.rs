@@ -102,7 +102,7 @@ fn a_page_of_ten_thousand_tasks_carries_the_rows_it_shows() {
 /// that changed.
 #[test]
 fn a_task_checked_off_on_the_page_is_done_in_the_workspace() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let surface = package(package_of(TASKS))
         .surface()
         .expect("the package has a surface");

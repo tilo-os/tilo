@@ -206,7 +206,7 @@ fn television() -> ProjectionDevice {
 
 #[test]
 fn super_p_opens_the_wireless_display_sheet() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session(&docked(), None);
     assert!(
         session.display_sheet().is_some(),
@@ -255,7 +255,7 @@ fn super_p_opens_the_wireless_display_sheet() {
 
 #[test]
 fn a_chosen_receiver_is_asked_for_its_pin_and_projected_to() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let broker = Broker::answering(television());
     let mut session = session(&docked(), Some(broker.socket.clone()));
 
@@ -375,7 +375,7 @@ fn differed(before: &Screenshot, after: &Screenshot) -> (u32, u32, u32, u32) {
 /// is.
 #[test]
 fn a_capture_of_the_pin_sheet_withholds_the_pin_and_the_display_shows_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // The two captures this test compares are of the same display: the bar's own minute turning
     // over between them is not a change the sheet made.
     let _clock = tilo_test_env::held_wall_clock();

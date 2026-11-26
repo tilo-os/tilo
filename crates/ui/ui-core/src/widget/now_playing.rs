@@ -4,13 +4,14 @@
 use vello::kurbo::{Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
-use crate::motion::{CrossFade, recent_input, want_frames_until};
-use crate::paint::PaintCtx;
-use crate::text_render::TextStyle;
+use tilo_ui_base::{motion::CrossFade, motion::recent_input, motion::want_frames_until};
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextStyle;
 use crate::time::Instant;
-use crate::tokens::{EffectiveMotion, MotionSource};
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
 use crate::widget::media_card::{MediaArt, paint_art_tile};
-use crate::widget::{SliderFace, TextStackFace, Tone, TransportArt};
+use crate::{widget::SliderFace, widget::TextStackFace, widget::TransportArt};
+use tilo_ui_base::widget::Tone;
 
 pub use crate::widget::slider::paint_held_readout;
 
@@ -240,7 +241,7 @@ impl Scrub {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::Theme;
+    use tilo_ui_base::theme::Theme;
 
     fn song(title: &str) -> Song {
         Song {
@@ -287,7 +288,7 @@ mod tests {
             let mut face = SongFace::new();
             assert!(face.show(&song("One"), motion, now));
             assert!(!face.is_moving(now), "the first song is there at once");
-            crate::motion::note_source(MotionSource::Pointer);
+            tilo_ui_base::motion::note_source(MotionSource::Pointer);
             assert!(face.show(&song("Two"), motion, now));
             assert!(face.is_moving(now), "the next one fades in");
             let layers: Vec<_> = face.layers(now).map(|(s, _)| s.title.clone()).collect();
@@ -308,7 +309,7 @@ mod tests {
         let now = crate::time::now();
         let mut face = SongFace::new();
         face.show(&song("One"), motion, now);
-        crate::motion::note_source(MotionSource::Keyboard);
+        tilo_ui_base::motion::note_source(MotionSource::Keyboard);
         face.show(&song("Two"), motion, now);
         assert!(!face.is_moving(now));
         assert_eq!(face.song().title, "Two");

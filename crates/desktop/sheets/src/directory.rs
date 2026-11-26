@@ -15,13 +15,11 @@ use std::rc::Rc;
 
 use ui::advanced::WindowEvent;
 use ui::framework::{Effected, ResourceApp, ViewCx};
-use ui::icons::Icon;
+use tilo_ui_base::icons::Icon;
 use ui::prelude::*;
-use ui::tokens::Rhythm;
-use ui::widget::{
-    Avatar, Banner, Button, ButtonRole, ChipStyle, Column, ControlSize, Element, EmptyState,
-    ListRow, ModalDialog, Row, SearchField, Section, Text, Widget,
-};
+use tilo_ui_base::tokens::Rhythm;
+use ui::{widget::Avatar, widget::Banner, widget::Button, widget::ButtonRole, widget::ChipStyle, widget::Column, widget::ControlSize, widget::EmptyState, widget::ListRow, widget::ModalDialog, widget::Row, widget::SearchField, widget::Section, widget::Text};
+use tilo_ui_base::{widget::Element, widget::Widget};
 
 mod store;
 mod view;
@@ -279,7 +277,7 @@ pub fn sheet(
         ModalDialog::new(t("directory-title"), body)
             .with_test_id("directory")
             .with_icon(Icon::Users)
-            .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
+            .with_max_width(f64::from(tilo_ui_base::tokens::Metrics::BASE.panel_width_sheet))
             .secondary_action(t("directory-link-or-code"), move || {
                 link(DirectoryEffect::LinkOrCode { text: typed.get() });
             })
@@ -303,7 +301,7 @@ impl ResourceApp for DirectoryApp {
     // Nothing is kept: there is no past to look back on.
     const DOCUMENT_HISTORY: bool = false;
 
-    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+    fn catalog() -> Option<&'static tilo_ui_base::i18n::EmbeddedCatalog> {
         Some(&crate::CATALOG)
     }
 
@@ -394,7 +392,7 @@ fn sample_directory() -> Directory {
         tag: None,
         activity: crate::t_args(
             "sheets-workspace-activity",
-            &[("people", ui::i18n::ArgValue::Text(here.to_string()))],
+            &[("people", tilo_ui_base::i18n::ArgValue::Text(here.to_string()))],
         ),
         members: (here > 0).then(|| format!("{} members", here.saturating_mul(4))),
         joins_as: "You join as an editor".to_owned(),
@@ -403,7 +401,7 @@ fn sample_directory() -> Directory {
                 (
                     crate::t_args(
                         "sheets-workspace-person",
-                        &[("number", ui::i18n::ArgValue::Text(n.to_string()))],
+                        &[("number", tilo_ui_base::i18n::ArgValue::Text(n.to_string()))],
                     ),
                     format!("person-{n}"),
                 )
@@ -483,7 +481,7 @@ fn rows(directory: &Directory, query: &str, ask: &Ask) -> Element {
         } else {
             EmptyState::new(crate::t_args(
                 "directory-no-match-title",
-                &[("query", ui::i18n::ArgValue::Text(query.trim().to_owned()))],
+                &[("query", tilo_ui_base::i18n::ArgValue::Text(query.trim().to_owned()))],
             ))
             .with_message(t("directory-no-match"))
         };
@@ -517,7 +515,7 @@ fn row(listing: &Listing, ask: &Ask) -> Element {
         .control_size(ControlSize::Small)
         .with_accessible_name(&crate::t_args(
             named,
-            &[("name", ui::i18n::ArgValue::Text(listing.name.clone()))],
+            &[("name", tilo_ui_base::i18n::ArgValue::Text(listing.name.clone()))],
         ))
         .tooltip(listing.joins_as.clone())
         .on_click(move || press(effect.clone()))
@@ -527,7 +525,7 @@ fn row(listing: &Listing, ask: &Ask) -> Element {
     }
     let mut trailing = Row::new()
         .with_rhythm(Rhythm::Related)
-        .with_gap(ui::tokens::Spacing::BASE.s1);
+        .with_gap(tilo_ui_base::tokens::Spacing::BASE.s1);
     let faces = listing.here.len().min(FACES_SHOWN);
     for (name, identity) in listing.here.iter().take(faces) {
         trailing = trailing.push(Box::new(Avatar::person(name.clone(), identity.clone())));
@@ -543,7 +541,7 @@ fn row(listing: &Listing, ask: &Ask) -> Element {
         trailing = trailing.push(Box::new(
             Text::new(&crate::t_args(
                 "directory-here-more",
-                &[("count", ui::i18n::ArgValue::Text(extra.to_string()))],
+                &[("count", tilo_ui_base::i18n::ArgValue::Text(extra.to_string()))],
             ))
             .with_role(TextRole::Caption),
         ));
@@ -577,7 +575,7 @@ struct Searching {
     ask: Ask,
 }
 
-impl ui::widget::Decorator for Searching {
+impl tilo_ui_base::widget::Decorator for Searching {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -588,7 +586,7 @@ impl ui::widget::Decorator for Searching {
         self.content.as_mut()
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         use ui::winit::keyboard::{Key, NamedKey};
         let pressed = match event {
             WindowEvent::KeyboardInput { event: key, .. }

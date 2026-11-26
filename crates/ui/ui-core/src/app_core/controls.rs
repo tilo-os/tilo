@@ -2,8 +2,8 @@
 
 use crate::bound_dispatch::local_target::LocalResourceTarget;
 use crate::bound_dispatch::{BoundActionTarget, ControlContinuationArguments};
-use crate::widget::ResourceOperationStart;
-use crate::widget::controls::Origin;
+use tilo_ui_base::widget::ResourceOperationStart;
+use tilo_ui_base::widget::controls::Origin;
 use tilo_actions::{ActionAddress, ApiError, ControlInvocation, InvocationId};
 
 use super::ResourceInvocation;
@@ -89,7 +89,7 @@ impl crate::app::App {
         } else {
             self.run_local_history_address(&intent.address, &json_argument(&intent.arguments))
         };
-        crate::widget::controls::on_control_invocation_result(
+        tilo_ui_base::widget::controls::on_control_invocation_result(
             self.host_root_mut(),
             &intent.address,
             &result,
@@ -263,7 +263,7 @@ impl crate::app::App {
     /// those the components and the outer document hold.
     pub(crate) fn dispatch_drained_controls(
         &mut self,
-        registered: crate::control_domain::RegisteredControls,
+        registered: tilo_ui_base::control_domain::RegisteredControls,
     ) -> usize {
         let mut dispatched = 0usize;
         // What waited for what it changes is asked again first, in the order it was pressed.
@@ -299,11 +299,11 @@ impl crate::app::App {
     /// delivered at all.
     pub(crate) fn dispatch_control_round(
         &mut self,
-        registered: crate::control_domain::RegisteredControls,
+        registered: tilo_ui_base::control_domain::RegisteredControls,
     ) -> (usize, usize) {
         let mut dispatched = 0usize;
         let mut delivered = 0usize;
-        let crate::control_domain::RegisteredControls {
+        let tilo_ui_base::control_domain::RegisteredControls {
             mut outer,
             components,
         } = registered;
@@ -353,7 +353,7 @@ impl crate::app::App {
             .pop_front()
             .map(|intent| (intent, None, Origin::Person))
             .or_else(|| {
-                crate::widget::input_provenance::take_attributed_with_origin(self.host_root_mut())
+                tilo_ui_base::widget::input_provenance::take_attributed_with_origin(self.host_root_mut())
             })
         {
             delivered = delivered.saturating_add(1);
@@ -490,7 +490,7 @@ impl crate::app::App {
         result: &Started,
     ) {
         self.note_continuation(on_behalf_of, result);
-        crate::widget::controls::on_control_invocation_result(
+        tilo_ui_base::widget::controls::on_control_invocation_result(
             self.host_root_mut(),
             address,
             result,

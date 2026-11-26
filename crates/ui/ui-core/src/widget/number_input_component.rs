@@ -1,6 +1,6 @@
 //! [`NumberInput`] as a described component.
 
-use crate::component::{Bound, Component, Described};
+use tilo_ui_base::{component::Bound, component::Component, component::Described};
 use crate::widget::ControlSize;
 
 use super::NumberInput;

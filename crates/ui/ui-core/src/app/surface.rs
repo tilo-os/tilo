@@ -4,7 +4,7 @@
 //! size, a redraw, the pointer's shape — comes from the surface.
 
 use super::*;
-use crate::damage::{WidgetIdentity, boxes_covered_by_own_damage, changed_boxes, widget_boxes};
+use tilo_ui_base::{damage::WidgetIdentity, damage::boxes_covered_by_own_damage, damage::changed_boxes, damage::widget_boxes};
 use crate::profiling::InputPhase;
 
 /// What an [`App`] needs from the surface it is shown on.
@@ -48,7 +48,7 @@ impl App {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        deliver: impl FnOnce(&mut dyn Widget, &WindowEvent, &mut crate::widget::EventCtx<'_>) -> bool,
+        deliver: impl FnOnce(&mut dyn Widget, &WindowEvent, &mut tilo_ui_base::widget::EventCtx<'_>) -> bool,
     ) -> bool {
         let _entry = self.enter_wake_scope();
         let Some(root_node) = self.live_app_node() else {
@@ -65,10 +65,10 @@ impl App {
         let took = deliver(
             self.root_widget.as_mut(),
             event,
-            &mut crate::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 scale_factor: scale,
                 modifiers: &self.input.modifiers,
-                state: crate::widget::Edits::lend(&mut self.state.doc),
+                state: tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
                 path: &self.state.root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -109,7 +109,7 @@ impl App {
             && let Some(layout) = self.input.keyboard_layout.clone()
         {
             self.root_widget
-                .observe_physical_input(crate::widget::PhysicalInput::Layout(Some(layout)));
+                .observe_physical_input(tilo_ui_base::widget::PhysicalInput::Layout(Some(layout)));
         }
     }
 
@@ -169,7 +169,7 @@ impl App {
         // lands at once. A host that shows an app on a surface of its own
         // (the session's shell, its panels and sheets) reaches the toolkit
         // through here, and would otherwise land everything at once.
-        crate::motion::note_input(&event);
+        tilo_ui_base::motion::note_input(&event);
         // Controls swapped in or moved under a still pointer learn it is
         // there before the press or release that follows.
         #[cfg(test)]
@@ -239,8 +239,8 @@ impl App {
     ) -> bool {
         let _entry = self.enter_wake_scope();
         // What the event changed reaches widgets that paint it without a
-        // flag of their own ([`crate::input_generation`]).
-        crate::input_generation::note();
+        // flag of their own ([`tilo_ui_base::input_generation`]).
+        tilo_ui_base::input_generation::note();
         self.input.pointer.track_buttons(&event);
         if self
             .input
@@ -252,7 +252,7 @@ impl App {
             self.dismiss_control_notice();
         }
         // A material stage lights where the pointer is: it moving over the window is a new frame.
-        if crate::part_paint::backdrop::follows_pointer()
+        if tilo_ui_base::part_paint::backdrop::follows_pointer()
             && matches!(
                 &event,
                 WindowEvent::CursorMoved { .. } | WindowEvent::CursorLeft { .. }
@@ -350,13 +350,13 @@ impl App {
         }
         if self.close_admission.dialog.is_some() || !self.app_live() {
             self.root_widget
-                .observe_physical_input(crate::widget::PhysicalInput::Focused(false));
-        } else if let Some(input) = crate::widget::PhysicalInput::from_window_event(&event) {
+                .observe_physical_input(tilo_ui_base::widget::PhysicalInput::Focused(false));
+        } else if let Some(input) = tilo_ui_base::widget::PhysicalInput::from_window_event(&event) {
             self.root_widget.observe_physical_input(input);
         }
         if self.close_handle_event(&event, window.scale_factor()) {
             self.root_widget
-                .observe_physical_input(crate::widget::PhysicalInput::Focused(false));
+                .observe_physical_input(tilo_ui_base::widget::PhysicalInput::Focused(false));
             window.request_redraw();
             return true;
         }
@@ -478,11 +478,11 @@ impl App {
                     .input
                     .platform
                     .command_modifier_down(app.input.modifiers.state())
-                    && crate::platform::HostShortcut::resolve(
+                    && tilo_ui_base::platform::HostShortcut::resolve(
                         app.input.platform,
                         c,
                         app.input.modifiers.state().shift_key(),
-                    ) == Some(crate::platform::HostShortcut::Search)
+                    ) == Some(tilo_ui_base::platform::HostShortcut::Search)
             );
             if !is_ctrl_k
                 && matches!(
@@ -621,14 +621,14 @@ impl App {
                 crate::window_toolbar::open_search(opening);
                 handled = true;
             }
-            match crate::platform::HostShortcut::resolve(app.input.platform, c, shift) {
-                Some(crate::platform::HostShortcut::Undo) => {
-                    app.perform_undo_request(crate::widget::undo_access::UndoRequest::Undo);
+            match tilo_ui_base::platform::HostShortcut::resolve(app.input.platform, c, shift) {
+                Some(tilo_ui_base::platform::HostShortcut::Undo) => {
+                    app.perform_undo_request(tilo_ui_base::widget::undo_access::UndoRequest::Undo);
                     is_undo_redo = true;
                     handled = true;
                 }
-                Some(crate::platform::HostShortcut::Redo) => {
-                    app.perform_undo_request(crate::widget::undo_access::UndoRequest::Redo);
+                Some(tilo_ui_base::platform::HostShortcut::Redo) => {
+                    app.perform_undo_request(tilo_ui_base::widget::undo_access::UndoRequest::Redo);
                     is_undo_redo = true;
                     handled = true;
                 }
@@ -636,7 +636,7 @@ impl App {
                 // session, the window's own outside one, where a second
                 // press closes it.
                 #[cfg(feature = "model")]
-                Some(crate::platform::HostShortcut::Search) => {
+                Some(tilo_ui_base::platform::HostShortcut::Search) => {
                     if app.palette_open() {
                         app.close_action_palette();
                     } else {
@@ -646,12 +646,12 @@ impl App {
                 }
                 // Without Tilo's model a window has no search: the key reaches the app.
                 #[cfg(not(feature = "model"))]
-                Some(crate::platform::HostShortcut::Search) => {}
-                Some(crate::platform::HostShortcut::History) => {
-                    handled = app.invoke_host_shortcut(crate::platform::HostShortcut::History);
+                Some(tilo_ui_base::platform::HostShortcut::Search) => {}
+                Some(tilo_ui_base::platform::HostShortcut::History) => {
+                    handled = app.invoke_host_shortcut(tilo_ui_base::platform::HostShortcut::History);
                 }
-                Some(crate::platform::HostShortcut::Sidebar) => {
-                    handled = app.invoke_host_shortcut(crate::platform::HostShortcut::Sidebar);
+                Some(tilo_ui_base::platform::HostShortcut::Sidebar) => {
+                    handled = app.invoke_host_shortcut(tilo_ui_base::platform::HostShortcut::Sidebar);
                 }
                 None => {}
             }
@@ -679,7 +679,7 @@ impl App {
         // Two-finger swipe, edge pull or mouse side button; delivered via
         // `on_nav_gesture`.
         if !handled && !synthesized_touch {
-            use crate::gesture::GesturePhase;
+            use tilo_ui_base::gesture::GesturePhase;
             let map_phase = |p: winit::event::TouchPhase| match p {
                 winit::event::TouchPhase::Started => GesturePhase::Begin,
                 winit::event::TouchPhase::Moved => GesturePhase::Update,
@@ -704,7 +704,7 @@ impl App {
                     map_phase(*phase),
                     true,
                 ),
-                WindowEvent::MouseInput { .. } => crate::interaction::mouse_nav_direction(&event),
+                WindowEvent::MouseInput { .. } => tilo_ui_base::interaction::mouse_nav_direction(&event),
                 WindowEvent::Touch(t) => {
                     let width = f64::from(window.inner_size().width);
                     app.input.nav_gestures.on_touch(
@@ -973,7 +973,7 @@ impl App {
     /// The system's back (or forward) gesture, once its host recognised one (a two-finger swipe,
     /// an edge pull, a mouse side button, the back key), delivered to the whole tree. Whether
     /// something took it; what took it syncs in the next frame.
-    pub fn surface_nav_gesture(&mut self, dir: crate::gesture::NavDirection) -> bool {
+    pub fn surface_nav_gesture(&mut self, dir: tilo_ui_base::gesture::NavDirection) -> bool {
         let _entry = self.enter_wake_scope();
         let taken = self
             .root_widget
@@ -1073,20 +1073,20 @@ impl App {
     /// the earliest deadline its widgets set (a caret's blink, the clock's
     /// next minute) or a tooltip's dwell runs out.
     pub fn surface_next_frame(&self) -> Option<crate::time::Instant> {
-        crate::motion::own(self.motion_owner(), || self.surface_next_frame_own())
+        tilo_ui_base::motion::own(self.motion_owner(), || self.surface_next_frame_own())
     }
 
     /// Whether something in the app moves at `now`: a widget's motion, a
     /// frame a motion asked for, or a press or hover still settling. A host
     /// draws it again while it does, as a window of its own is redrawn.
     pub fn surface_moving(&self, now: crate::time::Instant) -> bool {
-        crate::motion::own(self.motion_owner(), || self.surface_moving_own(now))
+        tilo_ui_base::motion::own(self.motion_owner(), || self.surface_moving_own(now))
     }
 
     /// [`Self::surface_moving`], asked as this app.
     fn surface_moving_own(&self, now: crate::time::Instant) -> bool {
         self.root_widget.needs_animation_frame()
-            || crate::motion::frames_wanted(now)
+            || tilo_ui_base::motion::frames_wanted(now)
             || self
                 .presence_ctx
                 .interaction_animation_demand(now, &self.theme)
@@ -1125,12 +1125,12 @@ impl App {
     }
 
     /// Hand `payload` to the app's root, as an external event a window of
-    /// its own receives ([`crate::widget::Widget::on_external_event`]).
+    /// its own receives ([`tilo_ui_base::widget::Widget::on_external_event`]).
     pub fn external_event(&mut self, payload: &str) {
         let _entry = self.enter_wake_scope();
         self.root_widget.on_external_event(
             payload,
-            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
             &self.state.root,
         );
         self.needs_sync = true;
@@ -1147,7 +1147,7 @@ impl App {
         &mut self,
         window: &dyn AppSurface,
         touch: winit::event::Touch,
-        emulator: &mut crate::interaction::TouchPointerEmulator,
+        emulator: &mut tilo_ui_base::interaction::TouchPointerEmulator,
     ) -> bool {
         let scale = window.scale_factor();
         if self.explore_by_touch(&touch, scale) {
@@ -1172,7 +1172,7 @@ impl App {
     pub fn surface_touch_hold(
         &mut self,
         window: &dyn AppSurface,
-        emulator: &mut crate::interaction::TouchPointerEmulator,
+        emulator: &mut tilo_ui_base::interaction::TouchPointerEmulator,
         now: crate::time::Instant,
     ) -> bool {
         let Some((device_id, events)) = emulator.poll(now) else {
@@ -1282,7 +1282,7 @@ impl App {
             unused_variables,
             reason = "a build without the window's own runner lays out in hosted frames only, and this guard is what the hosted frame's passes read"
         )]
-        let laying_out = crate::motion::laying_out_frame();
+        let laying_out = tilo_ui_base::motion::laying_out_frame();
         if self.layout.root_node.is_none() {
             self.init_layout();
         }
@@ -1360,7 +1360,7 @@ impl App {
             && !self.root_widget.needs_animation_frame()
             && !self.wake_pending()
             && !self.actions.bound_calls_running()
-            && !crate::widget::controls::has_pending_control_invocation(self.root_widget.as_ref());
+            && !tilo_ui_base::widget::controls::has_pending_control_invocation(self.root_widget.as_ref());
         let frames = &mut self.layout.frames;
         frames.laid_out = frames.laid_out.saturating_add(1);
         if quiet {
@@ -1426,15 +1426,15 @@ impl App {
         .into_iter()
         .find_map(|(repaint, why)| repaint.then_some(why));
         // A host that repaints only this frame's damage from its scene is
-        // drawn only what that damage needs (`crate::draw_cull`), unless the
+        // drawn only what that damage needs (`tilo_ui_base::draw_cull`), unless the
         // frame repaints whole or paints what its widgets' damage does not
         // describe.
         let culls = damage.culls
             && full.is_none()
             && !self.presents_history()
-            && !crate::scene_parts::is_tracked(scene);
+            && !tilo_ui_base::scene_parts::is_tracked(scene);
         let mut culling = culls.then(|| std::mem::take(&mut self.layout.cull));
-        let cull_frame = culling.as_mut().map(crate::draw_cull::Culling::begin);
+        let cull_frame = culling.as_mut().map(tilo_ui_base::draw_cull::Culling::begin);
         #[cfg(test)]
         let draw_probe = crate::frame_probe::span("frame.draw");
         let drawn = draw_frame_content_with(
@@ -1510,9 +1510,9 @@ impl App {
         // What moved besides what scrolls copy, and what came or went in a
         // scrolled content; `None` when a rebuild no widget described moved
         // what cannot be said.
-        let moved_besides = |offers: &[crate::scroll_copy::ScrollOffer]| match &boxes_after {
+        let moved_besides = |offers: &[tilo_ui_base::scroll_copy::ScrollOffer]| match &boxes_after {
             Some(after) if described || relaid => {
-                let moves = crate::scroll_copy::moves_besides(
+                let moves = tilo_ui_base::scroll_copy::moves_besides(
                     &uncovered(&boxes_before),
                     &uncovered(after),
                     offers,
@@ -1543,30 +1543,30 @@ impl App {
             if !copying {
                 collect_submitted_widget_damage(root, regions);
                 regions.extend(moved.into_iter().flatten());
-                return crate::scroll_copy::CopyPlan::default();
+                return tilo_ui_base::scroll_copy::CopyPlan::default();
             }
             let offers =
-                crate::scroll_copy::accepting(|| collect_submitted_widget_damage(root, regions));
+                tilo_ui_base::scroll_copy::accepting(|| collect_submitted_widget_damage(root, regions));
             if offers.is_empty() {
                 regions.extend(moved.into_iter().flatten());
-                return crate::scroll_copy::CopyPlan::default();
+                return tilo_ui_base::scroll_copy::CopyPlan::default();
             }
             // What is painted over the widgets (a menu, the palette, a
             // tooltip, peer marks that cannot be bounded) does not move with
             // a scroll: the scrollers repaint.
             if drawn.painted_over || marks_unbounded {
                 regions.extend(moved.into_iter().flatten());
-                regions.extend(offers.iter().map(crate::scroll_copy::ScrollOffer::viewport));
-                return crate::scroll_copy::CopyPlan::default();
+                regions.extend(offers.iter().map(tilo_ui_base::scroll_copy::ScrollOffer::viewport));
+                return tilo_ui_base::scroll_copy::CopyPlan::default();
             }
             let Some(besides) = moved_besides(&offers) else {
                 regions.extend(moved.into_iter().flatten());
-                regions.extend(offers.iter().map(crate::scroll_copy::ScrollOffer::viewport));
-                return crate::scroll_copy::CopyPlan::default();
+                regions.extend(offers.iter().map(tilo_ui_base::scroll_copy::ScrollOffer::viewport));
+                return tilo_ui_base::scroll_copy::CopyPlan::default();
             };
             regions.extend(besides);
             let history = self.history_widget();
-            crate::scroll_copy::plan_scaled(
+            tilo_ui_base::scroll_copy::plan_scaled(
                 &offers,
                 &std::iter::once(root).chain(history).collect::<Vec<_>>(),
                 plan_scale,
@@ -1579,7 +1579,7 @@ impl App {
         if let Some(mut culling) = culling {
             let left_out = cull_frame
                 .as_ref()
-                .is_some_and(crate::draw_cull::Frame::skipped_any);
+                .is_some_and(tilo_ui_base::draw_cull::Frame::skipped_any);
             let holds = cull_frame
                 .as_ref()
                 .is_none_or(|frame| frame.holds(damage.pending.as_deref()));
@@ -1665,8 +1665,8 @@ fn device_extent(extent: u32, scale: f64) -> u32 {
 /// of its own does ([`SurfaceDamage::painting_peers`]).
 #[derive(Default)]
 struct PeerLayer {
-    layer: crate::presence::PresenceLayer,
-    bounds: crate::scene_parts::DrawBounds,
+    layer: tilo_ui_base::presence::PresenceLayer,
+    bounds: tilo_ui_base::scene_parts::DrawBounds,
 }
 
 /// What the members' layer did in one frame: its damage against the
@@ -1674,7 +1674,7 @@ struct PeerLayer {
 /// screen and now (`None` when that cannot be bounded), in scene pixels.
 struct PeerFrame {
     changed: Option<Vec<KurboRect>>,
-    marks: Option<crate::presence::LayerMarks>,
+    marks: Option<tilo_ui_base::presence::LayerMarks>,
 }
 
 /// Where an app's frames on a surface changed since its host last looked
@@ -1689,7 +1689,7 @@ pub struct SurfaceDamage {
     /// chrome, a dialog, the palette) that their damage does not describe.
     top_layer_drawn: bool,
     tooltip: Option<KurboRect>,
-    widgets: Option<crate::presence::WidgetPresence>,
+    widgets: Option<tilo_ui_base::presence::WidgetPresence>,
     /// Why the last frame repainted the surface whole, if it did.
     repainted: Option<&'static str>,
     /// Whether the host copies what a scroll keeps on screen
@@ -1698,7 +1698,7 @@ pub struct SurfaceDamage {
     /// The copies of the frames since the last take, in device pixels at
     /// [`Self::copy_scale`] per scene pixel, to make before repainting the
     /// damage.
-    copies: Vec<crate::scroll_copy::DeviceCopy>,
+    copies: Vec<tilo_ui_base::scroll_copy::DeviceCopy>,
     /// How many pixels of the host's target one pixel of the surface's
     /// scene is ([`Self::set_copy_scale`]).
     copy_scale: f64,
@@ -1730,7 +1730,7 @@ impl SurfaceDamage {
     /// For a host that presents each frame over the pixels of the last one
     /// and makes the copies [`Self::take_copying`] returns before it repaints
     /// the damage: a scroll then copies what stays on screen instead of
-    /// damaging its viewport ([`crate::scroll_copy`]).
+    /// damaging its viewport ([`tilo_ui_base::scroll_copy`]).
     pub fn copying() -> Self {
         Self {
             copying: true,
@@ -1748,7 +1748,7 @@ impl SurfaceDamage {
     /// scene alone, over the pixels it presented last: never more of the
     /// scene, and never the scene again later. The scene then holds only
     /// what that damage needs: a scroll draws the strip it exposed and what
-    /// changed, not every row in view (`crate::draw_cull`).
+    /// changed, not every row in view (`tilo_ui_base::draw_cull`).
     #[must_use]
     pub fn drawing_only_damage(mut self) -> Self {
         self.culls = self.copying;
@@ -1816,7 +1816,7 @@ impl SurfaceDamage {
     /// last take changed; `None` when they must be repainted whole.
     pub fn take_copying(
         &mut self,
-    ) -> Option<(Vec<crate::scroll_copy::DeviceCopy>, Vec<KurboRect>)> {
+    ) -> Option<(Vec<tilo_ui_base::scroll_copy::DeviceCopy>, Vec<KurboRect>)> {
         let copies = std::mem::take(&mut self.copies);
         self.pending
             .replace(Vec::new())
@@ -1838,7 +1838,7 @@ impl SurfaceDamage {
     /// Whether what widgets paint from presence changed, or follows their
     /// content (a peer's caret or selection, fresh typing): either moves
     /// marks no widget reports.
-    fn widgets_presence_changed(&mut self, widgets: crate::presence::WidgetPresence) -> bool {
+    fn widgets_presence_changed(&mut self, widgets: tilo_ui_base::presence::WidgetPresence) -> bool {
         let changed = widgets.marks_follow_content() || self.widgets.as_ref() != Some(&widgets);
         self.widgets = Some(widgets);
         changed
@@ -1855,7 +1855,7 @@ impl SurfaceDamage {
         drawn: &DrawnFrame,
         scale: f64,
         peers: Option<&PeerFrame>,
-        collect: impl FnOnce(&mut Vec<KurboRect>) -> crate::scroll_copy::CopyPlan,
+        collect: impl FnOnce(&mut Vec<KurboRect>) -> tilo_ui_base::scroll_copy::CopyPlan,
     ) {
         let layer_shown = std::mem::replace(&mut self.top_layer_drawn, drawn.top_layer.is_some());
         let tooltip_shown = std::mem::replace(&mut self.tooltip, drawn.tooltip);
@@ -1899,7 +1899,7 @@ impl SurfaceDamage {
         // since, those are not all there: that frame's damage is repainted
         // only once the host takes, so the copy lands as damage instead.
         if pending.is_empty() && self.copies.is_empty() {
-            crate::scroll_copy::carry(&planned.copies, &mut changed);
+            tilo_ui_base::scroll_copy::carry(&planned.copies, &mut changed);
             if let Some(marks) = peers.and_then(|peers| peers.marks.as_ref()) {
                 let device = |rects: &[KurboRect]| -> Vec<KurboRect> {
                     rects
@@ -1907,7 +1907,7 @@ impl SurfaceDamage {
                         .map(|rect| to_device.transform_rect_bbox(*rect))
                         .collect()
                 };
-                crate::scroll_copy::marks_over_copies(
+                tilo_ui_base::scroll_copy::marks_over_copies(
                     &planned.copies,
                     &device(&marks.shown),
                     &device(&marks.painted),
@@ -1922,7 +1922,7 @@ impl SurfaceDamage {
                 planned
                     .copies
                     .iter()
-                    .map(crate::scroll_copy::DeviceCopy::destination_rect),
+                    .map(tilo_ui_base::scroll_copy::DeviceCopy::destination_rect),
             );
         }
         let to_scene = Affine::scale(unit.recip());
@@ -1939,13 +1939,13 @@ impl SurfaceDamage {
 mod tests {
     use super::*;
     use crate::testing::Dispatch;
-    use crate::widget::TaffyTreeExt;
+    use tilo_ui_base::widget::TaffyTreeExt;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     thread_local! {
         static CLICKS: RefCell<Option<Rc<RefCell<Vec<Point>>>>> = const { RefCell::new(None) };
-        static PHYSICAL: RefCell<Vec<crate::widget::PhysicalInput>> = const { RefCell::new(Vec::new()) };
+        static PHYSICAL: RefCell<Vec<tilo_ui_base::widget::PhysicalInput>> = const { RefCell::new(Vec::new()) };
 
     }
 
@@ -2025,7 +2025,7 @@ mod tests {
     }
 
     impl Widget for ClickProbe {
-        fn observe_physical_input(&mut self, input: crate::widget::PhysicalInput) {
+        fn observe_physical_input(&mut self, input: tilo_ui_base::widget::PhysicalInput) {
             PHYSICAL.with_borrow_mut(|events| events.push(input));
         }
         fn build_layout(
@@ -2036,8 +2036,8 @@ mod tests {
         ) -> NodeId {
             taffy.fill_leaf(nodes, self)
         }
-        crate::rect_geometry!();
-        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        tilo_ui_base::rect_geometry!();
+        fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
             #[allow(
                 unused_variables,
                 unused_mut,
@@ -2052,7 +2052,7 @@ mod tests {
                 &self.rect,
             );
         }
-        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
             match event {
                 WindowEvent::CursorMoved { position, .. } => {
                     self.pointer = ctx.logical(position);
@@ -2070,8 +2070,8 @@ mod tests {
         fn name(&self) -> &'static str {
             "Clicks"
         }
-        fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-            let mut node = crate::a11y::AccessNode::new(crate::a11y::Role::Button);
+        fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+            let mut node = tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button);
             node.name = Some("Press".into());
             node.state.focusable = true;
             Some(node)
@@ -2207,7 +2207,7 @@ mod tests {
             winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
         PHYSICAL.with_borrow_mut(Vec::clear);
         let key = PhysicalKey::Code(KeyCode::KeyZ);
-        let event = crate::synthetic_input::keyboard_input(winit::event::KeyEvent::synthetic(
+        let event = tilo_ui_base::synthetic_input::keyboard_input(winit::event::KeyEvent::synthetic(
             winit::event::RawKeyEvent {
                 physical_key: key,
                 state: ElementState::Pressed,
@@ -2225,7 +2225,7 @@ mod tests {
         );
         PHYSICAL.with_borrow(|events| {
             assert_eq!(events.len(), 1);
-            assert!(matches!(events[0], crate::widget::PhysicalInput::Key {
+            assert!(matches!(events[0], tilo_ui_base::widget::PhysicalInput::Key {
                 key: observed, state: ElementState::Pressed
             } if observed == key));
         });
@@ -2233,14 +2233,14 @@ mod tests {
         if let WindowEvent::KeyboardInput { is_synthetic, .. } = &mut synthetic {
             *is_synthetic = true;
         }
-        assert!(crate::widget::PhysicalInput::from_window_event(&synthetic).is_none());
+        assert!(tilo_ui_base::widget::PhysicalInput::from_window_event(&synthetic).is_none());
         app.surface_input(&region, synthetic, false);
         PHYSICAL.with_borrow(|events| assert_eq!(events.len(), 1));
         app.surface_input(&region, WindowEvent::Focused(false), false);
         PHYSICAL.with_borrow(|events| {
             assert!(matches!(
                 events.last(),
-                Some(crate::widget::PhysicalInput::Focused(false))
+                Some(tilo_ui_base::widget::PhysicalInput::Focused(false))
             ))
         });
     }
@@ -2251,8 +2251,8 @@ mod tests {
         app.input.modifiers =
             winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
         app.input.platform =
-            crate::platform::PlatformConventions::new(crate::platform::Platform::Linux);
-        crate::synthetic_input::keyboard_input(winit::event::KeyEvent::synthetic(
+            tilo_ui_base::platform::PlatformConventions::new(tilo_ui_base::platform::Platform::Linux);
+        tilo_ui_base::synthetic_input::keyboard_input(winit::event::KeyEvent::synthetic(
             winit::event::RawKeyEvent {
                 physical_key: PhysicalKey::Code(KeyCode::Equal),
                 state: ElementState::Pressed,
@@ -2274,7 +2274,7 @@ mod tests {
             redraw: Cell::new(false),
         };
         app.surface_frame(&region, &mut Scene::new());
-        let body = |app: &App| app.theme.text(crate::tokens::TextRole::Body).size;
+        let body = |app: &App| app.theme.text(tilo_ui_base::tokens::TextRole::Body).size;
         let (scale, text_scale, size) = (app.theme.ui_scale, app.theme.text_scale, body(&app));
         let gap = app.theme.tokens.spacing.s4;
 
@@ -2429,7 +2429,7 @@ mod tests {
         PHYSICAL.with_borrow_mut(Vec::clear);
         app.surface_input(
             &region,
-            crate::synthetic_input::keyboard_input(winit::event::KeyEvent::synthetic(
+            tilo_ui_base::synthetic_input::keyboard_input(winit::event::KeyEvent::synthetic(
                 winit::event::RawKeyEvent {
                     physical_key: winit::keyboard::PhysicalKey::Code(
                         winit::keyboard::KeyCode::KeyY,
@@ -2453,7 +2453,7 @@ mod tests {
             assert!(
                 events
                     .iter()
-                    .all(|event| matches!(event, crate::widget::PhysicalInput::Focused(false))),
+                    .all(|event| matches!(event, tilo_ui_base::widget::PhysicalInput::Focused(false))),
                 "modal keystrokes must not reach foreground observers"
             );
         });
@@ -2505,13 +2505,13 @@ mod tests {
             assert!(
                 events
                     .iter()
-                    .all(|event| matches!(event, crate::widget::PhysicalInput::Focused(false)))
+                    .all(|event| matches!(event, tilo_ui_base::widget::PhysicalInput::Focused(false)))
             )
         });
         app.close_admission.dialog = None;
         app.surface_frame(&region, &mut Scene::new());
         PHYSICAL.with_borrow(|events| assert!(events.iter().any(|event|
-            matches!(event, crate::widget::PhysicalInput::Layout(Some(layout)) if layout == &active))));
+            matches!(event, tilo_ui_base::widget::PhysicalInput::Layout(Some(layout)) if layout == &active))));
         assert_eq!(
             app.state.doc.get_heads(),
             heads,
@@ -2574,7 +2574,7 @@ mod tests {
         let opened = crate::time::now();
         let next = opened + crate::time::Duration::from_millis(16);
         crate::time::testing::with_monotonic_time(opened, || {
-            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
             app.open_action_palette();
             let _ = app.surface_frame(&region, &mut Scene::new());
             assert!(app.palette_moving(), "a palette a click opened arrives");
@@ -2585,7 +2585,7 @@ mod tests {
                 "the arriving palette asks for the frame that draws it further in"
             );
         });
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         assert!(
             settle(&mut app),
             "a palette at rest asks for no more frames"
@@ -2611,7 +2611,7 @@ mod tests {
         embedded.apply_layout(&taffy, node, Point::new(100.0, 50.0));
         let mut text = TextRenderer::new();
         let mut scene = Scene::new();
-        embedded.draw(&mut crate::draw::DrawCtx::new(
+        embedded.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
@@ -2656,7 +2656,7 @@ mod tests {
         );
 
         let control = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-        let close = crate::synthetic_input::key_input(
+        let close = tilo_ui_base::synthetic_input::key_input(
             &winit::keyboard::Key::Character(winit::keyboard::SmolStr::new("w")),
             ElementState::Pressed,
         );
@@ -2686,7 +2686,7 @@ mod tests {
             )
             .unwrap();
         embedded.apply_layout(&taffy, node, Point::new(100.0, 50.0));
-        embedded.draw(&mut crate::draw::DrawCtx::new(
+        embedded.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut TextRenderer::new(),
@@ -2694,7 +2694,7 @@ mod tests {
             PresenceCtx::empty().draw_env(),
         ));
 
-        fn find(node: &crate::a11y::AccessNode, name: &str) -> Option<crate::a11y::AccessNode> {
+        fn find(node: &tilo_ui_base::a11y::AccessNode, name: &str) -> Option<tilo_ui_base::a11y::AccessNode> {
             if node.name.as_deref() == Some(name) {
                 return Some(node.clone());
             }
@@ -2714,7 +2714,7 @@ mod tests {
             .layout(&taffy, node)
             .send(
                 &mut embedded,
-                &crate::synthetic_input::key_input(
+                &tilo_ui_base::synthetic_input::key_input(
                     &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
                     ElementState::Pressed,
                 ),
@@ -2735,7 +2735,7 @@ mod tests {
     /// window holding focus is the one that asked.
     #[test]
     fn a_palette_opened_by_a_press_stands_over_the_window_pressed_in() {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut app = App::new(
             crate::State::new(),
             Box::new(crate::testing::TwoWindows::new(["Chat", "Contacts"])),

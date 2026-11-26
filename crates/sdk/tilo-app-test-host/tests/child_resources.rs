@@ -5,7 +5,7 @@
 //! palette, agents and scripts address the child like any resource.
 
 use tilo_actions::{Action, ActionError};
-use tilo_app::Role;
+use tilo_ui_base::Role;
 use tilo_app::automerge::transaction::Transactable;
 use tilo_app::automerge::{ObjId, ObjType, ROOT, ReadDoc, Value};
 use tilo_app::prelude::*;

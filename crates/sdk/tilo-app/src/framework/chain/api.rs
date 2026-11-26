@@ -31,7 +31,7 @@ impl ResourceApi for ChainState {
         ChainState::publish_head(self)
     }
 
-    fn publish_shared(&self) -> ui_core::published::SharedResource {
+    fn publish_shared(&self) -> tilo_ui_base::published::SharedResource {
         ChainState::publish_shared(self)
     }
 

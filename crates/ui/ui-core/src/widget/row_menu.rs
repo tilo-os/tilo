@@ -8,12 +8,10 @@ use std::rc::Rc;
 
 use winit::event::WindowEvent;
 
-use crate::icons::Icon;
-use crate::widget::controls::ActionControls;
-use crate::widget::{
-    ActionEmitter, Button, ControlBindingMetadata, ControlSize, EventCtx, MenuButton, MenuItem,
-    ModelPath, Widget,
-};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::widget::controls::ActionControls;
+use crate::{widget::Button, widget::ControlSize, widget::MenuButton, widget::MenuItem};
+use tilo_ui_base::{widget::ActionEmitter, widget::ControlBindingMetadata, widget::EventCtx, widget::ModelPath, widget::Widget};
 
 struct Entry {
     label: String,
@@ -22,7 +20,7 @@ struct Entry {
     emitter: Option<ActionEmitter<()>>,
 }
 
-#[crate::component::not_a_component(part, "a row's menu, from its `menu` slot")]
+#[tilo_ui_base::component::not_a_component(part, "a row's menu, from its `menu` slot")]
 pub struct RowMenu {
     menu: MenuButton,
     id: String,
@@ -137,7 +135,7 @@ impl RowMenu {
     }
 }
 
-impl crate::widget::Decorator for RowMenu {
+impl tilo_ui_base::widget::Decorator for RowMenu {
     type Inner = MenuButton;
 
     fn inner(&self) -> &MenuButton {
@@ -148,7 +146,7 @@ impl crate::widget::Decorator for RowMenu {
         &mut self.menu
     }
 
-    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+    fn provide<'a>(&'a self, request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn ActionControls>() {
             request.provide::<dyn ActionControls>(self);
         } else {
@@ -156,7 +154,7 @@ impl crate::widget::Decorator for RowMenu {
         }
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
+    fn provide_mut<'a>(&'a mut self, request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>) {
         if request.wants::<dyn ActionControls>() {
             request.provide::<dyn ActionControls>(self);
         } else {
@@ -169,7 +167,7 @@ impl crate::widget::Decorator for RowMenu {
         self.run_chosen();
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &ModelPath) {
         Widget::sync(&mut self.menu, state, path);
         self.run_chosen();
     }
@@ -178,8 +176,8 @@ impl crate::widget::Decorator for RowMenu {
 impl ActionControls for RowMenu {
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         for emitter in self
             .entries

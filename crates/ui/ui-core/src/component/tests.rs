@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use super::*;
+use tilo_ui_base::component::*;
 use crate::component_catalogue::TOOLKIT;
 use crate::widget::ListRowProps;
 
@@ -84,7 +84,7 @@ tilo_test_env::scenario! {
 
     phase every_described_widget_lists_the_children_it_hands_out;
     {
-        use crate::widget::Widget;
+        use tilo_ui_base::widget::Widget;
 
         type Child = (*const (), String);
 
@@ -198,7 +198,7 @@ tilo_test_env::scenario! {
                 no_type.push(description.name.clone());
                 continue;
             }
-            let before = std::ptr::from_ref::<dyn crate::widget::Widget>(widget.as_ref());
+            let before = std::ptr::from_ref::<dyn tilo_ui_base::widget::Widget>(widget.as_ref());
             let mut next = given("k", &props);
             let taken = (entry.update)(&mut widget, &mut next);
             if taken != Ok(true) {
@@ -207,7 +207,7 @@ tilo_test_env::scenario! {
             }
             assert_eq!(
                 before,
-                std::ptr::from_ref::<dyn crate::widget::Widget>(widget.as_ref()),
+                std::ptr::from_ref::<dyn tilo_ui_base::widget::Widget>(widget.as_ref()),
                 "{} is the instance it was",
                 description.name
             );
@@ -231,7 +231,7 @@ tilo_test_env::scenario! {
 pub(super) struct Given {
     key: String,
     props: BTreeMap<String, Value>,
-    queue: crate::Intents<Fired>,
+    queue: tilo_ui_base::Intents<Fired>,
     events: Vec<&'static str>,
     views: usize,
 }
@@ -279,7 +279,7 @@ pub(super) fn given(key: &str, props: &[(&str, Value)]) -> Given {
             .iter()
             .map(|(name, value)| ((*name).to_owned(), value.clone()))
             .collect(),
-        queue: crate::Intents::default(),
+        queue: tilo_ui_base::Intents::default(),
         events: Vec::new(),
         views: 0,
     }
@@ -386,8 +386,8 @@ tilo_test_env::scenario! {
             )
         }
 
-        fn said(root: &dyn crate::widget::Widget) -> Vec<String> {
-            fn walk(w: &dyn crate::widget::Widget, out: &mut Vec<String>) {
+        fn said(root: &dyn tilo_ui_base::widget::Widget) -> Vec<String> {
+            fn walk(w: &dyn tilo_ui_base::widget::Widget, out: &mut Vec<String>) {
                 if let Some(node) = w.accessibility() {
                     out.extend(node.name);
                 }
@@ -400,14 +400,14 @@ tilo_test_env::scenario! {
             out
         }
 
-        fn laid_out<W: crate::widget::Widget + 'static>(
+        fn laid_out<W: tilo_ui_base::widget::Widget + 'static>(
             widget: W,
         ) -> (crate::headless::Driver, Vec<String>) {
             let host = crate::headless::Driver::for_root(
                 crate::State::new(),
                 widget,
                 (900, 600),
-                crate::theme::Theme::dark(),
+                tilo_ui_base::theme::Theme::dark(),
             );
             let said = said(host.root::<W>());
             (host, said)
@@ -520,7 +520,7 @@ tilo_test_env::scenario! {
         assert_eq!(props.key, "row");
         assert_eq!(props.title, "Q3 plan");
         assert_eq!(props.secondary.as_deref(), Some("Ship it"));
-        assert_eq!(props.mark, Some(crate::icons::Icon::Pin));
+        assert_eq!(props.mark, Some(tilo_ui_base::icons::Icon::Pin));
         assert!(props.selected);
         assert!(!props.activate.is_none(), "the event is the host's intent");
         props.activate.fire(None);
@@ -539,7 +539,7 @@ tilo_test_env::scenario! {
     {
         let mut first = given("t", &[("value", Value::Text("1".into()))]);
         let mut text =
-            toolkit().build("Text", &mut first).unwrap_or_else(|_| Box::new(crate::widget::Spacer::fixed(0.0)));
+            toolkit().build("Text", &mut first).unwrap_or_else(|_| Box::new(tilo_ui_base::widget::Spacer::fixed(0.0)));
         let mut next = given("t", &[("value", Value::Text("2".into()))]);
         assert_eq!(toolkit().update("Text", &mut text, &mut next), Ok(true));
         let mut titled = given(
@@ -580,7 +580,7 @@ struct Item {
 
 struct ItemSource<'a> {
     item: &'a Item,
-    queue: crate::Intents<Fired>,
+    queue: tilo_ui_base::Intents<Fired>,
 }
 
 impl Source for ItemSource<'_> {
@@ -690,7 +690,7 @@ impl Source for AvatarRow {
 struct Rendered {
     items: Vec<Item>,
     asked: Vec<std::ops::Range<usize>>,
-    queue: crate::Intents<Fired>,
+    queue: tilo_ui_base::Intents<Fired>,
     changed: Vec<String>,
 }
 
@@ -737,11 +737,11 @@ impl RowSource for Rendered {
         self.items.iter().any(|item| item.key == key)
     }
 
-    fn take_changes(&mut self) -> Vec<crate::collection_transition::ListModelChange<String>> {
+    fn take_changes(&mut self) -> Vec<tilo_ui_base::collection_transition::ListModelChange<String>> {
         if self.changed.is_empty() {
             return Vec::new();
         }
-        vec![crate::collection_transition::ListModelChange::RowsChanged {
+        vec![tilo_ui_base::collection_transition::ListModelChange::RowsChanged {
             keys: std::mem::take(&mut self.changed),
         }]
     }
@@ -753,7 +753,7 @@ impl RowSource for Rendered {
 
 struct ListSource {
     rows: SharedRows,
-    queue: crate::Intents<Fired>,
+    queue: tilo_ui_base::Intents<Fired>,
 }
 
 impl Source for ListSource {
@@ -849,7 +849,7 @@ fn grouped_list(title: Option<&str>, items: &[(&str, &str)]) -> crate::widget::D
     <crate::widget::DescribedList as Described>::from_props("list", props)
 }
 
-fn rendered_list(items: Vec<Item>) -> (crate::widget::DescribedList, crate::Intents<Fired>) {
+fn rendered_list(items: Vec<Item>) -> (crate::widget::DescribedList, tilo_ui_base::Intents<Fired>) {
     let (list, queue, _) = rendered_list_and_rows(items);
     (list, queue)
 }
@@ -858,10 +858,10 @@ fn rendered_list_and_rows(
     items: Vec<Item>,
 ) -> (
     crate::widget::DescribedList,
-    crate::Intents<Fired>,
+    tilo_ui_base::Intents<Fired>,
     std::rc::Rc<std::cell::RefCell<Rendered>>,
 ) {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let rendered = std::rc::Rc::new(std::cell::RefCell::new(Rendered {
         items,
         asked: Vec::new(),
@@ -948,7 +948,7 @@ tilo_test_env::scenario! {
             crate::State::new(),
             list,
             (400, 300),
-            crate::theme::Theme::dark(),
+            tilo_ui_base::theme::Theme::dark(),
         );
         harness.relayout();
         let (rebuilt, nodes) = (harness.rebuilt_frames(), harness.layout_node_ids());
@@ -1012,7 +1012,7 @@ tilo_test_env::scenario! {
             crate::State::new(),
             list,
             (1600, 900),
-            crate::theme::Theme::dark(),
+            tilo_ui_base::theme::Theme::dark(),
         );
         harness.relayout();
         let inspection = harness.inspection();
@@ -1020,7 +1020,7 @@ tilo_test_env::scenario! {
         pages(&inspection.root, &mut found);
         assert_eq!(found.len(), 3, "one page row per message");
         let measure = f64::from(crate::widget::arrange::MEASURE_REM)
-            * f64::from(crate::widget::arrange::rem_of(&crate::theme::Theme::dark()));
+            * f64::from(crate::widget::arrange::rem_of(&tilo_ui_base::theme::Theme::dark()));
         for page in &found {
             let width = page.children.first().expect("a row").rect[2];
             assert!(
@@ -1094,8 +1094,8 @@ fn a_person_wears_the_colour_that_travels_with_them() {
         .unwrap()
         .hue
     };
-    assert_eq!(worn(Some(1)), crate::tokens::PresenceHue::Orange);
-    assert_eq!(worn(None), crate::tokens::PresenceHue::of_member(&identity));
+    assert_eq!(worn(Some(1)), tilo_ui_base::tokens::PresenceHue::Orange);
+    assert_eq!(worn(None), tilo_ui_base::tokens::PresenceHue::of_member(&identity));
 }
 
 /// A component whose press is bound to an action says why it cannot be pressed now. The runtime

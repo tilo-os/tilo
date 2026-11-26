@@ -23,12 +23,12 @@ pub(super) fn capture_font_check(args: &LaunchArgs) -> Result<(), LaunchError> {
     if !captures_frames(args) {
         return Ok(());
     }
-    if let Some(problem) = crate::text_render::font_catalog_problem() {
+    if let Some(problem) = tilo_ui_base::text_render::font_catalog_problem() {
         return Err(LaunchError::SubstituteFont(problem));
     }
     // Say which catalog set the text, once, so a review of these frames knows
     // what it is looking at instead of assuming.
-    if let Some(root) = crate::font_catalog::catalog_root() {
+    if let Some(root) = tilo_ui_base::font_catalog::catalog_root() {
         eprintln!("font catalog: {}", root.display());
     }
     Ok(())

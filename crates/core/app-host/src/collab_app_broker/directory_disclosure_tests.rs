@@ -502,7 +502,7 @@ impl app_framework::framework::ResourceApp for FrameworkProjectionApp {
     type Resource = FrameworkProjection;
     const ID: &'static str = "so.tilo.test-framework-projection";
     const TITLE: &'static str = "Public document";
-    fn view(_: &mut app_framework::framework::ViewCx<FrameworkProjection>) -> ui::widget::Element {
+    fn view(_: &mut app_framework::framework::ViewCx<FrameworkProjection>) -> tilo_ui_base::widget::Element {
         Box::new(ui::widget::Text::new("Public document"))
     }
 }

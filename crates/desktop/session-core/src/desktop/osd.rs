@@ -121,25 +121,25 @@ pub const OSD_HOLD: Duration = Duration::from_millis(1_500);
 /// The hint pill's height: its glyph's square and the gap above and below it. Unscaled `BASE`
 /// values because a host sizes the surface from this before any theme is in hand.
 pub const OSD_ROW_HEIGHT: f32 =
-    ui::tokens::Metrics::BASE.icon_lg + 2.0 * ui::tokens::Spacing::BASE.s3;
+    tilo_ui_base::tokens::Metrics::BASE.icon_lg + 2.0 * tilo_ui_base::tokens::Spacing::BASE.s3;
 
 /// The level pill's height: the device's row, the bar beneath it, and the gap above and below.
-pub const OSD_LEVEL_HEIGHT: f32 = 2.0 * ui::tokens::Spacing::BASE.s3
-    + ui::tokens::Metrics::BASE.icon_lg
-    + 2.0 * ui::tokens::Spacing::BASE.s2;
+pub const OSD_LEVEL_HEIGHT: f32 = 2.0 * tilo_ui_base::tokens::Spacing::BASE.s3
+    + tilo_ui_base::tokens::Metrics::BASE.icon_lg
+    + 2.0 * tilo_ui_base::tokens::Spacing::BASE.s2;
 
 /// Room above and below the pill's body for the shadow it floats on: a surface sized to the body
 /// alone would cut the shadow off in a hard edge.
-pub const OSD_MARGIN: f32 = ui::tokens::Spacing::BASE.s8;
+pub const OSD_MARGIN: f32 = tilo_ui_base::tokens::Spacing::BASE.s8;
 
 /// How far the pill's edge stands above the output's bottom edge (or below its top, when it moves
 /// up): the same inset the readouts have always rested at, where a glance finds them and no bar or
 /// dock sits.
-pub const OSD_INSET: f32 = ui::tokens::Spacing::BASE.s16;
+pub const OSD_INSET: f32 = tilo_ui_base::tokens::Spacing::BASE.s16;
 
 /// The pill's content is at least this wide: a short word still leaves a bar long enough to read as
 /// a level rather than a dash.
-pub const OSD_BAR: f32 = ui::tokens::Metrics::BASE.icon_lg * 5.0;
+pub const OSD_BAR: f32 = tilo_ui_base::tokens::Metrics::BASE.icon_lg * 5.0;
 
 /// How wide the pill's content grows, in glyphs, before it stops and cuts the device's name with an
 /// ellipsis instead: a long device name widens the pill to a point, never across the display.
@@ -322,12 +322,12 @@ impl DeviceGlyph {
         }
     }
 
-    const fn icon(self) -> ui::icons::Icon {
+    const fn icon(self) -> tilo_ui_base::icons::Icon {
         match self {
-            Self::Speaker => ui::icons::Icon::Speaker,
-            Self::Headphones => ui::icons::Icon::Headphones,
-            Self::Display => ui::icons::Icon::Monitor,
-            Self::Keyboard => ui::icons::Icon::Keyboard,
+            Self::Speaker => tilo_ui_base::icons::Icon::Speaker,
+            Self::Headphones => tilo_ui_base::icons::Icon::Headphones,
+            Self::Display => tilo_ui_base::icons::Icon::Monitor,
+            Self::Keyboard => tilo_ui_base::icons::Icon::Keyboard,
         }
     }
 }
@@ -467,8 +467,8 @@ impl Level {
     /// The glyph for the device it changed (its own when the session named it), and whether it
     /// reads as on.
     #[must_use]
-    pub fn glyph(&self) -> (ui::icons::Icon, GlyphTone) {
-        use ui::icons::Icon;
+    pub fn glyph(&self) -> (tilo_ui_base::icons::Icon, GlyphTone) {
+        use tilo_ui_base::icons::Icon;
         if let Some(device) = &self.device {
             let tone = if self.kind == OsdKind::KeyboardBacklight && self.level <= 0.0 {
                 GlyphTone::Off
@@ -548,8 +548,8 @@ impl Hint {
 
     /// The glyph for what was turned on or off, and whether it reads as on.
     #[must_use]
-    pub fn glyph(&self) -> (ui::icons::Icon, GlyphTone) {
-        use ui::icons::Icon;
+    pub fn glyph(&self) -> (tilo_ui_base::icons::Icon, GlyphTone) {
+        use tilo_ui_base::icons::Icon;
         match self.kind {
             OsdKind::NightLight if self.on => (Icon::Moon, GlyphTone::On),
             OsdKind::NightLight => (Icon::Moon, GlyphTone::Off),
@@ -592,7 +592,7 @@ impl Osd {
 
     /// The glyph the pill leads with, and how it is inked.
     #[must_use]
-    pub fn glyph(&self) -> (ui::icons::Icon, GlyphTone) {
+    pub fn glyph(&self) -> (tilo_ui_base::icons::Icon, GlyphTone) {
         match self {
             Self::Level(level) => level.glyph(),
             Self::Hint(hint) => hint.glyph(),
@@ -687,7 +687,7 @@ mod tests {
             );
             assert_eq!(
                 volume(0.65).glyph(),
-                (ui::icons::Icon::Headphones, GlyphTone::On)
+                (tilo_ui_base::icons::Icon::Headphones, GlyphTone::On)
             );
         }
 

@@ -6,7 +6,7 @@
 //! offsets) is built from, never grown again by the reader's text scale, so a caller that scales an
 //! expression scales all of it together.
 
-use crate::text_render::{FontChoice, TextKind, TextRenderer, TextStyle, UI_MATH_FAMILY};
+use tilo_ui_base::{text_render::FontChoice, text_render::TextKind, text_render::TextRenderer, text_render::TextStyle, text_render::UI_MATH_FAMILY};
 
 use super::model::{Node, Row, Slot};
 
@@ -1338,7 +1338,7 @@ mod layout_tests {
 
         phase an_exponent_of_any_length_sits_raised_above_its_base;
         {
-            let mut tr = crate::font_catalog::fixture_renderer();
+            let mut tr = tilo_ui_base::font_catalog::fixture_renderer();
             let size = 22.0_f32;
             for source in ["x^2", "x^(2-2)", "x^(n+1)"] {
                 let laid = layout(&parse(source).root, &mut tr, size);
@@ -1410,7 +1410,7 @@ mod layout_tests {
         // and reads as an oversized, misaligned glyph. The name and its parenthesised argument must
         // be the same font size AND share the row baseline.
         {
-            let mut tr = crate::font_catalog::fixture_renderer();
+            let mut tr = tilo_ui_base::font_catalog::fixture_renderer();
             let expr = parse("sin(sqrt(x^2+y^2))");
             let lay = layout(&expr.root, &mut tr, 20.0);
 
@@ -1441,7 +1441,7 @@ mod layout_tests {
 
         phase binary_and_relation_operators_receive_math_spacing;
         {
-            let mut tr = crate::font_catalog::fixture_renderer();
+            let mut tr = tilo_ui_base::font_catalog::fixture_renderer();
             let compact = parse("xy");
             let binary = parse("x+y");
             let relation = parse("x=y");
@@ -1461,7 +1461,7 @@ mod layout_tests {
 
         phase paired_scripts_share_a_column_above_and_below_the_baseline;
         {
-            let mut tr = crate::font_catalog::fixture_renderer();
+            let mut tr = tilo_ui_base::font_catalog::fixture_renderer();
             let row = vec![
                 Node::Char('∑'),
                 Node::SubSup {
@@ -1482,7 +1482,7 @@ mod layout_tests {
 
         phase tex_delimiters_enclose_tall_content_and_accents_fit_their_base;
         {
-            let mut tr = crate::font_catalog::fixture_renderer();
+            let mut tr = tilo_ui_base::font_catalog::fixture_renderer();
             let parsed = parse_tex(r"\left[\frac{\hat{x}}{y}\right]");
             let laid = layout(&parsed.expr.root, &mut tr, 22.0);
             let delimiters: Vec<_> = laid
@@ -1524,7 +1524,7 @@ mod layout_tests {
 
         phase matrix_cells_align_to_shared_rows_and_columns;
         {
-            let mut tr = crate::font_catalog::fixture_renderer();
+            let mut tr = tilo_ui_base::font_catalog::fixture_renderer();
             let row = vec![Node::Paren {
                 body: vec![Node::Table {
                     rows: vec![
@@ -1585,7 +1585,7 @@ mod layout_tests {
 
         phase matrix_rows_share_baselines_and_remain_in_source_order;
         {
-            let mut tr = crate::font_catalog::fixture_renderer();
+            let mut tr = tilo_ui_base::font_catalog::fixture_renderer();
             let row = vec![Node::Paren {
                 body: vec![Node::Table {
                     rows: vec![

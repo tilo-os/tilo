@@ -47,6 +47,7 @@ rand.workspace = true
 zeroize.workspace = true
 rustix = { workspace = true, features = ["fs", "process"] }
 settings-store = { package = "tilo-settings-store", path = "../../desktop/settings", features = ["watch"] }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # The theme the legacy toolkits' appearance keys are projected from.
 ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 futures-util.workspace = true
@@ -68,6 +69,7 @@ zbus = { workspace = true, features = ["tokio"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model"] }
 
 [features]

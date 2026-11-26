@@ -1,11 +1,8 @@
-use tilo_ui::permissions::{
-    Access, ActionKind, Answer, AppKind, CapDecision, CapOverride, Denial, Grantee, MemberId,
-    PermissionContext, PermissionScope, ResourceRef, Role, Scope, TreePath, policy,
-};
+use tilo_ui_base::{permissions::Access, permissions::ActionKind, permissions::Answer, permissions::AppKind, permissions::CapDecision, permissions::CapOverride, permissions::Denial, permissions::Grantee, permissions::MemberId, permissions::PermissionContext, permissions::PermissionScope, permissions::ResourceRef, permissions::Role, permissions::Scope, permissions::TreePath, permissions::policy};
 
 /// A viewer in the workspace: role only, no individual capabilities.
 fn viewer_ctx(user: &str) -> PermissionContext {
-    PermissionContext::member(&tilo_ui::permissions::MemberId::person(user), Role::Viewer)
+    PermissionContext::member(&tilo_ui_base::permissions::MemberId::person(user), Role::Viewer)
 }
 
 /// An editor in the workspace, additionally shared one file.
@@ -14,7 +11,7 @@ fn viewer_ctx(user: &str) -> PermissionContext {
 /// authority over the filesystem, so even an Owner needs one of these
 /// to touch a path.
 fn editor_ctx(user: &str) -> PermissionContext {
-    PermissionContext::member(&tilo_ui::permissions::MemberId::person(user), Role::Editor).granting(
+    PermissionContext::member(&tilo_ui_base::permissions::MemberId::person(user), Role::Editor).granting(
         CapOverride::grant(
             Grantee::person(user),
             Scope::FsPath("/var/workspace/report.md".into()),
@@ -58,10 +55,10 @@ tilo_test_env::scenario! {
     {
         // An actor with no role has no base authority at all, so absent an
         // explicit capability it is denied — fail-closed by construction.
-        let no_role = || PermissionContext::stranger(&tilo_ui::permissions::MemberId::person("x"));
+        let no_role = || PermissionContext::stranger(&tilo_ui_base::permissions::MemberId::person("x"));
         // A block is not an absence. A broader grant must not undo it.
         let denied_with_admin_grant = || {
-            let ctx = PermissionContext::member(&tilo_ui::permissions::MemberId::person("mallory"), Role::Editor);
+            let ctx = PermissionContext::member(&tilo_ui_base::permissions::MemberId::person("mallory"), Role::Editor);
             let block = ctx
                 .access()
                 .policy
@@ -167,8 +164,8 @@ tilo_test_env::scenario! {
     phase widget_defaults_carry_no_presence_or_permission;
     {
         let w = NoOpWidget;
-        assert!(tilo_ui::presence::capability::presence_key(&w).is_none());
-        assert!(tilo_ui::widget::permission::permission_scope(&w).is_none());
+        assert!(tilo_ui_base::presence::capability::presence_key(&w).is_none());
+        assert!(tilo_ui_base::widget::permission::permission_scope(&w).is_none());
     }
 
     phase guarded_widget_fires_only_when_its_scope_is_granted;
@@ -203,10 +200,10 @@ tilo_test_env::scenario! {
     {
         let terminal = TreePath::root().app(AppKind::Terminal.app_id());
         {
-            let ctx = PermissionContext::member(&tilo_ui::permissions::MemberId::person("alice"), Role::Editor).with_grant(policy::Grant::new(
+            let ctx = PermissionContext::member(&tilo_ui_base::permissions::MemberId::person("alice"), Role::Editor).with_grant(policy::Grant::new(
                 "terminal",
                 policy::Grantee::person("alice"),
-                TreePath::workspace(tilo_ui::permissions::LOCAL_WORKSPACE).join(&terminal),
+                TreePath::workspace(tilo_ui_base::permissions::LOCAL_WORKSPACE).join(&terminal),
                 policy::KindSet::ALL,
                 Answer::Allow,
                 policy::Grantee::person("owner"),
@@ -233,13 +230,13 @@ tilo_test_env::scenario! {
             let grant = policy::Grant::new(
                 "terminal",
                 policy::Grantee::person("alice"),
-                TreePath::workspace(tilo_ui::permissions::LOCAL_WORKSPACE).join(&terminal),
+                TreePath::workspace(tilo_ui_base::permissions::LOCAL_WORKSPACE).join(&terminal),
                 policy::KindSet::ALL,
                 Answer::Allow,
                 policy::Grantee::person("owner"),
             )
             .with_lifetime(policy::Lifetime::Until(2_000_000));
-            let ctx = || PermissionContext::member(&tilo_ui::permissions::MemberId::person("alice"), Role::Editor).with_grant(grant.clone());
+            let ctx = || PermissionContext::member(&tilo_ui_base::permissions::MemberId::person("alice"), Role::Editor).with_grant(grant.clone());
             let live = ctx().at_unix_time(1_999);
             assert_eq!(live.answer(&terminal, ActionKind::Outside), Answer::Allow);
             let lapsed = ctx().at_unix_time(2_000);
@@ -299,7 +296,7 @@ tilo_test_env::scenario! {
 }
 
 struct NoOpWidget;
-impl tilo_ui::widget::Widget for NoOpWidget {
+impl tilo_ui_base::widget::Widget for NoOpWidget {
     #[allow(
         clippy::unimplemented,
         reason = "test-only Widget stub; build_layout is never invoked by these tests (they \
@@ -308,8 +305,8 @@ impl tilo_ui::widget::Widget for NoOpWidget {
     fn build_layout(
         &mut self,
         _t: &mut taffy::TaffyTree<()>,
-        _th: &tilo_ui::theme::Theme,
-        _m: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui::widget::Widget>,
+        _th: &tilo_ui_base::theme::Theme,
+        _m: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,
     ) -> taffy::NodeId {
         unimplemented!()
     }
@@ -318,15 +315,15 @@ impl tilo_ui::widget::Widget for NoOpWidget {
     }
 }
 
-use tilo_ui::permissions::PermissionScope as PS;
+use tilo_ui_base::permissions::PermissionScope as PS;
 
 struct GuardedButton {
     clicked: bool,
     scope: PS,
 }
 
-impl tilo_ui::widget::Widget for GuardedButton {
-    tilo_ui::provides!(dyn tilo_ui::widget::permission::PermissionGuarded);
+impl tilo_ui_base::widget::Widget for GuardedButton {
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::permission::PermissionGuarded);
 
     #[allow(
         clippy::unimplemented,
@@ -336,15 +333,15 @@ impl tilo_ui::widget::Widget for GuardedButton {
     fn build_layout(
         &mut self,
         _t: &mut taffy::TaffyTree<()>,
-        _th: &tilo_ui::theme::Theme,
-        _m: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui::widget::Widget>,
+        _th: &tilo_ui_base::theme::Theme,
+        _m: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,
     ) -> taffy::NodeId {
         unimplemented!()
     }
     fn handle_event(
         &mut self,
         _e: &winit::event::WindowEvent,
-        _ctx: &mut tilo_ui::widget::EventCtx<'_>,
+        _ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         self.clicked = true;
     }
@@ -353,7 +350,7 @@ impl tilo_ui::widget::Widget for GuardedButton {
     }
 }
 
-impl tilo_ui::widget::permission::PermissionGuarded for GuardedButton {
+impl tilo_ui_base::widget::permission::PermissionGuarded for GuardedButton {
     fn permission_scope(&self) -> Option<PS> {
         Some(self.scope.clone())
     }

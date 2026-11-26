@@ -7,7 +7,7 @@ use std::rc::Rc;
 use tilo_resource::Effect;
 use ui::headless::Driver;
 use ui::tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
-use ui::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 use super::effect::Answer;
 use super::{Flow, Opened, Reply, SHOT_VIEWPORT, Store, invoke, published, scenario_store, window};
@@ -99,7 +99,7 @@ impl TestHost {
     /// Run the frame the window runs after an event: what its controls pressed and its
     /// workers finished taken up, and drawn.
     pub(crate) fn settle(&mut self) {
-        ui::component_inputs::forcing(|| {
+        tilo_ui_base::component_inputs::forcing(|| {
             self.harness.wait_until(ui::time::Duration::ZERO, |_| true);
         });
     }
@@ -312,10 +312,10 @@ pub(crate) fn find<T: 'static>(widget: &mut dyn Widget) -> Option<&mut T> {
     if widget.as_any_mut().is_some_and(|any| any.is::<T>()) {
         return widget.as_any_mut()?.downcast_mut();
     }
-    if ui::widget::capability::capability_mut::<dyn super::Served>(widget)
+    if tilo_ui_base::widget::capability::capability_mut::<dyn super::Served>(widget)
         .is_some_and(|served| served.window_mut().is::<T>())
     {
-        return ui::widget::capability::capability_mut::<dyn super::Served>(widget)?
+        return tilo_ui_base::widget::capability::capability_mut::<dyn super::Served>(widget)?
             .window_mut()
             .downcast_mut();
     }

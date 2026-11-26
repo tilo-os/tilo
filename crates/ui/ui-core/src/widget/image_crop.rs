@@ -1,6 +1,6 @@
 //! Shared direct-manipulation crop editor for scanner, Photos, and image tools.
 
-use crate::widget::ModelPath;
+use tilo_ui_base::widget::ModelPath;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -12,12 +12,13 @@ use winit::event::{ElementState, MouseButton, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::ColorCompat;
-use crate::LocalState;
-use crate::a11y::{AccessNode, AccessState, Action, Role};
+use tilo_ui_base::LocalState;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Action, a11y::Role};
 
-use crate::theme::Theme;
-use crate::widget::DrawChild;
-use crate::widget::{Image, ImageFit, TaffyTreeExt, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use crate::{widget::Image, widget::ImageFit};
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 /// Normalized source-image crop edges.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -59,7 +60,7 @@ impl Drag {
     }
 }
 
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "the crop surface `ui.ImageCropEditor` shows its picture in"
 )]
@@ -361,12 +362,12 @@ impl Widget for ImageCropEditor {
             size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
-        let style = crate::widget::layout::filling(style, 1.0);
+        let style = tilo_ui_base::widget::layout::filling(style, 1.0);
         taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.image.apply_layout(taffy, node, origin);
     }
 
@@ -376,7 +377,7 @@ impl Widget for ImageCropEditor {
         self.rect == Rect::ZERO
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -387,7 +388,7 @@ impl Widget for ImageCropEditor {
         self.paint_crop_overlay(scene, transform, theme);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         if self.handle_event_at(event, ctx.scale_factor) {
             if self.drag.is_some() {
@@ -409,8 +410,8 @@ impl Widget for ImageCropEditor {
         let percent = |share: f64| format!("{:.0}", share * 100.0);
         Some(
             AccessNode::new(Role::Group)
-                .with_name(crate::i18n::widget_format("widget-crop-name", &[]))
-                .with_description(crate::i18n::widget_format(
+                .with_name(tilo_ui_base::i18n::widget_format("widget-crop-name", &[]))
+                .with_description(tilo_ui_base::i18n::widget_format(
                     "widget-crop-hint",
                     &[
                         ("left", percent(selection.left).into()),
@@ -433,7 +434,7 @@ impl Widget for ImageCropEditor {
         &mut self,
         target: &str,
         action: &Action,
-        _state: &mut crate::widget::Edits<'_>,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         match action {
@@ -463,11 +464,11 @@ impl Widget for ImageCropEditor {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -529,14 +530,14 @@ mod tests {
             assert!(editor.perform_semantic_action(
                 "crop.left",
                 &Action::SetValue("40%".into()),
-                &mut crate::widget::Edits::lend(&mut document),
+                &mut tilo_ui_base::widget::Edits::lend(&mut document),
                 &root,
             ));
             assert_eq!(state.get().left, 0.4);
             assert!(editor.perform_semantic_action(
                 "crop.right",
                 &Action::Decrement,
-                &mut crate::widget::Edits::lend(&mut document),
+                &mut tilo_ui_base::widget::Edits::lend(&mut document),
                 &root,
             ));
             assert!(state.get().right < 1.0);

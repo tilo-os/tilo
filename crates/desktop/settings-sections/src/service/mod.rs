@@ -50,8 +50,8 @@ pub fn keeps(id: &str) -> bool {
 /// The index's copy, in the desktop's language: the settings' names. The same
 /// index serves every window, so it rides along in the window's language
 /// instead of deciding it.
-static NAMES: ui::i18n::EmbeddedCatalog = {
-    let catalog = ui::i18n::EmbeddedCatalog::new("en-US", index::CATALOGUES)
+static NAMES: tilo_ui_base::i18n::EmbeddedCatalog = {
+    let catalog = tilo_ui_base::i18n::EmbeddedCatalog::new("en-US", index::CATALOGUES)
         .with_system_locale()
         .as_shared();
     #[cfg(test)]

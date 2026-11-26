@@ -9,9 +9,9 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::theme::Theme;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 
 const SPLIT_MIN: f32 = 0.1;
 const SPLIT_MAX: f32 = 0.9;
@@ -83,7 +83,7 @@ impl SplitRatio {
     /// Follow a pointer at `along` on an extent from `start` that is
     /// `extent` long; returns whether it moved.
     pub fn follow(&mut self, along: f64, start: f64, extent: f64) -> bool {
-        self.set(crate::num::f32_of_f64((along - start) / extent.max(1.0)))
+        self.set(tilo_ui_base::num::f32_of_f64((along - start) / extent.max(1.0)))
     }
 
     #[must_use]
@@ -108,7 +108,7 @@ impl SplitRatio {
 /// The divider between two panes: hit-testing, hover, dragging, keyboard steps, painting and
 /// its accessible separator node.
 #[derive(Clone, Debug)]
-#[crate::component::not_a_component(part, "the handle of the language's `split`")]
+#[tilo_ui_base::component::not_a_component(part, "the handle of the language's `split`")]
 pub struct SplitHandle {
     orientation: SplitOrientation,
     ratio: SplitRatio,
@@ -212,7 +212,7 @@ impl SplitHandle {
         if total <= 0.0 {
             return self.ratio.position();
         }
-        crate::num::f32_of_f64(self.first_extent(total) / total)
+        tilo_ui_base::num::f32_of_f64(self.first_extent(total) / total)
     }
 
     /// Step the first pane smaller from where the divider stands, not from
@@ -303,7 +303,7 @@ impl SplitHandle {
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         self.dirty = true;
         match event {
@@ -376,11 +376,11 @@ impl SplitHandle {
     }
 
     /// Apply an assistive-technology step; returns whether it moved.
-    pub fn perform_action(&mut self, action: &crate::a11y::Action) -> bool {
+    pub fn perform_action(&mut self, action: &tilo_ui_base::a11y::Action) -> bool {
         let moved = match action {
-            crate::a11y::Action::Increment => self.ratio.step(KEY_STEP),
-            crate::a11y::Action::Decrement => self.step_back(),
-            crate::a11y::Action::SetValue(value) => value
+            tilo_ui_base::a11y::Action::Increment => self.ratio.step(KEY_STEP),
+            tilo_ui_base::a11y::Action::Decrement => self.step_back(),
+            tilo_ui_base::a11y::Action::SetValue(value) => value
                 .trim_end_matches('%')
                 .trim()
                 .parse::<f32>()
@@ -417,7 +417,7 @@ impl SplitHandle {
         let colour = if active {
             theme.tokens.colors.intent.value_fill
         } else {
-            crate::surface::edge_on(ground)
+            tilo_ui_base::surface::edge_on(ground)
         };
         scene.fill(vello::peniko::Fill::NonZero, transform, colour, None, &line);
         if self.focused {
@@ -425,8 +425,8 @@ impl SplitHandle {
         }
     }
 
-    pub fn accessibility(&self) -> crate::a11y::AccessNode {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    pub fn accessibility(&self) -> tilo_ui_base::a11y::AccessNode {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         AccessNode::new(Role::Separator)
             .with_name(self.label.clone())
             .with_value(format!(
@@ -477,7 +477,7 @@ impl Widget for SplitHandle {
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
-        _text: &mut crate::text_render::TextRenderer,
+        _text: &mut tilo_ui_base::text_render::TextRenderer,
     ) -> bool {
         let style = self.layout_style();
         if taffy.style(node).is_ok_and(|current| *current != style) {
@@ -490,7 +490,7 @@ impl Widget for SplitHandle {
         self.layout_dirty
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -505,17 +505,17 @@ impl Widget for SplitHandle {
         );
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         self.layout_dirty |= SplitHandle::handle_event(self, event, ctx);
     }
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &crate::widget::ModelPath,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         let moved = SplitHandle::perform_action(self, action);
         self.layout_dirty |= moved;
@@ -538,7 +538,7 @@ impl Widget for SplitHandle {
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         SplitHandle::cursor_shape(self, point)
     }
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let mut node = SplitHandle::accessibility(self);
         if let Some(id) = &self.test_id {
             node = node.with_action_target(id);
@@ -548,9 +548,9 @@ impl Widget for SplitHandle {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &crate::widget::ModelPath,
+        action: &tilo_ui_base::a11y::Action,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         if self.test_id.as_deref() != Some(target) {
             return false;
@@ -568,11 +568,11 @@ impl Widget for SplitHandle {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
     fn name(&self) -> &'static str {
         "SplitHandle"
@@ -609,7 +609,7 @@ mod tests {
                 "with area, the ratio is back"
             );
             handle.set_first_max(Some(200.0));
-            assert!(handle.perform_action(&crate::a11y::Action::Decrement));
+            assert!(handle.perform_action(&tilo_ui_base::a11y::Action::Decrement));
             let (top, _) = handle.pane_rects();
             assert!(
                 top.height() < 199.5,

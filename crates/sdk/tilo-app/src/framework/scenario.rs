@@ -88,7 +88,7 @@ pub(crate) struct Run {
     /// What the workspace holds, when the record the window opened was not
     /// on this device: the view shows once it arrived.
     pub(crate) workspace:
-        Option<ui_core::arriving::Arriving<(), ui_core::workspace_sync::WorkspaceUnreachable>>,
+        Option<tilo_ui_base::arriving::Arriving<(), tilo_ui_base::workspace_sync::WorkspaceUnreachable>>,
 }
 
 /// The arguments, the app's own options, the file and the playback handoff
@@ -206,7 +206,7 @@ impl Run {
     pub(crate) fn awaiting_workspace(
         mut self,
         workspace: Option<
-            ui_core::arriving::Arriving<(), ui_core::workspace_sync::WorkspaceUnreachable>,
+            tilo_ui_base::arriving::Arriving<(), tilo_ui_base::workspace_sync::WorkspaceUnreachable>,
         >,
     ) -> Self {
         self.workspace = workspace;

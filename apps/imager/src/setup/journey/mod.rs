@@ -41,15 +41,12 @@ use crate::hosting::{EffectAnswer, EffectCx, Effected, Hosted, Opened, Port, Sto
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_resource::EffectStatus;
 use tilo_resource::{self, AbsolutePath, ActionRef, Effect};
-use ui::icons::Icon;
-use ui::theme::Theme;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::theme::Theme;
 
-use ui::tokens::{Rhythm, TextRole};
-use ui::widget::{
-    AppModel, Button, ButtonRole, Card, Container, DrawChild as _, Field, IconWidget,
-    LabelPlacement, ListRow, ModelPath, NumberInput, Row, Spacer, Text, TextInput, TextInputKind,
-    Widget,
-};
+use tilo_ui_base::{tokens::Rhythm, tokens::TextRole};
+use ui::{widget::Button, widget::ButtonRole, widget::Card, widget::Container, widget::Field, widget::IconWidget, widget::ListRow, widget::NumberInput, widget::Row, widget::Text, widget::TextInput, widget::TextInputKind};
+use tilo_ui_base::{widget::AppModel, widget::DrawChild as _, widget::LabelPlacement, widget::ModelPath, widget::Spacer, widget::Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -200,7 +197,7 @@ pub(super) fn changes(
 /// The guided setup's window on `store`: the preview, and the USB media writer it hands the
 /// reviewed names to. Each keeps what it shows while the other one does.
 pub(crate) fn window(store: &Store, wake: &ui::WakeHandle, opened: Opened<'_>) -> Box<dyn Widget> {
-    let media = ui::LocalState::new(false);
+    let media = tilo_ui_base::LocalState::new(false);
     let (store, wake) = (store.clone(), wake.clone());
     let preview_media = media.clone();
     let opened_live = opened.is_live();
@@ -215,7 +212,7 @@ pub(crate) fn window(store: &Store, wake: &ui::WakeHandle, opened: Opened<'_>) -
     Box::new(ui::widget::Switch::from_state(
         &media,
         |showing: &bool| *showing,
-        move |showing: &bool| -> ui::widget::Element {
+        move |showing: &bool| -> tilo_ui_base::widget::Element {
             if *showing {
                 crate::app::media_writer(Port::new(store.clone(), wake.clone()), opened_live)
             } else {
@@ -235,11 +232,11 @@ struct Machine {
     created: Option<machine::Created>,
     /// A plan made here and not yet written into the person's Servers
     /// workspace: the request that writes it, followed until it answers.
-    making: Option<(machine::Created, ui::InvocationCall)>,
+    making: Option<(machine::Created, tilo_ui_base::InvocationCall)>,
     /// Whether the review was waiting for the plan before it could continue.
     plan_continue: bool,
     /// The waiting computers, as the session answered the list.
-    listing: Option<ui::InvocationCall>,
+    listing: Option<tilo_ui_base::InvocationCall>,
     waiting: Vec<machine::Waiting>,
     error: Option<&'static str>,
 }
@@ -270,11 +267,11 @@ pub struct InstallerPreview {
     capture: bool,
     last_frame: Option<Scene>,
     outgoing: Option<Scene>,
-    slide: Option<(f64, ui::motion::Presence)>,
+    slide: Option<(f64, tilo_ui_base::motion::Presence)>,
     pending_slide: Option<f64>,
     layout_metrics: Option<(f32, f32, f32)>,
     profile_breakpoint: f64,
-    field_values: [ui::LocalState<String>; 4],
+    field_values: [tilo_ui_base::LocalState<String>; 4],
     storage: storage::Storage,
     install_preferences: imager_backend::imager_model::InstallProfile,
     direct: direct::Direct,
@@ -287,7 +284,7 @@ pub struct InstallerPreview {
     native_full_os_review_pending: bool,
     live: bool,
     demo: bool,
-    media: Option<ui::LocalState<bool>>,
+    media: Option<tilo_ui_base::LocalState<bool>>,
     port: Port<InstallerPreview>,
 }
 
@@ -304,7 +301,7 @@ impl Default for InstallerPreview {
             pending_slide: None,
             layout_metrics: None,
             profile_breakpoint: 0.0,
-            field_values: std::array::from_fn(|_| ui::LocalState::new(String::new())),
+            field_values: std::array::from_fn(|_| tilo_ui_base::LocalState::new(String::new())),
             storage: storage::Storage::default(),
             install_preferences: imager_backend::imager_model::InstallProfile::default(),
             direct: direct::Direct::default(),
@@ -375,9 +372,9 @@ impl InstallerPreview {
                     Text::new(&t_args(
                         "installer-storage-btrfs-resize",
                         &[
-                            ("before", ui::format::memory(shrink.from_bytes).into()),
-                            ("after", ui::format::memory(shrink.to_bytes).into()),
-                            ("reserve", ui::format::memory(volume.reserve_bytes).into()),
+                            ("before", tilo_ui_base::format::memory(shrink.from_bytes).into()),
+                            ("after", tilo_ui_base::format::memory(shrink.to_bytes).into()),
+                            ("reserve", tilo_ui_base::format::memory(volume.reserve_bytes).into()),
                         ],
                     ))
                     .with_id("installer.storage.retained-resize"),
@@ -425,7 +422,7 @@ impl InstallerPreview {
                         "installer-preview-storage-capacity",
                         &[(
                             "capacity",
-                            ui::format::memory(plan.basis.disk.size_bytes).into(),
+                            tilo_ui_base::format::memory(plan.basis.disk.size_bytes).into(),
                         )],
                     ))
                     .with_id("installer.storage.capacity"),
@@ -447,7 +444,7 @@ impl InstallerPreview {
                             "installer.storage.existing",
                             t("installer-preview-storage-existing"),
                         )
-                        .secondary(ui::format::memory(existing_bytes))
+                        .secondary(tilo_ui_base::format::memory(existing_bytes))
                         .icon(Icon::Monitor),
                     ))
                     .push(Box::new(
@@ -455,7 +452,7 @@ impl InstallerPreview {
                             "installer.storage.tilo",
                             t("installer-preview-storage-tilo"),
                         )
-                        .secondary(ui::format::memory(self.storage.selected() << 30))
+                        .secondary(tilo_ui_base::format::memory(self.storage.selected() << 30))
                         .icon(Icon::MonitorSmartphone),
                     ))
                     .push(Box::new(
@@ -463,7 +460,7 @@ impl InstallerPreview {
                             "installer.storage.temporary",
                             t("installer-preview-storage-temporary"),
                         )
-                        .secondary(ui::format::memory(
+                        .secondary(tilo_ui_base::format::memory(
                             (plan.staging_esp.extent().lbas() + plan.staging_root.extent().lbas())
                                 * plan.basis.disk.sector_bytes,
                         ))
@@ -482,8 +479,8 @@ impl InstallerPreview {
             content = content.push(Box::new(Text::new(&t_args(
                 "installer-preview-storage-shortfall",
                 &[
-                    ("needed", ui::format::memory(*needed_bytes).into()),
-                    ("available", ui::format::memory(*available_bytes).into()),
+                    ("needed", tilo_ui_base::format::memory(*needed_bytes).into()),
+                    ("available", tilo_ui_base::format::memory(*available_bytes).into()),
                 ],
             ))));
         } else {
@@ -1277,7 +1274,7 @@ impl InstallerPreview {
         ) && let Some(input) = root
             .as_any()
             .and_then(|widget| widget.downcast_ref::<TextInput>())
-            && let Some(state) = ui::widget::undo_points::UndoPoints::get_state(input)
+            && let Some(state) = tilo_ui_base::widget::undo_points::UndoPoints::get_state(input)
         {
             states.push((root.test_id().unwrap().to_string(), state));
         }
@@ -1295,7 +1292,7 @@ impl InstallerPreview {
                 .as_any_mut()
                 .and_then(|widget| widget.downcast_mut::<TextInput>())
         {
-            ui::widget::undo_points::UndoPoints::set_state(input, state);
+            tilo_ui_base::widget::undo_points::UndoPoints::set_state(input, state);
         }
         for child in root.children_mut() {
             Self::restore_password_input_state(child, states);
@@ -1437,7 +1434,7 @@ impl InstallerPreview {
         let mut widget = Field::new(t(&format!("installer-preview-{key}-label")), input)
             .with_label_placement(Some(LabelPlacement::Above));
         if let Some(error) = self.password_field_validation(key) {
-            widget = widget.with_error_live(t(error), ui::a11y::Politeness::Assertive);
+            widget = widget.with_error_live(t(error), tilo_ui_base::a11y::Politeness::Assertive);
         } else if key == "password" {
             widget = widget.with_help(t("installer-preview-password-hint"));
         }
@@ -1748,7 +1745,7 @@ impl Widget for InstallerPreview {
         let child = if let Some(composed) = &mut self.composed {
             composed.build_layout(taffy, theme, nodes)
         } else {
-            use ui::widget::TaffyTreeExt as _;
+            use tilo_ui_base::widget::TaffyTreeExt as _;
             taffy.leaf_node(Style::default())
         };
         if let Ok(style) = taffy.style(child) {
@@ -1805,14 +1802,14 @@ impl Widget for InstallerPreview {
             child.apply_layout(taffy, node, self.rect.origin());
         }
     }
-    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        let now = ui::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         if theme.reduce_motion || self.capture {
             self.pending_slide = None;
             self.slide = None;
@@ -1820,12 +1817,12 @@ impl Widget for InstallerPreview {
         } else if let Some(direction) = self.pending_slide.take() {
             self.outgoing = self.last_frame.take();
             self.slide = self.outgoing.as_ref().map(|_| {
-                let mut arriving = ui::motion::Presence::closed();
+                let mut arriving = tilo_ui_base::motion::Presence::closed();
                 arriving.show(
                     true,
-                    ui::motion::Drill::SPEC,
+                    tilo_ui_base::motion::Drill::SPEC,
                     theme.motion(),
-                    ui::tokens::MotionSource::Pointer,
+                    tilo_ui_base::tokens::MotionSource::Pointer,
                     now,
                 );
                 (direction, arriving)
@@ -1855,8 +1852,8 @@ impl Widget for InstallerPreview {
             let width = self.rect.width();
             let motion = theme.motion();
             let incoming =
-                ui::motion::Drill::screen_pose(direction * (1.0 - arrived), width, motion);
-            let leaving = ui::motion::Drill::screen_pose(-direction * arrived, width, motion);
+                tilo_ui_base::motion::Drill::screen_pose(direction * (1.0 - arrived), width, motion);
+            let leaving = tilo_ui_base::motion::Drill::screen_pose(-direction * arrived, width, motion);
             if let Some(outgoing) = &self.outgoing {
                 scene.append(outgoing, Some(leaving.applied_to(transform)));
             }
@@ -1867,7 +1864,7 @@ impl Widget for InstallerPreview {
         scene.pop_layer();
         self.last_frame = Some(current);
     }
-    fn handle_event(&mut self, event: &WindowEvent, cx: &mut ui::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, cx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = cx.logical(position);
         }
@@ -1911,10 +1908,10 @@ impl Widget for InstallerPreview {
     }
 
     fn needs_redraw(&self) -> bool {
-        ui::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
-        ui::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
     fn name(&self) -> &'static str {
         "InstallerPreview"

@@ -7,9 +7,10 @@
 use std::collections::HashMap;
 
 use super::*;
-use crate::Theme;
+use tilo_ui_base::Theme;
 use crate::widget::scrollable::Scrollable;
-use crate::widget::{DragSource, Spacer, Widget, drag_bus};
+use crate::{widget::DragSource, widget::drag_bus};
+use tilo_ui_base::{widget::Spacer, widget::Widget};
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 
 /// A widget laid out in its own tree, which every event is then dispatched against: the tree
@@ -81,10 +82,10 @@ impl Laid {
     /// Press at `from` and carry the pointer to `to` in the steps a hand's does, without letting
     /// go: what the drag is while it travels.
     fn press_and_travel(&mut self, from: (f64, f64), to: (f64, f64)) {
-        self.send(&crate::synthetic_input::cursor_moved(from.0, from.1));
-        self.send(&crate::synthetic_input::mouse_press());
+        self.send(&tilo_ui_base::synthetic_input::cursor_moved(from.0, from.1));
+        self.send(&tilo_ui_base::synthetic_input::mouse_press());
         for at in [0.25, 0.5, 0.75, 1.0] {
-            self.send(&crate::synthetic_input::cursor_moved(
+            self.send(&tilo_ui_base::synthetic_input::cursor_moved(
                 from.0 + (to.0 - from.0) * at,
                 from.1 + (to.1 - from.1) * at,
             ));
@@ -92,7 +93,7 @@ impl Laid {
     }
 
     fn release(&mut self) {
-        self.send(&crate::synthetic_input::mouse_release());
+        self.send(&tilo_ui_base::synthetic_input::mouse_release());
     }
 
     /// [`Self::press_and_travel`] and then let go there.
@@ -192,7 +193,7 @@ fn a_press_on_a_source_lifts_it_wherever_it_stands_and_a_drag_out_lands_where_le
         "the drop is where the person let go, past the region's foot: {}",
         landed.pointer.y
     );
-    let crate::dnd::DragPayload::Custom { blob, .. } = landed.payload else {
+    let tilo_ui_base::dnd::DragPayload::Custom { blob, .. } = landed.payload else {
         panic!("a resource drag");
     };
     assert_eq!(String::from_utf8(blob).unwrap(), "notes.page:one");
@@ -209,7 +210,7 @@ fn a_press_on_a_scrolls_own_bar_still_drags_the_bar() {
     );
     let thumb = laid
         .scroll()
-        .thumb_rect(crate::widget::ScrollAxis::Vertical)
+        .thumb_rect(tilo_ui_base::widget::ScrollAxis::Vertical)
         .expect("a live scrollbar has a thumb");
     let grab = thumb.center();
     let before = laid.scroll().offset_y();
@@ -243,7 +244,7 @@ fn a_press_outside_a_source_is_not_the_sources_and_leaves_the_release_to_what_wa
     // after, as the shell's window handles and its bar do.
     let mut laid = Laid::of(
         crate::widget::arrange::Stack::stack()
-            .gap(crate::tokens::Rhythm::None)
+            .gap(tilo_ui_base::tokens::Rhythm::None)
             .push_part(crate::widget::arrange::Part::new(Box::new(button)))
             .push_part(crate::widget::arrange::Part::new(Box::new(source(
                 "notes.page:one",
@@ -254,11 +255,11 @@ fn a_press_outside_a_source_is_not_the_sources_and_leaves_the_release_to_what_wa
     );
     // The press lands on the button, under the source.
     let button_at = laid.centre_of::<crate::widget::Button>();
-    laid.send(&crate::synthetic_input::cursor_moved(
+    laid.send(&tilo_ui_base::synthetic_input::cursor_moved(
         button_at.x,
         button_at.y,
     ));
-    laid.send(&crate::synthetic_input::mouse_press());
+    laid.send(&tilo_ui_base::synthetic_input::mouse_press());
     assert!(
         drag_bus::current().is_none(),
         "a press outside the source lifts nothing"
@@ -283,9 +284,9 @@ fn a_press_outside_a_source_is_not_the_sources_and_leaves_the_release_to_what_wa
 /// path a drop crosses from one view to another on.
 #[test]
 fn a_drop_onto_a_target_reports_the_resource_the_source_carried() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let dropped =
-        crate::component::Event::View(crate::component::Intent::new(&queue, "target", "drop"));
+        tilo_ui_base::component::Event::View(tilo_ui_base::component::Intent::new(&queue, "target", "drop"));
     let target = crate::widget::DropTarget::new(
         "target",
         Box::new(Spacer::fixed(120.0)) as Element,
@@ -299,7 +300,7 @@ fn a_drop_onto_a_target_reports_the_resource_the_source_carried() {
     );
     let mut laid = Laid::of(
         crate::widget::arrange::Stack::stack()
-            .gap(crate::tokens::Rhythm::None)
+            .gap(tilo_ui_base::tokens::Rhythm::None)
             .push_part(crate::widget::arrange::Part::new(Box::new(source)))
             .push_part(crate::widget::arrange::Part::new(Box::new(target))),
         300.0,
@@ -316,16 +317,16 @@ fn a_drop_onto_a_target_reports_the_resource_the_source_carried() {
     drag_bus::end(None);
     assert_eq!(
         fired,
-        vec![crate::component::Fired {
+        vec![tilo_ui_base::component::Fired {
             key: "target".to_owned(),
             event: "drop".to_owned(),
             // The resource, and where inside the target it was let go: a view that lays what
             // arrived at the drop puts it where the person's hand was, not at a corner.
-            value: Some(crate::component::Value::List(vec![
-                crate::component::Value::Resource("notes.pages:page_1".to_owned()),
-                crate::component::Value::List(vec![
-                    crate::component::Value::Int(60),
-                    crate::component::Value::Int(80),
+            value: Some(tilo_ui_base::component::Value::List(vec![
+                tilo_ui_base::component::Value::Resource("notes.pages:page_1".to_owned()),
+                tilo_ui_base::component::Value::List(vec![
+                    tilo_ui_base::component::Value::Int(60),
+                    tilo_ui_base::component::Value::Int(80),
                 ]),
             ])),
             gesture: None,
@@ -336,7 +337,7 @@ fn a_drop_onto_a_target_reports_the_resource_the_source_carried() {
 
 #[test]
 fn a_drag_carried_away_lands_nowhere_here() {
-    let payload = crate::dnd::DragPayload::Custom {
+    let payload = tilo_ui_base::dnd::DragPayload::Custom {
         kind: RESOURCE_PAYLOAD.to_owned(),
         blob: b"notes.page:one".to_vec(),
     };
@@ -369,8 +370,8 @@ fn a_drag_carried_away_lands_nowhere_here() {
 }
 
 /// What a row standing for `files` carries on the bus.
-fn files_payload(files: &[&str]) -> crate::dnd::DragPayload {
-    crate::dnd::DragPayload::Custom {
+fn files_payload(files: &[&str]) -> tilo_ui_base::dnd::DragPayload {
+    tilo_ui_base::dnd::DragPayload::Custom {
         kind: super::FILES_PAYLOAD.to_owned(),
         blob: files
             .iter()
@@ -385,22 +386,22 @@ fn files_payload(files: &[&str]) -> crate::dnd::DragPayload {
 /// file this window never offered is another app's and no target here takes it.
 #[test]
 fn files_the_desktop_carried_back_land_on_the_target_under_the_pointer() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let target = |key: &str, height: f32| {
         Box::new(
             crate::widget::DropTarget::new(
                 key,
                 Box::new(Spacer::fixed(height)) as Element,
-                crate::component::Event::View(crate::component::Intent::new(&queue, key, "drop")),
+                tilo_ui_base::component::Event::View(tilo_ui_base::component::Intent::new(&queue, key, "drop")),
             )
-            .with_files(crate::component::Event::View(
-                crate::component::Intent::new(&queue, key, "drop_files"),
+            .with_files(tilo_ui_base::component::Event::View(
+                tilo_ui_base::component::Intent::new(&queue, key, "drop_files"),
             )),
         ) as Element
     };
     let mut laid = Laid::of(
         crate::widget::arrange::Stack::stack()
-            .gap(crate::tokens::Rhythm::None)
+            .gap(tilo_ui_base::tokens::Rhythm::None)
             .push_part(crate::widget::arrange::Part::new(target("music", 60.0)))
             .push_part(crate::widget::arrange::Part::new(target("photos", 120.0))),
         300.0,
@@ -421,7 +422,7 @@ fn files_the_desktop_carried_back_land_on_the_target_under_the_pointer() {
     // The desktop's drag comes over the window, the pointer moves with it into the second
     // target, and both files are let go there.
     laid.send(&winit::event::WindowEvent::HoveredFile(song.into()));
-    laid.send(&crate::synthetic_input::cursor_moved(50.0, 100.0));
+    laid.send(&tilo_ui_base::synthetic_input::cursor_moved(50.0, 100.0));
     laid.widget.update(&doc, &automerge::ROOT);
     assert!(queue.take().is_empty(), "a hover drops nothing");
     laid.send(&winit::event::WindowEvent::DroppedFile(song.into()));
@@ -429,17 +430,17 @@ fn files_the_desktop_carried_back_land_on_the_target_under_the_pointer() {
     laid.widget.update(&doc, &automerge::ROOT);
     assert_eq!(
         queue.take(),
-        vec![crate::component::Fired {
+        vec![tilo_ui_base::component::Fired {
             key: "photos".to_owned(),
             event: "drop_files".to_owned(),
-            value: Some(crate::component::Value::List(vec![
-                crate::component::Value::List(vec![
-                    crate::component::Value::Text(song.to_owned()),
-                    crate::component::Value::Text(cover.to_owned()),
+            value: Some(tilo_ui_base::component::Value::List(vec![
+                tilo_ui_base::component::Value::List(vec![
+                    tilo_ui_base::component::Value::Text(song.to_owned()),
+                    tilo_ui_base::component::Value::Text(cover.to_owned()),
                 ]),
-                crate::component::Value::List(vec![
-                    crate::component::Value::Int(50),
-                    crate::component::Value::Int(40),
+                tilo_ui_base::component::Value::List(vec![
+                    tilo_ui_base::component::Value::Int(50),
+                    tilo_ui_base::component::Value::Int(40),
                 ]),
             ])),
             gesture: None,
@@ -495,14 +496,14 @@ fn files_the_desktop_carried_back_onto_no_target_land_nowhere() {
 /// files drags them on the window's own bus, and a target there takes them as the files they are.
 #[test]
 fn a_rows_files_dragged_inside_the_window_land_on_the_target_as_files() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let target = crate::widget::DropTarget::new(
         "folder",
         Box::new(Spacer::fixed(120.0)) as Element,
-        crate::component::Event::View(crate::component::Intent::new(&queue, "folder", "drop")),
+        tilo_ui_base::component::Event::View(tilo_ui_base::component::Intent::new(&queue, "folder", "drop")),
     )
-    .with_files(crate::component::Event::View(
-        crate::component::Intent::new(&queue, "folder", "drop_files"),
+    .with_files(tilo_ui_base::component::Event::View(
+        tilo_ui_base::component::Intent::new(&queue, "folder", "drop_files"),
     ));
     let source = DragSource::new(
         "row",
@@ -513,7 +514,7 @@ fn a_rows_files_dragged_inside_the_window_land_on_the_target_as_files() {
     .with_files(vec!["/home/ada/notes.md".into()]);
     let mut laid = Laid::of(
         crate::widget::arrange::Stack::stack()
-            .gap(crate::tokens::Rhythm::None)
+            .gap(tilo_ui_base::tokens::Rhythm::None)
             .push_part(crate::widget::arrange::Part::new(Box::new(source)))
             .push_part(crate::widget::arrange::Part::new(Box::new(target))),
         300.0,
@@ -526,7 +527,7 @@ fn a_rows_files_dragged_inside_the_window_land_on_the_target_as_files() {
     // pointer travels with the desktop's drag, so the target under it is the one they are let
     // go on.
     if drag_bus::offered().is_some() {
-        laid.send(&crate::synthetic_input::cursor_moved(from.x, 120.0));
+        laid.send(&tilo_ui_base::synthetic_input::cursor_moved(from.x, 120.0));
         laid.send(&winit::event::WindowEvent::DroppedFile(
             "/home/ada/notes.md".into(),
         ));
@@ -545,13 +546,13 @@ fn a_rows_files_dragged_inside_the_window_land_on_the_target_as_files() {
     );
     assert_eq!(
         fired[0].value,
-        Some(crate::component::Value::List(vec![
-            crate::component::Value::List(vec![crate::component::Value::Text(
+        Some(tilo_ui_base::component::Value::List(vec![
+            tilo_ui_base::component::Value::List(vec![tilo_ui_base::component::Value::Text(
                 "/home/ada/notes.md".to_owned()
             )]),
-            crate::component::Value::List(vec![
-                crate::component::Value::Int(60),
-                crate::component::Value::Int(80),
+            tilo_ui_base::component::Value::List(vec![
+                tilo_ui_base::component::Value::Int(60),
+                tilo_ui_base::component::Value::Int(80),
             ]),
         ]))
     );

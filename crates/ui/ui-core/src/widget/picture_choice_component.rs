@@ -1,12 +1,12 @@
 //! [`PictureChoice`] as a described component.
 
-use crate::component::{Component, Described, Event, Value};
+use tilo_ui_base::{component::Component, component::Described, component::Event, component::Value};
 use crate::widget::Picture;
 
 use super::{PictureChoice, PictureOption};
 use crate::widget::picture as picture_module;
 
-crate::component::part_type!(PictureOptionProps);
+tilo_ui_base::component::part_type!(PictureOptionProps);
 
 /// A choice among pictures whose meaning is visual (a text size, a pointer size, a colour
 /// filter), each tile showing its picture over its name, the chosen one edged.
@@ -96,7 +96,7 @@ pub enum PictureKind {
     BannerMessage,
 }
 
-crate::choice!(PictureKind, "PictureKind", {
+tilo_ui_base::choice!(PictureKind, "PictureKind", {
     TextSizeSmall => "text_size_small",
     TextSizeRegular => "text_size_regular",
     TextSizeLarge => "text_size_large",

@@ -1,15 +1,15 @@
 //! `IconWidget` — a leaf that paints one themed vector glyph from the shared
-//! [`crate::icons::Icon`] set, at one of the theme's three icon sizes ([`IconSize`]).
+//! [`tilo_ui_base::icons::Icon`] set, at one of the theme's three icon sizes ([`IconSize`]).
 
 use std::collections::HashMap;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::Rect;
 use vello::peniko::Color;
 
-use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX};
-use crate::theme::Theme;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use tilo_ui_base::{icons::Icon, icons::LUCIDE_DEFAULT_STROKE_PX};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 
 #[path = "icon_component.rs"]
 mod component;
@@ -20,7 +20,7 @@ enum Tint {
     Primary,
     Dim,
     Accent,
-    Tone(crate::widget::Tone),
+    Tone(tilo_ui_base::widget::Tone),
     Fixed(Color),
 }
 
@@ -131,7 +131,7 @@ impl IconWidget {
     /// Resolve the glyph through a status's colour in the active theme: a passed check in
     /// success, a warning sign in warning.
     #[must_use]
-    pub fn tone(mut self, tone: crate::widget::Tone) -> Self {
+    pub fn tone(mut self, tone: tilo_ui_base::widget::Tone) -> Self {
         self.tint = Tint::Tone(tone);
         self
     }
@@ -158,7 +158,7 @@ impl IconWidget {
 }
 
 impl Widget for IconWidget {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -175,9 +175,9 @@ impl Widget for IconWidget {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!(measured);
+    tilo_ui_base::rect_geometry!(measured);
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -212,14 +212,14 @@ impl Widget for IconWidget {
             .map(std::borrow::Cow::Borrowed)
     }
 
-    crate::redraw_flag!();
+    tilo_ui_base::redraw_flag!();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::presence::PresenceCtx;
-    use crate::text_render::TextRenderer;
+    use tilo_ui_base::presence::PresenceCtx;
+    use tilo_ui_base::text_render::TextRenderer;
     use vello::Scene;
     use vello::kurbo::Affine;
     use vello_encoding::DrawTag;
@@ -231,7 +231,7 @@ mod tests {
         let mut scene = Scene::new();
         let edge = f64::from(w.size.px(&theme));
         w.rect = Rect::new(0.0, 0.0, edge, edge);
-        w.draw(&mut crate::draw::DrawCtx::new(
+        w.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
@@ -265,7 +265,7 @@ mod tests {
                 let presence = PresenceCtx::default();
                 let mut scene = Scene::new();
                 let mut w = IconWidget::new(Icon::Home).sized(IconSize::Large);
-                w.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+                w.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
                 let tags = scene.encoding().draw_tags.len();
                 assert_eq!(tags, 0, "no draw work for a zero-size icon");
             }

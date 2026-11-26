@@ -5,7 +5,7 @@ use tilo_resource::{self, Availability, Effect, Id, Invoke, Keyed, Model, resour
 
 use crate::model::{InstallProfile, RecentSource, Source};
 
-ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE"]);
+tilo_ui_base::embedded_catalog!(pub(crate) static CATALOG, ["de-DE"]);
 
 /// The reviewed image, the images reviewed before it and the install
 /// profile: everything the imager keeps in its document.
@@ -325,7 +325,7 @@ mod tests {
 
         phase assistive_profile_edits_reach_the_document;
         {
-            use ui::a11y::Action as AccessAction;
+            use tilo_ui_base::a11y::Action as AccessAction;
 
             let mut app = customizing();
             let perform =
@@ -546,7 +546,7 @@ mod tests {
     fn the_keyboard_chooser_commits_through_the_real_event_path() {
         let mut app = customizing();
         app.harness()
-            .perform_named("imager.profile.keyboard", &ui::a11y::Action::Focus)
+            .perform_named("imager.profile.keyboard", &tilo_ui_base::a11y::Action::Focus)
             .unwrap();
         app.harness().key("Enter");
         app.harness().type_text("german");

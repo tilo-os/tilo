@@ -15,8 +15,8 @@ pub use winit::platform::android::activity::AndroidApp;
 pub fn run_main<T: std::process::Termination>(app: AndroidApp, main: fn() -> T) {
     forward_stdio_to_logcat();
     install_environment(&app);
-    if crate::platform::android::APP.set(app).is_err() {
-        crate::diag!("tilo: android_main started twice in one process");
+    if tilo_ui_base::platform::android::APP.set(app).is_err() {
+        tilo_ui_base::diag!("tilo: android_main started twice in one process");
         return;
     }
     // SAFETY: android-activity published the activity in `ndk_context` before it called
@@ -30,7 +30,7 @@ pub fn run_main<T: std::process::Termination>(app: AndroidApp, main: fn() -> T) 
 /// `message` and ends once they close it. Until then this thread answers the activity's
 /// lifecycle, as the window's event loop would have, so the system never finds the app hung.
 pub(crate) fn launch_failed(message: &str) {
-    crate::diag!("tilo: the app did not open: {message}");
+    tilo_ui_base::diag!("tilo: the app did not open: {message}");
     let shown = tilo_process::android::with_activity(|env, activity| {
         let message = env.new_string(message)?;
         env.call_method(
@@ -42,10 +42,10 @@ pub(crate) fn launch_failed(message: &str) {
         .map(drop)
     });
     if let Err(error) = shown {
-        crate::diag!("tilo: the launch's failure could not be shown: {error}");
+        tilo_ui_base::diag!("tilo: the launch's failure could not be shown: {error}");
         return;
     }
-    let Some(app) = crate::platform::android::app() else {
+    let Some(app) = tilo_ui_base::platform::android::app() else {
         return;
     };
     let mut destroyed = false;
@@ -113,7 +113,7 @@ fn forward_stdio_to_logcat() {
 /// `tilo-paths`, `dirs` and every store built on them resolve there unchanged.
 fn install_environment(app: &AndroidApp) {
     let Some(files) = app.internal_data_path() else {
-        crate::diag!("tilo: the activity reports no internal data path");
+        tilo_ui_base::diag!("tilo: the activity reports no internal data path");
         return;
     };
     install_environment_in(&files);

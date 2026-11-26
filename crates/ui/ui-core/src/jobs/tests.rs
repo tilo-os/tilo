@@ -5,7 +5,7 @@ use super::{dismiss, finished, rows, running, start, stop, summary};
 use crate::attention::{self, Action, Notice, Owner, Urgency};
 
 fn owner() -> Owner {
-    Owner::new("so.tilo.test", "Test").with_icon(crate::icons::Icon::Download)
+    Owner::new("so.tilo.test", "Test").with_icon(tilo_ui_base::icons::Icon::Download)
 }
 
 fn began(title: &str) -> super::Running {

@@ -50,11 +50,11 @@ struct Feed {
 
 /// What a pass that read the feed follows ([`Feed::followed`]).
 #[derive(Clone)]
-struct Followed(crate::component_inputs::Shared);
+struct Followed(tilo_ui_base::component_inputs::Shared);
 
 impl Default for Followed {
     fn default() -> Self {
-        Self(crate::component_inputs::Shared::new(0))
+        Self(tilo_ui_base::component_inputs::Shared::new(0))
     }
 }
 
@@ -129,7 +129,7 @@ impl NavFeed {
 
     /// Open the rename field on the row or section `id` (its menu's Rename), handing the list
     /// the keyboard through `focus_target`, the one of the event that asked for it
-    /// ([`crate::widget::EventCtx`]).
+    /// ([`tilo_ui_base::widget::EventCtx`]).
     pub fn begin_rename(&self, id: &str, focus_target: &mut Option<crate::taffy::NodeId>) {
         let mut feed = self.0.borrow_mut();
         feed.rename = Some(id.to_owned());
@@ -201,7 +201,7 @@ impl NavList {
     pub fn fed_by(self, feed: &NavFeed) -> Self {
         let (reads, chooses, acts) = (feed.clone(), feed.clone(), feed.clone());
         let (checks, folds) = (feed.clone(), feed.clone());
-        let id = crate::widget::Widget::test_id(&*self.list)
+        let id = tilo_ui_base::widget::Widget::test_id(&*self.list)
             .unwrap_or("navigation")
             .to_owned();
         let mut list = self
@@ -288,7 +288,7 @@ mod tests {
         let feed = NavFeed::new();
         feed.show(conversations(2), None);
         let mut seen = None;
-        let ((), reads) = crate::component_inputs::reading(&window, || {
+        let ((), reads) = tilo_ui_base::component_inputs::reading(&window, || {
             assert!(feed.pull(&mut seen).is_some(), "the list reads the places");
         });
         feed.show(conversations(2), None);

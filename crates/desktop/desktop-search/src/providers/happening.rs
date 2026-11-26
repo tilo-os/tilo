@@ -59,7 +59,7 @@ impl PersonHere {
         RowFace {
             name: self.name.clone(),
             identity: self.id.clone(),
-            colour: ui::presence::presence_colour(self.colour),
+            colour: tilo_ui_base::presence::presence_colour(self.colour),
             is_agent: self.agent,
             dimmed: self.away,
         }
@@ -183,7 +183,7 @@ impl Happening {
             subtitle: Some(here_line(&workspace.people)),
             facts: Vec::new(),
             score: 0,
-            icon: Some(ui::icons::Icon::Users),
+            icon: Some(tilo_ui_base::icons::Icon::Users),
             faces,
             outcome: Some(crate::i18n::t("search-launcher-outcome-open")),
             target,
@@ -201,7 +201,7 @@ impl Happening {
             subtitle: Some(with_line(&window.people)),
             facts: Vec::new(),
             score: 0,
-            icon: Some(ui::icons::Icon::LayoutGrid),
+            icon: Some(tilo_ui_base::icons::Icon::LayoutGrid),
             faces: window.people.iter().map(PersonHere::face).collect(),
             outcome: Some(crate::i18n::t("search-launcher-outcome-join")),
             target: Target::Window {
@@ -228,7 +228,7 @@ impl Happening {
             subtitle: Some(with_line(&call.people)),
             facts: Vec::new(),
             score: 0,
-            icon: Some(ui::icons::Icon::Phone),
+            icon: Some(tilo_ui_base::icons::Icon::Phone),
             faces: call.people.iter().map(PersonHere::face).collect(),
             outcome: Some(crate::i18n::t("search-launcher-outcome-open")),
             target: {
@@ -319,7 +319,7 @@ mod tests {
         PersonHere {
             id: id.into(),
             name: name.into(),
-            colour: ui::presence::user_color(id),
+            colour: tilo_ui_base::presence::user_color(id),
             agent: false,
             away: false,
             tab,

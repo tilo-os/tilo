@@ -3,9 +3,9 @@
 //! gesture without taking any of it away.
 
 use crate::color::{Oklch, contrast_ratio};
-use crate::text_render::{TextRenderer, TextStyle, TextWeight};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::InputHint;
 use crate::widget::floating_surface::PopoverSide;
 use vello::Scene;
@@ -203,9 +203,9 @@ pub(super) fn paint(
         rect.inflate(2.0, 2.0),
         look.glow,
         radius + 2.0,
-        crate::surface::std_dev_for(GLOW_BLUR),
+        tilo_ui_base::surface::std_dev_for(GLOW_BLUR),
     );
-    crate::surface::shadow(
+    tilo_ui_base::surface::shadow(
         scene,
         transform,
         rect,
@@ -320,7 +320,7 @@ pub(super) fn pulse(
         rect.inflate(reach, reach),
         look.glow.multiply_alpha(strength),
         radius + reach,
-        crate::surface::std_dev_for(blur),
+        tilo_ui_base::surface::std_dev_for(blur),
     );
     if ring {
         let out = 1.0 + 16.0 * spread;
@@ -341,7 +341,7 @@ pub(super) fn dot(scene: &mut Scene, transform: Affine, centre: Point, diameter:
         Rect::from_center_size(centre, (diameter, diameter)),
         look.glow,
         diameter / 2.0,
-        crate::surface::std_dev_for(GLOW_BLUR / 3.0),
+        tilo_ui_base::surface::std_dev_for(GLOW_BLUR / 3.0),
     );
     scene.fill(
         Fill::NonZero,

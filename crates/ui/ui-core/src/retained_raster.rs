@@ -5,13 +5,9 @@
 
 use crate::cpu_raster;
 #[cfg(feature = "native")]
-use crate::damage::coalesce_regions;
-use crate::damage::{FineDamageRect, area, pixel_rect};
-use crate::offscreen::{
-    damage_geometric_capacity_enabled, damage_texture_extent,
-    damage_texture_geometric_needs_replacement, damage_texture_geometric_width_extent,
-    damage_texture_height_extent, damage_texture_needs_replacement,
-};
+use tilo_ui_base::damage::coalesce_regions;
+use tilo_ui_base::{damage::FineDamageRect, damage::area, damage::pixel_rect};
+use tilo_ui_base::{offscreen::damage_geometric_capacity_enabled, offscreen::damage_texture_extent, offscreen::damage_texture_geometric_needs_replacement, offscreen::damage_texture_geometric_width_extent, offscreen::damage_texture_height_extent, offscreen::damage_texture_needs_replacement};
 use vello::kurbo::Rect;
 use vello::peniko::Color;
 use vello::{RenderParams, Renderer, Scene};
@@ -30,7 +26,7 @@ pub(crate) struct DamageCache {
     /// Damage textures grow in geometric buckets ([`DamageCache::geometric`]).
     geometric_capacity: bool,
     coarse_pool_high_water_pixels: u64,
-    copy_scratch: crate::scroll_copy::CopyScratch,
+    copy_scratch: tilo_ui_base::scroll_copy::CopyScratch,
     /// The frame's scene holds only what its damage needs ([`RetainedRaster::rasterize_damage_only`]).
     damage_only: bool,
     /// A frame drawn for its damage only would have had to repaint more: nothing was drawn.
@@ -113,9 +109,9 @@ fn tile_window(region: FineDamageRect) -> FineDamageRect {
 pub(crate) fn damage_windows(regions: &[FineDamageRect]) -> Vec<FineDamageRect> {
     let windows: Vec<FineDamageRect> = regions.iter().copied().map(tile_window).collect();
     if windows.len() > 128 {
-        return Vec::from_iter(windows.into_iter().reduce(crate::damage::damage_union));
+        return Vec::from_iter(windows.into_iter().reduce(tilo_ui_base::damage::damage_union));
     }
-    crate::damage::merge_regions(windows, WINDOW_COST_PIXELS)
+    tilo_ui_base::damage::merge_regions(windows, WINDOW_COST_PIXELS)
 }
 
 /// The pixels `windows` cover, each counted once per window it is in.
@@ -127,7 +123,7 @@ fn window_pixels(windows: &[FineDamageRect]) -> u64 {
 
 /// Whether `outer` holds every pixel of `inner`.
 fn contains(outer: FineDamageRect, inner: FineDamageRect) -> bool {
-    crate::damage::damage_union(outer, inner) == outer
+    tilo_ui_base::damage::damage_union(outer, inner) == outer
 }
 
 /// What a host keeps between frames to rasterize them into one retained target: the damage scratch, the
@@ -136,7 +132,7 @@ fn contains(outer: FineDamageRect, inner: FineDamageRect) -> bool {
 /// same pixels from the same frame.
 pub struct RetainedRaster {
     damage_cache: DamageCache,
-    backdrop_blur: Option<crate::backdrop::BackdropBlur>,
+    backdrop_blur: Option<tilo_ui_base::backdrop::BackdropBlur>,
     cpu: Option<cpu_raster::CpuCanvas>,
 }
 
@@ -150,7 +146,7 @@ impl DamageCache {
 
 impl RetainedRaster {
     /// Scratch for one target; `on_cpu` rasterizes on the CPU and uploads the pixels (a software
-    /// adapter, see `crate::gpu::rasterizes_on_cpu`).
+    /// adapter, see `tilo_ui_base::gpu::rasterizes_on_cpu`).
     pub fn new(on_cpu: bool) -> Self {
         Self {
             damage_cache: DamageCache {
@@ -217,7 +213,7 @@ impl RetainedRaster {
         mut renderer: Option<&mut Renderer>,
         target: RetainedTarget<'_>,
         frame: FrameContent<'_>,
-    ) -> (Result<u64, String>, Option<crate::backdrop::BackdropStats>) {
+    ) -> (Result<u64, String>, Option<tilo_ui_base::backdrop::BackdropStats>) {
         // Floating surfaces over the blurred material: render, blur and
         // substitute each one's backdrop before the frame that draws it.
         let backdrop_stats = if frame.backdrop.is_empty() {
@@ -231,7 +227,7 @@ impl RetainedRaster {
             };
             Some(
                 self.backdrop_blur
-                    .get_or_insert_with(|| crate::backdrop::BackdropBlur::new(device))
+                    .get_or_insert_with(|| tilo_ui_base::backdrop::BackdropBlur::new(device))
                     .prepare(
                         device,
                         queue,
@@ -243,7 +239,7 @@ impl RetainedRaster {
             )
         };
         let raster_frame = FrameContent {
-            backdrop: &crate::part_paint::backdrop::BackdropFrame::default(),
+            backdrop: &tilo_ui_base::part_paint::backdrop::BackdropFrame::default(),
             ..frame
         };
         let rasterized =
@@ -279,7 +275,7 @@ impl RetainedRaster {
     }
 
     /// [`Self::rasterize`] for a frame whose scene holds only what its damage needs
-    /// (`crate::draw_cull`): it is never repainted beyond its damage. `Err` with
+    /// (`tilo_ui_base::draw_cull`): it is never repainted beyond its damage. `Err` with
     /// [`DAMAGE_ONLY_REFUSED`] when it would have to be (a whole frame, a backdrop, a copy that cannot
     /// be made, a damage too large to repaint alone); the target then still holds the last frame.
     pub fn rasterize_damage_only(
@@ -288,7 +284,7 @@ impl RetainedRaster {
         renderer: &mut Renderer,
         target: RetainedTarget<'_>,
         frame: FrameContent<'_>,
-    ) -> (Result<u64, String>, Option<crate::backdrop::BackdropStats>) {
+    ) -> (Result<u64, String>, Option<tilo_ui_base::backdrop::BackdropStats>) {
         if frame.full_redraw
             || !frame.backdrop.is_empty()
             || !repaints_alone(frame.width, frame.height, frame.damage_regions)
@@ -378,7 +374,7 @@ pub(crate) fn rasterize_damage(
         let mut encoder = device.create_command_encoder(&vello::wgpu::CommandEncoderDescriptor {
             label: Some("ui-native-scroll-copies"),
         });
-        if crate::scroll_copy::encode_copies(
+        if tilo_ui_base::scroll_copy::encode_copies(
             device,
             &mut encoder,
             retained.texture,
@@ -690,10 +686,10 @@ pub struct FrameContent<'a> {
     /// Physical-pixel rectangles that changed.
     pub damage_regions: &'a [Rect],
     /// Copies within the target before the damage is repainted.
-    pub scroll_copies: &'a [crate::scroll_copy::DeviceCopy],
+    pub scroll_copies: &'a [tilo_ui_base::scroll_copy::DeviceCopy],
     /// Repaint everything: the target is not current, or the frame says so.
     pub full_redraw: bool,
-    pub backdrop: &'a crate::part_paint::backdrop::BackdropFrame,
+    pub backdrop: &'a tilo_ui_base::part_paint::backdrop::BackdropFrame,
 }
 
 /// What a target holds and how a scene is placed on it: a frame drawn for another key cannot be
@@ -711,19 +707,19 @@ pub struct TargetKey {
 }
 
 /// What of `scene`, drawn with `parts`, repainting `damage` (target pixels) on the target `key` names
-/// takes: the scene without the parts that cannot reach the damage ([`crate::scene_parts::culled`]), or
+/// takes: the scene without the parts that cannot reach the damage ([`tilo_ui_base::scene_parts::culled`]), or
 /// `None` when it takes all of it: no parts, every part reaching the damage, or a damage repainted as
 /// one whole frame ([`repaints_alone`]), which draws every pixel.
 pub fn culled_for_damage(
     scene: &Scene,
-    parts: Option<&crate::scene_parts::SectionParts>,
+    parts: Option<&tilo_ui_base::scene_parts::SectionParts>,
     key: TargetKey,
     damage: &[Rect],
 ) -> Option<Scene> {
     if !repaints_alone(key.width, key.height, damage) {
         return None;
     }
-    crate::scene_parts::culled(scene, parts?, |bounds| {
+    tilo_ui_base::scene_parts::culled(scene, parts?, |bounds| {
         bounds.iter().any(|rect| {
             let rect = key.to_device.transform_rect_bbox(*rect).inflate(1.0, 1.0);
             damage.iter().any(|region| region.overlaps(rect))
@@ -750,26 +746,26 @@ pub enum Unknown {
     /// The target or the scene's placement on it changed.
     Target,
     /// The frames cannot be compared part by part.
-    Unproven(crate::scene_parts::Unproven),
+    Unproven(tilo_ui_base::scene_parts::Unproven),
     /// The renderer dropped geometry from a frame drawn since the target was last repainted whole
     /// ([`RetainedFrames::note_scratch`]).
     LostGeometry,
 }
 
 /// The frame a host presented last, to compare the next with. Where a scene drawn with damage parts
-/// ([`crate::scene_parts`]) changed is the parts whose commands differ (or what a hinted part says
+/// ([`tilo_ui_base::scene_parts`]) changed is the parts whose commands differ (or what a hinted part says
 /// changed); every other pixel is drawn by the same commands as before. Anything that cannot be proven
 /// (no parts, a change outside every part, another target) repaints the whole frame.
 #[derive(Default)]
 pub struct RetainedFrames {
-    last: Option<(Scene, crate::scene_parts::SectionParts, TargetKey)>,
+    last: Option<(Scene, tilo_ui_base::scene_parts::SectionParts, TargetKey)>,
     shown: bool,
     /// The renderer's scratch ([`crate::render_bump_recovery::Scratch`]) when the target was last
     /// brought up to date.
     scratch: Option<crate::render_bump_recovery::Scratch>,
     /// The target may show a frame with geometry missing.
     lost: bool,
-    bounds: crate::scene_parts::DrawBounds,
+    bounds: tilo_ui_base::scene_parts::DrawBounds,
 }
 
 impl RetainedFrames {
@@ -778,7 +774,7 @@ impl RetainedFrames {
     pub fn repaint(
         &self,
         scene: &Scene,
-        parts: Option<&crate::scene_parts::SectionParts>,
+        parts: Option<&tilo_ui_base::scene_parts::SectionParts>,
         key: TargetKey,
     ) -> Repaint {
         if self.lost {
@@ -793,7 +789,7 @@ impl RetainedFrames {
         if *last_key != key {
             return Repaint::Full(Unknown::Target);
         }
-        let changed = match crate::scene_parts::damage(last, last_parts, scene, parts) {
+        let changed = match tilo_ui_base::scene_parts::damage(last, last_parts, scene, parts) {
             Ok(changed) => changed,
             Err(unproven) => return Repaint::Full(Unknown::Unproven(unproven)),
         };
@@ -814,15 +810,15 @@ impl RetainedFrames {
     }
 
     /// [`Self::repaint`] for a host that moves the pixels of the target before it repaints: what hinted
-    /// parts say moved ([`crate::scene_parts::DamageHint::copies`]) is copied, in order, and then the
+    /// parts say moved ([`tilo_ui_base::scene_parts::DamageHint::copies`]) is copied, in order, and then the
     /// rest repainted. A copy that cannot be made exactly (its content drawn through a fading layer,
     /// something unbounded drawn over it) repaints where it lands instead.
     pub fn repaint_copying(
         &mut self,
         scene: &Scene,
-        parts: Option<&crate::scene_parts::SectionParts>,
+        parts: Option<&tilo_ui_base::scene_parts::SectionParts>,
         key: TargetKey,
-    ) -> (Repaint, Vec<crate::scroll_copy::DeviceCopy>) {
+    ) -> (Repaint, Vec<tilo_ui_base::scroll_copy::DeviceCopy>) {
         let full = |unknown| (Repaint::Full(unknown), Vec::new());
         if self.lost {
             return full(Unknown::LostGeometry);
@@ -836,7 +832,7 @@ impl RetainedFrames {
         if *last_key != key {
             return full(Unknown::Target);
         }
-        let section = match crate::scene_parts::damage_with_copies(
+        let section = match tilo_ui_base::scene_parts::damage_with_copies(
             last,
             last_parts,
             scene,
@@ -859,7 +855,7 @@ impl RetainedFrames {
             })
             .filter(|rect| !rect.is_zero_area())
             .collect();
-        let presented = crate::scene_parts::present_copies(
+        let presented = tilo_ui_base::scene_parts::present_copies(
             &section.copies,
             damage,
             &[],
@@ -879,7 +875,7 @@ impl RetainedFrames {
     pub fn presented(
         &mut self,
         scene: &Scene,
-        parts: Option<&crate::scene_parts::SectionParts>,
+        parts: Option<&tilo_ui_base::scene_parts::SectionParts>,
         key: TargetKey,
     ) {
         self.last = parts.map(|parts| (scene.clone(), parts.clone(), key));
@@ -911,7 +907,7 @@ impl RetainedFrames {
     }
 
     /// Whether the target still holds the frame last presented: a host that acquired a surface texture
-    /// for a frame it then skipped puts that on it again ([`crate::gpu::submit_target_to_surface`])
+    /// for a frame it then skipped puts that on it again ([`tilo_ui_base::gpu::submit_target_to_surface`])
     /// rather than presenting a cleared one.
     #[must_use]
     pub const fn shows_frame(&self) -> bool {
@@ -1100,11 +1096,11 @@ impl RasterCheck {
             ));
         }
         let (count, bounds) =
-            crate::offscreen::OffscreenRenderer::differing_beyond_aa(&kept, &rendered, width);
+            tilo_ui_base::offscreen::OffscreenRenderer::differing_beyond_aa(&kept, &rendered, width);
         let (inside, rows, kept_base, render_base) = if count == 0 {
             (0, Vec::new(), 0, 0)
         } else {
-            let positions = crate::offscreen::OffscreenRenderer::positions_differing_beyond_aa(
+            let positions = tilo_ui_base::offscreen::OffscreenRenderer::positions_differing_beyond_aa(
                 &kept, &rendered, width,
             );
             let inside = bounds.map_or(0, |(x0, y0, x1, y1)| {

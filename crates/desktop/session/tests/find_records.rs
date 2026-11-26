@@ -28,7 +28,7 @@ const NOTE_TITLE: &str = crate::common::NOTE_TITLE;
 
 #[test]
 fn the_persons_repl_finds_the_workspaces_tasks() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     until(&mut session, "the bar's controls", |session| {
@@ -52,7 +52,7 @@ fn the_persons_repl_finds_the_workspaces_tasks() {
 
 #[test]
 fn an_agents_run_at_the_api_finds_the_workspaces_tasks() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     until(&mut session, "the bar's controls", |session| {

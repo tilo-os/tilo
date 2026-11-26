@@ -3,7 +3,7 @@
 //! and the retained dialog's input, accessibility and top-layer contract.
 
 use super::*;
-use crate::a11y::contrast_ratio;
+use tilo_ui_base::a11y::contrast_ratio;
 use crate::widget::Text;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -14,8 +14,8 @@ const WINDOW: Rect = Rect::new(0.0, 0.0, 800.0, 600.0);
 
 /// How the person reaches the window in these tests: the pointer, unless a
 /// test sets another.
-fn environment() -> crate::interaction::InteractionEnvironment {
-    crate::interaction::InteractionEnvironment::default()
+fn environment() -> tilo_ui_base::interaction::InteractionEnvironment {
+    tilo_ui_base::interaction::InteractionEnvironment::default()
 }
 
 fn themes() -> Vec<(&'static str, Theme)> {
@@ -28,12 +28,12 @@ fn lay(spec: &ModalSpec<'_>, theme: &Theme) -> ModalLayout {
 }
 
 fn cursor_at(p: Point) -> WindowEvent {
-    crate::synthetic_input::cursor_moved(p.x, p.y)
+    tilo_ui_base::synthetic_input::cursor_moved(p.x, p.y)
 }
 
-use crate::synthetic_input::mouse_press;
+use tilo_ui_base::synthetic_input::mouse_press;
 
-use crate::synthetic_input::named_key;
+use tilo_ui_base::synthetic_input::named_key;
 
 use crate::testing::dispatch;
 use crate::testing::{Seen, TestLeaf};
@@ -44,7 +44,7 @@ fn lay_out<C: Widget + 'static>(d: &mut ModalDialog<C>, area: Rect, theme: &Them
     let node = d.build_layout(&mut taffy, theme, &mut node_map);
     let mut text = TextRenderer::new();
     text.set_text_scale(theme.text_scale);
-    let mut bindings = crate::widget::bound_nodes::BoundNodeMap::default();
+    let mut bindings = tilo_ui_base::widget::bound_nodes::BoundNodeMap::default();
     #[allow(clippy::cast_possible_truncation, reason = "test geometry")]
     let available = Size {
         width: taffy::AvailableSpace::Definite(area.width() as f32),
@@ -54,7 +54,7 @@ fn lay_out<C: Widget + 'static>(d: &mut ModalDialog<C>, area: Rect, theme: &Them
     // function holds exclusively.
     unsafe {
         bindings.rebuild(d, &taffy, node, &node_map);
-        crate::widget::layout::compute_widget_layout(
+        tilo_ui_base::widget::layout::compute_widget_layout(
             &mut taffy, node, available, &node_map, &bindings, &mut text,
         )
         .unwrap();
@@ -63,19 +63,19 @@ fn lay_out<C: Widget + 'static>(d: &mut ModalDialog<C>, area: Rect, theme: &Them
 }
 
 fn present<C: Widget + 'static>(d: &mut ModalDialog<C>, window: Rect, theme: &Theme) -> Scene {
-    let presence = crate::presence::PresenceCtx::default();
+    let presence = tilo_ui_base::presence::PresenceCtx::default();
     let previous = presence.push_viewport(window);
     let mut scene = Scene::new();
     let mut tr = TextRenderer::new();
     tr.set_text_scale(theme.text_scale);
-    d.draw(&mut crate::draw::DrawCtx::new(
+    d.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut tr,
         theme,
         presence.draw_env(),
     ));
-    d.draw_overlay(&mut crate::draw::DrawCtx::new(
+    d.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut tr,
@@ -99,7 +99,7 @@ tilo_test_env::scenario! {
 
     phase a_coarse_pointer_grows_the_sheets_controls_to_a_fingers_target;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let theme = Theme::dark();
         let actions = [
             ModalAction::primary("Save"),
@@ -112,7 +112,7 @@ tilo_test_env::scenario! {
             &spec,
             &mut tr,
             &theme,
-            crate::interaction::InteractionEnvironment::TOUCH,
+            tilo_ui_base::interaction::InteractionEnvironment::TOUCH,
         );
         for action in &touch.actions {
             assert!(
@@ -142,7 +142,7 @@ tilo_test_env::scenario! {
 
     phase sheet_sizes_to_its_body_within_the_window;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let spec = ModalSpec::new("Workspace invite").body_height(120.0);
             let l = lay(&spec, &Theme::dark());
@@ -240,7 +240,7 @@ tilo_test_env::scenario! {
 
     phase compact_modals_fill_the_window_and_keep_their_controls_on_the_foreground_page;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         for (name, theme) in themes() {
             for window in [
                 Rect::new(0.0, 0.0, 360.0, 800.0),
@@ -286,8 +286,8 @@ tilo_test_env::scenario! {
                     Some(ModalHit::Card)
                 );
                 let mut scene = Scene::new();
-                let recording = crate::part_paint::backdrop::BackdropRecording::begin();
-                crate::part_paint::backdrop::layer_scene(&scene, 0);
+                let recording = tilo_ui_base::part_paint::backdrop::BackdropRecording::begin();
+                tilo_ui_base::part_paint::backdrop::layer_scene(&scene, 0);
                 paint_backdrop(
                     &mut scene,
                     Affine::IDENTITY,
@@ -306,8 +306,8 @@ tilo_test_env::scenario! {
 
     phase narrow_large_text_footer_stacks_full_actions_without_covering_the_body;
     {
-        use crate::platform::{Platform, PlatformConventions};
-        let _settled = crate::motion::testing::settled();
+        use tilo_ui_base::{platform::Platform, platform::PlatformConventions};
+        let _settled = tilo_ui_base::motion::testing::settled();
         let window = Rect::new(0.0, 0.0, 360.0, 640.0);
         let actions = [
             ModalAction::alternate("Keep separate"),
@@ -316,7 +316,7 @@ tilo_test_env::scenario! {
         ];
         for (_, base) in themes() {
             let theme = base.with_text_scale(2.0);
-            let mut text = crate::font_catalog::fixture_renderer();
+            let mut text = tilo_ui_base::font_catalog::fixture_renderer();
             text.set_text_scale(theme.text_scale);
             let spec = ModalSpec::new("Merge contacts")
                 .platform_conventions(PlatformConventions::new(Platform::Linux))
@@ -351,9 +351,9 @@ tilo_test_env::scenario! {
 
     phase modal_ink_and_action_labels_are_legible_on_every_theme;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         for (name, theme) in themes() {
-            let ground = crate::chrome::panel_ground(&theme);
+            let ground = tilo_ui_base::chrome::panel_ground(&theme);
             let (primary, dim) = ink(&theme);
             assert!(
                 contrast_ratio(primary, ground) >= MODAL_MIN_INK_CONTRAST,
@@ -379,7 +379,7 @@ tilo_test_env::scenario! {
 
     phase the_dialog_is_presented_in_the_top_layer_over_the_whole_window;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let mut d = ModalDialog::new("Title", crate::testing::TestLeaf::auto()).open(true);
             lay_out(
@@ -388,7 +388,7 @@ tilo_test_env::scenario! {
                 &Theme::dark(),
             );
             let mut scene = Scene::new();
-            d.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), crate::presence::PresenceCtx::default().draw_env()));
+            d.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), tilo_ui_base::presence::PresenceCtx::default().draw_env()));
             assert!(scene.encoding().draw_tags.is_empty(), "draw paints nothing");
 
             let scene = present(&mut d, WINDOW, &Theme::dark());
@@ -452,7 +452,7 @@ tilo_test_env::scenario! {
 
     phase a_long_title_wraps_to_two_lines;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let theme = Theme::dark();
         let short = lay(&ModalSpec::new("Rename"), &theme);
         let long = lay(
@@ -474,7 +474,7 @@ tilo_test_env::scenario! {
 
     phase an_unpainted_sheet_centres_on_the_window_not_its_parent;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut taffy = TaffyTree::<()>::new();
         let pane = taffy
             .new_leaf(Style {
@@ -510,7 +510,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn a_modal_scrim_runs_under_the_foreground_materials_recorded_backdrop() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let window = Rect::new(0.0, 0.0, 1000.0, 700.0);
     for (name, theme) in themes() {
         let mut text = TextRenderer::new();
@@ -525,8 +525,8 @@ fn a_modal_scrim_runs_under_the_foreground_materials_recorded_backdrop() {
             &window,
         );
         let original = scene.clone();
-        let recording = crate::part_paint::backdrop::BackdropRecording::begin();
-        crate::part_paint::backdrop::layer_scene(&scene, 0);
+        let recording = tilo_ui_base::part_paint::backdrop::BackdropRecording::begin();
+        tilo_ui_base::part_paint::backdrop::layer_scene(&scene, 0);
         paint_backdrop(
             &mut scene,
             Affine::IDENTITY,
@@ -541,7 +541,7 @@ fn a_modal_scrim_runs_under_the_foreground_materials_recorded_backdrop() {
             .expect("the real floating material records its backdrop");
         assert_eq!(surface.bounds, geometry.card);
         let mut renderer =
-            crate::offscreen::OffscreenRenderer::try_new_with_cpu_preprocessing(1000, 700)
+            tilo_ui_base::offscreen::OffscreenRenderer::try_new_with_cpu_preprocessing(1000, 700)
                 .expect("the production renderer can observe the backdrop");
         let original = renderer.render_rgba(&original);
         let below = renderer.render_rgba(&surface.below);
@@ -570,7 +570,7 @@ tilo_test_env::scenario! {
 
     phase modal_controls_are_hittable_and_show_their_states;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let spec = ModalSpec::new("Workspace invite").body_height(120.0);
             for (name, theme) in themes() {
@@ -634,9 +634,9 @@ tilo_test_env::scenario! {
 
     phase actions_follow_platform_order_inside_the_sheet;
     {
-        use crate::platform::{Platform, PlatformConventions};
+        use tilo_ui_base::{platform::Platform, platform::PlatformConventions};
 
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let actions = [
                 ModalAction::secondary("Cancel"),
@@ -713,7 +713,7 @@ tilo_test_env::scenario! {
 
     phase scrim_and_sheet_route_clicks_that_hit_no_control;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let corner = Point::new(4.0, 4.0);
         let l = lay(
             &ModalSpec::new("Workspace invite").body_height(100.0),
@@ -737,7 +737,7 @@ tilo_test_env::scenario! {
 
     phase dialog_accessibility_exposes_open_content_and_real_actions;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let fired = Rc::new(Cell::new(0));
             let callback = fired.clone();
@@ -749,11 +749,11 @@ tilo_test_env::scenario! {
                 .clone()
                 .unwrap();
             let mut doc = AutoCommit::new();
-            let activate = crate::a11y::Action::Activate;
+            let activate = tilo_ui_base::a11y::Action::Activate;
             assert!(dialog.perform_semantic_action(
                 &target,
                 &activate,
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(fired.get(), 1);
@@ -762,7 +762,7 @@ tilo_test_env::scenario! {
             assert!(!dialog.perform_semantic_action(
                 &target,
                 &activate,
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             dialog.set_open(true);
@@ -770,14 +770,14 @@ tilo_test_env::scenario! {
             assert!(!dialog.perform_semantic_action(
                 &target,
                 &activate,
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(
                 !dialog.perform_semantic_action(
                     "modal.primary",
                     &activate,
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT
                 ),
                 "an absent action is not activatable"
@@ -790,7 +790,7 @@ tilo_test_env::scenario! {
                 .open(true)
                 .on_dismiss(|| {});
             let node = Widget::accessibility(&d).unwrap();
-            assert_eq!(node.role, crate::a11y::Role::Dialog);
+            assert_eq!(node.role, tilo_ui_base::a11y::Role::Dialog);
             assert_eq!(node.name.as_deref(), Some("Confirm delete"));
             assert!(node.state.modal && !node.state.hidden);
             assert!(
@@ -805,7 +805,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            use crate::accesskit_bridge::build_tree_update;
+            use tilo_ui_base::accesskit_bridge::build_tree_update;
             use crate::widget::Button;
             use accesskit::Role as AccessKitRole;
 
@@ -834,7 +834,7 @@ tilo_test_env::scenario! {
 
     phase dialog_dismisses_and_invokes_actions_by_key_and_pointer;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let dismissed = Rc::new(Cell::new(0));
             let flag = Rc::clone(&dismissed);
@@ -855,7 +855,7 @@ tilo_test_env::scenario! {
                 &named_key(NamedKey::Escape),
                 1.0,
                 Modifiers::default(),
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(dismissed.get(), 4, "a painted host routes events too");
@@ -901,7 +901,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            use crate::platform::{Platform, PlatformConventions};
+            use tilo_ui_base::{platform::Platform, platform::PlatformConventions};
             let mut d = ModalDialog::new("Title", crate::testing::TestLeaf::auto())
                 .primary_action("Save", || {})
                 .secondary_action("Cancel", || {})
@@ -917,7 +917,7 @@ tilo_test_env::scenario! {
 
     phase open_dialog_captures_input_and_closed_dialog_is_inert;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let (d, _) = laid_out_counting(true);
             assert!(Widget::modal_capture(&d).is_some());
@@ -948,8 +948,8 @@ tilo_test_env::scenario! {
 
     phase a_three_way_question_stands_in_the_platform_order;
     {
-        use crate::platform::{Platform, PlatformConventions};
-        let _settled = crate::motion::testing::settled();
+        use tilo_ui_base::{platform::Platform, platform::PlatformConventions};
+        let _settled = tilo_ui_base::motion::testing::settled();
         let (saved, save) = counter();
         let (discarded, discard) = counter();
         let (cancelled, cancel) = counter();
@@ -995,7 +995,7 @@ tilo_test_env::scenario! {
 
     phase enter_in_a_destructive_confirmation_is_the_safe_answer;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let (erased, erase) = counter();
         let (cancelled, cancel) = counter();
         let mut d = ModalDialog::new("Erase disk?", crate::testing::TestLeaf::auto())
@@ -1016,7 +1016,7 @@ tilo_test_env::scenario! {
             "a click still takes the destructive action"
         );
 
-        d.set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Windows));
+        d.set_platform_conventions(PlatformConventions::new(tilo_ui_base::platform::Platform::Windows));
         lay_out(&mut d, WINDOW, &Theme::dark());
         assert_eq!(d.keys.first().map(|k| k.slot), Some(Slot::Secondary));
 
@@ -1035,7 +1035,7 @@ tilo_test_env::scenario! {
 
     phase a_check_may_read_state_the_content_writes_elsewhere;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let valid = Rc::new(Cell::new(false));
         let (saved, save) = counter();
         let check = Rc::clone(&valid);
@@ -1065,7 +1065,7 @@ tilo_test_env::scenario! {
 
     phase a_disabled_or_guarded_primary_action_is_inert_and_announced;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let (fired, fire) = counter();
         let mut d = ModalDialog::new("Erase disk", crate::testing::TestLeaf::auto())
             .primary_action("Erase", fire)
@@ -1110,7 +1110,7 @@ tilo_test_env::scenario! {
                 };
                 taffy.widget_leaf(style, node_map, self)
             }
-            crate::rect_geometry!();
+            tilo_ui_base::rect_geometry!();
             fn name(&self) -> &'static str {
                 "ValueContent"
             }
@@ -1146,13 +1146,13 @@ tilo_test_env::scenario! {
             fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
                 self.0.apply_layout(taffy, node, origin);
             }
-            fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+            fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
                 self.0
-                    .draw(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+                    .draw(&mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
             }
-            fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+            fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
                 self.0.handle_event(event, ctx);
             }
             fn wants_pointer_capture(&self) -> bool {
@@ -1165,7 +1165,7 @@ tilo_test_env::scenario! {
                 self.0.get_rect()
             }
         }
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let (dismissed, dismiss) = counter();
         let list = TestLeaf::sized(200.0, 40.0).consumes();
         let events = list.seen();
@@ -1190,7 +1190,7 @@ tilo_test_env::scenario! {
 
     phase footer_actions_are_addressable_by_name;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut d = ModalDialog::new("Delete note?", crate::testing::TestLeaf::auto())
             .with_test_id("notes.delete")
             .primary_action("Delete", || {})
@@ -1217,10 +1217,10 @@ tilo_test_env::scenario! {
 }
 
 fn wheel(dy: f32) -> WindowEvent {
-    crate::synthetic_input::mouse_wheel(0.0, dy)
+    tilo_ui_base::synthetic_input::mouse_wheel(0.0, dy)
 }
 
-fn footer_buttons<C: Widget + 'static>(d: &ModalDialog<C>) -> Vec<crate::a11y::AccessNode> {
+fn footer_buttons<C: Widget + 'static>(d: &ModalDialog<C>) -> Vec<tilo_ui_base::a11y::AccessNode> {
     Widget::children(d)
         .into_iter()
         .filter(|child| child.name() == "ModalAction")
@@ -1238,7 +1238,7 @@ fn counter() -> (Rc<Cell<usize>>, impl FnMut() + 'static) {
 fn a_hosted_dialog_focuses_its_fields_by_pointer_and_its_footer_by_tab() {
     use crate::app::driver::Framed;
     use crate::widget::{Column, TextInput};
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (cancelled, cancel) = counter();
     let (connected, connect) = counter();
     let content = Column::new()
@@ -1304,7 +1304,7 @@ tilo_test_env::scenario! {
 
     phase a_tall_body_scrolls_inside_a_sheet_that_takes_the_window;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let theme = Theme::dark();
         let mut d = ModalDialog::new(
             "Shortcuts",
@@ -1346,7 +1346,7 @@ tilo_test_env::scenario! {
     // An app builds a new tree whenever its state changes: a choice made far down a long sheet
     // builds a new dialog, which starts where the person was, not back at its top.
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let theme = Theme::dark();
         let kept = Rc::new(Cell::new(0.0));
         let tall = || TestLeaf::sized(200.0, 2000.0);
@@ -1388,7 +1388,7 @@ tilo_test_env::scenario! {
     // the body scrolls under it: the wheel moves what the body holds, never the
     // tabs a person is switching between.
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let theme = Theme::dark();
 
         let strip = 40.0;
@@ -1462,7 +1462,7 @@ tilo_test_env::scenario! {
     // the window's edge falls in, and the rows below are reached by scrolling:
     // a person never sees half a row under the footer.
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let theme = Theme::dark();
         let block = |height: f32| {
             Box::new(
@@ -1535,9 +1535,9 @@ tilo_test_env::scenario! {
 fn space_flips_a_focused_switch_and_enter_is_the_sheets_default() {
     use crate::app::driver::Framed;
     use crate::widget::{Column, TextInput, Toggle};
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (saved, save) = counter();
-    let on = crate::LocalState::new(false);
+    let on = tilo_ui_base::LocalState::new(false);
     let content = Column::new()
         .push(Box::new(TextInput::local().with_placeholder("Name")))
         .push(Box::new(
@@ -1577,7 +1577,7 @@ fn space_flips_a_focused_switch_and_enter_is_the_sheets_default() {
 fn every_footer_action_is_one_focusable_button() {
     use crate::app::driver::Framed;
     use crate::widget::{Column, TextInput};
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (connected, connect) = counter();
     let content = Column::new().push(Box::new(TextInput::local().with_placeholder("Name")));
     let dialog = ModalDialog::new("Connection", content)
@@ -1604,7 +1604,7 @@ fn every_footer_action_is_one_focusable_button() {
         Framed::harness_mut(&mut framed).tab(false);
         focused = Framed::harness(&framed)
             .focused_access_node()
-            .filter(|node| node.role == crate::a11y::Role::Button);
+            .filter(|node| node.role == tilo_ui_base::a11y::Role::Button);
         if focused.is_some() {
             break;
         }
@@ -1625,7 +1625,7 @@ fn every_footer_action_is_one_focusable_button() {
         .perform_semantic_named(
             "connect.primary",
             Some(&primary),
-            &crate::a11y::Action::Activate,
+            &tilo_ui_base::a11y::Action::Activate,
         )
         .expect("the reader's activation lands");
     assert_eq!(
@@ -1637,7 +1637,7 @@ fn every_footer_action_is_one_focusable_button() {
 
 #[test]
 fn what_stands_behind_an_open_sheet_never_takes_its_input() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // A page lists its content before its dialog. A greedy sibling (a table
     // that takes every press) must not see the press meant for the sheet.
     use crate::app::driver::Framed;
@@ -1672,9 +1672,9 @@ fn what_stands_behind_an_open_sheet_never_takes_its_input() {
 /// the entrance; a key opens it at once.
 #[test]
 fn a_dialog_arrives_from_its_centre_and_a_rebuilt_one_does_not_replay_it() {
-    use crate::motion::note_source;
+    use tilo_ui_base::motion::note_source;
     use crate::time::testing::with_monotonic_time;
-    use crate::tokens::MotionSource;
+    use tilo_ui_base::tokens::MotionSource;
     let theme = Theme::dark();
     let t0 = crate::time::now();
     let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
@@ -1743,9 +1743,9 @@ fn a_dialog_arrives_from_its_centre_and_a_rebuilt_one_does_not_replay_it() {
 
 #[test]
 fn a_shared_appearance_arrives_once_and_leaves_until_it_is_gone() {
-    use crate::motion::{Appearance, note_source};
+    use tilo_ui_base::{motion::Appearance, motion::note_source};
     use crate::time::testing::with_monotonic_time;
-    use crate::tokens::MotionSource;
+    use tilo_ui_base::tokens::MotionSource;
     let theme = Theme::dark();
     let t0 = crate::time::now();
     let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
@@ -1820,7 +1820,7 @@ fn a_dialog_moves_on_the_motion_the_person_allows() {
         let _ = present(&mut d, WINDOW, &theme);
         assert!(!d.appear.is_moving(), "it rests");
     });
-    crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+    tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
     with_monotonic_time(at(620), || d.set_open(false));
     with_monotonic_time(at(660), || {
         lay_out(&mut d, WINDOW, &theme);
@@ -1929,7 +1929,7 @@ fn an_agent_presses_a_dialog_footer_through_its_published_controls() {
 
 #[test]
 fn a_closed_sheet_names_no_target_and_an_open_one_is_where_it_shows() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     use crate::widget::Column;
     let sheet = |open: bool| {
         let mut dialog = ModalDialog::new("About", Column::new().push(Box::new(Text::new("Tilo"))))

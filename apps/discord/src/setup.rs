@@ -15,11 +15,11 @@ use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use ui::framework::{EffectAnswer, EffectCx, Effected};
-use ui::i18n::ArgValue;
+use tilo_ui_base::i18n::ArgValue;
 use ui::prelude::*;
 use ui::tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
 use ui::tilo_actions::{InvocationId, InvocationUpdate};
-use ui::{Arrival, InvocationCall, LocalState};
+use tilo_ui_base::{Arrival, InvocationCall, LocalState};
 
 use crate::effects::DiscordEffect;
 use crate::guild::Guild;
@@ -182,7 +182,7 @@ pub struct Setup {
     pub token: LocalState<String>,
     /// The id of the server chosen.
     pub chosen: LocalState<String>,
-    remote: ui::RemoteActions,
+    remote: tilo_ui_base::RemoteActions,
     asked: Rc<RefCell<Vec<InvocationCall>>>,
 }
 
@@ -193,7 +193,7 @@ impl Setup {
             step: LocalState::new(Step::Closed),
             token: LocalState::new(String::new()),
             chosen: LocalState::new(String::new()),
-            remote: ui::RemoteActions::current(),
+            remote: tilo_ui_base::RemoteActions::current(),
             asked: Rc::default(),
         }
     }
@@ -358,7 +358,7 @@ fn body(setup: &Setup, step: &Step) -> Element {
     let named = |key: &str, server: &Server| -> Element {
         Box::new(
             Text::new(&CATALOG.t_args(key, &[("server", ArgValue::Text(server.name.clone()))]))
-                .with_live(ui::a11y::Politeness::Polite),
+                .with_live(tilo_ui_base::a11y::Politeness::Polite),
         )
     };
     match step {
@@ -401,7 +401,7 @@ fn body(setup: &Setup, step: &Step) -> Element {
         }
         Step::Asking(server) => named("discord-setup-asking", server),
         Step::Asked(server) => named("discord-setup-asked", server),
-        Step::Failed(why) => Box::new(Text::new(why).with_live(ui::a11y::Politeness::Assertive)),
+        Step::Failed(why) => Box::new(Text::new(why).with_live(tilo_ui_base::a11y::Politeness::Assertive)),
     }
 }
 
@@ -484,7 +484,7 @@ impl SetupSheet {
     }
 }
 
-impl ui::widget::Decorator for SetupSheet {
+impl tilo_ui_base::widget::Decorator for SetupSheet {
     type Inner = ui::widget::ModalDialog<Container>;
 
     fn inner(&self) -> &Self::Inner {
@@ -495,25 +495,25 @@ impl ui::widget::Decorator for SetupSheet {
         &mut self.dialog
     }
 
-    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
         let followed = self.setup.follow();
         self.follow();
-        ui::widget::Widget::update(&mut self.dialog, state, path) || followed
+        tilo_ui_base::widget::Widget::update(&mut self.dialog, state, path) || followed
     }
 
     fn handle_event(
         &mut self,
         event: &ui::winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         self.follow();
-        ui::widget::Widget::handle_event(&mut self.dialog, event, ctx);
+        tilo_ui_base::widget::Widget::handle_event(&mut self.dialog, event, ctx);
     }
 
     fn needs_redraw(&self) -> bool {
         self.shown.as_ref() != Some(&self.setup.step.get())
             || self.dialog.needs_redraw()
-            || ui::widget::Widget::needs_animation_frame(self)
+            || tilo_ui_base::widget::Widget::needs_animation_frame(self)
     }
 
     fn concrete_type_name(&self) -> &'static str {
@@ -526,7 +526,7 @@ impl ui::widget::Decorator for SetupSheet {
 /// back to it.
 pub struct SetupClient {
     content: Stack,
-    remote: ui::RemoteActions,
+    remote: tilo_ui_base::RemoteActions,
 }
 
 impl SetupClient {
@@ -539,8 +539,8 @@ impl SetupClient {
     }
 }
 
-impl ui::widget::Decorator for SetupClient {
-    ui::provides!(dyn ui::widget::Collaborative; inner = content);
+impl tilo_ui_base::widget::Decorator for SetupClient {
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::Collaborative; inner = content);
 
     type Inner = Stack;
 
@@ -557,13 +557,13 @@ impl ui::widget::Decorator for SetupClient {
     }
 }
 
-impl ui::widget::Collaborative for SetupClient {
-    fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
-        ui::widget::Collaborative::take_collab_requests(&mut self.remote)
+impl tilo_ui_base::widget::Collaborative for SetupClient {
+    fn take_collab_requests(&mut self) -> Vec<tilo_ui_base::collaboration::CollabRequest> {
+        tilo_ui_base::widget::Collaborative::take_collab_requests(&mut self.remote)
     }
 
-    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
-        ui::widget::Collaborative::handle_collab_event(&mut self.remote, event);
+    fn handle_collab_event(&mut self, event: &tilo_ui_base::collaboration::CollabEvent) {
+        tilo_ui_base::widget::Collaborative::handle_collab_event(&mut self.remote, event);
     }
 }
 

@@ -25,7 +25,7 @@ use tilolang_process::testing::{Broker, Inbox, Routed, Sent};
 use tilolang_process::window::hosted::HostedWindow;
 use tilolang_tilo::runtime::store::Store as _;
 use ui::headless::Driver;
-use ui::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 use crate::settle::{self, Woken};
 
@@ -233,9 +233,9 @@ impl Window {
         match self {
             Self::Harness(window) => window.click_at(x, y),
             Self::Live(app) => {
-                Self::live_input(app, ui::synthetic_input::cursor_moved(x, y));
-                Self::live_input(app, ui::synthetic_input::mouse_press());
-                Self::live_input(app, ui::synthetic_input::mouse_release());
+                Self::live_input(app, tilo_ui_base::synthetic_input::cursor_moved(x, y));
+                Self::live_input(app, tilo_ui_base::synthetic_input::mouse_press());
+                Self::live_input(app, tilo_ui_base::synthetic_input::mouse_release());
             }
         }
     }
@@ -255,11 +255,11 @@ impl Window {
                     };
                     Self::live_input(
                         app,
-                        ui::synthetic_input::key_press(key.clone(), Some(&typed)),
+                        tilo_ui_base::synthetic_input::key_press(key.clone(), Some(&typed)),
                     );
                     Self::live_input(
                         app,
-                        ui::synthetic_input::key_input(&key, ElementState::Released),
+                        tilo_ui_base::synthetic_input::key_input(&key, ElementState::Released),
                     );
                 }
             }
@@ -312,11 +312,11 @@ impl Window {
             })
             .unwrap_or_else(|| panic!("the window shows no {name:?} with a menu"))
             .0;
-        self.a11y_action(node, &ui::a11y::Action::ShowContextMenu);
+        self.a11y_action(node, &tilo_ui_base::a11y::Action::ShowContextMenu);
     }
 
     /// The accessibility action `action` on `node`, as a tool or a screen reader asks for it.
-    fn a11y_action(&mut self, node: ui::accesskit::NodeId, action: &ui::a11y::Action) {
+    fn a11y_action(&mut self, node: ui::accesskit::NodeId, action: &tilo_ui_base::a11y::Action) {
         match self {
             Self::Harness(window) => window
                 .perform_a11y_action(node, action)
@@ -349,10 +349,10 @@ impl Window {
         match self {
             Self::Harness(window) => window.key(&format!("{key:?}")),
             Self::Live(app) => {
-                Self::live_input(app, ui::synthetic_input::named_key(key));
+                Self::live_input(app, tilo_ui_base::synthetic_input::named_key(key));
                 Self::live_input(
                     app,
-                    ui::synthetic_input::key_input(&Key::Named(key), ElementState::Released),
+                    tilo_ui_base::synthetic_input::key_input(&Key::Named(key), ElementState::Released),
                 );
             }
         }
@@ -385,10 +385,10 @@ impl Window {
                     other => Key::Character(other.into()),
                 };
                 app.set_surface_modifiers(held.into());
-                Self::live_input(app, ui::synthetic_input::key_press(key.clone(), None));
+                Self::live_input(app, tilo_ui_base::synthetic_input::key_press(key.clone(), None));
                 Self::live_input(
                     app,
-                    ui::synthetic_input::key_input(&key, ElementState::Released),
+                    tilo_ui_base::synthetic_input::key_input(&key, ElementState::Released),
                 );
                 app.set_surface_modifiers(ModifiersState::empty().into());
             }
@@ -398,8 +398,8 @@ impl Window {
     /// The pointer moved to `(x, y)` without pressing anything: where a person hovers.
     fn move_to(&mut self, x: f64, y: f64) {
         match self {
-            Self::Harness(window) => window.send(&ui::synthetic_input::cursor_moved(x, y)),
-            Self::Live(app) => Self::live_input(app, ui::synthetic_input::cursor_moved(x, y)),
+            Self::Harness(window) => window.send(&tilo_ui_base::synthetic_input::cursor_moved(x, y)),
+            Self::Live(app) => Self::live_input(app, tilo_ui_base::synthetic_input::cursor_moved(x, y)),
         }
     }
 
@@ -409,7 +409,7 @@ impl Window {
             Self::Harness(window) => window.scroll(dx, dy),
             Self::Live(app) => {
                 let (dx, dy) = (dx as f32, dy as f32);
-                Self::live_input(app, ui::synthetic_input::mouse_wheel(dx, dy));
+                Self::live_input(app, tilo_ui_base::synthetic_input::mouse_wheel(dx, dy));
             }
         }
     }
@@ -439,10 +439,10 @@ impl Window {
                 // The surface reports the modifiers held beside the key events.
                 app.set_surface_modifiers(held.into());
                 let key = Key::Character(key.into());
-                Self::live_input(app, ui::synthetic_input::key_press(key.clone(), None));
+                Self::live_input(app, tilo_ui_base::synthetic_input::key_press(key.clone(), None));
                 Self::live_input(
                     app,
-                    ui::synthetic_input::key_input(&key, ElementState::Released),
+                    tilo_ui_base::synthetic_input::key_input(&key, ElementState::Released),
                 );
                 app.set_surface_modifiers(ModifiersState::empty().into());
             }
@@ -656,7 +656,7 @@ impl Session {
     /// Bo at a window of `app` in Ada's workspace, made its editor: an editor asks before what
     /// leaves the workspace.
     fn bo_editing(app: &str, window: impl FnOnce(HostedWindow) -> Window) -> Self {
-        use ui::permissions::policy::{MemberAccess, Role, WorkspacePolicy};
+        use tilo_ui_base::{permissions::policy::MemberAccess, permissions::policy::Role, permissions::policy::WorkspacePolicy};
         let route = RouteSpec::app(app, uuid::Uuid::new_v4());
         let mut policy = WorkspacePolicy::new(route.cluster_id.to_string(), "ada");
         policy.members.insert("bo".to_owned(), Role::Editor);
@@ -669,7 +669,7 @@ impl Session {
     /// `person` at a harness window of `app` in a workspace whose members it knows, alone in it:
     /// what an app tells them reaches them as a notice, on every device of theirs.
     fn member(app: &str, person: &str) -> Self {
-        use ui::permissions::policy::{MemberAccess, WorkspacePolicy};
+        use tilo_ui_base::{permissions::policy::MemberAccess, permissions::policy::WorkspacePolicy};
         let route = RouteSpec::app(app, uuid::Uuid::new_v4());
         let policy = WorkspacePolicy::new(route.cluster_id.to_string(), person);
         let spec = Spec::new(app, route.cluster_id.to_string(), 1, person)
@@ -1098,7 +1098,7 @@ impl Session {
     /// Press the window bar's History, as the shell's bar hands the press to the window, and let
     /// the window settle.
     fn press_history(&mut self) {
-        let history = ui::widget::capability::capability_mut::<dyn ui::widget::WindowHistory>(
+        let history = tilo_ui_base::widget::capability::capability_mut::<dyn ui::widget::WindowHistory>(
             self.window.root(),
         )
         .expect("the window offers its bar's History");
@@ -1219,7 +1219,7 @@ fn named(widget: &dyn Widget, label: &str, out: &mut Vec<ui::kurbo::Rect>) {
 /// Every checkbox the window lays out on screen, with whether it is marked.
 fn boxes(widget: &dyn Widget, out: &mut Vec<(ui::kurbo::Rect, bool)>) {
     if let Some(access) = widget.accessibility()
-        && access.role == ui::a11y::Role::Checkbox
+        && access.role == tilo_ui_base::a11y::Role::Checkbox
     {
         let rect = widget.get_rect();
         if rect.width() > 0.0 && rect.height() > 0.0 {
@@ -2058,8 +2058,8 @@ fn shots() {
         _ => dir,
     };
     std::fs::create_dir_all(&dir).unwrap();
-    let _settled = ui::motion::testing::settled();
-    for (shade, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    for (shade, theme) in [("light", tilo_ui_base::Theme::light()), ("dark", tilo_ui_base::Theme::dark())] {
         let mut session = Session::rich();
         session.window.harness().set_theme(theme);
         new_note(&mut session, "Saturday");
@@ -2325,11 +2325,11 @@ fn a_checked_row_box(session: &mut Session) -> bool {
 }
 
 /// The accessible nodes of the window, each with the widget that draws it.
-fn accessible(session: &mut Session) -> Vec<ui::a11y::AccessNode> {
+fn accessible(session: &mut Session) -> Vec<tilo_ui_base::a11y::AccessNode> {
     let snapshot = session.window.harness().inspection();
     (snapshot.root.nodes().into_iter())
         .filter_map(|node| node.semantics.as_ref())
-        .flat_map(ui::a11y::AccessNode::nodes)
+        .flat_map(tilo_ui_base::a11y::AccessNode::nodes)
         .cloned()
         .collect()
 }
@@ -2339,7 +2339,7 @@ fn accessible(session: &mut Session) -> Vec<ui::a11y::AccessNode> {
 fn place_at(session: &mut Session, label: &str) -> (f64, f64) {
     let rect = accessible(session)
         .into_iter()
-        .filter(|node| node.role == ui::a11y::Role::TreeItem)
+        .filter(|node| node.role == tilo_ui_base::a11y::Role::TreeItem)
         .filter(|node| node.answers_to(label))
         .find_map(|node| node.bounds)
         .unwrap_or_else(|| panic!("the sidebar shows the place {label:?}"));
@@ -2488,7 +2488,7 @@ fn choose(session: &mut Session, query: &str) {
 
 #[test]
 fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = Session::tasks();
     // What the app publishes for this window is what the window offers: the labels people
     // read, and the keys the app gives its actions. A task is made by one action, which the
@@ -2523,7 +2523,7 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
     );
     // A session's palette builds each action row from that same published state, and paints a
     // declared key as the platform's keycaps: the app's keys are caps, not free text.
-    let platform = ui::PlatformConventions::new(ui::Platform::Linux);
+    let platform = tilo_ui_base::PlatformConventions::new(tilo_ui_base::Platform::Linux);
     let mut row = |label: &str| {
         let resources = session.window.harness().resources();
         let (resource, action) = resources
@@ -2580,7 +2580,7 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
 #[test]
 fn a_window_given_the_keyboard_before_its_instance_answered_types_into_the_entry() {
     use ui::winit::keyboard::NamedKey;
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = Session::opened(TASKS, "ada", Window::live);
     // The shell gives a window the keyboard as it maps it, before what its instance sends has
     // arrived: the entry the window shows once it does takes what the person types.
@@ -2601,7 +2601,7 @@ fn a_window_given_the_keyboard_before_its_instance_answered_types_into_the_entry
 #[test]
 fn a_chosen_action_runs_at_the_app_and_the_task_offers_its_own() {
     use ui::winit::keyboard::NamedKey;
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = Session::live_tasks();
     // The app's New task is the list's entry: choosing it in the window's palette puts the
     // keyboard there, and what is typed and committed is the task the app makes. Opened, that
@@ -2647,8 +2647,8 @@ fn palette_shots() {
         _ => dir,
     };
     std::fs::create_dir_all(&dir).unwrap();
-    let _settled = ui::motion::testing::settled();
-    for (shade, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    for (shade, theme) in [("light", tilo_ui_base::Theme::light()), ("dark", tilo_ui_base::Theme::dark())] {
         for (what, query) in [("palette", ""), ("palette-search", "new")] {
             let mut session = Session::tasks();
             session.window.harness().set_theme(theme.clone());
@@ -2677,7 +2677,7 @@ fn palette_shots() {
     }
 }
 
-type Shown = (String, Option<ui::icons::Icon>, Option<Vec<String>>);
+type Shown = (String, Option<tilo_ui_base::icons::Icon>, Option<Vec<String>>);
 
 /// What the window's own palette reads for `query`, row by row: the title it
 /// shows, the picture it paints and the chord it names.
@@ -2708,8 +2708,8 @@ fn palette_rows(session: &mut Session, query: &str) -> Vec<Shown> {
 }
 
 /// The modifier a command chord is written with.
-fn command_modifier(conventions: ui::PlatformConventions) -> String {
-    ui::HostShortcut::Search
+fn command_modifier(conventions: tilo_ui_base::PlatformConventions) -> String {
+    tilo_ui_base::HostShortcut::Search
         .shortcut(conventions)
         .keycap_labels(conventions)
         .first()
@@ -2719,17 +2719,17 @@ fn command_modifier(conventions: ui::PlatformConventions) -> String {
 
 #[test]
 fn the_windows_palette_lists_the_apps_own_resources_and_actions() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = Session::tasks();
     session.settle();
-    let conventions = ui::PlatformConventions::default();
+    let conventions = tilo_ui_base::PlatformConventions::default();
     an_empty_windows_palette_lists_what_a_person_can_do_now(&mut session, conventions);
     an_open_tasks_palette_lists_what_the_task_lets_a_person_do(&mut session, conventions);
 }
 
 fn an_empty_windows_palette_lists_what_a_person_can_do_now(
     session: &mut Session,
-    conventions: ui::PlatformConventions,
+    conventions: tilo_ui_base::PlatformConventions,
 ) {
     // Unasked, an empty window lists the app itself once and each command a
     // person can take now, drawn from what the action declares. An action that
@@ -2741,12 +2741,12 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
     // The app's root offers the system's copy link to it, as every root with a
     // view does.
     let undo = Some(
-        ui::HostShortcut::Undo
+        tilo_ui_base::HostShortcut::Undo
             .shortcut(conventions)
             .keycap_labels(conventions),
     );
     let redo = Some(
-        ui::HostShortcut::Redo
+        tilo_ui_base::HostShortcut::Redo
             .shortcut(conventions)
             .keycap_labels(conventions),
     );
@@ -2755,24 +2755,24 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
     assert_eq!(
         empty,
         vec![
-            ("Tasks".to_owned(), Some(ui::icons::Icon::Layers), None),
+            ("Tasks".to_owned(), Some(tilo_ui_base::icons::Icon::Layers), None),
             (
                 "Copy link".to_owned(),
-                Some(ui::icons::Icon::Settings2),
+                Some(tilo_ui_base::icons::Icon::Settings2),
                 None
             ),
             (
                 "New task".to_owned(),
-                Some(ui::icons::Icon::Plus),
+                Some(tilo_ui_base::icons::Icon::Plus),
                 Some(vec![command, "N".to_owned()]),
             ),
             (
                 "New project".to_owned(),
-                Some(ui::icons::Icon::FolderPlus),
+                Some(tilo_ui_base::icons::Icon::FolderPlus),
                 None,
             ),
-            ("Undo".to_owned(), Some(ui::icons::Icon::Undo2), undo),
-            ("Redo".to_owned(), Some(ui::icons::Icon::Redo2), redo),
+            ("Undo".to_owned(), Some(tilo_ui_base::icons::Icon::Undo2), undo),
+            ("Redo".to_owned(), Some(tilo_ui_base::icons::Icon::Redo2), redo),
         ],
         "the empty window's palette"
     );
@@ -2812,7 +2812,7 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
 
 fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
     session: &mut Session,
-    conventions: ui::PlatformConventions,
+    conventions: tilo_ui_base::PlatformConventions,
 ) {
     let command = command_modifier(conventions);
     // The window lists the app, the task the entry made and that stands on
@@ -2866,7 +2866,7 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
         .expect("the task the entry made is a row");
     assert_eq!(
         task.1,
-        Some(ui::icons::Icon::Layers),
+        Some(tilo_ui_base::icons::Icon::Layers),
         "a resource row shows the picture of what it is"
     );
     assert!(
@@ -2911,7 +2911,7 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
 /// requirement it does not meet is the reason the person reads, beside the name it announces.
 #[test]
 fn a_header_button_for_an_action_that_cannot_run_is_disabled_with_its_reason() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = Session::tasks();
     session.settle();
     let view = session.hosted().view().expect("the window is connected");
@@ -2985,7 +2985,7 @@ fn live_task(title: &str) -> Session {
 /// surface as a session's workspace decides it.
 #[test]
 fn a_click_on_a_tasks_box_marks_it_done() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let surface = package(package_of(TASKS))
         .surface()
         .expect("the package has a surface");
@@ -3018,7 +3018,7 @@ fn a_click_on_a_tasks_box_marks_it_done() {
 #[test]
 fn a_tool_opens_a_tasks_menu_and_marks_it_done_by_its_box() {
     use ui::winit::keyboard::NamedKey;
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = live_task("Water the plants");
     let offered_now = controls_of(session.window.app());
     assert!(

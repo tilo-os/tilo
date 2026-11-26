@@ -3,10 +3,7 @@
 //! runs against the collab crate's fake broker
 //! (`collaboration::test_support`).
 
-use crate::collaboration::test_support::{
-    Captures, FakeBroker, eventually, manager_on, manager_on_resource_route, ordinary_manager,
-    stand_up_fake_broker, wake_channel,
-};
+use tilo_ui_base::{collaboration::test_support::Captures, collaboration::test_support::FakeBroker, collaboration::test_support::eventually, collaboration::test_support::manager_on, collaboration::test_support::manager_on_resource_route, collaboration::test_support::ordinary_manager, collaboration::test_support::stand_up_fake_broker, collaboration::test_support::wake_channel};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -51,7 +48,7 @@ fn a_write_before_the_channel_connects_lands_after_it_connects_in_order() {
         .unwrap();
     // As at launch: the channel is the app's settings before anything
     // reaches the shell.
-    crate::collaboration::channel_settings::install(APP);
+    tilo_ui_base::collaboration::channel_settings::install(APP);
     let prefs = crate::storage::Settings::<MonitorPrefs>::for_app(APP);
     prefs.update(|prefs| prefs.interval_ms = 1500).unwrap();
     prefs.update(|prefs| prefs.confirm_kill = true).unwrap();
@@ -95,7 +92,7 @@ fn a_write_before_the_channel_connects_lands_after_it_connects_in_order() {
         },
         "the shell's view, once it answers, is what was written last"
     );
-    crate::collaboration::channel_settings::uninstall();
+    tilo_ui_base::collaboration::channel_settings::uninstall();
 }
 
 #[cfg(unix)]
@@ -128,7 +125,7 @@ fn an_apps_settings_reach_the_shells_records_and_follow_them() {
         ..FakeBroker::default()
     };
     let (fd, _, _thread) = stand_up_fake_broker(broker);
-    crate::collaboration::channel_settings::install(APP);
+    tilo_ui_base::collaboration::channel_settings::install(APP);
     let _manager = manager_on(fd, APP, Uuid::new_v4());
     let prefs = crate::storage::Settings::<MonitorPrefs>::for_app(APP);
 
@@ -174,7 +171,7 @@ fn an_apps_settings_reach_the_shells_records_and_follow_them() {
             .get("so.tilo.notes")
             .is_none()
     );
-    crate::collaboration::channel_settings::uninstall();
+    tilo_ui_base::collaboration::channel_settings::uninstall();
 }
 
 /// The first frame of an app on a live manager publishes what it offers,
@@ -186,7 +183,7 @@ fn manager_publishes_the_first_frame_without_input() {
     {
         let broker = FakeBroker::default();
         let (fd, captures, _thread) = stand_up_fake_broker(broker);
-        let app_id = crate::collaboration::local_app_id();
+        let app_id = tilo_ui_base::collaboration::local_app_id();
         let manager = manager_on(fd, &app_id, Uuid::new_v4());
         let mut app = crate::App::with_collaboration_manager(
             crate::State::new(),
@@ -217,7 +214,7 @@ fn manager_publishes_the_first_frame_without_input() {
         let broker = FakeBroker::default();
         let (fd, captures, _thread) = stand_up_fake_broker(broker);
         captures.lock().unwrap().refuse_action_publications = 1;
-        let app_id = crate::collaboration::local_app_id();
+        let app_id = tilo_ui_base::collaboration::local_app_id();
         let manager = manager_on(fd, &app_id, Uuid::new_v4());
         let mut app = crate::App::with_collaboration_manager(
             crate::State::new(),
@@ -269,7 +266,7 @@ fn held_directory_observation(refused: bool) {
     let (scope, wakes) = wake_channel();
     let _entry = scope.enter();
     let (fd, captures, worker) = stand_up_fake_broker(broker);
-    let manager = manager_on(fd, &crate::collaboration::local_app_id(), Uuid::new_v4());
+    let manager = manager_on(fd, &tilo_ui_base::collaboration::local_app_id(), Uuid::new_v4());
     let mut app = crate::App::with_collaboration_manager(
         crate::State::new(),
         Box::new(crate::widget::Button::new("complete", "Complete").on_open(|| {})),

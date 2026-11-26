@@ -506,7 +506,7 @@ impl Decorator for RichInput {
         self.settle();
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -526,7 +526,7 @@ impl Decorator for RichInput {
         self.line.draw_child(scene, transform, text, theme, &env);
     }
 
-    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -535,7 +535,7 @@ impl Decorator for RichInput {
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.line
             .inner_mut()
-            .draw_overlay(&mut tilo_ui::DrawCtx::new(
+            .draw_overlay(&mut tilo_ui_base::DrawCtx::new(
                 scene,
                 transform,
                 text,

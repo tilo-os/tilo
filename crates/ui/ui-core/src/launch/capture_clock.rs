@@ -1,4 +1,4 @@
-//! Which launches render at the capture instant ([`crate::clock::freeze_for_capture`]).
+//! Which launches render at the capture instant ([`tilo_ui_base::clock::freeze_for_capture`]).
 
 use super::LaunchArgs;
 

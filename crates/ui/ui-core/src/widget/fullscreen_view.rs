@@ -15,16 +15,14 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::component::{Component, Described, Event, PartViews};
-use crate::fullscreen::{FullscreenRequest, FullscreenTarget};
-use crate::motion::{Presence, Transient};
-use crate::theme::Theme;
-use crate::tokens::MotionSource;
-use crate::widget::identity::concrete::Decorator;
-use crate::widget::{
-    Button, ButtonRole, ControlSize, DrawChild, Element, EventCtx, FullscreenProvider,
-    TaffyTreeExt, Widget, layout_rect,
-};
+use tilo_ui_base::{component::Component, component::Described, component::Event, component::PartViews};
+use tilo_ui_base::{fullscreen::FullscreenRequest, fullscreen::FullscreenTarget};
+use tilo_ui_base::{motion::Presence, motion::Transient};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::MotionSource;
+use tilo_ui_base::widget::identity::concrete::Decorator;
+use crate::{widget::Button, widget::ButtonRole, widget::ControlSize};
+use tilo_ui_base::{widget::DrawChild, widget::Element, widget::EventCtx, widget::FullscreenProvider, widget::TaffyTreeExt, widget::Widget, widget::layout_rect};
 
 /// Which screen the window fills while the view is presented.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -53,7 +51,7 @@ impl Screen {
     }
 }
 
-crate::choice!(Screen, "Screen", {
+tilo_ui_base::choice!(Screen, "Screen", {
     Auto => "auto", Largest => "largest", Primary => "primary",
     PrimaryExternal => "primary_external",
 });
@@ -89,7 +87,7 @@ pub struct FullscreenProps {
 
 /// The name the way out is announced and drawn with.
 fn exit_label() -> String {
-    crate::i18n::widget_text("widget-exit-fullscreen")
+    tilo_ui_base::i18n::widget_text("widget-exit-fullscreen")
 }
 
 /// The view `Fullscreen` presents: the window fills the audience's screen while `showing`, and
@@ -115,7 +113,7 @@ pub struct Fullscreen {
 
 impl Fullscreen {
     fn no_body() -> Element {
-        Box::new(crate::widget::Spacer::new())
+        Box::new(tilo_ui_base::widget::Spacer::new())
     }
 
     fn put(&mut self, body: Element) {
@@ -125,7 +123,7 @@ impl Fullscreen {
     /// The way out: a small control in the leading top corner, named "Exit full screen".
     fn control(key: &str) -> Button {
         Button::new(&format!("{key}.exit"), &exit_label())
-            .with_icon(crate::icons::Icon::Minimize)
+            .with_icon(tilo_ui_base::icons::Icon::Minimize)
             .role(ButtonRole::Secondary)
             .control_size(ControlSize::Small)
     }
@@ -142,7 +140,7 @@ impl Fullscreen {
         }
         let inset = Self::inset(&self.theme);
         let theme = self.theme.clone();
-        let size = crate::text_render::with_layout_renderer(&theme, |text| {
+        let size = tilo_ui_base::text_render::with_layout_renderer(&theme, |text| {
             Widget::measure(
                 &mut self.control,
                 Size {
@@ -166,7 +164,7 @@ impl Fullscreen {
 
     /// How far the way out is drawn, at `now`: it comes in as the view does.
     fn openness(&mut self, theme: &Theme) -> f64 {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         if self.presence.is_open() != self.showing {
             self.presence.show(
                 self.showing,
@@ -196,7 +194,7 @@ impl Decorator for Fullscreen {
 
     /// The fullscreen intent is this view's own; everything else it knows is the view's it
     /// presents.
-    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+    fn provide<'a>(&'a self, request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn FullscreenProvider>() {
             request.provide::<dyn FullscreenProvider>(self);
             return;
@@ -204,7 +202,7 @@ impl Decorator for Fullscreen {
         self.body.provide(request);
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
+    fn provide_mut<'a>(&'a mut self, request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>) {
         if request.wants::<dyn FullscreenProvider>() {
             request.provide::<dyn FullscreenProvider>(self);
             return;
@@ -264,7 +262,7 @@ impl Decorator for Fullscreen {
         self.place_control();
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -341,20 +339,20 @@ impl Decorator for Fullscreen {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.presence.is_moving(crate::motion::frame_now())
+        self.presence.is_moving(tilo_ui_base::motion::frame_now())
             || self.body.needs_animation_frame()
             || (self.showing && self.control.needs_animation_frame())
     }
 
     fn needs_redraw(&self) -> bool {
-        self.showing && self.presence.is_moving(crate::motion::frame_now())
+        self.showing && self.presence.is_moving(tilo_ui_base::motion::frame_now())
             || self.body.needs_redraw()
             || (self.showing && self.control.needs_redraw())
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         self.body.collect_damage(regions);
-        if self.showing && self.presence.progress(crate::motion::frame_now()) > 0.0 {
+        if self.showing && self.presence.progress(tilo_ui_base::motion::frame_now()) > 0.0 {
             regions.push(self.control.get_rect());
         }
     }

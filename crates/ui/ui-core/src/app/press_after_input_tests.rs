@@ -9,7 +9,7 @@ use std::rc::Rc;
 use vello::kurbo::{Point, Rect};
 
 use crate::floating_surface::FloatingSurfaceHostMessage;
-use crate::synthetic_input::{char_key, cursor_moved, mouse_press, mouse_release};
+use tilo_ui_base::{synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release};
 use crate::window_targets::TargetAction;
 
 use super::App;
@@ -33,7 +33,7 @@ impl crate::app::AppSurface for Window {
 fn window(secret: bool) -> (App, Rc<RefCell<Vec<String>>>) {
     let saved = Rc::new(RefCell::new(Vec::new()));
     let sink = Rc::clone(&saved);
-    let name = crate::LocalState::new(String::new());
+    let name = tilo_ui_base::LocalState::new(String::new());
     let read = name.clone();
     let field = crate::widget::TextInput::from_state(&name)
         .with_id("name")
@@ -63,7 +63,7 @@ fn press_from_shell(app: &mut App, name: &str, role: &str, after_input: Option<u
 }
 
 /// Where the window draws the control `test_id`.
-fn find_rect(root: &dyn crate::widget::Widget, test_id: &str) -> Option<Rect> {
+fn find_rect(root: &dyn tilo_ui_base::widget::Widget, test_id: &str) -> Option<Rect> {
     if root.test_id() == Some(test_id) {
         return Some(root.get_rect());
     }

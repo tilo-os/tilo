@@ -11,7 +11,7 @@
 //! Skipped without a wgpu adapter, unless `TILO_REQUIRE_GPU=1` promises one,
 //! matching the sibling `screenshot_test.rs`; it is never ignored.
 
-use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui_base::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};

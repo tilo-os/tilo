@@ -18,8 +18,8 @@ tilo_test_env::scenario! {
     // A window of one tab shows it as the bar's title, so the bar lifts the window from its title
     // and its location wherever the window stands; the press that travels is no click.
     {
-        let _settled = crate::motion::testing::settled();
-        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
         let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
         b.set_window_controls(true);
         b.set_toolbar(1, Some(crowded_parts()));
@@ -50,8 +50,8 @@ tilo_test_env::scenario! {
 
     phase a_bar_of_several_tabs_keeps_its_presses_for_the_tabs;
     {
-        let _settled = crate::motion::testing::settled();
-        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
         let mut b = TabBar::new(
             "g1",
             vec![TabDescriptor::new(1, "A"), TabDescriptor::new(2, "B")],

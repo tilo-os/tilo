@@ -9,9 +9,9 @@ tilo_test_env::scenario! {
 
     phase a_bar_control_keeps_the_bars_height_and_reaches_a_finger_from_its_hit_rect;
     {
-        use crate::interaction::InteractionEnvironment;
-        let theme = crate::theme::Theme::light();
-        let mut button = Button::icon_only("new", crate::icons::Icon::Plus, "New");
+        use tilo_ui_base::interaction::InteractionEnvironment;
+        let theme = tilo_ui_base::theme::Theme::light();
+        let mut button = Button::icon_only("new", tilo_ui_base::icons::Icon::Plus, "New");
         button.set_interaction_environment(InteractionEnvironment::TOUCH);
         let grown = button.face_height();
         assert!(
@@ -32,12 +32,12 @@ tilo_test_env::scenario! {
 
     phase a_button_told_of_a_finger_after_its_node_was_built_grows_when_laid_out_again;
     {
-        use crate::interaction::InteractionEnvironment;
+        use tilo_ui_base::interaction::InteractionEnvironment;
         let mut harness = crate::app::driver::Driver::new(
             crate::State::new(),
             Box::new(crate::widget::Row::new().push(Box::new(Button::icon_only(
                 "pin",
-                crate::icons::Icon::Pin,
+                tilo_ui_base::icons::Icon::Pin,
                 "Pin",
             )))),
             (400, 100),
@@ -65,8 +65,8 @@ tilo_test_env::scenario! {
     // as a phone and insets what it holds as a bar's body does, so the row has nowhere to put the
     // controls but beside each other.
     {
-        use crate::interaction::InteractionEnvironment;
-        use crate::tokens::Rhythm;
+        use tilo_ui_base::interaction::InteractionEnvironment;
+        use tilo_ui_base::tokens::Rhythm;
         for pointer in [
             InteractionEnvironment::POINTER,
             InteractionEnvironment::TOUCH,
@@ -76,7 +76,7 @@ tilo_test_env::scenario! {
                 .with_padding_rhythm(Rhythm::Tight, Rhythm::Tight);
             for key in ["menu", "workspace", "bell"] {
                 row = row.push(Box::new(
-                    Button::icon_only(key, crate::icons::Icon::Bell, key).role(ButtonRole::Bar),
+                    Button::icon_only(key, tilo_ui_base::icons::Icon::Bell, key).role(ButtonRole::Bar),
                 ));
             }
             let mut harness =

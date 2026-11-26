@@ -27,7 +27,7 @@ use std::fmt::Write as _;
 pub use tilo_headless_schema::PageAction;
 
 use super::{Composed, Composition};
-use crate::a11y::{AccessNode, Action, Autofill, Role};
+use tilo_ui_base::{a11y::AccessNode, a11y::Action, a11y::Autofill, a11y::Role};
 
 /// One page's render of a window: the numbers its elements carry, kept by
 /// path, and the elements it last sent, so the next render answers only what
@@ -51,7 +51,7 @@ pub struct Page {
 /// host draws it; `placed`, containers that place their children at rectangles of their own,
 /// which the page places at those rectangles rather than flowing them.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     framework,
     "the page's record of what it drew, never a view a person places"
 )]
@@ -417,7 +417,7 @@ fn call_into(element: &mut Element, node: &Composed) {
         face.attr("class", "tilo-call-face");
         face.attr("aria-hidden", "true");
         face.own
-            .push_str(&escape(&crate::widget::initials_for_name(name)));
+            .push_str(&escape(&tilo_ui_base::widget::initials_for_name(name)));
         element.children.push(face);
     }
     let mut picture = Element::new("canvas");
@@ -434,13 +434,13 @@ fn call_into(element: &mut Element, node: &Composed) {
             .is_some_and(|live| live.ends_with("/screen"));
         if screen {
             pill.own
-                .push_str(&crate::icons::glyph_svg(crate::icons::Icon::ScreenShare));
+                .push_str(&tilo_ui_base::icons::glyph_svg(tilo_ui_base::icons::Icon::ScreenShare));
         }
         let mut muted = Element::new("span");
         muted.attr("class", "tilo-call-muted");
         muted
             .own
-            .push_str(&crate::icons::glyph_svg(crate::icons::Icon::MicOff));
+            .push_str(&tilo_ui_base::icons::glyph_svg(tilo_ui_base::icons::Icon::MicOff));
         pill.children.push(muted);
         let mut words = Element::new("span");
         words.own.push_str(&escape(name));
@@ -757,7 +757,7 @@ impl Page {
                 if access.role == Role::Button && access.state.expanded.is_some() {
                     element
                         .own
-                        .push_str(&crate::icons::glyph_svg(crate::icons::Icon::ChevronDown));
+                        .push_str(&tilo_ui_base::icons::glyph_svg(tilo_ui_base::icons::Icon::ChevronDown));
                 }
             }
             (Shows::Call, _) => call_into(&mut element, node),
@@ -775,8 +775,8 @@ impl Page {
                 } else if let Some(glyph) = node.glyph.as_deref() {
                     // A glyph is a vector: stroked from the icon set's own sources where the host
                     // drew no picture of it.
-                    if let Some(icon) = crate::icons::Icon::from_name(glyph) {
-                        element.own.push_str(&crate::icons::glyph_svg(icon));
+                    if let Some(icon) = tilo_ui_base::icons::Icon::from_name(glyph) {
+                        element.own.push_str(&tilo_ui_base::icons::glyph_svg(icon));
                     }
                 } else if let Some(access) = semantics {
                     // Nothing drew its paint: what it says of itself is what the page shows.
@@ -854,7 +854,7 @@ impl Page {
             } else {
                 if let Some(icon) = node.icon {
                     // Its glyph stands before its words, as the app paints the row.
-                    element.own.push_str(&crate::icons::glyph_svg(icon));
+                    element.own.push_str(&tilo_ui_base::icons::glyph_svg(icon));
                 }
                 words_into(&mut element, node);
             }
@@ -925,8 +925,8 @@ impl Page {
         }
         .filter(|role| !native(element.tag, role));
         let live = access.live.map(|live| match live {
-            crate::a11y::Politeness::Assertive => "alert",
-            crate::a11y::Politeness::Polite => "status",
+            tilo_ui_base::a11y::Politeness::Assertive => "alert",
+            tilo_ui_base::a11y::Politeness::Polite => "status",
         });
         let role = match (live, role) {
             (Some(live), None | Some("group")) => Some(live),
@@ -1160,15 +1160,15 @@ fn words_into(element: &mut Element, access: &AccessNode) {
 
 /// What a row draws ([`AccessNode::drawn`]): its label as shown and its trailing text, with what
 /// it is called and what it says told to assistive technology alone, never drawn.
-fn drawn_into(element: &mut Element, access: &AccessNode, drawn: &crate::a11y::Drawn) {
+fn drawn_into(element: &mut Element, access: &AccessNode, drawn: &tilo_ui_base::a11y::Drawn) {
     // Its leading column, as the app paints the row: a toggle's check when it is on (its state,
     // not its glyph), its glyph, or nothing, kept so its label starts with the menu's others.
     let lead = match access.state.checked {
-        Some(on) => on.then_some(crate::icons::Icon::Check),
+        Some(on) => on.then_some(tilo_ui_base::icons::Icon::Check),
         None => access.icon,
     };
     match lead {
-        Some(icon) => element.own.push_str(&crate::icons::glyph_svg(icon)),
+        Some(icon) => element.own.push_str(&tilo_ui_base::icons::glyph_svg(icon)),
         None if drawn.gutter => element
             .own
             .push_str("<span class=\"tilo-glyph\" aria-hidden=\"true\"></span>"),
@@ -1186,7 +1186,7 @@ fn drawn_into(element: &mut Element, access: &AccessNode, drawn: &crate::a11y::D
     if access.state.expanded.is_some() {
         element
             .own
-            .push_str(&crate::icons::glyph_svg(crate::icons::Icon::ChevronRight));
+            .push_str(&tilo_ui_base::icons::glyph_svg(tilo_ui_base::icons::Icon::ChevronRight));
     } else if let Some(trailing) = drawn.trailing.as_deref().filter(|text| !text.is_empty()) {
         let _ = write!(
             element.own,
@@ -1323,7 +1323,7 @@ fn acts_within(node: &AccessNode) -> bool {
 fn pressable(access: &AccessNode) -> bool {
     !access.state.disabled
         && (access.action_target.is_some() && !matches!(access.role, Role::Window)
-            || crate::a11y::activation_role(access.role)
+            || tilo_ui_base::a11y::activation_role(access.role)
             || matches!(access.role, Role::Slider | Role::ComboBox))
 }
 
@@ -1502,10 +1502,10 @@ pub fn escape(text: &str) -> String {
 
 /// Where a surface over the window starts arriving, as the layer's style: about the point of it
 /// nearest the control that summoned it (its own centre when nothing did), smaller and a few
-/// pixels toward that control, as [`crate::motion::Appear`] starts it natively. The page's
+/// pixels toward that control, as [`tilo_ui_base::motion::Appear`] starts it natively. The page's
 /// stylesheet runs it to rest (`@starting-style`) on the theme's appear timing.
 fn appear_style(layer: &Composed) -> String {
-    use crate::motion::{Appear, Direction};
+    use tilo_ui_base::{motion::Appear, motion::Direction};
     use vello::kurbo::{Point, Rect};
     fn summoned(node: &Composed) -> Option<(&Composed, [f64; 2])> {
         node.appears_from
@@ -1521,7 +1521,7 @@ fn appear_style(layer: &Composed) -> String {
     let anchor = Point::new(anchor[0], anchor[1]);
     let origin = Appear::origin(surface, anchor);
     // The tokens' own motion, never reduced: the stylesheet decides whether it moves.
-    let moving = crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), false);
+    let moving = tilo_ui_base::tokens::EffectiveMotion::new(tilo_ui_base::tokens::Motion::default(), false);
     let start = Appear::coming(0.0, Direction::Enter, surface, anchor, moving);
     format!(
         "transform-origin:{:.1}px {:.1}px;--tilo-appear-from:translate({:.1}px,{:.1}px) scale({:.3});",
@@ -1532,8 +1532,8 @@ fn appear_style(layer: &Composed) -> String {
 /// The theme as the page's custom properties (`--tilo-*`): its colours, its type roles, its
 /// corners, its motion, and the `color-scheme` the browser draws its own parts in.
 #[must_use]
-pub fn theme_css(theme: &crate::Theme) -> String {
-    use crate::tokens::typography::TextRole;
+pub fn theme_css(theme: &tilo_ui_base::Theme) -> String {
+    use tilo_ui_base::tokens::typography::TextRole;
     let colors = &theme.tokens.colors;
     let look = if theme.document.is_dark() {
         "dark"
@@ -1543,12 +1543,12 @@ pub fn theme_css(theme: &crate::Theme) -> String {
     // The pointer's tints, as the app answers it on each ground it stands on.
     let tint = |ground, hover, pressed| {
         rgba(
-            crate::chrome::selection_tier_on(
+            tilo_ui_base::chrome::selection_tier_on(
                 theme,
-                crate::chrome::SelectionState {
+                tilo_ui_base::chrome::SelectionState {
                     hover,
                     pressed,
-                    ..crate::chrome::SelectionState::default()
+                    ..tilo_ui_base::chrome::SelectionState::default()
                 },
                 ground,
             )
@@ -1568,10 +1568,10 @@ pub fn theme_css(theme: &crate::Theme) -> String {
     ] {
         let style = theme.tokens.typography.style(role);
         let weight = match style.weight {
-            crate::text_render::TextWeight::Regular => 400,
-            crate::text_render::TextWeight::Medium => 500,
-            crate::text_render::TextWeight::Semibold => 600,
-            crate::text_render::TextWeight::Bold => 700,
+            tilo_ui_base::text_render::TextWeight::Regular => 400,
+            tilo_ui_base::text_render::TextWeight::Medium => 500,
+            tilo_ui_base::text_render::TextWeight::Semibold => 600,
+            tilo_ui_base::text_render::TextWeight::Bold => 700,
         };
         let _ = write!(
             type_roles,
@@ -1592,23 +1592,23 @@ pub fn theme_css(theme: &crate::Theme) -> String {
     // Reduced motion keeps the fades and lands the travel; a theme that holds still does neither.
     let motion = theme.motion();
     let fast = motion.tokens().durations.fast();
-    let (_, settle) = crate::motion::ControlChange::SHOW.css_entrance(motion, |p| p);
-    let appear = crate::motion::Appear::SPEC;
+    let (_, settle) = tilo_ui_base::motion::ControlChange::SHOW.css_entrance(motion, |p| p);
+    let appear = tilo_ui_base::motion::Appear::SPEC;
     let (appear_time, appear_curve, appear_props, held_curve, held_rise) = if motion.still()
         || motion.reduced()
     {
         let (time, curve) = appear.css_entrance(motion, |p| p);
         (time, curve.clone(), "opacity", curve, 0.0)
     } else {
-        let (time, opacity) = appear.css_entrance(motion, |p| crate::motion::Appear::arriving(p).0);
-        let (_, transform) = appear.css_entrance(motion, |p| crate::motion::Appear::arriving(p).1);
-        let (_, held) = appear.css_entrance(motion, crate::motion::Appear::holding);
+        let (time, opacity) = appear.css_entrance(motion, |p| tilo_ui_base::motion::Appear::arriving(p).0);
+        let (_, transform) = appear.css_entrance(motion, |p| tilo_ui_base::motion::Appear::arriving(p).1);
+        let (_, held) = appear.css_entrance(motion, tilo_ui_base::motion::Appear::holding);
         (
             time,
             format!("{opacity},{transform}"),
             "opacity,transform",
             held,
-            crate::motion::Appear::HELD_RISE,
+            tilo_ui_base::motion::Appear::HELD_RISE,
         )
     };
     let motion_props = format!(
@@ -1626,9 +1626,9 @@ pub fn theme_css(theme: &crate::Theme) -> String {
     // A floating panel's edge is the theme's own (`chrome::panel_border`), and a danger row's ink
     // is the danger colour made legible on the panel, as the app paints them.
     let danger = colors.ink_on_any(
-        &[crate::chrome::panel_ground(theme)],
+        &[tilo_ui_base::chrome::panel_ground(theme)],
         colors.semantic.danger,
-        crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+        tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
     );
     // A button's face is the app's own: its edge (high contrast's hairline, else none) and the
     // fill it is held at while the menu it opens stands open.
@@ -1647,12 +1647,12 @@ pub fn theme_css(theme: &crate::Theme) -> String {
     // A floating panel stands on the app's panel ground, rounds by its radius, and a menu's rule
     // is the separator the app derives on that ground. An icon's stroke is the theme's, in pixels
     // at every size, as the app strokes it.
-    let ground = crate::chrome::panel_ground(theme);
+    let ground = tilo_ui_base::chrome::panel_ground(theme);
     let floating = format!(
         "--tilo-floating-ground:{};--tilo-floating-radius:{}px;--tilo-menu-rule:{};--tilo-icon-stroke:{}px;",
         rgba(ground),
         crate::widget::floating_surface::radius(theme),
-        rgba(crate::surface::edge_on(ground)),
+        rgba(tilo_ui_base::surface::edge_on(ground)),
         theme.tokens.icon_stroke_px,
     );
     let menu_props = format!(
@@ -1663,7 +1663,7 @@ pub fn theme_css(theme: &crate::Theme) -> String {
         crate::widget::context_menu::label_inset(theme) - inset,
         tokens.metrics.icon_sm,
         tokens.spacing.s2,
-        rgba(crate::chrome::panel_border(theme)),
+        rgba(tilo_ui_base::chrome::panel_border(theme)),
         rgba(danger),
     );
     format!(
@@ -1691,7 +1691,7 @@ pub fn theme_css(theme: &crate::Theme) -> String {
 /// its head, `body` (what [`Page::render`] answered) and `tail` (its script) in
 /// its body.
 #[must_use]
-pub fn document(title: &str, theme: &crate::Theme, body: &str, tail: &str) -> String {
+pub fn document(title: &str, theme: &tilo_ui_base::Theme, body: &str, tail: &str) -> String {
     format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>{}{PAGE_CSS}</style></head><body>{body}{tail}</body></html>",
         escape(title),

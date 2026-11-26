@@ -17,7 +17,7 @@ use i_overlay::float::simplify::SimplifyShape;
 use i_overlay::float::single::SingleFloatOverlay;
 use i_overlay::mesh::float::outline::offset::OutlineOffset;
 use i_overlay::mesh::float::style::{LineJoin, OutlineStyle};
-use tilo_ui::num::f64_of_usize;
+use tilo_ui_base::num::f64_of_usize;
 use tilo_ui::vello::kurbo::{
     Affine, BezPath, ParamCurve as _, ParamCurveNearest as _, PathEl, PathSeg, Point, Rect,
     Shape as _,

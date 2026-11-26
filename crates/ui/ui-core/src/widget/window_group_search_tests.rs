@@ -2,7 +2,7 @@
 //! is typed reaches the app's document, and closing gives it back untouched.
 
 use super::*;
-use crate::synthetic_input::{char_key, named_key};
+use tilo_ui_base::{synthetic_input::char_key, synthetic_input::named_key};
 use crate::testing::Dispatch;
 use crate::widget::find_bar::{FindMatch, FindOptions, Findable};
 use crate::widget::{InPlace, SearchHandoff, SearchReach};
@@ -44,7 +44,7 @@ impl Findable for Draft {
 }
 
 impl Widget for Draft {
-    crate::provides!(dyn Findable);
+    tilo_ui_base::provides!(dyn Findable);
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -54,7 +54,7 @@ impl Widget for Draft {
         taffy.widget_leaf(Style::default(), node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
     }
     fn get_rect(&self) -> Rect {
         self.rect
@@ -189,7 +189,7 @@ fn a_window_with_nothing_to_search_in_place_opens_the_platform_search_for_its_ap
         1,
         WindowWidth::Normal,
     );
-    group.open_search(crate::tokens::MotionSource::Pointer);
+    group.open_search(tilo_ui_base::tokens::MotionSource::Pointer);
     assert!(!group.window_search().is_open());
     assert_eq!(
         group
@@ -230,7 +230,7 @@ fn an_app_in_its_own_process_gets_the_query_and_the_bar_shows_its_count() {
         "nothing new"
     );
 
-    group.open_search(crate::tokens::MotionSource::Pointer);
+    group.open_search(tilo_ui_base::tokens::MotionSource::Pointer);
     assert!(group.window_search().is_open() && group.window_search().is_remote());
     assert_eq!(group.window_search().in_place(), InPlace::List);
     assert_eq!(
@@ -280,7 +280,7 @@ fn an_app_in_its_own_process_with_nothing_to_search_in_place_opens_the_platform_
     use crate::window_toolbar::WindowOffer;
     let mut group = app_window_in_its_own_process();
     group.set_tab_window_offer(1, Some(WindowOffer::default()));
-    group.open_search(crate::tokens::MotionSource::Pointer);
+    group.open_search(tilo_ui_base::tokens::MotionSource::Pointer);
     assert!(!group.window_search().is_open());
     assert_eq!(
         group
@@ -302,30 +302,30 @@ fn laid_out_window(group: &mut WindowGroup) {
         .compute_layout(root, Size::MAX_CONTENT)
         .expect("the window lays out");
     group.apply_layout(&taffy, node, Point::ZERO);
-    group.draw(&mut crate::draw::DrawCtx::new(
+    group.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut Scene::new(),
         Affine::IDENTITY,
         &mut TextRenderer::new(),
         &theme,
-        crate::presence::PresenceCtx::empty().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
     ));
 }
 
 fn bar_top_layer_tags(group: &mut WindowGroup) -> usize {
     let mut scene = Scene::new();
-    group.draw_bar_popups(&mut crate::draw::DrawCtx::new(
+    group.draw_bar_popups(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut TextRenderer::new(),
         &Theme::dark(),
-        crate::presence::PresenceCtx::empty().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
     ));
     scene.encoding().draw_tags.len()
 }
 
 #[test]
 fn a_host_that_paints_the_bars_top_layer_itself_paints_the_open_search_options() {
-    use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
+    use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release};
     let mut group = searchable_window();
     group.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
     let mut find = Dispatch::new().modifiers(ModifiersState::CONTROL);

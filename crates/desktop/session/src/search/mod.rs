@@ -1290,7 +1290,7 @@ impl SessionSearch {
     /// message read: what its apps published (agents, people, conversations; the most recent
     /// first), the people present there, every person its governance lists and every agent it
     /// lists. Each member once, by kind and id, never the person searching, named by the
-    /// one rule every surface names a member by ([`ui::presence::person_label`]).
+    /// one rule every surface names a member by ([`tilo_ui_base::presence::person_label`]).
     pub(crate) fn recipients(&self, workspace: &str) -> Vec<ui::floating_surface::Recipient> {
         use ui::floating_surface::Recipient;
         use ui::floating_surface::RecipientKind::{Agent, Conversation, Person};
@@ -1344,7 +1344,7 @@ impl SessionSearch {
                 .iter_mut()
                 .find(|kept| kept.kind == recipient.kind && kept.id == recipient.id)
             {
-                Some(kept) if ui::presence::shown_name(&kept.name).is_none() => {
+                Some(kept) if tilo_ui_base::presence::shown_name(&kept.name).is_none() => {
                     kept.name = recipient.name;
                 }
                 Some(_) => {}
@@ -1352,7 +1352,7 @@ impl SessionSearch {
             }
         }
         for recipient in out.iter_mut().filter(|r| r.kind != Conversation) {
-            recipient.name = ui::presence::person_label(&recipient.name);
+            recipient.name = tilo_ui_base::presence::person_label(&recipient.name);
         }
         out
     }

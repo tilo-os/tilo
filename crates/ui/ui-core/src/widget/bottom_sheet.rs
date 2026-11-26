@@ -8,10 +8,10 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, KeyEvent, MouseButton, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::a11y::{AccessNode, AccessState, Action, Role};
-use crate::motion::{self, Direction, MotionValue, Snap};
-use crate::theme::Theme;
-use crate::tokens::{EffectiveMotion, MotionSource};
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Action, a11y::Role};
+use tilo_ui_base::{motion, motion::Direction, motion::MotionValue, motion::Snap};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum SheetDetent {
@@ -44,7 +44,7 @@ impl SheetDetent {
 
     #[must_use]
     pub fn label(self) -> String {
-        crate::i18n::widget_format(
+        tilo_ui_base::i18n::widget_format(
             match self {
                 Self::Peek => "widget-sheet-peek",
                 Self::Half => "widget-sheet-half",
@@ -347,7 +347,7 @@ impl BottomSheet {
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &crate::widget::EventCtx<'_>,
+        ctx: &tilo_ui_base::widget::EventCtx<'_>,
         motion: EffectiveMotion,
     ) -> SheetInput {
         match event {
@@ -443,7 +443,7 @@ impl BottomSheet {
             return SheetInput::Ignored;
         };
         drag.path.push(crate::time::now(), drag.from_y - y);
-        let slop = f64::from(crate::tokens::Metrics::BASE.click_slop);
+        let slop = f64::from(tilo_ui_base::tokens::Metrics::BASE.click_slop);
         drag.moved |= (y - drag.from_y).abs() > slop;
         if !drag.moved {
             return SheetInput::Taken { moved: false };
@@ -495,7 +495,7 @@ impl BottomSheet {
 
     pub fn accessibility(&self, name: &str, target: &str) -> AccessNode {
         let grip = AccessNode::new(Role::Slider)
-            .with_name(crate::i18n::widget_format("widget-sheet-height", &[]))
+            .with_name(tilo_ui_base::i18n::widget_format("widget-sheet-height", &[]))
             .with_value(self.detent.label())
             .with_action_target(target)
             .with_hashed_key(target)
@@ -531,7 +531,7 @@ impl BottomSheet {
     }
 
     pub fn paint(&self, scene: &mut Scene, transform: Affine, theme: &Theme) -> Theme {
-        let local = theme.on_ground(crate::chrome::panel_ground(theme));
+        let local = theme.on_ground(tilo_ui_base::chrome::panel_ground(theme));
         let panel = self.geometry.panel;
         if panel.height() <= 0.0 {
             return local;
@@ -547,8 +547,8 @@ impl BottomSheet {
             transform,
             &clip,
         );
-        crate::surface::floating_shadow(scene, transform, shape, radius, 1.0, theme);
-        crate::surface::panel(scene, transform, shape, radius, theme);
+        tilo_ui_base::surface::floating_shadow(scene, transform, shape, radius, 1.0, theme);
+        tilo_ui_base::surface::panel(scene, transform, shape, radius, theme);
         scene.pop_layer();
         let grip = self.geometry.grip;
         let s = theme.tokens.spacing;

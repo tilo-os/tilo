@@ -2,10 +2,10 @@
 
 use super::super::tests::lay_out_at_width;
 use super::super::{TabBar, TabDescriptor};
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::Widget;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
 use automerge::AutoCommit;
 use tilo_desktop_model::ownership::OpenedBy;
 use vello::Scene;
@@ -21,7 +21,7 @@ fn opened(title: &str) -> OpenedBy {
 }
 
 fn draw(bar: &mut TabBar, tr: &mut TextRenderer, theme: &Theme) {
-    bar.draw(&mut crate::draw::DrawCtx::new(
+    bar.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut Scene::new(),
         Affine::IDENTITY,
         tr,
@@ -84,8 +84,8 @@ tilo_test_env::scenario! {
         assert!(Widget::perform_semantic_action(
             &mut bar,
             super::OPENED_BY_TARGET,
-            &crate::a11y::Action::Activate,
-            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+            &tilo_ui_base::a11y::Action::Activate,
+            &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
             &automerge::ROOT,
         ));
         assert_eq!(bar.take_opened_by_press(), Some((1, mark.run.clone())));
@@ -132,7 +132,7 @@ tilo_test_env::scenario! {
     phase the_agents_mark_follows_an_apps_location_in_its_bar;
     {
         use crate::window_toolbar::{ToolbarAction, ToolbarLocation, WindowToolbar};
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let theme = Theme::light().with_reduce_motion(true);
         let mut tr = TextRenderer::new();
         let mut bar = TabBar::new("slots", vec![TabDescriptor::new(1, "Agenda")], 1);
@@ -177,7 +177,7 @@ tilo_test_env::scenario! {
     // the agent's name never stand on each other.
     {
         use crate::window_toolbar::{ToolbarAction, ToolbarLocation, WindowToolbar};
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let theme = Theme::light().with_reduce_motion(true);
         let mut tr = TextRenderer::new();
         let mut bar = TabBar::new("edited", vec![TabDescriptor::new(1, "Letter")], 1);
@@ -207,7 +207,7 @@ tilo_test_env::scenario! {
             .into_iter()
             .find(|label| label.widget == "BarLocation")
             .expect("the location is painted");
-        let edited = crate::i18n::I18nManager::lookup_plain("window-toolbar-edited");
+        let edited = tilo_ui_base::i18n::I18nManager::lookup_plain("window-toolbar-edited");
         assert!(
             location.text.ends_with(&edited),
             "the edited word is shown: {location:?}"
@@ -224,7 +224,7 @@ tilo_test_env::scenario! {
     // One agent is one colour: its mark beside a window is drawn as its face is,
     // from the agent, never from the session that happened to open the window.
     {
-        let face = crate::presence::member_color(&::collaboration::permissions::MemberId::agent("scribe", "ada"));
+        let face = tilo_ui_base::presence::member_color(&::collaboration::permissions::MemberId::agent("scribe", "ada"));
         let face = vello::peniko::Color::from_rgb8(face.0, face.1, face.2);
         assert_eq!(super::agent_colour(&opened("")), face);
     }

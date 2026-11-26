@@ -8,30 +8,30 @@
     reason = "in a test these are the assertion"
 )]
 
-use super::testing::*;
-use super::*;
+use tilo_ui_base::component::testing::*;
+use tilo_ui_base::component::*;
 use crate::headless::Driver;
 use crate::testing::harness;
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 fn column(header: &str) -> Node {
-    Node::new("DataTableColumn", header, &crate::Intents::default()).prop("header", text(header))
+    Node::new("DataTableColumn", header, &tilo_ui_base::Intents::default()).prop("header", text(header))
 }
 
 fn cell_node(column: &str, value: &str) -> Node {
-    Node::new("DataTableCell", column, &crate::Intents::default())
+    Node::new("DataTableCell", column, &tilo_ui_base::Intents::default())
         .prop("column", text(column))
         .prop("value", text(value))
 }
 
-fn row(queue: &crate::Intents<Fired>, name: &str, item: &str) -> Node {
+fn row(queue: &tilo_ui_base::Intents<Fired>, name: &str, item: &str) -> Node {
     Node::new("DataTableRow", item, queue)
         .prop("item", resource(item))
         .holding("cells", cell_node("Name", name))
         .holding("cells", cell_node("State", "ok"))
 }
 
-fn table_node(queue: &crate::Intents<Fired>) -> Node {
+fn table_node(queue: &tilo_ui_base::Intents<Fired>) -> Node {
     Node::new("DataTable", "songs", queue)
         .holding("columns", column("Name"))
         .holding("columns", column("State"))
@@ -46,7 +46,7 @@ tilo_test_env::scenario! {
 
     phase a_data_table_reads_its_columns_and_rows_and_reports_the_resource_a_row_shows;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut node = table_node(&queue)
             .prop("name", text("Songs"))
             .prop("selectable", Value::Bool(true));
@@ -68,7 +68,7 @@ tilo_test_env::scenario! {
 
     phase a_table_row_press_reports_the_resource_it_stands_for;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut node = table_node(&queue).prop("selectable", Value::Bool(true));
         let props = crate::widget::DataTableProps::from_source(&mut node).unwrap();
         let mut host = harness(crate::widget::DescribedTable::from_props("songs", props));
@@ -88,7 +88,7 @@ tilo_test_env::scenario! {
 
     phase a_table_with_changed_rows_and_a_changed_selection_is_taken_in_place;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut node = table_node(&queue);
         let props = crate::widget::DataTableProps::from_source(&mut node).unwrap();
         let mut table = crate::widget::DescribedTable::from_props("songs", props);
@@ -113,7 +113,7 @@ tilo_test_env::scenario! {
 
     phase a_conversation_list_reads_its_lines_and_keeps_them_in_place;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let line = |item: &str, said: &str| {
             Node::new("ConversationEntry", item, &queue)
                 .prop("item", resource(item))
@@ -135,7 +135,7 @@ tilo_test_env::scenario! {
 
     phase a_card_grid_reads_its_cards_and_a_press_reports_the_resource_it_shows;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let card = |item: &str| {
             Node::new("CardGridCard", item, &queue)
                 .prop("item", resource(item))
@@ -170,7 +170,7 @@ tilo_test_env::scenario! {
     // it. A card that says something else changes on the card where it is.
     phase a_card_grid_takes_its_cards_in_place_while_they_are_the_cards_it_shows;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let card = |item: &str, title: &str| {
             Node::new("CardGridCard", item, &queue)
                 .prop("item", resource(item))
@@ -240,7 +240,7 @@ tilo_test_env::scenario! {
 
     phase a_tree_view_reads_its_nodes_and_reports_the_resource_a_node_shows;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let node_part = |label: &str, parent: Option<&str>, item: &str| {
             let mut part = Node::new("TreeViewNode", item, &queue)
                 .prop("label", text(label))
@@ -285,7 +285,7 @@ tilo_test_env::scenario! {
 
     phase a_tree_view_takes_its_expansion_and_selection_in_place;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let node_part = |label: &str, parent: Option<&str>, item: &str| {
             let mut part = Node::new("TreeViewNode", item, &queue)
                 .prop("label", text(label))
@@ -326,7 +326,7 @@ tilo_test_env::scenario! {
 
     phase an_activity_timeline_reads_its_changes_and_reports_the_one_reverted;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let entry = |item: &str, summary: &str| {
             Node::new("ActivityEntry", item, &queue)
                 .prop("item", resource(item))
@@ -357,7 +357,7 @@ tilo_test_env::scenario! {
 
     phase a_timeline_among_a_pages_content_is_as_tall_as_its_rows;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let entry = |item: &str, summary: &str| {
             Node::new("ActivityEntry", item, &queue)
                 .prop("item", resource(item))
@@ -380,7 +380,7 @@ tilo_test_env::scenario! {
 
     phase a_data_table_holds_only_table_parts;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         assert_eq!(
             <Vec<crate::widget::DataTableColumnProps> as PartType>::accepts(),
             Accepts::Component("DataTableColumn".into())

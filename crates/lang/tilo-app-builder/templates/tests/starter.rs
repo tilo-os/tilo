@@ -1,5 +1,5 @@
 use generated_app::{App, Greeting};
-use ui::a11y::{Action, Role};
+use tilo_ui_base::{a11y::Action, a11y::Role};
 use ui::headless::SemanticExpectation;
 use ui::prelude::{HeadlessApp, Invoke, Replica};
 
@@ -38,7 +38,7 @@ fn the_name_field_edits_the_greeting() {
 
 #[test]
 fn a_viewer_cannot_edit() {
-    let mut app = HeadlessApp::<App>::with_role(ui::Role::Viewer).expect("the app opens");
+    let mut app = HeadlessApp::<App>::with_role(tilo_ui_base::Role::Viewer).expect("the app opens");
     assert!(app.invoke(name("Eve")).is_err());
     assert_eq!(app.state().name, "");
 }

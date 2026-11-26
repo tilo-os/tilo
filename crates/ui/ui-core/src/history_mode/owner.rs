@@ -27,7 +27,7 @@ pub(crate) enum OwnedDocumentPublication {
     },
 }
 
-pub(crate) use crate::control_domain::ResourceOwnerLifetime;
+pub(crate) use tilo_ui_base::control_domain::ResourceOwnerLifetime;
 
 /// Captured by the actual mounted owner; callers cannot manufacture ownership.
 #[derive(Clone)]
@@ -355,7 +355,7 @@ impl HistoryOwner {
         self.store_checkout().1.kind.clone()
     }
 
-    pub(crate) fn broker_route(&self) -> Option<crate::collaboration::RouteSpec> {
+    pub(crate) fn broker_route(&self) -> Option<tilo_ui_base::collaboration::RouteSpec> {
         self.validate().ok()?;
         match &self.0 {
             OwnerKind::Component(binding) => binding.broker_route(),
@@ -367,7 +367,7 @@ impl HistoryOwner {
     /// Merge a peer's `mutation` into the record.
     pub(crate) fn merge_remote(
         &self,
-        mut incoming: crate::collaboration::Incoming<'_>,
+        mut incoming: tilo_ui_base::collaboration::Incoming<'_>,
         outer: &mut AutoCommit,
     ) -> Result<super::routes::MergedRemote, super::routes::RemoteApplyError> {
         self.validate()
@@ -386,11 +386,11 @@ impl HistoryOwner {
 
     pub(crate) fn with_restore_authority<T>(
         &self,
-        fallback_authority: &crate::permissions::PermissionContext,
-        fallback_author: &crate::permissions::MemberId,
+        fallback_authority: &tilo_ui_base::permissions::PermissionContext,
+        fallback_author: &tilo_ui_base::permissions::MemberId,
         operation: impl FnOnce(
-            &crate::permissions::PermissionContext,
-            &crate::permissions::MemberId,
+            &tilo_ui_base::permissions::PermissionContext,
+            &tilo_ui_base::permissions::MemberId,
         ) -> T,
     ) -> T {
         match &self.0 {
@@ -406,7 +406,7 @@ impl HistoryOwner {
     /// stored. Whether the record changed; why not, in words a person reads.
     pub(crate) fn run_history_edit(
         &self,
-        root: &mut dyn crate::widget::Widget,
+        root: &mut dyn tilo_ui_base::widget::Widget,
         outer: &mut AutoCommit,
         run: &HistoryRun<'_>,
     ) -> Result<bool, String> {
@@ -468,7 +468,7 @@ pub(crate) struct HistoryRun<'a> {
     pub(crate) edit: HistoryEdit,
     pub(crate) context: tilo_actions::ActionContext,
     pub(crate) current: &'a [automerge::ChangeHash],
-    pub(crate) author: &'a crate::permissions::MemberId,
+    pub(crate) author: &'a tilo_ui_base::permissions::MemberId,
 }
 
 impl HistoryRun<'_> {
@@ -479,7 +479,7 @@ impl HistoryRun<'_> {
 
     /// Why a record whose app does not decode the history verbs keeps its versions.
     pub(crate) fn unsupported() -> String {
-        crate::i18n::I18nManager::lookup_plain("history-restore-unsupported")
+        tilo_ui_base::i18n::I18nManager::lookup_plain("history-restore-unsupported")
     }
 
     /// Run `action`, the verb as the record's own types decode it, on `doc` through the executor

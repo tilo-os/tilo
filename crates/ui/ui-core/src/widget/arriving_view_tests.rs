@@ -1,8 +1,8 @@
 use super::*;
-use crate::arriving::{GRACE, MIN_SHOWN, frame_budget};
+use tilo_ui_base::{arriving::GRACE, arriving::MIN_SHOWN, arriving::frame_budget};
 use crate::launch::ShotFrame;
 use crate::time::{Duration, testing::with_monotonic_time};
-use crate::widget::Spacer;
+use tilo_ui_base::widget::Spacer;
 
 const SHAPE: SkeletonShape = SkeletonShape::Text { lines: 2 };
 
@@ -20,7 +20,7 @@ fn frame_at(frame: &mut ShotFrame, view: &mut dyn Widget, at: Instant) {
 
 fn content_height(frame: &mut ShotFrame) -> f32 {
     let theme = frame.theme.clone();
-    crate::num::f32_of_f64(SkeletonFace::new(SHAPE).height(&mut frame.text, &theme, 400.0))
+    tilo_ui_base::num::f32_of_f64(SkeletonFace::new(SHAPE).height(&mut frame.text, &theme, 400.0))
 }
 
 fn shown(view: &dyn Widget) -> String {

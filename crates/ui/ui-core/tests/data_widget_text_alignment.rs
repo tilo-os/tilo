@@ -28,19 +28,16 @@
 use std::collections::HashMap;
 
 use tilo_ui::State;
-use tilo_ui::TextRole;
-use tilo_ui::chrome::{disclosure_gutter, row_bleed};
-use tilo_ui::component::{Described, ResourceId};
+use tilo_ui_base::TextRole;
+use tilo_ui_base::{chrome::disclosure_gutter, chrome::row_bleed};
+use tilo_ui_base::{component::Described, component::ResourceId};
 use tilo_ui::headless::{Driver, InspectionNode};
-use tilo_ui::icons::Icon;
+use tilo_ui_base::icons::Icon;
 use tilo_ui::search::{SearchGroup, SearchResult};
-use tilo_ui::theme::Theme;
+use tilo_ui_base::theme::Theme;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
-use tilo_ui::widget::{
-    Banner, Button, Chart, Column, DescribedTreeView, Element, ListRowFace, SearchResultsView,
-    Section, SectionHeader, Series, StatGroup, StatTile, Text, TreeViewNodeProps, TreeViewProps,
-    Trend,
-};
+use tilo_ui::{widget::Banner, widget::Button, widget::Chart, widget::Column, widget::DescribedTreeView, widget::ListRowFace, widget::SearchResultsView, widget::Section, widget::SectionHeader, widget::Series, widget::StatGroup, widget::StatTile, widget::Text, widget::TreeViewNodeProps, widget::TreeViewProps, widget::Trend};
+use tilo_ui_base::widget::Element;
 use vello::kurbo::Rect;
 
 // Pinned widget defaults the regions below are built from.
@@ -401,7 +398,7 @@ fn data_rows_centre_their_text_and_scale_once() {
             // The row a tree draws is an outline's row: the tree's own row token, shorter
             // than a list's row of the same theme, holding a label-size title.
             // Measured the way the row measures itself: at the theme's own text scale.
-            let row_h = tilo_ui::text_render::with_layout_renderer(&theme, |text| {
+            let row_h = tilo_ui_base::text_render::with_layout_renderer(&theme, |text| {
                 ListRowFace::new("crates").outline().height(text, &theme)
             });
             // The list leads every row one step, where the chevron that folds it hangs: the

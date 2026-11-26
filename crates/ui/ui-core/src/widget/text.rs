@@ -1,18 +1,14 @@
-use crate::i18n::ArgValue;
-use crate::i18n::widget_text;
+use tilo_ui_base::i18n::ArgValue;
+use tilo_ui_base::i18n::widget_text;
 #[cfg(feature = "model")]
-use crate::permissions::PermissionScope;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::text_render::{
-    FIGURE_TAGS, FontChoice, HangingPunctuation, Hyphenation, NumericStyle, OpenTypeTag,
-    OpticalSizing, ParagraphAlign, PreparedText, TextKind, TextLayoutConstraints, TextLayoutEngine,
-    TextRenderer, TextScaling, TextStyle, TextWeight, TextWrapMode,
-};
-use crate::theme::Theme;
-use crate::tokens::{TextRole, Typography};
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
-use crate::widget::{AppModel, ModelPath};
+use tilo_ui_base::permissions::PermissionScope;
+use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
+use tilo_ui_base::{text_render::FIGURE_TAGS, text_render::FontChoice, text_render::HangingPunctuation, text_render::Hyphenation, text_render::NumericStyle, text_render::OpenTypeTag, text_render::OpticalSizing, text_render::ParagraphAlign, text_render::PreparedText, text_render::TextKind, text_render::TextLayoutConstraints, text_render::TextLayoutEngine, text_render::TextRenderer, text_render::TextScaling, text_render::TextStyle, text_render::TextWeight, text_render::TextWrapMode};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{tokens::TextRole, tokens::Typography};
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Affine, Point};
@@ -31,11 +27,11 @@ type DynamicTextSource = Box<dyn FnMut() -> Option<String>>;
 type DocumentTextSource = Box<dyn FnMut(&AutoCommit, &ObjId) -> String>;
 
 /// Top edge of one text line centred in a band — the shared rule from
-/// [`crate::text_metrics`], re-exported here because [`super::Button`] and
+/// [`tilo_ui_base::text_metrics`], re-exported here because [`super::Button`] and
 /// the other controls learned it from this module. Pass the `.1` of
 /// [`TextRenderer::measure`] / [`TextRenderer::measure_style`], never the
 /// font size.
-pub use crate::text_metrics::centered_text_top;
+pub use tilo_ui_base::text_metrics::centered_text_top;
 
 #[cfg(test)]
 pub(crate) fn assert_glyph_run_centred_in_band(
@@ -138,12 +134,12 @@ pub struct Text {
     /// holds its longest word's width, so a title in a narrow card ends in an
     /// ellipsis rather than making the card taller.
     truncate: bool,
-    live: Option<crate::a11y::Politeness>,
+    live: Option<tilo_ui_base::a11y::Politeness>,
     layout_engine: Option<Box<dyn TextLayoutEngine>>,
     engine_revision: u64,
     color: Option<vello::peniko::Color>,
     dimmed: bool,
-    tone: Option<super::Tone>,
+    tone: Option<tilo_ui_base::widget::Tone>,
     access: TextAccess,
     /// Whether assistive technology may move focus to these words: what a
     /// sheet asks, which a person reads whole before answering.
@@ -157,7 +153,7 @@ pub struct Text {
     edits: Option<(String, String)>,
     #[cfg(feature = "model")]
     permission_scope: Option<PermissionScope>,
-    face: crate::widget::CachedPaint,
+    face: tilo_ui_base::widget::CachedPaint,
     drawn_color: Option<vello::peniko::Color>,
     /// Whether the label needs drawing again, flipped on when the *size*
     /// of `self.rect` changes: a move (`Scrollable` offsetting its
@@ -181,7 +177,7 @@ impl Text {
     /// Box this widget in the SDK so thin apps reuse its shared implementation.
     /// This keeps the widget's vtable instantiation out of the app.
     #[must_use]
-    pub fn into_widget(self) -> Box<dyn crate::widget::Widget> {
+    pub fn into_widget(self) -> Box<dyn tilo_ui_base::widget::Widget> {
         Box::new(self)
     }
 
@@ -191,10 +187,10 @@ impl Text {
             test_id: None,
             source: None,
             args: Vec::new(),
-            i18n_revision: crate::i18n::I18nManager::revision(),
+            i18n_revision: tilo_ui_base::i18n::I18nManager::revision(),
             role: TextRole::Body,
             modifiers: TextModifiers::default(),
-            style: crate::tokens::typography::stock().style(TextRole::Body),
+            style: tilo_ui_base::tokens::typography::stock().style(TextRole::Body),
             prepared_input: None,
             renderer_epoch: None,
             heading_level: None,
@@ -214,7 +210,7 @@ impl Text {
             edits: None,
             #[cfg(feature = "model")]
             permission_scope: None,
-            face: crate::widget::CachedPaint::default(),
+            face: tilo_ui_base::widget::CachedPaint::default(),
             drawn_color: None,
             dirty: true,
             layout_dirty: false,
@@ -227,13 +223,13 @@ impl Text {
         if self.spoken.is_some() || self.source.is_some() || !self.args.is_empty() {
             return false;
         }
-        let revision = crate::i18n::I18nManager::revision();
+        let revision = tilo_ui_base::i18n::I18nManager::revision();
         if let Some((seen, interface)) = self.interface.get()
             && seen == revision
         {
             return interface;
         }
-        let interface = crate::i18n::I18nManager::has_message(&self.label);
+        let interface = tilo_ui_base::i18n::I18nManager::has_message(&self.label);
         self.interface.set(Some((revision, interface)));
         interface
     }
@@ -252,17 +248,17 @@ impl Text {
     }
 
     pub fn from_state<T: 'static>(
-        state: &crate::LocalState<T>,
+        state: &tilo_ui_base::LocalState<T>,
         mut render: impl FnMut(&T) -> String + 'static,
     ) -> Self {
         let initial = state.with(&mut render);
         let state = state.clone();
         let mut observed_revision = state.revision();
-        let mut observed_i18n_revision = crate::i18n::I18nManager::revision();
+        let mut observed_i18n_revision = tilo_ui_base::i18n::I18nManager::revision();
         let mut text = Self::new(&initial);
         text.source = Some(TextSource::Local(Box::new(move || {
             let revision = state.revision();
-            let i18n_revision = crate::i18n::I18nManager::revision();
+            let i18n_revision = tilo_ui_base::i18n::I18nManager::revision();
             if revision == observed_revision && i18n_revision == observed_i18n_revision {
                 return None;
             }
@@ -319,7 +315,7 @@ impl Text {
                 .iter()
                 .map(|(n, v)| (n.as_str(), v.clone()))
                 .collect();
-            crate::i18n::I18nManager::format(&self.label, &args)
+            tilo_ui_base::i18n::I18nManager::format(&self.label, &args)
         }
     }
 
@@ -350,7 +346,7 @@ impl Text {
     }
 
     fn observe_i18n_revision(&mut self) {
-        let revision = crate::i18n::I18nManager::revision();
+        let revision = tilo_ui_base::i18n::I18nManager::revision();
         if revision == self.i18n_revision {
             return;
         }
@@ -364,7 +360,7 @@ impl Text {
     }
 
     fn shows_stale_copy(&self) -> bool {
-        if self.i18n_revision == crate::i18n::I18nManager::revision() {
+        if self.i18n_revision == tilo_ui_base::i18n::I18nManager::revision() {
             return false;
         }
         let shown = self
@@ -405,13 +401,13 @@ impl Text {
                 style
                     .font_features
                     .capacity()
-                    .saturating_mul(std::mem::size_of::<crate::text_render::OpenTypeFeature>()),
+                    .saturating_mul(std::mem::size_of::<tilo_ui_base::text_render::OpenTypeFeature>()),
             )
             .saturating_add(
                 style
                     .font_variations
                     .capacity()
-                    .saturating_mul(std::mem::size_of::<crate::text_render::FontVariation>()),
+                    .saturating_mul(std::mem::size_of::<tilo_ui_base::text_render::FontVariation>()),
             );
         if self.layout_engine.is_none()
             && !matches!(style.hyphenation, Hyphenation::Custom(_))
@@ -474,7 +470,7 @@ impl Text {
     }
 
     fn restyle_default(&mut self) {
-        let style = self.resolve(crate::tokens::typography::stock());
+        let style = self.resolve(tilo_ui_base::tokens::typography::stock());
         self.set_style(style);
     }
 
@@ -572,7 +568,7 @@ impl Text {
 
     /// Mark this text as a live accessibility region.
     ///
-    /// Use [`crate::a11y::Politeness::Assertive`] for feedback that must be
+    /// Use [`tilo_ui_base::a11y::Politeness::Assertive`] for feedback that must be
     /// heard before the person can proceed (for example, a rejected login),
     /// and `Polite` for non-blocking progress. This does not move focus or
     /// change visual styling.
@@ -586,7 +582,7 @@ impl Text {
     }
 
     #[must_use]
-    pub fn with_live(mut self, politeness: crate::a11y::Politeness) -> Self {
+    pub fn with_live(mut self, politeness: tilo_ui_base::a11y::Politeness) -> Self {
         self.live = Some(politeness);
         self
     }
@@ -611,7 +607,7 @@ impl Text {
     #[must_use]
     pub fn with_hyphenator(
         self,
-        hyphenator: std::sync::Arc<dyn crate::text_render::Hyphenator>,
+        hyphenator: std::sync::Arc<dyn tilo_ui_base::text_render::Hyphenator>,
     ) -> Self {
         self.modify(|m| m.layered = m.layered.clone().with_hyphenator(hyphenator))
     }
@@ -704,7 +700,7 @@ impl Text {
 
     /// Elide it at the width it is given rather than wrap wider: it never holds its longest
     /// word's width, so its box may shrink to nothing and what does not fit ends in a
-    /// [`ELLIPSIS`](crate::text_render::ELLIPSIS). One line, unless [`Self::with_lines`] says
+    /// [`ELLIPSIS`](tilo_ui_base::text_render::ELLIPSIS). One line, unless [`Self::with_lines`] says
     /// how many.
     #[must_use]
     pub fn with_truncate(mut self, truncate: bool) -> Self {
@@ -793,7 +789,7 @@ impl Text {
 
     #[must_use]
     pub(crate) fn danger(self) -> Self {
-        self.tone(super::Tone::Danger)
+        self.tone(tilo_ui_base::widget::Tone::Danger)
     }
 
     #[must_use]
@@ -809,7 +805,7 @@ impl Text {
     }
 
     #[must_use]
-    pub fn tone(mut self, tone: super::Tone) -> Self {
+    pub fn tone(mut self, tone: tilo_ui_base::widget::Tone) -> Self {
         self.color = None;
         self.dimmed = false;
         self.tone = Some(tone);
@@ -852,10 +848,10 @@ impl Widget for Text {
         Some(self)
     }
 
-    crate::provides!(
+    tilo_ui_base::provides!(
         #[cfg(feature = "model")]
-        dyn crate::widget::permission::PermissionGuarded,
-        dyn crate::presence::capability::PublishesPresence
+        dyn tilo_ui_base::widget::permission::PermissionGuarded,
+        dyn tilo_ui_base::presence::capability::PublishesPresence
     );
 
     fn own_page_title(&self) -> Option<String> {
@@ -869,7 +865,7 @@ impl Widget for Text {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, path) = crate::doc::document_ref(state, path);
+        let (state, path) = tilo_ui_base::doc::document_ref(state, path);
         self.observe_i18n_revision();
         self.observe_engine_revision();
         let label = match self.source.as_mut() {
@@ -909,7 +905,7 @@ impl Widget for Text {
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
-        _text: &mut crate::text_render::TextRenderer,
+        _text: &mut tilo_ui_base::text_render::TextRenderer,
     ) -> bool {
         let display = self.flow_display();
         match taffy.style(node) {
@@ -1017,13 +1013,13 @@ impl Widget for Text {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if self.face.resized(self.rect) {
             self.dirty = true;
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1043,9 +1039,9 @@ impl Widget for Text {
             let colors = &theme.tokens.colors;
             if let Some(tone) = self.tone {
                 let floor = if matches!(self.role, TextRole::Caption | TextRole::Label) {
-                    crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST
+                    tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST
                 } else {
-                    crate::tokens::colors::ON_FILL_MIN_CONTRAST
+                    tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST
                 };
                 colors.ink_on_any(&[colors.surfaces.content], tone.colour(theme), floor)
             } else if self.dimmed {
@@ -1136,9 +1132,9 @@ impl Widget for Text {
             }
         }
         self.face.append(scene, transform, self.rect);
-        crate::widget::draw_over(
+        tilo_ui_base::widget::draw_over(
             self,
-            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
         );
     }
 
@@ -1179,7 +1175,7 @@ impl Widget for Text {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.i18n_revision != crate::i18n::I18nManager::revision()
+        self.i18n_revision != tilo_ui_base::i18n::I18nManager::revision()
     }
 
     fn get_rect(&self) -> vello::kurbo::Rect {
@@ -1192,8 +1188,8 @@ impl Widget for Text {
         false
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         let label = self.spoken.clone().unwrap_or_else(|| self.resolved_label());
         if label.is_empty() || self.access == TextAccess::Presentational {
             return None;
@@ -1208,7 +1204,7 @@ impl Widget for Text {
             .with_name(label)
             .with_interface_name(self.interface_copy());
         if self.focusable {
-            node = node.with_state(crate::a11y::AccessState::new().focusable(true));
+            node = node.with_state(tilo_ui_base::a11y::AccessState::new().focusable(true));
         }
         if let Some(politeness) = self.live {
             node = node.with_live(politeness);
@@ -1217,7 +1213,7 @@ impl Widget for Text {
     }
 }
 
-impl crate::presence::capability::PublishesPresence for Text {
+impl tilo_ui_base::presence::capability::PublishesPresence for Text {
     fn presence_key(&self) -> Option<PresenceKey> {
         PresenceKey::widget(&self.presence_path)
     }
@@ -1225,13 +1221,13 @@ impl crate::presence::capability::PublishesPresence for Text {
     fn written_place<'a>(
         &'a self,
         _theme: &'a Theme,
-    ) -> Option<crate::presence::capability::WrittenPlace<'a>> {
+    ) -> Option<tilo_ui_base::presence::capability::WrittenPlace<'a>> {
         let (field, item) = self.edits.as_ref()?;
         let label = self.resolved_label();
         let for_place = label.clone();
         let style = &self.style;
         let rect = self.rect;
-        Some(crate::presence::capability::WrittenPlace {
+        Some(tilo_ui_base::presence::capability::WrittenPlace {
             region: Some(field.as_str()),
             block: item.as_str(),
             text: std::borrow::Cow::Owned(label),
@@ -1245,7 +1241,7 @@ impl crate::presence::capability::PublishesPresence for Text {
                 )]
                 let lines = text.wrap_lines(&for_place, style, rect.width() as f32 + 1.0);
                 let line = f64::from(style.line_height_px_at(text.text_scale()));
-                let (bands, caret) = crate::presence::LabeledCaret::after_span(
+                let (bands, caret) = tilo_ui_base::presence::LabeledCaret::after_span(
                     text,
                     (&for_place, &lines, style),
                     (rect.x0, rect.y0, line),
@@ -1259,7 +1255,7 @@ impl crate::presence::capability::PublishesPresence for Text {
 }
 
 #[cfg(feature = "model")]
-impl crate::widget::permission::PermissionGuarded for Text {
+impl tilo_ui_base::widget::permission::PermissionGuarded for Text {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
     }
@@ -1387,7 +1383,7 @@ mod tests {
         phase a_one_line_text_keeps_its_line_whole_unless_it_elides;
         {
             let said = "12:59 PM";
-            let mut renderer = crate::font_catalog::fixture_renderer();
+            let mut renderer = tilo_ui_base::font_catalog::fixture_renderer();
             let mut measure = |text: &mut Text, width| {
                 Widget::measure(
                     text,
@@ -1525,7 +1521,7 @@ mod tests {
                 );
                 assert!(matches!(
                     &text.text_style().hyphenation,
-                    crate::text_render::Hyphenation::Auto(language) if language == "en-US"
+                    tilo_ui_base::text_render::Hyphenation::Auto(language) if language == "en-US"
                 ));
             }
 
@@ -1544,8 +1540,8 @@ mod tests {
             }
 
             {
-                use crate::presence::PresenceCtx;
-                let mut tr = crate::font_catalog::fixture_renderer();
+                use tilo_ui_base::presence::PresenceCtx;
+                let mut tr = tilo_ui_base::font_catalog::fixture_renderer();
                 let fam = String::from("Adwaita Sans");
                 assert!(
                     tr.system_families().iter().any(|family| family == &fam),
@@ -1558,7 +1554,7 @@ mod tests {
                 let mut label = Text::new("Reading").with_font_family(FontChoice::Named(fam.clone()));
                 label.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 400.0, 40.0));
                 let mut scene = Scene::new();
-                label.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+                label.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
 
                 let _ = tr.take_shape_stats();
                 tr.draw_style(
@@ -1637,7 +1633,7 @@ mod tests {
             }
 
             {
-                use crate::a11y::Politeness;
+                use tilo_ui_base::a11y::Politeness;
 
                 let t = Text::new("Incorrect password").with_live(Politeness::Assertive);
                 let node = Widget::accessibility(&t).expect("live status remains accessible text");
@@ -1684,12 +1680,12 @@ mod tests {
 
     fn drawn_glyph_runs(w: &mut dyn Widget, renderer: &mut TextRenderer) -> Vec<u32> {
         let mut scene = Scene::new();
-        w.draw(&mut crate::draw::DrawCtx::new(
+        w.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             renderer,
             &Theme::dark(),
-            crate::presence::PresenceCtx::default().draw_env(),
+            tilo_ui_base::presence::PresenceCtx::default().draw_env(),
         ));
         let encoding = scene.encoding();
         encoding
@@ -1710,7 +1706,7 @@ mod tests {
         let mut scene = Scene::new();
         renderer.draw_style(
             &mut scene,
-            &crate::text_render::ELLIPSIS.to_string(),
+            &tilo_ui_base::text_render::ELLIPSIS.to_string(),
             vello::peniko::Color::WHITE,
             Affine::IDENTITY,
             None,
@@ -1719,9 +1715,9 @@ mod tests {
         scene.encoding().resources.glyphs[0].id
     }
 
-    use crate::a11y::Role;
+    use tilo_ui_base::a11y::Role;
 
-    use crate::i18n::I18nManager;
+    use tilo_ui_base::i18n::I18nManager;
 
     #[test]
     fn fluent_text_interpolates_degrades_and_follows_locale() {
@@ -1790,7 +1786,7 @@ mod tests {
                     Box::new(root),
                     (700, 300),
                     Theme::dark(),
-                    crate::font_catalog::fixture_renderer(),
+                    tilo_ui_base::font_catalog::fixture_renderer(),
                     tilo_action_policy::MemberId::person("text-widget-locale-fixture"),
                 );
 

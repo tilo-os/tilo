@@ -3,8 +3,8 @@
 //! [`ResourceSpec`]s, each exporting the [`ActionSpec`]s Ctrl+K offers.
 
 use crate::bound_dispatch::{DeferredIntent, PreparedActionIntent};
-use crate::i18n::widget_text;
-use crate::widget::ModelPath;
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::widget::ModelPath;
 use tilo_sort::CompactSort as _;
 
 use std::collections::{HashMap, VecDeque};
@@ -21,12 +21,13 @@ use crate::search::{
     Facet, FacetFilter, PagePoll, PendingToken, SearchCursor, SearchProvider, SearchQuery,
     SearchResult,
 };
-use crate::text_match::{FieldWeight, ListIndex};
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::DrawChild;
+use tilo_ui_base::{text_match::FieldWeight, text_match::ListIndex};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
 use crate::widget::search_request::ScopeDecl;
-use crate::widget::{SearchField, SearchResultsView, Widget};
+use crate::{widget::SearchField, widget::SearchResultsView};
+use tilo_ui_base::widget::Widget;
 use tilo_actions::{
     ActionContext, ActionInput, EncodedAction, OperationKind, ResourceSpec, flatten,
 };
@@ -141,7 +142,7 @@ pub struct SearchAdvance {
 /// dictation's) may write into it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QueryField {
-    /// Fingerprint of the field's text and selection ([`crate::ime::edit_fingerprint`]): any edit or
+    /// Fingerprint of the field's text and selection ([`tilo_ui_base::ime::edit_fingerprint`]): any edit or
     /// caret move since moves it, so committed text can tell whether the field is still the one it was
     /// meant for.
     pub fingerprint: [u8; 32],
@@ -291,7 +292,7 @@ impl PendingOperation {
 /// None hides the row until its finite queued check completes.
 struct ProviderRowValidation {
     provider: usize,
-    permissions: Option<crate::permissions::PermissionContext>,
+    permissions: Option<tilo_ui_base::permissions::PermissionContext>,
 }
 
 struct HostStep {
@@ -301,7 +302,7 @@ struct HostStep {
 
 /// The unified Ctrl+K palette: a [`SearchField`] over a [`SearchResultsView`], fed by the focused app's
 /// resource/action tree plus any folded-in [`SearchProvider`]s.
-#[crate::component::not_a_component(system, "the palette is the system's")]
+#[tilo_ui_base::component::not_a_component(system, "the palette is the system's")]
 pub struct ActionPalette {
     field: SearchField,
     results: Box<SearchResultsView>,
@@ -382,7 +383,7 @@ pub struct ActionPalette {
     command: std::rc::Rc<std::cell::Cell<Option<bool>>>,
     /// Its arrival (`motion::Appear`, from its centre): a shortcut opens it at once, a click brings it
     /// in.
-    appear: crate::motion::Appearing,
+    appear: tilo_ui_base::motion::Appearing,
     /// The window it is in, under the window's bar, which its modal scrim dims ([`Self::place_in`]);
     /// `None` where a host lays it out as a widget of it.
     scrim: Option<Rect>,
@@ -403,9 +404,9 @@ pub struct ActionPalette {
     /// The rows shown answer an earlier query than the one typed ([`Self::set_stale`]).
     stale: bool,
     /// Whether the rows are drawn dimmed as stale: they fade down when kept over a query still
-    /// being answered, as data that went out of date ([`crate::motion::CrossFade::arrive`]), and
+    /// being answered, as data that went out of date ([`tilo_ui_base::motion::CrossFade::arrive`]), and
     /// the rows that replace them come in at full strength.
-    stale_dim: crate::motion::CrossFade<bool>,
+    stale_dim: tilo_ui_base::motion::CrossFade<bool>,
     /// What the field says while nothing is typed; a host names the source it searches ("Search
     /// files…").
     query_placeholder: String,
@@ -443,7 +444,7 @@ pub struct ActionPalette {
     /// after the person may have let go of it.
     chosen_with: Option<crate::search::ActivationModifier>,
     /// The keycap notation the host's rows are drawn with.
-    platform: crate::platform::PlatformConventions,
+    platform: tilo_ui_base::platform::PlatformConventions,
     /// The theme's text and interface scales, as last laid out.
     text_scale: f64,
     ui_scale: f64,
@@ -506,7 +507,7 @@ impl ActionPalette {
             field: field_source
                 .build()
                 .control_size(FIELD_SIZE)
-                .with_placeholder(&crate::i18n::widget_format("action-palette-query", &[])),
+                .with_placeholder(&tilo_ui_base::i18n::widget_format("action-palette-query", &[])),
             results: Box::new(
                 SearchResultsView::new()
                     .with_empty_text("No matches")
@@ -559,7 +560,7 @@ impl ActionPalette {
             controls,
             controls_node: None,
             command,
-            appear: crate::motion::Appearing::closed(),
+            appear: tilo_ui_base::motion::Appearing::closed(),
             scrim: None,
             scrim_pointer: Point::new(f64::NAN, f64::NAN),
             host_rows: None,
@@ -568,7 +569,7 @@ impl ActionPalette {
             bypass_fuzzy: false,
             searching: false,
             stale: false,
-            stale_dim: crate::motion::CrossFade::new(false),
+            stale_dim: tilo_ui_base::motion::CrossFade::new(false),
             query_placeholder: widget_text("palette-placeholder"),
             host_step: None,
             saved_host_query: String::new(),
@@ -584,7 +585,7 @@ impl ActionPalette {
             max_width: None,
             held: winit::keyboard::ModifiersState::empty(),
             chosen_with: None,
-            platform: crate::platform::PlatformConventions::default(),
+            platform: tilo_ui_base::platform::PlatformConventions::default(),
             text_scale: 1.0,
             ui_scale: 1.0,
             layout_theme: Theme::default(),
@@ -688,7 +689,7 @@ impl ActionPalette {
 
     /// Follow whether it is presented, with the motion the person allows: its host calls this every
     /// frame, drawn or not, so a palette hidden and shown again arrives again.
-    pub(crate) fn follow_presence(&mut self, motion: crate::tokens::EffectiveMotion) {
+    pub(crate) fn follow_presence(&mut self, motion: tilo_ui_base::tokens::EffectiveMotion) {
         let presented = self.is_presented();
         self.appear.follow(presented, motion);
     }
@@ -700,13 +701,13 @@ impl ActionPalette {
     fn target(&self, part: &str) -> String {
         format!("palette-answer:{}:{part}", self.request_generation)
     }
-    fn drain_command(&mut self, doc: &mut crate::widget::Edits<'_>, path: &ObjId) {
-        crate::widget::controls::start_pending_control_invocations(&mut self.controls, doc, path);
+    fn drain_command(&mut self, doc: &mut tilo_ui_base::widget::Edits<'_>, path: &ObjId) {
+        tilo_ui_base::widget::controls::start_pending_control_invocations(&mut self.controls, doc, path);
         match self.command.take() {
             Some(true) => {
                 self.focus_part(0);
                 self.handle_key(
-                    &crate::synthetic_input::key_input(
+                    &tilo_ui_base::synthetic_input::key_input(
                         &Key::Named(NamedKey::Enter),
                         ElementState::Pressed,
                     ),
@@ -731,21 +732,21 @@ impl ActionPalette {
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        doc: &mut crate::widget::Edits<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         if !self.is_presented() {
             return false;
         }
         if self.hosts_rows() {
-            use crate::widget::TaffyTreeExt as _;
+            use tilo_ui_base::widget::TaffyTreeExt as _;
             let mut handled = false;
             let mut focus_target = None;
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let node = taffy.leaf_node(Style::default());
             let host = self.route_host_event(
                 event,
-                &mut crate::widget::EventCtx {
+                &mut tilo_ui_base::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &modifiers,
                     state: doc.reborrow(),
@@ -769,7 +770,7 @@ impl ActionPalette {
         if let Some(node) = self.controls_node {
             self.controls.handle_event(
                 event,
-                &mut crate::widget::EventCtx {
+                &mut tilo_ui_base::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &modifiers,
                     state: doc.reborrow(),
@@ -796,7 +797,7 @@ impl ActionPalette {
                 let mut focus = None;
                 self.field.handle_event(
                     event,
-                    &mut crate::widget::EventCtx {
+                    &mut tilo_ui_base::widget::EventCtx {
                         scale_factor: scale,
                         modifiers: &modifiers,
                         state: doc.reborrow(),
@@ -874,7 +875,7 @@ impl ActionPalette {
             .field_source
             .build()
             .control_size(FIELD_SIZE)
-            .with_placeholder(&crate::i18n::widget_format("action-palette-query", &[]));
+            .with_placeholder(&tilo_ui_base::i18n::widget_format("action-palette-query", &[]));
         field.set_scope_token(self.scope.as_ref().map(scope_token_label));
         field
     }
@@ -1014,7 +1015,7 @@ impl ActionPalette {
         }
         let (anchor, focus) = self.field.selection_anchor_focus_or_caret();
         Some(QueryField {
-            fingerprint: crate::ime::edit_fingerprint(self.field.value(), anchor, focus, key),
+            fingerprint: tilo_ui_base::ime::edit_fingerprint(self.field.value(), anchor, focus, key),
             secret: content.is_secret(),
             multiline: self.field.ime_multiline(),
         })
@@ -1201,9 +1202,9 @@ impl ActionPalette {
             return binding
                 .permissions
                 .borrow()
-                .check(&crate::permissions::PermissionScope::app(
+                .check(&tilo_ui_base::permissions::PermissionScope::app(
                     &binding.app_id,
-                    crate::permissions::ActionKind::Read,
+                    tilo_ui_base::permissions::ActionKind::Read,
                 ));
         };
         let resource = provider.resolve_action_resource(address).or_else(|| {
@@ -1231,7 +1232,7 @@ impl ActionPalette {
         provider: &dyn SearchProvider,
         binding: Option<&crate::bound_dispatch::CallbackBinding>,
         hits: Vec<SearchResult>,
-    ) -> Vec<(SearchResult, Option<crate::permissions::PermissionContext>)> {
+    ) -> Vec<(SearchResult, Option<tilo_ui_base::permissions::PermissionContext>)> {
         hits.into_iter()
             .filter_map(|hit| {
                 let Some(binding) = binding else {
@@ -1347,7 +1348,7 @@ impl ActionPalette {
 
     fn merge_provider_page(
         &mut self,
-        results: Vec<(SearchResult, Option<crate::permissions::PermissionContext>)>,
+        results: Vec<(SearchResult, Option<tilo_ui_base::permissions::PermissionContext>)>,
         binding: Option<&crate::bound_dispatch::CallbackBinding>,
         provider: usize,
     ) -> usize {
@@ -1371,7 +1372,7 @@ impl ActionPalette {
                         || RowResolution::Address(address.clone()),
                         |binding| {
                             RowResolution::Bound(crate::bound_dispatch::BoundActionTarget {
-                                input: crate::widget::input_provenance::Input::Discrete,
+                                input: tilo_ui_base::widget::input_provenance::Input::Discrete,
                                 binding: (*binding).clone(),
                                 address: crate::bound_dispatch::BoundActionAddress {
                                     instance_id: binding.instance_id,
@@ -1607,7 +1608,7 @@ impl ActionPalette {
     #[cfg(test)]
     pub fn take_dispatch(
         &mut self,
-        doc: &mut crate::widget::Edits<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         registry: &ActionRegistry,
         transport: &mut dyn ActionTransport,
     ) -> Option<Result<Dispatched, tilo_actions::ActionError>> {
@@ -1763,7 +1764,7 @@ impl ActionPalette {
 
     #[cfg(test)]
     fn dispatch_encoded(
-        doc: &mut crate::widget::Edits<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         encoded: &EncodedAction,
         registry: &ActionRegistry,
         transport: &mut dyn ActionTransport,
@@ -1994,7 +1995,7 @@ impl ActionPalette {
                     // window publish it.
                     let row = fa.row();
                     let target = crate::bound_dispatch::BoundActionTarget {
-                        input: crate::widget::input_provenance::Input::Discrete,
+                        input: tilo_ui_base::widget::input_provenance::Input::Discrete,
                         binding: snapshot.binding.clone(),
                         address: crate::bound_dispatch::BoundActionAddress {
                             instance_id: snapshot.binding.instance_id,
@@ -2031,7 +2032,7 @@ impl ActionPalette {
                         scope.label.clone(),
                         format!("{SCOPE_PREFIX}{}", scope.anchor),
                     )
-                    .with_icon(crate::icons::Icon::Search),
+                    .with_icon(tilo_ui_base::icons::Icon::Search),
                     None,
                     RowResolution::Navigate(format!("{SCOPE_PREFIX}{}", scope.anchor), None),
                 ));
@@ -2181,7 +2182,7 @@ impl ActionPalette {
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = self.field.build_layout(&mut taffy, theme, &mut node_map);
 
-        let Ok(()) = crate::widget::layout::solve_layout(
+        let Ok(()) = tilo_ui_base::widget::layout::solve_layout(
             &mut taffy,
             node,
             Size {
@@ -2235,7 +2236,7 @@ impl ActionPalette {
         let node = self
             .controls
             .build_layout(&mut self.field_taffy, theme, &mut nodes);
-        let Ok(()) = crate::widget::layout::solve_layout(
+        let Ok(()) = tilo_ui_base::widget::layout::solve_layout(
             &mut self.field_taffy,
             node,
             Size {
@@ -2277,7 +2278,7 @@ impl ActionPalette {
     }
 
     /// Draw the field + results overlay. `layout` must have run this frame.
-    pub fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2321,7 +2322,7 @@ impl ActionPalette {
         if dim <= 0.0 {
             return false;
         }
-        let alpha = 1.0 - dim * (1.0 - crate::widget::DISABLED_ALPHA);
+        let alpha = 1.0 - dim * (1.0 - tilo_ui_base::widget::DISABLED_ALPHA);
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -2334,8 +2335,8 @@ impl ActionPalette {
 
     /// How dimmed the rows are drawn now, `0..=1`: kept rows of an earlier query fade down as data
     /// that went out of date, not as a change a hand made.
-    fn follow_stale(&mut self, motion: crate::tokens::EffectiveMotion) -> f32 {
-        let now = crate::motion::frame_now();
+    fn follow_stale(&mut self, motion: tilo_ui_base::tokens::EffectiveMotion) -> f32 {
+        let now = tilo_ui_base::motion::frame_now();
         self.stale_dim.arrive(self.stale, motion, now);
         let shown = if *self.stale_dim.shown() {
             self.stale_dim.incoming(now)
@@ -2369,7 +2370,7 @@ impl ActionPalette {
         &mut self,
         event: &WindowEvent,
         modifiers: &Modifiers,
-        doc: &mut crate::widget::Edits<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         if self.history_suspended {
@@ -2402,7 +2403,7 @@ impl ActionPalette {
                 )
             {
                 self.controls.children_mut()[focused - 1].perform_action(
-                    &crate::a11y::Action::Activate,
+                    &tilo_ui_base::a11y::Action::Activate,
                     &[],
                     doc,
                     path,
@@ -2599,7 +2600,7 @@ impl ActionPalette {
         &mut self,
         event: &WindowEvent,
         modifiers: Modifiers,
-        doc: &mut crate::widget::Edits<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ObjId,
     ) {
         let Some(node) = self.field_node else { return };
@@ -2607,7 +2608,7 @@ impl ActionPalette {
         let mut ft = None;
         self.field.handle_event(
             event,
-            &mut crate::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
                 state: doc.reborrow(),
@@ -2624,7 +2625,7 @@ impl ActionPalette {
         &mut self,
         event: &WindowEvent,
         modifiers: Modifiers,
-        doc: &mut crate::widget::Edits<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ObjId,
     ) {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -2638,7 +2639,7 @@ impl ActionPalette {
         let mut ft = None;
         self.results.handle_event(
             event,
-            &mut crate::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
                 state: doc.reborrow(),
@@ -2849,8 +2850,8 @@ mod tests {
             ["Ada Lovelace", "Alan Turing"]
                 .into_iter()
                 .filter(|n| {
-                    crate::text_match::fold_search_text(n)
-                        .contains(&crate::text_match::fold_search_text(query))
+                    tilo_ui_base::text_match::fold_search_text(n)
+                        .contains(&tilo_ui_base::text_match::fold_search_text(query))
                 })
                 .map(|n| SearchResult::new("People", n, n.to_string()))
                 .collect()
@@ -2867,8 +2868,8 @@ mod tests {
         }
 
         fn search(&self, query: &str) -> Vec<SearchResult> {
-            if !crate::text_match::fold_search_text("Ada Lovelace")
-                .contains(&crate::text_match::fold_search_text(query))
+            if !tilo_ui_base::text_match::fold_search_text("Ada Lovelace")
+                .contains(&tilo_ui_base::text_match::fold_search_text(query))
             {
                 return Vec::new();
             }
@@ -2934,9 +2935,9 @@ mod tests {
 
         phase palette_activation_dispatches_navigates_prompts_or_queues;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             {
-                let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                let mut p = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
                     SearchField::with_language("en_US")
                 });
                 p.load_open_resources(&[thing_resource()]);
@@ -2955,7 +2956,7 @@ mod tests {
                 let mut tx = LocalTransport::new();
                 let d = p
                     .take_dispatch(
-                        &mut crate::widget::Edits::lend(&mut doc),
+                        &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                         &registry(),
                         &mut tx,
                     )
@@ -2991,7 +2992,7 @@ mod tests {
             }
 
             {
-                let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                let mut p = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
                     SearchField::with_language("en_US")
                 });
                 p.load_open_resources(&[thing_resource()]);
@@ -3008,7 +3009,7 @@ mod tests {
                 let mut tx = LocalTransport::new();
                 let dispatched = p
                     .take_dispatch(
-                        &mut crate::widget::Edits::lend(&mut doc),
+                        &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                         &registry(),
                         &mut tx,
                     )
@@ -3031,7 +3032,7 @@ mod tests {
             }
 
             {
-                let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                let mut p = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
                     SearchField::with_language("en_US")
                 });
                 p.set_providers(vec![Box::new(People)]);
@@ -3050,7 +3051,7 @@ mod tests {
                 let mut tx = LocalTransport::new();
                 assert!(
                     p.take_dispatch(
-                        &mut crate::widget::Edits::lend(&mut doc),
+                        &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                         &registry(),
                         &mut tx
                     )
@@ -3069,7 +3070,7 @@ mod tests {
             // Canonical provider hits are broker operations, not opaque navigation
             // callbacks. This is the per-app migration contract.
             {
-                let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                let mut p = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
                     SearchField::with_language("en_US")
                 });
                 p.load_open_resources(&[thing_resource()]);
@@ -3106,7 +3107,7 @@ mod tests {
             }
 
             {
-                let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                let mut p = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
                     SearchField::with_language("en_US")
                 });
                 p.load_open_resources(&[thing_resource()]);
@@ -3132,14 +3133,14 @@ mod tests {
                 p.handle_key(
                     &enter(),
                     &mods,
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &root,
                 );
 
                 let mut tx = LocalTransport::new();
                 let d = p
                     .take_dispatch(
-                        &mut crate::widget::Edits::lend(&mut doc),
+                        &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                         &registry(),
                         &mut tx,
                     )
@@ -3158,9 +3159,9 @@ mod tests {
 
         phase removed_or_disabled_actions_are_refused_at_activation_and_dispatch;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             {
-                let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                let mut p = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
                     SearchField::with_language("en_US")
                 });
                 p.load_open_resources(&[thing_resource()]);
@@ -3188,7 +3189,7 @@ mod tests {
                         reason: "The service went offline".into(),
                     };
 
-                let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                let mut p = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
                     SearchField::with_language("en_US")
                 });
                 p.load_open_resources(&[thing_resource()]);
@@ -3204,7 +3205,7 @@ mod tests {
             }
 
             {
-                let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                let mut p = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
                     SearchField::with_language("en_US")
                 });
                 p.load_open_resources(&[thing_resource()]);
@@ -3221,7 +3222,7 @@ mod tests {
 
         phase what_asks_first_is_queued_and_asked_when_it_runs;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             // Case `programmatic_actions_are_not_rows_and_queue_by_value`:
             // A programmatic generic edit is never a row; a control that submits a value
             // of it queues it, a destructive value too: the person is asked when it runs,
@@ -3289,9 +3290,9 @@ mod tests {
 
         phase history_suspends_the_same_palette_draft_and_ready_dispatch;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let mut palette =
-                ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
                     SearchField::with_language("en_US")
                 });
             palette.load_open_resources(&[thing_resource()]);
@@ -3328,7 +3329,7 @@ mod tests {
             palette.handle_key(
                 &enter(),
                 &Modifiers::default(),
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &ROOT,
             );
             let pending = palette
@@ -3340,7 +3341,7 @@ mod tests {
 
         phase visible_refresh_keeps_exact_selection_through_reorder_revocation_and_restore;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let resource = |id: &str, label: &str| {
                 let mut value = thing_resource();
                 value.id = tilo_actions::ResourceId::new(id);
@@ -3369,7 +3370,7 @@ mod tests {
 
         phase invalid_arguments_stay_visible_and_can_be_corrected;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let mut spec = ActionSpec::typed(
                 "number",
                 "Number",
@@ -3395,11 +3396,11 @@ mod tests {
             let mut doc = automerge::AutoCommit::new();
             let root = automerge::ROOT;
             let enter =
-                crate::synthetic_input::key_input(&Key::Named(NamedKey::Enter), ElementState::Pressed);
+                tilo_ui_base::synthetic_input::key_input(&Key::Named(NamedKey::Enter), ElementState::Pressed);
             palette.handle_key(
                 &enter,
                 &Modifiers::default(),
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &root,
             );
             assert!(palette.arg.is_some());
@@ -3414,7 +3415,7 @@ mod tests {
             palette.handle_key(
                 &enter,
                 &Modifiers::default(),
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &root,
             );
             assert!(
@@ -3425,22 +3426,22 @@ mod tests {
     }
 
     fn enter_key() -> KeyEvent {
-        crate::synthetic_input::key_event(Key::Named(NamedKey::Enter), None, ElementState::Pressed)
+        tilo_ui_base::synthetic_input::key_event(Key::Named(NamedKey::Enter), None, ElementState::Pressed)
     }
 
     fn enter() -> WindowEvent {
-        crate::synthetic_input::keyboard_input(enter_key())
+        tilo_ui_base::synthetic_input::keyboard_input(enter_key())
     }
 
     #[cfg(feature = "native")]
     #[test]
     fn the_palette_appears_for_a_click_lands_for_a_key_and_its_results_stay_instant() {
-        use crate::tokens::{EffectiveMotion, Motion, MotionSource};
+        use tilo_ui_base::{tokens::EffectiveMotion, tokens::Motion, tokens::MotionSource};
         let motion = EffectiveMotion::new(Motion::default(), false);
         let card = Rect::new(400.0, 96.0, 1000.0, 500.0);
-        let _frame = crate::motion::pin_frame();
+        let _frame = tilo_ui_base::motion::pin_frame();
 
-        crate::motion::note_source(MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(MotionSource::Pointer);
         let mut clicked = ActionPalette::new();
         clicked.open();
         clicked.follow_presence(motion);
@@ -3450,22 +3451,22 @@ mod tests {
             "from nothing, not a pop"
         );
 
-        crate::motion::note_source(MotionSource::Keyboard);
+        tilo_ui_base::motion::note_source(MotionSource::Keyboard);
         let mut keyed = ActionPalette::new();
         keyed.open();
         keyed.follow_presence(motion);
         assert!(!keyed.is_moving(), "a key opens it at once");
         assert!(keyed.appear.pose(card, card.center()).is_rest());
-        crate::motion::note_source(MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(MotionSource::Pointer);
         keyed.rebuild("no");
         keyed.follow_presence(motion);
         assert!(!keyed.is_moving(), "results stay instant");
-        crate::motion::note_source(MotionSource::Keyboard);
+        tilo_ui_base::motion::note_source(MotionSource::Keyboard);
         keyed.close();
         keyed.follow_presence(motion);
         assert!(!keyed.is_moving(), "Escape closes it at once");
 
-        crate::motion::note_source(MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(MotionSource::Pointer);
         let mut reduced = ActionPalette::new();
         reduced.open();
         reduced.follow_presence(EffectiveMotion::new(Motion::default(), true));
@@ -3473,7 +3474,7 @@ mod tests {
         assert_eq!(pose.transform, Affine::IDENTITY, "reduced: nothing scales");
         assert!(pose.opacity < 1.0, "it only fades in");
 
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         assert!(!clicked.is_moving(), "at rest it asks for no frames");
     }
 }

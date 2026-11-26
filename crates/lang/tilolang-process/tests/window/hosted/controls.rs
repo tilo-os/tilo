@@ -279,7 +279,7 @@ impl super::Session {
 /// caller names are one.
 #[test]
 fn a_new_note_is_invoked_at_the_api_by_what_its_control_does() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = super::Session::live_notes();
     let new_note = session.identity_named("New note");
     assert!(
@@ -306,7 +306,7 @@ fn a_new_note_is_invoked_at_the_api_by_what_its_control_does() {
 /// it, at the button's box and never the state's.
 #[test]
 fn an_empty_windows_state_and_bar_offer_the_primary_action_as_one_control() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = super::Session::live_notes();
     let new_note = session.identity_doing("Notebook", "new_note");
     let shown: Vec<ShownControl> = session
@@ -338,7 +338,7 @@ fn an_empty_windows_state_and_bar_offer_the_primary_action_as_one_control() {
 /// task it names.
 #[test]
 fn a_new_task_is_invoked_at_the_api_by_what_its_control_does_and_its_argument() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = super::Session::live_tasks();
     let new_task = session.identity_named("New task");
     let answered = session.invoke_doing(
@@ -362,7 +362,7 @@ fn a_new_task_is_invoked_at_the_api_by_what_its_control_does_and_its_argument() 
 /// what it does, completes that task alone, and the first is left as it was.
 #[test]
 fn a_tasks_complete_completes_the_task_its_row_names() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = super::Session::live_tasks();
     let new_task = session.identity_named("New task");
     for title in ["Water the plants", "Call the plumber"] {
@@ -406,7 +406,7 @@ fn a_tasks_complete_completes_the_task_its_row_names() {
 /// runs.
 #[test]
 fn todays_cleanup_runs_at_the_api_by_what_its_control_does() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = super::Session::today(super::Window::live);
     let cleanup = session.identity_named("Morning cleanup");
     // The two places its command acts on, as the window's own cards name them.
@@ -427,7 +427,7 @@ fn todays_cleanup_runs_at_the_api_by_what_its_control_does() {
 
 /// Today's date, as the window's own clock reads it: a task due by then stands in the day's list.
 fn today() -> String {
-    ui::clock::today().to_string()
+    tilo_ui_base::clock::today().to_string()
 }
 
 /// The document the card `title` on a window shows, as an argument names a resource: the place of
@@ -468,7 +468,7 @@ fn card_document(session: &mut super::Session, title: &str) -> serde_json::Value
 /// marks the field, where a press and a screen reader's activation do.
 #[test]
 fn a_field_bound_checkbox_says_which_field_it_edits_and_marks_it_by_that_identity() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = super::Session::open(super::FIELDBOX, "ada", super::Window::live);
     assert_eq!(
         session.field_value("done"),
@@ -784,7 +784,7 @@ fn asked(update: &ui::tilo_actions::InvocationUpdate) -> bool {
 mod access {
     use collaboration::RouteSpec;
     use tilolang_process::hosted::Spec;
-    use ui::permissions::policy::{MemberAccess, Role, WorkspacePolicy};
+    use tilo_ui_base::{permissions::policy::MemberAccess, permissions::policy::Role, permissions::policy::WorkspacePolicy};
 
     use super::super::{Session, TASKS, Window, find, task_in_workspace};
 
@@ -824,7 +824,7 @@ mod access {
     /// it makes the task.
     #[test]
     fn a_viewer_is_offered_no_change_and_one_made_an_editor_is_while_the_window_is_open() {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let (mut session, workspace) = tasks_as(Role::Viewer);
         let button = new_task_button(&mut session);
         assert_eq!(

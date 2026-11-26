@@ -15,7 +15,7 @@ use super::delivery::{DeliveryState, DeliveryStep};
 use super::draft::{self, DraftBook};
 use super::list::{CaptionShows, captions};
 use super::list::{ConversationLine, ConversationRole, ListFace, bubble_colors, run_breaks};
-use crate::theme::Theme;
+use tilo_ui_base::theme::Theme;
 
 const NOONISH: i64 = 1_782_828_300;
 
@@ -50,15 +50,15 @@ tilo_test_env::scenario! {
     // code and told apart by ink alone, so neither can be drawn as bare text beside the other.
     phase both_dividers_of_a_conversation_rule_the_column_on_each_side_of_their_label;
     {
-        use crate::widget::Widget as _;
-        let mut text = crate::font_catalog::fixture_renderer();
+        use tilo_ui_base::widget::Widget as _;
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
         for theme in [Theme::light(), Theme::dark()] {
             let mut draw = |label: &str, tone: DividerTone| {
                 let (left, right) = (48.0, 688.0);
                 let band = Rect::new(left, 120.0, right, 120.0 + band::height(&theme));
                 let mut scene = vello::Scene::new();
                 let parts = band::paint(
-                    &mut crate::paint::PaintCtx::new(
+                    &mut tilo_ui_base::paint::PaintCtx::new(
                         &mut scene,
                         vello::kurbo::Affine::IDENTITY,
                         &mut text,
@@ -127,8 +127,8 @@ tilo_test_env::scenario! {
             for tone in [DividerTone::Quiet, DividerTone::Accent] {
                 let rule = tone.ink_on(&theme, ground).rule;
                 assert!(
-                    crate::surface::edge_delta(rule, ground)
-                        >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                    tilo_ui_base::surface::edge_delta(rule, ground)
+                        >= tilo_ui_base::tokens::colors::HAIRLINE_MIN_DELTA,
                     "{tone:?} divider's rule visibly moves the ground it lands on: {rule:?} on \
                  {ground:?}"
                 );
@@ -140,14 +140,14 @@ tilo_test_env::scenario! {
             let day_rule = DividerTone::Quiet.ink_on(&theme, ground).rule;
             let accent_rule = DividerTone::Accent.ink_on(&theme, ground).rule;
             assert!(
-                crate::surface::edge_delta(accent_rule, ground)
-                    >= crate::surface::COLOURED_RULE_MIN_DELTA,
+                tilo_ui_base::surface::edge_delta(accent_rule, ground)
+                    >= tilo_ui_base::surface::COLOURED_RULE_MIN_DELTA,
                 "the accent divider's rule is a mark on the ground it lands on: {accent_rule:?} on \
              {ground:?}"
             );
             assert!(
-                crate::surface::edge_delta(accent_rule, ground)
-                    >= crate::surface::edge_delta(day_rule, ground) * 2.0,
+                tilo_ui_base::surface::edge_delta(accent_rule, ground)
+                    >= tilo_ui_base::surface::edge_delta(day_rule, ground) * 2.0,
                 "the accent divider's rule is clearly stronger than a day's: {accent_rule:?} against \
              {day_rule:?} on {ground:?}"
             );
@@ -164,11 +164,11 @@ tilo_test_env::scenario! {
             // the accent would get from `surface::edge_on` — leaves the ground where it was: that
             // is the divider that reads as bare text.
             assert!(
-                crate::surface::edge_delta(crate::surface::edge_on(accent), ground)
-                    < crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                tilo_ui_base::surface::edge_delta(tilo_ui_base::surface::edge_on(accent), ground)
+                    < tilo_ui_base::tokens::colors::HAIRLINE_MIN_DELTA,
                 "an edge of the accent itself carries none of it onto the ground: {ground:?}"
             );
-            let built = <SectionDivider as crate::component::Described>::from_props(
+            let built = <SectionDivider as tilo_ui_base::component::Described>::from_props(
                 "unread",
                 super::SectionDividerProps {
                     label: None,
@@ -270,7 +270,7 @@ tilo_test_env::scenario! {
         assert!(!live.contains(DeliveryState::Uncertain.icon().name()));
         // The vocabulary is the same in both apps because it is the same table.
         assert_eq!(DeliveryState::Delivered.label(), "Delivered");
-        assert_eq!(DeliveryState::Failed.tone(), crate::widget::Tone::Danger);
+        assert_eq!(DeliveryState::Failed.tone(), tilo_ui_base::widget::Tone::Danger);
         assert!(DeliveryState::Failed.needs_attention());
         assert!(DeliveryState::Read.is_final());
     }
@@ -521,7 +521,7 @@ tilo_test_env::scenario! {
 
     phase the_list_reserves_exactly_what_it_paints_and_marks_every_day;
     {
-        let mut text = crate::font_catalog::fixture_renderer();
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
         let theme = Theme::dark();
         let clock = clock_at(NOONISH);
         let lines = vec![
@@ -567,8 +567,8 @@ tilo_test_env::scenario! {
 
     phase your_own_words_read_on_their_own_colour_in_every_theme;
     {
-        use crate::a11y::contrast_ratio;
-        use crate::tokens::contrast::BODY_TEXT_MIN_CONTRAST;
+        use tilo_ui_base::a11y::contrast_ratio;
+        use tilo_ui_base::tokens::contrast::BODY_TEXT_MIN_CONTRAST;
         for theme in [Theme::dark(), Theme::light()] {
             for role in [ConversationRole::Incoming, ConversationRole::Outgoing] {
                 let (fill, ink) = bubble_colors(&theme, role);

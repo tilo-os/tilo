@@ -18,8 +18,8 @@
 
 use super::*;
 use crate::app::{App, AppSurface, SurfaceDamage};
-use crate::offscreen::OffscreenRenderer;
-use crate::widget::Widget;
+use tilo_ui_base::offscreen::OffscreenRenderer;
+use tilo_ui_base::widget::Widget;
 
 /// A transcript painted line by line inside a scroll region, as a chat or
 /// a calculator's history paints its content.
@@ -40,12 +40,12 @@ impl Widget for Transcript {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        crate::widget::TaffyTreeExt::fill_leaf(taffy, node_map, self)
+        tilo_ui_base::widget::TaffyTreeExt::fill_leaf(taffy, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -84,7 +84,7 @@ impl Widget for Transcript {
             });
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let before = self.region.offset();
         let theme = Theme::dark();
         if self.region.handle_event(event, ctx, &theme) {
@@ -170,7 +170,7 @@ fn scroll(theme: &Theme, scale: f64, edge_fade: bool, runs: &[(f64, usize)]) -> 
     let mut scene = Scene::new();
     app.surface_input(
         &window,
-        crate::synthetic_input::cursor_moved(200.0 * scale, 200.0 * scale),
+        tilo_ui_base::synthetic_input::cursor_moved(200.0 * scale, 200.0 * scale),
         false,
     );
     for _ in 0..5 {

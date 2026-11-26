@@ -62,7 +62,7 @@ impl Session {
                 for (id, name, (r, g, b)) in sync.here().borrow().persons() {
                     let person = collab_types::Person::new(id, name);
                     let colour =
-                        ui::tokens::PresenceHue::nearest_to_srgb(r, g, b).unwrap_or(person.colour);
+                        tilo_ui_base::tokens::PresenceHue::nearest_to_srgb(r, g, b).unwrap_or(person.colour);
                     let here = collab_types::Member::of_person(&person.wearing(colour), None);
                     match people.iter_mut().find(|member| member.id == here.id) {
                         Some(member) => {
@@ -184,7 +184,7 @@ impl Session {
     /// else for everyone there, in its agent's colour, saying what it is doing while it works and
     /// the window of the app it does it in.
     fn say_agents_here(&self, sync: &crate::sync::Client) {
-        use ui::step::lines;
+        use tilo_ui_base::step::lines;
         let present = self.shared.agent_sessions.here();
         let sessions: Vec<(String, String, String, ShellPresence)> =
             self.shared.handle.read(|tree| {
@@ -221,7 +221,7 @@ impl Session {
                         // The colour the agent wears wherever it shows: its member's, the same for each
                         // of its sessions — the one rule and the one key every surface asks.
                         let (r, g, b) =
-                            ui::presence::member_color(&ui::permissions::MemberId::agent(
+                            tilo_ui_base::presence::member_color(&tilo_ui_base::permissions::MemberId::agent(
                                 &present.agent,
                                 self.shared.person.as_str(),
                             ));

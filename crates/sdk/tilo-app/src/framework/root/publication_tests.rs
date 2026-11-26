@@ -170,7 +170,7 @@ thread_local! {
 /// A leaf that counts the walks of the view reaching it.
 struct Probe(ui_core::widget::Text);
 
-impl ui_core::widget::Decorator for Probe {
+impl tilo_ui_base::widget::Decorator for Probe {
     type Inner = ui_core::widget::Text;
     fn inner(&self) -> &Self::Inner {
         &self.0
@@ -430,7 +430,7 @@ tilo_test_env::scenario! {
             .expect("the root is the shelf's");
         let first = root.shared_resources(None, &doc).expect("a shared forest");
         let second = root.shared_resources(None, &doc).expect("a shared forest");
-        let children = |forest: &[ui_core::published::SharedResource]| {
+        let children = |forest: &[tilo_ui_base::published::SharedResource]| {
             forest
                 .first()
                 .expect("the shelf")
@@ -448,7 +448,7 @@ tilo_test_env::scenario! {
         // This shelf builds its document children afresh for each publication
         // (it keeps no publication epoch), so a row joining one is joined
         // again; a row of its own is the node it published last time.
-        let visitor = |children: &[(String, ui_core::published::SharedResource)]| {
+        let visitor = |children: &[(String, tilo_ui_base::published::SharedResource)]| {
             children
                 .iter()
                 .find(|(id, _)| id == "shelf/visitor")

@@ -10,8 +10,8 @@
 use std::sync::mpsc::Receiver;
 
 use tilo_sheets::lock::{LockEffect, LockState, Shown};
-use ui::LocalStateWriter;
-use ui::collaboration::SessionResource;
+use tilo_ui_base::LocalStateWriter;
+use tilo_ui_base::collaboration::SessionResource;
 use ui::tilo_resource::Effect as _;
 
 /// The resource the session publishes the lock's state on.

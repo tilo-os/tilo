@@ -1,4 +1,4 @@
-use super::*;
+use tilo_ui_base::widget::manual::*;
 use crate::app::driver::Driver;
 use crate::headless::InspectionNode;
 use crate::widget::{Button, Column, Field, Form, FormSection, Row, Text, TextInput};
@@ -126,12 +126,12 @@ fn manual_layout_errors_reject_invalid_geometry_admission_and_duplicates() {
         let mut tree = TaffyTree::new();
         let mut nodes = HashMap::new();
         let root = widget.build_layout(&mut tree, &Theme::dark(), &mut nodes);
-        let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
+        let mut bindings = tilo_ui_base::widget::bound_nodes::BoundNodeMap::new();
         unsafe {
             bindings.rebuild(&widget, &tree, root, &nodes);
         }
         let result = unsafe {
-            super::super::compute_widget_layout(
+            tilo_ui_base::widget::compute_widget_layout(
                 &mut tree,
                 root,
                 Size {
@@ -140,7 +140,7 @@ fn manual_layout_errors_reject_invalid_geometry_admission_and_duplicates() {
                 },
                 &nodes,
                 &bindings,
-                &mut crate::font_catalog::fixture_renderer(),
+                &mut tilo_ui_base::font_catalog::fixture_renderer(),
             )
         };
         assert!(matches!(
@@ -165,13 +165,13 @@ fn manual_layout_errors_reject_invalid_geometry_admission_and_duplicates() {
         let mut nodes = HashMap::new();
         let root = widget.build_layout(&mut tree, &Theme::dark(), &mut nodes);
         let mut bindings = BoundNodeMap::new();
-        let mut text = crate::font_catalog::fixture_renderer();
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
         let space = Size {
             width: AvailableSpace::Definite(300.0),
             height: AvailableSpace::Definite(200.0),
         };
         unsafe {
-            super::super::compute_widget_layout(
+            tilo_ui_base::widget::compute_widget_layout(
                 &mut tree, root, space, &nodes, &bindings, &mut text,
             )
             .unwrap();
@@ -184,7 +184,7 @@ fn manual_layout_errors_reject_invalid_geometry_admission_and_duplicates() {
         let mut replacement = Text::new("Replacement");
         nodes.insert(root, &mut replacement as *mut dyn Widget);
         unsafe {
-            super::super::compute_widget_layout(
+            tilo_ui_base::widget::compute_widget_layout(
                 &mut tree, root, space, &nodes, &bindings, &mut text,
             )
             .unwrap();
@@ -192,7 +192,7 @@ fn manual_layout_errors_reject_invalid_geometry_admission_and_duplicates() {
         assert_eq!(calls.get(), 0);
         nodes.insert(root, original);
         unsafe {
-            super::super::compute_widget_layout(
+            tilo_ui_base::widget::compute_widget_layout(
                 &mut tree, root, space, &nodes, &bindings, &mut text,
             )
             .unwrap();
@@ -218,7 +218,7 @@ fn manual_layout_errors_reject_invalid_geometry_admission_and_duplicates() {
             bindings.rebuild(&widget, &tree, root, &nodes);
         }
         let result = unsafe {
-            super::super::compute_widget_layout(
+            tilo_ui_base::widget::compute_widget_layout(
                 &mut tree,
                 root,
                 Size {
@@ -227,7 +227,7 @@ fn manual_layout_errors_reject_invalid_geometry_admission_and_duplicates() {
                 },
                 &nodes,
                 &bindings,
-                &mut crate::font_catalog::fixture_renderer(),
+                &mut tilo_ui_base::font_catalog::fixture_renderer(),
             )
         };
         assert!(result.is_err(), "duplicate placement must be diagnosed");
@@ -291,9 +291,9 @@ fn manual_overflow_is_painted_inspected_and_clipped_per_axis() {
             unsafe {
                 bindings.rebuild(&widget, &tree, root, &nodes);
             }
-            let mut text = crate::font_catalog::fixture_renderer();
+            let mut text = tilo_ui_base::font_catalog::fixture_renderer();
             unsafe {
-                super::super::compute_widget_layout(
+                tilo_ui_base::widget::compute_widget_layout(
                     &mut tree,
                     root,
                     Size {
@@ -307,10 +307,10 @@ fn manual_overflow_is_painted_inspected_and_clipped_per_axis() {
                 .unwrap();
             }
             widget.apply_layout(&tree, root, origin);
-            let presence = crate::presence::PresenceCtx::empty();
+            let presence = tilo_ui_base::presence::PresenceCtx::empty();
             presence.viewport.set(Some(viewport));
             let mut scene = Scene::new();
-            widget.draw(&mut crate::draw::DrawCtx::new(
+            widget.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut text,
@@ -395,9 +395,9 @@ fn nested_negative_overflow(horizontal: bool) {
     unsafe {
         bindings.rebuild(&outer, &tree, root, &nodes);
     }
-    let mut text = crate::font_catalog::fixture_renderer();
+    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
     unsafe {
-        super::super::compute_widget_layout(
+        tilo_ui_base::widget::compute_widget_layout(
             &mut tree,
             root,
             Size {
@@ -424,10 +424,10 @@ fn nested_negative_overflow(horizontal: bool) {
         )
     };
     outer.apply_layout(&tree, root, origin);
-    let presence = crate::presence::PresenceCtx::empty();
+    let presence = tilo_ui_base::presence::PresenceCtx::empty();
     presence.viewport.set(Some(viewport));
     let mut scene = Scene::new();
-    outer.draw(&mut crate::draw::DrawCtx::new(
+    outer.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut text,

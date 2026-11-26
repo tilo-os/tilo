@@ -6,10 +6,11 @@ use vello::kurbo::{Affine, BezPath, Point, Rect, Shape, Size};
 use vello::peniko::Color;
 use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
 
-use super::*;
-use crate::text_render::TextRenderer;
+use tilo_ui_base::part_paint::*;
+use tilo_ui_base::text_render::TextRenderer;
 use crate::time::Duration;
-use crate::widget::{Button, Widget};
+use crate::widget::Button;
+use tilo_ui_base::widget::Widget;
 
 /// A painter set that draws a button as a triangle pointing up, counts its calls, springs between
 /// states and leaves every other part alone.
@@ -78,12 +79,12 @@ impl PartPainter for Triangles {
 
 fn draw(button: &mut Button, theme: &Theme) -> Scene {
     let mut scene = Scene::new();
-    button.draw(&mut crate::draw::DrawCtx::new(
+    button.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut TextRenderer::new(),
         theme,
-        crate::presence::PresenceCtx::default().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::default().draw_env(),
     ));
     scene
 }
@@ -160,16 +161,16 @@ fn strokes(painted: &PaintedPart) -> Vec<(vello::kurbo::BezPath, f32)> {
         .collect()
 }
 
-fn runs_along(path: &vello::kurbo::BezPath, rect: Rect, side: crate::part_paint::Sides) -> bool {
+fn runs_along(path: &vello::kurbo::BezPath, rect: Rect, side: tilo_ui_base::part_paint::Sides) -> bool {
     use vello::kurbo::PathEl;
     let half = 0.51;
     let (top, trailing, bottom, leading) = (rect.y0, rect.x1, rect.y1, rect.x0);
     let on = |p: vello::kurbo::Point| {
-        if side == crate::part_paint::Sides::TOP {
+        if side == tilo_ui_base::part_paint::Sides::TOP {
             (p.y - top).abs() <= half
-        } else if side == crate::part_paint::Sides::BOTTOM {
+        } else if side == tilo_ui_base::part_paint::Sides::BOTTOM {
             (p.y - bottom).abs() <= half
-        } else if side == crate::part_paint::Sides::LEADING {
+        } else if side == tilo_ui_base::part_paint::Sides::LEADING {
             (p.x - leading).abs() <= half
         } else {
             (p.x - trailing).abs() <= half
@@ -350,7 +351,7 @@ fn with_param(tokens: &PartTokens, name: &str, value: f32) -> PartTokens {
 /// The straight stretches of the Liquid rim on a 200×100 floating panel lit from `light_angle`: each
 /// solid fill in the theme's light, by its bounds and opacity.
 fn liquid_rim_stretches(light_angle: f32) -> Vec<(Rect, f32)> {
-    let theme = crate::theme_document::finish_theme("liquid-glass");
+    let theme = tilo_ui_base::theme_document::finish_theme("liquid-glass");
     let color = Color::from_rgb8(0x30, 0x34, 0x40);
     let mut tokens = part_tokens(&theme, SurfaceRole::Floating, (color, color, color), color);
     tokens.radius = 12.0;
@@ -412,7 +413,7 @@ fn the_part_cache_keys_on_every_liquid_parameter() {
         calls: AtomicUsize::new(0),
     });
     let set = PainterSet::new("test.counted-liquid", painter.clone());
-    let theme = crate::theme_document::finish_theme("liquid-glass");
+    let theme = tilo_ui_base::theme_document::finish_theme("liquid-glass");
     let color = Color::from_rgb8(0x50, 0x54, 0x60);
     let base = part_tokens(&theme, SurfaceRole::Control, (color, color, color), color);
     let draw = |tokens: &PartTokens| {
@@ -486,7 +487,7 @@ tilo_test_env::scenario! {
         // Glass draws its specular sheen and its lit rim in `tokens.light`: the
         // colour the theme names for the light a surface catches, never a
         // literal white in the painter.
-        let theme = crate::theme_document::finish_theme("glass");
+        let theme = tilo_ui_base::theme_document::finish_theme("glass");
         let color = Color::from_rgb8(0x40, 0x60, 0x80);
         let tokens = part_tokens(&theme, SurfaceRole::Bar, (color, color, color), color);
         assert_eq!(
@@ -551,8 +552,8 @@ tilo_test_env::scenario! {
     // are the display's own, so a rim there is a line of light a pixel in from the bezel: the bar reads as
     // floating rather than as reaching the edge.
     {
-        use crate::part_paint::Sides;
-        let theme = crate::theme_document::finish_theme("glass");
+        use tilo_ui_base::part_paint::Sides;
+        let theme = tilo_ui_base::theme_document::finish_theme("glass");
         let color = Color::from_rgb8(0x40, 0x60, 0x80);
         let size = Size::new(320.0, 32.0);
         let body = Rect::new(0.0, 0.0, 320.0, 32.0);
@@ -639,13 +640,13 @@ tilo_test_env::scenario! {
     // Pixelated draws its cell grid as its own ops: a pattern fill of the body in the fill stepped towards
     // the ink, one texel per cell.
     {
-        let theme = crate::theme_document::finish_theme("pixelated");
+        let theme = tilo_ui_base::theme_document::finish_theme("pixelated");
         let color = Color::from_rgb8(0x18, 0x20, 0x2c);
         let tokens = part_tokens(
             &theme,
             SurfaceRole::Floating,
             (color, color, color),
-            crate::chrome::panel_ground(&theme),
+            tilo_ui_base::chrome::panel_ground(&theme),
         );
         let cell = tokens.param("cell", 8.0);
         for part in [
@@ -673,16 +674,16 @@ tilo_test_env::scenario! {
 /// per texel, so a row of the body steps in a Bayer order rather than shading evenly.
 #[test]
 fn the_cell_grid_paints_cells_on_the_frame() {
-    use crate::offscreen::OffscreenRenderer;
+    use tilo_ui_base::offscreen::OffscreenRenderer;
     let (width, height) = (160, 120);
-    let theme = crate::theme_document::finish_theme("pixelated");
+    let theme = tilo_ui_base::theme_document::finish_theme("pixelated");
     let color = Color::from_rgb8(0x20, 0x28, 0x34);
     let ink = Color::from_rgb8(0xf0, 0xf2, 0xf6);
     let tokens = part_tokens(
         &theme,
         SurfaceRole::Floating,
         (color, ink, color),
-        crate::chrome::panel_ground(&theme),
+        tilo_ui_base::chrome::panel_ground(&theme),
     );
     let mut scene = Scene::new();
     paint_part(

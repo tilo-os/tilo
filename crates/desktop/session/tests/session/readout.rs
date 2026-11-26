@@ -32,7 +32,7 @@ tilo_test_env::scenario! {
 
     phase a_volume_key_names_the_output_it_changed;
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let asked = Rc::new(RefCell::new(Vec::new()));
         let headphones = Audio::speakers(Rc::clone(&asked));
         {
@@ -62,7 +62,7 @@ tilo_test_env::scenario! {
 
     phase a_brightness_key_on_a_machine_that_dims_nothing_says_so;
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = crate::common::headless(Options {
             collab: false,
             ..Options::default()
@@ -84,7 +84,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn a_brightness_key_answers_on_the_display_it_changed() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let dials = Dials::with(&[("eDP-1", 0.5), ("HEADLESS-2", 0.5)]);
     let mut session = crate::common::headless_on(
         &[
@@ -142,7 +142,7 @@ fn a_brightness_key_answers_on_the_display_it_changed() {
 
 #[test]
 fn a_mode_change_is_confirmed_in_words() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     invoke(&mut session, tilo_session::NIGHT_LIGHT_RESOURCE, "toggle");
     assert_eq!(

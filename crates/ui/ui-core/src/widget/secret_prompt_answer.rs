@@ -4,8 +4,8 @@
 
 use crate::time::Instant;
 
-use crate::motion::{Attention, CrossFade};
-use crate::tokens::{EffectiveMotion, MotionSource};
+use tilo_ui_base::{motion::Attention, motion::CrossFade};
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
 
 use super::NoticeTone;
 
@@ -103,7 +103,7 @@ impl Answer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::Theme;
+    use tilo_ui_base::theme::Theme;
     use crate::time::Duration;
 
     fn at(base: Instant, millis: u64) -> Instant {

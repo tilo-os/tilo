@@ -1,6 +1,6 @@
 use super::framework_history_tests::RoutedOwners;
 use crate::app::document_routes::Handoff;
-use crate::collaboration::CollabRequest;
+use tilo_ui_base::collaboration::CollabRequest;
 use automerge::{ROOT, transaction::Transactable as _};
 
 /// Part `index` of the workspace's messages, written with `text` as an
@@ -124,7 +124,7 @@ fn a_record_of_an_open_records_tree_syncs_on_its_own_route_from_a_snapshot() {
 fn a_record_held_for_a_tree_never_holds_back_the_published_surface() {
     let mut fixture = RoutedOwners::new();
     fixture.app.collaboration.manager =
-        crate::collaboration::CollaborationManager::native_initial_named_fixture_for_test(
+        tilo_ui_base::collaboration::CollaborationManager::native_initial_named_fixture_for_test(
             fixture.bindings[0].broker_route().unwrap(),
             automerge::AutoCommit::new().save(),
         );

@@ -26,7 +26,7 @@
 use std::time::{Duration, Instant};
 
 use os_actions::{ForwardedGamepadEvent, GamepadAxis, GamepadButton};
-use ui::ControllerFamily;
+use tilo_ui_base::ControllerFamily;
 
 /// Stick deflection (of `i16::MAX` ) that starts a move.
 pub const STICK_PRESS: i16 = 18_000;
@@ -96,10 +96,10 @@ pub enum FaceRole {
 /// prints `A` east where Xbox prints it south.
 fn face_role(family: ControllerFamily, button: GamepadButton) -> Option<FaceRole> {
     let glyph = match button {
-        GamepadButton::South => ui::input::ControllerButton::South,
-        GamepadButton::East => ui::input::ControllerButton::East,
-        GamepadButton::West => ui::input::ControllerButton::West,
-        GamepadButton::North => ui::input::ControllerButton::North,
+        GamepadButton::South => tilo_ui_base::input::ControllerButton::South,
+        GamepadButton::East => tilo_ui_base::input::ControllerButton::East,
+        GamepadButton::West => tilo_ui_base::input::ControllerButton::West,
+        GamepadButton::North => tilo_ui_base::input::ControllerButton::North,
         _ => return None,
     };
     let roles = [
@@ -699,7 +699,7 @@ mod tests {
 
         phase roles_agree_with_the_glyphs_the_guide_draws;
         {
-            use ui::input::ControllerButton;
+            use tilo_ui_base::input::ControllerButton;
             for family in [
                 ControllerFamily::Xbox,
                 ControllerFamily::Nintendo,
@@ -727,7 +727,7 @@ mod tests {
 
         phase the_guide_draws_the_button_that_carries_each_role;
         {
-            use ui::input::ControllerButton;
+            use tilo_ui_base::input::ControllerButton;
             let faces = ControllerFamily::Xbox.faces();
             assert_eq!(faces[0], ControllerButton::South);
             assert_eq!(

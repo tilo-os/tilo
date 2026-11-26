@@ -206,7 +206,7 @@ tilo_test_env::scenario! {
             });
             assert_eq!(answered, std::slice::from_ref(&agent_writer));
             let undone = writers_of(&records, id, || {
-                you.history_request(&mut outer, crate::widget::undo_access::UndoRequest::Undo)
+                you.history_request(&mut outer, tilo_ui_base::widget::undo_access::UndoRequest::Undo)
                     .unwrap()
                     .unwrap();
             });
@@ -278,7 +278,7 @@ pub(super) fn mount(
         closing: Rc::new(Cell::new(false)),
         registry_owner: Rc::downgrade(&owner),
         lifetime_id: uuid::Uuid::new_v4(),
-        control_domain: crate::control_domain::WeakControlDomain::default(),
+        control_domain: tilo_ui_base::control_domain::WeakControlDomain::default(),
         queued_controls: Rc::new(RefCell::new(std::collections::VecDeque::new())),
         search_requests: Rc::default(),
         instance_id: instance,
@@ -287,7 +287,7 @@ pub(super) fn mount(
         local_person: MemberId::person(author),
         records: records.clone(),
         checkout: checkout.clone(),
-        permissions: crate::permissions::SharedPermissions::new(PermissionContext::permissive()),
+        permissions: tilo_ui_base::permissions::SharedPermissions::new(PermissionContext::permissive()),
         author: MemberId::person(author),
         operation_context: std::rc::Rc::default(),
         writes_as_author,

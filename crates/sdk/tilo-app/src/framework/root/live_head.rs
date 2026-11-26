@@ -20,7 +20,7 @@ impl ResourceRoot {
     ) -> Rc<tilo_actions::ResourceSpec> {
         let at = (
             self.version(),
-            ui_core::i18n::I18nManager::revision(),
+            tilo_ui_base::i18n::I18nManager::revision(),
             epoch.to_owned(),
         );
         if let Some(kept) = self

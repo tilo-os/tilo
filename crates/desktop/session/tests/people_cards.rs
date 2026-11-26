@@ -255,7 +255,7 @@ fn name_of(session: &Session) -> String {
 
 #[test]
 fn a_message_is_offered_only_where_chat_and_the_persons_key_are_here() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // Chat is installed, so the card of someone whose key is known offers their conversation.
     let mut session = session_with(vec![chat()]);
     let mia = someone(&"01".repeat(32), "Mia Clayton", "Studio laptop", "mia-root");
@@ -303,7 +303,7 @@ fn a_message_is_offered_only_where_chat_and_the_persons_key_are_here() {
 
 #[test]
 fn a_persons_card_lists_their_devices_and_the_accounts_they_keep_elsewhere() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     // One person here on two of their devices, one of them away, with an account they keep at a
     // service this workspace is connected to.
@@ -339,7 +339,7 @@ fn a_persons_card_lists_their_devices_and_the_accounts_they_keep_elsewhere() {
 
 #[test]
 fn an_agents_card_says_what_it_is_at_and_offers_what_can_be_asked_of_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     set_here(
         &mut session,
@@ -354,7 +354,7 @@ fn an_agents_card_says_what_it_is_at_and_offers_what_can_be_asked_of_it() {
     open_who_is_here(&mut session);
     let (place, row) = a11y_node(&session, "Agent Fieldwork");
     assert!(
-        session.a11y_perform(place, row, &ui::a11y::Action::Activate),
+        session.a11y_perform(place, row, &tilo_ui_base::a11y::Action::Activate),
         "the shell took the press its window offers"
     );
     // What it is at, as its live line, and what can be asked of it: Stop, Undo run, Take over and
@@ -410,7 +410,7 @@ fn an_agents_card_says_what_it_is_at_and_offers_what_can_be_asked_of_it() {
 
 #[test]
 fn the_own_card_offers_what_the_host_offers_and_wears_the_colour_chosen() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     open_own_card(&mut session);
     // Settings at the card's top, everything that acts as the person beside it, and the switch
@@ -463,7 +463,7 @@ fn the_own_card_offers_what_the_host_offers_and_wears_the_colour_chosen() {
 
 #[test]
 fn a_picture_is_offered_where_the_host_lists_its_actions() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     let action = |id: &str, title: &str| tilo_session_core::desktop::state::HostAction {
         id: id.to_owned(),
@@ -494,7 +494,7 @@ fn a_picture_is_offered_where_the_host_lists_its_actions() {
 
 #[test]
 fn a_typed_status_is_kept_when_the_card_closes() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     open_own_card(&mut session);
     press(&mut session, "What you're doing");
@@ -517,7 +517,7 @@ fn a_typed_status_is_kept_when_the_card_closes() {
 
 #[test]
 fn a_pause_after_typing_keeps_what_was_typed() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     open_own_card(&mut session);
     press(&mut session, "What you're doing");
@@ -534,7 +534,7 @@ fn a_pause_after_typing_keeps_what_was_typed() {
 
 #[test]
 fn enter_keeps_what_is_typed_and_the_card_stays() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (_home, mut session) = unnamed_session();
     open_own_card(&mut session);
     press(&mut session, "Add your name");
@@ -548,7 +548,7 @@ fn enter_keeps_what_is_typed_and_the_card_stays() {
 
 #[test]
 fn a_name_is_kept_when_the_card_closes_and_a_blank_or_unchanged_one_changes_nothing() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (_home, mut session) = unnamed_session();
     open_own_card(&mut session);
     // No name given yet: the field asks for one and holds nothing to type over.

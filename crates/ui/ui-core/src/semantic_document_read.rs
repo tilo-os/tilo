@@ -11,12 +11,8 @@ use tilo_sort::CompactSort as _;
 
 pub mod retirement;
 
-pub(crate) use crate::semantic_readers::registered_in_tree;
-pub use crate::semantic_readers::{
-    Declared, MAX_CURSOR_BYTES, MAX_REQUEST_BYTES, NoReadParams, ReadName, ReadPage,
-    ReadProjection, RegisteredSemanticReader, SemanticReadError, SemanticReaders, decode_cursor,
-    decode_request, encode_cursor, read_action, registers_readers, result_schema,
-};
+pub(crate) use tilo_ui_base::semantic_readers::registered_in_tree;
+pub use tilo_ui_base::{semantic_readers::Declared, semantic_readers::MAX_CURSOR_BYTES, semantic_readers::MAX_REQUEST_BYTES, semantic_readers::NoReadParams, semantic_readers::ReadName, semantic_readers::ReadPage, semantic_readers::ReadProjection, semantic_readers::RegisteredSemanticReader, semantic_readers::SemanticReadError, semantic_readers::SemanticReaders, semantic_readers::decode_cursor, semantic_readers::decode_request, semantic_readers::encode_cursor, semantic_readers::read_action, semantic_readers::registers_readers, semantic_readers::result_schema};
 
 /// A borrowed selection from the actual app table and exact current resource.
 pub(crate) struct SelectedSemanticRead<'a> {
@@ -113,11 +109,11 @@ impl SelectedSemanticRead<'_> {
 
 /// Inert descriptors for reads registered by the actual retained widget tree.
 pub fn registered_operations(
-    widget: &dyn crate::widget::Widget,
+    widget: &dyn tilo_ui_base::widget::Widget,
     resources: &[ResourceSpec],
 ) -> Vec<tilo_actions::ActionDescriptor> {
     fn collect(
-        widget: &dyn crate::widget::Widget,
+        widget: &dyn tilo_ui_base::widget::Widget,
         resource: &ResourceSpec,
         addresses: &mut std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {

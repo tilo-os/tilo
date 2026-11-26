@@ -3,7 +3,7 @@
 //! another of the person's devices carried here lands on the window it is let go over.
 
 use super::{GroupDrag, GroupRow};
-use crate::widget::Widget as _;
+use tilo_ui_base::widget::Widget as _;
 
 /// The key this row takes a dropped window under, on the drag bus: a window's bar drag is known by
 /// the window it lifted, never by the row.
@@ -97,7 +97,7 @@ impl GroupRow {
         let Some(landed) = crate::widget::drag_bus::landed() else {
             return;
         };
-        let crate::dnd::DragPayload::Custom { kind, blob } = &landed.payload else {
+        let tilo_ui_base::dnd::DragPayload::Custom { kind, blob } = &landed.payload else {
             return;
         };
         if kind != crate::widget::drag_source::RESOURCE_PAYLOAD {

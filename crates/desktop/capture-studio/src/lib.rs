@@ -73,7 +73,8 @@ pub fn definition() -> &'static ui::prelude::ApplicationDefinition {
 mod tests {
     use tilo_sheets::SheetState as _;
     use ui::vello::kurbo::Rect;
-    use ui::widget::{CapturePreview, ScreenshotKept, ScreenshotSendDevice, Widget};
+    use ui::{widget::CapturePreview, widget::ScreenshotKept, widget::ScreenshotSendDevice};
+    use tilo_ui_base::widget::Widget;
 
     use crate::link::{Ask, Finished, Kept, Recording, Scene, Sent, Studio};
     use crate::surface::StudioSurface;
@@ -131,7 +132,7 @@ mod tests {
             ui::state::State::new(),
             StudioSurface::new(Some(state.clone())),
             (1280, 800),
-            ui::theme::Theme::dark(),
+            tilo_ui_base::theme::Theme::dark(),
         );
         state.wake_with(&frame.wake_handle());
         frame

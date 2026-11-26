@@ -1,7 +1,7 @@
 //! The send-to box a window stands with no menu around it ([`App::open_send_box`]).
 
 use super::App;
-use crate::widget::Widget as _;
+use tilo_ui_base::widget::Widget as _;
 
 impl App {
     /// Open the send-to box with no menu around it, about `about`: what a window's own key does
@@ -9,7 +9,7 @@ impl App {
     /// beside `bounds`, else beside what holds the keyboard, and takes the keys at once.
     pub fn open_send_box(
         &mut self,
-        about: Option<crate::shared_subject::SharedSelection>,
+        about: Option<tilo_ui_base::shared_subject::SharedSelection>,
         bounds: Option<[f64; 4]>,
         draft: Option<&str>,
         to: &[crate::floating_surface::Recipient],
@@ -53,10 +53,10 @@ impl App {
         let mut focus = None;
         self.window_box.handle_event(
             event,
-            &mut crate::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 scale_factor: scale,
                 modifiers: &self.input.modifiers,
-                state: crate::widget::Edits::lend(&mut self.state.doc),
+                state: tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
                 path: &self.state.root,
                 handled: &mut handled,
                 focus_target: &mut focus,

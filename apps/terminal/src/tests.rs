@@ -8,8 +8,8 @@ use tilo_test_env::hang_bound;
 use ui::State;
 use ui::framework::ResourceSurface;
 use ui::tilo_resource::Resource as _;
-use ui::widget::DrawChild;
-use ui::widget::Widget as _;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::Widget as _;
 use vello::kurbo::Rect;
 
 #[path = "chrome_tests.rs"]
@@ -272,7 +272,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            fn _takes_widget<T: ui::widget::Widget>(_: T) {}
+            fn _takes_widget<T: tilo_ui_base::widget::Widget>(_: T) {}
             #[allow(
                 unused_imports,
                 reason = "the import itself is the compile-time public type assertion"
@@ -722,7 +722,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         let mut widget = crate::TerminalWidget::spawn_hosted(services)
             .expect("the discovered ush connection must use the supervisor protocol");
         let doc = session_resource_at(&crate::target::SessionTarget::default_environment());
-        ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
+        tilo_ui_base::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
         tilo_test_env::wait_until("the healthy open to finish", || {
             ui::headless::frame_widget(&mut widget, &doc);
             !matches!(widget.session_state(), crate::sessions::OpenState::Opening)
@@ -764,7 +764,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         })
         .unwrap();
         let doc = session_resource_at(&crate::target::SessionTarget::default_environment());
-        ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
+        tilo_ui_base::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
         tilo_test_env::wait_until("the failed open to finish", || {
             ui::headless::frame_widget(&mut widget, &doc);
             !matches!(widget.session_state(), crate::sessions::OpenState::Opening)
@@ -798,17 +798,17 @@ pub(crate) fn drain_writes(rx: &std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
 }
 
 fn send_left_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
-    let ev = ui::synthetic_input::mouse_press();
+    let ev = tilo_ui_base::synthetic_input::mouse_press();
     ui::testing::Dispatch::new().doc(doc).send(widget, &ev);
 }
 
 fn send_left_release(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
-    let ev = ui::synthetic_input::mouse_release();
+    let ev = tilo_ui_base::synthetic_input::mouse_release();
     ui::testing::Dispatch::new().doc(doc).send(widget, &ev);
 }
 
 fn send_cursor_move(widget: &mut TerminalWidget, doc: &mut AutoCommit, x: f64, y: f64) {
-    let ev = ui::synthetic_input::cursor_moved(x, y);
+    let ev = tilo_ui_base::synthetic_input::cursor_moved(x, y);
     ui::testing::Dispatch::new().doc(doc).send(widget, &ev);
 }
 
@@ -825,7 +825,7 @@ fn send_mouse_button_mods(
     } else {
         ModifiersState::empty()
     };
-    let ev = ui::synthetic_input::mouse_input(state, button);
+    let ev = tilo_ui_base::synthetic_input::mouse_input(state, button);
     ui::testing::Dispatch::new()
         .modifiers(modifiers)
         .doc(doc)
@@ -840,7 +840,7 @@ fn send_focus(widget: &mut TerminalWidget, doc: &mut AutoCommit, focused: bool) 
 }
 
 fn send_key(
-    widget: &mut impl ui::widget::Widget,
+    widget: &mut impl tilo_ui_base::widget::Widget,
     doc: &mut AutoCommit,
     key: winit::keyboard::Key,
     ctrl: bool,
@@ -850,7 +850,7 @@ fn send_key(
 }
 
 pub(crate) fn send_key_mods(
-    widget: &mut impl ui::widget::Widget,
+    widget: &mut impl tilo_ui_base::widget::Widget,
     doc: &mut AutoCommit,
     key: winit::keyboard::Key,
     ctrl: bool,
@@ -873,20 +873,20 @@ pub(crate) fn send_key_mods(
 }
 
 fn send_key_with_modifiers(
-    widget: &mut impl ui::widget::Widget,
+    widget: &mut impl tilo_ui_base::widget::Widget,
     doc: &mut AutoCommit,
     key: winit::keyboard::Key,
     state: winit::keyboard::ModifiersState,
 ) {
     use winit::event::ElementState;
 
-    let mut ev = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
+    let mut ev = tilo_ui_base::synthetic_input::key_event(key, None, ElementState::Pressed);
     ev.text = match &ev.logical_key {
         winit::keyboard::Key::Character(s) => Some(s.clone()),
         _ => None,
     };
 
-    let win_ev = ui::synthetic_input::keyboard_input(ev);
+    let win_ev = tilo_ui_base::synthetic_input::keyboard_input(ev);
     ui::testing::Dispatch::new()
         .modifiers(state)
         .doc(doc)
@@ -900,10 +900,10 @@ pub(crate) fn send_key_without_text(
 ) -> bool {
     use winit::event::ElementState;
 
-    let ev = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
+    let ev = tilo_ui_base::synthetic_input::key_event(key, None, ElementState::Pressed);
     ui::testing::Dispatch::new()
         .doc(doc)
-        .send(widget, &ui::synthetic_input::keyboard_input(ev))
+        .send(widget, &tilo_ui_base::synthetic_input::keyboard_input(ev))
         .handled
 }
 
@@ -970,13 +970,13 @@ tilo_test_env::scenario! {
                 Key::Character(SmolStr::new_static(" ")),
                 Key::Unidentified(winit::keyboard::NativeKey::Unidentified),
             ] {
-                let mut event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
+                let mut event = tilo_ui_base::synthetic_input::key_event(key, None, ElementState::Pressed);
                 event.physical_key = PhysicalKey::Code(KeyCode::Space);
                 assert!(
                     ui::testing::Dispatch::new()
                         .modifiers(modifiers)
                         .doc(&mut doc)
-                        .send(&mut widget, &ui::synthetic_input::keyboard_input(event),)
+                        .send(&mut widget, &tilo_ui_base::synthetic_input::keyboard_input(event),)
                         .handled,
                     "the terminal must consume modified Space"
                 );
@@ -1000,7 +1000,7 @@ tilo_test_env::scenario! {
     phase terminal_draw_and_disconnected_state_follow_theme_and_text_scale;
     {
         {
-            use ui::widget::Widget;
+            use tilo_ui_base::widget::Widget;
 
             let mut widget = TerminalWidget::spawn_command(shell_command("true", "exit /b 0"))
                 .expect("spawn short-lived pty command");
@@ -1019,12 +1019,12 @@ tilo_test_env::scenario! {
                     .name
                     .as_deref()
                     .is_some_and(|name| name.contains("Session ended"))
-                    && child.live == Some(ui::a11y::Politeness::Assertive)
+                    && child.live == Some(tilo_ui_base::a11y::Politeness::Assertive)
             }));
         }
 
         {
-            use ui::Theme;
+            use tilo_ui_base::Theme;
             let theme = Theme::dark();
             let mono = theme.tokens.font_mono;
             assert!(
@@ -1034,7 +1034,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+            use tilo_ui_base::{Theme, presence::PresenceCtx, text_render::TextRenderer};
             use vello::{Scene, kurbo::Affine};
 
             let (mut widget, _) = build_test_widget();
@@ -1061,7 +1061,7 @@ tilo_test_env::scenario! {
 
     phase the_cursor_is_an_opaque_inverted_cell;
     {
-        let palette = ui::tokens::TerminalPalette::dark();
+        let palette = tilo_ui_base::tokens::TerminalPalette::dark();
         let cursor = crate::inner::cursor_from_palette(&palette);
         assert!(
             (cursor.components[3] - 1.0).abs() < f32::EPSILON,
@@ -1171,7 +1171,7 @@ fn find_matches_follow_case_and_whole_word_options() {
 )]
 fn terminal_palette_tracks_the_theme() {
     {
-        use ui::tokens::TerminalPalette;
+        use tilo_ui_base::tokens::TerminalPalette;
         use vello::peniko::Color;
 
         let mut palette_a = TerminalPalette::dark();
@@ -1210,7 +1210,7 @@ fn terminal_palette_tracks_the_theme() {
     }
 
     {
-        use ui::tokens::TerminalPalette;
+        use tilo_ui_base::tokens::TerminalPalette;
         use vello::peniko::Color;
 
         struct MockMaster;
@@ -1271,7 +1271,7 @@ fn terminal_palette_tracks_the_theme() {
 
     {
         use ui::ColorCompat;
-        use ui::theme::Theme;
+        use tilo_ui_base::theme::Theme;
         let rgb = |c: vello::peniko::Color| (c.r(), c.g(), c.b());
 
         let dark = Theme::dark();
@@ -1523,7 +1523,7 @@ fn clipboard_gestures_route_through_confirmed_actions() {
     {
         use winit::keyboard::{Key, NamedKey, SmolStr};
 
-        ui::clipboard_copy("shortcut paste");
+        tilo_ui_base::clipboard_copy("shortcut paste");
         for key in [
             Key::Character(SmolStr::new_static("V")),
             Key::Named(NamedKey::Insert),
@@ -1538,7 +1538,7 @@ fn clipboard_gestures_route_through_confirmed_actions() {
     }
 
     {
-        ui::clipboard_copy_primary("PASTED");
+        tilo_ui_base::clipboard_copy_primary("PASTED");
         let (mut w, write_rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
@@ -1551,7 +1551,7 @@ fn clipboard_gestures_route_through_confirmed_actions() {
     {
         use crate::resource::TerminalEffect;
         let mut viewer = tilo_app_test_host::TestApp::<crate::resource::TerminalShell>::with_role(
-            ui::Role::Viewer,
+            tilo_ui_base::Role::Viewer,
         )
         .expect("terminal");
         for effect in [
@@ -1598,7 +1598,7 @@ fn person_paste_is_immediate_while_published_paste_asks_for_confirmation() {
     assert_eq!((own, direct), (Some(true), Ok(())));
     let _ = drain_writes(&writes);
 
-    ui::clipboard_copy("person shortcut paste");
+    tilo_ui_base::clipboard_copy("person shortcut paste");
     app.with_surface(|terminal: &mut crate::TerminalView| {
         use winit::keyboard::{Key, NamedKey, SmolStr};
         let mut doc = AutoCommit::new();
@@ -1626,7 +1626,7 @@ fn person_paste_is_immediate_while_published_paste_asks_for_confirmation() {
         "the person's Ctrl+Shift+V and Shift+Insert paste with no confirmation step"
     );
 
-    ui::clipboard_copy("person menu paste");
+    tilo_ui_base::clipboard_copy("person menu paste");
     app.with_surface(|terminal: &mut crate::TerminalView| {
         terminal.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
         terminal.open_context_menu_at(Point::new(20.0, 20.0));
@@ -1835,7 +1835,7 @@ fn find_in_terminal_is_local_discoverable_and_reveals() {
     use ui::window_toolbar::{SearchOpening, take_search_request};
 
     {
-        use ui::{Platform, PlatformConventions};
+        use tilo_ui_base::{Platform, PlatformConventions};
         use winit::keyboard::{Key, ModifiersState};
 
         for platform in [Platform::Windows, Platform::MacOs, Platform::Linux] {
@@ -1867,7 +1867,7 @@ fn find_in_terminal_is_local_discoverable_and_reveals() {
     }
 
     {
-        use ui::{Platform, PlatformConventions};
+        use tilo_ui_base::{Platform, PlatformConventions};
         use winit::keyboard::{Key, ModifiersState};
 
         for (platform, modifiers) in [
@@ -1905,7 +1905,7 @@ fn find_in_terminal_is_local_discoverable_and_reveals() {
     }
 
     {
-        use ui::a11y::{Action, Role};
+        use tilo_ui_base::{a11y::Action, a11y::Role};
 
         let (mut widget, writes) = build_test_widget();
         let mut doc = AutoCommit::new();
@@ -1924,7 +1924,7 @@ fn find_in_terminal_is_local_discoverable_and_reveals() {
                     .as_deref()
                     .expect("transcript target"),
                 &Action::ShowContextMenu,
-                &mut ui::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &ROOT,
             )
         );
@@ -1948,7 +1948,7 @@ fn find_in_terminal_is_local_discoverable_and_reveals() {
         assert!(view.terminal_mut().perform_semantic_action(
             find.action_target.as_deref().expect("Find target"),
             &Action::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &ROOT,
         ));
         view.sync(&doc, &ROOT);
@@ -2039,7 +2039,7 @@ fn find_in_terminal_is_local_discoverable_and_reveals() {
 )]
 fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
     {
-        use ui::a11y::Role;
+        use tilo_ui_base::a11y::Role;
         use winit::keyboard::{Key, NamedKey};
 
         for (key, shift) in [(NamedKey::ContextMenu, false), (NamedKey::F10, true)] {
@@ -2069,7 +2069,7 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
     }
 
     {
-        use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+        use tilo_ui_base::{Theme, presence::PresenceCtx, text_render::TextRenderer};
         use vello::{Scene, kurbo::Affine};
         use winit::keyboard::{Key, NamedKey};
         for height in [120.0, 160.0] {
@@ -2111,7 +2111,7 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
                 "the Find row asks the hosting view for the window bar's search"
             );
             assert!(
-                ui::widget::controls::take_control_invocation(&mut widget).is_none(),
+                tilo_ui_base::widget::controls::take_control_invocation(&mut widget).is_none(),
                 "Find is local presentation"
             );
             assert!(drain_writes(&writes).is_empty());
@@ -2135,11 +2135,11 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
             false,
         );
 
-        let semantics = ui::widget::Widget::accessibility(&widget).expect("terminal semantics");
+        let semantics = tilo_ui_base::widget::Widget::accessibility(&widget).expect("terminal semantics");
         let menu = semantics
             .children
             .iter()
-            .find(|child| child.role == ui::a11y::Role::Menu)
+            .find(|child| child.role == tilo_ui_base::a11y::Role::Menu)
             .expect("open context menu is exposed");
         assert!(menu.state.modal && menu.state.expanded == Some(true));
         assert!(menu.children.iter().any(|item| {
@@ -2179,7 +2179,7 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
     }
 
     {
-        use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+        use tilo_ui_base::{Theme, presence::PresenceCtx, text_render::TextRenderer};
         use vello::{
             Scene,
             kurbo::{Affine, Point, Rect},
@@ -2228,7 +2228,7 @@ fn menu_rows_drive_the_process_and_follow_its_lifecycle() {
     widget.activate_menu_row_for_test(clear);
     assert_eq!(drain_writes(&writes), vec![0x0c]);
 
-    ui::clipboard_copy("menu snapshot");
+    tilo_ui_base::clipboard_copy("menu snapshot");
     widget.open_context_menu_at(Point::new(20.0, 20.0));
     let paste = row(&widget, "Paste");
     widget.activate_menu_row_for_test(paste);
@@ -2495,10 +2495,10 @@ fn ime_and_accessibility_expose_terminal_semantics() {
         let (mut w, rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.set_focus(true);
-        assert_eq!(w.ime_content(), Some(ui::ime::InputContent::TERMINAL));
+        assert_eq!(w.ime_content(), Some(tilo_ui_base::ime::InputContent::TERMINAL));
         assert_eq!(
-            ui::ime::ImeWindowState::from_widget(&w).unwrap().content,
-            ui::ime::InputContent::TERMINAL
+            tilo_ui_base::ime::ImeWindowState::from_widget(&w).unwrap().content,
+            tilo_ui_base::ime::InputContent::TERMINAL
         );
         let stamp = w.ime_edit_fingerprint(&[9; 32]).unwrap();
         w.feed(b"x");
@@ -2555,8 +2555,8 @@ fn ime_and_accessibility_expose_terminal_semantics() {
     }
 
     {
-        use ui::a11y::Role;
-        use ui::widget::Widget;
+        use tilo_ui_base::a11y::Role;
+        use tilo_ui_base::widget::Widget;
         let (mut w, _rx) = build_test_widget();
         let doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 80.0), 10.0, 20.0);
@@ -2587,8 +2587,8 @@ fn ime_and_accessibility_expose_terminal_semantics() {
     }
 
     {
-        use ui::a11y::Action;
-        use ui::widget::Widget;
+        use tilo_ui_base::a11y::Action;
+        use tilo_ui_base::widget::Widget;
 
         let (mut w, writes) = build_test_widget();
         let mut doc = AutoCommit::new();
@@ -2596,7 +2596,7 @@ fn ime_and_accessibility_expose_terminal_semantics() {
             &mut w,
             &Action::SetValue("printf semantic".to_string()),
             &[],
-            &mut ui::widget::Edits::lend(&mut doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(
@@ -2606,8 +2606,8 @@ fn ime_and_accessibility_expose_terminal_semantics() {
     }
 
     {
-        use ui::a11y::Action;
-        use ui::widget::Widget;
+        use tilo_ui_base::a11y::Action;
+        use tilo_ui_base::widget::Widget;
 
         let (mut w, _writes) = build_test_widget();
         let mut doc = AutoCommit::new();
@@ -2620,7 +2620,7 @@ fn ime_and_accessibility_expose_terminal_semantics() {
                 focus: 3,
             },
             &[],
-            &mut ui::widget::Edits::lend(&mut doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(
@@ -2633,7 +2633,7 @@ fn ime_and_accessibility_expose_terminal_semantics() {
         );
         assert_eq!(
             w.accessibility().and_then(|node| node.text_selection),
-            Some(ui::a11y::AccessibleTextSelection {
+            Some(tilo_ui_base::a11y::AccessibleTextSelection {
                 anchor: 1,
                 focus: "A🦀e\u{301}".len(),
             }),
@@ -2646,7 +2646,7 @@ fn ime_and_accessibility_expose_terminal_semantics() {
                 focus: 6,
             },
             &[],
-            &mut ui::widget::Edits::lend(&mut doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(
@@ -2659,7 +2659,7 @@ fn ime_and_accessibility_expose_terminal_semantics() {
         );
         assert_eq!(
             w.accessibility().and_then(|node| node.text_selection),
-            Some(ui::a11y::AccessibleTextSelection {
+            Some(tilo_ui_base::a11y::AccessibleTextSelection {
                 anchor: 1,
                 focus: "A🦀e\u{301}\ngo".len(),
             })
@@ -2702,14 +2702,14 @@ fn terminal_resource_identity_convergence_and_presence() {
             &Rc::new(right),
         );
         assert_eq!(
-            ui::presence::capability::presence_key(&left_view),
-            ui::presence::capability::presence_key(&right_view),
+            tilo_ui_base::presence::capability::presence_key(&left_view),
+            tilo_ui_base::presence::capability::presence_key(&right_view),
             "presence addresses converge after merge"
         );
     }
 
     {
-        use ui::widget::Widget;
+        use tilo_ui_base::widget::Widget;
 
         let (mut widget, _writes) = build_test_widget();
         widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 120.0), 10.0, 20.0);
@@ -2729,7 +2729,7 @@ fn terminal_resource_identity_convergence_and_presence() {
         assert!(widget.link_row(link.id.as_str()).is_some());
         let semantics = Widget::accessibility(&widget).expect("terminal semantics");
         assert!(semantics.children.iter().any(|child| {
-            child.role == ui::a11y::Role::Link
+            child.role == tilo_ui_base::a11y::Role::Link
                 && child.name.as_deref() == Some("https://example.test/docs")
                 && child.action_target.as_deref() == Some(link.id.as_str())
                 && child.state.focusable
@@ -2756,7 +2756,7 @@ fn terminal_resource_identity_convergence_and_presence() {
     }
 
     {
-        use ui::presence::PresenceKey;
+        use tilo_ui_base::presence::PresenceKey;
         let mut a =
             tilo_app_test_host::TestApp::<crate::resource::TerminalShell>::new().expect("terminal");
         a.with_surface(|terminal: &mut crate::TerminalView| terminal.feed(b"peer-a-line-one\r\n"))
@@ -2775,24 +2775,24 @@ fn terminal_resource_identity_convergence_and_presence() {
         );
         let a_key = a
             .with_surface(|terminal: &mut crate::TerminalView| {
-                ui::presence::capability::presence_key(terminal)
+                tilo_ui_base::presence::capability::presence_key(terminal)
             })
             .expect("hosted terminal");
-        let b_key = ui::presence::capability::presence_key(&b);
+        let b_key = tilo_ui_base::presence::capability::presence_key(&b);
         assert_eq!(
             a_key, b_key,
             "both peers scope presence under the same shared pane id"
         );
         match a_key {
             Some(PresenceKey::App { app, .. }) => {
-                assert_eq!(app, ui::permissions::AppKind::Terminal);
+                assert_eq!(app, tilo_ui_base::permissions::AppKind::Terminal);
             }
             other => panic!("expected App presence key, got {other:?}"),
         }
     }
 
     {
-        use ui::collaboration::PresencePayload;
+        use tilo_ui_base::collaboration::PresencePayload;
 
         let (mut w, _) = build_test_widget();
         w.force_grid(vec!["abcdefgh".to_string()]);
@@ -2802,7 +2802,7 @@ fn terminal_resource_identity_convergence_and_presence() {
             cursor: GridPos { row: 0, col: 5 },
         }));
         let (_key, payload) =
-            ui::presence::capability::presence_payload(&w).expect("payload with selection");
+            tilo_ui_base::presence::capability::presence_payload(&w).expect("payload with selection");
         match payload {
             PresencePayload::Selection { start, end } => {
                 assert_eq!((start, end), (2, 5), "selection linearised to cell columns");
@@ -2812,7 +2812,7 @@ fn terminal_resource_identity_convergence_and_presence() {
 
         w.force_selection(None);
         let (_key, payload) =
-            ui::presence::capability::presence_payload(&w).expect("payload with cursor");
+            tilo_ui_base::presence::capability::presence_payload(&w).expect("payload with cursor");
         assert!(
             matches!(payload, PresencePayload::Caret { .. }),
             "cursor payload"
@@ -3481,7 +3481,7 @@ fn send_left_press_mods(widget: &mut TerminalWidget, doc: &mut AutoCommit, shift
     if shift {
         state |= ModifiersState::SHIFT;
     }
-    let ev = ui::synthetic_input::mouse_press();
+    let ev = tilo_ui_base::synthetic_input::mouse_press();
     ui::testing::Dispatch::new()
         .modifiers(state)
         .doc(doc)
@@ -3490,7 +3490,7 @@ fn send_left_press_mods(widget: &mut TerminalWidget, doc: &mut AutoCommit, shift
 
 fn send_middle_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
     use winit::event::{ElementState, MouseButton};
-    let ev = ui::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Middle);
+    let ev = tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Middle);
     ui::testing::Dispatch::new().doc(doc).send(widget, &ev);
 }
 
@@ -3608,12 +3608,12 @@ fn mouse_selection_gestures_select_extend_and_stay_anchored() {
         assert_eq!(w.test_selected_text().as_deref(), Some("bravo"));
 
         assert_eq!(
-            ui::text_selection::clipboard_paste_primary().as_deref(),
+            tilo_ui_base::text_selection::clipboard_paste_primary().as_deref(),
             Some("bravo"),
             "finishing a drag puts exactly the selection on the primary selection"
         );
         assert_eq!(
-            ui::text_selection::clipboard_paste().as_deref(),
+            tilo_ui_base::text_selection::clipboard_paste().as_deref(),
             Some("bravo"),
             "select-to-copy put exactly the selection on the clipboard"
         );
@@ -3627,7 +3627,7 @@ fn mouse_selection_gestures_select_extend_and_stay_anchored() {
         send_cursor_move(&mut widget, &mut doc, 4.0 + 2.0 * 10.0 + 1.0, 20.0 + 1.0);
         send_left_press(&mut widget, &mut doc);
 
-        let ev = ui::synthetic_input::cursor_moved(4.0 + 20.0 * 10.0 + 1.0, 20.0 + 1.0);
+        let ev = tilo_ui_base::synthetic_input::cursor_moved(4.0 + 20.0 * 10.0 + 1.0, 20.0 + 1.0);
         let handled = ui::testing::Dispatch::new()
             .doc(&mut doc)
             .send(&mut widget, &ev)
@@ -3651,17 +3651,17 @@ fn mouse_selection_gestures_select_extend_and_stay_anchored() {
 #[serial_test::serial]
 fn osc_52_writes_clipboard_from_base64() {
     let (mut w, _) = build_test_widget();
-    ui::text_selection::clipboard_copy("untouched");
+    tilo_ui_base::text_selection::clipboard_copy("untouched");
     w.feed(b"\x1b]52;c;dGlsby1vc2M1Mg==\x07");
     assert_eq!(
-        ui::text_selection::clipboard_paste().as_deref(),
+        tilo_ui_base::text_selection::clipboard_paste().as_deref(),
         Some("untouched"),
         "by default, program output must not replace the clipboard"
     );
     w.set_allow_osc52_clipboard(true);
     w.feed(b"\x1b]52;c;dGlsby1vc2M1Mg==\x07");
     assert_eq!(
-        ui::text_selection::clipboard_paste().as_deref(),
+        tilo_ui_base::text_selection::clipboard_paste().as_deref(),
         Some("tilo-osc52"),
         "once allowed, OSC 52 decodes base64 into the clipboard"
     );
@@ -3900,7 +3900,7 @@ tilo_test_env::scenario! {
 
     phase typing_damages_only_its_row_and_the_cursor;
     {
-        use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+        use tilo_ui_base::{Theme, presence::PresenceCtx, text_render::TextRenderer};
         use vello::{Scene, kurbo::Affine};
 
         let (mut widget, _) = build_test_widget();
@@ -3911,7 +3911,7 @@ tilo_test_env::scenario! {
         let mut text = TextRenderer::new();
         let mut frame = |widget: &mut TerminalWidget| {
             let mut scene = Box::new(Scene::new());
-            let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {
+            let ((), parts) = tilo_ui_base::scene_parts::record(&mut scene, |scene| {
                 widget.draw_child(
                     scene,
                     Affine::IDENTITY,
@@ -3926,13 +3926,13 @@ tilo_test_env::scenario! {
         let (before, before_parts) = frame(&mut widget);
         let (again, again_parts) = frame(&mut widget);
         assert_eq!(
-            ui::scene_parts::damage(&before, &before_parts, &again, &again_parts),
+            tilo_ui_base::scene_parts::damage(&before, &before_parts, &again, &again_parts),
             Ok(Vec::new()),
             "an unchanged terminal draws the same commands"
         );
         widget.feed(b"l");
         let (after, after_parts) = frame(&mut widget);
-        let damage = ui::scene_parts::damage(&again, &again_parts, &after, &after_parts)
+        let damage = tilo_ui_base::scene_parts::damage(&again, &again_parts, &after, &after_parts)
             .expect("typing changes nothing outside the terminal's parts");
         assert!(!damage.is_empty(), "the typed letter is repainted");
         let (_, rows) = widget.grid_size();
@@ -3955,7 +3955,7 @@ tilo_test_env::scenario! {
 
     phase fingers_scroll_the_scrollback_by_the_pixel_and_copy_its_rows;
     {
-        use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+        use tilo_ui_base::{Theme, presence::PresenceCtx, text_render::TextRenderer};
         use vello::{Scene, kurbo::Affine};
         use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
 
@@ -4008,7 +4008,7 @@ tilo_test_env::scenario! {
         );
         frame(&mut widget);
         let mut regions = Vec::new();
-        let offers = ui::scroll_copy::accepting(|| widget.collect_damage(&mut regions));
+        let offers = tilo_ui_base::scroll_copy::accepting(|| widget.collect_damage(&mut regions));
         assert_eq!(offers.len(), 1, "the scroll is offered as a copy");
         assert_eq!(offers[0].delta(), vello::kurbo::Vec2::new(0.0, 7.0));
         let area: f64 = regions.iter().map(Rect::area).sum();
@@ -4093,11 +4093,11 @@ fn an_agents_narrated_run_lands_at_the_prompt() {
         prompt.width() > 0.0 && prompt.height() > 0.0,
         "the prompt has a line: {prompt:?}"
     );
-    let bindings = ui::widget::controls::control_action_bindings(app.harness().root_widget());
+    let bindings = tilo_ui_base::widget::controls::control_action_bindings(app.harness().root_widget());
     let run = bindings
         .iter()
         .find_map(|binding| match &binding.kind {
-            ui::widget::ControlBindingKind::Action(address) if address.action == "run" => {
+            tilo_ui_base::widget::ControlBindingKind::Action(address) if address.action == "run" => {
                 Some(address.clone())
             }
             _ => None,
@@ -4117,12 +4117,12 @@ fn an_agents_narrated_run_lands_at_the_prompt() {
     let mut followed = ui::app::driver::FollowedView::default();
     assert!(
         !app.harness().follow_view(
-            &ui::permissions::MemberId::person("someone-else"),
+            &tilo_ui_base::permissions::MemberId::person("someone-else"),
             &mut ui::app::driver::FollowedView::default()
         ),
         "not following moves nothing"
     );
-    let agent = ui::permissions::MemberId::agent("agent", "someone-else");
+    let agent = tilo_ui_base::permissions::MemberId::agent("agent", "someone-else");
     assert!(app.harness().follow_view(&agent, &mut followed));
     assert!(!app.harness().follow_view(&agent, &mut followed));
     let audit = app.harness().native_app_audit();

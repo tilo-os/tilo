@@ -12,21 +12,22 @@ use vello::peniko::{Color, Fill, ImageBrush};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-use crate::a11y::{AccessNode, AccessState, Role};
-use crate::component::{Event, Value};
-use crate::icons::Icon;
-use crate::motion::{Direction, MotionValue};
-use crate::paint::{PaintCtx, with_alpha_scaled};
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::{MotionSource, TextRole};
-use crate::widget::ScrollMetrics;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+use tilo_ui_base::{component::Event, component::Value};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{motion::Direction, motion::MotionValue};
+use tilo_ui_base::{paint::PaintCtx, paint::with_alpha_scaled};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{tokens::MotionSource, tokens::TextRole};
+use tilo_ui_base::widget::ScrollMetrics;
 use crate::widget::scrollbar::{PressOutcome, Scrollbar};
-use crate::widget::{Ink, TaffyTreeExt, Widget};
+use crate::widget::Ink;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 use super::{EDGE_GRAB, Geom, SNAP_REACH, on_grid, snap_target, tick_steps, timecode};
 
-const DRAG_THRESHOLD: f64 = crate::dnd::DRAG_START_THRESHOLD_PX;
+const DRAG_THRESHOLD: f64 = tilo_ui_base::dnd::DRAG_START_THRESHOLD_PX;
 
 /// The shortest a trim leaves a span when the view gives no grid: a tenth of a second.
 const LEAST_LENGTH: f64 = 0.1;
@@ -277,9 +278,9 @@ impl TrackTimeline {
     /// Take what the view hands in now: a span whose place changed glides from where it was drawn
     /// to its new one, a span newly chosen rises, and one no longer there is forgotten.
     pub(crate) fn retarget(&mut self, tracks: Vec<Track>, markers: Vec<Marker>) {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let theme = self.theme.clone();
-        let timing = |spec: crate::motion::MotionSpec| {
+        let timing = |spec: tilo_ui_base::motion::MotionSpec| {
             theme
                 .as_ref()
                 .map(|theme| spec.timing(Direction::Enter, theme.motion(), MotionSource::Pointer))
@@ -290,7 +291,7 @@ impl TrackTimeline {
             let place = Vec2::new(span.start, span.length);
             match self.shown.get_mut(&span.key) {
                 Some(shown) if shown.target() != place => {
-                    match timing(crate::motion::ListChange::MOVE) {
+                    match timing(tilo_ui_base::motion::ListChange::MOVE) {
                         Some(timing) => shown.set(place, timing, now),
                         None => shown.snap(place),
                     }
@@ -303,7 +304,7 @@ impl TrackTimeline {
             let chosen = if span.selected { 1.0 } else { 0.0 };
             match self.lift.get_mut(&span.key) {
                 Some(lift) if (lift.target() - chosen).abs() > f64::EPSILON => {
-                    match timing(crate::motion::ControlChange::SHOW) {
+                    match timing(tilo_ui_base::motion::ControlChange::SHOW) {
                         Some(timing) => lift.set(chosen, timing, now),
                         None => lift.snap(chosen),
                     }
@@ -384,7 +385,7 @@ impl TrackTimeline {
 
     /// Where span `index` of track `track` is drawn now: its start and its length.
     fn drawn_place(&self, span: &Span) -> (f64, f64) {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.shown
             .get(&span.key)
             .map_or((span.start, span.length), |shown| {
@@ -535,7 +536,7 @@ impl TrackTimeline {
         let geom = self.geom();
         let gutter = self.scrollbar_h();
         let rows_bottom =
-            geom.rect.y0 + geom.ruler_h + geom.track_h * crate::num::f64_of_usize(geom.tracks);
+            geom.rect.y0 + geom.ruler_h + geom.track_h * tilo_ui_base::num::f64_of_usize(geom.tracks);
         let y0 = rows_bottom.min(self.rect.y1 - gutter).max(geom.rect.y0);
         if y0 + gutter > self.rect.y1 + 0.5 {
             return None;
@@ -862,12 +863,12 @@ impl TrackTimeline {
             return false;
         }
         let theme = self.theme();
-        let timing = crate::motion::Snap::SPEC.timing(
+        let timing = tilo_ui_base::motion::Snap::SPEC.timing(
             Direction::Enter,
             theme.motion(),
             MotionSource::Pointer,
         );
-        let frame = crate::motion::frame_now();
+        let frame = tilo_ui_base::motion::frame_now();
         for (key, _) in due {
             let Some(span) = self
                 .tracks
@@ -1124,7 +1125,7 @@ impl TrackTimeline {
         let geom = self.geom();
         let lane = geom.lane();
         let ruler = geom.ruler();
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let radius = f64::from(theme.tokens.radii.item).min(6.0);
         let hairline = f64::from(theme.tokens.border.width).max(1.0);
         let ink = colors.text_primary;
@@ -1149,7 +1150,7 @@ impl TrackTimeline {
                     with_alpha_scaled(ink, 0.025),
                 );
             }
-            crate::paint::stroke_line(
+            tilo_ui_base::paint::stroke_line(
                 ctx.scene,
                 ctx.transform,
                 Line::new((self.rect.x0, band.y1), (self.rect.x1, band.y1)),
@@ -1158,7 +1159,7 @@ impl TrackTimeline {
             );
             let header = geom.header(row);
             let name = if track.label.is_empty() {
-                crate::i18n::widget_format("timeline-track-untitled", &[])
+                tilo_ui_base::i18n::widget_format("timeline-track-untitled", &[])
             } else {
                 track.label.clone()
             };
@@ -1192,17 +1193,17 @@ impl TrackTimeline {
                 if on {
                     ctx.fill_round(rect, radius, with_alpha_scaled(colors.intent.accent, 0.18));
                 }
-                crate::icons::draw_icon(
+                tilo_ui_base::icons::draw_icon(
                     ctx.scene,
                     ctx.transform,
                     rect.inset(-4.0),
                     toggle.icon(on),
                     if on { colors.intent.accent } else { dim },
-                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
             }
         }
-        crate::paint::stroke_line(
+        tilo_ui_base::paint::stroke_line(
             ctx.scene,
             ctx.transform,
             Line::new((lane.x0, self.rect.y0), (lane.x0, self.rect.y1)),
@@ -1235,7 +1236,7 @@ impl TrackTimeline {
             } else {
                 ruler.y1 - 5.0
             };
-            crate::paint::stroke_line(
+            tilo_ui_base::paint::stroke_line(
                 ctx.scene,
                 ctx.transform,
                 Line::new((x, top), (x, ruler.y1)),
@@ -1259,7 +1260,7 @@ impl TrackTimeline {
             }
             t += minor;
         }
-        crate::paint::stroke_line(
+        tilo_ui_base::paint::stroke_line(
             ctx.scene,
             ctx.transform,
             Line::new((lane.x0, ruler.y1), (lane.x1, ruler.y1)),
@@ -1319,7 +1320,7 @@ impl TrackTimeline {
             for edge in [start, start + length] {
                 if snap_target(edge, &self.targets(Some((track, index)), true), 1e-6).is_some() {
                     let x = geom.x_of(edge);
-                    crate::paint::stroke_line(
+                    tilo_ui_base::paint::stroke_line(
                         ctx.scene,
                         ctx.transform,
                         Line::new((x, ruler.y1), (x, self.rect.y1)),
@@ -1338,14 +1339,14 @@ impl TrackTimeline {
             };
             let x = geom.x_of(at);
             let tone = Self::tone(theme, marker.tone);
-            crate::paint::stroke_line(
+            tilo_ui_base::paint::stroke_line(
                 ctx.scene,
                 ctx.transform,
                 Line::new(
                     (x, ruler.y0),
                     (
                         x,
-                        (ruler.y1 + geom.track_h * crate::num::f64_of_usize(geom.tracks))
+                        (ruler.y1 + geom.track_h * tilo_ui_base::num::f64_of_usize(geom.tracks))
                             .min(self.rect.y1),
                     ),
                 ),
@@ -1365,13 +1366,13 @@ impl TrackTimeline {
             }
         }
 
-        let tracks_bottom = ruler.y1 + geom.track_h * crate::num::f64_of_usize(geom.tracks);
+        let tracks_bottom = ruler.y1 + geom.track_h * tilo_ui_base::num::f64_of_usize(geom.tracks);
         // Where a measurement found a problem: a danger flag on the ruler and a line down the
         // tracks, so the flag stands at the moment it is about.
         for at in &self.clips {
             let x = geom.x_of(*at);
-            let danger = crate::widget::Tone::Danger.colour(theme);
-            crate::paint::stroke_line(
+            let danger = tilo_ui_base::widget::Tone::Danger.colour(theme);
+            tilo_ui_base::paint::stroke_line(
                 ctx.scene,
                 ctx.transform,
                 Line::new((x, ruler.y0), (x, tracks_bottom.min(self.rect.y1))),
@@ -1390,8 +1391,8 @@ impl TrackTimeline {
         // The playhead: a line down every row with a handle on the ruler.
         let head = self.shown_playhead();
         let x = geom.x_of(head);
-        let red = crate::widget::Tone::Danger.colour(theme);
-        crate::paint::stroke_line(
+        let red = tilo_ui_base::widget::Tone::Danger.colour(theme);
+        tilo_ui_base::paint::stroke_line(
             ctx.scene,
             ctx.transform,
             Line::new((x, ruler.y0), (x, tracks_bottom.min(self.rect.y1))),
@@ -1408,7 +1409,7 @@ impl TrackTimeline {
         ctx.scene
             .fill(Fill::NonZero, ctx.transform, red, None, &handle);
         if self.focus == Some(Focus::Playhead) {
-            crate::paint::stroke_line(
+            tilo_ui_base::paint::stroke_line(
                 ctx.scene,
                 ctx.transform,
                 Line::new((x - 8.0, ruler.y1 - 14.0), (x + 8.0, ruler.y1 - 14.0)),
@@ -1547,7 +1548,7 @@ impl TrackTimeline {
                 Fill::NonZero,
                 ctx.transform,
                 with_alpha_scaled(
-                    crate::widget::Tone::Warning.colour(theme),
+                    tilo_ui_base::widget::Tone::Warning.colour(theme),
                     alpha(0.35 * fade),
                 ),
                 None,
@@ -1567,7 +1568,7 @@ impl TrackTimeline {
             ctx.scene.fill(
                 Fill::NonZero,
                 ctx.transform,
-                crate::widget::Tone::Warning.colour(theme),
+                tilo_ui_base::widget::Tone::Warning.colour(theme),
                 None,
                 &diamond,
             );
@@ -1654,28 +1655,28 @@ impl TrackTimeline {
     }
 
     fn track_key(track: &Track) -> u64 {
-        crate::a11y::hash_key(&("track-timeline.track", &track.key))
+        tilo_ui_base::a11y::hash_key(&("track-timeline.track", &track.key))
     }
 
     fn span_key(span: &Span) -> u64 {
-        crate::a11y::hash_key(&("track-timeline.span", &span.key))
+        tilo_ui_base::a11y::hash_key(&("track-timeline.span", &span.key))
     }
 
     fn marker_key(marker: &Marker) -> u64 {
-        crate::a11y::hash_key(&("track-timeline.marker", &marker.key))
+        tilo_ui_base::a11y::hash_key(&("track-timeline.marker", &marker.key))
     }
 
     fn toggle_key(toggle: Toggle) -> u64 {
-        crate::a11y::hash_key(&("track-timeline.toggle", toggle.words()))
+        tilo_ui_base::a11y::hash_key(&("track-timeline.toggle", toggle.words()))
     }
 
     fn playhead_key() -> u64 {
-        crate::a11y::hash_key(&"track-timeline.playhead")
+        tilo_ui_base::a11y::hash_key(&"track-timeline.playhead")
     }
 
     /// When a span is, as a person reads it: `0:03.0 to 0:07.5`.
     fn span_time(span: &Span) -> String {
-        crate::format::range(
+        tilo_ui_base::format::range(
             &timecode(span.start, true),
             &timecode(span.start + span.length, true),
         )
@@ -1685,7 +1686,7 @@ impl TrackTimeline {
         let span = self.tracks.get(row)?.spans.get(index)?;
         let rect = geom.span_rect(row, span.start, span.length, self.span_inset());
         let name = if span.label.is_empty() {
-            crate::i18n::widget_format("timeline-span-untitled", &[])
+            tilo_ui_base::i18n::widget_format("timeline-span-untitled", &[])
         } else {
             span.label.clone()
         };
@@ -1715,7 +1716,7 @@ impl TrackTimeline {
             };
             children.push(
                 AccessNode::new(Role::ToggleButton)
-                    .with_name(crate::i18n::widget_format(toggle.words(), &[]))
+                    .with_name(tilo_ui_base::i18n::widget_format(toggle.words(), &[]))
                     .with_key(Self::toggle_key(toggle))
                     .with_bounds(rect)
                     .with_state(AccessState::new().checked(toggle.on(track)).focusable(true)),
@@ -1732,23 +1733,23 @@ impl TrackTimeline {
         }
         let mut said = Vec::new();
         if track.muted {
-            said.push(crate::i18n::widget_format("timeline-muted", &[]));
+            said.push(tilo_ui_base::i18n::widget_format("timeline-muted", &[]));
         }
         if track.solo {
-            said.push(crate::i18n::widget_format("timeline-soloed", &[]));
+            said.push(tilo_ui_base::i18n::widget_format("timeline-soloed", &[]));
         }
         if track.locked {
-            said.push(crate::i18n::widget_format("timeline-locked", &[]));
+            said.push(tilo_ui_base::i18n::widget_format("timeline-locked", &[]));
         }
         let name = if track.label.is_empty() {
-            crate::i18n::widget_format("timeline-track-untitled", &[])
+            tilo_ui_base::i18n::widget_format("timeline-track-untitled", &[])
         } else {
             track.label.clone()
         };
         Some(
             AccessNode::new(Role::Group)
                 .with_name(name)
-                .with_optional_description((!said.is_empty()).then(|| crate::format::list(&said)))
+                .with_optional_description((!said.is_empty()).then(|| tilo_ui_base::format::list(&said)))
                 .with_key(Self::track_key(track))
                 .with_bounds(geom.row(row))
                 .with_children(children),
@@ -1756,8 +1757,8 @@ impl TrackTimeline {
     }
 
     /// Run `action` on the element `key` names.
-    fn act_on(&mut self, action: &crate::a11y::Action, key: u64, parent: Option<u64>) -> bool {
-        use crate::a11y::Action;
+    fn act_on(&mut self, action: &tilo_ui_base::a11y::Action, key: u64, parent: Option<u64>) -> bool {
+        use tilo_ui_base::a11y::Action;
         if key == Self::playhead_key() {
             self.focus = Some(Focus::Playhead);
             self.dirty = true;
@@ -1877,7 +1878,7 @@ impl TrackTimeline {
 }
 
 impl Widget for TrackTimeline {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -1915,12 +1916,12 @@ impl Widget for TrackTimeline {
         let rows = Geom::height(ruler_h, track_h, self.tracks.len()) + self.scrollbar_h();
         taffy::Size {
             width,
-            height: crate::num::f32_of_f64(rows),
+            height: tilo_ui_base::num::f32_of_f64(rows),
         }
     }
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
     }
 
     fn get_rect(&self) -> Rect {
@@ -1931,7 +1932,7 @@ impl Widget for TrackTimeline {
         self.rect == Rect::ZERO
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1947,7 +1948,7 @@ impl Widget for TrackTimeline {
         self.dirty = false;
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.modifiers = ctx.modifiers.state();
         match event {
             WindowEvent::PinchGesture { delta, .. } if self.rect.contains(self.pointer) => {
@@ -2051,7 +2052,7 @@ impl Widget for TrackTimeline {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.shown.values().any(|v| v.is_moving(now))
             || self.lift.values().any(|v| v.is_moving(now))
     }
@@ -2118,7 +2119,7 @@ impl Widget for TrackTimeline {
         let head = self.shown_playhead();
         let mut children = vec![
             AccessNode::new(Role::Slider)
-                .with_name(crate::i18n::widget_format("timeline-playhead", &[]))
+                .with_name(tilo_ui_base::i18n::widget_format("timeline-playhead", &[]))
                 .with_value(timecode(head, true))
                 .with_key(Self::playhead_key())
                 .with_bounds(geom.ruler())
@@ -2130,7 +2131,7 @@ impl Widget for TrackTimeline {
         ];
         for marker in &self.markers {
             let name = if marker.label.is_empty() {
-                crate::i18n::widget_format("timeline-marker", &[])
+                tilo_ui_base::i18n::widget_format("timeline-marker", &[])
             } else {
                 marker.label.clone()
             };
@@ -2160,10 +2161,10 @@ impl Widget for TrackTimeline {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &crate::widget::ModelPath,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         let Some(&key) = key_path.last() else {
             return false;

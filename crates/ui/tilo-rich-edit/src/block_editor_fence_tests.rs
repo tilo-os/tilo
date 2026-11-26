@@ -48,7 +48,7 @@ tilo_test_env::scenario! {
             .unwrap();
             editor.apply_layout(&tree, node, Point::ZERO);
             let mut text = TextRenderer::new();
-            editor.draw(&mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, PresenceCtx::empty().draw_env()));
+            editor.draw(&mut tilo_ui_base::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, PresenceCtx::empty().draw_env()));
             assert!(editor.copy_code_run(0, 0));
             assert_eq!(ui::clipboard_paste().as_deref(), Some("print(1)"));
             let id = editor.blocks[0].id.clone();
@@ -63,7 +63,7 @@ tilo_test_env::scenario! {
                     .checked_sub(ui::time::Duration::from_secs(3))
                     .expect("three seconds is within Instant's representable past"),
             ));
-            editor.draw(&mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, PresenceCtx::empty().draw_env()));
+            editor.draw(&mut tilo_ui_base::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, PresenceCtx::empty().draw_env()));
             assert!(editor.copied_code_feedback.is_none());
             assert!(!editor.needs_animation_frame());
         }
@@ -92,7 +92,7 @@ tilo_test_env::scenario! {
                 )
                 .unwrap();
                 editor.apply_layout(&tree, node, Point::ZERO);
-                editor.draw(&mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &theme, PresenceCtx::empty().draw_env()));
+                editor.draw(&mut tilo_ui_base::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &theme, PresenceCtx::empty().draw_env()));
                 assert_eq!(editor.code_copy_hits.len(), 2);
                 for (copy, start, _) in &editor.code_copy_hits {
                     let source = editor.blocks[*start].line.get_rect();

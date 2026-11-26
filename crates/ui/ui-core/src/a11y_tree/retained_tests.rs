@@ -3,7 +3,7 @@
 //! keeps nothing answers.
 
 use super::*;
-use crate::theme::Theme;
+use tilo_ui_base::theme::Theme;
 use taffy::TaffyTree;
 
 struct Rows {

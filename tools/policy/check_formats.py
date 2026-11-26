@@ -2,7 +2,7 @@
 """Keep date, time, number and size formatting in ``ui::format``.
 
 Every date, time, size and duration a person reads goes through the toolkit's
-formatter (``crates/ui/ui-core/src/format.rs``, and the toolkit-free
+formatter (``crates/ui/ui-base/src/format.rs``, and the toolkit-free
 ``crates/ui/tilo-formats`` it re-exports), which follows their Region & Formats
 settings and the desktop's language. Formatting built by hand drifts:
 one app shows ``Sep 18, 2026, 12:30PM``, another ``Jun 30, 2026, 13:42``. This
@@ -104,9 +104,9 @@ SCOPES += (
 # The formatter itself, its toolkit-free half, and the clock it formats times of day with.
 FORMATTER = (
     Path("crates/ui/tilo-formats/src"),
-    Path("crates/ui/ui-core/src/format.rs"),
-    Path("crates/ui/ui-core/src/format"),
-    Path("crates/ui/ui-core/src/clock.rs"),
+    Path("crates/ui/ui-base/src/format.rs"),
+    Path("crates/ui/ui-base/src/format"),
+    Path("crates/ui/ui-base/src/clock.rs"),
 )
 # Crates that joined a judged group without having been judged where they were before. Each
 # still writes a size by hand (tilo-document's import limit, in MiB), and leaves the list

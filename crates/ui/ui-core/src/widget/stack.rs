@@ -1,10 +1,10 @@
 #[cfg(feature = "model")]
-use crate::permissions::PermissionScope;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::theme::Theme;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
-use crate::widget::{AppModel, ModelPath};
+use tilo_ui_base::permissions::PermissionScope;
+use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::Point;
@@ -12,7 +12,7 @@ use winit::event::WindowEvent;
 
 /// Children painted on top of one another, each `position: Absolute` and anchored at the
 /// stack's top-left.
-#[crate::component::not_a_component(layout, "the language's `stack`")]
+#[tilo_ui_base::component::not_a_component(layout, "the language's `stack`")]
 pub struct Stack {
     children: Vec<Box<dyn Widget>>,
     rect: vello::kurbo::Rect,
@@ -59,10 +59,10 @@ impl Stack {
 }
 
 impl Widget for Stack {
-    crate::provides!(
+    tilo_ui_base::provides!(
         #[cfg(feature = "model")]
-        dyn crate::widget::permission::PermissionGuarded,
-        dyn crate::presence::capability::PublishesPresence
+        dyn tilo_ui_base::widget::permission::PermissionGuarded,
+        dyn tilo_ui_base::presence::capability::PublishesPresence
     );
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
@@ -107,7 +107,7 @@ impl Widget for Stack {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
 
         let children = taffy.children(node).unwrap_or_default();
         for (child_widget, child_node) in self.children.iter_mut().zip(children.iter()) {
@@ -115,7 +115,7 @@ impl Widget for Stack {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -123,16 +123,16 @@ impl Widget for Stack {
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         for child in &mut self.children {
-            crate::widget::draw_child(child.as_mut(), scene, transform, text_renderer, theme, &env);
+            tilo_ui_base::widget::draw_child(child.as_mut(), scene, transform, text_renderer, theme, &env);
         }
 
-        crate::widget::draw_over(
+        tilo_ui_base::widget::draw_over(
             self,
-            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
         );
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let child_nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         // Reverse order: top-most first.
         for (child_widget, &child_node) in
@@ -197,12 +197,12 @@ impl Widget for Stack {
             .fold(false, |acc, d| acc || d)
     }
 
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
-        crate::widget::StructureChange::of_children(self.children_mut())
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
+        tilo_ui_base::widget::StructureChange::of_children(self.children_mut())
     }
 }
 
-impl crate::presence::capability::PublishesPresence for Stack {
+impl tilo_ui_base::presence::capability::PublishesPresence for Stack {
     fn presence_key(&self) -> Option<PresenceKey> {
         PresenceKey::widget(&self.presence_path)
     }
@@ -227,7 +227,7 @@ impl Stack {
 }
 
 #[cfg(feature = "model")]
-impl crate::widget::permission::PermissionGuarded for Stack {
+impl tilo_ui_base::widget::permission::PermissionGuarded for Stack {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
     }

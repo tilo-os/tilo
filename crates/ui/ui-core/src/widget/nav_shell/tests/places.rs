@@ -1,7 +1,7 @@
 //! A phone's places screen: the sidebar in front of the list the window opens on.
 
 use super::*;
-use crate::gesture::NavDirection;
+use tilo_ui_base::gesture::NavDirection;
 
 const W: u32 = 390;
 const H: u32 = 844;
@@ -41,7 +41,7 @@ tilo_test_env::scenario! {
     // back in the bar beside the toggle that puts the places away.
     phase a_places_screen_in_the_window_bar_offers_back_beside_its_toggle;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut h = harness(
             NavShell::new()
                 .content_kind(ContentKind::Reading)
@@ -88,7 +88,7 @@ tilo_test_env::scenario! {
     // takes the person to that list — its title starts after the chip rather than under it.
     phase a_phone_places_screen_goes_back_to_the_list_it_covered;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         for input in [BackInput::Chip, BackInput::Escape, BackInput::Gesture] {
             let mut h = harness(files_shell(), W, H, Theme::light());
             settle(&mut h, W, H);
@@ -146,7 +146,7 @@ tilo_test_env::scenario! {
 /// what Back returns to.
 #[test]
 fn the_places_go_back_to_the_screen_the_person_last_worked_in() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut h = harness(mail_shell(), W, H, Theme::light());
     settle(&mut h, W, H);
     assert_eq!(
@@ -181,7 +181,7 @@ fn the_places_go_back_to_the_screen_the_person_last_worked_in() {
 /// nothing to go back to; the page chosen from them is what carries Back.
 #[test]
 fn a_window_that_opens_on_its_places_has_nothing_to_go_back_to() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut h = harness(settings_shell(), W, H, Theme::light());
     settle(&mut h, W, H);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
@@ -204,7 +204,7 @@ fn a_window_that_opens_on_its_places_has_nothing_to_go_back_to() {
 /// screen changes: a phone's gesture reaches the places however the window shows them.
 #[test]
 fn the_back_gesture_puts_a_floating_sidebar_away() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let shell = NavShell::new()
         .content_kind(ContentKind::Document)
         .sidebar(TestLeaf::fill("sidebar").boxed().0)

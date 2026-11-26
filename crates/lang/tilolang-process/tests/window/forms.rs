@@ -34,7 +34,7 @@ fn open_place(app: &mut TestApp<TlApp>, label: &str) {
     let bounds = accessible(app)
         .into_iter()
         .find(|node| {
-            node.role == ui::a11y::Role::TreeItem
+            node.role == tilo_ui_base::a11y::Role::TreeItem
                 && node
                     .name
                     .as_deref()
@@ -50,11 +50,11 @@ fn open_place(app: &mut TestApp<TlApp>, label: &str) {
 }
 
 /// Every accessible node of the window.
-fn accessible(app: &mut TestApp<TlApp>) -> Vec<ui::a11y::AccessNode> {
+fn accessible(app: &mut TestApp<TlApp>) -> Vec<tilo_ui_base::a11y::AccessNode> {
     let snapshot = app.harness().inspection();
     (snapshot.root.nodes().into_iter())
         .filter_map(|node| node.semantics.as_ref())
-        .flat_map(ui::a11y::AccessNode::nodes)
+        .flat_map(tilo_ui_base::a11y::AccessNode::nodes)
         .cloned()
         .collect()
 }
@@ -63,7 +63,7 @@ fn accessible(app: &mut TestApp<TlApp>) -> Vec<ui::a11y::AccessNode> {
 fn bounds_of(
     app: &mut TestApp<TlApp>,
     name: &str,
-    role: Option<ui::a11y::Role>,
+    role: Option<tilo_ui_base::a11y::Role>,
 ) -> Option<ui::kurbo::Rect> {
     accessible(app)
         .into_iter()
@@ -97,7 +97,7 @@ fn reads(app: &mut TestApp<TlApp>, text: &str) -> bool {
 fn menu_items(app: &mut TestApp<TlApp>) -> Vec<String> {
     accessible(app)
         .into_iter()
-        .filter(|node| node.role == ui::a11y::Role::MenuItem)
+        .filter(|node| node.role == tilo_ui_base::a11y::Role::MenuItem)
         .filter_map(|node| node.name)
         .collect()
 }
@@ -107,7 +107,7 @@ fn submit(app: &mut TestApp<TlApp>, label: &str) -> Option<((), bool)> {
     accessible(app)
         .into_iter()
         .rev()
-        .find(|node| node.role == ui::a11y::Role::Button && node.name.as_deref() == Some(label))
+        .find(|node| node.role == tilo_ui_base::a11y::Role::Button && node.name.as_deref() == Some(label))
         .map(|node| ((), !node.state.disabled))
 }
 
@@ -128,7 +128,7 @@ fn choose(app: &mut TestApp<TlApp>, title: &str, item: &str) {
         .unwrap_or_else(|| panic!("the task {title} shows: {:?}", all_names(app)));
     right_click(app, (row.center().x, row.center().y));
     let items = menu_items(app);
-    let at = bounds_of(app, item, Some(ui::a11y::Role::MenuItem))
+    let at = bounds_of(app, item, Some(tilo_ui_base::a11y::Role::MenuItem))
         .unwrap_or_else(|| panic!("the menu offers {item}: {items:?}"));
     click(app, at.center());
 }
@@ -136,7 +136,7 @@ fn choose(app: &mut TestApp<TlApp>, title: &str, item: &str) {
 /// The form's field named `label`, which has the keyboard: a form opens on its first field.
 fn field(app: &mut TestApp<TlApp>, label: &str) {
     let focused = accessible(app).into_iter().any(|node| {
-        node.role == ui::a11y::Role::TextInput
+        node.role == tilo_ui_base::a11y::Role::TextInput
             && node.name.as_deref() == Some(label)
             && node.state.focused
     });
@@ -149,7 +149,7 @@ fn field(app: &mut TestApp<TlApp>, label: &str) {
 
 #[test]
 fn a_tasks_menu_offers_the_actions_that_ask_for_more() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut app = staged(DESKTOP);
     open_place(&mut app, "Today");
     let row = bounds_of(&mut app, "Book a haircut", None).expect("the task shows");
@@ -164,7 +164,7 @@ fn a_tasks_menu_offers_the_actions_that_ask_for_more() {
 
 #[test]
 fn picking_a_day_asks_until_when_and_runs_once_the_day_reads() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut app = staged(DESKTOP);
     open_place(&mut app, "Today");
     choose(&mut app, "Book a haircut", "Pick date…");
@@ -204,7 +204,7 @@ fn picking_a_day_asks_until_when_and_runs_once_the_day_reads() {
     choose(&mut app, "Book a haircut", "Pick date…");
     let shown = accessible(&mut app)
         .into_iter()
-        .find(|node| node.role == ui::a11y::Role::TextInput && node.name.as_deref() == Some("Due"))
+        .find(|node| node.role == tilo_ui_base::a11y::Role::TextInput && node.name.as_deref() == Some("Due"))
         .and_then(|node| node.value);
     assert_eq!(
         shown.as_deref(),
@@ -238,13 +238,13 @@ fn picking_a_day_asks_until_when_and_runs_once_the_day_reads() {
 
 #[test]
 fn the_task_pages_assignee_opens_the_people_to_pick_from() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut app = staged(DESKTOP);
     open_place(&mut app, "Today");
     let row = bounds_of(&mut app, "Book a haircut", None).expect("the task shows");
     click(&mut app, row.center());
     // The page keeps one person field for who does the task, showing nobody yet.
-    let chip = bounds_of(&mut app, "No one", Some(ui::a11y::Role::Button)).unwrap_or_else(|| {
+    let chip = bounds_of(&mut app, "No one", Some(tilo_ui_base::a11y::Role::Button)).unwrap_or_else(|| {
         panic!(
             "the page offers who does the task: {:?}",
             all_names(&mut app)
@@ -265,9 +265,9 @@ fn shots() {
     };
     let dir = std::path::PathBuf::from(dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     for (size, viewport) in [("desktop", DESKTOP), ("phone", PHONE)] {
-        for (shade, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
+        for (shade, theme) in [("light", tilo_ui_base::Theme::light()), ("dark", tilo_ui_base::Theme::dark())] {
             let mut app = staged(viewport);
             app.harness().set_theme(theme);
             settle(&mut app);

@@ -33,7 +33,7 @@ fn number_input_value_change_resizes_retained_control_on_same_viewport_app_frame
             .0;
         app.dispatch_a11y_action(
             target,
-            &crate::a11y::Action::SetValue("123456789012345".into()),
+            &tilo_ui_base::a11y::Action::SetValue("123456789012345".into()),
         );
         assert!(
             app.layout.layout_dirty,
@@ -49,7 +49,7 @@ fn number_input_value_change_resizes_retained_control_on_same_viewport_app_frame
         assert_eq!(value, "123456789012345 min");
         let (text_width, _) = app.text_renderer.measure(
             &value,
-            crate::tokens::typography::stock().size(crate::tokens::TextRole::Body),
+            tilo_ui_base::tokens::typography::stock().size(tilo_ui_base::tokens::TextRole::Body),
             None,
         );
         assert!(

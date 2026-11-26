@@ -217,7 +217,7 @@ pub(crate) struct HistoryFeeds(std::rc::Rc<std::cell::RefCell<FeedList>>);
 type Feed = (
     std::rc::Weak<()>,
     usize,
-    ui_core::LocalState<Vec<HistoryVersion>>,
+    tilo_ui_base::LocalState<Vec<HistoryVersion>>,
 );
 
 #[derive(Default)]
@@ -232,8 +232,8 @@ impl HistoryFeeds {
         &self,
         alive: std::rc::Weak<()>,
         last: usize,
-    ) -> ui_core::LocalState<Vec<HistoryVersion>> {
-        let state = ui_core::LocalState::new(Vec::new());
+    ) -> tilo_ui_base::LocalState<Vec<HistoryVersion>> {
+        let state = tilo_ui_base::LocalState::new(Vec::new());
         let mut registry = self.0.borrow_mut();
         registry.feeds.push((alive, last, state.clone()));
         registry.heads.clear();

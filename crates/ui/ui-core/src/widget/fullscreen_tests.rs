@@ -10,9 +10,9 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use super::*;
-use crate::component::{Described, Event, Fired, Intent};
-use crate::theme::Theme;
-use crate::widget::{Spacer, Widget};
+use tilo_ui_base::{component::Described, component::Event, component::Fired, component::Intent};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::Spacer, widget::Widget};
 
 /// A `Fullscreen` laid out in its own tree, as a window lays its root out, which every event is
 /// then dispatched against.
@@ -20,12 +20,12 @@ struct Laid {
     widget: Box<dyn Widget>,
     taffy: TaffyTree<()>,
     node: NodeId,
-    exits: crate::Intents<Fired>,
+    exits: tilo_ui_base::Intents<Fired>,
 }
 
 impl Laid {
     fn of(showing: bool) -> Self {
-        let exits = crate::Intents::default();
+        let exits = tilo_ui_base::Intents::default();
         let mut widget = Fullscreen::from_props(
             "page",
             FullscreenProps {
@@ -124,7 +124,7 @@ fn a_presented_view_carries_a_way_out_that_reports_it() {
     let announced = way_out.accessibility().and_then(|node| node.name);
     assert_eq!(
         announced.as_deref(),
-        Some(crate::i18n::widget_text("widget-exit-fullscreen").as_str())
+        Some(tilo_ui_base::i18n::widget_text("widget-exit-fullscreen").as_str())
     );
 
     laid.send(&WindowEvent::CursorMoved {

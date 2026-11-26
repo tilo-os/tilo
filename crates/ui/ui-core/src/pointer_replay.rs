@@ -82,11 +82,11 @@ impl PointerReplay {
 }
 
 /// Every widget's layout box in tree order that a pointer can reach: in a long scrolled collection only
-/// the children near its view ([`crate::widget::Widget::for_each_child_in_clip`]), so the snapshot
+/// the children near its view ([`tilo_ui_base::widget::Widget::for_each_child_in_clip`]), so the snapshot
 /// costs what is shown, not what is held. Two snapshots of one unchanged tree are equal exactly when no
 /// widget the pointer can reach moved or resized.
-pub(crate) fn widget_geometry(root: &dyn crate::widget::Widget) -> Vec<Rect> {
-    fn walk(widget: &dyn crate::widget::Widget, out: &mut Vec<Rect>) {
+pub(crate) fn widget_geometry(root: &dyn tilo_ui_base::widget::Widget) -> Vec<Rect> {
+    fn walk(widget: &dyn tilo_ui_base::widget::Widget, out: &mut Vec<Rect>) {
         out.push(widget.get_rect());
         widget.for_each_child_in_clip(&mut |child| walk(child, out));
     }
@@ -238,15 +238,16 @@ mod tests {
     use winit::event::{DeviceId, MouseButton};
 
     use crate::headless::Driver;
-    use crate::theme::Theme;
-    use crate::widget::{Button, EventCtx, TaffyTreeExt as _, Widget};
+    use tilo_ui_base::theme::Theme;
+    use crate::widget::Button;
+    use tilo_ui_base::{widget::EventCtx, widget::TaffyTreeExt as _, widget::Widget};
 
     fn moved(x: f64, y: f64) -> WindowEvent {
-        crate::synthetic_input::cursor_moved(x, y)
+        tilo_ui_base::synthetic_input::cursor_moved(x, y)
     }
 
     fn button(state: ElementState) -> WindowEvent {
-        crate::synthetic_input::mouse_input(state, MouseButton::Left)
+        tilo_ui_base::synthetic_input::mouse_input(state, MouseButton::Left)
     }
 
     tilo_test_env::scenario! {
@@ -362,14 +363,14 @@ mod tests {
                 self.placed.set(self.child.get_rect());
             }
         }
-        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
             #[allow(
                 unused_variables,
                 unused_mut,
                 reason = "a draw binds only the parts it uses"
             )]
             let (scene, transform, text, theme, mut env) = ctx.parts();
-            self.child.draw(&mut crate::draw::DrawCtx::new(
+            self.child.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text,

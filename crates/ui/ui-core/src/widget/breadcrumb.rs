@@ -4,12 +4,12 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::icons::Icon;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 use crate::widget::text::centered_text_top;
 
 #[path = "breadcrumb_component.rs"]
@@ -337,7 +337,7 @@ impl Breadcrumb {
 }
 
 impl Widget for Breadcrumb {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -359,13 +359,13 @@ impl Widget for Breadcrumb {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         // Per-segment rects need text measurements, which need a
         // `TextRenderer` we don't have here — deferred to `draw`. Stale
         // rects until the first paint are fine: no hover happens before it.
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -459,19 +459,19 @@ impl Widget for Breadcrumb {
             if i.saturating_add(1) < n {
                 let edge = separator_width(theme);
                 let centre = Point::new(r.x1 + sep_pad + edge / 2.0, self.rect.center().y);
-                crate::icons::draw_icon(
+                tilo_ui_base::icons::draw_icon(
                     scene,
                     transform,
                     Rect::from_center_size(centre, (edge, edge)),
-                    crate::icons::Icon::ChevronRight,
+                    tilo_ui_base::icons::Icon::ChevronRight,
                     text_dim,
-                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
             }
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -536,7 +536,7 @@ impl Widget for Breadcrumb {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
 
     /// Its box is the width it is given and one line tall: what it shows truncates to it as it
@@ -546,7 +546,7 @@ impl Widget for Breadcrumb {
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -557,14 +557,14 @@ impl Widget for Breadcrumb {
         self.rect
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         // Segments are drawn, not child widgets, so the container carries
         // the list semantics; the rightmost segment is surfaced as the value.
         let value = self.segments.last().cloned();
         Some(
             AccessNode::new(Role::List)
-                .with_name(crate::i18n::widget_format("widget-breadcrumb", &[]))
+                .with_name(tilo_ui_base::i18n::widget_format("widget-breadcrumb", &[]))
                 .with_optional_value(value)
                 .with_state(AccessState::default()),
         )
@@ -581,10 +581,10 @@ mod tests {
     use vello::kurbo::Affine;
 
     fn cursor_at(p: Point) -> WindowEvent {
-        crate::synthetic_input::cursor_moved(p.x, p.y)
+        tilo_ui_base::synthetic_input::cursor_moved(p.x, p.y)
     }
 
-    use crate::synthetic_input::mouse_press;
+    use tilo_ui_base::synthetic_input::mouse_press;
 
     tilo_test_env::scenario! {
         /// The breadcrumb.
@@ -620,7 +620,7 @@ mod tests {
                 bc.rect = rect;
                 bc.apply_layout_helper(&theme, &mut tr);
                 let mut scene = Scene::new();
-                bc.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, crate::presence::PresenceCtx::default().draw_env()));
+                bc.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, tilo_ui_base::presence::PresenceCtx::default().draw_env()));
                 assert_eq!(
                     scene.encoding().resources.glyph_runs.len(),
                     2,
@@ -715,7 +715,7 @@ mod tests {
             }
 
             fn accessibility_reports_list_role_name_and_current_segment() {
-                use crate::a11y::Role;
+                use tilo_ui_base::a11y::Role;
                 let bc = Breadcrumb::new(vec![
                     "home".to_string(),
                     "docs".to_string(),

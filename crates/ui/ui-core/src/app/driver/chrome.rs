@@ -7,13 +7,12 @@
 use vello::kurbo::Rect;
 
 use super::Driver;
-use crate::a11y::AccessNode;
+use tilo_ui_base::a11y::AccessNode;
 use crate::headless::InspectionNode;
 use crate::widget::window_header::{content_bar, root_header_row};
 use crate::widget::window_toolbar_row::SIDEBAR_TARGET;
-use crate::widget::{
-    ColumnFrame, NavPane, NavShell, SidebarPlacement, Widget, WindowFrame, WindowHeader,
-};
+use crate::{widget::ColumnFrame, widget::NavPane, widget::NavShell, widget::SidebarPlacement, widget::WindowFrame, widget::WindowHeader};
+use tilo_ui_base::widget::Widget;
 
 /// The sidebar toggle a shell's own header row holds while the app's parts are not in a bar.
 const ROW_SIDEBAR_TOGGLE: &str = "nav-shell-sidebar";
@@ -53,9 +52,9 @@ impl Driver {
     #[must_use]
     pub fn in_window_frame(
         state: crate::state::State,
-        body: crate::widget::Element,
+        body: tilo_ui_base::widget::Element,
         viewport: (u32, u32),
-        theme: crate::theme::Theme,
+        theme: tilo_ui_base::theme::Theme,
     ) -> Self {
         Self::framed(state, body, None, viewport, theme)
     }
@@ -66,22 +65,22 @@ impl Driver {
     #[must_use]
     pub fn in_named_window_frame(
         state: crate::state::State,
-        body: crate::widget::Element,
+        body: tilo_ui_base::widget::Element,
         name: impl Into<String>,
         viewport: (u32, u32),
-        theme: crate::theme::Theme,
+        theme: tilo_ui_base::theme::Theme,
     ) -> Self {
         Self::framed(state, body, Some(name.into()), viewport, theme)
     }
 
     fn framed(
         state: crate::state::State,
-        body: crate::widget::Element,
+        body: tilo_ui_base::widget::Element,
         name: Option<String>,
         viewport: (u32, u32),
-        theme: crate::theme::Theme,
+        theme: tilo_ui_base::theme::Theme,
     ) -> Self {
-        use crate::component::Described as _;
+        use tilo_ui_base::component::Described as _;
         use crate::widget::arrange::{Fit, Part, Stack};
         let frame = WindowFrame::from_props(
             "window",
@@ -130,7 +129,7 @@ impl Driver {
             });
         }
         let (spot, name) = in_row(&self.inspection().root)?;
-        let hide = crate::i18n::I18nManager::lookup_plain("window-toolbar-hide-sidebar");
+        let hide = tilo_ui_base::i18n::I18nManager::lookup_plain("window-toolbar-hide-sidebar");
         Some(SidebarButton {
             spot,
             shown: name.as_deref() == Some(hide.as_str()),
@@ -265,7 +264,7 @@ impl Driver {
             let [x, y, width, height] = node.rect;
             let rect = Rect::new(x, y, x + width, y + height);
             if let Some(access) = &node.semantics
-                && access.role == crate::a11y::Role::Button
+                && access.role == tilo_ui_base::a11y::Role::Button
                 && rect.area() > 0.0
                 && row.contains(rect.center())
             {
@@ -387,7 +386,7 @@ impl Driver {
             if rect.area() > 0.0
                 && rows.iter().any(|row| row.contains(rect.center()))
                 && node.semantics.as_ref().is_some_and(|access| {
-                    access.role == crate::a11y::Role::Button && access.name.as_deref() == Some(name)
+                    access.role == tilo_ui_base::a11y::Role::Button && access.name.as_deref() == Some(name)
                 })
             {
                 return Some(rect);
@@ -415,7 +414,7 @@ fn sidebar_shell(widget: &dyn Widget) -> Option<&NavShell> {
     let shell = widget
         .as_any()
         .and_then(|any| any.downcast_ref::<NavShell>())
-        .or_else(|| crate::widget::capability::capability::<NavShell>(widget));
+        .or_else(|| tilo_ui_base::widget::capability::capability::<NavShell>(widget));
     if let Some(shell) = shell
         && shell.has_sidebar()
     {

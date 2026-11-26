@@ -1,7 +1,7 @@
 //! The desktop's Fluent catalogue.
 //!
 //! Top bar and activity pane strings are keys resolved through the toolkit's
-//! [`mod@ui::i18n`] manager, never literals. The catalogues are embedded with
+//! [`mod@tilo_ui_base::i18n`] manager, never literals. The catalogues are embedded with
 //! `include_str!`, so the native shell, the browser runtime (which has no
 //! file system to read them from) and a unit test resolve the same copy. On a
 //! thread with no manager yet, the user's locale comes from the environment,
@@ -15,7 +15,7 @@ const CATALOGS: &[(&str, &str)] = &[
     ("de-DE", include_str!("../../locales/de-DE.ftl")),
 ];
 
-ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
+tilo_ui_base::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
 
 /// Load the desktop's catalogue on this thread, so history entries the
 /// desktop records read in its words.

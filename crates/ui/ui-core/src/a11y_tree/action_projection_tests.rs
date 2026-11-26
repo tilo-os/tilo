@@ -2,7 +2,7 @@ struct ProjectionBranch {
     inner: Column,
     root: AccessNode,
 }
-impl crate::widget::Decorator for ProjectionBranch {
+impl tilo_ui_base::widget::Decorator for ProjectionBranch {
     type Inner = Column;
     fn inner(&self) -> &Column {
         &self.inner
@@ -18,7 +18,7 @@ struct ProjectionLeaf {
     inner: crate::widget::Text,
     calls: std::rc::Rc<std::cell::Cell<usize>>,
 }
-impl crate::widget::Decorator for ProjectionLeaf {
+impl tilo_ui_base::widget::Decorator for ProjectionLeaf {
     type Inner = crate::widget::Text;
     fn inner(&self) -> &Self::Inner {
         &self.inner

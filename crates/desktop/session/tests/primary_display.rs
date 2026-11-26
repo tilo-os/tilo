@@ -150,7 +150,7 @@ fn sheet_place(session: &Session) -> Option<(i32, i32, i32, i32)> {
 #[test]
 fn new_windows_and_sheets_open_on_the_primary_the_person_chose() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = docked();
     let mut client = client(&mut session);
 
@@ -193,7 +193,7 @@ fn new_windows_and_sheets_open_on_the_primary_the_person_chose() {
 #[test]
 fn the_display_the_person_made_primary_is_theirs_again_after_a_restart() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     {
         let mut session = docked();
         make_primary(&mut session, "HEADLESS-2");

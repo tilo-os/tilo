@@ -1496,7 +1496,7 @@ verbs = [
     /// holds it no more.
     #[test]
     fn a_moved_window_takes_the_record_it_shows_to_the_workspace_it_moves_to() {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut shell = Shell::new();
         let showing = shell.showing("first draft");
         shell.carry();
@@ -1531,7 +1531,7 @@ verbs = [
         // The move gives up on the window a moment from now, rather than after production's half
         // minute: what the person is told and what the tab does are the same, sooner.
         const GIVING_UP: Duration = Duration::from_millis(300);
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(OPENING_ENV, GIVING_UP.as_millis().to_string());
         let mut shell = Shell::new();
@@ -1573,7 +1573,7 @@ verbs = [
     /// move waits until the window's app saved what it shows, and nothing moves before.
     #[test]
     fn an_edit_made_just_before_a_move_arrives_where_the_window_went() {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut shell = Shell::new();
         let showing = shell.showing("first draft");
         shell.carry_asking();
@@ -1604,7 +1604,7 @@ verbs = [
     /// person is told: moving it would leave what they typed last behind.
     #[test]
     fn a_move_whose_app_cannot_save_leaves_everything_where_it_was() {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut shell = Shell::new();
         let showing = shell.showing("first draft");
         shell.carry_asking();
@@ -1617,7 +1617,7 @@ verbs = [
     /// window stays where it is with its record, and the person is told.
     #[test]
     fn a_move_whose_app_goes_away_while_it_saves_leaves_everything_where_it_was() {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut shell = Shell::new();
         let showing = shell.showing("first draft");
         shell.carry_asking();
@@ -1631,7 +1631,7 @@ verbs = [
     /// told.
     #[test]
     fn a_move_into_a_workspace_the_person_may_not_write_leaves_everything_where_it_was() {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         // The workspace behind belongs to someone else, who let the person write none of its
         // records.
         let mut shell = Shell::new_elsewhere(Some(WorkspaceId::from_u128(2)));
@@ -1646,7 +1646,7 @@ verbs = [
     /// alike, though they may write them where the tab was going.
     #[test]
     fn a_move_out_of_a_workspace_the_person_may_not_remove_from_leaves_everything_where_it_was() {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         // The workspace the window is in belongs to someone else: the person writes the note
         // there as one of its editors, and may not take it out.
         let mut shell = Shell::new_elsewhere(Some(WorkspaceId::from_u128(1)));
@@ -1698,7 +1698,7 @@ verbs = [
     /// written where the tab was going, and the person is told.
     #[test]
     fn a_move_of_a_record_removed_meanwhile_leaves_the_tab_where_it_was() {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut shell = Shell::new();
         let showing = shell.showing("first draft");
         let removed = shell.command(

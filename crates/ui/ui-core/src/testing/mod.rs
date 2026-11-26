@@ -58,6 +58,6 @@ pub(crate) fn capture_regression(
     };
     let phase = std::env::var("TILO_DRAW_REGRESSION_PHASE").unwrap_or_else(|_| "after".to_owned());
     let path = std::path::Path::new(&dir).join(format!("{case}-{theme}-{phase}.png"));
-    let mut renderer = crate::offscreen::OffscreenRenderer::new(width, height);
+    let mut renderer = tilo_ui_base::offscreen::OffscreenRenderer::new(width, height);
     renderer.render_png(scene, background, path);
 }

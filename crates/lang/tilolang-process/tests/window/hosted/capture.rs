@@ -10,7 +10,7 @@ tilo_test_env::scenario! {
 
     phase the_headless_frame_reports_the_protection;
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = Session::new(SECRET, "ada");
         session.settle();
         session.window.harness().relayout();
@@ -22,7 +22,7 @@ tilo_test_env::scenario! {
 
     phase the_live_window_withholds_itself;
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = Session::open(SECRET, "ada", Window::live);
         session.settle();
         let Window::Live(app) = &session.window else {
@@ -38,7 +38,7 @@ tilo_test_env::scenario! {
 
     phase the_window_half_reports_it_to_its_host;
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = Session::new(SECRET, "ada");
         session.settle();
         let view = session.hosted().view().expect("the window is connected");
@@ -51,7 +51,7 @@ tilo_test_env::scenario! {
     phase the_page_rendered_from_it_is_withheld_too;
     {
         use tilolang_process::window::shown_on_page::ShownOnPage;
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = Session::new(SECRET, "ada");
         session.settle();
         let shown = ShownOnPage::new().open(session.window.harness(), None);

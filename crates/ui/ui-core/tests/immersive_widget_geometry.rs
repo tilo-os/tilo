@@ -33,12 +33,13 @@ use vello::kurbo::Affine;
 
 use tilo_ui::State;
 use tilo_ui::headless::Driver;
-use tilo_ui::icons::Icon;
-use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::Theme;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::offscreen::OffscreenRenderer;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 use tilo_ui::widget::video_player::PlayerSetting;
-use tilo_ui::widget::{CaptureMode, CaptureStudio, ScreenshotMarkup, VideoPlayer, Widget};
+use tilo_ui::{widget::CaptureMode, widget::CaptureStudio, widget::ScreenshotMarkup, widget::VideoPlayer};
+use tilo_ui_base::widget::Widget;
 
 /// HIG §9.6: minimum pointer target.
 const MIN_TARGET: f64 = 32.0;
@@ -181,7 +182,7 @@ fn immersive_widgets_render_reachable_geometry_at_every_size() {
     // renderer (the host-palette convention) — so the scaled insets and the
     // band-bound tag can be seen, not only asserted.
     {
-        use tilo_ui::presence::{PeerCursor, draw_peer_presence};
+        use tilo_ui_base::{presence::PeerCursor, presence::draw_peer_presence};
         use vello::peniko::Color;
         let theme = Theme::dark();
         let (w, h) = (480_u32, 240_u32);

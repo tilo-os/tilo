@@ -55,7 +55,7 @@ pub enum Input {
         value: char,
     },
     Key {
-        key: crate::synthetic_input::NativeKey,
+        key: tilo_ui_base::synthetic_input::NativeKey,
     },
     /// Find, as the platform types it: its command modifier (⌘ on macOS, Ctrl elsewhere) held around
     /// one press of F.
@@ -86,7 +86,7 @@ impl Input {
     /// The window events this step delivers, in order, through the same routing platform input takes.
     #[cfg(feature = "native")]
     pub(crate) fn window_events(self) -> Vec<winit::event::WindowEvent> {
-        use crate::synthetic_input as input;
+        use tilo_ui_base::synthetic_input as input;
         use winit::event::ElementState;
         match self {
             Self::Hover { x, y } => vec![input::cursor_moved(x, y)],
@@ -111,8 +111,8 @@ impl Input {
                     .collect()
             }
             Self::Find {} => {
-                let command = match crate::platform::PlatformConventions::default().platform() {
-                    crate::platform::Platform::MacOs => winit::keyboard::ModifiersState::SUPER,
+                let command = match tilo_ui_base::platform::PlatformConventions::default().platform() {
+                    tilo_ui_base::platform::Platform::MacOs => winit::keyboard::ModifiersState::SUPER,
                     _ => winit::keyboard::ModifiersState::CONTROL,
                 };
                 let key = winit::keyboard::Key::Character("f".into());
@@ -935,7 +935,7 @@ mod tests {
                     panic!("the command modifier goes down first");
                 };
                 assert!(
-                    crate::platform::PlatformConventions::default()
+                    tilo_ui_base::platform::PlatformConventions::default()
                         .command_modifier_down(held.state())
                 );
                 assert!(matches!(

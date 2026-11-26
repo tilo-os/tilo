@@ -11,18 +11,19 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::GroupRow;
-use crate::edge_autoscroll::{self, EdgeAutoscroll};
+use tilo_ui_base::{edge_autoscroll, edge_autoscroll::EdgeAutoscroll};
 use crate::time::Instant;
 use crate::widget::edge_resize::{
     Border, DraggedWindow, EdgeDrag, EdgeGrab, ResizeMode, WindowEdge, border_owner,
 };
-use crate::widget::{RESIZE_HANDLE_PX, Widget, WindowGroup};
+use crate::{widget::RESIZE_HANDLE_PX, widget::WindowGroup};
+use tilo_ui_base::widget::Widget;
 
 /// How deep the band along the display's edge is in which an edge resize
 /// scrolls the strip. Shallower than the strip's gutter
 /// ([`super::STRIP_EDGE_GUTTER_PX`]), where the outer edge of the first and
 /// last window rests: a drag into the gutter only resizes the window.
-pub(super) const RESIZE_AUTOSCROLL_BAND: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+pub(super) const RESIZE_AUTOSCROLL_BAND: f64 = tilo_ui_base::tokens::Spacing::BASE.s2 as f64;
 
 /// An edge resize in flight, with its windows named by id: a window may close or move while
 /// the pointer is down.
@@ -206,7 +207,7 @@ impl GroupRow {
     pub(super) fn handle_edge_resize(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         let shift = ctx.modifiers.state().shift_key();
         match event {
@@ -356,8 +357,8 @@ impl GroupRow {
                 settle = change;
             }
         }
-        let now = crate::motion::frame_now();
-        let timing = self.move_timing(crate::tokens::MotionSource::Pointer);
+        let now = tilo_ui_base::motion::frame_now();
+        let timing = self.move_timing(tilo_ui_base::tokens::MotionSource::Pointer);
         let reduce_motion = self.reduce_motion;
         let pan = self.pan_of_section_mut(drag.section);
         pan.scroll_x = if commit {

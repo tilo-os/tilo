@@ -21,7 +21,7 @@ use os_actions::{
     ForwardedGamepadEvent, LinuxPhysicalGamepadCatalog, LinuxPhysicalGamepadSource,
     PhysicalGamepadHotplug, PhysicalGamepadId,
 };
-use ui::ControllerFamily;
+use tilo_ui_base::ControllerFamily;
 
 use tilo_compositor::InputEvent;
 

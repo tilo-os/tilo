@@ -82,7 +82,7 @@ fn published(session: &Session) -> Value {
 /// a frame drawn by it is visibly other than the stock theme's. The device's daemon compiles it
 /// when the package arrives.
 fn triangle_module() -> Vec<u8> {
-    use ui::part_paint::{Brush, PaintedPart, ParamSpec, PartScene};
+    use tilo_ui_base::{part_paint::Brush, part_paint::PaintedPart, part_paint::ParamSpec, part_paint::PartScene};
 
     let mut part = PartScene::new();
     let mut triangle = ui::kurbo::BezPath::new();
@@ -133,7 +133,7 @@ fn install_theme_package(store: &std::path::Path) -> Vec<u8> {
     let payload = store.join("pkgs").join("theme-triangle");
     std::fs::create_dir_all(&payload).expect("the payload tree");
     std::fs::write(
-        payload.join(ui::theme_bundle::DOCUMENT),
+        payload.join(tilo_ui_base::theme_bundle::DOCUMENT),
         DOCUMENT.replace("\"bauhaus\"", &format!("{SET:?}")),
     )
     .expect("the document");
@@ -239,10 +239,10 @@ fn an_applied_theme_package_draws_the_session_on_the_compiled_store() {
         .is_some(),
         "the install compiled the set"
     );
-    let document = ui::theme_bundle::document(&installed.payload_root).expect("the bundle reads");
-    let theme = ui::Theme::from_document(&document).expect("the theme draws");
+    let document = tilo_ui_base::theme_bundle::document(&installed.payload_root).expect("the bundle reads");
+    let theme = tilo_ui_base::Theme::from_document(&document).expect("the theme draws");
     assert_eq!(
-        theme.finish(ui::tokens::SurfaceRole::Control).painter(),
+        theme.finish(tilo_ui_base::tokens::SurfaceRole::Control).painter(),
         SET
     );
 

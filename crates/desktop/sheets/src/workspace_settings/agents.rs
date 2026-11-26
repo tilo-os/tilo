@@ -5,13 +5,11 @@
 //! app: Allow, Ask first or Deny for reading, changes and outside effects,
 //! the model it plans with, and the actions always allowed without asking.
 
-use ui::icons::{Icon, app_glyph};
+use tilo_ui_base::{icons::Icon, icons::app_glyph};
 use ui::peniko::Color;
-use ui::tokens::{PresenceHue, Rhythm};
-use ui::widget::{
-    Button, ButtonRole, ChipStyle, Column, Container, ControlSize, Dropdown, Element, EmptyState,
-    ListRow, Row, Section, Segment, TextInput, ToggleGroup, Tone,
-};
+use tilo_ui_base::{tokens::PresenceHue, tokens::Rhythm};
+use ui::{widget::Button, widget::ButtonRole, widget::ChipStyle, widget::Column, widget::Container, widget::ControlSize, widget::Dropdown, widget::EmptyState, widget::ListRow, widget::Row, widget::Section, widget::Segment, widget::TextInput, widget::ToggleGroup};
+use tilo_ui_base::{widget::Element, widget::Tone};
 
 use super::general::{button, buttons, caption};
 use super::{Parts, Settings, WorkspaceSettingsEffect};
@@ -324,8 +322,8 @@ fn new_agent(agents: &Agents, parts: &Parts) -> Element {
 
 /// The colour the agent `key` wears everywhere, as a row's avatar wears it.
 fn colour_of(key: &str) -> Color {
-    let hue = PresenceHue::of_member(&ui::permissions::MemberId::agent(key, "ada"));
-    ui::Theme::dark().tokens.colors.presence.hue(hue)
+    let hue = PresenceHue::of_member(&tilo_ui_base::permissions::MemberId::agent(key, "ada"));
+    tilo_ui_base::Theme::dark().tokens.colors.presence.hue(hue)
 }
 
 /// One agent: its face in its own colour, name, who added it and the model it

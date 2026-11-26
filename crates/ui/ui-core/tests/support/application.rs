@@ -2,25 +2,24 @@
 use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, transaction::Transactable};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use tilo_ui::TextRole;
+use tilo_ui_base::TextRole;
 use tilo_ui::application::{
     AppComponent, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
     RestoreInput,
 };
 use tilo_ui::application_view::{InstanceViewStore, SavedInstanceView};
 use tilo_ui::launch::LaunchError;
-use tilo_ui::local_state::LocalState;
-use tilo_ui::permissions::{
-    ActionKind, MemberId, PermissionContext, PermissionScope, SharedPermissions,
-};
+use tilo_ui_base::local_state::LocalState;
+use tilo_ui_base::{permissions::ActionKind, permissions::MemberId, permissions::PermissionContext, permissions::PermissionScope, permissions::SharedPermissions};
 use tilo_ui::resource::{
     DocumentAsk, DocumentCheckout, DocumentPort, DocumentRead, MemoryWorkspace, ResourceOwners,
     ResourceStore, ResourceType, Written,
 };
 use tilo_ui::view::ViewContribution;
 use tilo_ui::wake::WakeHandle;
-use tilo_ui::widget::{AppKind, AppWidget, IconDescriptor, NativeViewLifecycle, Widget};
-use tilo_ui::widget::{AppModel, ModelPath};
+use tilo_ui::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
+use tilo_ui_base::{widget::NativeViewLifecycle, widget::Widget};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 pub const APP: &str = "so.tilo.application-probe";
 pub const DEVICE: &str = "D";
@@ -47,8 +46,8 @@ pub fn take_native_lifecycle_observations() -> Vec<(&'static str, WakeHandle)> {
 
 #[derive(Default)]
 pub struct PresentationObservations {
-    pub layouts: Vec<tilo_ui::Theme>,
-    pub draws: Vec<(tilo_ui::Theme, f32)>,
+    pub layouts: Vec<tilo_ui_base::Theme>,
+    pub draws: Vec<(tilo_ui_base::Theme, f32)>,
     pub motion: Vec<bool>,
     pub local_draws: Vec<String>,
     pub local_resource_reads: Vec<String>,
@@ -80,7 +79,7 @@ pub fn configure_presentation(
     inputs.text_renderer.set_text_scale(1.5);
     inputs
 }
-pub fn assert_presentation(theme: &tilo_ui::Theme, scale: f32, ui_scale: f32) {
+pub fn assert_presentation(theme: &tilo_ui_base::Theme, scale: f32, ui_scale: f32) {
     assert_eq!(theme.text_scale, scale);
     assert_eq!(theme.ui_scale, ui_scale);
     assert_eq!(theme.name, "explicit presentation");
@@ -89,7 +88,7 @@ pub fn assert_presentation(theme: &tilo_ui::Theme, scale: f32, ui_scale: f32) {
     assert!(
         (theme.tokens.typography.size(TextRole::Body) - 19.0 * ui_scale * scale).abs() < 0.0001
     );
-    let base = tilo_ui::Theme::dark();
+    let base = tilo_ui_base::Theme::dark();
     assert!(
         (theme.tokens.typography.size(TextRole::Caption)
             - base.tokens.typography.size(TextRole::Caption) * 19.0 / 14.0 * ui_scale * scale)
@@ -233,7 +232,7 @@ pub fn local_state() -> LocalState<String> {
 }
 pub fn permissions() -> SharedPermissions {
     SharedPermissions::new(
-        PermissionContext::stranger(&tilo_ui::permissions::MemberId::person("probe-author"))
+        PermissionContext::stranger(&tilo_ui_base::permissions::MemberId::person("probe-author"))
             .at_unix_time(100),
     )
 }
@@ -242,8 +241,8 @@ pub fn permissions() -> SharedPermissions {
 pub fn owner_permissions() -> SharedPermissions {
     SharedPermissions::new(
         PermissionContext::member(
-            &tilo_ui::permissions::MemberId::person("probe-author"),
-            tilo_ui::permissions::Role::Owner,
+            &tilo_ui_base::permissions::MemberId::person("probe-author"),
+            tilo_ui_base::permissions::Role::Owner,
         )
         .at_unix_time(100),
     )
@@ -252,8 +251,8 @@ pub fn owner_permissions() -> SharedPermissions {
 pub fn editor_permissions() -> SharedPermissions {
     SharedPermissions::new(
         PermissionContext::member(
-            &tilo_ui::permissions::MemberId::person("probe-author"),
-            tilo_ui::permissions::Role::Editor,
+            &tilo_ui_base::permissions::MemberId::person("probe-author"),
+            tilo_ui_base::permissions::Role::Editor,
         )
         .at_unix_time(100),
     )
@@ -294,8 +293,8 @@ pub use tilo_ui::headless::fixture_runner_inputs as runner_inputs;
 pub fn runner_permissions() -> SharedPermissions {
     SharedPermissions::new(
         PermissionContext::member(
-            &tilo_ui::permissions::MemberId::person("probe-author"),
-            tilo_ui::permissions::Role::Owner,
+            &tilo_ui_base::permissions::MemberId::person("probe-author"),
+            tilo_ui_base::permissions::Role::Owner,
         )
         .at_unix_time(100),
     )
@@ -617,12 +616,12 @@ struct ProbeRoot {
     rect: vello::kurbo::Rect,
 }
 impl Widget for ProbeRoot {
-    tilo_ui::provides!(
-        dyn tilo_ui::widget::NativeViewLifecycle,
-        dyn tilo_ui::widget::resources::PublishesResources,
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::NativeViewLifecycle,
+        dyn tilo_ui_base::widget::resources::PublishesResources,
         dyn tilo_ui::search::capability::SearchSource,
         dyn tilo_ui::view::capability::ViewState,
-        dyn tilo_ui::widget::undo_points::UndoPoints,
+        dyn tilo_ui_base::widget::undo_points::UndoPoints,
         dyn tilo_ui::undo::CommittedActions,
         dyn tilo_ui::host_operation::ResourceOperations
     );
@@ -642,7 +641,7 @@ impl Widget for ProbeRoot {
     fn build_layout(
         &mut self,
         tree: &mut taffy::TaffyTree<()>,
-        theme: &tilo_ui::Theme,
+        theme: &tilo_ui_base::Theme,
         map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         PRESENTATION.with_borrow(|slot| {
@@ -658,8 +657,8 @@ impl Widget for ProbeRoot {
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    tilo_ui::rect_geometry!();
-    fn draw(&mut self, ctx: &mut tilo_ui::draw::DrawCtx<'_>) {
+    tilo_ui_base::rect_geometry!();
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -696,7 +695,7 @@ impl tilo_ui::host_operation::ResourceOperations for ProbeRoot {
     fn start_operation(
         &mut self,
         op: &tilo_ui::host_operation::ResourceOperation<'_>,
-        _: &mut tilo_ui::widget::Edits<'_>,
+        _: &mut tilo_ui_base::widget::Edits<'_>,
         _: &ObjId,
     ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
         let tilo_ui::host_operation::OperationRequest { kind, type_id, .. } = op.request();
@@ -744,7 +743,7 @@ impl tilo_ui::undo::CommittedActions for ProbeRoot {
     }
 }
 
-impl tilo_ui::widget::undo_points::UndoPoints for ProbeRoot {
+impl tilo_ui_base::widget::undo_points::UndoPoints for ProbeRoot {
     fn get_state(&self) -> Option<String> {
         Some(self.caret.clone())
     }
@@ -782,7 +781,7 @@ impl tilo_ui::search::capability::SearchSource for ProbeRoot {
     }
 }
 
-impl tilo_ui::widget::resources::PublishesResources for ProbeRoot {
+impl tilo_ui_base::widget::resources::PublishesResources for ProbeRoot {
     #[allow(
         clippy::too_many_lines,
         reason = "one shared resource declares the runner action matrix"
@@ -912,7 +911,7 @@ impl tilo_ui::widget::resources::PublishesResources for ProbeRoot {
 }
 
 impl NativeViewLifecycle for ProbeRoot {
-    fn mount_native_view(&mut self, _: &tilo_ui::widget::native_view::NativeViewHost<'_>) {
+    fn mount_native_view(&mut self, _: &tilo_ui_base::widget::native_view::NativeViewHost<'_>) {
         NATIVE_LIFECYCLE.with_borrow_mut(|events| {
             events.push(("mount", WakeHandle::new()));
         });
@@ -1054,7 +1053,7 @@ pub fn initializer_failure(
 }
 
 /// A fixture owner publishes a string through the same typed action loan as an app.
-pub fn write_fixture_string(edits: &mut tilo_ui::widget::Edits<'_>, key: &str, value: &str) {
+pub fn write_fixture_string(edits: &mut tilo_ui_base::widget::Edits<'_>, key: &str, value: &str) {
     #[derive(Debug, serde::Serialize)]
     struct Write {
         key: String,
@@ -1080,7 +1079,7 @@ pub fn write_fixture_string(edits: &mut tilo_ui::widget::Edits<'_>, key: &str, v
         .unwrap();
 }
 
-pub fn write_fixture_flag(edits: &mut tilo_ui::widget::Edits<'_>, key: &str) {
+pub fn write_fixture_flag(edits: &mut tilo_ui_base::widget::Edits<'_>, key: &str) {
     #[derive(Debug, serde::Serialize)]
     struct Flag {
         key: String,

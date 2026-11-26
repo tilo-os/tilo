@@ -8,7 +8,7 @@ use super::layout_height;
 use super::ml_input;
 use super::mods;
 use super::shaped_row;
-use crate::synthetic_input::{char_key, named_key};
+use tilo_ui_base::{synthetic_input::char_key, synthetic_input::named_key};
 use automerge::ObjType;
 use automerge::transaction::Transactable as _;
 
@@ -17,12 +17,12 @@ tilo_test_env::scenario! {
 
     phase multiline_ime_intent_and_paragraph_commit_preserve_the_submit_boundary;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut input = ml_input("before old after", 400.0, 200.0).with_enter_submits(true);
         input.set_selection(7, 10);
-        let intent = crate::ime::ImeWindowState::from_widget(&input).unwrap();
+        let intent = tilo_ui_base::ime::ImeWindowState::from_widget(&input).unwrap();
         assert!(intent.content.hints.multiline);
-        assert_eq!(intent.content.purpose, crate::ime::InputPurpose::Text);
+        assert_eq!(intent.content.purpose, tilo_ui_base::ime::InputPurpose::Text);
         let mut doc = AutoCommit::new();
         assert!(drive(
             &mut input,
@@ -43,23 +43,23 @@ tilo_test_env::scenario! {
         assert!(!input.take_submit());
         input.set_multiline(false);
         assert!(
-            !crate::ime::ImeWindowState::from_widget(&input)
+            !tilo_ui_base::ime::ImeWindowState::from_widget(&input)
                 .unwrap()
                 .content
                 .hints
                 .multiline
         );
         input.set_focus(false);
-        assert!(crate::ime::ImeWindowState::from_widget(&input).is_none());
+        assert!(tilo_ui_base::ime::ImeWindowState::from_widget(&input).is_none());
         let mut secret = TextInput::local().multiline(true).with_secret(true);
         secret.set_focus(true);
-        let secret = crate::ime::ImeWindowState::from_widget(&secret).unwrap();
-        assert_eq!(secret.content, crate::ime::InputContent::PASSWORD);
+        let secret = tilo_ui_base::ime::ImeWindowState::from_widget(&secret).unwrap();
+        assert_eq!(secret.content, tilo_ui_base::ime::InputContent::PASSWORD);
     }
 
     phase multiline_enter_backspace_and_copy_handle_newlines;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let mut ti = ml_input("ab", 300.0, 120.0);
             ti.set_cursor_pos(1); // between 'a' and 'b'
@@ -165,7 +165,7 @@ tilo_test_env::scenario! {
 
     phase multiline_vertical_and_line_edge_navigation_follows_visual_lines;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let mut ti = ml_input("hello\nworld\nfoo", 400.0, 200.0);
             let mut doc = AutoCommit::new();
@@ -291,7 +291,7 @@ tilo_test_env::scenario! {
 
     phase multiline_wraps_at_unicode_line_breaks;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let text = "the quick brown fox jumps over the lazy dog again and again";
             let mut ti = ml_input(text, 170.0, 220.0); // narrow → must wrap
@@ -350,12 +350,12 @@ tilo_test_env::scenario! {
 
     phase a_wrapping_field_holding_one_line_centres_it_in_the_band_it_stands_in;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let theme = Theme::dark();
         let inset = 8.0;
         {
             let mut composer = TextInput::local().multiline(true);
-            composer.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
+            composer.set_interaction_environment(tilo_ui_base::InteractionEnvironment::TOUCH);
             let height = layout_height(&mut composer, &theme, 320.0);
             assert!(
                 height >= 48.0,
@@ -432,7 +432,7 @@ tilo_test_env::scenario! {
 
     phase clearing_the_binding_leaves_the_field_as_it_was_and_a_local_field_keeps_working;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut doc = AutoCommit::new();
         let stale = doc
             .put_object(&automerge::ROOT, "stale", ObjType::Text)
@@ -483,14 +483,14 @@ tilo_test_env::scenario! {
 
         // A field that was never bound keeps working as a local one.
         let mut doc = AutoCommit::new();
-        let state = crate::LocalState::new(String::from("local"));
+        let state = tilo_ui_base::LocalState::new(String::from("local"));
         let mut local_input = TextInput::from_state(&state);
         local_input.clear_text_binding();
         assert!(Widget::perform_action(
             &mut local_input,
-            &crate::a11y::Action::SetValue("updated".into()),
+            &tilo_ui_base::a11y::Action::SetValue("updated".into()),
             &[],
-            &mut crate::widget::Edits::lend(&mut doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(state.get(), "updated");

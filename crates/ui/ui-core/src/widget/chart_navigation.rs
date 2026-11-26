@@ -11,7 +11,7 @@ macro_rules! chart_leaf {
         fn build_layout(
             &mut self,
             taffy: &mut taffy::TaffyTree<()>,
-            _theme: &crate::theme::Theme,
+            _theme: &tilo_ui_base::theme::Theme,
             node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
             let style = taffy::Style {
@@ -21,10 +21,10 @@ macro_rules! chart_leaf {
                 },
                 ..Default::default()
             };
-            crate::widget::TaffyTreeExt::widget_leaf(taffy, style, node_map, self)
+            tilo_ui_base::widget::TaffyTreeExt::widget_leaf(taffy, style, node_map, self)
         }
 
-        crate::rect_geometry!();
+        tilo_ui_base::rect_geometry!();
 
         fn is_layout_dirty(&self) -> bool {
             self.rect == vello::kurbo::Rect::ZERO
@@ -35,13 +35,13 @@ pub(crate) use chart_leaf;
 
 /// How every chart writes its title: in the heading role, the same for a line, bars, a pie or
 /// a graph.
-pub(crate) fn title_style(theme: &crate::theme::Theme) -> crate::text_render::TextStyle {
-    theme.text(crate::tokens::TextRole::Heading)
+pub(crate) fn title_style(theme: &tilo_ui_base::theme::Theme) -> tilo_ui_base::text_render::TextStyle {
+    theme.text(tilo_ui_base::tokens::TextRole::Heading)
 }
 
 /// The height a chart's title takes over what follows it: its line and the related gap under
 /// it; nothing for a chart without one.
-pub(crate) fn title_band(theme: &crate::theme::Theme, title: &str) -> f64 {
+pub(crate) fn title_band(theme: &tilo_ui_base::theme::Theme, title: &str) -> f64 {
     if title.is_empty() {
         return 0.0;
     }
@@ -53,8 +53,8 @@ pub(crate) fn title_band(theme: &crate::theme::Theme, title: &str) -> f64 {
 pub(crate) fn draw_title(
     scene: &mut vello::Scene,
     transform: vello::kurbo::Affine,
-    tr: &mut crate::text_render::TextRenderer,
-    theme: &crate::theme::Theme,
+    tr: &mut tilo_ui_base::text_render::TextRenderer,
+    theme: &tilo_ui_base::theme::Theme,
     rect: vello::kurbo::Rect,
     title: &str,
 ) {
@@ -66,7 +66,7 @@ pub(crate) fn draw_title(
         title,
         theme.tokens.colors.text_primary,
         transform * vello::kurbo::Affine::translate((rect.x0, rect.y0)),
-        Some(crate::num::f32_of_f64(rect.width().max(0.0))),
+        Some(tilo_ui_base::num::f32_of_f64(rect.width().max(0.0))),
         &title_style(theme),
     );
 }
@@ -200,8 +200,8 @@ pub fn moved_item<T: Clone + PartialEq>(
     moved_index(position, items.len(), action).and_then(|position| items.get(position).cloned())
 }
 
-pub(crate) fn activated_key(action: &crate::a11y::Action, keys: &[u64]) -> Option<u64> {
-    if matches!(action, crate::a11y::Action::Activate) {
+pub(crate) fn activated_key(action: &tilo_ui_base::a11y::Action, keys: &[u64]) -> Option<u64> {
+    if matches!(action, tilo_ui_base::a11y::Action::Activate) {
         keys.last().copied()
     } else {
         None
@@ -272,9 +272,9 @@ pub(crate) trait InteractiveChart {
 pub(crate) fn handle_chart_event(
     chart: &mut impl InteractiveChart,
     event: &WindowEvent,
-    ctx: &mut crate::widget::EventCtx<'_>,
+    ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
 ) {
-    let claim = |ctx: &mut crate::widget::EventCtx<'_>| {
+    let claim = |ctx: &mut tilo_ui_base::widget::EventCtx<'_>| {
         *ctx.handled = true;
         *ctx.focus_target = Some(ctx.node_id);
     };

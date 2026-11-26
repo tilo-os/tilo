@@ -21,10 +21,10 @@ pub struct Live<R: Resource> {
     places: Rc<RefCell<Places<R>>>,
     /// What the reader holds — its revision and its loads — as a generation
     /// that moves whenever either does. It belongs to no scope
-    /// ([`ui_core::component_inputs::Shared`]), so a component's pass that
+    /// ([`tilo_ui_base::component_inputs::Shared`]), so a component's pass that
     /// read the state follows it and runs again when the framework reads more
     /// of the document, instead of resting on a state it no longer shows.
-    generation: ui_core::component_inputs::Shared,
+    generation: tilo_ui_base::component_inputs::Shared,
     /// The revision and loads `generation` last stood for.
     held: Cell<(u64, u64)>,
 }
@@ -213,7 +213,7 @@ impl<R: Resource> Live<R> {
             inner: Rc::new(RefCell::new(reader)),
             changes: Changes::shared(),
             places: Rc::default(),
-            generation: ui_core::component_inputs::Shared::new(0),
+            generation: tilo_ui_base::component_inputs::Shared::new(0),
             held: Cell::new(held),
         }
     }

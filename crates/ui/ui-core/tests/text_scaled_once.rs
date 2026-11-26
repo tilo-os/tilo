@@ -25,13 +25,12 @@
 //! `text_scaled_once/` there as visual evidence.
 
 use tilo_ui::State;
-use tilo_ui::TextRole;
+use tilo_ui_base::TextRole;
 use tilo_ui::headless::{Driver, InspectionNode};
-use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::Theme;
-use tilo_ui::widget::{
-    Avatar, AvatarSize, Breadcrumb, ChipFace, Column, Element, ShortcutRecorder,
-};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui::{widget::Avatar, widget::Breadcrumb, widget::ChipFace, widget::Column, widget::ShortcutRecorder};
+use tilo_ui_base::{widget::AvatarSize, widget::Element};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
@@ -161,7 +160,7 @@ fn retained_widgets() -> Vec<(&'static str, fn() -> Element, f64)> {
             || {
                 Box::new(ShortcutRecorder::new(
                     "x1",
-                    &tilo_ui::LocalState::new("Ctrl+K".to_owned()),
+                    &tilo_ui_base::LocalState::new("Ctrl+K".to_owned()),
                     "Ctrl+K",
                 ))
             },
@@ -218,8 +217,8 @@ fn text_scale_is_applied_once_by_retained_immediate_and_renderer_paths() {
                 // the text scale changes — they used to grow out of it.
                 "AvatarFace::paint",
                 Box::new(|scene, tr, theme| {
-                    tilo_ui::widget::AvatarFace::new("Ada Byron", "ada.byron").paint(
-                        &mut tilo_ui::paint::PaintCtx::new(scene, Affine::IDENTITY, tr, theme),
+                    tilo_ui_base::widget::AvatarFace::new("Ada Byron", "ada.byron").paint(
+                        &mut tilo_ui_base::paint::PaintCtx::new(scene, Affine::IDENTITY, tr, theme),
                         Rect::new(0.0, 0.0, 40.0, 40.0),
                     );
                 }),

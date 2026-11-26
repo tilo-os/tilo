@@ -1043,7 +1043,7 @@ mod tests {
         )
         .unwrap();
         editor.apply_layout(&tree, node, Point::ORIGIN);
-        editor.draw(&mut tilo_ui::DrawCtx::new(
+        editor.draw(&mut tilo_ui_base::DrawCtx::new(
             &mut Scene::new(),
             Affine::IDENTITY,
             renderer,

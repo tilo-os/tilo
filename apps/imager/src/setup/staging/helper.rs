@@ -122,7 +122,7 @@ pub(crate) fn development_layers(dir: &Path) -> Result<Vec<DevelopmentLayer>, St
             return Err(format!(
                 "{} holds more than {} of development layers",
                 dir.display(),
-                ui::format::size(MAX_DEVELOPMENT_LAYER_BYTES)
+                tilo_ui_base::format::size(MAX_DEVELOPMENT_LAYER_BYTES)
             ));
         }
     }

@@ -16,9 +16,10 @@ use winit::keyboard::{Key, ModifiersState};
 
 use crate::app::driver::Driver;
 use crate::headless::ControlInput;
-use crate::platform::{Platform, PlatformConventions};
+use tilo_ui_base::{platform::Platform, platform::PlatformConventions};
 use crate::state::State;
-use crate::widget::{Button, Column, Labelled, NavShell, Text, TextInput, Widget};
+use crate::{widget::Button, widget::Column, widget::Labelled, widget::NavShell, widget::Text, widget::TextInput};
+use tilo_ui_base::widget::Widget;
 
 /// A shell with a sidebar and content, as an app shows one.
 fn shell() -> NavShell {
@@ -37,7 +38,7 @@ fn the_page_composes_the_app_the_frame_laid_out() {
         State::new(),
         Text::new("Hello"),
         (400, 300),
-        crate::Theme::dark(),
+        tilo_ui_base::Theme::dark(),
     );
     let composition = driver.composition();
     assert_eq!(composition.viewport, [400, 300]);
@@ -78,7 +79,7 @@ fn a_control_operates_as_a_person_would() {
         let pressed = Rc::clone(&pressed);
         move || pressed.set(pressed.get() + 1)
     });
-    let mut driver = Driver::for_root(State::new(), button, (200, 80), crate::Theme::dark());
+    let mut driver = Driver::for_root(State::new(), button, (200, 80), tilo_ui_base::Theme::dark());
     let control = driver
         .controls()
         .into_iter()
@@ -96,7 +97,7 @@ fn a_frame_that_settled_skips_nothing_and_measures_nothing_again() {
         State::new(),
         Text::new("Hello"),
         (400, 300),
-        crate::Theme::dark(),
+        tilo_ui_base::Theme::dark(),
     );
     assert_eq!(driver.take_skip_report(), None, "the layout settles");
     assert!(
@@ -107,12 +108,12 @@ fn a_frame_that_settled_skips_nothing_and_measures_nothing_again() {
 
 #[test]
 fn the_root_takes_a_key_under_the_modifier_state_it_is_given() {
-    let mut driver = Driver::for_root(State::new(), shell(), (1280, 800), crate::Theme::dark());
+    let mut driver = Driver::for_root(State::new(), shell(), (1280, 800), tilo_ui_base::Theme::dark());
     driver
         .root_mut::<NavShell>()
         .set_platform_conventions(PlatformConventions::new(Platform::Linux));
     driver.relayout();
-    let key = crate::synthetic_input::key_input(&Key::Character("L".into()), ElementState::Pressed);
+    let key = tilo_ui_base::synthetic_input::key_input(&Key::Character("L".into()), ElementState::Pressed);
     let modifiers = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
     assert!(driver.dispatch_to_root_with(&key, &modifiers));
     assert!(!driver.root::<NavShell>().is_sidebar_open());

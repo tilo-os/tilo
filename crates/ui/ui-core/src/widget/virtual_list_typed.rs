@@ -12,11 +12,12 @@ use std::rc::Rc;
 use vello::kurbo::{Point, Rect};
 
 use super::{ListModel, RowBuild, TreeMarks, TreeRow, VecListModel, VirtualRows};
-use crate::arriving::Arrival;
-use crate::collection_transition::ListModelChange;
-use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
-use crate::selection::KeySelection;
-use crate::widget::{Element, MenuItem, RowGroup, Widget};
+use tilo_ui_base::arriving::Arrival;
+use tilo_ui_base::collection_transition::ListModelChange;
+use tilo_ui_base::{reorder::DropPlacement, reorder::DropTarget, reorder::ReorderDrop};
+use tilo_ui_base::selection::KeySelection;
+use crate::{widget::MenuItem, widget::RowGroup};
+use tilo_ui_base::{widget::Element, widget::Widget};
 
 trait KeyValue {
     fn as_any(&self) -> &dyn Any;
@@ -231,7 +232,7 @@ fn model_mut<M: 'static>(model: &mut dyn AnyModel) -> &mut M {
 
 /// A sparse, variable-height list of `M`'s rows: [`VirtualRows`], read as `M` and keyed by
 /// its keys.
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "`ui.VirtualList` (`DescribedList`) is its described form"
 )]
@@ -254,7 +255,7 @@ impl<M: ListModel> std::ops::DerefMut for VirtualList<M> {
     }
 }
 
-impl<M: ListModel + 'static> crate::widget::identity::concrete::Decorator for VirtualList<M> {
+impl<M: ListModel + 'static> tilo_ui_base::widget::identity::concrete::Decorator for VirtualList<M> {
     type Inner = VirtualRows;
 
     fn inner(&self) -> &VirtualRows {
@@ -269,15 +270,15 @@ impl<M: ListModel + 'static> crate::widget::identity::concrete::Decorator for Vi
         self.rows.for_each_layout_child(visitor)
     }
 
-    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+    fn provide<'a>(&'a self, request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
         self.rows.provide(request);
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
+    fn provide_mut<'a>(&'a mut self, request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>) {
         self.rows.provide_mut(request);
     }
 
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
         self.rows.take_structure_change()
     }
 
@@ -293,11 +294,11 @@ impl<M: ListModel + 'static> crate::widget::identity::concrete::Decorator for Vi
         self.rows.accessibility_hidden()
     }
 
-    fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
+    fn accessibility_shared(&self) -> Option<tilo_ui_base::a11y::SharedAccessNode> {
         self.rows.accessibility_shared()
     }
 
-    fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility_root(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.rows.accessibility_root()
     }
 
@@ -408,7 +409,7 @@ impl<M: ListModel + 'static> VirtualList<M> {
 
     builders! {
         with_id(id: impl Into<String>);
-        with_feel(feel: crate::motion::Feel);
+        with_feel(feel: tilo_ui_base::motion::Feel);
         with_viewport_height(height: f32);
         overlay_scrollbar();
         flush();
@@ -491,7 +492,7 @@ impl<M: ListModel + 'static> VirtualList<M> {
     #[must_use]
     pub fn with_row_presence(
         mut self,
-        presence: impl Fn(&M, usize, &M::Key) -> Option<crate::presence::PresenceKey> + 'static,
+        presence: impl Fn(&M, usize, &M::Key) -> Option<tilo_ui_base::presence::PresenceKey> + 'static,
     ) -> Self {
         self.rows = self
             .rows
@@ -528,7 +529,7 @@ impl<M: ListModel + 'static> VirtualList<M> {
     /// row answers the key however it is drawn, a list row and any other view alike.
     pub fn set_on_row_shortcut(
         &mut self,
-        mut callback: impl FnMut(&M::Key, &crate::platform::Shortcut) -> bool + 'static,
+        mut callback: impl FnMut(&M::Key, &tilo_ui_base::platform::Shortcut) -> bool + 'static,
     ) {
         self.rows
             .set_on_row_shortcut(move |key: &ListKey, pressed| {
@@ -711,7 +712,7 @@ impl<M: ListModel + 'static> VirtualList<M> {
     }
 
     #[must_use]
-    pub fn reveal_when(mut self, shown: &crate::LocalState<Option<M::Key>>) -> Self {
+    pub fn reveal_when(mut self, shown: &tilo_ui_base::LocalState<Option<M::Key>>) -> Self {
         let initial = shown.with(Clone::clone);
         if initial.is_some() {
             shown.set(None);

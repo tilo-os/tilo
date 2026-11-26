@@ -9,10 +9,11 @@ use vello::kurbo::{Affine, BezPath, Point, Rect};
 use vello::peniko::Color;
 use winit::event::{DeviceId, WindowEvent};
 
-use super::wasm;
-use super::*;
-use crate::text_render::TextRenderer;
-use crate::widget::{Button, Widget};
+use tilo_ui_base::part_paint::wasm;
+use tilo_ui_base::part_paint::*;
+use tilo_ui_base::text_render::TextRenderer;
+use crate::widget::Button;
+use tilo_ui_base::widget::Widget;
 use tilo_theme_sdk::wire;
 
 /// `bytes` as a WAT data string.
@@ -87,7 +88,7 @@ fn a_wasm_set_draws_a_button_and_its_shape_takes_the_pointer() {
         vec![ParamSpec::new("levels", Some(4.0), 2.0..=16.0)]
     );
     assert!(register_painter_set(set.clone()));
-    let finish = crate::tokens::Finish::named("test.wasm-triangles", [("levels", 8.0)]).unwrap();
+    let finish = tilo_ui_base::tokens::Finish::named("test.wasm-triangles", [("levels", 8.0)]).unwrap();
     assert_eq!(finish.param("levels"), Some(8.0));
     let theme = Theme::dark()
         .with_painter_set(SurfaceRole::Control, set)
@@ -95,12 +96,12 @@ fn a_wasm_set_draws_a_button_and_its_shape_takes_the_pointer() {
     let mut button = Button::new("go", "Go");
     button.apply_layout_external(Rect::new(100.0, 50.0, 220.0, 90.0));
     let mut scene = Scene::new();
-    button.draw(&mut crate::draw::DrawCtx::new(
+    button.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut TextRenderer::new(),
         &theme,
-        crate::presence::PresenceCtx::default().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::default().draw_env(),
     ));
     assert!(moved_to(&mut button, (160.0, 60.0)));
     assert!(moved_to(&mut button, (116.0, 88.0)));

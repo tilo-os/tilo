@@ -572,7 +572,7 @@ mod tests {
         {
             let report =
                 fixture_support_report();
-            let mut app = SetupApp::for_full_os_check(ui::LocalState::new(None));
+            let mut app = SetupApp::for_full_os_check(tilo_ui_base::LocalState::new(None));
             app.support_report = Some(report);
             let sections = app.hardware_report_sections();
             assert!(
@@ -606,7 +606,7 @@ mod tests {
         {
             let report =
                 fixture_support_report();
-            let mut app = SetupApp::for_full_os_check(ui::LocalState::new(None));
+            let mut app = SetupApp::for_full_os_check(tilo_ui_base::LocalState::new(None));
             app.support_report = Some(report);
             let hardware = app.setup_projection().hardware.unwrap();
             assert_eq!(hardware.source, "local-scan");
@@ -637,7 +637,7 @@ mod tests {
 
         phase checking_report_stays_visible_until_the_probe_reports;
         {
-            let app = SetupApp::for_full_os_check(ui::LocalState::new(None));
+            let app = SetupApp::for_full_os_check(tilo_ui_base::LocalState::new(None));
             assert!(app.support_report.is_none());
             assert!(
                 app.hardware_report_sections()

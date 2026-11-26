@@ -757,7 +757,7 @@ impl ui::notify::Notifier for AppNotifier {
             let _ = self.forward.show(notification);
         }
         self.push(AppRequest::Show {
-            tab: ui::widget::panic_scope::current(),
+            tab: tilo_ui_base::widget::panic_scope::current(),
             notification: Box::new(notification.clone()),
         });
         Ok(())
@@ -774,7 +774,7 @@ impl ui::notify::Notifier for AppNotifier {
         }
         let _ = self.forward.withdraw(tag);
         self.push(AppRequest::Withdraw {
-            tab: ui::widget::panic_scope::current(),
+            tab: tilo_ui_base::widget::panic_scope::current(),
             tag: tag.to_owned(),
         });
         Ok(())

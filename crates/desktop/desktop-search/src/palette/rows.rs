@@ -97,7 +97,7 @@ pub(super) fn entries_for(
             // where the few they reach for most are listed.
             entries.push(
                 CommandEntry::new(ALL_APPS_ID, crate::i18n::t("search-launcher-all-apps"))
-                    .icon(ui::icons::Icon::LayoutGrid)
+                    .icon(tilo_ui_base::icons::Icon::LayoutGrid)
                     .group(label)
                     .group_total(group.total),
             );
@@ -127,7 +127,7 @@ pub(super) fn all_results_entry(rest: usize) -> CommandEntry {
             &[("count", rest.to_string().into())],
         ),
     )
-    .icon(ui::icons::Icon::ChevronDown)
+    .icon(tilo_ui_base::icons::Icon::ChevronDown)
 }
 
 /// Kinds a crowded card never leaves out: the answer to the question, the
@@ -289,15 +289,15 @@ pub(super) fn entry_for(hit: &Hit, id: String) -> CommandEntry {
 }
 
 /// The glyph an app's rows wear, the one its windows wear.
-fn app_glyph(app: &str) -> ui::icons::Icon {
-    ui::icons::app_glyph(app, crate::availability::category_for(app))
+fn app_glyph(app: &str) -> tilo_ui_base::icons::Icon {
+    tilo_ui_base::icons::app_glyph(app, crate::availability::category_for(app))
 }
 
 /// The artwork of the app a row launches or whose window it is.
-fn app_artwork(target: &Target) -> Option<ui::icons::AppImage> {
+fn app_artwork(target: &Target) -> Option<tilo_ui_base::icons::AppImage> {
     match target {
         Target::Launch { app, .. } | Target::Window { app: Some(app), .. } => {
-            ui::icons::app_artwork(app)
+            tilo_ui_base::icons::app_artwork(app)
         }
         _ => None,
     }

@@ -47,7 +47,7 @@ fn settle(table: &mut DataTable<Item>, width: f32, height: f32) -> (TaffyTree<()
         },
         &[node],
     );
-    crate::widget::layout::solve_built(
+    tilo_ui_base::widget::layout::solve_built(
         table,
         &mut tree,
         (root, node),
@@ -83,11 +83,11 @@ fn send(
 }
 
 fn at(x: f64, y: f64) -> WindowEvent {
-    crate::synthetic_input::cursor_moved(x, y)
+    tilo_ui_base::synthetic_input::cursor_moved(x, y)
 }
 
 fn button(state: ElementState, button: MouseButton) -> WindowEvent {
-    crate::synthetic_input::mouse_input(state, button)
+    tilo_ui_base::synthetic_input::mouse_input(state, button)
 }
 
 tilo_test_env::scenario! {
@@ -101,7 +101,7 @@ tilo_test_env::scenario! {
         table.set_rows(items(3));
         let _ = settle(&mut table, 300.0, 400.0);
         let theme = Theme::dark();
-        let bleed = crate::chrome::row_bleed(&theme);
+        let bleed = tilo_ui_base::chrome::row_bleed(&theme);
         let rect = table.get_rect();
         let band = table.columns_band();
         assert!(
@@ -140,7 +140,7 @@ tilo_test_env::scenario! {
         assert!(table.h_overflow(), "what still does not fit scrolls");
         let before = table.scroll_x();
         send(&mut table, &tree, node, &at(60.0, 60.0), false);
-        let wheel = crate::synthetic_input::mouse_wheel(0.0, -1.0);
+        let wheel = tilo_ui_base::synthetic_input::mouse_wheel(0.0, -1.0);
         assert!(
             send(&mut table, &tree, node, &wheel, true),
             "shift-wheel scrolls sideways"
@@ -181,7 +181,7 @@ tilo_test_env::scenario! {
         assert!(table.h_overflow());
         let before = table.scroll_x();
         send(&mut table, &tree, node, &at(100.0, 60.0), false);
-        let wheel = crate::synthetic_input::mouse_wheel(0.0, -1.0);
+        let wheel = tilo_ui_base::synthetic_input::mouse_wheel(0.0, -1.0);
         assert!(send(&mut table, &tree, node, &wheel, true));
         assert!(table.scroll_x() > before);
         assert!(table.h_track().is_some());
@@ -269,9 +269,9 @@ tilo_test_env::scenario! {
         let mut doc = AutoCommit::new();
         assert!(Widget::perform_action(
             &mut table,
-            &crate::a11y::Action::Expand,
+            &tilo_ui_base::a11y::Action::Expand,
             &[0],
-            &mut crate::widget::Edits::lend(&mut doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(toggles.borrow().len(), 2);
@@ -407,7 +407,7 @@ tilo_test_env::scenario! {
 #[test]
 fn hosted_checkbox_cells_toggle_instead_of_activating_their_row() {
     struct RetainedTable(DataTable<Item>);
-    impl crate::widget::Decorator for RetainedTable {
+    impl tilo_ui_base::widget::Decorator for RetainedTable {
         type Inner = DataTable<Item>;
         fn inner(&self) -> &Self::Inner {
             &self.0
@@ -445,17 +445,17 @@ fn hosted_checkbox_cells_toggle_instead_of_activating_their_row() {
         .collect();
     assert_eq!(cells.len(), 2);
     harness
-        .perform_a11y_action(cells[1], &crate::a11y::Action::Focus)
+        .perform_a11y_action(cells[1], &tilo_ui_base::a11y::Action::Focus)
         .unwrap();
     assert!(
         checks.borrow().is_empty(),
         "focus does not toggle a checkbox"
     );
     harness
-        .perform_a11y_action(cells[1], &crate::a11y::Action::ToggleCheck)
+        .perform_a11y_action(cells[1], &tilo_ui_base::a11y::Action::ToggleCheck)
         .unwrap();
     harness
-        .perform_a11y_action(cells[0], &crate::a11y::Action::Activate)
+        .perform_a11y_action(cells[0], &tilo_ui_base::a11y::Action::Activate)
         .unwrap();
     assert_eq!(*checks.borrow(), [(1, true), (0, true)]);
     assert_eq!(activations.get(), 0, "a checkbox never activates its row");
@@ -465,7 +465,7 @@ fn hosted_checkbox_cells_toggle_instead_of_activating_their_row() {
     harness.relayout();
     assert!(
         harness
-            .perform_a11y_action(cells[0], &crate::a11y::Action::ToggleCheck)
+            .perform_a11y_action(cells[0], &tilo_ui_base::a11y::Action::ToggleCheck)
             .is_err(),
         "a removed record's retained checkbox must be refused"
     );
@@ -479,7 +479,7 @@ fn badges_and_checkboxes_are_measured_painted_and_read() {
     let mut table = DataTable::new(vec![
         ColumnDef::checkbox("on", "On", |r: &Item| r.on),
         ColumnDef::new("level", "Level", ColumnWidth::Auto)
-            .with_badge(|_| ("Warning".to_owned(), crate::widget::Tone::Warning)),
+            .with_badge(|_| ("Warning".to_owned(), tilo_ui_base::widget::Tone::Warning)),
         name_col(),
     ])
     .selectable(true)
@@ -509,22 +509,22 @@ fn badges_and_checkboxes_are_measured_painted_and_read() {
     assert_eq!(*checks.borrow(), [(1, true)]);
     let mut state = crate::state::State::new();
     assert!(table.perform_action(
-        &crate::a11y::Action::ToggleCheck,
+        &tilo_ui_base::a11y::Action::ToggleCheck,
         &[0, 0],
-        &mut crate::widget::Edits::lend(&mut state.doc),
+        &mut tilo_ui_base::widget::Edits::lend(&mut state.doc),
         &state.root,
     ));
     assert_eq!(*checks.borrow(), [(1, true), (0, true)]);
     assert!(!table.perform_action(
-        &crate::a11y::Action::ToggleCheck,
+        &tilo_ui_base::a11y::Action::ToggleCheck,
         &[0, 99],
-        &mut crate::widget::Edits::lend(&mut state.doc),
+        &mut tilo_ui_base::widget::Edits::lend(&mut state.doc),
         &state.root,
     ));
     assert_eq!(*checks.borrow(), [(1, true), (0, true)]);
     let a11y = Widget::accessibility(&table).unwrap();
     let cell = &a11y.children[0].children[0];
-    assert_eq!(cell.role, crate::a11y::Role::Checkbox);
+    assert_eq!(cell.role, tilo_ui_base::a11y::Role::Checkbox);
     assert_eq!(cell.state.checked, Some(false));
     assert_eq!(
         a11y.children[0].children[1].value.as_deref(),

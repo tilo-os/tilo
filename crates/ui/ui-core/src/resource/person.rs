@@ -28,7 +28,7 @@ use super::{
 };
 use crate::history_mode::HistoryOwner;
 use crate::history_mode::owner::ResourceOwnerLifetime;
-use crate::permissions::{Acting, MemberId};
+use tilo_ui_base::{permissions::Acting, permissions::MemberId};
 
 #[cfg(test)]
 #[path = "person_owner_tests.rs"]
@@ -450,7 +450,7 @@ impl StoredResource {
     /// The route this record syncs on. `None` for a record kept on this
     /// device only.
     #[must_use]
-    pub fn route(&self) -> Option<crate::collaboration::RouteSpec> {
+    pub fn route(&self) -> Option<tilo_ui_base::collaboration::RouteSpec> {
         self.store.route(&self.checkout).ok()
     }
 
@@ -515,11 +515,11 @@ impl StoredResource {
 fn content_of(package: String, home: &str, id: &DocumentId) -> Option<tilo_content::ContentStore> {
     let workspace = uuid::Uuid::parse_str(home).ok()?;
     let route = if id.is_package_primary() {
-        crate::collaboration::RouteSpec::app(package, workspace)
+        tilo_ui_base::collaboration::RouteSpec::app(package, workspace)
     } else {
-        crate::collaboration::RouteSpec::document(package, workspace, id.as_str())
+        tilo_ui_base::collaboration::RouteSpec::document(package, workspace, id.as_str())
     };
-    Some(crate::collaboration::document_content::ContentLink::resource_store(&route))
+    Some(tilo_ui_base::collaboration::document_content::ContentLink::resource_store(&route))
 }
 
 #[cfg(test)]

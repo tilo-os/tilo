@@ -96,7 +96,7 @@ pub(crate) struct AppPipelineCache {
 impl AppPipelineCache {
     /// This app's cache file if it is valid for the device, else the session's seed, else an empty
     /// cache.
-    pub(crate) fn open(device: &crate::gpu::DeviceHandle) -> Option<Self> {
+    pub(crate) fn open(device: &tilo_ui_base::gpu::DeviceHandle) -> Option<Self> {
         if !crate::pipeline_seed::supported(device) {
             return None;
         }
@@ -110,9 +110,9 @@ impl AppPipelineCache {
 
     /// [`Self::open`] with the cache directory and the seed supplied.
     pub(crate) fn open_in(
-        device: &crate::gpu::DeviceHandle,
+        device: &tilo_ui_base::gpu::DeviceHandle,
         dir: &Path,
-        seed: impl FnOnce(&crate::gpu::DeviceHandle) -> Option<Vec<u8>>,
+        seed: impl FnOnce(&tilo_ui_base::gpu::DeviceHandle) -> Option<Vec<u8>>,
     ) -> Option<Self> {
         let info = device.adapter.get_info();
         let file = dir.join(format!("{}.bin", wgpu::util::pipeline_cache_key(&info)?));
@@ -370,7 +370,7 @@ mod tests {
     /// nothing.
     #[test]
     fn a_second_launch_starts_from_the_first_launch_s_pipelines() {
-        let mut context = crate::gpu::RenderContext::new();
+        let mut context = tilo_ui_base::gpu::RenderContext::new();
         let Some(index) = pollster::block_on(context.device(None)) else {
             return;
         };

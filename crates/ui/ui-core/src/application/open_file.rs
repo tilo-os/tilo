@@ -41,7 +41,7 @@ impl OpenFile {
         if bytes.len() > MAX_OPEN_FILE_BYTES {
             return Err(format!(
                 "{name} is larger than the {} a component may be handed",
-                crate::format::memory(u64::try_from(MAX_OPEN_FILE_BYTES).unwrap_or(u64::MAX))
+                tilo_ui_base::format::memory(u64::try_from(MAX_OPEN_FILE_BYTES).unwrap_or(u64::MAX))
             ));
         }
         let opened = Rc::new(RefCell::new(None));

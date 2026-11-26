@@ -595,9 +595,9 @@ struct RowPublishingApp;
 
 /// This test's own words: the catalogue the framework reads the effect's
 /// labels and parameter descriptions from at publication.
-static CATALOG: tilo_app::i18n::EmbeddedCatalog =
-    tilo_app::i18n::EmbeddedCatalog::new("en-US", &[("en-US", include_str!("locales/en-US.ftl"))])
-        .with_language_pack(tilo_app::i18n::LanguagePack {
+static CATALOG: tilo_ui_base::i18n::EmbeddedCatalog =
+    tilo_ui_base::i18n::EmbeddedCatalog::new("en-US", &[("en-US", include_str!("locales/en-US.ftl"))])
+        .with_language_pack(tilo_ui_base::i18n::LanguagePack {
             id: env!("CARGO_PKG_NAME"),
             locales: &["en-US"],
             source_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/tests/locales"),
@@ -613,7 +613,7 @@ impl ResourceApp for RowPublishingApp {
     const ID: &'static str = "so.tilo.test-jobs";
     const TITLE: &'static str = "Jobs";
 
-    fn catalog() -> Option<&'static tilo_app::i18n::EmbeddedCatalog> {
+    fn catalog() -> Option<&'static tilo_ui_base::i18n::EmbeddedCatalog> {
         Some(&CATALOG)
     }
 
@@ -900,7 +900,7 @@ impl ResourceApp for LatePageApp {
     const ID: &'static str = "so.tilo.test-late-page";
     const TITLE: &'static str = "Pages";
 
-    fn catalog() -> Option<&'static tilo_app::i18n::EmbeddedCatalog> {
+    fn catalog() -> Option<&'static tilo_ui_base::i18n::EmbeddedCatalog> {
         Some(&CATALOG)
     }
 

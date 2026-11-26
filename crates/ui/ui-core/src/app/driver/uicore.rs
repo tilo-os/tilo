@@ -6,13 +6,13 @@
 //! publication, its presence — so a caller sees what a window would.
 
 use super::Driver;
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 /// What the driver keeps of what is shown over its app: the pointers a host placed on the
 /// surface, in the surface's logical pixels, and how often it checks its retained layout.
 #[derive(Default)]
 pub(super) struct Overlay {
-    pointers: Vec<crate::presence::PeerCursor>,
+    pointers: Vec<tilo_ui_base::presence::PeerCursor>,
     /// Check the retained layout against a fresh rebuild every this many frames that kept
     /// their tree; zero, the check is off.
     retained_geometry_check_every: u32,
@@ -98,12 +98,12 @@ impl Driver {
         &mut self,
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
-        let answered = crate::widget::resource_operation::laying_out_first(|| {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
+        let answered = tilo_ui_base::widget::resource_operation::laying_out_first(|| {
             self.app.invoke_bound_action_at(address, arguments)
         });
         let answered = match answered {
-            Err(error) if crate::widget::resource_operation::asks_to_lay_out_first(&error) => {
+            Err(error) if tilo_ui_base::widget::resource_operation::asks_to_lay_out_first(&error) => {
                 self.relayout();
                 self.app.invoke_bound_action_at(address, arguments)
             }
@@ -243,7 +243,7 @@ impl Driver {
                 self.app.focused_node,
                 resources,
             );
-            let bindings = crate::widget::controls::control_action_bindings(widget);
+            let bindings = tilo_ui_base::widget::controls::control_action_bindings(widget);
             result.push(
                 crate::action_locus::resource_bounds(&tree, &bindings, &target.address.address)
                     .and_then(|(bounds, node)| self.clipped_publication_bounds(bounds, node)),
@@ -303,7 +303,7 @@ impl Driver {
     /// Place `pointers` over the app, in the surface's logical pixels: each is drawn with the
     /// arrow, name tag and colour the app's own presence gives that person. A pointer outside
     /// the surface is dropped. Whether anything changed.
-    pub fn set_placed_pointers(&mut self, pointers: Vec<crate::presence::PeerCursor>) -> bool {
+    pub fn set_placed_pointers(&mut self, pointers: Vec<tilo_ui_base::presence::PeerCursor>) -> bool {
         let (width, height) = self.viewport();
         let (width, height) = (f64::from(width), f64::from(height));
         let pointers: Vec<_> = pointers
@@ -322,20 +322,20 @@ impl Driver {
 
     /// The pointers [`Self::set_placed_pointers`] last kept.
     #[must_use]
-    pub fn placed_pointers(&self) -> &[crate::presence::PeerCursor] {
+    pub fn placed_pointers(&self) -> &[tilo_ui_base::presence::PeerCursor] {
         &self.overlay.pointers
     }
 
     /// The placed pointers as the last frame drew them: without the name of one whose tag would
     /// meet the caret tag of the same person.
-    pub fn drawn_placed_pointers(&mut self) -> Vec<crate::presence::PeerCursor> {
+    pub fn drawn_placed_pointers(&mut self) -> Vec<tilo_ui_base::presence::PeerCursor> {
         self.pointers_beside_caret_tags(vello::kurbo::Affine::scale(self.surface.scale.get()))
     }
 
     fn pointers_beside_caret_tags(
         &mut self,
         transform: vello::kurbo::Affine,
-    ) -> Vec<crate::presence::PeerCursor> {
+    ) -> Vec<tilo_ui_base::presence::PeerCursor> {
         let mut pointers = self.overlay.pointers.clone();
         if pointers.is_empty() {
             return pointers;
@@ -346,14 +346,14 @@ impl Driver {
             .presence_ctx
             .caret_tags()
             .into_iter()
-            .map(|tag| crate::presence::CaretTag {
+            .map(|tag| tilo_ui_base::presence::CaretTag {
                 rect: to_surface.transform_rect_bbox(tag.rect),
                 ..tag
             })
             .collect();
         let (width, height) = self.viewport();
         let viewport = vello::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
-        crate::presence::hide_names_beside_caret_tags(
+        tilo_ui_base::presence::hide_names_beside_caret_tags(
             &mut pointers,
             &tags,
             viewport,
@@ -371,7 +371,7 @@ impl Driver {
         let transform = vello::kurbo::Affine::scale(self.surface.scale.get());
         let pointers = self.pointers_beside_caret_tags(transform);
         let (width, height) = self.viewport();
-        crate::presence::draw_peer_cursors(
+        tilo_ui_base::presence::draw_peer_cursors(
             &mut self.scene,
             transform,
             vello::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),

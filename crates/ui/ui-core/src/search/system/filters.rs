@@ -1,10 +1,10 @@
 //! The native system-search filter strip: paint, hit targets and accessibility.
 use super::ResourceKind;
-use crate::num::{f32_of_f64, f64_of_usize};
-use crate::paint::PaintCtx;
-use crate::text_render::{TextRenderer, TextStyle, TextWeight};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::{num::f32_of_f64, num::f64_of_usize};
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 /// Toggle `kind` in the chip selection.
@@ -95,7 +95,7 @@ impl Default for SearchFilters {
             more_open: false,
             search_chip_rows: 1,
             search_filter_control_h: SELECTOR_HEIGHT_PX,
-            search_pointer_floor_h: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
+            search_pointer_floor_h: f64::from(tilo_ui_base::tokens::Metrics::BASE.min_pointer_target),
             search_band_at_draw: Rect::ZERO,
 
             kinds: Vec::new(),
@@ -141,7 +141,7 @@ impl SearchFilters {
     pub fn search_banner_rect(&self) -> Rect {
         self.band
     }
-    pub fn accessibility(&self) -> crate::a11y::AccessNode {
+    pub fn accessibility(&self) -> tilo_ui_base::a11y::AccessNode {
         self.search_filters_accessibility()
     }
     pub fn rect_for_path(&self, path: &[usize]) -> Option<Rect> {
@@ -198,8 +198,8 @@ impl SearchFilters {
         }
     }
 
-    pub fn search_filters_accessibility(&self) -> crate::a11y::AccessNode {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    pub fn search_filters_accessibility(&self) -> tilo_ui_base::a11y::AccessNode {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let bounded = |node: AccessNode, rect: Rect, checked: bool| {
             let node = node.with_state(AccessState {
                 checked: Some(checked),
@@ -433,7 +433,7 @@ impl SearchFilters {
                     rect,
                     &label,
                     &chip_text_style,
-                    crate::chrome::SelectionState::new(is_active, hover, false),
+                    tilo_ui_base::chrome::SelectionState::new(is_active, hover, false),
                 );
             }
             match i {
@@ -455,7 +455,7 @@ impl SearchFilters {
                 more,
                 &self.text.more_label,
                 &chip_text_style,
-                crate::chrome::SelectionState::new(self.more_open, hover, false),
+                tilo_ui_base::chrome::SelectionState::new(self.more_open, hover, false),
             );
         }
 
@@ -466,9 +466,9 @@ impl SearchFilters {
 
 /// Narrowest a chip is ever squeezed to before its label is just an ellipsis: the §9.6
 /// pointer floor — a pill narrower than a finger is not a target whatever it says.
-const CHIP_MIN_W_PX: f64 = crate::tokens::Metrics::BASE.min_pointer_target as f64;
+const CHIP_MIN_W_PX: f64 = tilo_ui_base::tokens::Metrics::BASE.min_pointer_target as f64;
 /// Height of a Selector at 100 % text (HIG §9.6, `metrics.selector_height`).
-pub const SELECTOR_HEIGHT_PX: f64 = crate::tokens::Metrics::BASE.selector_height as f64;
+pub const SELECTOR_HEIGHT_PX: f64 = tilo_ui_base::tokens::Metrics::BASE.selector_height as f64;
 
 /// One row of filter chips, with kinds that did not fit sitting behind More.
 #[derive(Debug, Clone, PartialEq)]
@@ -615,24 +615,24 @@ pub fn draw_filter_chip(
     rect: Rect,
     label: &str,
     text_style: &TextStyle,
-    state: crate::chrome::SelectionState,
+    state: tilo_ui_base::chrome::SelectionState,
 ) {
     let colors = &theme.tokens.colors;
-    let radius = crate::chrome::ChromeRole::Selector.radius(theme, rect.height());
-    let tier = crate::chrome::selection_tier(theme, state);
+    let radius = tilo_ui_base::chrome::ChromeRole::Selector.radius(theme, rect.height());
+    let tier = tilo_ui_base::chrome::selection_tier(theme, state);
     tier.paint(scene, transform, rect, radius);
     let lifted = state.active || state.pressed || state.hover;
     let under = if lifted {
         tier.fill
     } else {
-        crate::chrome::shell::panel_ground(theme)
+        tilo_ui_base::chrome::shell::panel_ground(theme)
     };
     let tone = if state.active {
         colors.text_primary
     } else {
         colors.text_dim
     };
-    let text_color = colors.ink_on(under, tone, crate::tokens::colors::ON_FILL_MIN_CONTRAST);
+    let text_color = colors.ink_on(under, tone, tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST);
     // Control labels are medium weight (HIG §9.6); measured and drawn at the same weight
     // so the centring holds.
     let (lw, lh) = text_renderer.measure_style(

@@ -13,7 +13,7 @@ use tilo_session_core::surface::{KeyModifiers, ShellSurface as _, SurfaceKey};
 
 use tilo_session::platform::surfaces::{Placement, WidgetSurface};
 use ui::taffy::{NodeId, Style, TaffyTree};
-use ui::widget::{EventCtx, TaffyTreeExt as _, Widget};
+use tilo_ui_base::{widget::EventCtx, widget::TaffyTreeExt as _, widget::Widget};
 use ui::winit::event::{ElementState, WindowEvent};
 
 /// A control that keeps what it is typed, as a field does.
@@ -40,7 +40,7 @@ impl Widget for Field {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &ui::Theme,
+        _theme: &tilo_ui_base::Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         taffy.widget_leaf(
@@ -56,7 +56,7 @@ impl Widget for Field {
         )
     }
 
-    ui::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         if let WindowEvent::KeyboardInput { event, .. } = event
@@ -115,7 +115,7 @@ fn an_open_modal_claims_its_layout_bounds_without_painted_pixels() {
 
 #[test]
 fn a_surface_that_loses_the_keyboard_draws_again_without_its_carets() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let holds = Rc::new(Cell::new(true));
     let field = Field::default();
     let mut host = WidgetSurface::new(
@@ -157,7 +157,7 @@ fn a_surface_that_loses_the_keyboard_draws_again_without_its_carets() {
 
 #[test]
 fn a_keystroke_reaches_one_frame_of_the_hosts_clock() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let field = Field::default();
     let typed = Rc::clone(&field.typed);
     let mut host = WidgetSurface::new(
@@ -195,11 +195,11 @@ fn a_keystroke_reaches_one_frame_of_the_hosts_clock() {
 /// tree's, and the host still draws the line over the target, and takes it away again.
 #[test]
 fn a_drag_that_reaches_the_tree_without_its_input_shows_where_it_lands() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let target = ui::widget::DropTarget::new(
         "window",
         Box::new(Field::default()),
-        ui::component::Event::None,
+        tilo_ui_base::component::Event::None,
     );
     let mut host = WidgetSurface::new(
         Box::new(target),
@@ -217,7 +217,7 @@ fn a_drag_that_reaches_the_tree_without_its_input_shows_where_it_lands() {
     // A window's record goes on over the target from elsewhere: nothing the tree was handed moved.
     ui::widget::drag_bus::publish(ui::widget::drag_bus::InFlight {
         source: "carried-here".into(),
-        payload: ui::dnd::DragPayload::Custom {
+        payload: tilo_ui_base::dnd::DragPayload::Custom {
             kind: ui::widget::RESOURCE_PAYLOAD.to_owned(),
             blob: b"notes.page:one".to_vec(),
         },
@@ -257,13 +257,13 @@ fn a_drag_that_reaches_the_tree_without_its_input_shows_where_it_lands() {
 /// second display's target alone and lands there, not on the first display's.
 #[test]
 fn a_drag_over_the_second_display_shows_and_lands_on_that_display() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let host = |x: i32| {
         let mut host = WidgetSurface::new(
             Box::new(ui::widget::DropTarget::new(
                 "window",
                 Box::new(Field::default()),
-                ui::component::Event::None,
+                tilo_ui_base::component::Event::None,
             )),
             Placement {
                 origin: (x, 0),
@@ -278,7 +278,7 @@ fn a_drag_over_the_second_display_shows_and_lands_on_that_display() {
     };
     let mut first = host(0);
     let mut second = host(320);
-    let payload = ui::dnd::DragPayload::Custom {
+    let payload = tilo_ui_base::dnd::DragPayload::Custom {
         kind: ui::widget::RESOURCE_PAYLOAD.to_owned(),
         blob: b"notes.page:one".to_vec(),
     };
@@ -344,7 +344,7 @@ impl Widget for Still {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &ui::Theme,
+        _theme: &tilo_ui_base::Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         taffy.widget_leaf(Style::default(), nodes, self)

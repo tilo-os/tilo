@@ -237,7 +237,7 @@ fn register_item(desktop: &DesktopServices, bus: &PrivateBus, calls: &Calls) -> 
 /// of its menu entries reaches the application.
 #[test]
 fn an_indicator_appears_in_the_bar_and_its_menu_item_runs_its_action() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let bus = PrivateBus::start();
     let (mut session, desktop) = session_on(&bus);
     session.step(SETTLE).expect("a frame");

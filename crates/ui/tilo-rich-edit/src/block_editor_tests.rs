@@ -326,7 +326,7 @@ fn layout_and_draw_editor(editor: &mut BlockEditor, theme: &Theme) {
     editor.apply_layout(&taffy, node, Point::ZERO);
     let mut renderer = TextRenderer::new();
     renderer.set_text_scale(theme.text_scale);
-    editor.draw(&mut tilo_ui::DrawCtx::new(
+    editor.draw(&mut tilo_ui_base::DrawCtx::new(
         &mut Scene::new(),
         Affine::IDENTITY,
         &mut renderer,
@@ -671,7 +671,7 @@ fn presence_paths(editor: &mut BlockEditor, presence: &PresenceCtx) -> usize {
     editor.apply_layout(&taffy, node, Point::ZERO);
     let mut renderer = TextRenderer::new();
     let mut scene = Scene::new();
-    editor.draw(&mut tilo_ui::DrawCtx::new(
+    editor.draw(&mut tilo_ui_base::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut renderer,
@@ -2409,7 +2409,7 @@ tilo_test_env::scenario! {
                 .is_some_and(|bounds| bounds.to_rect().height() > 0.0)
         );
 
-        editor.draw(&mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut renderer, &Theme::dark(), PresenceCtx::empty().draw_env()));
+        editor.draw(&mut tilo_ui_base::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut renderer, &Theme::dark(), PresenceCtx::empty().draw_env()));
         let rect = editor.blocks()[0]
             .line
             .mark_rects(&Theme::dark(), 8..15)
@@ -2546,7 +2546,7 @@ tilo_test_env::scenario! {
                         );
                     }
                     previous = Some(preview);
-                    editor.draw(&mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut renderer, &Theme::dark(), PresenceCtx::empty().draw_env()));
+                    editor.draw(&mut tilo_ui_base::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut renderer, &Theme::dark(), PresenceCtx::empty().draw_env()));
                 }
             }
         }

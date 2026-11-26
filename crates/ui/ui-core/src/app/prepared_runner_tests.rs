@@ -97,7 +97,7 @@ fn settings_file_write_rethemes_the_sampled_app_surface() {
     app.apply_configured_theme();
     app.rebuild_theme();
     let dark_bg = app.theme.tokens.colors.surfaces.content;
-    let dark_y = crate::a11y::relative_luminance(dark_bg);
+    let dark_y = tilo_ui_base::a11y::relative_luminance(dark_bg);
 
     write("light");
     if let Some(due) = crate::time::now().checked_sub(std::time::Duration::from_millis(750)) {
@@ -108,7 +108,7 @@ fn settings_file_write_rethemes_the_sampled_app_surface() {
         "a session-file theme write must retheme the next tick"
     );
     let light_bg = app.theme.tokens.colors.surfaces.content;
-    let light_y = crate::a11y::relative_luminance(light_bg);
+    let light_y = tilo_ui_base::a11y::relative_luminance(light_bg);
     assert_ne!(
         (light_bg, app.theme.name.as_str()),
         (dark_bg, Theme::dark().name.as_str()),
@@ -156,7 +156,7 @@ fn settings_keeps_the_session_theme_when_the_host_scheme_is_unset() {
     app.apply_configured_theme();
     app.rebuild_theme();
     let dark_raised = app.theme.tokens.colors.surfaces.raised;
-    let dark_y = crate::a11y::relative_luminance(dark_raised);
+    let dark_y = tilo_ui_base::a11y::relative_luminance(dark_raised);
 
     write("light");
     if let Some(due) = crate::time::now().checked_sub(std::time::Duration::from_millis(750)) {
@@ -168,10 +168,10 @@ fn settings_keeps_the_session_theme_when_the_host_scheme_is_unset() {
     );
     // Production re-applies the host reading on that same tick. With no
     // portal, the reading is the unset scheme, which is painted as dark.
-    let _ = app.apply_host_appearance(crate::host_appearance::HostAppearance::default());
+    let _ = app.apply_host_appearance(tilo_ui_base::host_appearance::HostAppearance::default());
 
     let raised = app.theme.tokens.colors.surfaces.raised;
-    let light_y = crate::a11y::relative_luminance(raised);
+    let light_y = tilo_ui_base::a11y::relative_luminance(raised);
     assert_ne!(
         raised, dark_raised,
         "Settings must not keep the previous raised surface after the session file changes"
@@ -182,7 +182,7 @@ fn settings_keeps_the_session_theme_when_the_host_scheme_is_unset() {
     );
     assert_eq!(app.theme.name, Theme::light().name);
     assert!(
-        crate::host_appearance::Source::start().is_none(),
+        tilo_ui_base::host_appearance::Source::start().is_none(),
         "the session document owns appearance; the unset host portal must not start"
     );
 }
@@ -270,7 +270,7 @@ fn assert_saved_body(
 
 fn edit_bound_resource(app: &mut App, binding: &crate::bound_dispatch::CallbackBinding) {
     let target = crate::bound_dispatch::BoundActionTarget {
-        input: crate::widget::input_provenance::Input::Discrete,
+        input: tilo_ui_base::widget::input_provenance::Input::Discrete,
         binding: binding.clone(),
         address: crate::bound_dispatch::BoundActionAddress {
             instance_id: binding.instance_id,
@@ -682,7 +682,7 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
         // An operation the outgoing component admitted is answered when the
         // tile swaps, never inherited by the component that takes its place.
         let pending = tilo_actions::InvocationId::new();
-        let started = crate::widget::ResourceOperation::local(
+        let started = tilo_ui_base::widget::ResourceOperation::local(
             pending,
             tilo_actions::OperationKind::Effect,
             "probe.pending",
@@ -690,19 +690,19 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
         )
         .start(
             &mut tile,
-            &mut crate::widget::Edits::lend(&mut state.doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut state.doc),
             &state.root,
         )
         .unwrap();
         assert!(matches!(
             started,
-            Some(crate::widget::ResourceOperationStart::Accepted)
+            Some(tilo_ui_base::widget::ResourceOperationStart::Accepted)
         ));
         tile.sync(&state.doc, &state.root);
         let shown = crate::bound_dispatch::callback_binding(&tile).unwrap();
         assert_eq!(shown.checkout.id, wanted);
         assert!(!first.lifetime.is_active());
-        let answer = crate::widget::poll_resource_operation(
+        let answer = tilo_ui_base::widget::poll_resource_operation(
             &mut tile,
             pending,
             false,
@@ -861,11 +861,11 @@ fn a_window_opened_in_a_served_windows_place_is_served_by_its_host() {
     let component = editable_component(&host, 37);
     let served = std::rc::Rc::new(std::cell::Cell::new(0_usize));
     let counted = std::rc::Rc::clone(&served);
-    crate::ImageStore::serve_window(
+    tilo_ui_base::ImageStore::serve_window(
         &component.callback_binding().lifetime,
-        std::rc::Rc::new(move |max_dimension, _: &crate::image_store::ServedWindow| {
+        std::rc::Rc::new(move |max_dimension, _: &tilo_ui_base::image_store::ServedWindow| {
             counted.set(counted.get() + 1);
-            crate::ImageStore::host_driven_with_max_dimension(max_dimension).0
+            tilo_ui_base::ImageStore::host_driven_with_max_dimension(max_dimension).0
         }),
     );
     let (context, _) = component
@@ -876,11 +876,11 @@ fn a_window_opened_in_a_served_windows_place_is_served_by_its_host() {
         )
         .unwrap();
     let successor = context.wake_handle();
-    let unused: crate::image_store::Fetcher =
+    let unused: tilo_ui_base::image_store::Fetcher =
         std::sync::Arc::new(|_| panic!("a served window never fetches its pictures itself"));
     {
         let _entry = successor.enter_if_open().unwrap();
-        drop(crate::ImageStore::new(&unused));
+        drop(tilo_ui_base::ImageStore::new(&unused));
     }
     assert_eq!(served.get(), 1, "the window in its place is served too");
     drop(context);
@@ -892,8 +892,8 @@ fn a_window_opened_in_a_served_windows_place_is_served_by_its_host() {
 /// once the window it replaced closed, and loads when the bytes arrive there.
 #[test]
 fn a_successor_window_asks_for_its_pictures_on_its_own_content_requests() {
-    use crate::collaboration::document_content::{ContentLink, DocumentContent};
-    use crate::image_store::{HostImageLoader, ServedWindow};
+    use tilo_ui_base::{collaboration::document_content::ContentLink, collaboration::document_content::DocumentContent};
+    use tilo_ui_base::{image_store::HostImageLoader, image_store::ServedWindow};
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Arc;
@@ -915,10 +915,10 @@ fn a_successor_window_asks_for_its_pictures_on_its_own_content_requests() {
         tilo_content::ContentStore::memory(),
         Arc::clone(&first_link),
     ));
-    crate::ImageStore::serve_window(
+    tilo_ui_base::ImageStore::serve_window(
         &first.wake_handle(),
         Rc::new(move |max_dimension, drawn_for: &ServedWindow| {
-            let (store, loader) = crate::ImageStore::host_driven_with_max_dimension(max_dimension);
+            let (store, loader) = tilo_ui_base::ImageStore::host_driven_with_max_dimension(max_dimension);
             page.borrow_mut().push((loader, drawn_for.clone()));
             store
         }),
@@ -951,11 +951,11 @@ fn a_successor_window_asks_for_its_pictures_on_its_own_content_requests() {
     let png = crate::png::encode_rgba8(8, 8, &[220, 60, 60, 255].repeat(64)).unwrap();
     let hash = tilo_content::ContentStore::memory().put(&png).unwrap();
     let url = format!("tilo-blob://{hash}");
-    let unused: crate::image_store::Fetcher =
+    let unused: tilo_ui_base::image_store::Fetcher =
         Arc::new(|_| panic!("a served window never fetches its pictures itself"));
     let store = {
         let _entry = successor.enter_if_open().unwrap();
-        crate::ImageStore::new(&unused)
+        tilo_ui_base::ImageStore::new(&unused)
     };
     assert!(store.get(&url).is_none());
 

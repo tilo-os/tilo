@@ -1,7 +1,7 @@
 //! [`EmptyState`] as a described component.
 
-use crate::component::{Component, Described, Event};
-use crate::icons::Icon;
+use tilo_ui_base::{component::Component, component::Described, component::Event};
+use tilo_ui_base::icons::Icon;
 
 use super::EmptyState;
 

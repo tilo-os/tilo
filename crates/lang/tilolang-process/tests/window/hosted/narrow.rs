@@ -53,7 +53,7 @@ fn chat_at_a_phones_width(messages: usize) -> Session {
 fn a_conversations_way_back_is_a_control_that_goes_to_the_first_message_unread() {
     use ui::widget::conversation::Jump;
 
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = chat_at_a_phones_width(40);
     let words = Jump::Unread.label();
     let pill = session
@@ -104,7 +104,7 @@ fn a_conversations_way_back_is_a_control_that_goes_to_the_first_message_unread()
     session
         .window
         .harness()
-        .perform_a11y_action(pill, &ui::a11y::Action::Activate)
+        .perform_a11y_action(pill, &tilo_ui_base::a11y::Action::Activate)
         .expect("the way back takes the press");
     session.settle();
     assert!(
@@ -193,7 +193,7 @@ fn a_note_opened_from_search_in_a_narrow_window_lands_in_front_at_once() {
 // link or an agent takes — and Back shows the tree it was opened from again.
 #[test]
 fn a_note_opens_by_its_own_open_and_back_shows_the_tree_again() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = Session::in_window(NOTES, "ada", (420, 860));
     let file = session.identity_doing("Notebook", "file_note");
     let filed = session.invoke_doing(

@@ -17,34 +17,34 @@ struct Probe {
 /// A window that keeps a record open beside what it shows, as every
 /// framework window keeps the workspace's emoji.
 struct KeepsBeside {
-    content: Box<dyn crate::widget::Widget>,
+    content: Box<dyn tilo_ui_base::widget::Widget>,
     owner: crate::history_mode::HistoryOwner,
 }
 
-impl crate::widget::Decorator for KeepsBeside {
-    type Inner = dyn crate::widget::Widget;
-    fn inner(&self) -> &(dyn crate::widget::Widget + 'static) {
+impl tilo_ui_base::widget::Decorator for KeepsBeside {
+    type Inner = dyn tilo_ui_base::widget::Widget;
+    fn inner(&self) -> &(dyn tilo_ui_base::widget::Widget + 'static) {
         self.content.as_ref()
     }
-    fn inner_mut(&mut self) -> &mut (dyn crate::widget::Widget + 'static) {
+    fn inner_mut(&mut self) -> &mut (dyn tilo_ui_base::widget::Widget + 'static) {
         self.content.as_mut()
     }
-    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+    fn provide<'a>(&'a self, request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn crate::bound_dispatch::BoundWidget>() {
             request.provide::<dyn crate::bound_dispatch::BoundWidget>(self);
-        } else if request.wants::<dyn crate::widget::component_walk::ComponentBoundary>() {
-            request.provide::<dyn crate::widget::component_walk::ComponentBoundary>(self);
-        } else if request.wants::<dyn crate::widget::Decorated>() {
-            request.provide::<dyn crate::widget::Decorated>(self);
+        } else if request.wants::<dyn tilo_ui_base::widget::component_walk::ComponentBoundary>() {
+            request.provide::<dyn tilo_ui_base::widget::component_walk::ComponentBoundary>(self);
+        } else if request.wants::<dyn tilo_ui_base::widget::Decorated>() {
+            request.provide::<dyn tilo_ui_base::widget::Decorated>(self);
         } else {
             self.content.provide(request);
         }
     }
 }
 
-impl crate::widget::component_walk::ComponentBoundary for KeepsBeside {
-    fn component_scope(&self) -> Option<crate::widget::component_walk::Binding> {
-        crate::widget::component_walk::binding_of(self.content.as_ref())
+impl tilo_ui_base::widget::component_walk::ComponentBoundary for KeepsBeside {
+    fn component_scope(&self) -> Option<tilo_ui_base::widget::component_walk::Binding> {
+        tilo_ui_base::widget::component_walk::binding_of(self.content.as_ref())
     }
 }
 
@@ -166,7 +166,7 @@ impl Probe {
             .unwrap();
         assert!(matches!(
             started,
-            crate::widget::ResourceOperationStart::Accepted
+            tilo_ui_base::widget::ResourceOperationStart::Accepted
         ));
         tilo_actions::ActionAddress::new(
             self.app

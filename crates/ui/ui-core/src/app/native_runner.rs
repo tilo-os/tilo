@@ -27,7 +27,7 @@ use ime::{
 #[cfg(not(target_os = "android"))]
 type PrimaryA11yAdapter = accesskit_winit::Adapter;
 #[cfg(target_os = "android")]
-type PrimaryA11yAdapter = crate::accesskit_android_adapter::Adapter;
+type PrimaryA11yAdapter = tilo_ui_base::accesskit_android_adapter::Adapter;
 
 #[cfg(not(target_os = "android"))]
 fn create_accessibility_adapter(
@@ -49,7 +49,7 @@ fn create_accessibility_adapter(
     match PrimaryA11yAdapter::new(event_loop, window, proxy) {
         Ok(adapter) => Some(adapter),
         Err(error) => {
-            crate::diag!("tilo: no TalkBack access: {error}");
+            tilo_ui_base::diag!("tilo: no TalkBack access: {error}");
             None
         }
     }
@@ -68,7 +68,7 @@ struct AppHandler {
     /// When the next presence step is due: a phase's dwell beginning, or a step
     /// of the fade of the text it wrote (`PresenceCtx::interaction_next_wake_deadline`).
     interaction_step_at: Option<crate::time::Instant>,
-    /// A frame held for a local read ([`crate::arriving`]): drawn when the
+    /// A frame held for a local read ([`tilo_ui_base::arriving`]): drawn when the
     /// read answers, or at this instant when its frame budget runs out.
     held_frame: Option<crate::time::Instant>,
     /// The state passes of the window while it takes no frame.
@@ -138,10 +138,10 @@ struct AppHandler {
     layers_drawn: (u64, bool),
     /// The members' marks painted over the widgets, as last submitted,
     /// so a frame damages only the marks that changed.
-    presence_layer: crate::presence::PresenceLayer,
+    presence_layer: tilo_ui_base::presence::PresenceLayer,
     /// Bounds what the presence layer draws outside its parts, so scrolls
     /// beneath peer marks still copy ([`peer_marks`]).
-    mark_bounds: crate::scene_parts::DrawBounds,
+    mark_bounds: tilo_ui_base::scene_parts::DrawBounds,
     last_primary_frame_presented: u64,
     primary_retry: crate::render_thread::retry::RenderRetryState,
     /// `None` waits for the next primary submission; `Some(sequence)` waits
@@ -152,7 +152,7 @@ struct AppHandler {
     floating_destination_present_frames: std::collections::HashMap<String, Option<u64>>,
     /// Maps one-finger taps onto the existing pointer event contract so every
     /// standard and app-local control gets touch without bespoke branches.
-    touch_pointer: crate::interaction::TouchPointerEmulator,
+    touch_pointer: tilo_ui_base::interaction::TouchPointerEmulator,
     /// Synthetic mouse events must retain touch modality rather than making
     /// the host immediately classify them as a fine pointer.
     dispatching_touch_pointer: bool,
@@ -179,7 +179,7 @@ struct AppHandler {
     /// The app's window-bar parts, drawn here while nothing hosts them.
     part_bar: part_bar::PartBar,
     /// The host OS's appearance, for a standalone app outside Tilo OS.
-    host_appearance: Option<crate::host_appearance::Source>,
+    host_appearance: Option<tilo_ui_base::host_appearance::Source>,
     /// Settings.json changed while this process was idle. The next
     /// `about_to_wait` skips the 750ms poll debounce and re-reads Theme.
     settings_store_changed: Arc<AtomicBool>,
@@ -267,7 +267,7 @@ impl AppHandler {
     /// them is what an invocation it makes now follows.
     fn note_press_serial(&self, event: &WindowEvent, serial: Option<u32>) {
         if let Some(serial) = serial {
-            crate::press::note_event(event, serial);
+            tilo_ui_base::press::note_event(event, serial);
         }
     }
 
@@ -422,21 +422,21 @@ fn dispatch_native_surface_accessibility(
     root: &mut dyn Widget,
     id: &str,
     request: &accesskit::ActionRequest,
-    state: &mut crate::widget::Edits<'_>,
+    state: &mut tilo_ui_base::widget::Edits<'_>,
     path: &automerge::ObjId,
 ) -> bool {
     if request.target_tree != accesskit::TreeId::ROOT {
         return false;
     }
     let Some(action) =
-        crate::accesskit_bridge::accesskit_action_to_ours(request.action, request.data.as_ref())
+        tilo_ui_base::accesskit_bridge::accesskit_action_to_ours(request.action, request.data.as_ref())
     else {
         return false;
     };
     let Some(access) = root.floating_surface_accessibility(id) else {
         return false;
     };
-    let Some(target) = crate::accesskit_bridge::surface_action_target(&access, request.target_node)
+    let Some(target) = tilo_ui_base::accesskit_bridge::surface_action_target(&access, request.target_node)
     else {
         return false;
     };
@@ -463,7 +463,7 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
         cycle: &[Color; 3],
         label_ground: Color,
     ) {
-        let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
+        let Ok(_entry) = tilo_ui_base::widget::bound_nodes::enter_widget(widget) else {
             return;
         };
         let rect = widget.get_rect();
@@ -961,7 +961,7 @@ fn prepare_window_render(
     Ok((render_cx, surface, renderer))
 }
 
-fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Renderer, String> {
+fn create_native_renderer(device_handle: &tilo_ui_base::gpu::DeviceHandle) -> Result<Renderer, String> {
     let plan = NativeRendererPlan::for_device(device_handle);
     let renderer = plan.build(&device_handle.device)?;
     Ok(plan.finish(device_handle, renderer))
@@ -977,7 +977,7 @@ pub(super) struct NativeRendererPlan {
 }
 
 impl NativeRendererPlan {
-    pub(super) fn for_device(device_handle: &crate::gpu::DeviceHandle) -> Self {
+    pub(super) fn for_device(device_handle: &tilo_ui_base::gpu::DeviceHandle) -> Self {
         // Vello's default uses every core minus two: on a 16-thread laptop fourteen pipeline
         // compilations per opened app starve the compositor. Two workers keep startup parallel
         // without a system-wide CPU burst.
@@ -992,7 +992,7 @@ impl NativeRendererPlan {
         // The first frame waits for this: build only what it dispatches and let the render worker
         // start the rest after that frame is presented. Nothing is on that path for a software
         // adapter, which rasterizes on the CPU and draws only backdrop blurs.
-        let software = crate::gpu::rasterizes_on_cpu(&device_handle.adapter.get_info());
+        let software = tilo_ui_base::gpu::rasterizes_on_cpu(&device_handle.adapter.get_info());
         let deferral = if software {
             vello::PipelineDeferral::All
         } else {
@@ -1038,7 +1038,7 @@ impl NativeRendererPlan {
     /// Keep what the build used, on the thread that owns the device's handle.
     pub(super) fn finish(
         self,
-        device_handle: &crate::gpu::DeviceHandle,
+        device_handle: &tilo_ui_base::gpu::DeviceHandle,
         mut renderer: Renderer,
     ) -> Renderer {
         // Kept once the deferred pipelines are built too.
@@ -1187,7 +1187,7 @@ impl AppHandler {
         event: WindowEvent,
         origin: native_input_isolation::EventOrigin,
     ) -> bool {
-        crate::focus_visible::note(&event);
+        tilo_ui_base::focus_visible::note(&event);
         native_input_isolation::dispatch(
             self.native_input_route_isolation,
             origin,
@@ -1327,7 +1327,7 @@ impl AppHandler {
                 .position(|monitor| monitor == current)
                 .and_then(|index| u32::try_from(index).ok())
         });
-        let infos: Vec<crate::fullscreen::MonitorInfo> = monitors
+        let infos: Vec<tilo_ui_base::fullscreen::MonitorInfo> = monitors
             .iter()
             .enumerate()
             .map(|(index, monitor)| {
@@ -1335,7 +1335,7 @@ impl AppHandler {
             })
             .collect();
         let target = request.and_then(|request| {
-            crate::fullscreen::select_audience_output(&infos, request.target, presenter_index)
+            tilo_ui_base::fullscreen::select_audience_output(&infos, request.target, presenter_index)
         });
 
         if self.audience_presentation.as_ref().is_some_and(|audience| {
@@ -1353,7 +1353,7 @@ impl AppHandler {
         };
 
         let attributes = Window::default_attributes()
-            .with_title(crate::i18n::widget_format("presentation-window-title", &[]))
+            .with_title(tilo_ui_base::i18n::widget_format("presentation-window-title", &[]))
             .with_decorations(false)
             .with_resizable(false)
             .with_visible(false);
@@ -1494,7 +1494,7 @@ impl AppHandler {
             f64::from(extent.width) / scale,
             f64::from(extent.height) / scale,
         );
-        let secrets = crate::secret_paint::SecretPaint::begin();
+        let secrets = tilo_ui_base::secret_paint::SecretPaint::begin();
         let drawn = self.app.root_widget.draw_audience_presentation(
             &mut scene,
             Affine::scale(scale),
@@ -1525,7 +1525,7 @@ impl AppHandler {
                 scroll_copies: Vec::new(),
                 full_redraw: true,
                 partial: false,
-                backdrop: crate::part_paint::backdrop::BackdropFrame::default(),
+                backdrop: tilo_ui_base::part_paint::backdrop::BackdropFrame::default(),
                 layers: None,
             })
             .is_err()
@@ -1649,7 +1649,7 @@ impl AppHandler {
             if next != self.ime_state || restart || touched {
                 let surrounding = field.and_then(|node| {
                     self.app
-                        .inspect_node(node, crate::ime::ImeSurroundingText::from_widget)
+                        .inspect_node(node, tilo_ui_base::ime::ImeSurroundingText::from_widget)
                         .ok()
                         .flatten()
                 });
@@ -1721,7 +1721,7 @@ impl AppHandler {
         }
         let logical_size = native_floating_logical_size(rect);
         let attributes = Window::default_attributes()
-            .with_title(crate::i18n::widget_format("floating-window-title", &[]))
+            .with_title(tilo_ui_base::i18n::widget_format("floating-window-title", &[]))
             .with_decorations(false)
             .with_resizable(false)
             .with_transparent(true)
@@ -2082,7 +2082,7 @@ impl AppHandler {
         // here only rewrote all stream lengths every frame.
         let scale = surface.window.scale_factor();
         let extent = render.frame_extent(surface.window.inner_size(), scale);
-        let transform = crate::scale::composite_transform(extent.scale)
+        let transform = tilo_ui_base::scale::composite_transform(extent.scale)
             .pre_translate((-surface.shell_rect.x0, -surface.shell_rect.y0).into());
         let presentation = app
             .root_widget
@@ -2095,7 +2095,7 @@ impl AppHandler {
             tracing::warn!(id = %surface.id, "floating surface has no valid content region");
             return false;
         };
-        let secrets = crate::secret_paint::SecretPaint::begin();
+        let secrets = tilo_ui_base::secret_paint::SecretPaint::begin();
         use vello::peniko::{BlendMode, Fill};
         scene.push_layer(
             Fill::NonZero,
@@ -2106,7 +2106,7 @@ impl AppHandler {
         );
         let drawn = app.root_widget.draw_floating_surface(
             &surface.id,
-            &mut crate::draw::DrawCtx::new(
+            &mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 transform,
                 &mut app.text_renderer,
@@ -2122,8 +2122,8 @@ impl AppHandler {
         if let Some(adapter) = surface.a11y_adapter.as_mut() {
             adapter.update_if_active(|| {
                 let access = app.root_widget.floating_surface_accessibility(&surface.id);
-                crate::accesskit_bridge::native_tree_update(
-                    crate::accesskit_bridge::surface_tree_update(
+                tilo_ui_base::accesskit_bridge::native_tree_update(
+                    tilo_ui_base::accesskit_bridge::surface_tree_update(
                         access.as_ref(),
                         surface.shell_rect.origin(),
                         scale,
@@ -2159,7 +2159,7 @@ impl AppHandler {
                 partial: false,
                 // The compositor puts this window over the shell; nothing
                 // under its surfaces is in this scene to blur.
-                backdrop: crate::part_paint::backdrop::BackdropFrame::default(),
+                backdrop: tilo_ui_base::part_paint::backdrop::BackdropFrame::default(),
                 layers: None,
             })
             .is_err()
@@ -2248,12 +2248,12 @@ impl AppHandler {
         self.undrawn.drew();
         // The frame's instant: its update steps its motions to it, as its layout and paint read
         // them, so a glide stands where the frame lays out the rows it shows.
-        let _frame = crate::motion::pin_frame();
+        let _frame = tilo_ui_base::motion::pin_frame();
         let _entry = self.app.enter_wake_scope();
         if self.surface_suspended {
             return;
         }
-        crate::input_frame::frame_started();
+        tilo_ui_base::input_frame::frame_started();
         self.input_backlog.frame_started(crate::time::now());
         if first_primary_frame {
             // The frame budget local reads get is one refresh of the display
@@ -2263,7 +2263,7 @@ impl AppHandler {
                     .current_monitor()
                     .and_then(|monitor| monitor.refresh_rate_millihertz()),
             );
-            crate::arriving::set_frame_budget(self.animation_schedule.interval());
+            tilo_ui_base::arriving::set_frame_budget(self.animation_schedule.interval());
         }
         if self.render.is_none() {
             tilo_startup_metrics::mark("first-redraw-init-render-start");
@@ -2272,7 +2272,7 @@ impl AppHandler {
             drop(render_init);
             if let Err(reason) = started {
                 // Retrying every redraw would only spin.
-                crate::diag!("tilo: {reason}");
+                tilo_ui_base::diag!("tilo: {reason}");
                 stop_abnormally(
                     &self.closing,
                     format!("its renderer could not start: {reason}"),
@@ -2446,7 +2446,7 @@ impl AppHandler {
         // dirty, whose damage the frame collects below. Only what damage
         // cannot describe repaints the whole window: a rebuilt tree, moved
         // geometry, a resized surface, and layers drawn over the widgets.
-        let mut repaint_why = crate::input_frame::RepaintWhy::default();
+        let mut repaint_why = tilo_ui_base::input_frame::RepaintWhy::default();
         let mut full_redraw_required = repaint_why.note("structure", app.layout.structure_dirty);
         // Armed for this frame: each rebuild it does clears it unless the
         // widgets behind it described the change (a long list mounting the
@@ -2548,7 +2548,7 @@ impl AppHandler {
             && app.layout.layout_dirty
             && app.app_live()
             && app.close_admission.dialog.is_none())
-        .then(|| crate::damage::widget_boxes(app.root_widget.as_ref()));
+        .then(|| tilo_ui_base::damage::widget_boxes(app.root_widget.as_ref()));
         let layout_before = (app.layout.rebuilds, app.layout.last_layout_logical);
         let layout_phase = slow_event::phase("layout");
         let Some((geometry_changed, t_compute_us, t_apply_us)) = run_layout_pass(
@@ -2558,7 +2558,7 @@ impl AppHandler {
             height,
             scale_factor,
             structure_rebuilt,
-            Some(&crate::widget::NativeViewHost::live(
+            Some(&tilo_ui_base::widget::NativeViewHost::live(
                 window,
                 app.input.platform,
             )),
@@ -2577,7 +2577,7 @@ impl AppHandler {
             return;
         }
         // A local read this frame would show has not answered and is still
-        // inside its frame budget ([`crate::arriving`]): the frame on screen
+        // inside its frame budget ([`tilo_ui_base::arriving`]): the frame on screen
         // stays until the data lands (its wake redraws) or the budget runs
         // out (`about_to_wait` redraws then), so a window or a view opens
         // complete. Like an aborted layout, the held frame keeps its render
@@ -2653,12 +2653,12 @@ impl AppHandler {
         // Floating chrome (menus, popovers, sheets, the palette, tooltips)
         // records what lies below it, and the render worker blurs that
         // backdrop under the material before the frame renders.
-        let backdrop_recording = crate::part_paint::backdrop::BackdropRecording::begin();
-        crate::part_paint::backdrop::layer_scene(&scene, 0);
+        let backdrop_recording = tilo_ui_base::part_paint::backdrop::BackdropRecording::begin();
+        tilo_ui_base::part_paint::backdrop::layer_scene(&scene, 0);
         // The local render worker repaints only the damage from each scene,
         // over the pixels it presented last: a frame that repaints neither
         // whole nor under layers the widgets' damage does not describe is
-        // drawn only where its damage needs it (`crate::draw_cull`).
+        // drawn only where its damage needs it (`tilo_ui_base::draw_cull`).
         let culls = !full_redraw_required
             && !self.top_layer_drawn
             && app.history_widget().is_none()
@@ -2671,9 +2671,9 @@ impl AppHandler {
         let mut culling =
             (culls && layer_recording.is_none()).then(|| std::mem::take(&mut app.layout.cull));
         let culled = culling.is_some();
-        let cull_frame = culling.as_mut().map(crate::draw_cull::Culling::begin);
+        let cull_frame = culling.as_mut().map(tilo_ui_base::draw_cull::Culling::begin);
         let draw_phase = slow_event::phase("draw");
-        crate::workspace_sync::frame_drawing();
+        tilo_ui_base::workspace_sync::frame_drawing();
         let drawn = draw_frame_content_with(
             app,
             &mut scene,
@@ -2690,9 +2690,9 @@ impl AppHandler {
             None => &mut scene,
         };
         // An empty state waiting for its workspace's first sync turns a spinner
-        // no widget's damage covers (`crate::workspace_sync`): a new pose damages
+        // no widget's damage covers (`tilo_ui_base::workspace_sync`): a new pose damages
         // its place, in scene pixels.
-        let spinner_damage = crate::workspace_sync::take_spinner_damage();
+        let spinner_damage = tilo_ui_base::workspace_sync::take_spinner_damage();
         let (transform, window_rect, t_draw_us) =
             (drawn.transform, drawn.window_rect, drawn.draw_us);
         // The tooltip's material blurs what is under it, which repaints this
@@ -2715,12 +2715,12 @@ impl AppHandler {
         // its scene once they are composed into it.
         let mut backdrop_recording = Some(backdrop_recording);
         let mut backdrop = if culled {
-            crate::part_paint::backdrop::BackdropFrame::default()
+            tilo_ui_base::part_paint::backdrop::BackdropFrame::default()
         } else {
             backdrop_recording.take().map_or_else(
-                crate::part_paint::backdrop::BackdropFrame::default,
+                tilo_ui_base::part_paint::backdrop::BackdropFrame::default,
                 |recording| {
-                    crate::part_paint::backdrop::BackdropFrame::from_single_scene(
+                    tilo_ui_base::part_paint::backdrop::BackdropFrame::from_single_scene(
                         recording.finish(),
                     )
                 },
@@ -2803,8 +2803,8 @@ impl AppHandler {
         if !full_redraw_required {
             let root = app.root_widget.as_ref();
             // The retained target holds the last presented frame, so a scroll
-            // copies what stays on screen (`crate::scroll_copy`).
-            let mut offers = crate::scroll_copy::accepting(|| {
+            // copies what stays on screen (`tilo_ui_base::scroll_copy`).
+            let mut offers = tilo_ui_base::scroll_copy::accepting(|| {
                 collect_submitted_widget_damage(root, &mut damage_regions);
             });
             // A view drawn whole (a canvas its own closure draws) offers no
@@ -2824,13 +2824,13 @@ impl AppHandler {
             // it are damage beside the copy; anything else repaints the
             // window.
             if let Some(before) = &moved_from {
-                let moves = crate::scroll_copy::moves_besides(
+                let moves = tilo_ui_base::scroll_copy::moves_besides(
                     before,
-                    &crate::damage::widget_boxes(root),
+                    &tilo_ui_base::damage::widget_boxes(root),
                     &offers,
                 );
                 if offers.is_empty() {
-                    let reach = crate::scroll_copy::EFFECT_REACH;
+                    let reach = tilo_ui_base::scroll_copy::EFFECT_REACH;
                     damage_regions.extend(
                         moves
                             .besides
@@ -2855,14 +2855,14 @@ impl AppHandler {
                 peer_marks(&self.presence_layer, &mut self.mark_bounds, window)
             };
             if !offers.is_empty() && (decorated || marks.is_none()) {
-                damage_regions.extend(offers.iter().map(crate::scroll_copy::ScrollOffer::viewport));
+                damage_regions.extend(offers.iter().map(tilo_ui_base::scroll_copy::ScrollOffer::viewport));
                 offers.clear();
             }
             if full_redraw_required {
                 offers.clear();
             }
             let history = app.history_widget();
-            let planned = crate::scroll_copy::plan(
+            let planned = tilo_ui_base::scroll_copy::plan(
                 &offers,
                 &std::iter::once(root).chain(history).collect::<Vec<_>>(),
                 f64::from(scale_factor),
@@ -2888,9 +2888,9 @@ impl AppHandler {
                 // away, as do the peer marks the copies took; what the
                 // copies exposed is repainted as it is.
                 damage_regions.extend(planned.damage);
-                crate::scroll_copy::carry(&planned.copies, &mut damage_regions);
+                tilo_ui_base::scroll_copy::carry(&planned.copies, &mut damage_regions);
                 if let Some(marks) = &marks {
-                    crate::scroll_copy::marks_over_copies(
+                    tilo_ui_base::scroll_copy::marks_over_copies(
                         &planned.copies,
                         &marks.shown,
                         &marks.painted,
@@ -2909,7 +2909,7 @@ impl AppHandler {
         if let Some(mut culling) = culling {
             let left_out = cull_frame
                 .as_ref()
-                .is_some_and(crate::draw_cull::Frame::skipped_any);
+                .is_some_and(tilo_ui_base::draw_cull::Frame::skipped_any);
             let holds = left_out
                 && !full_redraw_required
                 && crate::render_thread::renders_damage_alone(width, height, &damage_regions)
@@ -2926,7 +2926,7 @@ impl AppHandler {
             app.set_secret_on_screen(secret);
             compose_culled(&mut scene, &culling.scenes);
             if let Some(recording) = backdrop_recording.take() {
-                backdrop = crate::part_paint::backdrop::BackdropFrame::from_single_scene(
+                backdrop = tilo_ui_base::part_paint::backdrop::BackdropFrame::from_single_scene(
                     recording.finish(),
                 );
             }
@@ -2969,7 +2969,7 @@ impl AppHandler {
             .is_some_and(crate::profiling::FrameProfiler::hud_enabled)
         {
             let (hud_w, hud_h) =
-                crate::scale::logical_size((width, height), f64::from(scale_factor));
+                tilo_ui_base::scale::logical_size((width, height), f64::from(scale_factor));
             if let Some(p) = app.profiler.as_ref() {
                 p.draw_hud(
                     &mut scene,
@@ -2991,7 +2991,7 @@ impl AppHandler {
                 .still_animation
                 .frame(app.root_widget.needs_animation_frame(), presents)
         {
-            crate::diag!(
+            tilo_ui_base::diag!(
                 "tilo-ui: a second of animation frames painted nothing; asked for by {:?}. \
                  Wait on a wake deadline or a waking channel (ui::wake::waking_channel) instead.",
                 animation_schedule::animating_leaves(app.root_widget.as_ref())
@@ -3020,10 +3020,10 @@ impl AppHandler {
                 crate::native_scenario::log::emit_json("tilo-physical-frame", row);
             }
 
-            let key_resource = crate::input_frame::submitted(if full_redraw_required {
-                crate::input_frame::Repaint::Full(repaint_why)
+            let key_resource = tilo_ui_base::input_frame::submitted(if full_redraw_required {
+                tilo_ui_base::input_frame::Repaint::Full(repaint_why)
             } else {
-                crate::input_frame::Repaint::Damage(&damage_regions)
+                tilo_ui_base::input_frame::Repaint::Damage(&damage_regions)
             });
             let layers = layer_recording.and_then(|recording| {
                 let (generation, consecutive) = self.layers_drawn;
@@ -3145,7 +3145,7 @@ impl AppHandler {
             if let Some(_start) = t_frame_start {
                 // On a static frame this reads `shape=0us hit=N miss=0`.
                 let (shape_hits, shape_misses, shape_ns) = app.text_renderer.take_shape_stats();
-                crate::diag!(
+                tilo_ui_base::diag!(
                     "perf frame: main_total={:>5}us layout={}({}+{}us) draw={:>5}us (shape={:>4}us hit={} miss={}) send_to_worker={:>5}us",
                     t_send_us,
                     if geometry_changed { "Y" } else { "n" },
@@ -3339,10 +3339,10 @@ impl AppHandler {
         // Ctrl+C copies whichever source is typing: name the chord by its
         // Latin key before any handler matches it.
         let event =
-            crate::latin_chord::renamed(&event, self.app.input.modifiers.state()).unwrap_or(event);
+            tilo_ui_base::latin_chord::renamed(&event, self.app.input.modifiers.state()).unwrap_or(event);
         // What this event opens or closes follows it (a key lands it at
         // once, a click moves it): `motion::input_source`.
-        crate::motion::note_input(&event);
+        tilo_ui_base::motion::note_input(&event);
         if let Some(window) = self
             .window
             .clone()
@@ -3386,13 +3386,13 @@ impl AppHandler {
             None
         };
         self.note_host_appearance_event(&event);
-        crate::input_frame::key_dispatched(&event);
+        tilo_ui_base::input_frame::key_dispatched(&event);
         let admitted = self.route_window_event(
             window_id,
             event,
             native_input_isolation::EventOrigin::Platform,
         );
-        crate::input_frame::event_handled();
+        tilo_ui_base::input_frame::event_handled();
         if let Some(input) = physical_input {
             let mut row = crate::physical_input_trace::Trace::effect(
                 input,
@@ -3552,34 +3552,34 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         };
         match event {
             UserEvent::Hover { x, y } => {
-                let ev = crate::synthetic_input::cursor_moved(x, y);
+                let ev = tilo_ui_base::synthetic_input::cursor_moved(x, y);
                 self.injected_window_event(window_id, ev);
             }
             UserEvent::Click { x, y } => {
-                let moved = crate::synthetic_input::cursor_moved(x, y);
+                let moved = tilo_ui_base::synthetic_input::cursor_moved(x, y);
                 self.injected_window_event(window_id, moved);
-                let press = crate::synthetic_input::mouse_press();
+                let press = tilo_ui_base::synthetic_input::mouse_press();
                 self.injected_window_event(window_id, press);
-                let release = crate::synthetic_input::mouse_release();
+                let release = tilo_ui_base::synthetic_input::mouse_release();
                 self.injected_window_event(window_id, release);
             }
             UserEvent::Key(key) => {
                 for state in [ElementState::Pressed, ElementState::Released] {
                     self.injected_window_event(
                         window_id,
-                        crate::synthetic_input::key_input(&key, state),
+                        tilo_ui_base::synthetic_input::key_input(&key, state),
                     );
                 }
             }
             UserEvent::Wheel { dx, dy } => {
-                let ev = crate::synthetic_input::mouse_wheel(dx, dy);
+                let ev = tilo_ui_base::synthetic_input::mouse_wheel(dx, dy);
                 self.injected_window_event(window_id, ev);
             }
             UserEvent::External(payload) => {
                 let app = &mut self.app;
                 app.root_widget.on_external_event(
                     &payload,
-                    &mut crate::widget::Edits::lend(&mut app.state.doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut app.state.doc),
                     &app.state.root,
                 );
                 app.needs_sync = true;
@@ -3598,7 +3598,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             UserEvent::HostSearch(query) => {
                 let opened = self
                     .app
-                    .invoke_host_shortcut(crate::platform::HostShortcut::Search);
+                    .invoke_host_shortcut(tilo_ui_base::platform::HostShortcut::Search);
                 // The query carries on in the palette, the model's search.
                 #[cfg(feature = "model")]
                 if opened && let Some(palette) = self.app.actions.action_palette.as_deref_mut() {
@@ -3648,9 +3648,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     AkWindowEvent::ActionRequested(req) => {
                         // Assistive technology acts like a shortcut: what it
                         // opens lands at once.
-                        crate::motion::note_source(crate::tokens::MotionSource::Action);
+                        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Action);
                         // `Some((x, y))` means "synthesise a click here".
-                        if let Some(action) = crate::accesskit_bridge::accesskit_action_to_ours(
+                        if let Some(action) = tilo_ui_base::accesskit_bridge::accesskit_action_to_ours(
                             req.action,
                             req.data.as_ref(),
                         ) {
@@ -3669,11 +3669,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             if let Some((x, y)) = click {
                                 let scale = window.scale_factor();
                                 let (px, py) = (x * scale, y * scale);
-                                let moved = crate::synthetic_input::cursor_moved(px, py);
+                                let moved = tilo_ui_base::synthetic_input::cursor_moved(px, py);
                                 self.injected_window_event(window_id, moved);
-                                let press = crate::synthetic_input::mouse_press();
+                                let press = tilo_ui_base::synthetic_input::mouse_press();
                                 self.injected_window_event(window_id, press);
-                                let release = crate::synthetic_input::mouse_release();
+                                let release = tilo_ui_base::synthetic_input::mouse_release();
                                 self.injected_window_event(window_id, release);
                             }
                             window.request_redraw();
@@ -3761,7 +3761,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         {
             use winit::platform::macos::ActiveEventLoopExtMacOS;
             if let Err(error) = event_loop.set_quit_request_window(Some(window.id())) {
-                crate::diag!("tilo: cannot protect application Quit: {error}");
+                tilo_ui_base::diag!("tilo: cannot protect application Quit: {error}");
                 self.closing.set(true);
                 return;
             }
@@ -3792,9 +3792,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         self.a11y_adapter = None;
         self.a11y_adapter =
             create_accessibility_adapter(event_loop, &window, self.a11y_proxy.clone());
-        crate::widget::mount_native_views(
+        tilo_ui_base::widget::mount_native_views(
             self.app.root_widget.as_mut(),
-            &crate::widget::NativeViewHost::live(&window, self.app.input.platform),
+            &tilo_ui_base::widget::NativeViewHost::live(&window, self.app.input.platform),
         );
         if let Some(host) = self.host_appearance.as_mut() {
             host.note_window_theme(window.theme());
@@ -3802,7 +3802,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         self.apply_host_appearance(false);
         #[cfg(windows)]
         if let Err(reason) = self.init_render(&window) {
-            crate::diag!("tilo: {reason}");
+            tilo_ui_base::diag!("tilo: {reason}");
             self.closing.set(true);
             return;
         }
@@ -3822,7 +3822,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // unfocused with dead input on first launch.
         window.request_redraw();
         tilo_startup_metrics::mark("primary-window-redraw-requested");
-        crate::dnd::set_drag_window(&window);
+        tilo_ui_base::dnd::set_drag_window(&window);
         self.window = Some(window);
         tilo_startup_metrics::mark("primary-window-resumed-done");
     }
@@ -4386,7 +4386,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // reduce-motion. Its dwell is a wait: the loop sleeps until the
         // reveal is due (`scheduled_deadline`) and paints once then.
         let tooltip_reveal = app.input.tooltips.reveal_at();
-        let tooltip_pending = tooltip_reveal.is_some_and(|at| at <= crate::motion::frame_now());
+        let tooltip_pending = tooltip_reveal.is_some_and(|at| at <= tilo_ui_base::motion::frame_now());
         if tooltip_pending {
             request_primary_redraw();
         }
@@ -4398,10 +4398,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             self.held_frame = None;
             request_primary_redraw();
         }
-        // A turning waiting spinner (`crate::workspace_sync`) takes its next pose:
+        // A turning waiting spinner (`tilo_ui_base::workspace_sync`) takes its next pose:
         // a frame paints it and damages its part alone, with no sync, no
         // layout and no frames between poses.
-        let spinner_pose = crate::workspace_sync::next_pose();
+        let spinner_pose = tilo_ui_base::workspace_sync::next_pose();
         let spinner_due = spinner_pose.is_some_and(|at| at <= crate::time::now());
         if spinner_due {
             request_primary_redraw();
@@ -4433,7 +4433,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let widget_animation = app.root_widget.needs_animation_frame()
             || app.window_box.needs_animation_frame()
             || self.part_bar.needs_frame()
-            || crate::motion::frames_wanted(crate::time::now());
+            || tilo_ui_base::motion::frames_wanted(crate::time::now());
         let needs_frame = widget_animation
             || app
                 .presence_ctx
@@ -4539,7 +4539,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         .map(|leaf| format!("animating:{leaf}")),
                 );
                 askers.extend(
-                    crate::motion::frames_wanted_by(crate::time::now())
+                    tilo_ui_base::motion::frames_wanted_by(crate::time::now())
                         .into_iter()
                         .map(|wish| format!("motion:{wish}")),
                 );
@@ -4613,7 +4613,7 @@ impl AppHandler {
             other => {
                 let handled = self.app.root_widget.handle_audience_presentation_event(
                     &other,
-                    &mut crate::widget::Edits::lend(&mut self.app.state.doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut self.app.state.doc),
                     &self.app.state.root,
                 );
                 if handled {
@@ -4656,8 +4656,8 @@ impl AppHandler {
                 if let Some(surface) = self.floating_windows.get_mut(index) {
                     if let Some(adapter) = surface.a11y_adapter.as_mut() {
                         adapter.update_if_active(|| {
-                            crate::accesskit_bridge::native_tree_update(
-                                crate::accesskit_bridge::surface_tree_update(
+                            tilo_ui_base::accesskit_bridge::native_tree_update(
+                                tilo_ui_base::accesskit_bridge::surface_tree_update(
                                     access.as_ref(),
                                     origin,
                                     scale,
@@ -4669,12 +4669,12 @@ impl AppHandler {
                 }
             }
             accesskit_winit::WindowEvent::ActionRequested(request) => {
-                crate::motion::note_source(crate::tokens::MotionSource::Action);
+                tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Action);
                 if dispatch_native_surface_accessibility(
                     self.app.root_widget.as_mut(),
                     &id,
                     &request,
-                    &mut crate::widget::Edits::lend(&mut self.app.state.doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut self.app.state.doc),
                     &self.app.state.root,
                 ) {
                     self.app.invalidate_widget_resource_cache();
@@ -5014,9 +5014,9 @@ impl AppHandler {
                 window.request_redraw();
             }
             WindowEvent::ScaleFactorChanged { .. } => {
-                crate::widget::mount_native_views(
+                tilo_ui_base::widget::mount_native_views(
                     self.app.root_widget.as_mut(),
-                    &crate::widget::NativeViewHost::live(window, self.app.input.platform),
+                    &tilo_ui_base::widget::NativeViewHost::live(window, self.app.input.platform),
                 );
                 self.app.layout.layout_dirty = true;
                 window.request_redraw();
@@ -5027,8 +5027,8 @@ impl AppHandler {
                 self.app.release_held_input(window.as_ref());
             }
             WindowEvent::ModifiersChanged(modifiers) => self.app.input.modifiers = modifiers,
-            other if self.app.input.platform.platform() == crate::platform::Platform::Android => {
-                if let Some(escape) = crate::interaction::back_key_as_escape(&other) {
+            other if self.app.input.platform.platform() == tilo_ui_base::platform::Platform::Android => {
+                if let Some(escape) = tilo_ui_base::interaction::back_key_as_escape(&other) {
                     self.handle_back_key(window, escape);
                 } else {
                     self.handle_other_window_event(window, other);
@@ -5042,14 +5042,14 @@ impl AppHandler {
 
     fn close_primary_window(&mut self, window: &Arc<Window>) {
         match crate::component_lifecycle::on_window_close_requested(self.app.root_widget.as_mut()) {
-            crate::widget::WindowCloseAdmission::Allow => {
+            tilo_ui_base::widget::WindowCloseAdmission::Allow => {
                 if self.app.admit_native_close_request() {
                     self.closing.set(true);
                 } else {
                     window.request_redraw();
                 }
             }
-            crate::widget::WindowCloseAdmission::Defer => {
+            tilo_ui_base::widget::WindowCloseAdmission::Defer => {
                 self.app.needs_sync = true;
                 self.app.layout.layout_dirty = true;
                 window.request_redraw();
@@ -5069,7 +5069,7 @@ impl AppHandler {
         }
         if self
             .app
-            .surface_nav_gesture(crate::gesture::NavDirection::Back)
+            .surface_nav_gesture(tilo_ui_base::gesture::NavDirection::Back)
         {
             window.request_redraw();
             return;
@@ -5116,7 +5116,7 @@ impl AppHandler {
         &mut self,
         window: &Arc<Window>,
         device_id: winit::event::DeviceId,
-        events: Vec<crate::interaction::TouchPointerEvent>,
+        events: Vec<tilo_ui_base::interaction::TouchPointerEvent>,
     ) {
         self.dispatching_touch_pointer = true;
         for pointer_event in events {
@@ -5216,7 +5216,7 @@ impl App {
         {
             use winit::platform::android::EventLoopBuilderExtAndroid;
             event_loop_builder.with_android_app(
-                crate::platform::android::app()
+                tilo_ui_base::platform::android::app()
                     .expect("an Android app starts through ui::android_main!")
                     .clone(),
             );
@@ -5339,7 +5339,7 @@ impl App {
             // A change of an outside authority the app's controls follow moves its permissions on
             // and wakes the loop, exactly as it does for a window.
             #[cfg(feature = "model")]
-            crate::permissions::wake_loop_on_outside_change(crate::wake::WakeHandle::new());
+            tilo_ui_base::permissions::wake_loop_on_outside_change(crate::wake::WakeHandle::new());
             self.init_layout();
         }
         let idle = crate::process::environment().no_window_idle;
@@ -5478,7 +5478,7 @@ impl App {
             // follow (the host's view of the app's action authority) moves
             // the permissions' revision on and wakes the loop to show it.
             let _entry = self.enter_wake_scope();
-            crate::permissions::wake_loop_on_outside_change(crate::wake::WakeHandle::new());
+            tilo_ui_base::permissions::wake_loop_on_outside_change(crate::wake::WakeHandle::new());
         }
         let host_appearance = {
             let _entry = self.enter_wake_scope();
@@ -5487,7 +5487,7 @@ impl App {
             self.init_layout();
             tilo_startup_metrics::mark("run-init-layout-done");
             self.watch_system_settings
-                .then(crate::host_appearance::Source::start)
+                .then(tilo_ui_base::host_appearance::Source::start)
                 .flatten()
         };
         tilo_startup_metrics::mark("run-host-appearance-started");
@@ -5522,14 +5522,14 @@ impl App {
             top_layer_drawn: false,
             panning: false,
             layers_drawn: (0, false),
-            presence_layer: crate::presence::PresenceLayer::new(),
-            mark_bounds: crate::scene_parts::DrawBounds::default(),
+            presence_layer: tilo_ui_base::presence::PresenceLayer::new(),
+            mark_bounds: tilo_ui_base::scene_parts::DrawBounds::default(),
             last_primary_frame_presented: 0,
             primary_retry: crate::render_thread::retry::RenderRetryState::default(),
             undrawn: crate::render_thread::retry::UndrawnTicks::default(),
             floating_source_clear_frames: std::collections::HashMap::new(),
             floating_destination_present_frames: std::collections::HashMap::new(),
-            touch_pointer: crate::interaction::TouchPointerEmulator::default(),
+            touch_pointer: tilo_ui_base::interaction::TouchPointerEmulator::default(),
             dispatching_touch_pointer: false,
             native_scenario,
             native_input_ids: Vec::new(),
@@ -5650,7 +5650,7 @@ impl AppHandler {
 fn sync_safe_area(app: &mut App, window: &Arc<Window>) {
     #[cfg(target_os = "android")]
     {
-        let area = crate::scale::SafeArea::from_physical(
+        let area = tilo_ui_base::scale::SafeArea::from_physical(
             crate::launch::android::safe_area_insets(),
             window.scale_factor(),
         );
@@ -5665,7 +5665,7 @@ fn sync_safe_area(app: &mut App, window: &Arc<Window>) {
 }
 
 /// What the render thread calls once it presented a frame: the dev reload's
-/// timing and the key record ([`crate::input_frame`]) the frame answers.
+/// timing and the key record ([`tilo_ui_base::input_frame`]) the frame answers.
 fn present_hook(
     reload: Option<super::DevReloadTiming>,
     key: Option<Box<dyn FnOnce() + Send>>,
@@ -5691,7 +5691,7 @@ mod early_window_tests;
 #[cfg(feature = "model")]
 type SettingsWatch = settings_store::watch::SettingsWatch;
 #[cfg(not(feature = "model"))]
-type SettingsWatch = std::sync::Arc<crate::settings_source::Listener>;
+type SettingsWatch = std::sync::Arc<tilo_ui_base::settings_source::Listener>;
 
 /// Run `changed` whenever the settings this process reads change: with Tilo's model the profile's
 /// settings file, else the source its host installed. `None` where there is nothing to hear.
@@ -5699,7 +5699,7 @@ fn watch_settings(changed: impl Fn() + Send + Sync + 'static) -> Option<Settings
     #[cfg(feature = "model")]
     let watch = settings_store::watch::watch_settings(changed).ok();
     #[cfg(not(feature = "model"))]
-    let watch = crate::settings_source::source().map(|source| {
+    let watch = tilo_ui_base::settings_source::source().map(|source| {
         let listener: SettingsWatch = std::sync::Arc::new(changed);
         source.changes().listen(&listener);
         listener

@@ -9,8 +9,8 @@
 )]
 
 use crate::headless::Driver;
-use crate::interaction::InteractionEnvironment;
-use crate::theme::Theme;
+use tilo_ui_base::interaction::InteractionEnvironment;
+use tilo_ui_base::theme::Theme;
 use crate::widget::NavShell;
 
 fn still() -> Theme {
@@ -31,7 +31,7 @@ fn notes_shell() -> NavShell {
 
 #[test]
 fn a_header_row_holding_the_frames_bar_is_the_bar_and_no_bar_stands_above_it() {
-    let _landed = crate::motion::testing::settled();
+    let _landed = tilo_ui_base::motion::testing::settled();
     let mut driver = Driver::in_named_window_frame(
         crate::State::new(),
         Box::new(notes_shell()),
@@ -62,7 +62,7 @@ fn a_header_row_holding_the_frames_bar_is_the_bar_and_no_bar_stands_above_it() {
 
 #[test]
 fn a_body_with_no_header_row_stands_under_the_frames_own_bar_naming_the_window() {
-    let _landed = crate::motion::testing::settled();
+    let _landed = tilo_ui_base::motion::testing::settled();
     let mut driver = Driver::in_named_window_frame(
         crate::State::new(),
         Box::new(crate::widget::Text::new("A long shopping list")),
@@ -212,7 +212,7 @@ fn a_part_that_paints_nothing_is_no_picture() {
     // A region holding nothing: a box, and no child to draw in it.
     let mut driver = Driver::new(
         crate::State::new(),
-        Box::new(crate::widget::Spacer::fixed(24.0)),
+        Box::new(tilo_ui_base::widget::Spacer::fixed(24.0)),
         (200, 120),
     );
     let mut composition = driver.composition();
@@ -250,10 +250,10 @@ fn a_part_the_window_hides_from_assistive_technology_stays_a_picture() {
     // it would have had.
     let sample = crate::widget::InState::new(
         crate::widget::shown::State::Rest,
-        Box::new(crate::widget::Spacer::fixed(24.0)),
+        Box::new(tilo_ui_base::widget::Spacer::fixed(24.0)),
     );
     assert!(
-        crate::widget::Widget::accessibility_hidden(&sample),
+        tilo_ui_base::widget::Widget::accessibility_hidden(&sample),
         "the window hides the sample from assistive technology"
     );
     let mut driver = Driver::new(crate::State::new(), Box::new(sample), (200, 120));

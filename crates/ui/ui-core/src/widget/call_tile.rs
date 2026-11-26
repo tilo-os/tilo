@@ -14,14 +14,15 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Fill, ImageData as PenikoImage};
 
-use crate::component::{Component, Described, Person};
-use crate::icons::Icon;
-use crate::paint::PaintCtx;
+use tilo_ui_base::{component::Component, component::Described, component::Person};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
 use crate::pictures::Pictures;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::{AvatarFace, PictureSource, TaffyTreeExt, Widget};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use crate::widget::PictureSource;
+use tilo_ui_base::{widget::AvatarFace, widget::TaffyTreeExt, widget::Widget};
 
 /// Which of a person's pictures a call tile shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -31,7 +32,7 @@ pub enum CallSource {
     Screen,
 }
 
-crate::choice!(CallSource, "CallSource", {
+tilo_ui_base::choice!(CallSource, "CallSource", {
     Camera => "camera",
     Screen => "screen",
 });
@@ -263,7 +264,7 @@ impl CallTile {
     /// What the tile shows a reader: who it is, and what they show there.
     fn spoken(&self) -> String {
         let name = if self.name.is_empty() {
-            crate::i18n::widget_text("call-tile-someone")
+            tilo_ui_base::i18n::widget_text("call-tile-someone")
         } else {
             self.name.clone()
         };
@@ -273,7 +274,7 @@ impl CallTile {
             CallSource::Camera => "call-tile-on-camera",
             CallSource::Screen => "call-tile-sharing-screen",
         };
-        crate::i18n::widget_text_with(key, Some(&args))
+        tilo_ui_base::i18n::widget_text_with(key, Some(&args))
     }
 
     fn paint_name(
@@ -307,7 +308,7 @@ impl CallTile {
         let available =
             (self.rect.width() - inset * 2.0 - pad * 2.0 - glyph_side - glyph_gap).max(0.0);
         let label =
-            text.elide_to_width_style(&self.name, crate::num::f32_of_f64(available), &style);
+            text.elide_to_width_style(&self.name, tilo_ui_base::num::f32_of_f64(available), &style);
         let (width, line) = text.measure_style(&label, None, &style);
         if label.is_empty() {
             return;
@@ -357,7 +358,7 @@ impl CallTile {
 }
 
 impl Widget for CallTile {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -392,9 +393,9 @@ impl Widget for CallTile {
         TaffySize { width, height }
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -418,7 +419,7 @@ impl Widget for CallTile {
         let mut painted = false;
         if let Some(image) = &image {
             scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &clip);
-            crate::image_store::paint_image_cover(scene, transform, rect, image, radius);
+            tilo_ui_base::image_store::paint_image_cover(scene, transform, rect, image, radius);
             scene.pop_layer();
             painted = true;
         }
@@ -471,8 +472,8 @@ impl Widget for CallTile {
         self.address().map(str::to_owned)
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         let mut node = AccessNode::new(Role::Image).with_name(self.spoken());
         // The person's name alone, as the tile shows it beside their picture: what a page writes
         // in its caption, where the words after it are for a reader alone.
@@ -487,7 +488,7 @@ impl Widget for CallTile {
 mod tests {
     use super::*;
     use crate::headless::Driver;
-    use crate::widget::Widget;
+    use tilo_ui_base::widget::Widget;
 
     tilo_test_env::scenario! {
         fn a_call_tile_shows_the_newest_picture_of_who_it_is_of;
@@ -498,22 +499,22 @@ mod tests {
                 tilo_actions::MemberId::person("ab".repeat(32)),
                 "Ada",
             );
-            let mut node = crate::component::testing::Node::new(
+            let mut node = tilo_ui_base::component::testing::Node::new(
                 "CallTile",
                 "ada",
-                &crate::Intents::default(),
+                &tilo_ui_base::Intents::default(),
             )
             .prop(
                 "who",
-                crate::component::Value::Actor {
+                tilo_ui_base::component::Value::Actor {
                     identity: person.identity.clone(),
                     name: person.name.clone(),
                     hue: None,
                     picture: None,
                 },
             )
-            .prop("source", crate::component::Value::Choice("screen".to_owned()))
-            .prop("speaking", crate::component::Value::Bool(true));
+            .prop("source", tilo_ui_base::component::Value::Choice("screen".to_owned()))
+            .prop("speaking", tilo_ui_base::component::Value::Bool(true));
             let props = CallTileProps::from_source(&mut node).expect("the props read");
             let tile = CallTile::from_props("ada", props);
             assert_eq!(tile.source, CallSource::Screen);

@@ -2,14 +2,12 @@
 
 use tilo_ui_graph::component::{CaseDescription, EnumDescription};
 
-use crate::component::{
-    Component, Described, PropType, Type, Value, case_field, case_field_description,
-};
+use tilo_ui_base::{component::Component, component::Described, component::PropType, component::Type, component::Value, component::case_field, component::case_field_description};
 
 use super::{FunnelChart, FunnelDirection};
 use crate::widget::chart_data::ChartItem;
 
-crate::choice!(FunnelDirection, "FunnelDirection", {
+tilo_ui_base::choice!(FunnelDirection, "FunnelDirection", {
     Funnel => "funnel", Pyramid => "pyramid",
 });
 
@@ -29,7 +27,7 @@ impl PropType for FunnelStage {
 
     fn from_value(value: &Value) -> Result<Self, String> {
         let Value::Case { case, fields } = value else {
-            return Err(crate::component::wrong(&Self::ty(), value));
+            return Err(tilo_ui_base::component::wrong(&Self::ty(), value));
         };
         if case != "stage" {
             return Err(format!("a funnel chart's stages are `stage`, not `{case}`"));

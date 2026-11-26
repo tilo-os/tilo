@@ -18,7 +18,7 @@ use tilo_ui::history_source::revert::{
     RevertError, Slot, latest_invocation_by, plan_revert, revert_invocation,
 };
 use tilo_ui::history_source::{AuthorDirectory, HistorySource, entry_id_from_hash};
-use tilo_ui::permissions::MemberId;
+use tilo_ui_base::permissions::MemberId;
 use tilo_ui::state::State;
 
 /// The agent commits under a stable actor derived from its name — see

@@ -7,9 +7,9 @@
 use std::time::{Instant, SystemTime};
 
 use tilo_ui::app::App;
-use tilo_ui::collaboration::{CollabEvent, PresencePayload};
-use tilo_ui::permissions::MemberId;
-use tilo_ui::presence::PresenceKey;
+use tilo_ui_base::{collaboration::CollabEvent, collaboration::PresencePayload};
+use tilo_ui_base::permissions::MemberId;
+use tilo_ui_base::presence::PresenceKey;
 use tilo_ui::state::State;
 use tilo_ui::widget::Container;
 use vello::kurbo::{Point, Rect};
@@ -150,7 +150,7 @@ fn remote_writing_tints_once_per_run() {
     {
         let mut a = app();
         let key = PresenceKey::Widget {
-            path: vec![tilo_ui::presence::PathSegment::Index(2)],
+            path: vec![tilo_ui_base::presence::PathSegment::Index(2)],
         };
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
             member: MemberId::person("alice"),
@@ -183,8 +183,8 @@ fn remote_writing_tints_once_per_run() {
         let mut a = app();
         let key = PresenceKey::Widget {
             path: vec![
-                tilo_ui::presence::PathSegment::Field("wp_block".into()),
-                tilo_ui::presence::PathSegment::Field("b1".into()),
+                tilo_ui_base::presence::PathSegment::Field("wp_block".into()),
+                tilo_ui_base::presence::PathSegment::Field("b1".into()),
             ],
         };
         // Caret before the edit, then after it; the delta between them is what
@@ -220,7 +220,7 @@ fn remote_writing_tints_once_per_run() {
     {
         let mut a = app();
         let key = PresenceKey::Widget {
-            path: vec![tilo_ui::presence::PathSegment::Index(7)],
+            path: vec![tilo_ui_base::presence::PathSegment::Index(7)],
         };
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
             member: MemberId::person("alice"),
@@ -255,7 +255,7 @@ fn remote_writing_tints_once_per_run() {
     {
         let mut a = app();
         let key = PresenceKey::Widget {
-            path: vec![tilo_ui::presence::PathSegment::Index(5)],
+            path: vec![tilo_ui_base::presence::PathSegment::Index(5)],
         };
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
             member: MemberId::person("alice"),
@@ -280,7 +280,7 @@ fn caret_motion_that_is_not_writing_marks_nothing() {
     {
         let mut a = app();
         let key = PresenceKey::Widget {
-            path: vec![tilo_ui::presence::PathSegment::Index(1)],
+            path: vec![tilo_ui_base::presence::PathSegment::Index(1)],
         };
         for pos in [9usize, 4] {
             a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
@@ -304,7 +304,7 @@ fn caret_motion_that_is_not_writing_marks_nothing() {
     {
         let mut a = app();
         let key = PresenceKey::Widget {
-            path: vec![tilo_ui::presence::PathSegment::Index(3)],
+            path: vec![tilo_ui_base::presence::PathSegment::Index(3)],
         };
         // A long forward sweep, exactly as reading produces it, with no
         // document change anywhere near it.
@@ -333,7 +333,7 @@ fn caret_motion_that_is_not_writing_marks_nothing() {
     {
         let mut a = app();
         let key = PresenceKey::Widget {
-            path: vec![tilo_ui::presence::PathSegment::Index(4)],
+            path: vec![tilo_ui_base::presence::PathSegment::Index(4)],
         };
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
             member: MemberId::person("bob"),
@@ -364,7 +364,7 @@ fn caret_motion_that_is_not_writing_marks_nothing() {
         a.presence_ctx_mut()
             .set_own_identity([MemberId::person("me")]);
         let key = PresenceKey::Widget {
-            path: vec![tilo_ui::presence::PathSegment::Index(9)],
+            path: vec![tilo_ui_base::presence::PathSegment::Index(9)],
         };
 
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {

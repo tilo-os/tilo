@@ -571,7 +571,7 @@ impl Session {
 }
 
 /// The rects of the laid out widgets whose accessible name says `text`.
-fn containing(widget: &dyn ui::widget::Widget, text: &str, out: &mut Vec<ui::kurbo::Rect>) {
+fn containing(widget: &dyn tilo_ui_base::widget::Widget, text: &str, out: &mut Vec<ui::kurbo::Rect>) {
     if widget.accessibility().is_some_and(|access| {
         access
             .name
@@ -586,7 +586,7 @@ fn containing(widget: &dyn ui::widget::Widget, text: &str, out: &mut Vec<ui::kur
     }
 }
 
-fn accessible_names(widget: &dyn ui::widget::Widget, out: &mut Vec<String>) {
+fn accessible_names(widget: &dyn tilo_ui_base::widget::Widget, out: &mut Vec<String>) {
     if let Some(name) = widget.accessibility().and_then(|access| access.name) {
         out.push(name);
     }
@@ -677,7 +677,7 @@ fn labelled<'a>(node: &'a UiNode, label: &str) -> Vec<&'a UiNode> {
 /// The wall clock at `hour:minute:second` on `day` of 2026, in the zone this process reads as
 /// the person's.
 fn local(month: i8, day: i8, (hour, minute, second): (i8, i8, i8)) -> ui::time::SystemTime {
-    let at = ui::clock::instant_of(jiff::civil::date(2026, month, day).at(hour, minute, second, 0))
+    let at = tilo_ui_base::clock::instant_of(jiff::civil::date(2026, month, day).at(hour, minute, second, 0))
         .expect("the time exists where the person is");
     let ms = u64::try_from(at.as_millisecond()).expect("after 1970");
     ui::time::UNIX_EPOCH
@@ -1015,7 +1015,7 @@ fn an_empty_place_says_which_one_it_is() {
 /// so an admitted call is not asked again. What an author may not do still asks before it runs.
 #[test]
 fn an_editors_check_now_is_offered_and_runs_admitted() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let servers = servers();
     // The server tells no idling connection of new mail: what comes is read when it is checked.
     servers.imap.without_idle();
@@ -1302,9 +1302,7 @@ fn a_reply_goes_out_once_the_server_takes_the_effect() {
 fn a_send_the_workspace_denies_settles_refused_and_nothing_is_sent() {
     use collaboration::RouteSpec;
     use tilolang_process::hosted::Spec;
-    use ui::permissions::policy::{
-        Answer, Grant, Grantee, KindSet, MemberAccess, TreePath, WorkspacePolicy,
-    };
+    use tilo_ui_base::{permissions::policy::Answer, permissions::policy::Grant, permissions::policy::Grantee, permissions::policy::KindSet, permissions::policy::MemberAccess, permissions::policy::TreePath, permissions::policy::WorkspacePolicy};
 
     let servers = servers();
     let connector = MailConnector::of(account(&servers));
@@ -1353,7 +1351,7 @@ fn a_send_the_workspace_denies_settles_refused_and_nothing_is_sent() {
 fn a_send_the_workspace_denies_for_its_capability_settles_refused() {
     use collaboration::RouteSpec;
     use tilolang_process::hosted::Spec;
-    use ui::permissions::policy::{Grantee, MemberAccess, WorkspacePolicy};
+    use tilo_ui_base::{permissions::policy::Grantee, permissions::policy::MemberAccess, permissions::policy::WorkspacePolicy};
 
     let servers = servers();
     let connector = MailConnector::of(account(&servers));
@@ -1411,7 +1409,7 @@ fn a_send_the_workspace_denies_for_its_capability_settles_refused() {
 fn a_send_goes_while_another_capability_is_the_one_denied() {
     use collaboration::RouteSpec;
     use tilolang_process::hosted::Spec;
-    use ui::permissions::policy::{Grantee, MemberAccess, WorkspacePolicy};
+    use tilo_ui_base::{permissions::policy::Grantee, permissions::policy::MemberAccess, permissions::policy::WorkspacePolicy};
 
     let servers = servers();
     let connector = MailConnector::of(account(&servers));
@@ -1991,7 +1989,7 @@ fn all_inboxes_lists_every_accounts_inbox_in_one_list() {
 #[test]
 fn snoozing_takes_a_conversation_out_of_the_inbox_until_its_moment() {
     use ui::time::testing::with_wall;
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let servers = servers();
     let (_connector, mut session) = window_at(local(6, 30, (10, 0, 0)), &servers);
     let account = session.accounts().remove(0);
@@ -2151,7 +2149,7 @@ fn marking_all_read_reads_every_conversation_and_reaches_the_server() {
 #[test]
 fn a_message_sent_later_waits_for_its_moment_and_is_cancelled_before_it() {
     use ui::time::testing::with_wall;
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let servers = servers();
     let (_connector, mut session) = window_at(local(6, 30, (10, 0, 0)), &servers);
     // Everything up to its cancellation happens at the pinned clock, so the moment it goes is
@@ -4286,7 +4284,7 @@ fn a_conversation_offers_its_actions_at_its_window() {
         .0;
     session
         .window
-        .a11y_action(archive, &ui::a11y::Action::Activate);
+        .a11y_action(archive, &tilo_ui_base::a11y::Action::Activate);
     session.settle();
     assert!(
         !matches!(session.value_of(&plan, "boxes"), RtValue::List(ref boxes)
@@ -4701,7 +4699,7 @@ fn composer_field(session: &mut Session, order: usize) -> ui::accesskit::NodeId 
 /// technology does: the window's own accessible action, not a press at a place.
 fn into_composer_field(session: &mut Session, order: usize) {
     let node = composer_field(session, order);
-    session.window.a11y_action(node, &ui::a11y::Action::Focus);
+    session.window.a11y_action(node, &tilo_ui_base::a11y::Action::Focus);
     session.settle();
 }
 

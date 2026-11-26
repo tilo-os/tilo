@@ -10,14 +10,15 @@ use vello::kurbo::{Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
 use winit::event::WindowEvent;
 
-use crate::icons::Icon;
-use crate::paint::PaintCtx;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
 
-use crate::text_render::{ParagraphAlign, TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::DrawChild;
-use crate::widget::{Button, TaffyTreeExt, Widget};
+use tilo_ui_base::{text_render::ParagraphAlign, text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::DrawChild;
+use crate::widget::Button;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[derive(Clone, Debug)]
 struct ZoneMetrics {
@@ -59,7 +60,7 @@ impl ZoneMetrics {
         title: &str,
         message: Option<&str>,
     ) -> f64 {
-        let wrap = Some(crate::num::f32_of_f64(width.max(1.0)));
+        let wrap = Some(tilo_ui_base::num::f32_of_f64(width.max(1.0)));
         let mut h = f64::from(text.measure_style(title, wrap, &self.title).1);
         if let Some(message) = message {
             h += self.text_gap + f64::from(text.measure_style(message, wrap, &self.message).1);
@@ -145,7 +146,7 @@ impl<'a> DropZoneFace<'a> {
             );
             (colors.intent.accent_ink, m.rule * 2.0)
         } else {
-            (crate::surface::edge_on(ground), m.rule)
+            (tilo_ui_base::surface::edge_on(ground), m.rule)
         };
         ctx.scene.stroke(
             &Stroke::new(width).with_dashes(0.0, [m.dash * 2.0, m.dash]),
@@ -177,7 +178,7 @@ impl<'a> DropZoneFace<'a> {
             icon_ink,
         );
         y += m.icon + m.gap;
-        let wrap = Some(crate::num::f32_of_f64(inner));
+        let wrap = Some(tilo_ui_base::num::f32_of_f64(inner));
         let x = rect.x0 + m.pad;
         ctx.text(
             self.title,
@@ -292,9 +293,9 @@ impl DropZone {
 }
 
 impl Widget for DropZone {
-    crate::described!();
+    tilo_ui_base::described!();
 
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls);
 
     fn build_layout(
         &mut self,
@@ -303,7 +304,7 @@ impl Widget for DropZone {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let metrics = ZoneMetrics::new(theme);
-        let pad = crate::num::f32_of_f64(metrics.pad);
+        let pad = tilo_ui_base::num::f32_of_f64(metrics.pad);
         self.metrics = Some(metrics);
         self.action_node = self
             .action
@@ -366,8 +367,8 @@ impl Widget for DropZone {
         let height =
             2.0 * m.pad + m.icon + m.gap + m.text_height(text, inner, face.title, face.message);
         Size {
-            width: crate::num::f32_of_f64(width),
-            height: crate::num::f32_of_f64(height.ceil()),
+            width: tilo_ui_base::num::f32_of_f64(width),
+            height: tilo_ui_base::num::f32_of_f64(height.ceil()),
         }
     }
 
@@ -388,12 +389,12 @@ impl Widget for DropZone {
         };
         let above = m.pad + m.icon + m.gap + m.text_height(text, inner, face.title, face.message);
         let mut style = styles.style(child).clone();
-        style.margin.top = length(crate::num::f32_of_f64((above + m.gap).ceil()));
+        style.margin.top = length(tilo_ui_base::num::f32_of_f64((above + m.gap).ceil()));
         styles.set_style(child, style);
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.dirty = true;
         }
@@ -403,7 +404,7 @@ impl Widget for DropZone {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -424,7 +425,7 @@ impl Widget for DropZone {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let (Some(button), Some(child)) = (&mut self.action, self.action_node) {
             button.handle_event(event, &mut ctx.reborrow(ctx.path, child));
             if *ctx.handled {
@@ -499,8 +500,8 @@ impl Widget for DropZone {
         self.rect
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         let mut node = AccessNode::new(Role::Group).with_name(self.title.clone());
         if let Some(message) = &self.message {
             node = node.with_description(message.clone());
@@ -509,29 +510,29 @@ impl Widget for DropZone {
     }
 }
 
-impl crate::widget::controls::ActionControls for DropZone {
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+impl tilo_ui_base::widget::controls::ActionControls for DropZone {
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         let mut bindings = Vec::new();
         for child in Widget::children(self) {
-            bindings.extend(crate::widget::controls::control_action_bindings(child));
+            bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(child));
         }
         bindings
     }
 
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         for child in Widget::children_mut(self) {
-            crate::widget::controls::attach_controls(child, domain, attachment);
+            tilo_ui_base::widget::controls::attach_controls(child, domain, attachment);
         }
     }
 
     fn take_control_invocation(&mut self) -> Option<crate::tilo_actions::ControlInvocation> {
         Widget::children_mut(self)
             .into_iter()
-            .find_map(crate::widget::controls::take_control_invocation)
+            .find_map(tilo_ui_base::widget::controls::take_control_invocation)
     }
 
     fn refresh_control_action_availability(
@@ -539,7 +540,7 @@ impl crate::widget::controls::ActionControls for DropZone {
         allowed: &std::collections::HashSet<crate::tilo_actions::ActionAddress>,
     ) {
         for child in Widget::children_mut(self) {
-            crate::widget::controls::refresh_control_action_availability(child, allowed);
+            tilo_ui_base::widget::controls::refresh_control_action_availability(child, allowed);
         }
     }
 }

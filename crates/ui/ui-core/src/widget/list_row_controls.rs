@@ -1,16 +1,16 @@
 //! [`ListRow`] as a control an agent's actions land on: its own activation, the check box
 //! and every action its trailing control or its parts hold.
 
-use crate::widget::controls::ActionControls;
-use crate::widget::{ActionEmitter, ControlBindingMetadata, Widget};
+use tilo_ui_base::widget::controls::ActionControls;
+use tilo_ui_base::{widget::ActionEmitter, widget::ControlBindingMetadata, widget::Widget};
 
 use super::{ActionHandler, ListRow};
 
 impl ActionControls for ListRow {
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         self.activation.attach(domain, attachment);
         if let Some(action) = &mut self.check_action {
@@ -25,7 +25,7 @@ impl ActionControls for ListRow {
             swipe.press.attach(domain, attachment);
         }
         for child in Widget::children_mut(self) {
-            crate::widget::controls::attach_controls(child, domain, attachment);
+            tilo_ui_base::widget::controls::attach_controls(child, domain, attachment);
         }
     }
 
@@ -48,7 +48,7 @@ impl ActionControls for ListRow {
         }
         Widget::children_mut(self)
             .into_iter()
-            .find_map(crate::widget::controls::take_control_invocation)
+            .find_map(tilo_ui_base::widget::controls::take_control_invocation)
     }
 
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
@@ -70,7 +70,7 @@ impl ActionControls for ListRow {
             bindings.extend(swipe.press.metadata(format!("{id}/swipe")));
         }
         for child in Widget::children(self) {
-            bindings.extend(crate::widget::controls::control_action_bindings(child));
+            bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(child));
         }
         bindings
     }
@@ -101,7 +101,7 @@ impl ActionControls for ListRow {
             self.dirty = true;
         }
         for child in Widget::children_mut(self) {
-            crate::widget::controls::refresh_control_action_availability(child, allowed);
+            tilo_ui_base::widget::controls::refresh_control_action_availability(child, allowed);
         }
     }
 }

@@ -9,7 +9,7 @@ use vello::{
     peniko::{BlendMode, Color, Fill, Gradient},
 };
 
-use crate::{Theme, tokens::colors::mix8};
+use tilo_ui_base::{Theme, tokens::colors::mix8};
 
 const PERIOD_SECONDS: f64 = 120.0;
 
@@ -314,7 +314,7 @@ mod tests {
         // a logical rect; the backdrop must land on every physical pixel,
         // not on the upper-left quadrant the logical rect spans unscaled.
         let logical = Rect::new(0.0, 0.0, 1472.0, 920.0);
-        let transform = crate::scale::composite_transform(2.0);
+        let transform = tilo_ui_base::scale::composite_transform(2.0);
         for theme in [Theme::dark(), Theme::high_contrast()] {
             let mut scene = Scene::new();
             draw(&mut scene, &theme, transform, logical, 7.0);

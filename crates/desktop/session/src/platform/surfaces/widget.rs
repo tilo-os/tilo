@@ -97,7 +97,7 @@ enum Owed {
 /// shown: when it comes back (the overview opened again) it shows what it drew, drawing only what
 /// changed meanwhile.
 struct LiftedLayer {
-    key: ui::scene_parts::PartKey,
+    key: tilo_ui_base::scene_parts::PartKey,
     /// The last frame lifted the part.
     shown: bool,
     /// Where it stands at rest, in the tree's logical pixels: `(x, y)` and its size.
@@ -235,14 +235,14 @@ impl WidgetSurface {
     /// # Panics
     /// Never: the placement's scale is a positive output scale.
     #[must_use]
-    pub fn new(root: Box<dyn ui::Widget>, placement: Placement, below: bool) -> Self {
+    pub fn new(root: Box<dyn tilo_ui_base::Widget>, placement: Placement, below: bool) -> Self {
         let mut host = Driver::new_with_controlled_inputs(
             ui::state::State::new(),
             root,
             placement.size,
-            ui::Theme::dark(),
-            ui::TextRenderer::new(),
-            ui::permissions::MemberId::person(String::new()),
+            tilo_ui_base::Theme::dark(),
+            tilo_ui_base::TextRenderer::new(),
+            tilo_ui_base::permissions::MemberId::person(String::new()),
         );
         // This host presents on its own frame clock, the compositor's, as a
         // browser page does on animation frames: a word typed, a drag or a
@@ -340,7 +340,7 @@ impl WidgetSurface {
         // between frames as much as a frame. A pass that drew without them
         // drew its material over the stand-in, and kept it: the compositor
         // hands a backdrop over again only when what lies below changes.
-        ui::part_paint::backdrop::provide_backdrops(
+        tilo_ui_base::part_paint::backdrop::provide_backdrops(
             self.provided
                 .iter()
                 .enumerate()
@@ -467,13 +467,13 @@ impl WidgetSurface {
 
     /// The theme the tree is drawn with.
     #[must_use]
-    pub fn theme(&self) -> &ui::Theme {
+    pub fn theme(&self) -> &tilo_ui_base::Theme {
         self.host.theme()
     }
 
     /// Draw the tree with `theme`: the person's palette, tokens and fonts,
     /// as the session's presentation settings hand them to every surface.
-    pub fn set_theme(&mut self, theme: ui::Theme) {
+    pub fn set_theme(&mut self, theme: tilo_ui_base::Theme) {
         self.host.set_theme(theme);
         self.owe();
     }
@@ -658,7 +658,7 @@ impl tilo_session_core::surfaces::Published for WidgetSurface {
         self.name.clone()
     }
 
-    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
+    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &tilo_ui_base::a11y::Action) -> bool {
         let acted = self.host.perform_a11y_action(target, action).is_ok();
         self.revision = self.revision.wrapping_add(1);
         self.owe();
@@ -737,7 +737,7 @@ impl tilo_session_core::surfaces::Published for WidgetSurface {
     /// name or test id, else an element of the accessibility tree — a chip, a
     /// window bar's pill — activated as assistive technology activates it.
     fn press(&mut self, name: &str) -> Result<(), String> {
-        if let Err(named) = self.host.perform_named(name, &ui::a11y::Action::Activate) {
+        if let Err(named) = self.host.perform_named(name, &tilo_ui_base::a11y::Action::Activate) {
             // A control of an app the tree shows as its own, by the id it
             // names it with, else an element of the accessibility tree.
             let mut pressed = false;
@@ -766,7 +766,7 @@ impl tilo_session_core::surfaces::Published for WidgetSurface {
                     return Err(named);
                 };
                 self.host
-                    .perform_a11y_action(node, &ui::a11y::Action::Activate)?;
+                    .perform_a11y_action(node, &tilo_ui_base::a11y::Action::Activate)?;
             }
         }
         self.owe();
@@ -1107,7 +1107,7 @@ impl ShellSurface for WidgetSurface {
 }
 
 /// Hand `each` every app `widget`'s tree shows as its own ([`ui::app::EmbeddedApp`]).
-fn each_embedded_app(widget: &mut dyn ui::Widget, each: &mut dyn FnMut(&mut ui::app::EmbeddedApp)) {
+fn each_embedded_app(widget: &mut dyn tilo_ui_base::Widget, each: &mut dyn FnMut(&mut ui::app::EmbeddedApp)) {
     if let Some(app) = widget
         .as_any_mut()
         .and_then(|any| any.downcast_mut::<ui::app::EmbeddedApp>())

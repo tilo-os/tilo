@@ -9,23 +9,23 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
-use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::presence::PresenceCtx;
+use tilo_ui_base::offscreen::OffscreenRenderer;
+use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui::profiling::{FrameProfiler, Pass};
 use tilo_ui::state::State;
-use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::Theme;
-use tilo_ui::widget::Widget;
-use tilo_ui::widget::solve_built_layout;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::widget::solve_built_layout;
 
 use super::dashboard_scene;
-use tilo_ui::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
 
 pub fn run(_args: &[String]) {
-    tilo_ui::i18n::I18nManager::init("en-US");
+    tilo_ui_base::i18n::I18nManager::init("en-US");
 
     let out = std::env::var("PERF_HUD_OUT").unwrap_or_else(|_| "/tmp/perf_hud/hud.png".to_string());
     let out = PathBuf::from(out);

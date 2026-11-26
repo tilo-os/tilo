@@ -97,7 +97,7 @@ fn with_no_caret_the_sheet_the_view_shows_is_reported() {
     let mut scene = Scene::new();
     Widget::draw(
         &mut *editor,
-        &mut tilo_ui::DrawCtx::new(
+        &mut tilo_ui_base::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut text,

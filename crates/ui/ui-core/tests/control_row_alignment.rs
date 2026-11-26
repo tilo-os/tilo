@@ -16,13 +16,11 @@ use std::collections::HashMap;
 
 use tilo_ui::State;
 use tilo_ui::headless::Driver;
-use tilo_ui::presence::PathSegment;
-use tilo_ui::theme::Theme;
+use tilo_ui_base::presence::PathSegment;
+use tilo_ui_base::theme::Theme;
 use tilo_ui::widget::toggle_group::Segment;
-use tilo_ui::widget::{
-    Button, Checkbox, Chip, Container, Dropdown, NumberInput, Row, SearchField, TextInput, Toggle,
-    ToggleGroup, Widget,
-};
+use tilo_ui::{widget::Button, widget::Checkbox, widget::Chip, widget::Container, widget::Dropdown, widget::NumberInput, widget::Row, widget::SearchField, widget::TextInput, widget::Toggle, widget::ToggleGroup};
+use tilo_ui_base::widget::Widget;
 use vello::kurbo::Rect;
 
 /// Fine-pointer minimum target (HIG §9.6).
@@ -143,7 +141,7 @@ fn assert_rects_aligned(label: &str, rects: &[(&'static str, Rect)]) {
 #[test]
 fn mixed_controls_share_one_centre_line_across_themes_scales_and_resize() {
     // Motion reads at its end: this test checks the resting frame.
-    let _settled = tilo_ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     {
         for (name, theme) in [
             ("dark", Theme::dark()),
@@ -228,7 +226,7 @@ fn mixed_controls_share_one_centre_line_across_themes_scales_and_resize() {
 #[test]
 fn fixed_controls_keep_their_size_and_labels_beside_fluid_fields() {
     // Motion reads at its end: this test checks the resting frame.
-    let _settled = tilo_ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // Fixed controls beside a fluid field laid directly in the row: the field
     // takes the remaining width and every fixed control keeps its target size
     // and the shared centre line. Fails before the Toggle pinned `flex_shrink: 0`

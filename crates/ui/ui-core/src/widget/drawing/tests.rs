@@ -1,14 +1,14 @@
 use vello::kurbo::{Point, Rect};
 
 use super::{Anchor, Drawing, Ink, Shape, Weight};
-use crate::component::{PropType, Value};
-use crate::theme::Theme;
+use tilo_ui_base::{component::PropType, component::Value};
+use tilo_ui_base::theme::Theme;
 use crate::time::Duration;
-use crate::tokens::{EffectiveMotion, Motion, TextRole};
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::Motion, tokens::TextRole};
 
 /// The `to` of the drawing's second arc as drawn at `at`.
 fn drawn_to(drawing: &Drawing, at: crate::time::Instant) -> f64 {
-    let _frame = crate::motion::pin_frame_at(at);
+    let _frame = tilo_ui_base::motion::pin_frame_at(at);
     let shapes = drawing
         .shapes_at(at)
         .unwrap_or_else(|| drawing.shapes.clone());
@@ -184,7 +184,7 @@ tilo_test_env::scenario! {
         let mut drawing = drawn_ring(EffectiveMotion::new(Motion::default(), false));
         let start = crate::time::now();
         {
-            let _frame = crate::motion::pin_frame_at(start);
+            let _frame = tilo_ui_base::motion::pin_frame_at(start);
             drawing.set_shapes(ring(0.8));
         }
         assert!((drawn_to(&drawing, start) - 0.2).abs() < 1e-6, "it starts where it was");
@@ -192,7 +192,7 @@ tilo_test_env::scenario! {
         assert!(mid > 0.2 && mid < 0.8, "on its way: {mid}");
         let later = start + Duration::from_secs(3);
         {
-            let _frame = crate::motion::pin_frame_at(later);
+            let _frame = tilo_ui_base::motion::pin_frame_at(later);
             assert!(!drawing.is_moving(later), "at rest it asks for no frames");
         }
         assert!((drawn_to(&drawing, later) - 0.8).abs() < 1e-6);
@@ -203,13 +203,13 @@ tilo_test_env::scenario! {
         let mut drawing = drawn_ring(EffectiveMotion::new(Motion::default(), false));
         let start = crate::time::now();
         {
-            let _frame = crate::motion::pin_frame_at(start);
+            let _frame = tilo_ui_base::motion::pin_frame_at(start);
             drawing.set_shapes(ring(0.8));
         }
         let turn = start + Duration::from_millis(60);
         let there = drawn_to(&drawing, turn);
         {
-            let _frame = crate::motion::pin_frame_at(turn);
+            let _frame = tilo_ui_base::motion::pin_frame_at(turn);
             drawing.set_shapes(ring(0.1));
         }
         let after = drawn_to(&drawing, turn);
@@ -223,13 +223,13 @@ tilo_test_env::scenario! {
     phase reduced_motion_and_a_still_feel_land_at_once;
     {
         let start = crate::time::now();
-        let _frame = crate::motion::pin_frame_at(start);
+        let _frame = tilo_ui_base::motion::pin_frame_at(start);
         let mut reduced = drawn_ring(EffectiveMotion::new(Motion::default(), true));
         reduced.set_shapes(ring(0.8));
         assert!(!reduced.is_moving(start));
 
         let mut still = drawn_ring(EffectiveMotion::new(Motion::default(), false));
-        still.feel = crate::motion::Feel::Still;
+        still.feel = tilo_ui_base::motion::Feel::Still;
         still.set_shapes(ring(0.8));
         assert!(!still.is_moving(start));
     }
@@ -318,7 +318,7 @@ tilo_test_env::scenario! {
     phase the_first_reading_and_a_new_form_land_at_once;
     {
         let start = crate::time::now();
-        let _frame = crate::motion::pin_frame_at(start);
+        let _frame = tilo_ui_base::motion::pin_frame_at(start);
         let mut first = Drawing::default();
         first.set_shapes(ring(0.2));
         first.set_shapes(ring(0.8));
@@ -336,7 +336,7 @@ tilo_test_env::scenario! {
 /// preview can show a theme other than the one in use; a name no theme has follows the window.
 #[test]
 fn a_named_theme_draws_in_its_colours() {
-    use crate::component::Described as _;
+    use tilo_ui_base::component::Described as _;
     use crate::widget::DrawingProps;
 
     let preview = |theme: Option<&str>| {

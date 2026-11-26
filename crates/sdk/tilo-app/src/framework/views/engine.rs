@@ -29,7 +29,7 @@ use tilo_resource::SearchBody;
 pub use tilo_search::excerpt;
 use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
 use ui_core::WakeHandle;
-use ui_core::arriving::{Arrival, ArrivalClock, Source, Step};
+use tilo_ui_base::{arriving::Arrival, arriving::ArrivalClock, arriving::Source, arriving::Step};
 use ui_core::background::Background;
 use ui_core::time::{Duration, Instant};
 

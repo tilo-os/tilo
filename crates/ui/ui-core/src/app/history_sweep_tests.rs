@@ -4,9 +4,10 @@
 use crate::app::framework_history_tests::{app_with_root, layout};
 
 use crate::state::State;
-use crate::theme::Theme;
-use crate::widget::undo_access::{UndoRequest, UndoStatus};
-use crate::widget::{Column, Text, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::undo_access::UndoRequest, widget::undo_access::UndoStatus};
+use crate::{widget::Column, widget::Text};
+use tilo_ui_base::widget::Widget;
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -22,7 +23,7 @@ struct Asker {
 }
 
 impl Widget for Asker {
-    crate::provides!(dyn crate::widget::undo_access::UndoControl);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::undo_access::UndoControl);
 
     fn name(&self) -> &str {
         "Asker"
@@ -40,14 +41,14 @@ impl Widget for Asker {
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.text.apply_layout(tree, node, origin);
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.text.draw(&mut crate::draw::DrawCtx::new(
+        self.text.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -60,7 +61,7 @@ impl Widget for Asker {
     }
 }
 
-impl crate::widget::undo_access::UndoControl for Asker {
+impl tilo_ui_base::widget::undo_access::UndoControl for Asker {
     fn set_undo_status(&mut self, status: &mut dyn FnMut() -> UndoStatus) {
         self.can_undo.set(Some(status().can_undo));
     }

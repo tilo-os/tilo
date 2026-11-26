@@ -9535,7 +9535,7 @@ impl Widget for BlockEditor {
 
     /// The editor's popovers, in the window's top layer — unless its owner
     /// painted them itself this frame, inside its own scroll and clip.
-    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -9543,7 +9543,7 @@ impl Widget for BlockEditor {
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         for child in self.children_mut() {
-            child.draw_overlay(&mut tilo_ui::DrawCtx::new(
+            child.draw_overlay(&mut tilo_ui_base::DrawCtx::new(
                 scene,
                 transform,
                 text_renderer,
@@ -9913,7 +9913,7 @@ impl Widget for BlockEditor {
         clippy::cast_precision_loss,
         reason = "one cohesive paint pass uses aligned caches and bounded viewport arithmetic"
     )]
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -10351,7 +10351,7 @@ impl Widget for BlockEditor {
                 );
                 if preceding.is_none() {
                     table.draw_projected_focus(
-                        &mut tilo_ui::DrawCtx::new(
+                        &mut tilo_ui_base::DrawCtx::new(
                             ctx.scene,
                             transform,
                             ctx.text_renderer,

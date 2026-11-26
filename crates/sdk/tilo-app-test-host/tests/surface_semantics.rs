@@ -4,10 +4,10 @@
 //! accessibility tree a screen reader reads.
 
 use std::collections::HashMap;
-use tilo_app::widget::TaffyTreeExt;
+use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_app_test_host::TestApp;
 
-use tilo_app::a11y::{AccessNode, Action as A11yAction, Role};
+use tilo_ui_base::{a11y::AccessNode, a11y::Action as A11yAction, a11y::Role};
 use tilo_app::framework::{Dispatcher, SurfaceCx};
 use tilo_app::prelude::*;
 
@@ -81,7 +81,7 @@ impl Widget for Booth {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    tilo_app::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
     fn name(&self) -> &'static str {
         "Booth"
@@ -113,8 +113,8 @@ impl Widget for Booth {
         &mut self,
         target: &str,
         action: &A11yAction,
-        _: &mut tilo_app::widget::Edits<'_>,
-        _: &tilo_app::widget::ModelPath,
+        _: &mut tilo_ui_base::widget::Edits<'_>,
+        _: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         matches!(action, A11yAction::Activate) && self.vote(target)
     }
@@ -261,13 +261,13 @@ impl Widget for WritesWhilePainting {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    tilo_app::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
     fn name(&self) -> &'static str {
         "WritesWhilePainting"
     }
 
-    fn draw(&mut self, ctx: &mut ui_core::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,

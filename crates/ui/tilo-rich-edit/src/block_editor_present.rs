@@ -624,7 +624,7 @@ mod tests {
             }
             let mut text = ui::text_render::TextRenderer::new();
             let mut scene = vello::Scene::new();
-            editor.draw(&mut tilo_ui::DrawCtx::new(
+            editor.draw(&mut tilo_ui_base::DrawCtx::new(
                 &mut scene,
                 Affine::translate((0.0, TOP)),
                 &mut text,

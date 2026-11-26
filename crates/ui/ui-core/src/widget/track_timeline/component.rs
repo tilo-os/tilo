@@ -1,7 +1,7 @@
 //! [`TrackTimeline`] as a described component: the tracks, spans and markers a view hands it, and
 //! the changes a person's hand on it reports back.
 
-use crate::component::{Component, Described, Event};
+use tilo_ui_base::{component::Component, component::Described, component::Event};
 use crate::widget::Ink;
 
 use super::widget::{Marker, Span, Track, TrackTimeline};
@@ -112,7 +112,7 @@ pub struct TimelineTrackProps {
     pub toggled_lock: Event,
 }
 
-crate::component::part_type!(TimelineTrackProps);
+tilo_ui_base::component::part_type!(TimelineTrackProps);
 
 /// One thing standing on a track for a stretch of time: a clip, a sound, a title. It shows its
 /// name, its colour, a strip of its frames and the shape of its sound when the view gives them.
@@ -160,7 +160,7 @@ pub struct TimelineSpanProps {
     pub trimmed: Event,
 }
 
-crate::component::part_type!(TimelineSpanProps);
+tilo_ui_base::component::part_type!(TimelineSpanProps);
 
 /// A moment marked on the ruler: a flag with its name, which a person drags along the time.
 #[derive(Component, Default)]
@@ -184,7 +184,7 @@ pub struct TimelineMarkerProps {
     pub moved: Event,
 }
 
-crate::component::part_type!(TimelineMarkerProps);
+tilo_ui_base::component::part_type!(TimelineMarkerProps);
 
 fn tracks(props: Vec<TimelineTrackProps>) -> Vec<Track> {
     props

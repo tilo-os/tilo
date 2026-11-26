@@ -5,11 +5,12 @@
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::{Metrics, Spacing};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{tokens::Metrics, tokens::Spacing};
 use crate::widget::flap::{FlapState, SplitLayout};
-use crate::widget::{AuthoredExtent, SplitHandle, SplitOrientation, SplitRatio};
+use crate::{widget::SplitHandle, widget::SplitOrientation, widget::SplitRatio};
+use tilo_ui_base::widget::AuthoredExtent;
 
 mod sheet;
 
@@ -98,11 +99,11 @@ pub struct SidebarDrawer {
 
 /// The minimum the content beside the panel keeps, and the width class it is in there: an authored
 /// minimum is a column's ([`crate::widget::arrange::column_min_width`]), and a content kind states
-/// its own ([`crate::widget::ContentKind::beside_sidebar_class`]).
+/// its own ([`tilo_ui_base::widget::ContentKind::beside_sidebar_class`]).
 #[derive(Clone, Copy, Debug)]
 struct ContentMinimum {
     extent: AuthoredExtent,
-    class: crate::widget::WidthClass,
+    class: tilo_ui_base::widget::WidthClass,
 }
 
 /// The drawer's show/hide button in a painted header row: its rect, hover
@@ -113,7 +114,7 @@ struct DrawerToggle {
     hovered: bool,
     pressed: bool,
     pointer: Option<Point>,
-    conventions: crate::platform::PlatformConventions,
+    conventions: tilo_ui_base::platform::PlatformConventions,
 }
 
 impl Default for SidebarDrawer {
@@ -133,7 +134,7 @@ impl SidebarDrawer {
             rail_width: AuthoredExtent::icon(0.0),
             responsive_scale: 1.0,
             ui_scale: 1.0,
-            rem: crate::tokens::typography::REFERENCE_BODY_PX,
+            rem: tilo_ui_base::tokens::typography::REFERENCE_BODY_PX,
             float_inset: f64::from(Spacing::BASE.s2),
             flap: FlapState::open_when_docked(),
             outer: Rect::ZERO,
@@ -191,15 +192,15 @@ impl SidebarDrawer {
     pub fn content_min_width(mut self, px: f64) -> Self {
         self.content_min = Some(ContentMinimum {
             extent: AuthoredExtent::text(px),
-            class: crate::widget::WidthClass::Medium,
+            class: tilo_ui_base::widget::WidthClass::Medium,
         });
         self
     }
     /// Dock while the content keeps the minimum its kind needs
-    /// ([`crate::widget::ContentKind`]), as `NavShell` does.
+    /// ([`tilo_ui_base::widget::ContentKind`]), as `NavShell` does.
     #[must_use]
-    pub fn content_kind(mut self, kind: crate::widget::ContentKind) -> Self {
-        self.push = kind == crate::widget::ContentKind::List;
+    pub fn content_kind(mut self, kind: tilo_ui_base::widget::ContentKind) -> Self {
+        self.push = kind == tilo_ui_base::widget::ContentKind::List;
         self.content_min = Some(ContentMinimum {
             extent: AuthoredExtent::text(f64::from(kind.min_width(&Metrics::BASE))),
             class: kind.beside_sidebar_class(),
@@ -217,13 +218,13 @@ impl SidebarDrawer {
     /// scaled to fit, a picture, a map — not a column of text, so it works
     /// narrower than a column: the panel docks beside it while it keeps
     /// `min_width`, and floats over it below that
-    /// ([`crate::widget::ContentKind::Canvas`]).
+    /// ([`tilo_ui_base::widget::ContentKind::Canvas`]).
     #[must_use]
     pub fn content_surface(mut self, min_width: f64) -> Self {
         self.push = false;
         self.content_min = Some(ContentMinimum {
             extent: AuthoredExtent::text(min_width),
-            class: crate::widget::ContentKind::Canvas.beside_sidebar_class(),
+            class: tilo_ui_base::widget::ContentKind::Canvas.beside_sidebar_class(),
         });
         self
     }
@@ -313,7 +314,7 @@ impl SidebarDrawer {
         self.rail_column = if self.rail_labels.is_empty() {
             f64::from(theme.tokens.metrics.rail_width)
         } else {
-            crate::text_render::with_layout_renderer(theme, |text| {
+            tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
                 crate::widget::nav_list::nav_row::rail_width_fitting(
                     theme,
                     text,
@@ -366,7 +367,7 @@ impl SidebarDrawer {
     /// never wider than it is.
     fn narrowest_docked_width(&self) -> f64 {
         let docked = self.resolved_docked_width();
-        if self.docked_width.sizing() == crate::widget::layout::ExtentSizing::Icon {
+        if self.docked_width.sizing() == tilo_ui_base::widget::layout::ExtentSizing::Icon {
             return docked;
         }
         let own = self
@@ -534,7 +535,7 @@ impl SidebarDrawer {
     }
 
     /// Spell the show/hide shortcut for `conventions`.
-    pub fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+    pub fn set_platform_conventions(&mut self, conventions: tilo_ui_base::platform::PlatformConventions) {
         self.toggle.conventions = conventions;
     }
 
@@ -545,7 +546,7 @@ impl SidebarDrawer {
             (SidebarSide::Right, true) => "window-toolbar-hide-inspector",
             (SidebarSide::Right, false) => "window-toolbar-show-inspector",
         };
-        crate::i18n::I18nManager::lookup_plain(key)
+        tilo_ui_base::i18n::I18nManager::lookup_plain(key)
     }
 
     /// Route `event` to the drawer's own parts: the toggle (hover, a press and release on it),
@@ -554,7 +555,7 @@ impl SidebarDrawer {
     pub fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
         use winit::keyboard::{Key, NamedKey};
@@ -641,8 +642,8 @@ impl SidebarDrawer {
                 if self.side == SidebarSide::Left
                     && conventions.command_modifier_down(modifiers)
                     && let Key::Character(c) = logical_key
-                    && crate::platform::HostShortcut::resolve(conventions, c, modifiers.shift_key())
-                        == Some(crate::platform::HostShortcut::Sidebar)
+                    && tilo_ui_base::platform::HostShortcut::resolve(conventions, c, modifiers.shift_key())
+                        == Some(tilo_ui_base::platform::HostShortcut::Sidebar)
                 {
                     self.toggle();
                     return true;
@@ -663,8 +664,8 @@ impl SidebarDrawer {
     /// The toggle's node in the window's semantic tree: a button named for
     /// what it does ("Show sidebar"), with its shortcut. Route an `Activate`
     /// on it back with [`Self::perform_toggle_action`].
-    pub fn toggle_accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    pub fn toggle_accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         if self.toggle.rect.width() <= 0.0 {
             return None;
         }
@@ -674,7 +675,7 @@ impl SidebarDrawer {
             .with_bounds(self.toggle.rect)
             .with_state(AccessState::new().focusable(true).expanded(self.is_open()));
         if self.side == SidebarSide::Left {
-            let shortcut = crate::platform::HostShortcut::Sidebar
+            let shortcut = tilo_ui_base::platform::HostShortcut::Sidebar
                 .shortcut(self.toggle.conventions)
                 .label(self.toggle.conventions);
             node = node.with_description(shortcut);
@@ -693,13 +694,13 @@ impl SidebarDrawer {
     /// `Widget::perform_action`); returns whether it did.
     pub fn perform_toggle_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
     ) -> bool {
         let ours = key_path
             .last()
-            .is_some_and(|key| *key == crate::a11y::hash_key(&self.toggle_target()));
-        if ours && matches!(action, crate::a11y::Action::Activate) {
+            .is_some_and(|key| *key == tilo_ui_base::a11y::hash_key(&self.toggle_target()));
+        if ours && matches!(action, tilo_ui_base::a11y::Action::Activate) {
             self.toggle();
             return true;
         }
@@ -709,7 +710,7 @@ impl SidebarDrawer {
     /// Advance the reveal on the standard panel slide ([`FlapState::advance`]). Call once per
     /// draw. Under reduced motion the reveal lands at once.
     pub fn tick(&mut self, theme: &Theme) -> bool {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.animating = self.flap.advance(self.layout, now, theme.motion());
         if let Some(sheet) = self.sheet.as_mut() {
             self.animating |= sheet.advance(now);
@@ -771,7 +772,7 @@ impl SidebarDrawer {
                 let full = self.docked_width_in(o.width()).min(o.width());
                 let rail = self.resolved_rail_width().min(full);
                 let inset = rail + (full - rail) * r;
-                let content_w = crate::motion::PanelSlide::content_width(
+                let content_w = tilo_ui_base::motion::PanelSlide::content_width(
                     o.width() - inset,
                     o.width() - rail,
                     self.flap.is_animating(self.layout),
@@ -861,8 +862,8 @@ impl SidebarDrawer {
             SidebarSide::Right => (1.0 - share, (1.0 - maximum / extent).max(0.0), 1.0),
         };
         let mut ratio = SplitRatio::default()
-            .with_bounds(crate::num::f32_of_f64(min), crate::num::f32_of_f64(max));
-        ratio.set(crate::num::f32_of_f64(position));
+            .with_bounds(tilo_ui_base::num::f32_of_f64(min), tilo_ui_base::num::f32_of_f64(max));
+        ratio.set(tilo_ui_base::num::f32_of_f64(position));
         *self.resize.ratio_mut() = ratio;
         let top = self.header_bottom.unwrap_or(self.outer.y0);
         self.resize
@@ -896,7 +897,7 @@ impl SidebarDrawer {
         }
     }
 
-    pub fn resize_accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    pub fn resize_accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.resize_available().then(|| {
             let key = match self.side {
                 SidebarSide::Left => "widget-sidebar-resize",
@@ -904,18 +905,18 @@ impl SidebarDrawer {
             };
             self.resize
                 .accessibility()
-                .with_name(crate::i18n::widget_format(key, &[]))
+                .with_name(tilo_ui_base::i18n::widget_format(key, &[]))
                 .with_action_target(self.resize_target())
                 .with_hashed_key(self.resize_target())
                 .with_bounds(self.resize.hit_rect())
         })
     }
 
-    pub fn perform_resize_action(&mut self, target: &str, action: &crate::a11y::Action) -> bool {
+    pub fn perform_resize_action(&mut self, target: &str, action: &tilo_ui_base::a11y::Action) -> bool {
         if target != self.resize_target() || !self.resize_available() {
             return false;
         }
-        if matches!(action, crate::a11y::Action::Focus) {
+        if matches!(action, tilo_ui_base::a11y::Action::Focus) {
             self.resize.set_focused(true);
             return true;
         }
@@ -938,8 +939,8 @@ impl SidebarDrawer {
                 scene,
                 transform,
                 theme.region(match self.side {
-                    SidebarSide::Left => crate::surface::Region::Sidebar,
-                    SidebarSide::Right => crate::surface::Region::Inspector,
+                    SidebarSide::Left => tilo_ui_base::surface::Region::Sidebar,
+                    SidebarSide::Right => tilo_ui_base::surface::Region::Inspector,
                 }),
                 theme,
             );
@@ -979,10 +980,10 @@ impl SidebarDrawer {
             paint_floating_drawer(scene, transform, rect, theme)
         } else {
             let region = match self.side {
-                SidebarSide::Left => crate::surface::Region::Sidebar,
-                SidebarSide::Right => crate::surface::Region::Inspector,
+                SidebarSide::Left => tilo_ui_base::surface::Region::Sidebar,
+                SidebarSide::Right => tilo_ui_base::surface::Region::Inspector,
             };
-            crate::surface::region(scene, transform, rect, region, theme);
+            tilo_ui_base::surface::region(scene, transform, rect, region, theme);
             theme.in_region(region)
         }
     }
@@ -1012,8 +1013,8 @@ impl SidebarDrawer {
         hovered: bool,
     ) {
         let icon = match self.side {
-            SidebarSide::Left => crate::icons::Icon::PanelLeft,
-            SidebarSide::Right => crate::icons::Icon::PanelRight,
+            SidebarSide::Left => tilo_ui_base::icons::Icon::PanelLeft,
+            SidebarSide::Right => tilo_ui_base::icons::Icon::PanelRight,
         };
         let name = self.toggle_name();
         let face = crate::widget::ButtonFace::icon_only(rect, icon, &name).hovered(hovered);
@@ -1031,18 +1032,18 @@ pub(crate) fn paint_floating_drawer(
     theme: &Theme,
 ) -> Theme {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
-        return theme.on_ground(crate::chrome::panel_ground(theme));
+        return theme.on_ground(tilo_ui_base::chrome::panel_ground(theme));
     }
     let radius = f64::from(theme.tokens.radii.panel);
-    crate::surface::shadow(
+    tilo_ui_base::surface::shadow(
         scene,
         transform,
         rect,
         radius,
         &theme.tokens.elevation.floating,
     );
-    crate::surface::panel(scene, transform, rect, radius, theme);
-    theme.on_ground(crate::chrome::panel_ground(theme))
+    tilo_ui_base::surface::panel(scene, transform, rect, radius, theme);
+    theme.on_ground(tilo_ui_base::chrome::panel_ground(theme))
 }
 
 #[cfg(test)]
@@ -1074,9 +1075,9 @@ mod tests {
             drawer.resolve(area);
             let edge = drawer.sidebar_rect().x1;
             let y = 200.0;
-            let motion = |x| crate::synthetic_input::cursor_moved(x, y);
+            let motion = |x| tilo_ui_base::synthetic_input::cursor_moved(x, y);
             route(&mut drawer, &motion(edge));
-            assert!(route(&mut drawer, &crate::synthetic_input::mouse_press()));
+            assert!(route(&mut drawer, &tilo_ui_base::synthetic_input::mouse_press()));
             route(&mut drawer, &motion(edge + 40.0));
             drawer.resolve(area);
             assert_eq!(drawer.list_rect().width(), 320.0);
@@ -1085,7 +1086,7 @@ mod tests {
             assert_eq!(drawer.list_rect().width(), 420.0);
             route(&mut drawer, &motion(area.x0 + 100.0));
             assert!(!drawer.is_open());
-            assert!(route(&mut drawer, &crate::synthetic_input::mouse_release()));
+            assert!(route(&mut drawer, &tilo_ui_base::synthetic_input::mouse_release()));
             drawer.open();
             drawer.snap(true);
             drawer.resolve(area);
@@ -1103,7 +1104,7 @@ mod tests {
                 drawer.snap(true);
                 drawer.resolve(area);
                 let motion = |width| {
-                    crate::synthetic_input::cursor_moved(
+                    tilo_ui_base::synthetic_input::cursor_moved(
                         match side {
                             SidebarSide::Left => area.x0 + width,
                             SidebarSide::Right => area.x1 - width,
@@ -1111,7 +1112,7 @@ mod tests {
                         200.0,
                     )
                 };
-                let button = |state| crate::synthetic_input::mouse_input(state, MouseButton::Left);
+                let button = |state| tilo_ui_base::synthetic_input::mouse_input(state, MouseButton::Left);
                 let initial_width = drawer.list_rect().width();
                 route(&mut drawer, &motion(initial_width));
                 assert!(route(&mut drawer, &button(ElementState::Pressed)));
@@ -1131,7 +1132,7 @@ mod tests {
 
         phase sidebar_resize_semantics_share_the_pointer_width_and_preserve_scale_and_rail;
         {
-            use crate::a11y::Action;
+            use tilo_ui_base::a11y::Action;
             for side in [SidebarSide::Left, SidebarSide::Right] {
                 let mut drawer = SidebarDrawer::new()
                     .side(side)
@@ -1146,7 +1147,7 @@ mod tests {
                 let node = drawer
                     .resize_accessibility()
                     .expect("actual docked separator");
-                assert_eq!(node.role, crate::a11y::Role::Separator);
+                assert_eq!(node.role, tilo_ui_base::a11y::Role::Separator);
                 let target = node.action_target.expect("stable semantic route");
                 let value = match side {
                     SidebarSide::Left => "30%",
@@ -1200,7 +1201,7 @@ mod tests {
                     SidebarSide::Right => "70%",
                 };
                 assert!(
-                    drawer.perform_resize_action(&target, &crate::a11y::Action::SetValue(value.into()))
+                    drawer.perform_resize_action(&target, &tilo_ui_base::a11y::Action::SetValue(value.into()))
                 );
                 assert_eq!(drawer.sidebar_rect().width(), 720.0);
                 drawer.resolve(area);
@@ -1246,7 +1247,7 @@ mod tests {
                     SidebarSide::Right => "10%",
                 };
                 let target = drawer.resize_target();
-                drawer.perform_resize_action(target, &crate::a11y::Action::SetValue(value.into()));
+                drawer.perform_resize_action(target, &tilo_ui_base::a11y::Action::SetValue(value.into()));
                 drawer.resolve(area);
                 assert!(drawer.is_docked(), "resize must not turn into an overlay");
                 assert_eq!(drawer.content_rect().width(), column);
@@ -1329,7 +1330,7 @@ mod tests {
         phase a_content_kind_docks_by_its_real_minimum;
         {
             let m = Metrics::BASE;
-            let mut drawer = SidebarDrawer::new().content_kind(crate::widget::ContentKind::Grid);
+            let mut drawer = SidebarDrawer::new().content_kind(tilo_ui_base::widget::ContentKind::Grid);
             drawer.scale_for(&Theme::dark());
             assert_eq!(
                 drawer.resolved_breakpoint(),
@@ -1346,13 +1347,13 @@ mod tests {
         {
             let theme = Theme::dark();
             let window = Rect::new(0.0, 0.0, 360.0, 800.0);
-            let mut pushes = vec![SidebarDrawer::new().content_kind(crate::widget::ContentKind::List)];
+            let mut pushes = vec![SidebarDrawer::new().content_kind(tilo_ui_base::widget::ContentKind::List)];
             pushes.extend([
                 SidebarDrawer::new()
-                    .content_kind(crate::widget::ContentKind::Document)
+                    .content_kind(tilo_ui_base::widget::ContentKind::Document)
                     .with_push(),
                 SidebarDrawer::new()
-                    .content_kind(crate::widget::ContentKind::Grid)
+                    .content_kind(tilo_ui_base::widget::ContentKind::Grid)
                     .with_push(),
             ]);
             for mut drawer in pushes {
@@ -1374,7 +1375,7 @@ mod tests {
                 assert_eq!(
                     local.tokens.colors.surfaces.content,
                     theme
-                        .in_region(crate::surface::Region::Sidebar)
+                        .in_region(tilo_ui_base::surface::Region::Sidebar)
                         .tokens
                         .colors
                         .surfaces
@@ -1383,7 +1384,7 @@ mod tests {
                 );
             }
 
-            let mut document = SidebarDrawer::new().content_kind(crate::widget::ContentKind::Document);
+            let mut document = SidebarDrawer::new().content_kind(tilo_ui_base::widget::ContentKind::Document);
             document.scale_for(&theme);
             document.snap(true);
             document.resolve(window);
@@ -1598,7 +1599,7 @@ mod tests {
                 let drawer_theme = d.paint_panel(&mut scene, Affine::IDENTITY, &theme);
                 assert_eq!(
                     drawer_theme.tokens.colors.surfaces.content,
-                    crate::chrome::panel_ground(&theme),
+                    tilo_ui_base::chrome::panel_ground(&theme),
                     "drawer contents stand on the floating material"
                 );
                 d.draw_toggle(
@@ -1616,7 +1617,7 @@ mod tests {
                 let docked_theme = docked.paint_panel(&mut Scene::new(), Affine::IDENTITY, &theme);
                 assert_eq!(
                     docked_theme.tokens.colors.surfaces.content,
-                    theme.region(crate::surface::Region::Sidebar)
+                    theme.region(tilo_ui_base::surface::Region::Sidebar)
                 );
             }
         }
@@ -1628,8 +1629,8 @@ mod tests {
             let gap = f64::from(theme.tokens.spacing.s2);
             let mut d = SidebarDrawer::new();
             d.scale_for(&theme);
-            d.set_platform_conventions(crate::platform::PlatformConventions::new(
-                crate::platform::Platform::Linux,
+            d.set_platform_conventions(tilo_ui_base::platform::PlatformConventions::new(
+                tilo_ui_base::platform::Platform::Linux,
             ));
             let face = d.header_with_history(narrow(), &theme, true);
             assert_eq!(d.toggle_rect(), face.toggle);
@@ -1667,7 +1668,7 @@ mod tests {
                 "the row stays live"
             );
 
-            let key = crate::synthetic_input::key_input(
+            let key = tilo_ui_base::synthetic_input::key_input(
                 &winit::keyboard::Key::Character("L".into()),
                 ElementState::Pressed,
             );
@@ -1677,7 +1678,7 @@ mod tests {
             assert!(route_with(&mut d, &key, modifiers));
             assert!(!d.is_open());
             assert!(
-                d.perform_toggle_action(&crate::a11y::Action::Activate, &[node.key.expect("keyed")])
+                d.perform_toggle_action(&tilo_ui_base::a11y::Action::Activate, &[node.key.expect("keyed")])
             );
             assert!(d.is_open());
         }
@@ -1736,7 +1737,7 @@ mod tests {
             );
             assert_eq!(
                 local.tokens.colors.surfaces.content,
-                crate::chrome::panel_ground(&theme)
+                tilo_ui_base::chrome::panel_ground(&theme)
             );
             assert!(scene.encoding().draw_tags.len() >= 2);
         }
@@ -1760,10 +1761,10 @@ mod tests {
         let mut focus = None;
         d.handle_event(
             event,
-            &mut crate::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: crate::widget::Edits::lend(&mut doc),
+                state: tilo_ui_base::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,

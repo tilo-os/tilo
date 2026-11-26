@@ -147,7 +147,7 @@ fn session_installing(asked: Rc<Asked>, apps: &[(&str, &str)]) -> Session {
 /// a setting, told which one it is.
 #[test]
 fn settings_search_finds_the_appearance_theme_and_enter_opens_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let asked = Rc::new(Asked::default());
     let mut session = session(Rc::clone(&asked));
     session.step(Duration::from_millis(1)).unwrap();
@@ -201,7 +201,7 @@ fn settings_search_finds_the_appearance_theme_and_enter_opens_it() {
 /// it asks nothing of an `open`, so pressing it opens Settings where a person sees the page.
 #[test]
 fn a_page_found_in_search_runs_that_pages_own_action() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let asked = Rc::new(Asked::default());
     let mut session = session(Rc::clone(&asked));
     session.step(Duration::from_millis(1)).unwrap();
@@ -364,7 +364,7 @@ fn open(session: &mut Session, by_chord: bool) {
 /// after the shell has settled, they all reach the same field.
 #[test]
 fn typing_reaches_the_searches_query_however_it_was_opened() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     for (by_chord, waited) in [(false, false), (true, false), (true, true)] {
         let mut session = with_slow_keys();
         open(&mut session, by_chord);
@@ -386,7 +386,7 @@ fn typing_reaches_the_searches_query_however_it_was_opened() {
 /// batch, with no frame between press and release.
 #[test]
 fn typing_letters_in_one_batch_reaches_the_query() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = with_slow_keys();
     open(&mut session, true);
     for _ in 0..20 {
@@ -415,7 +415,7 @@ fn typing_letters_in_one_batch_reaches_the_query() {
 /// deleted reaches the query as the first letters did.
 #[test]
 fn typing_after_deleting_the_whole_query_reaches_it_again() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = with_slow_keys();
     open(&mut session, true);
     for _ in 0..20 {
@@ -443,7 +443,7 @@ fn typing_after_deleting_the_whole_query_reaches_it_again() {
 /// the shell's own search key does.
 #[test]
 fn the_search_chord_closes_the_open_search_and_opens_it_again() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session(Rc::new(Asked::default()));
     session.compositor().set_key_repeat(KeyRepeat {
         delay: Duration::from_secs(60),
@@ -469,7 +469,7 @@ fn the_search_chord_closes_the_open_search_and_opens_it_again() {
 /// are looked for by name — and found.
 #[test]
 fn the_empty_search_offers_making_what_is_useful_and_never_a_way_out() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session(Rc::new(Asked::default()));
     session.step(Duration::from_millis(1)).expect("step");
     invoke(
@@ -523,7 +523,7 @@ fn the_empty_search_offers_making_what_is_useful_and_never_a_way_out() {
 /// the shell's actions.
 #[test]
 fn searching_for_the_person_lists_no_action_of_the_shells_own() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session(Rc::new(Asked::default()));
     session.step(Duration::from_millis(1)).expect("step");
     search_for(&mut session, "person");
@@ -554,7 +554,7 @@ fn searching_for_the_person_lists_no_action_of_the_shells_own() {
 /// than one.
 #[test]
 fn the_empty_search_offers_the_shells_welcome_verbs_and_typing_finds_them_all() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_installing(
         Rc::new(Asked::default()),
         &[
@@ -656,7 +656,7 @@ fn the_empty_search_offers_the_shells_welcome_verbs_and_typing_finds_them_all() 
 fn a_welcome_card_does_what_its_published_action_does() {
     use ui::window_targets::TargetAction;
 
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let asked = Rc::new(Asked::default());
     let mut session = session_installing(
         Rc::clone(&asked),
@@ -779,7 +779,7 @@ fn an_app_card_opens_the_app_it_names() {
         ("notes", "so.tilo.notes", "Notes"),
         ("tasks", "so.tilo.tasks", "Tasks"),
     ] {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = session_installing(Rc::new(Asked::default()), &[(app, name)]);
         session.step(Duration::from_millis(1)).expect("step");
         invoke(
@@ -806,7 +806,7 @@ fn an_app_card_opens_the_app_it_names() {
 #[test]
 fn the_shell_offers_the_tasks_that_are_installed_and_no_card_for_the_app_that_is_not() {
     const TASKS: &str = "so.tilo.tasks";
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let asked = Rc::new(Asked::default());
     let mut session = session_installing(Rc::clone(&asked), &[(TASKS, "Tasks")]);
     session.step(Duration::from_millis(1)).expect("step");
@@ -910,7 +910,7 @@ fn the_shell_offers_the_tasks_that_are_installed_and_no_card_for_the_app_that_is
 
 #[test]
 fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let asked = Rc::new(Asked::default());
     let mut session = session(Rc::clone(&asked));
     session.step(Duration::from_millis(1)).unwrap();
@@ -986,7 +986,7 @@ fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
 
 #[test]
 fn the_sessions_own_actions_are_found_and_run_on_its_published_surface() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session(Rc::new(Asked::default()));
     session.step(Duration::from_millis(1)).unwrap();
     let before = session.accessible_labels();
@@ -1020,7 +1020,7 @@ fn the_sessions_own_actions_are_found_and_run_on_its_published_surface() {
 /// it: the chrome's own action, found by the words people use for what it holds.
 #[test]
 fn a_search_for_the_workspaces_grants_opens_workspace_settings() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session(Rc::new(Asked::default()));
     session.step(Duration::from_millis(1)).unwrap();
     for query in ["permissions", "grants"] {
@@ -1094,7 +1094,7 @@ fn stored(session: &Session, kind: &str, field: &str) -> serde_json::Value {
 #[test]
 fn a_switch_and_a_choice_are_changed_from_search_and_the_choice_is_kept() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_with_settings();
     session.step(Duration::from_millis(1)).unwrap();
 
@@ -1218,7 +1218,7 @@ fn titled(session: &Session, title: &str) -> Option<ResourceSpec> {
 #[test]
 fn a_source_switched_off_from_search_leaves_search_and_stays_off() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_with_settings();
     session.step(Duration::from_millis(1)).unwrap();
 
@@ -1380,7 +1380,7 @@ fn kept(index_dir: &std::path::Path) -> bool {
 
 #[test]
 fn an_apps_published_entry_is_found_with_the_app_closed_and_after_a_restart() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let dir = tempfile::tempdir().expect("a directory to keep the index in");
     let content = AppContentIndex::persistent(dir.path().to_path_buf());
     let asked = Rc::new(Asked::default());
@@ -1463,7 +1463,7 @@ fn add_downloaded(home: &tilo_test_env::TestHome, key: &str, name: &str, path: &
 #[test]
 fn a_downloaded_program_is_found_and_starts_and_one_whose_file_is_gone_says_so() {
     let home = tilo_test_env::TestHome::new().unwrap();
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let dropped = home.home().join("Applications/Dropped.AppImage");
     add_downloaded(&home, "Dropped", "Dropped Tool", &dropped);
     let gone = home.home().join("Downloads/Gone.AppImage");
@@ -1545,7 +1545,7 @@ fn type_at_the_seat(session: &mut Session, text: &str) {
 /// whoever reads it (the shell, an agent) as its own open search.
 #[test]
 fn the_palette_the_host_search_opens_takes_the_keys() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session(Rc::new(Asked::default()));
     session.compositor().set_key_repeat(KeyRepeat {
         delay: Duration::from_secs(60),
@@ -1639,7 +1639,7 @@ impl Opening {
 /// `Alacritty` and the person's `Notes` alike.
 #[test]
 fn the_searches_find_the_persons_apps_by_name_however_it_opens() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     for (query, title) in [("alacritty", "Alacritty"), ("notes", "Notes")] {
         let mut session = host_session(Rc::new(Asked::default()));
         Opening::Asked.open(&mut session, query);
@@ -1664,7 +1664,7 @@ fn the_searches_find_the_persons_apps_by_name_however_it_opens() {
 /// row of the shell's own search does.
 #[test]
 fn choosing_the_row_any_search_found_starts_the_app() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     for opening in [Opening::Asked, Opening::Shell, Opening::Applications] {
         let asked = Rc::new(Asked::default());
         let mut session = host_session(Rc::clone(&asked));
@@ -1709,7 +1709,7 @@ fn tasks_capture() -> Vec<ResourceSpec> {
 /// words as typed.
 #[test]
 fn a_line_typed_into_search_runs_the_workspace_s_capture_with_no_app_open() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let asked = Rc::new(Asked::default());
     let mut session = session(Rc::clone(&asked));
     session.step(Duration::from_millis(1)).expect("step");
@@ -1766,7 +1766,7 @@ fn a_line_typed_into_search_runs_the_workspace_s_capture_with_no_app_open() {
 /// the application provider's parser and never matched.
 #[test]
 fn a_search_row_for_an_app_starts_it_through_the_sessions_own_host() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().expect("a home");
     let store = home.data().join("tilo-apps");
     crate::common::install_apps_in(&store, &home.state().join("tilolang"));
@@ -1871,7 +1871,7 @@ fn session_with_agents() -> Session {
 #[test]
 fn the_first_request_typed_into_search_makes_the_workspaces_agent_and_the_second_goes_to_it() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_with_agents();
 
     // The first request: the person keeps no agent yet.
@@ -1964,7 +1964,7 @@ fn search_showing(session: &Session) -> bool {
 /// "sheets" gets Sheets, and the workbook the sheet window holds comes after it.
 #[test]
 fn an_apps_own_row_leads_a_record_of_the_app_it_names() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let dir = tempfile::tempdir().expect("a directory to keep the index in");
     let content = AppContentIndex::persistent(dir.path().to_path_buf());
     let mut session = session_over(Rc::new(Asked::default()), Some(Arc::clone(&content)));
@@ -2004,7 +2004,7 @@ fn an_apps_own_row_leads_a_record_of_the_app_it_names() {
 /// is pressed, never the window's under it, and it is the window's keyboard the chord crosses.
 #[test]
 fn the_search_chord_opens_the_search_with_a_window_in_front() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_installing(Rc::new(Asked::default()), &[("so.tilo.notes", "Notes")]);
     session.compositor().set_key_repeat(KeyRepeat {
         delay: Duration::from_secs(60),
@@ -2063,7 +2063,7 @@ fn closed_calendar() -> Lists {
 /// actions, the row is the one it publishes, never both.
 #[test]
 fn search_finds_what_an_installed_app_offers_before_it_ever_ran() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let asked = Rc::new(Asked::default());
     let mut session = crate::common::headless(Options {
         lists: closed_calendar(),
@@ -2138,7 +2138,7 @@ fn search_finds_what_an_installed_app_offers_before_it_ever_ran() {
 /// offers it (the empty shell's card, the person's own card, Console's place).
 #[test]
 fn connecting_an_agent_is_one_row() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_installing(
         Rc::new(Asked::default()),
         &[
@@ -2168,7 +2168,7 @@ fn connecting_an_agent_is_one_row() {
 /// Calendar's Show tasks, which nobody moved to, and Enter invokes it.
 #[test]
 fn enter_on_the_row_search_put_first_acts_at_once() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let asked = Rc::new(Asked::default());
     let mut session = crate::common::headless(Options {
         lists: closed_calendar(),
@@ -2189,7 +2189,7 @@ fn enter_on_the_row_search_put_first_acts_at_once() {
 /// glass asks for the on-screen keyboard as it does over any field.
 #[test]
 fn the_searches_field_takes_typing_and_asks_for_the_glass_keyboard() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = with_slow_keys();
     open(&mut session, true);
     await_search(&mut session, None);

@@ -5,11 +5,8 @@ use super::{
     canvas::PreviewCanvas,
 };
 use crate::widget::ButtonRole;
-use crate::{
-    i18n::I18nManager,
-    theme::Theme,
-    widget::{ActivityTimeline, Button, Column, Row, TaffyTreeExt, Text, TextInput, Widget},
-};
+use crate::{widget::ActivityTimeline, widget::Button, widget::Column, widget::Row, widget::Text, widget::TextInput};
+use tilo_ui_base::{i18n::I18nManager, theme::Theme, widget::TaffyTreeExt, widget::Widget};
 use automerge::AutoCommit;
 use std::{
     cell::{Cell, RefCell},
@@ -38,7 +35,7 @@ enum Command {
     Scope(usize),
     /// A person chose a change the app takes up ([`crate::widget::EntryFace::opens`]): return to the
     /// live app and hand it the change.
-    Open(crate::HistoryEntryId),
+    Open(tilo_ui_base::HistoryEntryId),
     Name,
     Review(review::ReviewCommand),
     /// Take back the change of the selected row of a folder's History.
@@ -94,7 +91,7 @@ pub struct HistoryHost {
     /// only when its tree record moved.
     observed_folder_revision: Option<u64>,
     /// The row of a folder's History a person selected: what its Undo and Restore act on.
-    folder_selected: Option<crate::HistoryEntryId>,
+    folder_selected: Option<tilo_ui_base::HistoryEntryId>,
     /// What became of the last Undo or Restore of a folder's row, when it was refused.
     folder_status: Option<String>,
     toolbar: Column,
@@ -109,7 +106,7 @@ pub struct HistoryHost {
     unavailable: Box<crate::widget::EmptyState>,
     unavailable_node: Option<NodeId>,
     open_requested: Rc<Cell<bool>>,
-    requested_entry: Option<crate::HistoryEntryId>,
+    requested_entry: Option<tilo_ui_base::HistoryEntryId>,
     /// A change a person chose to open in the app, handed to the live app once History has returned to
     /// it ([`Self::deliver_opened_entry`]).
     opened: Option<crate::widget::HistoryEntry>,
@@ -130,11 +127,11 @@ pub struct HistoryHost {
     /// no toggle of its own, and closes from the tab, or with Escape.
     window_presents: bool,
     commands: Rc<RefCell<VecDeque<Command>>>,
-    selected: Vec<crate::HistoryEntryId>,
+    selected: Vec<tilo_ui_base::HistoryEntryId>,
     /// The foot's name for the selected changes, and the selection whose naming is open: another
     /// selection closes it.
-    name_draft: crate::LocalState<String>,
-    name_draft_for: Option<Vec<crate::HistoryEntryId>>,
+    name_draft: tilo_ui_base::LocalState<String>,
+    name_draft_for: Option<Vec<tilo_ui_base::HistoryEntryId>>,
     /// The changes History lists, read from the window's documents while History is open.
     listing: super::listing::Listing,
     /// The workspace's history of the window's resources, while History lists it, and its last
@@ -150,7 +147,7 @@ pub struct HistoryHost {
     activity_page: bool,
     width: f64,
     cursor: Point,
-    saved_focus: Option<crate::widget::layout::CompositionFocus>,
+    saved_focus: Option<tilo_ui_base::widget::layout::CompositionFocus>,
     returning_live: bool,
     pending_controls: super::pending_controls::SuspendedLocalControls,
     pending_control_capture_failures: Vec<String>,
@@ -162,8 +159,8 @@ pub struct HistoryHost {
     toolbar_generation: u64,
     built_composition: Option<Composition>,
     live_root_lifetime: uuid::Uuid,
-    control_domain: Option<crate::ControlDomain>,
-    control_lease: Option<crate::control_domain::SuspensionLease>,
+    control_domain: Option<tilo_ui_base::ControlDomain>,
+    control_lease: Option<tilo_ui_base::control_domain::SuspensionLease>,
     invalid_owner: bool,
     rect: Rect,
     chrome_node: Option<NodeId>,
@@ -181,8 +178,8 @@ pub struct HistoryHost {
     panel_rect: Rect,
     /// The side panel sliding in from the window's trailing edge as History opens, and the motion
     /// settings the last frame drew with.
-    panel_motion: crate::motion::Presence,
-    motion: crate::tokens::EffectiveMotion,
+    panel_motion: tilo_ui_base::motion::Presence,
+    motion: tilo_ui_base::tokens::EffectiveMotion,
     /// What the frame being drawn painted ([`Self::draw_compared`]), and what the last presented frame
     /// did ([`Self::paint_presented`]).
     painting: Option<Scene>,
@@ -222,7 +219,7 @@ impl HistoryHost {
     }
 
     /// Open with `entry` selected, as choosing a recent change in a History menu does.
-    pub(crate) fn request_open_at(&mut self, entry: crate::HistoryEntryId) -> bool {
+    pub(crate) fn request_open_at(&mut self, entry: tilo_ui_base::HistoryEntryId) -> bool {
         if !self.request_open() {
             return false;
         }
@@ -416,11 +413,11 @@ impl HistoryHost {
             footer_node: None,
             banner_node: None,
             panel_rect: Rect::ZERO,
-            panel_motion: crate::motion::Presence::closed(),
-            motion: crate::tokens::EffectiveMotion::default(),
+            panel_motion: tilo_ui_base::motion::Presence::closed(),
+            motion: tilo_ui_base::tokens::EffectiveMotion::default(),
             commands,
             selected: vec![],
-            name_draft: crate::LocalState::new(String::new()),
+            name_draft: tilo_ui_base::LocalState::new(String::new()),
             name_draft_for: None,
             listing: super::listing::Listing::new(),
             feed: None,
@@ -464,12 +461,12 @@ impl HistoryHost {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        text: &mut crate::text_render::TextRenderer,
-        (theme, presence): (&crate::theme::Theme, &crate::presence::PresenceCtx),
+        text: &mut tilo_ui_base::text_render::TextRenderer,
+        (theme, presence): (&tilo_ui_base::theme::Theme, &tilo_ui_base::presence::PresenceCtx),
     ) -> bool {
         let mut own = self.painting.take().unwrap_or_default();
         own.reset();
-        crate::widget::DrawChild::draw_child(
+        tilo_ui_base::widget::DrawChild::draw_child(
             self,
             &mut own,
             transform,
@@ -492,7 +489,7 @@ impl HistoryHost {
             self.painted = Some(painting);
         }
     }
-    pub(crate) fn set_control_domain(&mut self, domain: &crate::ControlDomain) {
+    pub(crate) fn set_control_domain(&mut self, domain: &tilo_ui_base::ControlDomain) {
         self.control_domain = Some(domain.clone());
     }
     pub(crate) fn sync_status_matches(&self, status: Option<&crate::widget::WindowStatus>) -> bool {
@@ -658,7 +655,7 @@ impl HistoryHost {
         }
         self.invalid_owner = true;
         self.pending_controls
-            .invalidate_owner(&crate::i18n::I18nManager::lookup_plain(
+            .invalidate_owner(&tilo_ui_base::i18n::I18nManager::lookup_plain(
                 "history-mode-owner-gone",
             ));
         self.assets.cancel();
@@ -679,7 +676,7 @@ impl HistoryHost {
     }
     pub(crate) fn preserve_captured_focus(
         &mut self,
-        captured: Option<crate::widget::layout::CompositionFocus>,
+        captured: Option<tilo_ui_base::widget::layout::CompositionFocus>,
     ) {
         if self.saved_focus.is_none() {
             self.saved_focus = captured;
@@ -687,7 +684,7 @@ impl HistoryHost {
     }
     pub(crate) fn take_returning_focus(
         &mut self,
-    ) -> Option<crate::widget::layout::CompositionFocus> {
+    ) -> Option<tilo_ui_base::widget::layout::CompositionFocus> {
         self.returning_live = false;
         self.saved_focus.take()
     }
@@ -812,7 +809,7 @@ impl HistoryHost {
                 .into_iter()
                 .map(|error| format!("component capture refused: {error:?}; unobserved entry direct-take output cannot be recovered, later output is discarded")),
         );
-        while let Some(invocation) = crate::widget::controls::take_control_invocation(live) {
+        while let Some(invocation) = tilo_ui_base::widget::controls::take_control_invocation(live) {
             let enclosing = self
                 .enclosing_owner
                 .as_ref()
@@ -823,7 +820,7 @@ impl HistoryHost {
                     let origin = super::pending_controls::PendingControlOrigin::Component(
                         crate::bound_dispatch::component_control(
                             crate::bound_dispatch::BoundActionTarget {
-                                input: crate::widget::input_provenance::Input::Discrete,
+                                input: tilo_ui_base::widget::input_provenance::Input::Discrete,
                                 binding: binding.clone(),
                                 address: crate::bound_dispatch::BoundActionAddress {
                                     instance_id: binding.instance_id,
@@ -894,7 +891,7 @@ impl HistoryHost {
     )]
     pub(crate) fn discard_pending_output(&mut self, live: &mut dyn Widget) {
         let _ = crate::bound_dispatch::drain_control_invocations(live);
-        while crate::widget::controls::take_control_invocation(live).is_some() {}
+        while tilo_ui_base::widget::controls::take_control_invocation(live).is_some() {}
         // Entry observed these exact queues even if mutable traversal failed.
         // Clear after every take: a component's fallback take may transfer a
         // request into its binding queue while returning None. Neither the
@@ -912,7 +909,7 @@ impl HistoryHost {
                     crate::bound_dispatch::component_control(sealed.target),
                 ),
                 sealed.invocation,
-                Err(crate::i18n::I18nManager::lookup_plain(
+                Err(tilo_ui_base::i18n::I18nManager::lookup_plain(
                     "history-mode-ownership-lost",
                 )),
             );
@@ -993,13 +990,13 @@ impl HistoryHost {
     /// controls it presents.
     pub(crate) fn answer_own_controls(
         &mut self,
-        doc: &mut crate::widget::Edits<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> usize {
-        crate::widget::controls::start_pending_control_invocations(self, doc, path)
+        tilo_ui_base::widget::controls::start_pending_control_invocations(self, doc, path)
     }
     /// The changes the timeline shows selected.
-    pub(crate) fn timeline_selection(&self) -> Vec<crate::HistoryEntryId> {
+    pub(crate) fn timeline_selection(&self) -> Vec<tilo_ui_base::HistoryEntryId> {
         self.timeline
             .selection()
             .and_then(|(start, end)| self.timeline.entries().get(start..=end))
@@ -1061,18 +1058,18 @@ impl HistoryHost {
         &mut self,
         focus: Option<NodeId>,
         nodes: &HashMap<NodeId, *mut dyn Widget>,
-        bindings: &crate::widget::bound_nodes::BoundNodeMap,
+        bindings: &tilo_ui_base::widget::bound_nodes::BoundNodeMap,
         tree: &TaffyTree<()>,
     ) {
         if self.saved_focus.is_none() && focus.is_some_and(|node| !self.owns_node(node, tree)) {
             self.saved_focus =
-                unsafe { crate::widget::layout::CompositionFocus::capture(focus, nodes, bindings) };
+                unsafe { tilo_ui_base::widget::layout::CompositionFocus::capture(focus, nodes, bindings) };
         }
     }
     pub(crate) unsafe fn restore_focus(
         &mut self,
         nodes: &HashMap<NodeId, *mut dyn Widget>,
-        bindings: &crate::widget::bound_nodes::BoundNodeMap,
+        bindings: &tilo_ui_base::widget::bound_nodes::BoundNodeMap,
     ) -> Option<NodeId> {
         if !self.returning_live {
             return None;
@@ -1533,7 +1530,7 @@ impl HistoryHost {
             changed = true;
         }
         if opening {
-            crate::diag!(
+            tilo_ui_base::diag!(
                 "HISTORY-OPEN listed={} earlier={} ms={}",
                 self.timeline.entries().len(),
                 self.listing.has_earlier(),
@@ -1833,7 +1830,7 @@ impl HistoryHost {
             .is_some_and(HistoryController::has_live_updates)
         {
             toolbar = toolbar.push(Box::new(
-                Text::new("history-mode-live-updates").with_live(crate::a11y::Politeness::Polite),
+                Text::new("history-mode-live-updates").with_live(tilo_ui_base::a11y::Politeness::Polite),
             ));
         }
         if self.open && self.registration.definition.scopes.len() > 1 {
@@ -1860,7 +1857,7 @@ impl HistoryHost {
             let mut row = Row::new()
                 .with_align_items(taffy::AlignItems::Center)
                 .push(Box::new(
-                    Text::new(&status.text).with_live(crate::a11y::Politeness::Polite),
+                    Text::new(&status.text).with_live(tilo_ui_base::a11y::Politeness::Polite),
                 ));
             if let Some(action) = &status.action {
                 row = row.push(Box::new(action.button()));
@@ -1928,7 +1925,7 @@ impl HistoryHost {
     }
 
     /// The oldest and newest selected change: the run a name covers.
-    pub(super) fn selected_run(&self) -> Option<(crate::HistoryEntryId, crate::HistoryEntryId)> {
+    pub(super) fn selected_run(&self) -> Option<(tilo_ui_base::HistoryEntryId, tilo_ui_base::HistoryEntryId)> {
         let mut picked = self.selected_entries();
         let first = picked.next()?.id;
         Some((first, picked.last().map_or(first, |entry| entry.id)))
@@ -1956,7 +1953,7 @@ impl HistoryHost {
             let label = I18nManager::lookup_plain("history-mode-back-to-live");
             let close = self.commands.clone();
             Some(
-                Button::icon_only("history-back-live", crate::icons::Icon::X, &label).on_open(
+                Button::icon_only("history-back-live", tilo_ui_base::icons::Icon::X, &label).on_open(
                     move || {
                         close.borrow_mut().push_back(Command::Live);
                         super::note_news();
@@ -2023,11 +2020,11 @@ impl HistoryHost {
                         Text::new(
                             &crate::history_source::sentence::author_parts(&newest.author).person,
                         )
-                        .with_role(crate::tokens::TextRole::Caption),
+                        .with_role(tilo_ui_base::tokens::TextRole::Caption),
                     ))
                     .push(Box::new(
                         Text::new(&when)
-                            .with_role(crate::tokens::TextRole::Caption)
+                            .with_role(tilo_ui_base::tokens::TextRole::Caption)
                             .dimmed(),
                     )),
             ));
@@ -2087,7 +2084,7 @@ impl HistoryHost {
                 } else {
                     "history-preview-after"
                 })
-                .with_role(crate::tokens::TextRole::Label),
+                .with_role(tilo_ui_base::tokens::TextRole::Label),
             ))
             .push(Box::new(
                 Button::new("history-back-now", "history-preview-now")
@@ -2165,21 +2162,21 @@ pub(crate) fn press_window_control(
 /// offers ([`crate::widget::WindowHistory`], a window showing the system's history of what it
 /// shows), else its History API's, `history`.
 pub(crate) fn offered_control(
-    root: &dyn crate::widget::Widget,
+    root: &dyn tilo_ui_base::widget::Widget,
     history: Option<&HistoryHost>,
 ) -> Option<crate::widget::HistoryControl> {
-    crate::widget::capability::capability::<dyn crate::widget::WindowHistory>(root)
+    tilo_ui_base::widget::capability::capability::<dyn crate::widget::WindowHistory>(root)
         .and_then(crate::widget::WindowHistory::window_history_control)
         .or_else(|| history.and_then(window_control))
 }
 
 /// Run the window's History `control` where [`offered_control`] found it.
 pub(crate) fn press_offered(
-    root: &mut dyn crate::widget::Widget,
+    root: &mut dyn tilo_ui_base::widget::Widget,
     history: Option<&mut HistoryHost>,
     control: crate::widget::HistoryControl,
 ) -> Result<(), String> {
-    match crate::widget::capability::capability_mut::<dyn crate::widget::WindowHistory>(root) {
+    match tilo_ui_base::widget::capability::capability_mut::<dyn crate::widget::WindowHistory>(root) {
         Some(offered) if offered.window_history_control().is_some() => {
             offered.invoke_window_history_control(control)
         }
@@ -2207,7 +2204,7 @@ mod folder;
 /// (a message key or the owner's own text) says why.
 pub(super) fn unavailable_state(reason: &str) -> crate::widget::EmptyState {
     crate::widget::EmptyState::new(I18nManager::lookup_plain("history-mode-unavailable"))
-        .with_icon(crate::icons::Icon::History)
+        .with_icon(tilo_ui_base::icons::Icon::History)
         .with_message(I18nManager::lookup_plain(reason))
 }
 #[cfg(test)]

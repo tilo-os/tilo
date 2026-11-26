@@ -8,14 +8,15 @@ use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::Rect;
 
-use crate::arriving::{Arrival, ArrivalClock, Source, Step};
-use crate::motion::CrossFade;
-use crate::paint::PaintCtx;
+use tilo_ui_base::{arriving::Arrival, arriving::ArrivalClock, arriving::Source, arriving::Step};
+use tilo_ui_base::motion::CrossFade;
+use tilo_ui_base::paint::PaintCtx;
 
-use crate::theme::Theme;
+use tilo_ui_base::theme::Theme;
 use crate::time::Instant;
-use crate::tokens::EffectiveMotion;
-use crate::widget::{ArrivalFace, Element, Showing, SkeletonShape, TaffyTreeExt, Widget};
+use tilo_ui_base::tokens::EffectiveMotion;
+use crate::{widget::ArrivalFace, widget::Showing};
+use tilo_ui_base::{widget::Element, widget::SkeletonShape, widget::TaffyTreeExt, widget::Widget};
 
 #[derive(Clone, Debug)]
 struct RowArrival {
@@ -393,7 +394,7 @@ pub(crate) struct RowReserve {
 impl RowReserve {
     pub(crate) fn element(height: f64) -> Element {
         Box::new(Self {
-            height: crate::num::f32_of_f64(height.max(0.0)),
+            height: tilo_ui_base::num::f32_of_f64(height.max(0.0)),
             rect: Rect::ZERO,
         })
     }
@@ -417,14 +418,14 @@ impl Widget for RowReserve {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
     /// Its box is the height it was made with, so it asks layout only until it is placed.
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,

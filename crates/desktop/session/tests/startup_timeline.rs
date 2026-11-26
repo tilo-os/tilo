@@ -40,7 +40,7 @@ fn names(timeline: &serde_json::Value, key: &str) -> Vec<String> {
 
 #[test]
 fn an_opened_app_writes_its_startup_timeline_with_the_launchers_marks() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let ada = Person::new("Ada");
     let mut laptop = ada.device("Ada's laptop");
     laptop.install_passwords();

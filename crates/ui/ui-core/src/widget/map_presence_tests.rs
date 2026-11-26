@@ -3,11 +3,11 @@
 //! none of its own.
 
 use super::*;
-use crate::Theme;
-use crate::component::Person;
-use crate::draw::DrawCtx;
-use crate::permissions::MemberId;
-use crate::presence::PresenceCtx;
+use tilo_ui_base::Theme;
+use tilo_ui_base::component::Person;
+use tilo_ui_base::draw::DrawCtx;
+use tilo_ui_base::permissions::MemberId;
+use tilo_ui_base::presence::PresenceCtx;
 
 /// The agent whose view stands at the place.
 const SCOUT: &str = "scout";
@@ -60,8 +60,8 @@ fn map(at_the_place: Option<Person>) -> Map {
 /// Draw `map` over an 800 by 600 viewport with `presence` lent, answering its pixels as RGBA.
 fn drawn(map: &mut Map, presence: &PresenceCtx) -> Vec<u8> {
     let theme = Theme::dark();
-    let mut text = crate::font_catalog::fixture_renderer();
-    crate::widget::layout::lay_out_detached(
+    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+    tilo_ui_base::widget::layout::lay_out_detached(
         map,
         Rect::new(0.0, 0.0, 800.0, 600.0),
         &theme,

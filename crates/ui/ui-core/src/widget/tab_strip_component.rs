@@ -14,11 +14,11 @@
 
 use std::collections::HashMap;
 
-use crate::component::{Component, Described, Event, Person, ResourceId, Value};
-use crate::icons::Icon;
+use tilo_ui_base::{component::Component, component::Described, component::Event, component::Person, component::ResourceId, component::Value};
+use tilo_ui_base::icons::Icon;
 use crate::widget::{TabBar, TabDescriptor, TabFaceSpec, TabMark};
 
-crate::component::part_type!(TabItemProps);
+tilo_ui_base::component::part_type!(TabItemProps);
 
 /// One tab of a frame: the resource it shows, and what its pill says.
 #[derive(Component, Default, Clone)]
@@ -69,7 +69,7 @@ pub struct PresenceFaceProps {
     pub name: Option<String>,
 }
 
-crate::component::part_type!(PresenceFaceProps);
+tilo_ui_base::component::part_type!(PresenceFaceProps);
 
 impl TabItemProps {
     /// The pill as the strip takes it: its title, and the glyph its type names.
@@ -312,7 +312,7 @@ pub struct TabStrip {
     tabs: Tabs,
 }
 
-impl crate::widget::identity::concrete::Decorator for TabStrip {
+impl tilo_ui_base::widget::identity::concrete::Decorator for TabStrip {
     type Inner = TabBar;
 
     fn inner(&self) -> &TabBar {
@@ -326,21 +326,21 @@ impl crate::widget::identity::concrete::Decorator for TabStrip {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
-        crate::widget::Widget::handle_event(&mut self.bar, event, ctx);
+        tilo_ui_base::widget::Widget::handle_event(&mut self.bar, event, ctx);
         self.report();
     }
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
-        path: &crate::widget::ModelPath,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         let handled =
-            crate::widget::Widget::perform_action(&mut self.bar, action, key_path, state, path);
+            tilo_ui_base::widget::Widget::perform_action(&mut self.bar, action, key_path, state, path);
         self.report();
         handled
     }
@@ -348,11 +348,11 @@ impl crate::widget::identity::concrete::Decorator for TabStrip {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
-        path: &crate::widget::ModelPath,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
-        let handled = crate::widget::Widget::perform_semantic_action(
+        let handled = tilo_ui_base::widget::Widget::perform_semantic_action(
             &mut self.bar,
             target,
             action,
@@ -365,13 +365,13 @@ impl crate::widget::identity::concrete::Decorator for TabStrip {
 
     /// A host that keeps its tree in step each frame hears what the pills reported since the
     /// last one, as one that only takes events does from [`Self::handle_event`].
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
-        crate::widget::Widget::sync(&mut self.bar, state, path);
+    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+        tilo_ui_base::widget::Widget::sync(&mut self.bar, state, path);
         self.report();
     }
 
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
-        let changed = crate::widget::Widget::update(&mut self.bar, state, path);
+    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+        let changed = tilo_ui_base::widget::Widget::update(&mut self.bar, state, path);
         self.report();
         changed
     }

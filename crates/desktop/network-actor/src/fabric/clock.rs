@@ -30,7 +30,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use ui::num::f64_of_i64;
+use tilo_ui_base::num::f64_of_i64;
 
 use serde::{Deserialize, Serialize};
 

@@ -1,6 +1,7 @@
 use super::*;
-use crate::widget::TaffyTreeExt;
-use crate::widget::{Button, Element};
+use tilo_ui_base::widget::TaffyTreeExt;
+use crate::widget::Button;
+use tilo_ui_base::widget::Element;
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -18,7 +19,7 @@ struct ResponsiveRoot {
     oscillate: Rc<Cell<bool>>,
     paints: Rc<Cell<usize>>,
 }
-fn body_editor(path: Vec<crate::presence::PathSegment>, id: &str) -> Element {
+fn body_editor(path: Vec<tilo_ui_base::presence::PathSegment>, id: &str) -> Element {
     Box::new(crate::testing::OwnedText::new(
         "body",
         crate::widget::TextInput::new(path).with_id(id),
@@ -45,7 +46,7 @@ impl Widget for ResponsiveRoot {
     fn name(&self) -> &'static str {
         "ResponsiveRoot"
     }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         for (child, node) in self.children.iter_mut().zip(&self.nodes) {
             child.handle_event(event, &mut ctx.reborrow(ctx.path, *node));
         }
@@ -73,7 +74,7 @@ impl Widget for ResponsiveRoot {
         if self.editing {
             self.children = vec![
                 body_editor(
-                    vec![crate::presence::PathSegment::Field("body".into())],
+                    vec![tilo_ui_base::presence::PathSegment::Field("body".into())],
                     "editor",
                 ),
                 Box::new(Button::new("other", "Other")),
@@ -107,7 +108,7 @@ impl Widget for ResponsiveRoot {
             self.children = vec![body_editor(vec![], "outside"), Box::new(modal)];
         }
         if let Some(calls) = &self.native_calls {
-            self.children = vec![Box::new(crate::widget::NativeView::new(
+            self.children = vec![Box::new(tilo_ui_base::widget::NativeView::new(
                 "Native",
                 CountingNativeBackend {
                     generation: self.builds.get(),
@@ -148,7 +149,7 @@ impl Widget for ResponsiveRoot {
             child.apply_layout(taffy, *node, origin);
         }
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -157,7 +158,7 @@ impl Widget for ResponsiveRoot {
         let (scene, affine, text, theme, mut env) = ctx.parts();
         self.paints.set(self.paints.get().saturating_add(1));
         for child in &mut self.children {
-            child.draw(&mut crate::draw::DrawCtx::new(
+            child.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 affine,
                 text,
@@ -299,7 +300,7 @@ fn viewport_changes_recompose_like_a_fresh_app_before_paint() {
         driver.resize((920, 400)).unwrap();
         // Every settle attempt the surface makes may build the fresh tree again: the bound is
         // the app's own per-pass bound over the surface's settle attempts.
-        let bound = 8 * crate::widget::SETTLE_FRAMES;
+        let bound = 8 * tilo_ui_base::widget::SETTLE_FRAMES;
         assert!(builds.get() - before <= bound);
         assert_eq!(
             paints.get(),
@@ -345,8 +346,8 @@ fn viewport_changes_recompose_like_a_fresh_app_before_paint() {
         let oscillate = root.oscillate.clone();
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
         app.init_layout();
-        let host = crate::widget::NativeViewHost::headless(app.input.platform, 1.0);
-        crate::widget::mount_native_views(app.root_widget.as_mut(), &host);
+        let host = tilo_ui_base::widget::NativeViewHost::headless(app.input.platform, 1.0);
+        tilo_ui_base::widget::mount_native_views(app.root_widget.as_mut(), &host);
         for width in [1200, 920] {
             let mounts = calls
                 .borrow()
@@ -373,7 +374,7 @@ fn viewport_changes_recompose_like_a_fresh_app_before_paint() {
             );
             assert!(calls.borrow().iter().any(|call| matches!(call, NativeCall::Geometry(generation, rect) if *generation == final_generation && rect.width() == f64::from(width))));
             let mut scene = Scene::new();
-            app.root_widget.draw(&mut crate::draw::DrawCtx::new(
+            app.root_widget.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut app.text_renderer,
@@ -438,7 +439,7 @@ fn resize_restores_editor_identity_selection_and_focus() {
         frame(&mut app, 1200);
         app.set_focused_node(Some(app.focusable_order[0]));
         app.mutate_node(app.focused_node.unwrap(), |widget| {
-            crate::widget::undo_points::set_state(widget, "5:b:1");
+            tilo_ui_base::widget::undo_points::set_state(widget, "5:b:1");
         })
         .unwrap();
         for width in [920, 600, 1200] {
@@ -456,7 +457,7 @@ fn resize_restores_editor_identity_selection_and_focus() {
                 Some("editor")
             );
             assert_eq!(
-                app.inspect_node(node, |widget| crate::widget::undo_points::get_state(widget))
+                app.inspect_node(node, |widget| tilo_ui_base::widget::undo_points::get_state(widget))
                     .unwrap()
                     .as_deref(),
                 Some("5:b:1")
@@ -538,7 +539,7 @@ fn resize_restores_editor_identity_selection_and_focus() {
         let editor = app.focusable_order[0];
         app.set_focused_node(Some(editor));
         app.mutate_node(editor, |widget| {
-            crate::widget::undo_points::set_state(widget, "5:b:1")
+            tilo_ui_base::widget::undo_points::set_state(widget, "5:b:1")
         })
         .unwrap();
         for width in [920, 600, 1200] {
@@ -560,7 +561,7 @@ fn resize_restores_editor_identity_selection_and_focus() {
                     .unwrap()
             );
             assert_eq!(
-                app.inspect_node(focused, |widget| crate::widget::undo_points::get_state(
+                app.inspect_node(focused, |widget| tilo_ui_base::widget::undo_points::get_state(
                     widget
                 ))
                 .unwrap()
@@ -580,7 +581,7 @@ fn resize_restores_editor_identity_selection_and_focus() {
         let outside = app.focusable_order[0];
         app.set_focused_node(Some(outside));
         app.mutate_node(outside, |widget| {
-            crate::widget::undo_points::set_state(widget, "5:b:1")
+            tilo_ui_base::widget::undo_points::set_state(widget, "5:b:1")
         })
         .unwrap();
         frame(&mut app, 920);
@@ -601,7 +602,7 @@ fn resize_restores_editor_identity_selection_and_focus() {
             Some("outside")
         );
         assert_eq!(
-            app.inspect_node(focused, |widget| crate::widget::undo_points::get_state(
+            app.inspect_node(focused, |widget| tilo_ui_base::widget::undo_points::get_state(
                 widget
             ))
             .unwrap()
@@ -638,8 +639,8 @@ fn harness(state: State, root: ResponsiveRoot, width: u32) -> crate::headless::D
         Box::new(root),
         (width, 400),
         Theme::dark(),
-        crate::font_catalog::fixture_renderer(),
-        crate::permissions::MemberId::person("resize-test"),
+        tilo_ui_base::font_catalog::fixture_renderer(),
+        tilo_ui_base::permissions::MemberId::person("resize-test"),
     )
 }
 
@@ -654,8 +655,8 @@ struct CountingNativeBackend {
     generation: usize,
     calls: Rc<std::cell::RefCell<Vec<NativeCall>>>,
 }
-impl crate::widget::NativeViewBackend for CountingNativeBackend {
-    fn mount(&mut self, _: &crate::widget::NativeViewHost<'_>) -> Result<(), String> {
+impl tilo_ui_base::widget::NativeViewBackend for CountingNativeBackend {
+    fn mount(&mut self, _: &tilo_ui_base::widget::NativeViewHost<'_>) -> Result<(), String> {
         self.calls
             .borrow_mut()
             .push(NativeCall::Mount(self.generation));
@@ -666,7 +667,7 @@ impl crate::widget::NativeViewBackend for CountingNativeBackend {
             .borrow_mut()
             .push(NativeCall::Unmount(self.generation));
     }
-    fn set_geometry(&mut self, geometry: crate::widget::NativeViewGeometry) {
+    fn set_geometry(&mut self, geometry: tilo_ui_base::widget::NativeViewGeometry) {
         self.calls
             .borrow_mut()
             .push(NativeCall::Geometry(self.generation, geometry.logical));
@@ -682,7 +683,7 @@ impl crate::widget::NativeViewBackend for CountingNativeBackend {
 
 #[test]
 fn native_slider_rebuilds_its_target_style_when_input_capabilities_change() {
-    let value = crate::LocalState::new(0.5);
+    let value = tilo_ui_base::LocalState::new(0.5);
     let mut app = App::new_with_controlled_inputs(
         State::new(),
         Box::new(crate::widget::Slider::from_state(&value)),
@@ -690,8 +691,8 @@ fn native_slider_rebuilds_its_target_style_when_input_capabilities_change() {
     app.init_layout();
     frame(&mut app, 600);
     for environment in [
-        crate::InteractionEnvironment::TOUCH,
-        crate::InteractionEnvironment::POINTER,
+        tilo_ui_base::InteractionEnvironment::TOUCH,
+        tilo_ui_base::InteractionEnvironment::POINTER,
     ] {
         app.set_interaction_environment(environment);
         frame(&mut app, 600);

@@ -11,15 +11,15 @@
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
-use crate::widget::TaffyTreeExt;
+use tilo_ui_base::widget::TaffyTreeExt;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Blob, Color, Fill, ImageBrush, ImageData as PenikoImage};
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::Widget;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
 
 static FALLBACK_ERROR_INK: LazyLock<Color> =
     LazyLock::new(|| Theme::dark().tokens.colors.semantic.danger);
@@ -52,17 +52,17 @@ impl PictureSource {
     }
 }
 
-impl crate::component::PropType for PictureSource {
-    fn ty() -> crate::component::Type {
-        crate::component::Type::Picture
+impl tilo_ui_base::component::PropType for PictureSource {
+    fn ty() -> tilo_ui_base::component::Type {
+        tilo_ui_base::component::Type::Picture
     }
 
-    fn from_value(value: &crate::component::Value) -> Result<Self, String> {
+    fn from_value(value: &tilo_ui_base::component::Value) -> Result<Self, String> {
         match value {
-            crate::component::Value::Picture(picture) => Ok(Self {
+            tilo_ui_base::component::Value::Picture(picture) => Ok(Self {
                 src: picture.src.clone(),
             }),
-            other => Err(crate::component::wrong(&Self::ty(), other)),
+            other => Err(tilo_ui_base::component::wrong(&Self::ty(), other)),
         }
     }
 }
@@ -617,8 +617,8 @@ impl Widget for Image {
 
     fn update(
         &mut self,
-        _state: &crate::widget::AppModel,
-        _path: &crate::widget::ModelPath,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         self.follow_picture()
     }
@@ -647,8 +647,8 @@ impl Widget for Image {
         });
         let style = Style {
             aspect_ratio: (self.intrinsic_size.1 > 0).then(|| {
-                crate::num::f32_of_u32(self.intrinsic_size.0)
-                    / crate::num::f32_of_u32(self.intrinsic_size.1)
+                tilo_ui_base::num::f32_of_u32(self.intrinsic_size.0)
+                    / tilo_ui_base::num::f32_of_u32(self.intrinsic_size.1)
             }),
             size: Size {
                 width: if self.fill_parent {
@@ -682,8 +682,8 @@ impl Widget for Image {
         available: Size<taffy::AvailableSpace>,
         _text_renderer: &mut TextRenderer,
     ) -> Size<f32> {
-        let width = crate::num::f32_of_u32(self.intrinsic_size.0) * self.layout_scale;
-        let height = crate::num::f32_of_u32(self.intrinsic_size.1) * self.layout_scale;
+        let width = tilo_ui_base::num::f32_of_u32(self.intrinsic_size.0) * self.layout_scale;
+        let height = tilo_ui_base::num::f32_of_u32(self.intrinsic_size.1) * self.layout_scale;
         match (known.width, known.height) {
             (Some(width), Some(height)) => Size { width, height },
             (Some(w), None) if width > 0.0 => Size {
@@ -711,7 +711,7 @@ impl Widget for Image {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.laid_out = Some(self.box_shown());
     }
 
@@ -719,7 +719,7 @@ impl Widget for Image {
         self.rect
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -730,7 +730,7 @@ impl Widget for Image {
             let radius = theme.tokens.radii.item;
             self.corner_radius = Some(radius);
             if self.fit == ImageFit::Contain && self.cached.is_some() {
-                crate::surface::card(
+                tilo_ui_base::surface::card(
                     scene,
                     transform,
                     self.rect,
@@ -746,8 +746,8 @@ impl Widget for Image {
         "Image"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         Some(AccessNode::new(Role::Image).with_optional_name(self.alt.clone()))
     }
 }
@@ -880,7 +880,7 @@ mod tests {
         phase image_accessible_name_comes_from_alt_text;
         {
             fn accessibility_without_alt_has_no_name() {
-                use crate::a11y::Role;
+                use tilo_ui_base::a11y::Role;
                 let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16);
                 assert_eq!(img.alt(), None, "an image defaults to no alt text");
                 let node = Widget::accessibility(&img).unwrap();

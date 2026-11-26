@@ -24,7 +24,7 @@ impl Widget for EveryKey {
     fn set_focus(&mut self, focused: bool) {
         self.focused = focused;
     }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ElementState::Pressed
         {
@@ -119,7 +119,7 @@ struct Field {
     input: crate::widget::TextInput,
 }
 
-impl crate::widget::Decorator for Field {
+impl tilo_ui_base::widget::Decorator for Field {
     type Inner = crate::widget::TextInput;
     fn inner(&self) -> &crate::widget::TextInput {
         &self.input
@@ -163,7 +163,7 @@ fn chat_and_a_field(chat_first: bool) -> (Driver, Rc<Cell<u32>>) {
         vec![(
             TabDescriptor::new(2, "Tasks"),
             TileContent::App(Box::new(Field {
-                input: crate::widget::TextInput::new(vec![crate::presence::PathSegment::Field(
+                input: crate::widget::TextInput::new(vec![tilo_ui_base::presence::PathSegment::Field(
                     "title".into(),
                 )])
                 .with_id("title"),

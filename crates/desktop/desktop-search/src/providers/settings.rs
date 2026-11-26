@@ -18,7 +18,7 @@
 
 use settings_store::index;
 use ui::search::system::{ResourceKind, provider_score};
-use ui::text_match::FieldWeight;
+use tilo_ui_base::text_match::FieldWeight;
 
 use crate::model::{Hit, InvokeTarget, Source, Target};
 
@@ -53,8 +53,8 @@ const QUICK_ACTION_SETTINGS: &[&str] = &[
 
 /// The index's copy, in the desktop's language: every window offers the same
 /// settings, so these words ride along in its language instead of deciding it.
-static CATALOG: ui::i18n::EmbeddedCatalog = {
-    let catalog = ui::i18n::EmbeddedCatalog::new("en-US", index::CATALOGUES)
+static CATALOG: tilo_ui_base::i18n::EmbeddedCatalog = {
+    let catalog = tilo_ui_base::i18n::EmbeddedCatalog::new("en-US", index::CATALOGUES)
         .with_system_locale()
         .as_shared();
     #[cfg(test)]
@@ -67,8 +67,8 @@ fn t(key: &str) -> String {
 }
 
 /// The picture of each page: the one Settings' sidebar shows beside it.
-fn page_icon(slug: &str) -> Option<ui::icons::Icon> {
-    use ui::icons::Icon;
+fn page_icon(slug: &str) -> Option<tilo_ui_base::icons::Icon> {
+    use tilo_ui_base::icons::Icon;
     Some(match slug {
         "network" => Icon::Wifi,
         "bluetooth" => Icon::Bluetooth,
@@ -123,7 +123,7 @@ pub struct Settings {
     workspace: String,
     rows: Vec<Row>,
     fields: Vec<Vec<(String, FieldWeight)>>,
-    ranker: ui::text_match::ListIndex,
+    ranker: tilo_ui_base::text_match::ListIndex,
 }
 
 impl Settings {
@@ -235,7 +235,7 @@ impl Settings {
             workspace: workspace.into(),
             rows,
             fields,
-            ranker: ui::text_match::ListIndex::default(),
+            ranker: tilo_ui_base::text_match::ListIndex::default(),
         }
     }
 
@@ -396,7 +396,7 @@ mod tests {
                     ),
                     "the page's own row shows it, told which page"
                 );
-                assert_eq!(page.icon, Some(ui::icons::Icon::Wifi));
+                assert_eq!(page.icon, Some(tilo_ui_base::icons::Icon::Wifi));
             }
             assert!(settings.query("").is_empty());
         }

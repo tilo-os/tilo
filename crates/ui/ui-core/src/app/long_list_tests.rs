@@ -91,7 +91,7 @@ fn window(count: u64, built: &Rc<Built>, stance: Stance) -> Box<dyn Widget> {
     let counted = Rc::clone(built);
     let list = VirtualList::new(
         model,
-        crate::tokens::Metrics::BASE.panel_row_height,
+        tilo_ui_base::tokens::Metrics::BASE.panel_row_height,
         move |model, index, key| {
             counted.rows.set(counted.rows.get() + 1);
             counted.keys.borrow_mut().insert(*key);
@@ -112,7 +112,7 @@ fn window(count: u64, built: &Rc<Built>, stance: Stance) -> Box<dyn Widget> {
     match stance {
         Stance::Filling => Box::new(
             Column::new()
-                .with_rhythm(crate::tokens::Rhythm::Group)
+                .with_rhythm(tilo_ui_base::tokens::Rhythm::Group)
                 .with_fill_remaining_height()
                 .push(header)
                 .push(Box::new(list.filling())),
@@ -120,7 +120,7 @@ fn window(count: u64, built: &Rc<Built>, stance: Stance) -> Box<dyn Widget> {
         Stance::InPage => Box::new(
             crate::widget::Scrollable::new_vertical().with_child(Box::new(
                 Column::new()
-                    .with_rhythm(crate::tokens::Rhythm::Group)
+                    .with_rhythm(tilo_ui_base::tokens::Rhythm::Group)
                     .with_intrinsic_height()
                     .push(header)
                     .push(Box::new(list.fitting_rows())),
@@ -131,14 +131,14 @@ fn window(count: u64, built: &Rc<Built>, stance: Stance) -> Box<dyn Widget> {
 
 /// The most rows a frame of this window may build: before its first layout
 /// a list holds the rows of a tall screen
-/// ([`crate::virtual_viewport::UNPLACED_VIEWPORT`]), then the rows its own
+/// ([`tilo_ui_base::virtual_viewport::UNPLACED_VIEWPORT`]), then the rows its own
 /// height shows, with a margin either side; a glide to the end passes a few
 /// screens' worth. A list that builds rows by its length rather than by its
 /// height passes this at a few hundred rows.
 fn screenful() -> usize {
-    let row = f64::from(crate::tokens::Metrics::BASE.panel_row_height);
+    let row = f64::from(tilo_ui_base::tokens::Metrics::BASE.panel_row_height);
     let rows = |height: f64| (height / row).ceil() as usize;
-    rows(crate::virtual_viewport::UNPLACED_VIEWPORT) + rows(HEIGHT) * 3 + 16
+    rows(tilo_ui_base::virtual_viewport::UNPLACED_VIEWPORT) + rows(HEIGHT) * 3 + 16
 }
 
 fn resident_kib() -> Option<u64> {
@@ -187,7 +187,7 @@ fn run(count: u64, stance: Stance) -> Run {
     // Two seconds of a two-finger scroll down, one wheel event a frame.
     app.surface_input(
         &Window,
-        crate::synthetic_input::cursor_moved(WIDTH / 2.0, HEIGHT / 2.0),
+        tilo_ui_base::synthetic_input::cursor_moved(WIDTH / 2.0, HEIGHT / 2.0),
         false,
     );
     let mut scroll_ms = Vec::new();
@@ -203,14 +203,14 @@ fn run(count: u64, stance: Stance) -> Run {
     }
 
     // A click on a row takes the keyboard; End goes to the last row.
-    app.surface_input(&Window, crate::synthetic_input::mouse_press(), false);
-    app.surface_input(&Window, crate::synthetic_input::mouse_release(), false);
+    app.surface_input(&Window, tilo_ui_base::synthetic_input::mouse_press(), false);
+    app.surface_input(&Window, tilo_ui_base::synthetic_input::mouse_release(), false);
     scene.reset();
     app.surface_frame_with_damage(&Window, &mut scene, &mut damage);
     let built_before = built.rows.get();
     app.surface_input(
         &Window,
-        crate::synthetic_input::named_key(NamedKey::End),
+        tilo_ui_base::synthetic_input::named_key(NamedKey::End),
         false,
     );
     for _ in 0..4 {
@@ -254,7 +254,7 @@ fn report(count: u64, stance: Stance, run: &Run) {
 
 #[test]
 fn a_long_list_builds_only_the_rows_near_its_view() {
-    crate::i18n::I18nManager::init("en-US");
+    tilo_ui_base::i18n::I18nManager::init("en-US");
     let limit = screenful();
     for stance in [Stance::Filling, Stance::InPage] {
         let short = run(2_500, stance);
@@ -299,7 +299,7 @@ fn a_long_list_builds_only_the_rows_near_its_view() {
 
 #[test]
 fn a_page_scrolled_to_its_end_shows_the_last_of_its_lists_rows_building_only_those() {
-    crate::i18n::I18nManager::init("en-US");
+    tilo_ui_base::i18n::I18nManager::init("en-US");
     let limit = screenful();
     let built = Rc::new(Built::default());
     let mut app =
@@ -313,11 +313,11 @@ fn a_page_scrolled_to_its_end_shows_the_last_of_its_lists_rows_building_only_tho
     }
     app.surface_input(
         &Window,
-        crate::synthetic_input::cursor_moved(WIDTH / 2.0, HEIGHT / 2.0),
+        tilo_ui_base::synthetic_input::cursor_moved(WIDTH / 2.0, HEIGHT / 2.0),
         false,
     );
     // Far more than the page's height in one long fling of the wheel.
-    let row = f64::from(crate::tokens::Metrics::BASE.panel_row_height);
+    let row = f64::from(tilo_ui_base::tokens::Metrics::BASE.panel_row_height);
     for _ in 0..4 {
         let built_before = built.rows.get();
         app.surface_input(&Window, wheel(-row * 2_600.0), false);

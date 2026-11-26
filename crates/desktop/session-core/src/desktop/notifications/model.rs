@@ -3,7 +3,7 @@
 //! disclose.
 
 use serde::{Deserialize, Serialize};
-use ui::theme::Theme;
+use tilo_ui_base::theme::Theme;
 use ui::time::{Duration, Instant};
 use ui::widget::toast::{Dwell, ToastKind};
 
@@ -52,12 +52,12 @@ impl NotificationSeverity {
 pub use tilo_service::notice::NotificationIconKind;
 
 /// The glyph a notification about `kind` of news leads its card with.
-fn kind_icon(kind: NotificationIconKind) -> Option<ui::icons::Icon> {
+fn kind_icon(kind: NotificationIconKind) -> Option<tilo_ui_base::icons::Icon> {
     match kind {
         NotificationIconKind::Generic => None,
-        NotificationIconKind::System => Some(ui::icons::Icon::Bell),
-        NotificationIconKind::Workspace => Some(ui::icons::Icon::LayoutGrid),
-        NotificationIconKind::Permission => Some(ui::icons::Icon::Fingerprint),
+        NotificationIconKind::System => Some(tilo_ui_base::icons::Icon::Bell),
+        NotificationIconKind::Workspace => Some(tilo_ui_base::icons::Icon::LayoutGrid),
+        NotificationIconKind::Permission => Some(tilo_ui_base::icons::Icon::Fingerprint),
     }
 }
 
@@ -186,7 +186,7 @@ pub struct Notification {
     /// The sending application's display name, above the title.
     pub app_name: Option<String>,
     /// The sending application's artwork, resolved from what proves it; the glyph is the fallback.
-    pub app_image: Option<ui::icons::AppImage>,
+    pub app_image: Option<tilo_ui_base::icons::AppImage>,
     /// The launcher-attributed id: the only key policy and grouping may use.
     pub app_id: Option<String>,
     pub source_workspace: Option<tilo_desktop_model::WorkspaceId>,
@@ -378,26 +378,26 @@ impl Notification {
     pub fn mark(&self) -> ui::widget::toast::SenderMark<'_> {
         let glyph = kind_icon(self.icon_kind)
             .or_else(|| self.sender_glyph())
-            .unwrap_or(ui::icons::Icon::Bell);
+            .unwrap_or(tilo_ui_base::icons::Icon::Bell);
         ui::widget::toast::SenderMark::new(self.app_image.as_ref(), Some(glyph))
     }
 
     /// The glyph for this notification's sender. An app the launcher attributed draws its
     /// own glyph; a sender the launcher only knows by the executable that posted (a script, a tool)
     /// draws the glyph of the name its row shows, so a row never reads "Notes" beside a window.
-    fn sender_glyph(&self) -> Option<ui::icons::Icon> {
+    fn sender_glyph(&self) -> Option<tilo_ui_base::icons::Icon> {
         if let Some(app) = self.app_id.as_deref()
             && !app.trim_start().starts_with('/')
         {
-            return Some(ui::icons::app_glyph(app, None));
+            return Some(tilo_ui_base::icons::app_glyph(app, None));
         }
         self.app_name
             .as_deref()
-            .map(|name| ui::icons::app_glyph(&name.trim().to_lowercase(), None))
+            .map(|name| tilo_ui_base::icons::app_glyph(&name.trim().to_lowercase(), None))
             .or_else(|| {
                 self.app_id
                     .as_deref()
-                    .map(|app| ui::icons::app_glyph(app, None))
+                    .map(|app| tilo_ui_base::icons::app_glyph(app, None))
             })
     }
 

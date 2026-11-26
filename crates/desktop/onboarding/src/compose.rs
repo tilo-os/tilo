@@ -5,11 +5,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use ui::theme::Theme;
-use ui::widget::{
-    Banner, ButtonRole, Checkbox, Column, Container, IconWidget, ListRow, ProgressBar, Row,
-    Scrollable, Section, Spacer, Spinner, Text, TextInput, Widget,
-};
+use tilo_ui_base::theme::Theme;
+use ui::{widget::Banner, widget::ButtonRole, widget::Checkbox, widget::Column, widget::Container, widget::IconWidget, widget::ListRow, widget::ProgressBar, widget::Row, widget::Scrollable, widget::Section, widget::Spinner, widget::Text, widget::TextInput};
+use tilo_ui_base::{widget::Spacer, widget::Widget};
 use zeroize::Zeroizing;
 
 use crate::ceremony::{
@@ -92,7 +90,7 @@ const START_CARDS: &[(&str, &str)] = &[
 /// One way forward on a choice page.
 struct Choice {
     id: &'static str,
-    icon: ui::icons::Icon,
+    icon: tilo_ui_base::icons::Icon,
     title: &'static str,
     detail: &'static str,
     effect: OnboardingEffect,
@@ -181,7 +179,7 @@ impl Ceremony {
                             "onboarding-progress-eyebrow"
                         }))
                         .with_id("onboarding.progress.eyebrow")
-                        .with_role(ui::tokens::typography::TextRole::Label)
+                        .with_role(tilo_ui_base::tokens::typography::TextRole::Label)
                         .with_color(theme.text_dim),
                     ))
                     .push(Box::new(Spacer::new()))
@@ -191,7 +189,7 @@ impl Ceremony {
                             &[("step", step.into()), ("total", total.into())],
                         ))
                         .with_id("onboarding.progress.stage")
-                        .with_role(ui::tokens::typography::TextRole::Label)
+                        .with_role(tilo_ui_base::tokens::typography::TextRole::Label)
                         .with_color(theme.text_dim),
                     )),
             ))
@@ -390,14 +388,14 @@ impl Ceremony {
             Screen::Intro => Some(vec![
                 Choice {
                     id: "onboarding.existing.card",
-                    icon: ui::icons::Icon::User,
+                    icon: tilo_ui_base::icons::Icon::User,
                     title: "onboarding-choice-existing",
                     detail: "onboarding-choice-existing-detail",
                     effect: OnboardingEffect::choose("existing"),
                 },
                 Choice {
                     id: "onboarding.begin.card",
-                    icon: ui::icons::Icon::Plus,
+                    icon: tilo_ui_base::icons::Icon::Plus,
                     title: "onboarding-choice-create",
                     detail: "onboarding-choice-create-detail",
                     effect: OnboardingEffect::choose("create"),
@@ -406,21 +404,21 @@ impl Ceremony {
             Screen::Existing => Some(vec![
                 Choice {
                     id: "onboarding.existing.nearby.card",
-                    icon: ui::icons::Icon::Monitor,
+                    icon: tilo_ui_base::icons::Icon::Monitor,
                     title: "onboarding-choice-nearby",
                     detail: "onboarding-choice-nearby-detail",
                     effect: OnboardingEffect::choose("nearby"),
                 },
                 Choice {
                     id: "onboarding.existing.recovery-key.card",
-                    icon: ui::icons::Icon::ListOrdered,
+                    icon: tilo_ui_base::icons::Icon::ListOrdered,
                     title: "onboarding-choice-recovery-key",
                     detail: "onboarding-choice-recovery-key-detail",
                     effect: OnboardingEffect::choose("recovery-key"),
                 },
                 Choice {
                     id: "onboarding.existing.restore.card",
-                    icon: ui::icons::Icon::Archive,
+                    icon: tilo_ui_base::icons::Icon::Archive,
                     title: "onboarding-choice-restore",
                     detail: "onboarding-choice-restore-detail",
                     effect: OnboardingEffect::choose("backup-file"),
@@ -522,7 +520,7 @@ impl Ceremony {
                     &t("onboarding-connect-retry-keyring"),
                     OnboardingEffect::Retry,
                 )
-                .with_icon(ui::icons::Icon::Refresh),
+                .with_icon(tilo_ui_base::icons::Icon::Refresh),
             )]),
             Screen::Existing => footer_actions(vec![self.back_button()]),
             Screen::Nearby => {
@@ -553,7 +551,7 @@ impl Ceremony {
                         &t("onboarding-restore-backup"),
                         OnboardingEffect::Continue,
                     )
-                    .with_icon(ui::icons::Icon::ArrowRight)
+                    .with_icon(tilo_ui_base::icons::Icon::ArrowRight)
                     .role(ui::widget::ButtonRole::Primary)
                     .with_enabled(
                         matches!(self.page.recovery_check, WordsCheck::Ready { .. })
@@ -569,7 +567,7 @@ impl Ceremony {
                         &t("onboarding-restore-backup"),
                         OnboardingEffect::Continue,
                     )
-                    .with_icon(ui::icons::Icon::ArrowRight)
+                    .with_icon(tilo_ui_base::icons::Icon::ArrowRight)
                     .role(ui::widget::ButtonRole::Primary)
                     .with_enabled(!self.path.with(|path| path.trim().is_empty())),
                 ),
@@ -582,7 +580,7 @@ impl Ceremony {
                         &t("onboarding-create-local-identity"),
                         OnboardingEffect::Continue,
                     )
-                    .with_icon(ui::icons::Icon::Shield)
+                    .with_icon(tilo_ui_base::icons::Icon::Shield)
                     .role(ui::widget::ButtonRole::Primary)
                     .with_enabled(self.page.can_create),
                 ),
@@ -691,13 +689,13 @@ impl Ceremony {
                     .with_padding(theme.tokens.spacing.s3, 0.0)
                     .push(Box::new(
                         Text::new(&t("onboarding-tour-eyebrow"))
-                            .with_role(ui::tokens::typography::TextRole::Label)
+                            .with_role(tilo_ui_base::tokens::typography::TextRole::Label)
                             .with_color(theme.text_dim),
                     ))
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(
                         Text::new(&t_args("onboarding-tour-stage", &[("step", number.into())]))
-                            .with_role(ui::tokens::typography::TextRole::Label)
+                            .with_role(tilo_ui_base::tokens::typography::TextRole::Label)
                             .with_color(theme.text_dim),
                     )),
             ))
@@ -796,7 +794,7 @@ impl Ceremony {
                         .with_gap(theme.tokens.spacing.s3)
                         .push(Box::new(
                             Text::new(&number.to_string())
-                                .with_role(ui::tokens::typography::TextRole::Label)
+                                .with_role(tilo_ui_base::tokens::typography::TextRole::Label)
                                 .strong()
                                 .numeric()
                                 .with_color(theme.text_dim),
@@ -808,7 +806,7 @@ impl Ceremony {
                                 .with_gap(theme.tokens.spacing.s1)
                                 .push(Box::new(
                                     Text::new(&t(card_title))
-                                        .with_role(ui::tokens::typography::TextRole::Label)
+                                        .with_role(tilo_ui_base::tokens::typography::TextRole::Label)
                                         .with_color(theme.text_primary),
                                 ))
                                 .push(paragraph(&t(copy), theme)),
@@ -830,7 +828,7 @@ impl Ceremony {
                             .with_gap(theme.tokens.spacing.s1)
                             .push(Box::new(
                                 Text::new(&t(keys))
-                                    .with_role(ui::tokens::typography::TextRole::Label)
+                                    .with_role(tilo_ui_base::tokens::typography::TextRole::Label)
                                     .with_color(theme.text_primary),
                             ))
                             .push(paragraph(&t(copy), theme)),
@@ -877,9 +875,9 @@ impl Ceremony {
             }
         };
         let icons = [
-            ui::icons::Icon::Users,
-            ui::icons::Icon::HardDrive,
-            ui::icons::Icon::Lock,
+            tilo_ui_base::icons::Icon::Users,
+            tilo_ui_base::icons::Icon::HardDrive,
+            tilo_ui_base::icons::Icon::Lock,
         ];
         Box::new(
             Column::new()
@@ -922,7 +920,7 @@ impl Ceremony {
                         &[("fingerprint", short_fingerprint(identity).into())],
                     ))
                     .with_id("onboarding.recovery.identity")
-                    .with_role(ui::tokens::typography::TextRole::Label)
+                    .with_role(tilo_ui_base::tokens::typography::TextRole::Label)
                     .with_color(theme.text_dim)
                     .numeric(),
                 ));
@@ -985,9 +983,9 @@ impl Ceremony {
                             // One status region across composition rebuilds,
                             // so its updates are spoken as they come.
                             .with_id("onboarding.nearby.status")
-                            .with_role(ui::tokens::typography::TextRole::Body)
+                            .with_role(tilo_ui_base::tokens::typography::TextRole::Body)
                             .with_color(theme.text_dim)
-                            .with_live(ui::a11y::Politeness::Polite),
+                            .with_live(tilo_ui_base::a11y::Politeness::Polite),
                     )),
             ));
         }
@@ -1027,7 +1025,7 @@ impl Ceremony {
             .with_gap(spacing.s1)
             .push(Box::new(
                 Text::new(&t("onboarding-restore-file-label"))
-                    .with_role(ui::tokens::typography::TextRole::Label),
+                    .with_role(tilo_ui_base::tokens::typography::TextRole::Label),
             ))
             .push(Box::new(
                 Row::new().no_wrap().push(Box::new(path)).push(Box::new(
@@ -1036,7 +1034,7 @@ impl Ceremony {
                         &t("onboarding-connect-browse"),
                         OnboardingEffect::Browse,
                     )
-                    .with_icon(ui::icons::Icon::FolderOpen),
+                    .with_icon(tilo_ui_base::icons::Icon::FolderOpen),
                 )),
             ));
         let secret = Column::new()
@@ -1045,7 +1043,7 @@ impl Ceremony {
             .with_gap(spacing.s1)
             .push(Box::new(
                 Text::new(&t("onboarding-connect-passphrase"))
-                    .with_role(ui::tokens::typography::TextRole::Label),
+                    .with_role(tilo_ui_base::tokens::typography::TextRole::Label),
             ))
             .push(Box::new(passphrase));
         Box::new(
@@ -1062,7 +1060,7 @@ impl Ceremony {
 
     fn no_recovery(&self, theme: &Theme) -> Box<dyn Widget> {
         let spacing = &theme.tokens.spacing;
-        let icons = [ui::icons::Icon::Ban, ui::icons::Icon::Archive];
+        let icons = [tilo_ui_base::icons::Icon::Ban, tilo_ui_base::icons::Icon::Archive];
         let mut body = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
@@ -1076,7 +1074,7 @@ impl Ceremony {
                     .push(spaced_banner(
                         Banner::warning(no_recovery_title())
                             .with_message(t("onboarding-protect-message"))
-                            .with_icon(ui::icons::Icon::Shield),
+                            .with_icon(tilo_ui_base::icons::Icon::Shield),
                         theme,
                     )),
             ));
@@ -1126,21 +1124,21 @@ impl Ceremony {
             backup = backup.push(spaced_banner(
                 Banner::success(t("onboarding-recovery-key-written"))
                     .with_message(t("onboarding-recovery-key-written-detail"))
-                    .with_icon(ui::icons::Icon::Check),
+                    .with_icon(tilo_ui_base::icons::Icon::Check),
                 theme,
             ));
         } else if let Some(path) = &self.page.backup_saved {
             backup = backup.push(spaced_banner(
                 Banner::success(t("onboarding-backup-verified"))
                     .with_message(path.clone())
-                    .with_icon(ui::icons::Icon::Check),
+                    .with_icon(tilo_ui_base::icons::Icon::Check),
                 theme,
             ));
         } else if self.page.backup_was_verified {
             backup = backup.push(spaced_banner(
                 Banner::success(t("onboarding-backup-verified"))
                     .with_message(t("onboarding-backup-verified-earlier"))
-                    .with_icon(ui::icons::Icon::Check),
+                    .with_icon(tilo_ui_base::icons::Icon::Check),
                 theme,
             ));
         }
@@ -1155,7 +1153,7 @@ impl Ceremony {
             .push(Box::new(
                 Text::new(&t("onboarding-backup-title"))
                     .with_id("onboarding.backup.heading")
-                    .with_role(ui::tokens::typography::TextRole::LargeTitle),
+                    .with_role(tilo_ui_base::tokens::typography::TextRole::LargeTitle),
             ));
         if self.page.backup_error.is_some()
             || self.page.backup_saved.is_some()
@@ -1175,7 +1173,7 @@ impl Ceremony {
                     "onboarding.backup.recovery-key.row",
                     t("onboarding-backup-recovery-key"),
                 )
-                .icon(ui::icons::Icon::ListOrdered)
+                .icon(tilo_ui_base::icons::Icon::ListOrdered)
                 .secondary(t("onboarding-backup-recovery-key-detail"))
                 .disclosure()
                 .on_activate(move || {
@@ -1226,7 +1224,7 @@ impl Ceremony {
             .push(Box::new(
                 Text::new(&title)
                     .with_id("onboarding.done.heading")
-                    .with_role(ui::tokens::typography::TextRole::LargeTitle),
+                    .with_role(tilo_ui_base::tokens::typography::TextRole::LargeTitle),
             ));
         if let Some(body) = body {
             page = page.push(paragraph_with_id(&body, theme, "onboarding.done.body"));
@@ -1266,21 +1264,21 @@ impl Ceremony {
             .with_extra_top_padding(top)
             .with_gap(spacing.s4)
             .push(centred(Box::new(
-                ui::widget::IconWidget::new(ui::icons::Icon::Film)
+                ui::widget::IconWidget::new(tilo_ui_base::icons::Icon::Film)
                     .sized(ui::widget::IconSize::Large)
                     .accent(),
             )))
             .push(Box::new(
                 Text::new(&codecs_title())
-                    .with_role(ui::tokens::typography::TextRole::Display)
-                    .with_align(ui::ParagraphAlign::Center),
+                    .with_role(tilo_ui_base::tokens::typography::TextRole::Display)
+                    .with_align(tilo_ui_base::ParagraphAlign::Center),
             ))
             .push(Box::new(
                 Text::new(&codecs_note())
                     .with_id("onboarding.codecs.note")
-                    .with_role(ui::tokens::typography::TextRole::Body)
+                    .with_role(tilo_ui_base::tokens::typography::TextRole::Body)
                     .with_color(theme.text_dim)
-                    .with_align(ui::ParagraphAlign::Center),
+                    .with_align(tilo_ui_base::ParagraphAlign::Center),
             ));
         if let Some((title, message)) = outcome {
             let failed = self.page.codecs.error.is_some()
@@ -1288,7 +1286,7 @@ impl Ceremony {
             let banner = match self.page.codecs.state {
                 _ if failed => Banner::error(title),
                 crate::page::PackState::Installed => {
-                    Banner::success(title).with_icon(ui::icons::Icon::Check)
+                    Banner::success(title).with_icon(tilo_ui_base::icons::Icon::Check)
                 }
                 crate::page::PackState::WaitingForNetwork => Banner::warning(title),
                 _ => Banner::info(title),
@@ -1311,7 +1309,7 @@ impl Ceremony {
             let install = self
                 .button(id, &label, key)
                 .control_size(ui::widget::ControlSize::Large)
-                .with_icon(ui::icons::Icon::Download)
+                .with_icon(tilo_ui_base::icons::Icon::Download)
                 .role(ButtonRole::Primary)
                 .with_default_focus();
             let skip = self
@@ -1338,7 +1336,7 @@ impl Ceremony {
                 OnboardingEffect::Continue,
             )
             .control_size(ui::widget::ControlSize::Large)
-            .with_icon(ui::icons::Icon::ArrowRight)
+            .with_icon(tilo_ui_base::icons::Icon::ArrowRight)
             .role(ButtonRole::Primary)
             .with_default_focus(),
         )])
@@ -1357,7 +1355,7 @@ impl Ceremony {
                 &t("onboarding-finish"),
                 OnboardingEffect::Finish,
             )
-            .with_icon(ui::icons::Icon::ArrowRight)
+            .with_icon(tilo_ui_base::icons::Icon::ArrowRight)
             .role(ui::widget::ButtonRole::Primary);
         footer_actions(vec![Box::new(enter)])
     }
@@ -1401,7 +1399,7 @@ impl Ceremony {
             .with_gap(spacing.s1)
             .push(Box::new(
                 Text::new(&t("onboarding-recovery-key-field"))
-                    .with_role(ui::tokens::typography::TextRole::Label),
+                    .with_role(tilo_ui_base::tokens::typography::TextRole::Label),
             ))
             .push(Box::new(words));
         body = body.push(Box::new(field));
@@ -1416,9 +1414,9 @@ impl Ceremony {
                     .push(Box::new(Spinner::with_size(theme.tokens.metrics.icon_md)))
                     .push(Box::new(
                         Text::new(&t("onboarding-recovery-key-restoring"))
-                            .with_role(ui::tokens::typography::TextRole::Body)
+                            .with_role(tilo_ui_base::tokens::typography::TextRole::Body)
                             .with_color(theme.text_dim)
-                            .with_live(ui::a11y::Politeness::Polite),
+                            .with_live(tilo_ui_base::a11y::Politeness::Polite),
                     )),
             ));
         }
@@ -1438,12 +1436,12 @@ impl Ceremony {
                     ],
                 ))
                 .with_id("onboarding.recovery-key.status")
-                .with_role(ui::tokens::typography::TextRole::Body)
+                .with_role(tilo_ui_base::tokens::typography::TextRole::Body)
                 .with_color(theme.text_dim)
                 .numeric(),
             )),
             WordsCheck::Problem(problem) => Some(spaced_banner(
-                Banner::warning(problem.clone()).with_icon(ui::icons::Icon::Pencil),
+                Banner::warning(problem.clone()).with_icon(tilo_ui_base::icons::Icon::Pencil),
                 theme,
             )),
             WordsCheck::Ready { fingerprint } => {
@@ -1573,7 +1571,7 @@ impl Ceremony {
 }
 /// The title at the top of an onboarding page.
 fn heading(text: &str, _theme: &Theme) -> Box<dyn Widget> {
-    Box::new(Text::new(text).with_role(ui::tokens::typography::TextRole::LargeTitle))
+    Box::new(Text::new(text).with_role(tilo_ui_base::tokens::typography::TextRole::LargeTitle))
 }
 
 /// Secondary body copy. Takes the live theme rather than a hard-coded
@@ -1582,7 +1580,7 @@ fn paragraph_with_id(text: &str, theme: &Theme, id: &str) -> Box<dyn Widget> {
     Box::new(
         Text::new(text)
             .with_id(id)
-            .with_role(ui::tokens::typography::TextRole::Body)
+            .with_role(tilo_ui_base::tokens::typography::TextRole::Body)
             .with_color(theme.text_dim),
     )
 }
@@ -1608,7 +1606,7 @@ fn spaced_banner(banner: Banner, theme: &Theme) -> Box<dyn Widget> {
 /// sits in its own column, top-aligned with the first line, so wrapped lines
 /// keep a clean left edge.
 fn fact_list(
-    facts: impl IntoIterator<Item = (ui::icons::Icon, String)>,
+    facts: impl IntoIterator<Item = (tilo_ui_base::icons::Icon, String)>,
     theme: &Theme,
 ) -> Box<dyn Widget> {
     let mut list = Column::new()
@@ -1623,7 +1621,7 @@ fn fact_list(
                 .with_gap(theme.tokens.spacing.s3)
                 .push(Box::new(IconWidget::new(icon).dim()))
                 .push(Box::new(
-                    Text::new(&text).with_role(ui::tokens::typography::TextRole::Body),
+                    Text::new(&text).with_role(tilo_ui_base::tokens::typography::TextRole::Body),
                 )),
         ));
     }
@@ -1711,7 +1709,7 @@ fn labelled_secret_field(
             .push(Box::new(
                 Text::new(label)
                     .with_id(label_id)
-                    .with_role(ui::tokens::typography::TextRole::Label),
+                    .with_role(tilo_ui_base::tokens::typography::TextRole::Label),
             ))
             .push(Box::new(secret_input(
                 id,
@@ -1752,7 +1750,7 @@ fn labelled_field(
             .push(Box::new(
                 Text::new(label)
                     .with_id(label_id)
-                    .with_role(ui::tokens::typography::TextRole::Label),
+                    .with_role(tilo_ui_base::tokens::typography::TextRole::Label),
             ))
             .push(Box::new(input)),
     )
@@ -1761,10 +1759,10 @@ fn labelled_field(
 fn choice_row_height(theme: &Theme) -> f32 {
     let spacing = &theme.tokens.spacing;
     let text = theme
-        .text(ui::tokens::typography::TextRole::Body)
+        .text(tilo_ui_base::tokens::typography::TextRole::Body)
         .line_height_px()
         + theme
-            .text(ui::tokens::typography::TextRole::Caption)
+            .text(tilo_ui_base::tokens::typography::TextRole::Caption)
             .line_height_px();
     (text + 2.0 * spacing.s2)
         .max(theme.tokens.metrics.min_pointer_target + spacing.s2)
@@ -1820,13 +1818,13 @@ fn recovery_key_copy_page(
                                     .with_width(spacing.s6)
                                     .with_child(Box::new(
                                         Text::new(&at.saturating_add(1).to_string())
-                                            .with_role(ui::tokens::typography::TextRole::Label)
+                                            .with_role(tilo_ui_base::tokens::typography::TextRole::Label)
                                             .with_color(theme.text_dim)
                                             .numeric(),
                                     )),
                             ))
                             .push(Box::new(
-                                Text::new(word).with_role(ui::tokens::typography::TextRole::Body),
+                                Text::new(word).with_role(tilo_ui_base::tokens::typography::TextRole::Body),
                             )),
                     )),
             ));
@@ -1893,7 +1891,7 @@ fn recovery_key_answers(theme: &Theme, copy: &KeyCopy, buffers: &[SecretBuffer; 
                         .with_intrinsic_height()
                         .with_gap(spacing.s1)
                         .push(Box::new(
-                            Text::new(&label).with_role(ui::tokens::typography::TextRole::Label),
+                            Text::new(&label).with_role(tilo_ui_base::tokens::typography::TextRole::Label),
                         ))
                         .push(Box::new(input)),
                 )),

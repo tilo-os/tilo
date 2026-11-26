@@ -1,7 +1,7 @@
 //! [`Sparkline`] as a described component: a tiny inline trend line.
 
-use crate::component::{Component, Described};
-use crate::widget::Tone;
+use tilo_ui_base::{component::Component, component::Described};
+use tilo_ui_base::widget::Tone;
 
 use super::Sparkline;
 

@@ -1,14 +1,14 @@
 //! `Tooltip` primitive — a small label revealed after a short hover delay.
-use crate::num::f32_of_f64;
+use tilo_ui_base::num::f32_of_f64;
 use crate::time::{Duration, Instant};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::event::WindowEvent;
 
-use crate::tokens::TextRole;
-use crate::widget::TaffyTreeExt;
-use crate::widget::TooltipSide;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::TooltipSide;
 use crate::widget::floating_surface::PopoverSide;
 
 pub const HOVER_DWELL: Duration = Duration::from_millis(500);
@@ -173,7 +173,7 @@ pub(crate) fn draw_chip_marked(
 ) {
     let radius = f64::from(theme.tokens.radii.control);
 
-    crate::surface::shadow(
+    tilo_ui_base::surface::shadow(
         scene,
         transform,
         rect,
@@ -191,8 +191,8 @@ pub(crate) fn draw_chip_marked(
         rect.x1.round(),
         rect.y1.round(),
     );
-    crate::surface::panel(scene, transform, snapped, radius, theme);
-    let on_panel = theme.on_ground(crate::chrome::panel_ground(theme));
+    tilo_ui_base::surface::panel(scene, transform, snapped, radius, theme);
+    let on_panel = theme.on_ground(tilo_ui_base::chrome::panel_ground(theme));
 
     let text_style = theme.text(TextRole::Caption);
     // Centre on the measured line, not the font size: the chip's box is
@@ -241,7 +241,7 @@ pub(crate) fn draw_chip_marked(
     scene.pop_layer();
 }
 
-pub fn on_screen(presence: &crate::presence::PresenceCtx, within: Rect) -> Rect {
+pub fn on_screen(presence: &tilo_ui_base::presence::PresenceCtx, within: Rect) -> Rect {
     presence
         .viewport()
         .map(|screen| within.intersect(screen))
@@ -354,17 +354,17 @@ pub fn chip_paint_bounds(rect: Rect, theme: &Theme) -> Rect {
     // The chip snaps to whole pixels and strokes its edge on the outline:
     // two pixels cover both, antialiasing included.
     let chip = rect.inflate(2.0, 2.0);
-    crate::surface::shadow_bounds(rect, &theme.tokens.elevation.floating)
+    tilo_ui_base::surface::shadow_bounds(rect, &theme.tokens.elevation.floating)
         .map_or(chip, |shadow| shadow.union(chip))
 }
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::Widget;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
 
 pub const DEFAULT_DELAY: Duration = Duration::from_millis(600);
 
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     framework,
     "a tooltip is what a control says of itself (`Widget::tooltip`), which the window's one \
      tooltip layer (`TooltipHost`) reveals after a dwell; a view never places one"
@@ -379,7 +379,7 @@ pub struct Tooltip {
     rect: Rect,
     anchor: Rect,
     hover_since: Option<Instant>,
-    appear: crate::motion::Appearing,
+    appear: tilo_ui_base::motion::Appearing,
 
     dirty: bool,
     /// It takes a box only while it shows, so showing or hiding asks layout again.
@@ -414,7 +414,7 @@ impl Tooltip {
             rect: Rect::ZERO,
             anchor: Rect::ZERO,
             hover_since: None,
-            appear: crate::motion::Appearing::closed(),
+            appear: tilo_ui_base::motion::Appearing::closed(),
             layout_dirty: true,
         }
     }
@@ -501,9 +501,9 @@ impl Widget for Tooltip {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!(measured);
+    tilo_ui_base::rect_geometry!(measured);
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -521,7 +521,7 @@ impl Widget for Tooltip {
             return;
         }
         self.appear
-            .follow_from(true, theme.motion(), crate::tokens::MotionSource::Pointer);
+            .follow_from(true, theme.motion(), tilo_ui_base::tokens::MotionSource::Pointer);
 
         // Generous fallback so an unclamped chip still renders in bare test
         // harnesses that never push a viewport.
@@ -547,7 +547,7 @@ impl Widget for Tooltip {
         );
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         if self.anchor == Rect::ZERO {
             return;
@@ -584,8 +584,8 @@ impl Widget for Tooltip {
 
     fn update(
         &mut self,
-        _state: &crate::widget::AppModel,
-        _path: &crate::widget::ModelPath,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         let due = self.hover_since.is_some_and(|since| {
             !self.is_visible && crate::time::now().saturating_duration_since(since) >= self.delay
@@ -601,11 +601,11 @@ impl Widget for Tooltip {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -616,8 +616,8 @@ impl Widget for Tooltip {
         !self.is_visible
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         Some(
             AccessNode::new(Role::Tooltip)
                 .with_name(self.label.clone())
@@ -669,7 +669,7 @@ pub struct TooltipHost {
     visible: bool,
     /// The chip's arrival from its control (`motion::Appear`). It goes at
     /// once: it hides because the pointer moved on or the person acted.
-    appear: crate::motion::Appearing,
+    appear: tilo_ui_base::motion::Appearing,
     /// The control the person acted on while pointing at it. Its tooltip
     /// stays away until the pointer leaves it: a press that opened a panel
     /// or popover must not have the control's hint come back over what it
@@ -700,7 +700,7 @@ impl TooltipHost {
             dwell: HOVER_DWELL,
             target: None,
             visible: false,
-            appear: crate::motion::Appearing::closed(),
+            appear: tilo_ui_base::motion::Appearing::closed(),
             acted_on: None,
         }
     }
@@ -789,10 +789,10 @@ impl TooltipHost {
     pub fn pose(
         &mut self,
         chip: Rect,
-        motion: crate::tokens::EffectiveMotion,
-    ) -> crate::motion::Pose {
+        motion: tilo_ui_base::tokens::EffectiveMotion,
+    ) -> tilo_ui_base::motion::Pose {
         self.appear
-            .follow_from(self.visible, motion, crate::tokens::MotionSource::Pointer);
+            .follow_from(self.visible, motion, tilo_ui_base::tokens::MotionSource::Pointer);
         let anchor = self
             .target
             .as_ref()
@@ -824,7 +824,7 @@ impl TooltipHost {
             self.refresh(current.map(|(rect, label, _)| (rect, label)));
         }
         let (label, anchor) = self.visible()?;
-        let text = crate::i18n::I18nManager::lookup(label, None);
+        let text = tilo_ui_base::i18n::I18nManager::lookup(label, None);
         let chip = hover_chip_rect_on(text_renderer, theme, (anchor, side), &text, viewport);
         let pose = self.pose(chip, theme.motion());
         let bounds = chip_paint_bounds(chip, theme);
@@ -895,7 +895,7 @@ mod host_tests {
 
         phase a_shown_tooltip_reads_its_region_again;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let mut host = TooltipHost::new().with_dwell(Duration::ZERO);
             let now = crate::time::now();
             host.on_pointer(Some(tip("Hide layer")), now);
@@ -935,7 +935,7 @@ mod host_tests {
 
         phase tooltip_host_dwell_reveals_restarts_and_dismisses;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             {
                 let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
                 let t0 = crate::time::now();
@@ -1008,7 +1008,7 @@ mod host_tests {
 
         phase a_rail_chip_sits_beside_its_tool_and_covers_no_neighbour;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let theme = Theme::dark();
             let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
             let size = (120.0, 24.0);
@@ -1036,7 +1036,7 @@ mod host_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::presence::PresenceCtx;
+    use tilo_ui_base::presence::PresenceCtx;
     use vello::kurbo::Point;
 
     fn feed(t: &mut Tooltip, p: Point) {
@@ -1052,7 +1052,7 @@ mod tests {
 
         phase anchored_tooltip_reveals_after_delay_and_is_inert_without_an_anchor;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             {
                 let mut t = Tooltip::new("Save")
                     .with_delay(Duration::ZERO)
@@ -1085,7 +1085,7 @@ mod tests {
             }
 
             {
-                use crate::a11y::Role;
+                use tilo_ui_base::a11y::Role;
                 // A freshly-built tooltip is not yet visible → hidden from the tree.
                 let mut t = Tooltip::new("Save").with_delay(Duration::ZERO);
                 let node = Widget::accessibility(&t).expect("tooltip is not presentational");
@@ -1114,7 +1114,7 @@ mod tests {
 
         phase tooltip_long_hint_wraps_inside_the_scaled_viewport;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let label = "Close applications and end this session, then return to the login screen.";
             for (theme, width) in [
                 (Theme::dark(), 800.0),
@@ -1131,7 +1131,7 @@ mod tests {
                 let presence = PresenceCtx::default();
                 presence.viewport.set(Some(viewport));
                 let mut text = TextRenderer::new();
-                tip.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
+                tip.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
                 let rect = tip.get_rect();
                 assert!(
                     viewport.contains_rect(rect),

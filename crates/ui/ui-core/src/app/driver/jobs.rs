@@ -14,8 +14,8 @@ use tilo_actions::{ActionAddress, ActionOutput, ApiError, InvocationId, Invocati
 
 use super::Driver;
 #[cfg(feature = "model")]
-use crate::collaboration::CollabRequest;
-use crate::widget::{ResourceOperationStart, Widget};
+use tilo_ui_base::collaboration::CollabRequest;
+use tilo_ui_base::{widget::ResourceOperationStart, widget::Widget};
 
 /// What the driver keeps of the calls it made and the requests it read.
 #[derive(Default)]
@@ -211,21 +211,21 @@ impl Driver {
         let (_, titles) = if app.history_widget().is_none() && !palette && app.window_box.is_drawn()
         {
             let roots: [&dyn Widget; 2] = [app.root_widget.as_ref(), &app.window_box];
-            crate::accesskit_bridge::build_presentation_tree_with_titles_bound(
+            tilo_ui_base::accesskit_bridge::build_presentation_tree_with_titles_bound(
                 &roots,
                 &exported.nodes,
                 exported.focus(app.focused_node),
                 1.0,
             )
         } else if app.history_widget().is_none() && !palette {
-            crate::accesskit_bridge::build_tree_update_with_titles_bound(
+            tilo_ui_base::accesskit_bridge::build_tree_update_with_titles_bound(
                 app.root_widget.as_ref(),
                 &exported.nodes,
                 exported.focus(app.focused_node),
                 1.0,
             )
         } else {
-            crate::accesskit_bridge::build_presentation_tree_with_titles_bound(
+            tilo_ui_base::accesskit_bridge::build_presentation_tree_with_titles_bound(
                 &app.presentation_roots(),
                 &exported.nodes,
                 exported.focus(app.focused_node),
@@ -471,7 +471,7 @@ struct Entry {
 #[derive(Serialize)]
 struct InvocationResults {
     schema_version: u8,
-    author: crate::permissions::MemberId,
+    author: tilo_ui_base::permissions::MemberId,
     entries: Vec<Entry>,
     /// Why outcomes after the kept ones are missing: a log that stopped short says so, so it is
     /// never read as complete.
@@ -482,7 +482,7 @@ struct InvocationResults {
 }
 
 impl InvocationResults {
-    fn new(author: crate::permissions::MemberId) -> Self {
+    fn new(author: tilo_ui_base::permissions::MemberId) -> Self {
         Self {
             schema_version: 1,
             author,

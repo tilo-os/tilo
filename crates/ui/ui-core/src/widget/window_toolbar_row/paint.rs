@@ -7,10 +7,10 @@ use super::{
     Point, Rect, Scene, SegmentedFace, TextRenderer, Theme, ToggleGroup, ToolbarRow, VIEWS_SIZE,
     Widget, WindowToolbar, paint_icon_button, trailing_word,
 };
-use crate::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 
 impl ToolbarRow {
-    pub(crate) fn paint_popups(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub(crate) fn paint_popups(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -19,7 +19,7 @@ impl ToolbarRow {
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         Widget::draw_overlay(
             &mut self.menu,
-            &mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()),
         );
         if self.suggestions_open() {
             self.suggestions.paint(scene, transform, tr, theme);
@@ -27,7 +27,7 @@ impl ToolbarRow {
         self.paint_picker(scene, transform, (tr, theme, &env));
     }
 
-    pub(crate) fn paint(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub(crate) fn paint(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -39,7 +39,7 @@ impl ToolbarRow {
         }
         let mut words = std::mem::take(&mut self.labels);
         words.clear();
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.start_part_change(theme);
         if let Some((outgoing, opacity)) = self.fade.outgoing(now)
             && outgoing.is_some()
@@ -65,7 +65,7 @@ impl ToolbarRow {
             return;
         };
         let interaction = Interaction {
-            poses: self.part_changes.poses(crate::motion::frame_now()),
+            poses: self.part_changes.poses(tilo_ui_base::motion::frame_now()),
             hover: self.hover.clone(),
             pressed: self.pressed.clone(),
             editing: self.field.is_some(),
@@ -125,7 +125,7 @@ impl ToolbarRow {
     }
 
     pub(super) fn start_part_change(&mut self, theme: &Theme) {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         if let Some(before) = self.changed_from.take()
             && let Some((_, toolbar)) = self.shown.as_ref()
         {
@@ -143,10 +143,10 @@ impl ToolbarRow {
         &self,
         scene: &mut Scene,
         transform: Affine,
-        (tr, theme, env): (&mut TextRenderer, &Theme, &crate::draw::DrawEnv<'_>),
+        (tr, theme, env): (&mut TextRenderer, &Theme, &tilo_ui_base::draw::DrawEnv<'_>),
         incoming: f32,
     ) {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         for leaving in self.part_changes.leaving(now) {
             let opacity = leaving.opacity * incoming;
             if opacity <= 0.0 {
@@ -239,7 +239,7 @@ fn posed(
 pub(super) fn paint_parts(
     scene: &mut Scene,
     transform: Affine,
-    (tr, theme, env): (&mut TextRenderer, &Theme, &crate::draw::DrawEnv<'_>),
+    (tr, theme, env): (&mut TextRenderer, &Theme, &tilo_ui_base::draw::DrawEnv<'_>),
     toolbar: &WindowToolbar,
     parts: &Parts,
     (interaction, crumbs): (Option<&Interaction>, Option<&mut Breadcrumb>),
@@ -512,7 +512,7 @@ pub(crate) struct LocationLift {
 pub(super) fn paint_location(
     scene: &mut Scene,
     transform: Affine,
-    (tr, theme, env): (&mut TextRenderer, &Theme, &crate::draw::DrawEnv<'_>),
+    (tr, theme, env): (&mut TextRenderer, &Theme, &tilo_ui_base::draw::DrawEnv<'_>),
     (location, crumbs): (
         &crate::window_toolbar::ToolbarLocation,
         Option<&mut Breadcrumb>,
@@ -540,8 +540,8 @@ pub(super) fn paint_location(
         text_rect = face.text_rect(theme);
     }
     if let Some(avatar) = &location.avatar {
-        let side = crate::widget::AvatarSize::Small.side(theme);
-        let mut face = crate::widget::AvatarFace::new(&avatar.name, &avatar.identity);
+        let side = tilo_ui_base::widget::AvatarSize::Small.side(theme);
+        let mut face = tilo_ui_base::widget::AvatarFace::new(&avatar.name, &avatar.identity);
         if avatar.agent {
             face = face.agent();
         }
@@ -553,13 +553,13 @@ pub(super) fn paint_location(
         }
         let c = Point::new(text_rect.x0 + side / 2.0, rect.center().y);
         face.paint(
-            &mut crate::paint::PaintCtx::new(scene, transform, tr, theme),
+            &mut tilo_ui_base::paint::PaintCtx::new(scene, transform, tr, theme),
             Rect::from_center_size(c, (side, side)),
         );
         text_rect.x0 += side + f64::from(theme.tokens.spacing.s2);
     } else if let Some(icon) = location.icon.as_deref().and_then(Icon::from_name) {
         let c = Point::new(text_rect.x0 + LOCATION_ICON_PX / 2.0, rect.center().y);
-        crate::icons::draw_icon(
+        tilo_ui_base::icons::draw_icon(
             scene,
             transform,
             Rect::from_center_size(c, (LOCATION_ICON_PX, LOCATION_ICON_PX)),
@@ -567,7 +567,7 @@ pub(super) fn paint_location(
             notice.map_or(theme.tokens.colors.text_dim, |kind| {
                 crate::widget::toast::kind_color(kind, theme)
             }),
-            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         text_rect.x0 += LOCATION_ICON_PX + f64::from(theme.tokens.spacing.s2);
     }
@@ -707,7 +707,7 @@ pub(crate) fn paint_picker(
         words.push(label.bar_label("BarPicker", face_rect.x0 + pad, y));
     }
     let chevron_x = face_rect.x0 + pad + label_w + gap;
-    crate::icons::draw_icon(
+    tilo_ui_base::icons::draw_icon(
         scene,
         transform,
         Rect::new(
@@ -718,7 +718,7 @@ pub(crate) fn paint_picker(
         ),
         Icon::ChevronDown,
         theme.tokens.colors.text_dim,
-        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+        tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
     );
     face_rect
 }

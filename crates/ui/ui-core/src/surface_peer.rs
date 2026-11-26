@@ -20,7 +20,7 @@ use tilo_actions::remote::{
 };
 use tilo_lock::MutexRecover as _;
 
-use crate::collaboration::{CollabEvent, CollabRequest, PeerTransport};
+use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest, collaboration::PeerTransport};
 use crate::floating_surface::{FloatingSurfaceClientMessage, FloatingSurfaceHostMessage};
 use crate::window_targets::{TargetAction, WindowTarget};
 
@@ -33,8 +33,8 @@ static FRAME: std::sync::LazyLock<std::sync::Mutex<Option<Arc<std::sync::Mutex<F
 /// other offers.
 #[derive(Default)]
 struct Frame {
-    table: crate::collaboration::SurfaceTable,
-    route: crate::collaboration::SurfaceTable,
+    table: tilo_ui_base::collaboration::SurfaceTable,
+    route: tilo_ui_base::collaboration::SurfaceTable,
     offered: Option<Vec<tilo_actions::api::ActionDescriptor>>,
     owed: bool,
     /// The presses the session asked of the window's controls, not taken yet.
@@ -113,7 +113,7 @@ pub fn publish(resources: &[tilo_actions::ResourceSpec]) {
     if frame.offered.as_ref() == Some(&offered) {
         return;
     }
-    let (delta, _) = crate::collaboration::SurfacePublication::next(None, &offered);
+    let (delta, _) = tilo_ui_base::collaboration::SurfacePublication::next(None, &offered);
     if let Err(error) = frame.table.apply(&delta) {
         tracing::warn!(%error, "a surface's actions did not apply");
         return;
@@ -132,7 +132,7 @@ pub struct SurfacePeer {
     outgoing: mpsc::Sender<Said>,
     app_id: String,
     frame: Arc<std::sync::Mutex<Frame>>,
-    acknowledged: Option<crate::collaboration::RouteSpec>,
+    acknowledged: Option<tilo_ui_base::collaboration::RouteSpec>,
     asked: HashMap<u64, tilo_actions::outcome::InvocationId>,
     asking: u64,
     incoming: mpsc::Receiver<RemoteActionMessage>,
@@ -143,7 +143,7 @@ pub struct SurfacePeer {
 
 impl SurfacePeer {
     /// The peer on the already connected socket handed over as
-    /// [`ACTIONS_FD_ENV`](crate::surface_services::ACTIONS_FD_ENV)'s number; `None` when
+    /// [`ACTIONS_FD_ENV`](tilo_ui_base::surface_services::ACTIONS_FD_ENV)'s number; `None` when
     /// the number names no socket.
     #[must_use]
     pub fn from_descriptor(number: i32) -> Option<Self> {
@@ -236,7 +236,7 @@ impl SurfacePeer {
                     resource: request.target.address.resource,
                     action: request.target.address.action,
                     argument,
-                    actor: crate::collaboration::local_user_id().into(),
+                    actor: tilo_ui_base::collaboration::local_user_id().into(),
                     context: None,
                 });
                 None
@@ -268,7 +268,7 @@ impl PeerTransport for SurfacePeer {
                 ..
             } => {
                 self.app_id = app_id;
-                self.acknowledged = Some(crate::collaboration::RouteSpec {
+                self.acknowledged = Some(tilo_ui_base::collaboration::RouteSpec {
                     app_id: self.app_id.clone(),
                     cluster_id,
                     document: record,
@@ -310,7 +310,7 @@ impl PeerTransport for SurfacePeer {
 
     fn take_primary_route_result(
         &mut self,
-    ) -> Option<Result<crate::collaboration::RouteSpec, String>> {
+    ) -> Option<Result<tilo_ui_base::collaboration::RouteSpec, String>> {
         self.acknowledged.take().map(Ok)
     }
 

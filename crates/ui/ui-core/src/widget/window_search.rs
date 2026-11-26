@@ -12,17 +12,18 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::icons::Icon;
-use crate::motion::{Disclose, Presence};
-use crate::platform::PlatformConventions;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{motion::Disclose, motion::Presence};
+use tilo_ui_base::platform::PlatformConventions;
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::{EffectiveMotion, MotionSource};
-use crate::widget::DrawChild;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
+use tilo_ui_base::widget::DrawChild;
 use crate::widget::find_bar::{FindAbilities, FindOptions, FindSession, Findable, with_findable};
 use crate::widget::search_field::{FilterCount, apply_filter, with_filterable};
-use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize, SearchField, Widget};
+use crate::{widget::Button, widget::ButtonFace, widget::ButtonRole, widget::ControlSize, widget::SearchField};
+use tilo_ui_base::widget::Widget;
 use crate::window_toolbar::SearchOpening;
 use options::{Choice, OptionsPanel};
 
@@ -55,7 +56,7 @@ pub trait Queryable {
 }
 
 pub fn with_queryable(widget: &mut dyn Widget, visit: &mut dyn FnMut(&mut dyn Queryable)) -> bool {
-    if let Some(target) = crate::widget::capability::capability_mut::<dyn Queryable>(&mut *widget) {
+    if let Some(target) = tilo_ui_base::widget::capability::capability_mut::<dyn Queryable>(&mut *widget) {
         visit(target);
         return true;
     }
@@ -357,7 +358,7 @@ impl Part {
 }
 
 fn tr(key: &str) -> String {
-    crate::i18n::widget_format(key, &[])
+    tilo_ui_base::i18n::widget_format(key, &[])
 }
 
 #[must_use]
@@ -382,7 +383,7 @@ pub fn search_chord(
     if !platform.command_modifier_down(modifiers) || modifiers.shift_key() {
         return None;
     }
-    let mac = platform.platform() == crate::platform::Platform::MacOs;
+    let mac = platform.platform() == tilo_ui_base::platform::Platform::MacOs;
     let letter = |letter: &str| matches!(logical_key, Key::Character(text) if text.eq_ignore_ascii_case(letter));
     let alt = modifiers.alt_key();
     // Option changes the character a Mac key types (⌥F is ƒ), so the key names the chord.
@@ -402,7 +403,7 @@ pub fn search_chord(
     letter("f").then_some(SearchOpening::Find)
 }
 
-#[crate::component::not_a_component(system, "system search")]
+#[tilo_ui_base::component::not_a_component(system, "system search")]
 pub struct WindowSearch {
     presence: Presence,
     field: SearchField,
@@ -688,7 +689,7 @@ impl WindowSearch {
             Disclose::SPEC,
             self.motion,
             source,
-            crate::motion::frame_now(),
+            tilo_ui_base::motion::frame_now(),
         );
     }
 
@@ -869,7 +870,7 @@ impl WindowSearch {
             Disclose::SPEC,
             self.motion,
             source,
-            crate::motion::frame_now(),
+            tilo_ui_base::motion::frame_now(),
         );
     }
 
@@ -959,7 +960,7 @@ impl WindowSearch {
         self.field.set_count(None);
     }
 
-    pub fn route(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
+    pub fn route(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) -> bool {
         let open = self.is_open();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -976,7 +977,7 @@ impl WindowSearch {
                     };
                     field.handle_event(
                         event,
-                        &mut crate::widget::EventCtx {
+                        &mut tilo_ui_base::widget::EventCtx {
                             handled: &mut field_handled,
                             ..ctx.reborrow(ctx.path, ctx.node_id)
                         },
@@ -1031,7 +1032,7 @@ impl WindowSearch {
         }
     }
 
-    fn press(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
+    fn press(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) -> bool {
         if !self.is_open() {
             if self.anchor.contains(self.last_cursor) {
                 self.requests.push(WindowSearchRequest::Open);
@@ -1090,7 +1091,7 @@ impl WindowSearch {
         }
     }
 
-    fn key(&mut self, key: &Key, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn key(&mut self, key: &Key, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let modifiers = ctx.modifiers.state();
         let command = self.platform.command_modifier_down(modifiers);
         let chord = search_chord(event, modifiers, self.platform);
@@ -1146,7 +1147,7 @@ impl WindowSearch {
         &mut self,
         key: &Key,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         match key {
             Key::Named(NamedKey::Escape) => self.toggle_options(),
@@ -1170,7 +1171,7 @@ impl WindowSearch {
         format!(
             "{} ({})",
             tr("window-search-name"),
-            crate::platform::Shortcut::command("F").label(self.platform)
+            tilo_ui_base::platform::Shortcut::command("F").label(self.platform)
         )
     }
 
@@ -1194,7 +1195,7 @@ impl WindowSearch {
         if self.app_name.is_empty() {
             tr("window-search-this-app")
         } else {
-            crate::i18n::widget_format(
+            tilo_ui_base::i18n::widget_format(
                 "window-search-app",
                 &[("app", self.app_name.clone().into())],
             )
@@ -1370,8 +1371,8 @@ impl WindowSearch {
 }
 
 impl WindowSearch {
-    fn options_node(&self, rect: Rect) -> crate::a11y::AccessNode {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn options_node(&self, rect: Rect) -> tilo_ui_base::a11y::AccessNode {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let open = self.panel.is_open();
         let options = self.options();
         let mut children = Vec::new();
@@ -1424,11 +1425,11 @@ impl WindowSearch {
     fn perform_option_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
-        path: &crate::widget::ModelPath,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &tilo_ui_base::widget::ModelPath,
     ) -> Option<bool> {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         let document = self.is_open() && self.in_place == InPlace::Document;
         if target == Part::Options.target() && matches!(action, Action::Expand | Action::Collapse) {
             let open = matches!(action, Action::Expand);
@@ -1479,7 +1480,7 @@ impl Widget for WindowSearch {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        use crate::widget::TaffyTreeExt;
+        use tilo_ui_base::widget::TaffyTreeExt;
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
 
@@ -1507,7 +1508,7 @@ impl Widget for WindowSearch {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1518,7 +1519,7 @@ impl Widget for WindowSearch {
         if self.anchor.area() <= 0.0 {
             return;
         }
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let progress = self.presence.progress(now);
         if progress <= 0.0 {
             let name = tr("window-search-name");
@@ -1574,7 +1575,7 @@ impl Widget for WindowSearch {
         }
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1586,18 +1587,18 @@ impl Widget for WindowSearch {
             matches: self.matches(),
         };
         self.panel.paint(
-            &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text, theme, env.clone()),
             shown,
         );
     }
 
     fn mark_drawn(&mut self) {
-        crate::widget::Widget::mark_drawn(&mut self.field);
-        crate::widget::Widget::mark_drawn(&mut self.panel.replace_field);
+        tilo_ui_base::widget::Widget::mark_drawn(&mut self.field);
+        tilo_ui_base::widget::Widget::mark_drawn(&mut self.panel.replace_field);
     }
 
     fn needs_redraw(&self) -> bool {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.presence.is_moving(now)
             || (self.presence.is_visible(now)
                 && (self.field.needs_redraw() || self.field.needs_animation_frame()))
@@ -1608,7 +1609,7 @@ impl Widget for WindowSearch {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.presence.is_moving(crate::motion::frame_now())
+        self.presence.is_moving(tilo_ui_base::motion::frame_now())
             || self.panel.is_moving()
             || (self.has_keyboard() && self.keyboard_field().needs_animation_frame())
     }
@@ -1666,7 +1667,7 @@ impl Widget for WindowSearch {
             .flatten()
     }
 
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
         self.has_keyboard()
             .then(|| self.keyboard_field().ime_content())
             .flatten()
@@ -1675,14 +1676,14 @@ impl Widget for WindowSearch {
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         if self.replacing {
             let field = self.panel.replace_field.ime_edit_fingerprint(key)?;
-            return Some(crate::ime::scoped_fingerprint(
+            return Some(tilo_ui_base::ime::scoped_fingerprint(
                 b"window-search-replacement",
                 field,
                 key,
             ));
         }
         let field = self.field.ime_edit_fingerprint(key)?;
-        Some(crate::ime::scoped_fingerprint(b"window-search", field, key))
+        Some(tilo_ui_base::ime::scoped_fingerprint(b"window-search", field, key))
     }
 
     fn name(&self) -> &'static str {
@@ -1710,8 +1711,8 @@ impl Widget for WindowSearch {
         out
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let button = |role: Role, name: String, target: &str, rect: Rect| {
             AccessNode::new(role)
                 .with_name(name)
@@ -1734,7 +1735,7 @@ impl Widget for WindowSearch {
                 .with_bounds(self.field_rect)
                 .with_action_target("window-search-query");
             if let Some(count) = self.field.count() {
-                field = field.with_description(crate::i18n::widget_format(
+                field = field.with_description(tilo_ui_base::i18n::widget_format(
                     "find-bar-position",
                     &[
                         ("current", count.shown.into()),
@@ -1768,12 +1769,12 @@ impl Widget for WindowSearch {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
-        path: &crate::widget::ModelPath,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         if target == "window-search-query" && self.is_open() {
-            if matches!(action, crate::a11y::Action::Focus) {
+            if matches!(action, tilo_ui_base::a11y::Action::Focus) {
                 self.take_keyboard();
                 return true;
             }
@@ -1782,7 +1783,7 @@ impl Widget for WindowSearch {
         if let Some(handled) = self.perform_option_action(target, action, state, path) {
             return handled;
         }
-        if !matches!(action, crate::a11y::Action::Activate) {
+        if !matches!(action, tilo_ui_base::a11y::Action::Activate) {
             return false;
         }
         if target == "window-search-open" && !self.is_open() {
@@ -1816,7 +1817,7 @@ mod tests {
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
         widget: &mut (dyn Widget + 'static),
     ) -> taffy::NodeId {
-        use crate::widget::TaffyTreeExt;
+        use tilo_ui_base::widget::TaffyTreeExt;
         taffy.widget_leaf(taffy::Style::default(), node_map, widget)
     }
 
@@ -1857,7 +1858,7 @@ mod tests {
     }
 
     impl Widget for Doc {
-        crate::provides!(dyn Findable);
+        tilo_ui_base::provides!(dyn Findable);
         fn build_layout(
             &mut self,
             taffy: &mut taffy::TaffyTree<()>,
@@ -1891,7 +1892,7 @@ mod tests {
     }
 
     impl Widget for Names {
-        crate::provides!(dyn Filterable);
+        tilo_ui_base::provides!(dyn Filterable);
         fn build_layout(
             &mut self,
             taffy: &mut taffy::TaffyTree<()>,
@@ -2094,7 +2095,7 @@ mod tests {
     }
 
     impl Widget for Views {
-        crate::provides!(dyn Queryable);
+        tilo_ui_base::provides!(dyn Queryable);
         fn build_layout(
             &mut self,
             taffy: &mut taffy::TaffyTree<()>,
@@ -2114,7 +2115,7 @@ mod tests {
         phase the_resting_control_names_what_it_searches_and_its_key;
         {
             let mut search = WindowSearch::new();
-            search.set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
+            search.set_platform_conventions(PlatformConventions::new(tilo_ui_base::platform::Platform::Linux));
             let anchor = Rect::new(100.0, 8.0, 128.0, 36.0);
             search.place(anchor, 600.0);
             let (rect, tip) = search
@@ -2158,7 +2159,7 @@ mod tests {
             closed.place(Rect::new(100.0, 8.0, 128.0, 36.0), 600.0);
             assert!(!closed.is_open());
             assert_eq!(
-                InPlace::of(&mut crate::widget::Spacer::new()),
+                InPlace::of(&mut tilo_ui_base::widget::Spacer::new()),
                 InPlace::Nothing
             );
         }

@@ -221,7 +221,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             banner.mark().icon,
-            Some(ui::icons::Icon::Bell),
+            Some(tilo_ui_base::icons::Icon::Bell),
             "the system's mark, not a generic window"
         );
         assert_eq!(
@@ -305,7 +305,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             command.mark().icon,
-            Some(ui::icons::Icon::SquareTerminal),
+            Some(tilo_ui_base::icons::Icon::SquareTerminal),
             "and leads with the terminal's mark"
         );
     }
@@ -373,7 +373,7 @@ tilo_test_env::scenario! {
                 "Ask about the date",
                 place.clone(),
             )
-            .tagged(place.tag(&ui::MemberId::person("u-bea")))
+            .tagged(place.tag(&tilo_ui_base::MemberId::person("u-bea")))
             .choosing(vec![(OPEN_ACTION.to_owned(), "Open".to_owned())])
             .staying(Some(Duration::from_secs(8))),
         );
@@ -397,7 +397,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             role.take_chosen_actions(),
-            [(place.tag(&ui::MemberId::person("u-bea")), OPEN_ACTION.to_owned())],
+            [(place.tag(&tilo_ui_base::MemberId::person("u-bea")), OPEN_ACTION.to_owned())],
             "the action it offered, by the notice's tag"
         );
         assert!(rig.feed().banners.is_empty(), "a chosen notice leaves");
@@ -417,7 +417,7 @@ tilo_test_env::scenario! {
         rig.step();
         assert_eq!(
             rig.banner_titled("You joined Book club").mark().icon,
-            Some(ui::icons::Icon::LayoutGrid),
+            Some(tilo_ui_base::icons::Icon::LayoutGrid),
             "the workspace's own mark"
         );
 
@@ -1437,7 +1437,7 @@ tilo_test_env::scenario! {
         assert!(!shown.show_on_lock_screen, "the desktop's text stays off this lock screen");
         // The banner leads with the app's own mark, whichever device told it.
         assert_eq!(shown.mark().icon, devices.desktop.banner().mark().icon);
-        assert_eq!(shown.mark().icon, Some(ui::icons::Icon::Mail));
+        assert_eq!(shown.mark().icon, Some(tilo_ui_base::icons::Icon::Mail));
         assert!(shown.mark().image.is_none(), "the other device's banner carries no artwork");
         assert!(
             devices.desktop.desktop.log().active()[0].remote_route.is_none(),
@@ -1613,7 +1613,7 @@ fn a_device_on_another_version_is_named_on_the_shell() {
     );
     assert_eq!(
         banner.mark().icon,
-        Some(ui::icons::Icon::Bell),
+        Some(tilo_ui_base::icons::Icon::Bell),
         "the system's mark, not a generic window"
     );
     assert_eq!(

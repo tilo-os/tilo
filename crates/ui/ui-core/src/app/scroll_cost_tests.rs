@@ -87,7 +87,7 @@ fn shown(root: Box<dyn Widget>) -> (App, Scene, SurfaceDamage) {
         if at == 2 {
             app.surface_input(
                 &Window,
-                crate::synthetic_input::cursor_moved(WIDTH / 2.0, HEIGHT / 2.0),
+                tilo_ui_base::synthetic_input::cursor_moved(WIDTH / 2.0, HEIGHT / 2.0),
                 false,
             );
         }
@@ -141,7 +141,7 @@ fn data_table(rows: usize) -> Box<dyn Widget> {
     // The rows scroll inside the window, under the header.
     let mut table = DataTable::new(columns)
         .selectable(true)
-        .with_viewport(crate::num::f32_of_f64(HEIGHT - 40.0), 36.0);
+        .with_viewport(tilo_ui_base::num::f32_of_f64(HEIGHT - 40.0), 36.0);
     table.set_rows(
         (0..rows)
             .map(|row| Track {
@@ -200,12 +200,12 @@ impl Widget for Transcript {
         _theme: &Theme,
         node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        crate::widget::TaffyTreeExt::fill_leaf(taffy, node_map, self)
+        tilo_ui_base::widget::TaffyTreeExt::fill_leaf(taffy, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -235,7 +235,7 @@ impl Widget for Transcript {
             });
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let before = self.region.offset();
         let theme = Theme::dark();
         if self.region.handle_event(event, ctx, &theme) && self.region.offset() != before {
@@ -257,8 +257,8 @@ impl Widget for Transcript {
 
     fn update(
         &mut self,
-        _state: &crate::widget::AppModel,
-        _path: &crate::widget::ModelPath,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         // A glide is a scroll, drawn and copied like one; it changes no
         // model, so it asks for no sync.

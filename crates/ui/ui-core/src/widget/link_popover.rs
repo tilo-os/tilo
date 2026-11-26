@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::widget::filter_menu::{FilterMenu, MenuEntry, MenuSpec};
 
 /// What a link offer names: a page of the host's own (`id`), or a record by the catalogue's
-/// reference to it (`reference`, a component's [`crate::component::Link`]).
+/// reference to it (`reference`, a component's [`tilo_ui_base::component::Link`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageEntry {
     pub id: Option<Uuid>,
@@ -78,10 +78,10 @@ mod tests {
     use winit::event::WindowEvent;
     use winit::keyboard::{Key, NamedKey};
 
-    use crate::synthetic_input::key_press;
-    use crate::text_render::TextRenderer;
-    use crate::theme::Theme;
-    use crate::widget::Widget;
+    use tilo_ui_base::synthetic_input::key_press;
+    use tilo_ui_base::text_render::TextRenderer;
+    use tilo_ui_base::theme::Theme;
+    use tilo_ui_base::widget::Widget;
 
     fn seed_three() -> LinkPopover {
         let mut p = LinkPopover::new();
@@ -106,7 +106,7 @@ mod tests {
                 assert!(p.highlighted().is_none());
             }
 
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             empty_results_renders_no_matches_hint();
         }
 
@@ -163,7 +163,7 @@ mod tests {
                 assert!(p.take_selection().is_none());
             }
 
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             keyboard_highlight_keeps_scrolling_through_large_page_sets();
             enter_commits_selection_and_hides();
             pointer_hover_and_click_select_the_visible_row();
@@ -227,7 +227,7 @@ mod tests {
                 assert!(!p.is_visible());
             }
 
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             ime_preedit_is_visible_but_filters_only_after_commit();
             backspace_removes_one_extended_grapheme();
             backspace_pops_filter_then_closes();

@@ -25,7 +25,7 @@ use tilo_desktop_model::shared_resource::{self, device};
 use tilo_desktop_model::{
     Layout, Strip, TileContent, Workspace, WorkspaceId, WorkspaceLayout, peer_salt_of,
 };
-use ui::permissions::MemberId;
+use tilo_ui_base::permissions::MemberId;
 use ui::state::UndoLog;
 
 use tilo_user_identity::DeviceCert;

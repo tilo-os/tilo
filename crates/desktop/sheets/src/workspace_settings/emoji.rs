@@ -4,8 +4,9 @@
 //! add one; Remove stands on each emoji the person may remove: their own,
 //! or anyone's as a moderator. The shell decides both again.
 
-use ui::icons::Icon;
-use ui::widget::{Banner, Button, ButtonRole, ControlSize, Element, EmptyState, ListRow, Section};
+use tilo_ui_base::icons::Icon;
+use ui::{widget::Banner, widget::Button, widget::ButtonRole, widget::ControlSize, widget::EmptyState, widget::ListRow, widget::Section};
+use tilo_ui_base::widget::Element;
 
 use super::agents::column;
 use super::general::{button, buttons, caption};

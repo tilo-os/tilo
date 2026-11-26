@@ -8,6 +8,7 @@ publish.workspace = true
 description = "Headless test host for Tilo apps: a window opened as the workspace broker hosts it, deciding the actions of records another workspace holds."
 
 [dependencies]
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 tilo-app = { path = "../tilo-app", default-features = false, features = ["test-support"] }
 # What the workspace broker says of an action a window shows, in the workspace holding its record.
 tilo-broker-core = { path = "../../core/broker-core" }
@@ -17,6 +18,7 @@ settings-sections = { path = "../../desktop/settings-sections", features = ["tes
 settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 
 [dev-dependencies]
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 tilo-app = { path = "../tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 # The workspace a chain test's devices keep their records in.

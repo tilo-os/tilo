@@ -1,12 +1,12 @@
 //! A toolbar a finger reaches.
 
 use super::*;
-use crate::icons::Icon;
-use crate::interaction::InteractionEnvironment;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::interaction::InteractionEnvironment;
 
 #[test]
 fn on_touch_every_command_is_a_fingers_target() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut tb = Toolbar::new(Orientation::Horizontal)
         .push_icon(Icon::Pencil, "Bold", || {})
         .push_icon(Icon::Pin, "Pin", || {});

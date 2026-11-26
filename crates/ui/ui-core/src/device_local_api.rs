@@ -5,7 +5,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::widget::{AppWidget, ResourceOperationStart};
+use crate::widget::AppWidget;
+use tilo_ui_base::widget::ResourceOperationStart;
 
 /// What an invocation answers, once its host served it.
 pub type Answer = Rc<RefCell<Option<Result<ResourceOperationStart, tilo_actions::ApiError>>>>;

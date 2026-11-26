@@ -25,7 +25,7 @@ impl LocalDispatch {
     #[doc(hidden)]
     pub fn apply<A>(
         &mut self,
-        edits: &mut crate::widget::Edits<'_>,
+        edits: &mut tilo_ui_base::widget::Edits<'_>,
         type_id: &str,
         action: &A,
         context: ActionContext,

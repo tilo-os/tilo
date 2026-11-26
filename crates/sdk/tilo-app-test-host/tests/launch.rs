@@ -119,7 +119,7 @@ tilo_test_env::scenario! {
 
         // A viewer may not edit, but an effect declared for readers reaches its
         // handler through the same API.
-        let mut viewer = TestApp::<GalleryApp>::with_role(tilo_app::Role::Viewer).unwrap();
+        let mut viewer = TestApp::<GalleryApp>::with_role(tilo_ui_base::Role::Viewer).unwrap();
         let dispatcher = GALLERY
             .with(|gallery| gallery.borrow_mut().take())
             .expect("the viewer's view was built");

@@ -1,7 +1,7 @@
 use crate::i18n::t;
 use crate::sessions::OpenState;
 use crate::target::{EnvironmentSummary, SessionTarget};
-use ui::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, TextInput};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,7 +118,7 @@ fn target_label(target: &SessionTarget, environments: &[EnvironmentSummary]) -> 
             ),
         SessionTarget::LinuxVm { vm } => crate::i18n::t_args(
             "terminal-target-linux-vm",
-            &[("vm", ui::i18n::ArgValue::Text(vm.clone()))],
+            &[("vm", tilo_ui_base::i18n::ArgValue::Text(vm.clone()))],
         ),
     }
 }
@@ -397,7 +397,7 @@ impl TerminalWidget {
     fn route_target_chrome(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         if self.environments_panel.open {
             self.handle_environments_panel_event(event, ctx);
@@ -701,7 +701,7 @@ impl TerminalWidget {
     fn handle_environments_panel_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor_pos = ctx.logical(position);
@@ -784,7 +784,7 @@ impl TerminalWidget {
             Widget::handle_event(
                 input,
                 event,
-                &mut ui::widget::EventCtx {
+                &mut tilo_ui_base::widget::EventCtx {
                     handled: &mut input_handled,
                     ..ctx.reborrow(ctx.path, ctx.node_id)
                 },
@@ -797,7 +797,7 @@ impl TerminalWidget {
         clippy::too_many_lines,
         reason = "one panel: header, a row per environment, and the name field"
     )]
-    fn draw_environments_panel(&mut self, ctx: &mut ui::DrawCtx<'_>) {
+    fn draw_environments_panel(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -816,7 +816,7 @@ impl TerminalWidget {
         let title_style = theme.text(TextRole::Subheading);
         let name_style = theme.text(TextRole::Label).strong();
         let caption = theme.text(TextRole::Caption);
-        let ink = theme.on_ground(ui::chrome::panel_ground(theme));
+        let ink = theme.on_ground(tilo_ui_base::chrome::panel_ground(theme));
         let envs = self.sessions.environments.clone();
         let top = self.rect.y0 + self.header_h();
         let panel_w = (f64::from(metrics.panel_width_sheet) * theme.responsive_scale())

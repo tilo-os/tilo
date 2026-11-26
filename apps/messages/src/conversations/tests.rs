@@ -320,7 +320,7 @@ tilo_test_env::scenario! {
 /// person's contacts and accounts are not read.
 #[test]
 fn a_past_version_reads_and_shows_its_messages() {
-    ui::i18n::I18nManager::init("en-US");
+    tilo_ui_base::i18n::I18nManager::init("en-US");
     let mut app = app();
     deliver(
         &mut app,

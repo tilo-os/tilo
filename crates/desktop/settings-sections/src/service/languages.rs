@@ -1,7 +1,7 @@
 //! The languages this desktop speaks, as Settings' Region page offers them: each with the tag a
 //! setting names it by and its own words, so a person finds their language by reading it.
 //!
-//! The list is the desktop's own ([`ui::i18n::spoken_languages`]: the toolkit's languages and the
+//! The list is the desktop's own ([`tilo_ui_base::i18n::spoken_languages`]: the toolkit's languages and the
 //! language packs installed beside them), never a second table that could drift from what a
 //! window can actually show. Choosing one is the appearance section's `choose-language`, which
 //! keeps nothing this desktop cannot speak.
@@ -39,7 +39,7 @@ impl Languages {
     #[must_use]
     pub fn spoken() -> Self {
         Self {
-            languages: ui::i18n::spoken_languages()
+            languages: tilo_ui_base::i18n::spoken_languages()
                 .into_iter()
                 .map(|(tag, name)| Language { tag, name })
                 .collect(),
@@ -50,7 +50,7 @@ impl Languages {
     /// (`de` of `de-DE`).
     #[must_use]
     pub fn speaks(&self, tag: &str) -> bool {
-        let language = ui::i18n::language_of(tag);
+        let language = tilo_ui_base::i18n::language_of(tag);
         self.languages.iter().any(|spoken| spoken.tag == language)
     }
 }

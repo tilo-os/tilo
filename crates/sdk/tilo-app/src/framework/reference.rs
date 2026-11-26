@@ -16,7 +16,7 @@ use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{ActionCallError, InvokeArgument};
 use tilo_reference::ResourceRef;
 use ui_core::widget::ChipLead;
-use ui_core::{Arrival, InvocationCall, RemoteActions};
+use tilo_ui_base::{Arrival, InvocationCall, RemoteActions};
 
 /// What `href`, a `tilo://open#…` address, names: the app that keeps the resource, the record of
 /// the app's workspace it lives in (`None` for the app's own record of the workspace), and the
@@ -156,7 +156,7 @@ pub fn workspace() -> Result<String, String> {
     if let Some(workspace) = ui_core::window_toolbar::workspace() {
         return Ok(workspace);
     }
-    let workspace = ui_core::collaboration::local_cluster_id();
+    let workspace = tilo_ui_base::collaboration::local_cluster_id();
     if workspace.is_nil() {
         Err("This window is in no workspace".into())
     } else {
@@ -253,7 +253,7 @@ impl Opener {
         &self,
         parent: Option<tilo_actions::InvocationId>,
         read: tilo_actions::remote::ResourceReadRequest,
-    ) -> ui_core::remote_actions::ResourceReadCall {
+    ) -> tilo_ui_base::remote_actions::ResourceReadCall {
         self.0
             .borrow_mut()
             .api
@@ -267,7 +267,7 @@ impl Opener {
     pub(crate) fn follow_resource(
         &self,
         read: tilo_actions::remote::ResourceReadRequest,
-    ) -> ui_core::FollowedRead {
+    ) -> tilo_ui_base::FollowedRead {
         self.0
             .borrow_mut()
             .api
@@ -282,7 +282,7 @@ impl Opener {
         target: tilo_actions::remote::RemoteActionTarget,
         argument: InvokeArgument,
         then: impl FnMut(&Arrival<InvocationUpdate, ActionCallError>) + Send + 'static,
-    ) -> ui_core::Followed {
+    ) -> tilo_ui_base::Followed {
         self.0
             .borrow_mut()
             .api

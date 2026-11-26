@@ -21,12 +21,12 @@ use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::dnd::DRAG_START_THRESHOLD_PX;
+use tilo_ui_base::dnd::DRAG_START_THRESHOLD_PX;
 
-use crate::theme::Theme;
-use crate::tokens::Rhythm;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::Rhythm;
 use crate::widget::arrange::{Part, Stack};
-use crate::widget::{Decorator, DrawChild, Element, Widget};
+use tilo_ui_base::{widget::Decorator, widget::DrawChild, widget::Element, widget::Widget};
 
 /// What a `DragSource` carries on the drag bus: the kind its payload is written as, so a target
 /// reads a resource id out of the blob without knowing which view made the drag.
@@ -153,19 +153,19 @@ impl DragSource {
 
     /// What the drag publishes: the resource's address in the blob, or, for a source that stands
     /// for device files and no resource, their paths.
-    fn payload(&self) -> crate::dnd::DragPayload {
+    fn payload(&self) -> tilo_ui_base::dnd::DragPayload {
         if self.resource.is_empty() && !self.files.is_empty() {
             let mut blob = Vec::new();
             for file in &self.files {
                 blob.extend_from_slice(file.as_os_str().as_encoded_bytes());
                 blob.push(0);
             }
-            return crate::dnd::DragPayload::Custom {
+            return tilo_ui_base::dnd::DragPayload::Custom {
                 kind: FILES_PAYLOAD.to_owned(),
                 blob,
             };
         }
-        crate::dnd::DragPayload::Custom {
+        tilo_ui_base::dnd::DragPayload::Custom {
             kind: RESOURCE_PAYLOAD.to_owned(),
             blob: self.resource.as_bytes().to_vec(),
         }
@@ -205,7 +205,7 @@ impl DragSource {
             // A drag of device files leaves the window: the desktop carries it, and another app
             // takes it. It is started here, where the press that began it still holds the
             // pointer, so the drag is the person's own.
-            if !self.files.is_empty() && crate::dnd::start_file_drag(&self.files) {
+            if !self.files.is_empty() && tilo_ui_base::dnd::start_file_drag(&self.files) {
                 lift.offered = true;
                 // Dropped back on this window, the files are this drag still: a target here
                 // takes them as it takes any drag of its own window.
@@ -269,17 +269,17 @@ impl Decorator for DragSource {
         &mut self.column
     }
 
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
         let changed = self.column.update(state, path);
         changed | self.dirty
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.column.apply_layout(taffy, node, origin);
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -298,7 +298,7 @@ impl Decorator for DragSource {
         self.lift.is_some()
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let point = ctx.logical(position);
@@ -400,7 +400,7 @@ impl Decorator for DragSource {
 #[path = "drag_source_tests.rs"]
 mod tests;
 
-impl crate::component::PartViews for DragSource {
+impl tilo_ui_base::component::PartViews for DragSource {
     fn len(&self) -> usize {
         1
     }

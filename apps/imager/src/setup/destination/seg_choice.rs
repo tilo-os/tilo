@@ -1,7 +1,8 @@
 //! [`SegChoice`] — one choice of a few, over published actions.
 
 use ui::widget::toggle_group::Segment;
-use ui::widget::{ToggleGroup, Widget};
+use ui::widget::ToggleGroup;
+use tilo_ui_base::widget::Widget;
 
 use crate::setup::destination::control::{Bound, Control};
 
@@ -34,8 +35,8 @@ mod tests {
 
     use automerge::{AutoCommit, ROOT, ReadDoc};
     use taffy::TaffyTree;
-    use ui::synthetic_input::named_key;
-    use ui::theme::Theme;
+    use tilo_ui_base::synthetic_input::named_key;
+    use tilo_ui_base::theme::Theme;
     use winit::keyboard::NamedKey;
 
     use super::*;
@@ -60,12 +61,12 @@ mod tests {
             "filesystem_choice",
         );
         assert_eq!(choice.test_id(), Some("filesystem_choice"));
-        let bindings = ui::widget::controls::control_action_bindings(&choice);
+        let bindings = tilo_ui_base::widget::controls::control_action_bindings(&choice);
         assert_eq!(bindings.len(), 1, "one action, one inventory entry");
         assert_eq!(bindings[0].control_id, "filesystem_choice");
         assert!(matches!(
             bindings[0].kind,
-            ui::widget::ControlBindingKind::Action(_)
+            tilo_ui_base::widget::ControlBindingKind::Action(_)
         ));
         choice.set_focus(true);
         let mut doc = AutoCommit::new();
@@ -87,9 +88,9 @@ mod tests {
             .layout(&taffy, node);
         keys.send(&mut choice, &named_key(NamedKey::ArrowRight));
         let mut tree: Box<dyn Widget> = Box::new(choice);
-        ui::widget::controls::start_pending_control_invocations(
+        tilo_ui_base::widget::controls::start_pending_control_invocations(
             tree.as_mut(),
-            &mut ui::widget::Edits::lend(&mut doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &ROOT,
         );
         let press = presses.take().expect("a segment action");

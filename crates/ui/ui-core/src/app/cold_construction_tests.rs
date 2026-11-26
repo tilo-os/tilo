@@ -23,7 +23,7 @@ tilo_test_env::scenario! {
 
     phase nested_construction_cannot_replace_the_original_worker;
     {
-        let original = crate::collaboration::native_initial::NativeConstruction::enter(
+        let original = tilo_ui_base::collaboration::native_initial::NativeConstruction::enter(
             CollaborationManager::disabled(),
         )
         .unwrap();
@@ -70,9 +70,9 @@ tilo_test_env::scenario! {
                     definition.app_id(),
                     "device".into(),
                     "workspace",
-                    crate::permissions::MemberId::person(crate::permissions::LOCAL_USER),
-                    crate::permissions::SharedPermissions::new(
-                        crate::permissions::PermissionContext::permissive(),
+                    tilo_ui_base::permissions::MemberId::person(tilo_ui_base::permissions::LOCAL_USER),
+                    tilo_ui_base::permissions::SharedPermissions::new(
+                        tilo_ui_base::permissions::PermissionContext::permissive(),
                     ),
                     tilo_actions::ActionContext::default(),
                 )?;
@@ -82,7 +82,7 @@ tilo_test_env::scenario! {
                     checkout.clone(),
                     ComponentRunnerInputs {
                         theme: Theme::dark(),
-                        text_renderer: crate::font_catalog::fixture_renderer(),
+                        text_renderer: tilo_ui_base::font_catalog::fixture_renderer(),
                     },
                 )
             },

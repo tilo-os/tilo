@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use tilo_ui::app::driver::Driver;
 use tilo_ui::composition::Composed;
 use tilo_ui::composition::page::{Page, document};
-use tilo_ui::icons::Icon;
+use tilo_ui_base::icons::Icon;
 use tilo_ui::widget::{Button, Column, IconSize, IconWidget, MenuItem, Row, Text};
 
 /// The menus, each on its own button: rows with glyphs and without, a long label, a separator, a
@@ -109,8 +109,8 @@ fn main() {
     let out = PathBuf::from(std::env::args().nth(1).expect("usage: page-menus OUT"));
     std::fs::create_dir_all(&out).unwrap();
     let mut opened = Vec::new();
-    let mut text = tilo_ui::text_render::TextRenderer::new();
-    let label_style = tilo_ui::Theme::light().text(tilo_ui::TextRole::Body);
+    let mut text = tilo_ui_base::text_render::TextRenderer::new();
+    let label_style = tilo_ui_base::Theme::light().text(tilo_ui_base::TextRole::Body);
     let mut body = None;
     for (name, items) in menus() {
         // A window of its own for each menu, so each opens from the page as first shown.
@@ -153,9 +153,9 @@ fn main() {
     }
     let body = body.expect("a menu");
     for (scheme, theme) in [
-        ("light", tilo_ui::Theme::light()),
-        ("dark", tilo_ui::Theme::dark()),
-        ("contrast", tilo_ui::Theme::high_contrast()),
+        ("light", tilo_ui_base::Theme::light()),
+        ("dark", tilo_ui_base::Theme::dark()),
+        ("contrast", tilo_ui_base::Theme::high_contrast()),
     ] {
         std::fs::write(
             out.join(format!("{scheme}.html")),
@@ -170,9 +170,9 @@ fn main() {
     .unwrap();
     if std::env::args().nth(2).as_deref() == Some("--native") {
         for (scheme, theme) in [
-            ("light", tilo_ui::Theme::light()),
-            ("dark", tilo_ui::Theme::dark()),
-            ("contrast", tilo_ui::Theme::high_contrast()),
+            ("light", tilo_ui_base::Theme::light()),
+            ("dark", tilo_ui_base::Theme::dark()),
+            ("contrast", tilo_ui_base::Theme::high_contrast()),
         ] {
             let mut driver = Driver::new(tilo_ui::State::new(), Box::new(window()), (720, 480));
             driver.set_theme(theme.clone());

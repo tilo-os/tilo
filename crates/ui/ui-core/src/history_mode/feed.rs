@@ -3,11 +3,12 @@
 //! changes its documents hold ([`super::listing`]) and takes from the feed the name, colour and
 //! relation of each change's author, and the groups the workspace named.
 
-use crate::remote_actions::{Followed, RemoteActions};
+use tilo_ui_base::{remote_actions::Followed, remote_actions::RemoteActions};
 use crate::tilo_actions::InvocationUpdate;
 use crate::tilo_actions::remote::workspace_activity as wire;
 use crate::widget::{AuthorRelation, HistoryAuthor, HistoryEntry};
-use crate::{DocumentId, HistoryEntryId, NamedRange};
+use crate::{DocumentId, NamedRange};
+use tilo_ui_base::HistoryEntryId;
 use std::collections::HashMap;
 
 /// The workspace's history of the window's resources, kept current while History lists it.

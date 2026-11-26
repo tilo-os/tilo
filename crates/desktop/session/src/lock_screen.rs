@@ -195,7 +195,7 @@ impl crate::Session {
             let (name, identity) =
                 crate::people::own_face(networked.map(|_| &own), &self.shared.person);
             (
-                ui::presence::person_label(&name),
+                tilo_ui_base::presence::person_label(&name),
                 Some(crate::people::own_hue(&identity)),
             )
         } else {
@@ -204,8 +204,8 @@ impl crate::Session {
         };
         lock.show(tilo_sheets::lock::Shown {
             screens: self.lock_screens(),
-            clock: ui::clock::time_of_day(ui::clock::local_now()),
-            date: ui::format::day_heading(ui::clock::today(), false),
+            clock: tilo_ui_base::clock::time_of_day(tilo_ui_base::clock::local_now()),
+            date: tilo_ui_base::format::day_heading(tilo_ui_base::clock::today(), false),
             person,
             hue,
             status: self.lock_status(),

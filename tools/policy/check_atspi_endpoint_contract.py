@@ -250,14 +250,14 @@ def audit(root: Path = ROOT) -> list[str]:
             "take windows' trees or write clients' actions back to them"
         )
 
-    bridge = (root / "crates/ui/ui-core/src/accesskit_bridge.rs").read_text(encoding="utf-8")
+    bridge = (root / "crates/ui/ui-base/src/accesskit_bridge.rs").read_text(encoding="utf-8")
     for needle, purpose in (
         ("ak.set_live(match politeness", "live-region export"),
         ("ak.set_live_atomic()", "atomic live-region updates"),
         ("if !access.state.protected", "protected-value boundary"),
     ):
         if needle not in bridge:
-            errors.append(f"crates/ui/ui-core/src/accesskit_bridge.rs: missing AT-SPI {purpose}")
+            errors.append(f"crates/ui/ui-base/src/accesskit_bridge.rs: missing AT-SPI {purpose}")
 
     # The source boundary above proves every graphical app reaches the shared
     # provider. These manifests declare the small, safe installed-image sample

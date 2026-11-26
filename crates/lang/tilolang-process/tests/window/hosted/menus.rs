@@ -14,7 +14,7 @@ use super::*;
 /// the person did not touch stay rows.
 #[test]
 fn a_tasks_menu_marks_it_done_by_its_complete_command() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let surface = package(package_of(TASKS))
         .surface()
         .expect("the package has a surface");
@@ -89,7 +89,7 @@ fn a_tasks_menu_marks_it_done_by_its_complete_command() {
 /// completes the task, and no menu opens for it.
 #[test]
 fn a_tasks_key_completes_it_from_a_row_whose_menu_never_opened() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let surface = package(package_of(TASKS))
         .surface()
         .expect("the package has a surface");
@@ -159,7 +159,7 @@ fn add_task(session: &mut Session, title: &str) {
 /// or the surface it opens (a date, who does it, the commands behind More) stands in its place.
 #[test]
 fn every_command_of_a_tasks_menu_acts_by_its_name() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let surface = package(package_of(TASKS))
         .surface()
         .expect("the package has a surface");

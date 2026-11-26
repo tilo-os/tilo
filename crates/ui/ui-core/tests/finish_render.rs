@@ -37,10 +37,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 
-use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::part_paint::backdrop::{BackdropFrame, BackdropRecording, layer_scene};
-use tilo_ui::theme::{Theme, ThemeDocument};
-use tilo_ui::tokens::SurfaceRole;
+use tilo_ui_base::offscreen::OffscreenRenderer;
+use tilo_ui_base::{part_paint::backdrop::BackdropFrame, part_paint::backdrop::BackdropRecording, part_paint::backdrop::layer_scene};
+use tilo_ui_base::{theme::Theme, theme::ThemeDocument};
+use tilo_ui_base::tokens::SurfaceRole;
 
 const W: u32 = 420;
 const H: u32 = 300;
@@ -99,12 +99,12 @@ fn render(theme: &Theme, name: &str) -> Vec<u8> {
     let mut scene = shell();
     let recording = BackdropRecording::begin();
     layer_scene(&scene, 0);
-    tilo_ui::surface::panel(&mut scene, Affine::IDENTITY, PANEL, RADIUS, theme);
+    tilo_ui_base::surface::panel(&mut scene, Affine::IDENTITY, PANEL, RADIUS, theme);
     // A control face at rest, on the panel, so a control role's finish is
     // drawn too.
     let face = Rect::new(130.0, 180.0, 230.0, 212.0);
     let body = RoundedRect::from_rect(face, f64::from(theme.tokens.radii.control));
-    tilo_ui::surface::control_face(
+    tilo_ui_base::surface::control_face(
         &mut scene,
         Affine::IDENTITY,
         &body,
@@ -193,7 +193,7 @@ fn runs(rgba: &[u8], y: u32, xs: std::ops::Range<u32>) -> (usize, usize) {
 
 #[test]
 fn block_is_one_flat_colour_with_square_corners() {
-    let _settled = tilo_ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let theme = finish("block");
     let rgba = render(&theme, "block-dark");
     let (colours, changes) = runs(&rgba, 150, 120..320);
@@ -209,7 +209,7 @@ fn block_is_one_flat_colour_with_square_corners() {
 
 #[test]
 fn glass_lets_the_blurred_shell_through_and_lights_its_rim() {
-    let _settled = tilo_ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let theme = finish("glass");
     let rgba = render(&theme, "glass-dark");
     let bare = bare_backdrop();
@@ -242,7 +242,7 @@ fn glass_lets_the_blurred_shell_through_and_lights_its_rim() {
 
 #[test]
 fn liquid_glass_shows_the_shell_in_its_middle_and_bends_it_at_the_rim() {
-    let _settled = tilo_ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let theme = finish("liquid-glass");
     let rgba = render(&theme, "liquid-glass-dark");
     let bare = bare_backdrop();
@@ -285,7 +285,7 @@ fn liquid_glass_shows_the_shell_in_its_middle_and_bends_it_at_the_rim() {
 
 #[test]
 fn pixelated_shows_the_shell_as_cells() {
-    let _settled = tilo_ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let theme = finish("pixelated");
     let rgba = render(&theme, "pixelated-dark");
     let cell = theme
@@ -320,7 +320,7 @@ fn pixelated_shows_the_shell_as_cells() {
 /// border. The grid is the finish's own, so it is there whatever is below.
 #[test]
 fn pixelated_shows_its_grid_over_a_flat_ground() {
-    let _settled = tilo_ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let theme = finish("pixelated");
     let cell = theme
         .finish(SurfaceRole::Floating)
@@ -338,7 +338,7 @@ fn pixelated_shows_its_grid_over_a_flat_ground() {
     );
     let recording = BackdropRecording::begin();
     layer_scene(&scene, 0);
-    tilo_ui::surface::panel(&mut scene, Affine::IDENTITY, PANEL, RADIUS, &theme);
+    tilo_ui_base::surface::panel(&mut scene, Affine::IDENTITY, PANEL, RADIUS, &theme);
     let frame = BackdropFrame::from_single_scene(recording.finish());
     let mut renderer = OffscreenRenderer::new(W, H);
     renderer.set_backdrop(Some(Arc::new(frame)));
@@ -363,7 +363,7 @@ fn pixelated_shows_its_grid_over_a_flat_ground() {
 
 #[test]
 fn every_finish_draws_differently_from_block() {
-    let _settled = tilo_ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let base = render(&finish("block"), "block-reference");
     for name in finishes() {
         if name == "block" {

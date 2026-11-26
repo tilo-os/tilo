@@ -9,7 +9,7 @@
 //! each; choosing one arrives back here as the same effect the session's host
 //! actions name.
 
-use ui::icons::Icon;
+use tilo_ui_base::icons::Icon;
 
 /// What the person can do to their session and their computer. Each acts on the
 /// device it is invoked on and on nobody else's.

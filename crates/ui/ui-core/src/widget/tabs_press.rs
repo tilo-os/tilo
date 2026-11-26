@@ -3,7 +3,7 @@
 //! what is under the pointer, and the middle one closes the tab it lands on.
 
 use super::{ActionChip, Resist, TabBar};
-use crate::widget::EventCtx;
+use tilo_ui_base::widget::EventCtx;
 use winit::event::{ElementState, MouseButton};
 
 impl TabBar {

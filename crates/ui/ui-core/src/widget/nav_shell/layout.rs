@@ -8,8 +8,8 @@ use super::{
     Column, ContentKind, Inputs, InspectorPlacement, Metrics, NavMode, NavPane, OverviewPlacement,
     Part, SidebarPlacement, inspector_layout_of, reaches,
 };
-use crate::num::f64_of_usize;
-use crate::tokens::Breakpoint;
+use tilo_ui_base::num::f64_of_usize;
+use tilo_ui_base::tokens::Breakpoint;
 use crate::widget::flap::SplitLayout;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -524,7 +524,7 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     let widest_w = w
         - if sidebar_moving { 0.0 } else { docked_now }
         - if inspector_moving { 0.0 } else { inspector_now };
-    let region_w = crate::motion::PanelSlide::content_width(
+    let region_w = tilo_ui_base::motion::PanelSlide::content_width(
         settled_w,
         widest_w.max(0.0),
         sidebar_moving || inspector_moving,

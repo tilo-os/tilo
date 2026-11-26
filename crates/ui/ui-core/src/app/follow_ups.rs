@@ -15,7 +15,7 @@ impl App {
         arguments: &serde_json::Map<String, serde_json::Value>,
         context: Option<tilo_actions::ActionContext>,
         control: crate::app_core::FollowUpControl,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let request_id = self.take_broker_request_id()?;
         let request = tilo_actions::remote::InvokeRequest {
             on_behalf_of: Some(running),
@@ -42,7 +42,7 @@ impl App {
             continuation.outstanding.insert(request_id);
         }
         self.send_own_invocation(request);
-        Ok(crate::widget::ResourceOperationStart::Accepted)
+        Ok(tilo_ui_base::widget::ResourceOperationStart::Accepted)
     }
 
     /// The broker answered the edit request `request_id` an effect
@@ -78,9 +78,9 @@ impl App {
         // answer may be what the edit made.
         let ended = match result {
             Ok((_, tilo_actions::InvocationUpdate::Succeeded { output, .. })) => Ok(
-                crate::widget::ResourceOperationStart::Completed(output.clone()),
+                tilo_ui_base::widget::ResourceOperationStart::Completed(output.clone()),
             ),
-            Ok(_) if refusal.is_none() => Ok(crate::widget::ResourceOperationStart::Accepted),
+            Ok(_) if refusal.is_none() => Ok(tilo_ui_base::widget::ResourceOperationStart::Accepted),
             _ => Err(tilo_actions::ApiError::Failed(
                 refusal
                     .as_ref()

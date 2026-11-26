@@ -193,9 +193,9 @@ fn auxiliary_secret_frames_keep_the_conservative_native_lifetime_latch() {
 #[test]
 fn a_frame_keeps_no_caret_an_earlier_frame_drew() {
     let mut app = drawn(TextInput::local());
-    let agent = crate::permissions::MemberId::agent("helper", "ada");
+    let agent = tilo_ui_base::permissions::MemberId::agent("helper", "ada");
     app.presence_ctx
-        .note_presence_mark(crate::presence::PresenceMark {
+        .note_presence_mark(tilo_ui_base::presence::PresenceMark {
             user: agent.clone(),
             rect: KurboRect::new(10.0, 10.0, 12.0, 30.0),
             selection: false,

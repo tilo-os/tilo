@@ -149,7 +149,7 @@ mod tests {
     /// The header counts who the list shows, besides this person.
     #[test]
     fn the_header_counts_the_people_listed() {
-        ui::i18n::I18nManager::init("en-US");
+        tilo_ui_base::i18n::I18nManager::init("en-US");
         assert_eq!(here_line(0), "Just you");
         assert_eq!(here_line(1), "You and 1 other");
         assert_eq!(here_line(3), "You and 3 others");

@@ -76,7 +76,7 @@ fn notes(locale: &str) -> (Host, Package) {
     imports.push(discussion.meta.clone());
     let compiled = tilolang::compile_package_source(&source, &ids, &imports)
         .expect("the notes package compiles");
-    ui::i18n::I18nManager::install("en-US", locale, &[("en-US", "")]).expect("the source words");
+    tilo_ui_base::i18n::I18nManager::install("en-US", locale, &[("en-US", "")]).expect("the source words");
     let host = Host::new(
         Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         || None,
@@ -108,7 +108,7 @@ fn contacts(locale: &str) -> (Host, Package) {
     .expect("its ids parse");
     let compiled = tilolang::compile_package_source(&source, &ids, &metas)
         .expect("the contacts package compiles");
-    ui::i18n::I18nManager::install("en-US", locale, &[("en-US", "")]).expect("the source words");
+    tilo_ui_base::i18n::I18nManager::install("en-US", locale, &[("en-US", "")]).expect("the source words");
     let host = Host::new(
         Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         || None,
@@ -234,7 +234,7 @@ fn a_catalogue_line_changes_a_label_and_a_search_match() {
     assert_eq!(view_label(&english, "notebook", &package), "Notebook");
 
     let words = host.runtime().words().revision();
-    ui::i18n::I18nManager::set_locale("de-DE");
+    tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
     assert_ne!(
         words,
         host.runtime().words().revision(),
@@ -297,7 +297,7 @@ fn a_packages_catalogues_all_load() {
     let (mut read, mut parsed) = (best, best);
     let mut loaded = 0;
     for _ in 0..5 {
-        ui::i18n::I18nManager::install("en-US", "en-US", &[("en-US", "")])
+        tilo_ui_base::i18n::I18nManager::install("en-US", "en-US", &[("en-US", "")])
             .expect("the source words");
         let started = std::time::Instant::now();
         let catalogues = tilolang::meta::locales_from_wasm(&compiled.wasm);
@@ -347,7 +347,7 @@ fn every_apps_catalogue_parses() {
                 .and_then(std::ffi::OsStr::to_str)
                 .expect("a catalogue is named by its locale");
             let text = std::fs::read_to_string(&path).expect("the catalogue reads");
-            ui::i18n::I18nManager::install(locale, locale, &[(locale, &text)])
+            tilo_ui_base::i18n::I18nManager::install(locale, locale, &[(locale, &text)])
                 .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
             read += 1;
         }
@@ -400,7 +400,7 @@ fn a_german_counter_window_draws_german() {
     .expect("its ids parse");
     let compiled =
         tilolang::compile_package_source(&source, &ids, &[]).expect("the counter package compiles");
-    ui::i18n::I18nManager::install("en-US", "de-DE", &[("en-US", "")]).expect("the German words");
+    tilo_ui_base::i18n::I18nManager::install("en-US", "de-DE", &[("en-US", "")]).expect("the German words");
     let host = Host::new(
         Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         || None,

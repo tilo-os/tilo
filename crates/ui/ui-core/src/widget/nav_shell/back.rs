@@ -2,8 +2,8 @@
 //! stack, where a phone's places screen returns to the screen its toggle covered.
 
 use super::{Column, NavPane, NavShell, SidebarPlacement, stack_index};
-use crate::gesture::{NavAvailability, NavDirection};
-use crate::widget::{AppModel, ModelPath, Widget};
+use tilo_ui_base::{gesture::NavAvailability, gesture::NavDirection};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::Widget};
 
 impl NavShell {
     /// Go back one step: lower or put away the inspector's sheet (`Self::sheet_back`), put away
@@ -63,7 +63,7 @@ impl NavShell {
         if dir == NavDirection::Back && (self.sheet_back() || self.drawer_back()) {
             return true;
         }
-        if crate::widget::defaults::on_nav_gesture(self.children_mut(), dir, state, path) {
+        if tilo_ui_base::widget::defaults::on_nav_gesture(self.children_mut(), dir, state, path) {
             return true;
         }
         dir == NavDirection::Back && self.back()
@@ -78,6 +78,6 @@ impl NavShell {
             back: self.can_go_back() || self.drawer_open(),
             forward: false,
         };
-        own.or(crate::widget::defaults::nav_availability(self.children()))
+        own.or(tilo_ui_base::widget::defaults::nav_availability(self.children()))
     }
 }

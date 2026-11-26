@@ -1,9 +1,10 @@
 //! One step's deliberate action: its label, icon, test id, and whether it is checked or
 //! disabled.
 
-use ui::i18n::ArgValue;
-use ui::icons::Icon;
-use ui::widget::{Button, ButtonRole, Checkbox, ControlSize, Element, Widget};
+use tilo_ui_base::i18n::ArgValue;
+use tilo_ui_base::icons::Icon;
+use ui::{widget::Button, widget::ButtonRole, widget::Checkbox, widget::ControlSize};
+use tilo_ui_base::{widget::Element, widget::Widget};
 
 use crate::setup::destination::control::{Control, is_activation_key};
 
@@ -34,7 +35,7 @@ impl ActionButton {
             size: ControlSize::Regular,
             icon: None,
             enabled: true,
-            inner: Box::new(ui::widget::Spacer::new()),
+            inner: Box::new(tilo_ui_base::widget::Spacer::new()),
         };
         button.compose();
         button
@@ -119,7 +120,7 @@ impl ActionButton {
         self.inner = if let Some(checked) = self.checked {
             let id = self.id().to_owned();
             Box::new(
-                Checkbox::from_state(&ui::LocalState::new(checked))
+                Checkbox::from_state(&tilo_ui_base::LocalState::new(checked))
                     .with_id(&id)
                     .with_label(self.label.clone())
                     .with_enabled(self.enabled)
@@ -139,7 +140,7 @@ impl ActionButton {
     }
 }
 
-impl ui::widget::Decorator for ActionButton {
+impl tilo_ui_base::widget::Decorator for ActionButton {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -150,7 +151,7 @@ impl ui::widget::Decorator for ActionButton {
         &mut *self.inner
     }
 
-    ui::provides!(dyn ui::widget::controls::ActionControls; inner = inner);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls; inner = inner);
 
     fn is_focusable(&self) -> bool {
         self.enabled && self.inner.is_focusable()
@@ -159,7 +160,7 @@ impl ui::widget::Decorator for ActionButton {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         if self.enabled && self.inner.is_focused() && is_activation_key(event) {
             self.control.fire();
@@ -169,7 +170,7 @@ impl ui::widget::Decorator for ActionButton {
         self.inner.handle_event(event, ctx);
     }
 
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.inner.accessibility().map(|mut node| {
             node.state.focusable = self.enabled && self.inner.is_focusable();
             node
@@ -181,12 +182,12 @@ impl ui::widget::Decorator for ActionButton {
     }
 }
 
-impl ui::widget::controls::ActionControls for ActionButton {
+impl tilo_ui_base::widget::controls::ActionControls for ActionButton {
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        ui::widget::controls::take_control_invocation(&mut *self.inner)
+        tilo_ui_base::widget::controls::take_control_invocation(&mut *self.inner)
     }
 
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         vec![self.control.metadata(self.id())]
     }
 }
@@ -197,8 +198,8 @@ mod tests {
 
     use automerge::{AutoCommit, ROOT, ReadDoc};
     use taffy::TaffyTree;
-    use ui::synthetic_input::named_key;
-    use ui::theme::Theme;
+    use tilo_ui_base::synthetic_input::named_key;
+    use tilo_ui_base::theme::Theme;
     use winit::keyboard::NamedKey;
 
     use super::*;
@@ -235,23 +236,23 @@ mod tests {
                 ActionButton::new("installer-action-reboot", control).with_test_id("reboot");
             button.set_focus(true);
             let node = button.accessibility().expect("button semantics");
-            assert_eq!(node.role, ui::a11y::Role::Button);
+            assert_eq!(node.role, tilo_ui_base::a11y::Role::Button);
             assert_eq!(node.name.as_deref(), Some("Reboot now"));
             assert!(button.is_focusable());
             assert!(button.is_focused());
             assert_eq!(button.test_id(), Some("reboot"));
 
             let mut doc = AutoCommit::new();
-            crate::setup::destination::press(&mut button, &ui::a11y::Action::Activate, &mut doc);
+            crate::setup::destination::press(&mut button, &tilo_ui_base::a11y::Action::Activate, &mut doc);
             assert!(presses.take().map(|press| press.effect) == Some(DestinationEffect::Reboot));
             assert_eq!(doc.length(ROOT), 0);
             assert!(button.is_focused(), "AT activation must not steal focus");
             let mut disabled = button.disabled(true);
             assert!(!disabled.is_focusable());
             assert!(!disabled.perform_action(
-                &ui::a11y::Action::Activate,
+                &tilo_ui_base::a11y::Action::Activate,
                 &[],
-                &mut ui::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &ROOT
             ));
             assert!(presses.take().is_none());
@@ -264,12 +265,12 @@ mod tests {
                 .with_test_id("recovery_ack")
                 .checkbox(true);
             let node = button.accessibility().expect("checkbox semantics");
-            assert_eq!(node.role, ui::a11y::Role::Checkbox);
+            assert_eq!(node.role, tilo_ui_base::a11y::Role::Checkbox);
             assert_eq!(node.name.as_deref(), Some("I will save my recovery key"));
             assert_eq!(node.state.checked, Some(true));
             assert_eq!(button.test_id(), Some("recovery_ack"));
             let mut doc = AutoCommit::new();
-            crate::setup::destination::press(&mut button, &ui::a11y::Action::ToggleCheck, &mut doc);
+            crate::setup::destination::press(&mut button, &tilo_ui_base::a11y::Action::ToggleCheck, &mut doc);
             assert!(
                 presses.take().map(|press| press.effect)
                     == Some(DestinationEffect::SetRecoveryPromise {
@@ -282,12 +283,12 @@ mod tests {
             let (control, _) = Control::detached(DestinationEffect::Reboot);
             let button =
                 ActionButton::new("installer-action-reboot", control).with_test_id("reboot");
-            let bindings = ui::widget::controls::control_action_bindings(&button);
+            let bindings = tilo_ui_base::widget::controls::control_action_bindings(&button);
             assert_eq!(bindings.len(), 1);
             assert_eq!(bindings[0].control_id, "reboot");
             assert!(matches!(
                 bindings[0].kind,
-                ui::widget::ControlBindingKind::Action(_)
+                tilo_ui_base::widget::ControlBindingKind::Action(_)
             ));
         }
     }

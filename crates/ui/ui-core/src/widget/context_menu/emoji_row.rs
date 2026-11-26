@@ -8,7 +8,7 @@
 use vello::kurbo::Rect;
 
 use super::{ContextMenu, MenuAction, MenuItem};
-use crate::a11y::{AccessNode, AccessState, Role};
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 
 /// An emoji row's height as a share of a command row's: the emoji are drawn larger than a
 /// label, to be told apart at a glance.
@@ -57,7 +57,7 @@ impl EmojiRow {
         self.emoji
             .get(cell)
             .cloned()
-            .unwrap_or_else(|| crate::i18n::widget_format("emoji-more", &[]))
+            .unwrap_or_else(|| tilo_ui_base::i18n::widget_format("emoji-more", &[]))
     }
 }
 
@@ -84,8 +84,8 @@ impl ContextMenu {
         let cells = self.emoji_cells(index, row);
         let point = self.last_cursor;
         let under = cells.iter().position(|cell| {
-            point.x >= cell.x0 - f64::from(crate::tokens::Spacing::BASE.s2) / 2.0
-                && point.x < cell.x1 + f64::from(crate::tokens::Spacing::BASE.s2) / 2.0
+            point.x >= cell.x0 - f64::from(tilo_ui_base::tokens::Spacing::BASE.s2) / 2.0
+                && point.x < cell.x1 + f64::from(tilo_ui_base::tokens::Spacing::BASE.s2) / 2.0
         });
         if let Some(cell) = under
             && self.list.cell() != cell
@@ -141,7 +141,7 @@ impl ContextMenu {
             })
             .collect();
         AccessNode::new(Role::Group)
-            .with_name(crate::i18n::widget_format("emoji-bar", &[]))
+            .with_name(tilo_ui_base::i18n::widget_format("emoji-bar", &[]))
             .with_bounds(self.row_bounds(index).unwrap_or(Rect::ZERO))
             .with_children(children)
     }

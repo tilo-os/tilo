@@ -1,7 +1,7 @@
 //! The admitted nodes the accessibility bridge may name and address.
-use crate::accesskit_bridge::A11yTarget;
-use crate::widget::Widget;
-use crate::widget::bound_nodes::BoundNodeMap;
+use tilo_ui_base::accesskit_bridge::A11yTarget;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
 use std::collections::HashMap;
 use taffy::NodeId;
 
@@ -15,7 +15,7 @@ impl ExportedNodes {
         node.filter(|node| self.nodes.contains_key(node))
     }
     pub(crate) fn resolve(&self, root: &dyn Widget, id: accesskit::NodeId) -> Option<A11yTarget> {
-        let target = crate::accesskit_bridge::resolve_node_id_bound(root, &self.nodes, id)?;
+        let target = tilo_ui_base::accesskit_bridge::resolve_node_id_bound(root, &self.nodes, id)?;
         let exported = |node: &NodeId| self.nodes.contains_key(node);
         match &target {
             A11yTarget::Root => {}

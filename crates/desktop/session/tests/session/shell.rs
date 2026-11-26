@@ -78,7 +78,7 @@ pub(super) fn light_session() -> Session {
 /// The presentation of a session drawing the shell in the light theme.
 pub(super) fn light_presentation() -> ui::application::ComponentRunnerInputs {
     let mut inputs = ui::headless::fixture_runner_inputs();
-    inputs.theme = ui::theme::Theme::light();
+    inputs.theme = tilo_ui_base::theme::Theme::light();
     inputs
 }
 
@@ -95,7 +95,7 @@ pub(super) fn held_clock() -> ui::time::testing::SharedWall {
 /// for a level, one for a mode change.
 #[test]
 fn the_readout_names_its_device_and_the_level_is_the_bar() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = held_clock();
     let mut played = session();
     settle(&mut played, 4);
@@ -279,7 +279,7 @@ pub(super) fn capture_to(session: &mut Session, dir: &std::path::Path, name: &st
 /// A session whose presentation is the fixture's, in the light theme.
 pub(super) fn light_runner_inputs() -> ui::application::ComponentRunnerInputs {
     let mut inputs = ui::headless::fixture_runner_inputs();
-    inputs.theme = ui::Theme::light();
+    inputs.theme = tilo_ui_base::Theme::light();
     inputs
 }
 
@@ -353,7 +353,7 @@ fn shell_of_three_workspaces(session: &mut Session) -> Vec<TestClient> {
 /// than a mark in place of them.
 #[test]
 fn the_overview_pictures_the_shells_windows() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = held_clock();
     let mut session = session();
     let _client = mapped(&mut session, "org.example.Terminal");
@@ -416,7 +416,7 @@ fn the_overview_pictures_the_shells_windows() {
 /// ground is a window the person cannot recognise.
 #[test]
 fn every_overview_card_shows_the_window_it_pictures() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = held_clock();
     let mut session = session();
     // A client whose buffer differs from the card's ground: a dark terminal, drawn green.
@@ -510,7 +510,7 @@ fn every_overview_card_shows_the_window_it_pictures() {
 /// card's width, never shrunk into a corner of it with the ground showing round it.
 #[test]
 fn an_overview_card_fills_at_the_windows_aspect() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = held_clock();
     let mut session = session();
     let mut client = mapped(&mut session, "org.example.Terminal");
@@ -573,7 +573,7 @@ fn an_overview_card_fills_at_the_windows_aspect() {
 /// shell the picture stands on is what a screenshot, a recording and a share of the overview show.
 #[test]
 fn the_overview_pictures_a_private_window_as_its_placeholder() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = held_clock();
     let mut session = session();
     let _client = mapped(&mut session, "so.tilo.passwords");
@@ -619,7 +619,7 @@ fn the_overview_pictures_a_private_window_as_its_placeholder() {
 /// The person's theme reaches the shell, its bar and the overview, not only the apps.
 #[test]
 fn the_shell_draws_the_persons_theme() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = held_clock();
     let regions = |presentation: fn() -> ui::application::ComponentRunnerInputs| {
         let mut session = Session::headless(
@@ -880,7 +880,7 @@ fn plain_desktop(
 /// for, so a strip rail with one strip does not hang under the clock as an empty handle.
 #[test]
 fn nothing_hangs_under_the_bar_when_it_has_nothing_to_show() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = held_clock();
     let dir = std::env::var_os("VISUAL_ACTIVITY_OUT").map_or_else(
         || {
@@ -1008,7 +1008,7 @@ fn two_strips(
 /// it has nothing to show and stands nowhere ([`nothing_hangs_under_the_bar_when_it_has_nothing_to_show`]).
 #[test]
 fn the_strip_rail_draws_the_count_and_new_strip_whole() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = held_clock();
     let dir = std::env::var_os("VISUAL_ACTIVITY_OUT").map_or_else(
         || {

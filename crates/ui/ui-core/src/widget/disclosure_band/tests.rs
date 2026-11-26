@@ -34,7 +34,7 @@ fn rebuild(d: &mut Driver, band: Option<DisclosureBand>) {
     d.relayout();
 }
 
-fn band(d: &Driver) -> Option<crate::widget::Disclosing> {
+fn band(d: &Driver) -> Option<tilo_ui_base::widget::Disclosing> {
     d.root_widget().children()[0].disclosing()
 }
 
@@ -52,10 +52,10 @@ fn a_band_built_after_the_window_has_shown_arrives_over_what_follows() {
     with_monotonic_time(start, || rebuild(&mut d, None));
     let empty_y = d.targets()["below"].y0;
     with_monotonic_time(start, || {
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
         rebuild(&mut d, Some(details("wifi")));
     });
-    let Some(crate::widget::Disclosing::Band { extent, drawn }) =
+    let Some(tilo_ui_base::widget::Disclosing::Band { extent, drawn }) =
         with_monotonic_time(start, || band(&d))
     else {
         panic!("a band new to the view arrives moving");
@@ -87,15 +87,15 @@ fn an_arrived_band_rests_in_the_layout() {
     let mut d = rooted(Column::new());
     rebuild(&mut d, None);
     let empty_y = d.targets()["below"].y0;
-    let frame = crate::motion::pin_frame();
-    crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+    let frame = tilo_ui_base::motion::pin_frame();
+    tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
     rebuild(&mut d, Some(details("wifi")));
-    let Some(crate::widget::Disclosing::Band { extent, .. }) = band(&d) else {
+    let Some(tilo_ui_base::widget::Disclosing::Band { extent, .. }) = band(&d) else {
         panic!("it arrives moving");
     };
     drop(frame);
 
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     assert!(band(&d).is_none(), "at rest it is no band on its way");
     assert!(d.root_widget().is_layout_dirty(), "the layout takes it in");
     d.relayout();
@@ -123,8 +123,8 @@ fn a_band_there_from_the_first_frame_rests_and_built_again_stays() {
     assert!(band(&d).is_none(), "first paint shows it at rest");
     assert!(!d.root_widget().needs_animation_frame());
     let shown_y = d.targets()["below"].y0;
-    let _frame = crate::motion::pin_frame();
-    crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+    let _frame = tilo_ui_base::motion::pin_frame();
+    tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
     rebuild(&mut d, Some(details("wifi")));
     assert!(band(&d).is_none(), "built again with its key, it stays");
     assert!(!d.root_widget().needs_animation_frame());
@@ -143,7 +143,7 @@ fn a_band_its_view_stops_building_leaves_and_what_follows_moves_up() {
     });
     let shown_y = d.targets()["below"].y0;
     with_monotonic_time(start, || {
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
         rebuild(&mut d, None);
     });
     let empty_y = d.targets()["below"].y0;
@@ -178,10 +178,10 @@ fn a_band_with_another_key_arrives_as_the_one_before_leaves() {
         )
     });
     with_monotonic_time(start, || {
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
         rebuild(&mut d, Some(details("bluetooth")));
         assert!(
-            matches!(band(&d), Some(crate::widget::Disclosing::Band { .. })),
+            matches!(band(&d), Some(tilo_ui_base::widget::Disclosing::Band { .. })),
             "another section arrives rather than taking the place of the one before"
         );
         assert!(
@@ -196,10 +196,10 @@ fn under_reduced_motion_or_by_key_a_band_lands() {
     let mut d = rooted(Column::new());
     rebuild(&mut d, None);
     let empty_y = d.targets()["below"].y0;
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     d.set_theme(Theme::dark().with_reduce_motion(true));
     d.relayout();
-    crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+    tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
     rebuild(&mut d, Some(details("wifi")));
     assert!(band(&d).is_none(), "nothing below moves");
     assert!(
@@ -213,7 +213,7 @@ fn under_reduced_motion_or_by_key_a_band_lands() {
 
     let mut d = rooted(Column::new());
     rebuild(&mut d, None);
-    crate::motion::note_source(crate::tokens::MotionSource::Keyboard);
+    tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Keyboard);
     rebuild(&mut d, Some(details("wifi")));
     assert!(band(&d).is_none(), "a key's result lands");
 }

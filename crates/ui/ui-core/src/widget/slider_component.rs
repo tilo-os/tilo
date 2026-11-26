@@ -1,7 +1,7 @@
 //! [`Slider`] as a described component.
 
 use super::Slider;
-use crate::component::{Bound, Component, Described, Event, Value};
+use tilo_ui_base::{component::Bound, component::Component, component::Described, component::Event, component::Value};
 
 /// A value along a track (a level, a volume, a share), set by dragging the knob or pressing the
 /// track and stepped by the arrow keys, finely with Shift.

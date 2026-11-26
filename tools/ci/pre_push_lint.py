@@ -847,6 +847,7 @@ def policy_checks(root: Path, push: Push, named: set[str] | None) -> list[str]:
 # The catalogue is committed, so a push that changes one of these without
 # regenerating it lands it stale.
 CATALOGUE_INPUTS = (
+    "crates/ui/ui-base/src/",
     "crates/ui/ui-core/src/",
     "crates/ui/tilo-rich-edit/src/",
     "crates/sdk/tilo-app-window/",

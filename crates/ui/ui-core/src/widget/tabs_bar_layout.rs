@@ -13,7 +13,7 @@ impl TabBar {
     pub fn bar_layout(&self) -> crate::window_toolbar::BarLayout {
         use crate::widget::window_controls::WindowControl;
         use crate::window_toolbar::{BarControl, BarLayout};
-        let lookup = crate::i18n::I18nManager::lookup_plain;
+        let lookup = tilo_ui_base::i18n::I18nManager::lookup_plain;
         let mut spare = 0.0;
         let mut out = Vec::new();
         let mut push = |control: BarControl| {

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use tilolang_process::window::app::TlApp;
 use ui::app::EmbeddedApp;
-use ui::text_render::TextRenderer;
+use tilo_ui_base::text_render::TextRenderer;
 use ui::tilo_resource::profiling::{Sample, observe};
 use ui::winit::event::{ElementState, MouseButton};
 
@@ -31,7 +31,7 @@ fn frame(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
 
 /// One frame of the app laid out at `size`, then drawn.
 fn frame_at(tile: &mut EmbeddedApp, text: &mut TextRenderer, (width, height): (f32, f32)) {
-    use ui::widget::{DrawChild as _, Widget as _};
+    use tilo_ui_base::{widget::DrawChild as _, widget::Widget as _};
     let theme = tile.app().theme.clone();
     let mut taffy = ui::taffy::TaffyTree::new();
     let node = tile.build_layout(&mut taffy, &theme, &mut HashMap::new());
@@ -49,7 +49,7 @@ fn frame_at(tile: &mut EmbeddedApp, text: &mut TextRenderer, (width, height): (f
         ui::kurbo::Affine::IDENTITY,
         text,
         &theme,
-        &ui::presence::PresenceCtx::empty().draw_env(),
+        &tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
     );
 }
 
@@ -69,20 +69,20 @@ fn opened(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
 fn click(tile: &mut EmbeddedApp, text: &mut TextRenderer, (x, y): (f64, f64)) -> usize {
     let mut solved = 0_usize;
     let mut settle = |tile: &mut EmbeddedApp, text: &mut TextRenderer| {
-        let before = ui::widget::counts::read().solves;
+        let before = tilo_ui_base::widget::counts::read().solves;
         frame(tile, text);
-        if ui::widget::counts::read().solves > before {
+        if tilo_ui_base::widget::counts::read().solves > before {
             solved = solved.saturating_add(1);
         }
     };
-    tile.input_for_test(ui::synthetic_input::cursor_moved(x, y));
+    tile.input_for_test(tilo_ui_base::synthetic_input::cursor_moved(x, y));
     settle(tile, text);
-    tile.input_for_test(ui::synthetic_input::mouse_input(
+    tile.input_for_test(tilo_ui_base::synthetic_input::mouse_input(
         ElementState::Pressed,
         MouseButton::Left,
     ));
     settle(tile, text);
-    tile.input_for_test(ui::synthetic_input::mouse_input(
+    tile.input_for_test(tilo_ui_base::synthetic_input::mouse_input(
         ElementState::Released,
         MouseButton::Left,
     ));
@@ -142,7 +142,7 @@ fn the_gallery_reads_only_the_faces_its_text_is_set_in() {
     ui::framework::testing::drive_live_embedded::<TlApp, _>(|tile| {
         let mut text = TextRenderer::new();
         opened(tile, &mut text);
-        let read: Vec<String> = ui::font_catalog::font_files_read()
+        let read: Vec<String> = tilo_ui_base::font_catalog::font_files_read()
             .iter()
             .filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
             .collect();
@@ -150,7 +150,7 @@ fn the_gallery_reads_only_the_faces_its_text_is_set_in() {
         // The media page sets its code in the bundled monospace face, which has every character
         // it shows: no other face is read for them.
         let _ = click(tile, &mut text, (120.0, ROWS[6]));
-        let read: Vec<String> = ui::font_catalog::font_files_read()
+        let read: Vec<String> = tilo_ui_base::font_catalog::font_files_read()
             .iter()
             .filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
             .collect();
@@ -172,14 +172,14 @@ fn switches(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
     let mut rounds = Vec::new();
     let mut held = vec![held_mib()];
     for _ in 0..4 {
-        let _ = ui::widget::counts::take();
+        let _ = tilo_ui_base::widget::counts::take();
         let mut callbacks = 0_usize;
         for y in ROWS {
-            let _ = ui::widget::counts::take_restyled();
+            let _ = tilo_ui_base::widget::counts::take_restyled();
             let (frames, scopes) = observe(|| click(tile, text, (120.0, y)));
             // What a control's layout follows from (its width, what it holds, where its rows
             // stand) is decided within the solve: nothing is styled again after it.
-            let restyled = ui::widget::counts::take_restyled();
+            let restyled = tilo_ui_base::widget::counts::take_restyled();
             assert!(
                 restyled.is_empty(),
                 "a page switch (the row at {y}) styles nothing again after its solve: {restyled:?}"
@@ -203,14 +203,14 @@ fn switches(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
                  frames, {}",
                 said(&scopes)
             );
-            let asking = ui::widget::counts::asking_for_layout(tile.app_mut().root_widget_mut());
+            let asking = tilo_ui_base::widget::counts::asking_for_layout(tile.app_mut().root_widget_mut());
             assert!(
                 asking.is_empty(),
                 "a settled page asks for no layout: {asking:?}"
             );
             callbacks = callbacks.saturating_add(calls(&scopes, "ui.callback_scope"));
         }
-        let solved = ui::widget::counts::take();
+        let solved = tilo_ui_base::widget::counts::take();
         held.push(held_mib());
         // A solve that answers a container from its cache measures each leaf a few times a
         // switch; one that solves nested grids again for every constraint probed measured
@@ -247,16 +247,16 @@ fn switches(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
 fn drags(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
     let _ = click(tile, text, (120.0, ROWS[0]));
     let before = placed(tile);
-    tile.input_for_test(ui::synthetic_input::cursor_moved(EDGE, 400.0));
+    tile.input_for_test(tilo_ui_base::synthetic_input::cursor_moved(EDGE, 400.0));
     frame(tile, text);
-    tile.input_for_test(ui::synthetic_input::mouse_input(
+    tile.input_for_test(tilo_ui_base::synthetic_input::mouse_input(
         ElementState::Pressed,
         MouseButton::Left,
     ));
     frame(tile, text);
     for step in 1..=4 {
         let ((), scopes) = observe(|| {
-            tile.input_for_test(ui::synthetic_input::cursor_moved(
+            tile.input_for_test(tilo_ui_base::synthetic_input::cursor_moved(
                 EDGE + f64::from(step) * 7.0,
                 400.0,
             ));
@@ -281,7 +281,7 @@ fn drags(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
             said(&scopes)
         );
     }
-    tile.input_for_test(ui::synthetic_input::mouse_input(
+    tile.input_for_test(tilo_ui_base::synthetic_input::mouse_input(
         ElementState::Released,
         MouseButton::Left,
     ));
@@ -297,11 +297,11 @@ fn drags(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
 
 /// The wheel over the content: one layout a step, no component synced.
 fn scrolls(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
-    tile.input_for_test(ui::synthetic_input::cursor_moved(800.0, 400.0));
+    tile.input_for_test(tilo_ui_base::synthetic_input::cursor_moved(800.0, 400.0));
     frame(tile, text);
     for _ in 0..3 {
         let ((), scopes) = observe(|| {
-            tile.input_for_test(ui::synthetic_input::mouse_wheel(0.0, -2.0));
+            tile.input_for_test(tilo_ui_base::synthetic_input::mouse_wheel(0.0, -2.0));
             frame(tile, text);
         });
         assert_eq!(
@@ -323,7 +323,7 @@ type Scroller = ([f64; 4], f64, f64, f64);
 
 /// Every scroller the app shows.
 fn scrollers(tile: &mut EmbeddedApp) -> Vec<Scroller> {
-    fn walk(widget: &dyn ui::widget::Widget, out: &mut Vec<Scroller>) {
+    fn walk(widget: &dyn tilo_ui_base::widget::Widget, out: &mut Vec<Scroller>) {
         if let Some(region) = widget.primary_vertical_scroll() {
             let rect = widget.get_rect();
             out.push((
@@ -351,10 +351,10 @@ fn the_wheel_over_the_embedded_gallery_scrolls_its_content() {
         let mut text = TextRenderer::new();
         opened(tile, &mut text);
         let _ = click(tile, &mut text, (120.0, 132.0));
-        tile.input_for_test(ui::synthetic_input::cursor_moved(1270.0, 400.0));
+        tile.input_for_test(tilo_ui_base::synthetic_input::cursor_moved(1270.0, 400.0));
         frame(tile, &mut text);
         let before = scrollers(tile);
-        tile.input_for_test(ui::synthetic_input::mouse_wheel(0.0, -3.0));
+        tile.input_for_test(tilo_ui_base::synthetic_input::mouse_wheel(0.0, -3.0));
         frame(tile, &mut text);
         let after = scrollers(tile);
         let under_pointer = |shown: &[Scroller]| {

@@ -345,8 +345,8 @@ impl EntryKind {
 
     /// Its row glyph: text symbols stay legible without an emoji font.
     #[must_use]
-    pub fn icon(self) -> crate::icons::Icon {
-        use crate::icons::Icon;
+    pub fn icon(self) -> tilo_ui_base::icons::Icon {
+        use tilo_ui_base::icons::Icon;
         match self {
             Self::Text => Icon::Type,
             Self::Move => Icon::ArrowUpDown,
@@ -376,7 +376,7 @@ impl EntryKind {
 }
 
 /// Used by both widgets so the wording stays uniform with every other
-/// "time ago" label ([`crate::format::relative`]). Re-renders every frame,
+/// "time ago" label ([`tilo_ui_base::format::relative`]). Re-renders every frame,
 /// so the label freshens naturally as `now` advances — no clock plumbing
 /// needed.
 pub fn format_relative_time(ts: SystemTime, now: SystemTime) -> String {
@@ -384,7 +384,7 @@ pub fn format_relative_time(ts: SystemTime, now: SystemTime) -> String {
         return String::new();
     }
     let secs = now.duration_since(ts).unwrap_or_default().as_secs();
-    crate::format::relative(i64::try_from(secs).unwrap_or(i64::MAX))
+    tilo_ui_base::format::relative(i64::try_from(secs).unwrap_or(i64::MAX))
 }
 
 /// The first moment after `now` at which [`format_relative_time`] of `ts` reads differently, or
@@ -631,7 +631,7 @@ pub fn author_face(
     if [red, green, blue] != [0; 3] {
         row = row.avatar_colour(crate::peniko::Color::from_rgb8(red, green, blue));
     } else if author.relation == wire::Relation::Software {
-        row = row.avatar_hue(crate::tokens::colors::PresenceHue::of_agent(&author.name));
+        row = row.avatar_hue(tilo_ui_base::tokens::colors::PresenceHue::of_agent(&author.name));
     }
     row
 }

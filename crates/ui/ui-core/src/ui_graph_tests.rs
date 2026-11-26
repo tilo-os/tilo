@@ -14,7 +14,7 @@ fn rewrite(path: &std::path::Path, contents: impl AsRef<[u8]>) {
         .set_modified(before + std::time::Duration::from_secs(1))
         .unwrap();
 }
-use crate::a11y::{Action, Role};
+use tilo_ui_base::{a11y::Action, a11y::Role};
 use automerge::transaction::Transactable;
 use automerge::{ObjType, ROOT};
 
@@ -96,7 +96,7 @@ fn a_routed_path_edits_through_the_apps_action_and_shows_its_value() {
         fill_remaining_height: false,
     });
     let mut root = document.build_with(&Theme::dark(), &context).unwrap();
-    crate::widget::controls::refresh_control_action_availability(
+    tilo_ui_base::widget::controls::refresh_control_action_availability(
         root.as_mut(),
         &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
             "ordinary:graph",
@@ -119,7 +119,7 @@ fn a_routed_path_edits_through_the_apps_action_and_shows_its_value() {
         ));
     };
     set(&mut root, &mut doc, "title-a", "Atlas II");
-    let invocation = crate::widget::controls::take_control_invocation(root.as_mut())
+    let invocation = tilo_ui_base::widget::controls::take_control_invocation(root.as_mut())
         .expect("the edit is the app's action");
     assert_eq!(invocation.address.action, "rename");
     assert_eq!(invocation.arguments["title"], "Atlas II");
@@ -138,7 +138,7 @@ fn a_routed_path_edits_through_the_apps_action_and_shows_its_value() {
 
     set(&mut root, &mut doc, "draft", "Notes");
     assert!(
-        crate::widget::controls::take_control_invocation(root.as_mut()).is_none(),
+        tilo_ui_base::widget::controls::take_control_invocation(root.as_mut()).is_none(),
         "an unrouted path invokes nothing"
     );
     assert_eq!(values.get("draft").as_deref(), Some("Notes"));
@@ -150,19 +150,19 @@ fn a_routed_path_edits_through_the_apps_action_and_shows_its_value() {
 }
 
 fn perform_named(widget: &mut dyn Widget, id: &str, action: &Action, doc: &mut AutoCommit) -> bool {
-    crate::widget::find_test_id_mut(widget, id).is_some_and(|widget| {
+    tilo_ui_base::widget::find_test_id_mut(widget, id).is_some_and(|widget| {
         Widget::perform_action(
             widget,
             action,
             &[],
-            &mut crate::widget::Edits::lend(doc),
+            &mut tilo_ui_base::widget::Edits::lend(doc),
             &ROOT,
         )
     })
 }
 
 fn named_value(widget: &dyn Widget, id: &str) -> Option<String> {
-    crate::widget::find_test_id(widget, id)?
+    tilo_ui_base::widget::find_test_id(widget, id)?
         .accessibility()?
         .value
 }
@@ -173,7 +173,7 @@ fn run_operation(
     type_id: &str,
     payload: &[u8],
 ) -> Result<Option<crate::tilo_actions::ActionOutput>, String> {
-    crate::widget::ResourceOperation::local(
+    tilo_ui_base::widget::ResourceOperation::local(
         crate::tilo_actions::InvocationId::new(),
         kind,
         type_id,
@@ -181,10 +181,10 @@ fn run_operation(
     )
     .start(
         live,
-        &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+        &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
         &ROOT,
     )
-    .map(|started| started.and_then(crate::widget::ResourceOperationStart::completed))
+    .map(|started| started.and_then(tilo_ui_base::widget::ResourceOperationStart::completed))
 }
 
 fn sample() -> UiDocument {
@@ -484,7 +484,7 @@ fn routed_graph_buttons_publish_navigation_and_leave_the_document_alone() {
             role: UiButtonRole::Secondary,
         },
     );
-    let router = crate::widget::Router::new(
+    let router = tilo_ui_base::widget::Router::new(
         "home",
         ["home", "settings"],
         &Theme::dark(),
@@ -523,7 +523,7 @@ fn routed_graph_buttons_publish_navigation_and_leave_the_document_alone() {
     let audit = driver.native_app_audit();
     assert!(audit.is_certified(), "{:?}", audit.issues);
     driver
-        .perform_named("open-settings", &crate::a11y::Action::Activate)
+        .perform_named("open-settings", &tilo_ui_base::a11y::Action::Activate)
         .unwrap();
     assert_eq!(handle.current(), "settings");
     assert!(driver.native_app_audit().is_certified());
@@ -532,7 +532,7 @@ fn routed_graph_buttons_publish_navigation_and_leave_the_document_alone() {
 
 #[test]
 fn navigation_to_an_unknown_registered_screen_is_disabled() {
-    fn find_missing(node: &crate::headless::InspectionNode) -> Option<&crate::a11y::AccessNode> {
+    fn find_missing(node: &crate::headless::InspectionNode) -> Option<&tilo_ui_base::a11y::AccessNode> {
         node.semantics
             .as_ref()
             .filter(|semantics| semantics.name.as_deref() == Some("Missing"))
@@ -555,7 +555,7 @@ fn navigation_to_an_unknown_registered_screen_is_disabled() {
             role: UiButtonRole::Secondary,
         });
     }
-    let route = crate::widget::RouteHandle::new("home", ["home"]).unwrap();
+    let route = tilo_ui_base::widget::RouteHandle::new("home", ["home"]).unwrap();
     let root = document
         .build_with(
             &Theme::dark(),
@@ -669,20 +669,20 @@ fn live_edit_rebuilds_the_real_subtree_and_round_trips() {
 }
 
 fn set_named_state(widget: &mut dyn Widget, id: &str, state: &str) -> bool {
-    let Some(widget) = crate::widget::find_test_id_mut(widget, id) else {
+    let Some(widget) = tilo_ui_base::widget::find_test_id_mut(widget, id) else {
         return false;
     };
     widget.set_focus(true);
-    crate::widget::undo_points::set_state(widget, state);
+    tilo_ui_base::widget::undo_points::set_state(widget, state);
     true
 }
 
 fn named_state(widget: &dyn Widget, id: &str) -> Option<String> {
-    crate::widget::undo_points::get_state(crate::widget::find_test_id(widget, id)?)
+    tilo_ui_base::widget::undo_points::get_state(tilo_ui_base::widget::find_test_id(widget, id)?)
 }
 
 fn named_widget_ptr(widget: &dyn Widget, id: &str) -> Option<usize> {
-    crate::widget::find_test_id(widget, id)
+    tilo_ui_base::widget::find_test_id(widget, id)
         .map(|widget| (widget as *const dyn Widget).cast::<()>().addr())
 }
 
@@ -846,7 +846,7 @@ fn poll_live_source_rejects_invalid_json_without_replacing() {
 fn live_graph_actions_apply_and_dump() {
     let handle = UiGraphHandle::new(sample()).unwrap();
     let mut live = handle.widget(&Theme::dark()).unwrap();
-    let resources = crate::widget::resources::resources(&live, &AutoCommit::new());
+    let resources = tilo_ui_base::widget::resources::resources(&live, &AutoCommit::new());
     assert!(
         resources
             .iter()

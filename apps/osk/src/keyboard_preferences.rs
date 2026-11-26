@@ -73,8 +73,8 @@ mod tests {
     use std::collections::HashMap;
 
     use taffy::{NodeId, Size, Style, TaffyTree};
-    use ui::theme::Theme;
-    use ui::widget::Widget;
+    use tilo_ui_base::theme::Theme;
+    use tilo_ui_base::widget::Widget;
     use vello::kurbo::{Point, Rect};
 
     use super::{KeyboardSize, Language, OskWidget};

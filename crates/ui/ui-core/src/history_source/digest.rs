@@ -6,7 +6,7 @@
 //! briefs for tone, but it is never the source of grouping, attribution, or
 //! counts.
 
-use crate::i18n::{widget_format, widget_text};
+use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
 use crate::time::SystemTime;
 use std::collections::HashSet;
 use tilo_sort::CompactSort as _;
@@ -278,7 +278,8 @@ mod tests {
     use collab_types::ArtifactKind;
     use tilo_actions::ActionContext;
 
-    use crate::widget::{HistoryEntryId, history::HistoryAuthor};
+    use crate::widget::history::HistoryAuthor;
+    use tilo_ui_base::widget::HistoryEntryId;
 
     fn entry(id: u8, author: &str, at: u64) -> HistoryEntry {
         let mut bytes = [0; 16];
@@ -511,12 +512,12 @@ mod tests {
 
     #[test]
     fn a_german_shell_reads_its_catch_up_in_german() {
-        crate::i18n::I18nManager::install(
+        tilo_ui_base::i18n::I18nManager::install(
             "en-US",
             "de-DE",
             &[
-                ("en-US", include_str!("../../locales/en-US.ftl")),
-                ("de-DE", include_str!("../../locales/de-DE.ftl")),
+                ("en-US", include_str!("../../../ui-base/locales/en-US.ftl")),
+                ("de-DE", include_str!("../../../ui-base/locales/de-DE.ftl")),
             ],
         )
         .unwrap();

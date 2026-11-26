@@ -4,8 +4,8 @@
 //! in the same slot), a **title** in the `Title` role, an optional one-sentence **message**
 //! in secondary ink s3 under it, and an optional primary **action** s4 under the text.
 
-use crate::i18n::widget_text;
-use crate::widget::{AppModel, ModelPath};
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -16,15 +16,16 @@ use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::icons::Icon;
-use crate::interaction::InteractionEnvironment;
-use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
-use crate::text_render::{ParagraphAlign, TextRenderer, TextStyle, TextWrapMode};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::DrawChild;
-use crate::widget::{Scrollable, TaffyTreeExt, Widget};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::interaction::InteractionEnvironment;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::{text_render::ParagraphAlign, text_render::TextRenderer, text_render::TextStyle, text_render::TextWrapMode};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::DrawChild;
+use crate::widget::Scrollable;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[derive(Clone, Copy, Debug)]
 struct Parts {
@@ -132,8 +133,8 @@ impl<'a> EmptyStateContent<'a> {
         rect: Rect,
         action: Option<Rect>,
         action_target: &str,
-    ) -> crate::a11y::AccessNode {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    ) -> tilo_ui_base::a11y::AccessNode {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let mut node = AccessNode::new(Role::Group)
             .with_name(self.title)
             .with_bounds(rect);
@@ -170,7 +171,7 @@ impl<'a> EmptyStateContent<'a> {
 fn described(message: Option<&str>, hint: Option<&str>, quote: Option<&str>) -> Option<String> {
     let mut said: Vec<String> = message.into_iter().chain(hint).map(str::to_owned).collect();
     if let Some(quote) = quote {
-        said.push(crate::i18n::widget_format(
+        said.push(tilo_ui_base::i18n::widget_format(
             "empty-state-quote",
             &[("said", quote.into())],
         ));
@@ -367,7 +368,7 @@ fn quote_layout(
     quote: &str,
 ) -> (String, f64) {
     let words = quote.split_whitespace().collect::<Vec<_>>().join(" ");
-    let wrap = crate::num::f32_of_f64(width.max(1.0));
+    let wrap = tilo_ui_base::num::f32_of_f64(width.max(1.0));
     let (_, height) = text.measure_style(&words, Some(wrap), style);
     let height = f64::from(height);
     // A line as the renderer actually paints it, so the bound holds at any text scale.
@@ -655,7 +656,7 @@ pub struct PaintedStack {
 
 fn shown_content<'a>(
     content: &EmptyStateContent<'a>,
-    waiting: Option<&'a crate::workspace_sync::Waiting>,
+    waiting: Option<&'a tilo_ui_base::workspace_sync::Waiting>,
 ) -> EmptyStateContent<'a> {
     let Some(waiting) = waiting else {
         return *content;
@@ -689,7 +690,7 @@ fn paint_empty_state(
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return painted;
     }
-    let waiting = crate::workspace_sync::waiting();
+    let waiting = tilo_ui_base::workspace_sync::waiting();
     let mut waiting_spinner = None;
     let mut waiting_step = None;
     if let Some(since) = waiting.as_ref().and_then(|waiting| waiting.spinner_since) {
@@ -697,8 +698,8 @@ fn paint_empty_state(
         let now = crate::time::now();
         let (step, next) = if turning {
             (
-                crate::animation::indicator_step(since, now),
-                Some(crate::animation::next_indicator_step(since, now)),
+                tilo_ui_base::animation::indicator_step(since, now),
+                Some(tilo_ui_base::animation::next_indicator_step(since, now)),
             )
         } else {
             (0, None)
@@ -731,7 +732,7 @@ fn paint_empty_state(
 
     if let Some(slot) = hero {
         if let Some((step, next)) = waiting_step {
-            crate::workspace_sync::spinner_painted(step, next, transform.transform_rect_bbox(slot));
+            tilo_ui_base::workspace_sync::spinner_painted(step, next, transform.transform_rect_bbox(slot));
         }
         if let Some(spinner) = spinner {
             spinner.set_rect(slot);
@@ -776,7 +777,7 @@ fn paint_empty_state(
     if let Some((said, rect)) = &quote {
         // The thing's own words, set apart as a quote of them: a quiet well in the code face,
         // left-aligned under the shell's centred sentence.
-        let well = crate::tokens::colors::over(
+        let well = tilo_ui_base::tokens::colors::over(
             theme.tokens.colors.surfaces.content,
             theme.text_primary,
             0.06,
@@ -788,7 +789,7 @@ fn paint_empty_state(
             &style.quote,
             theme.text_primary,
             Point::new(rect.x0 + style.quote_pad_x, rect.y0 + style.quote_pad_y),
-            Some(crate::num::f32_of_f64(wrap)),
+            Some(tilo_ui_base::num::f32_of_f64(wrap)),
         );
     }
 
@@ -949,10 +950,10 @@ impl PaintedEmptyStates {
     #[must_use]
     pub fn describe(
         &self,
-        node: Option<crate::a11y::AccessNode>,
-        content: &dyn crate::widget::Widget,
-    ) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+        node: Option<tilo_ui_base::a11y::AccessNode>,
+        content: &dyn tilo_ui_base::widget::Widget,
+    ) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         if self.painted.is_empty() {
             return node;
         }
@@ -1007,8 +1008,8 @@ impl PaintedEmptyStates {
         Some(node)
     }
 
-    fn place_unplaced_buttons(&self, node: &mut crate::a11y::AccessNode) {
-        if node.role == crate::a11y::Role::Button
+    fn place_unplaced_buttons(&self, node: &mut tilo_ui_base::a11y::AccessNode) {
+        if node.role == tilo_ui_base::a11y::Role::Button
             && node.bounds.is_none()
             && let Some(name) = &node.name
             && let Some(action) = self.painted.iter().find(|action| action.label == *name)
@@ -1023,7 +1024,7 @@ impl PaintedEmptyStates {
     /// Where the painted action at `path` beneath `described` (what [`Self::describe`]
     /// returned) is drawn; `None` for any other node.
     #[must_use]
-    pub fn action_rect(&self, described: &crate::a11y::AccessNode, path: &[usize]) -> Option<Rect> {
+    pub fn action_rect(&self, described: &tilo_ui_base::a11y::AccessNode, path: &[usize]) -> Option<Rect> {
         let mut node = described;
         for &index in path {
             node = node.children.get(index)?;
@@ -1038,13 +1039,13 @@ impl PaintedEmptyStates {
     }
 }
 
-fn buttons_in(node: &crate::a11y::AccessNode, out: &mut Vec<(String, Option<Rect>)>) {
-    if node.role == crate::a11y::Role::Button
+fn buttons_in(node: &tilo_ui_base::a11y::AccessNode, out: &mut Vec<(String, Option<Rect>)>) {
+    if node.role == tilo_ui_base::a11y::Role::Button
         && let Some(name) = &node.name
     {
         out.push((
             name.clone(),
-            node.bounds.map(crate::a11y::AccessBounds::to_rect),
+            node.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect),
         ));
     }
     for child in &node.children {
@@ -1052,7 +1053,7 @@ fn buttons_in(node: &crate::a11y::AccessNode, out: &mut Vec<(String, Option<Rect
     }
 }
 
-fn buttons_under(widget: &dyn crate::widget::Widget, out: &mut Vec<(String, Option<Rect>)>) {
+fn buttons_under(widget: &dyn tilo_ui_base::widget::Widget, out: &mut Vec<(String, Option<Rect>)>) {
     if let Some(node) = widget.accessibility() {
         buttons_in(&node, out);
     }
@@ -1152,7 +1153,7 @@ impl EmptyState {
             spinner: None,
             busy: false,
             resolved: (String::new(), None, None),
-            i18n_revision: crate::i18n::I18nManager::revision(),
+            i18n_revision: tilo_ui_base::i18n::I18nManager::revision(),
             layout_dirty: true,
             details: None,
             details_open: false,
@@ -1241,9 +1242,9 @@ impl EmptyState {
         let (action, disclosure, lines) = if rect.width() <= 0.0 || rect.height() <= 0.0 {
             (Rect::ZERO, Rect::ZERO, Vec::new())
         } else {
-            let waiting = crate::workspace_sync::waiting();
+            let waiting = tilo_ui_base::workspace_sync::waiting();
             let content = shown_content(&content, waiting.as_ref());
-            crate::text_render::with_layout_renderer(&theme, |text| {
+            tilo_ui_base::text_render::with_layout_renderer(&theme, |text| {
                 let details_h = StackStyle::resolved(&theme, inline).details_height(
                     text,
                     rect.width(),
@@ -1312,13 +1313,13 @@ impl EmptyState {
         }
         if self.details_open {
             let lines = &style.details_lines;
-            let well = crate::tokens::colors::over(
+            let well = tilo_ui_base::tokens::colors::over(
                 theme.tokens.colors.surfaces.content,
                 theme.text_primary,
                 0.06,
             );
             for (index, line) in self.details_lines.iter().enumerate() {
-                let wrap = Some(crate::num::f32_of_f64(line.wrap));
+                let wrap = Some(tilo_ui_base::num::f32_of_f64(line.wrap));
                 match line.kind {
                     details::Kind::Words => {
                         ctx.text(&line.text, &lines.words, theme.text_dim, line.origin, wrap);
@@ -1375,7 +1376,7 @@ impl EmptyState {
         else {
             return false;
         };
-        crate::text_selection::clipboard_copy(&line.text);
+        tilo_ui_base::text_selection::clipboard_copy(&line.text);
         true
     }
 
@@ -1538,9 +1539,9 @@ impl EmptyState {
         }
     }
 
-    fn fire_action(&mut self, state: &mut crate::widget::Edits<'_>, path: &ObjId) {
+    fn fire_action(&mut self, state: &mut tilo_ui_base::widget::Edits<'_>, path: &ObjId) {
         if let Some(engine) = &mut self.engine {
-            let _ = engine.perform_action(&crate::a11y::Action::Activate, &[], state, path);
+            let _ = engine.perform_action(&tilo_ui_base::a11y::Action::Activate, &[], state, path);
         }
     }
 
@@ -1620,7 +1621,7 @@ impl EmptyState {
         if rect.width() <= 0.0
             || rect.height() <= 0.0
             || content.action_label.is_none()
-            || crate::workspace_sync::waiting().is_some_and(|waiting| !waiting.keeps_action())
+            || tilo_ui_base::workspace_sync::waiting().is_some_and(|waiting| !waiting.keeps_action())
         {
             return None;
         }
@@ -1683,7 +1684,7 @@ impl EmptyState {
     /// it is, unless a workspace that has not synced says so in its place.
     fn lists_action(&self) -> bool {
         self.resolved.2.is_some()
-            && crate::workspace_sync::waiting().is_none_or(|waiting| waiting.keeps_action())
+            && tilo_ui_base::workspace_sync::waiting().is_none_or(|waiting| waiting.keeps_action())
     }
 
     fn content(&self) -> EmptyStateContent<'_> {
@@ -1718,13 +1719,13 @@ impl Widget for EmptyState {
         Some(self)
     }
 
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::widget::ResourceOperations
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::controls::ActionControls,
+        dyn tilo_ui_base::widget::ResourceOperations
     );
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
-        let revision = crate::i18n::I18nManager::revision();
+        let revision = tilo_ui_base::i18n::I18nManager::revision();
         if revision != self.i18n_revision {
             self.i18n_revision = revision;
             self.resolve();
@@ -1811,7 +1812,7 @@ impl Widget for EmptyState {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.place_controls();
     }
 
@@ -1829,7 +1830,7 @@ impl Widget for EmptyState {
             .is_some_and(Widget::needs_animation_frame)
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1874,7 +1875,7 @@ impl Widget for EmptyState {
         self.paint_details(&mut ctx);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = ctx.logical(position);
@@ -1954,21 +1955,21 @@ impl Widget for EmptyState {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let (state, path) = crate::doc::document(state, path);
+        let (state, path) = tilo_ui_base::doc::document(state, path);
         if self.is_enabled()
             && self.action_label.is_some()
-            && matches!(action, crate::a11y::Action::Activate)
+            && matches!(action, tilo_ui_base::a11y::Action::Activate)
         {
             self.fire_action(state, path);
             true
         } else if self.action_label.is_none()
             && self.details.is_some()
-            && matches!(action, crate::a11y::Action::Activate)
+            && matches!(action, tilo_ui_base::a11y::Action::Activate)
         {
             self.toggle_details();
             true
@@ -1980,18 +1981,18 @@ impl Widget for EmptyState {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if self.details.is_some()
             && self.details_control_id() == target
-            && matches!(action, crate::a11y::Action::Activate)
+            && matches!(action, tilo_ui_base::a11y::Action::Activate)
         {
             self.toggle_details();
             return true;
         }
-        if matches!(action, crate::a11y::Action::Activate)
+        if matches!(action, tilo_ui_base::a11y::Action::Activate)
             && let Some(line) =
                 (0..self.details_lines.len()).find(|&line| self.copy_control_id(line) == target)
         {
@@ -2030,9 +2031,9 @@ impl Widget for EmptyState {
         self.lists_action().then_some(0)
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Politeness, Role};
-        let waiting = crate::workspace_sync::waiting();
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Politeness, a11y::Role};
+        let waiting = tilo_ui_base::workspace_sync::waiting();
         let (title, message, busy) = waiting.as_ref().map_or(
             (
                 &self.resolved.0,
@@ -2146,15 +2147,15 @@ impl Widget for EmptyState {
     }
 }
 
-impl crate::widget::ResourceOperations for EmptyState {
+impl tilo_ui_base::widget::ResourceOperations for EmptyState {
     fn start_operation(
         &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
+        op: &tilo_ui_base::widget::ResourceOperation<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
         match &mut self.engine {
-            Some(engine) => crate::widget::start_operation(&mut *engine, op, doc, path),
+            Some(engine) => tilo_ui_base::widget::start_operation(&mut *engine, op, doc, path),
             None => Ok(None),
         }
     }
@@ -2162,47 +2163,47 @@ impl crate::widget::ResourceOperations for EmptyState {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         self.engine
             .as_ref()
-            .map(crate::widget::resource_operation_handlers)
+            .map(tilo_ui_base::widget::resource_operation_handlers)
             .unwrap_or_default()
     }
 }
 
-impl crate::widget::controls::ActionControls for EmptyState {
+impl tilo_ui_base::widget::controls::ActionControls for EmptyState {
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         if let Some(engine) = &mut self.engine {
-            crate::widget::controls::ActionControls::attach_controls(engine, domain, attachment);
+            tilo_ui_base::widget::controls::ActionControls::attach_controls(engine, domain, attachment);
         }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.engine.as_mut().and_then(|engine| {
-            crate::widget::controls::ActionControls::take_control_invocation(engine)
+            tilo_ui_base::widget::controls::ActionControls::take_control_invocation(engine)
         })
     }
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         let mut bindings = if self.action_label.is_none() {
             Vec::new()
         } else if let Some(engine) = &self.engine {
-            crate::widget::controls::ActionControls::control_action_bindings(engine)
+            tilo_ui_base::widget::controls::ActionControls::control_action_bindings(engine)
         } else {
-            vec![crate::widget::ControlBindingMetadata::semantic(
+            vec![tilo_ui_base::widget::ControlBindingMetadata::semantic(
                 self.action_control_id(),
             )]
         };
         // The "Details" disclosure only shows what the state already holds:
         // a view-local control, never an effect on the app's resources.
         if self.details.is_some() {
-            bindings.push(crate::widget::ControlBindingMetadata::semantic(
+            bindings.push(tilo_ui_base::widget::ControlBindingMetadata::semantic(
                 self.details_control_id(),
             ));
         }
         // So is copying a line of them.
         for (index, line) in self.details_lines.iter().enumerate() {
             if line.kind == details::Kind::Verbatim {
-                bindings.push(crate::widget::ControlBindingMetadata::semantic(
+                bindings.push(tilo_ui_base::widget::ControlBindingMetadata::semantic(
                     self.copy_control_id(index),
                 ));
             }
@@ -2214,7 +2215,7 @@ impl crate::widget::controls::ActionControls for EmptyState {
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         if let Some(engine) = &mut self.engine {
-            crate::widget::controls::ActionControls::refresh_control_action_availability(
+            tilo_ui_base::widget::controls::ActionControls::refresh_control_action_availability(
                 engine, allowed,
             );
         }

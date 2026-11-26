@@ -152,7 +152,7 @@ impl RetainedEditor {
             presence.push_viewport(viewport);
         }
         self.scene.reset();
-        self.editor.draw(&mut tilo_ui::DrawCtx::new(
+        self.editor.draw(&mut tilo_ui_base::DrawCtx::new(
             &mut self.scene,
             Affine::IDENTITY,
             &mut self.text,
@@ -920,7 +920,7 @@ fn render_window(fixture: &mut RetainedEditor, viewport: Option<Rect>, top: f64)
         presence.push_viewport(viewport);
     }
     let mut scene = Scene::new();
-    fixture.editor.draw(&mut tilo_ui::DrawCtx::new(
+    fixture.editor.draw(&mut tilo_ui_base::DrawCtx::new(
         &mut scene,
         Affine::translate((0.0, -top)),
         &mut fixture.text,

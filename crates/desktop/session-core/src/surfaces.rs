@@ -196,7 +196,7 @@ pub trait Published {
     /// Perform the accessibility action `action` on `target`, as a client
     /// asked for it: exactly the path of a key or a press on the node.
     /// Whether the node was there to act on.
-    fn a11y_action(&mut self, _target: ui::accesskit::NodeId, _action: &ui::a11y::Action) -> bool {
+    fn a11y_action(&mut self, _target: ui::accesskit::NodeId, _action: &tilo_ui_base::a11y::Action) -> bool {
         false
     }
 
@@ -384,7 +384,7 @@ impl Surfaces {
     /// or changed language in between.
     #[must_use]
     pub fn revision(&self) -> Vec<(usize, u64)> {
-        let locale = ui::i18n::I18nManager::revision();
+        let locale = tilo_ui_base::i18n::I18nManager::revision();
         self.offered()
             .into_iter()
             .map(|(place, surface)| {
@@ -402,7 +402,7 @@ impl Surfaces {
     /// locked.
     #[must_use]
     pub fn resources(&self) -> Vec<ResourceSpec> {
-        let locale = ui::i18n::I18nManager::revision();
+        let locale = tilo_ui_base::i18n::I18nManager::revision();
         self.offered()
             .into_iter()
             .flat_map(|(place, surface)| {
@@ -465,7 +465,7 @@ impl Surfaces {
 
     /// The surface offering `address` now.
     fn publishing(&self, address: &ActionAddress) -> Result<Shared, ApiError> {
-        let locale = ui::i18n::I18nManager::revision();
+        let locale = tilo_ui_base::i18n::I18nManager::revision();
         self.offered()
             .into_iter()
             .find(|(place, surface)| {

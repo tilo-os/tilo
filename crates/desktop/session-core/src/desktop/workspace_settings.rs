@@ -136,7 +136,7 @@ fn scope_object_label(scope: &Scope, apps: &dyn AppDirectory) -> String {
 }
 
 fn scope_phrase(scope: &Scope, object: bool, _apps: &dyn AppDirectory) -> String {
-    let (key, args): (&str, Vec<(&str, ui::i18n::ArgValue)>) = match scope {
+    let (key, args): (&str, Vec<(&str, tilo_ui_base::i18n::ArgValue)>) = match scope {
         Scope::FsPath(path) => fs_scope_phrase(path),
         Scope::FsResource(record) => (
             "workspace-settings-scope-record",
@@ -160,7 +160,7 @@ fn scope_phrase(scope: &Scope, object: bool, _apps: &dyn AppDirectory) -> String
 /// A filesystem scope, phrased the way a person would say it. The [`WORKSPACE_FILES_PATH`] mount
 /// point never appears in the label — it's a fact about where the OS keeps the bytes, not what the
 /// user is agreeing to (HIG §4).
-fn fs_scope_phrase(path: &str) -> (&'static str, Vec<(&'static str, ui::i18n::ArgValue)>) {
+fn fs_scope_phrase(path: &str) -> (&'static str, Vec<(&'static str, tilo_ui_base::i18n::ArgValue)>) {
     // Trailing slash: `/var/workspace/` is the root, not an unnamed child.
     let trimmed = path.trim_end_matches('/');
     if trimmed == WORKSPACE_FILES_PATH {
@@ -551,7 +551,7 @@ pub fn lifetime_choices() -> Vec<(&'static str, String)> {
         .filter(|lifetime| lifetime.is_durable())
         .map(|lifetime| {
             let key = lifetime.key();
-            (key, ui::format::lifetime_kind(key))
+            (key, tilo_ui_base::format::lifetime_kind(key))
         })
         .collect()
 }
@@ -844,7 +844,7 @@ fn person_name(ws: &Workspace, local_user: &str, id: &MemberId) -> String {
     let known = member_named(ws, id).is_some();
     if id.person_id() == Some(local_user)
         && !known
-        && let Some(name) = ui::local_identity::load()
+        && let Some(name) = tilo_ui_base::local_identity::load()
             .map(|identity| identity.display_name.trim().to_owned())
             .filter(|name| !name.is_empty())
     {
@@ -992,14 +992,14 @@ pub fn listed_permissions(
             let (allows, expiry, granted_by) = match entry {
                 Listed::Sandbox(cap) => (
                     capability_allows(cap, apps),
-                    ui::format::lifetime(cap.lifetime),
+                    tilo_ui_base::format::lifetime(cap.lifetime),
                     cap.granted_by
                         .as_ref()
                         .map(|who| given_by_label(who, ws, local_user)),
                 ),
                 Listed::Grant(grant) => (
                     grant_allows(grant, apps),
-                    ui::format::lifetime(grant.lifetime),
+                    tilo_ui_base::format::lifetime(grant.lifetime),
                     match &grant.granted_by {
                         Grantee::Member(who) => Some(given_by_label(who, ws, local_user)),
                         Grantee::Role(_)
@@ -1457,17 +1457,17 @@ mod permissions_tests {
 
     /// Tomorrow at `hour`:`minute`, in Unix milliseconds: the end the composer's date field picks.
     fn tomorrow_at(hour: i8, minute: i8) -> u64 {
-        let day = ui::clock::today().tomorrow().expect("a tomorrow");
-        let time = ui::format::Time::new(hour, minute, 0, 0).expect("a time of day");
-        let at = ui::clock::instant_of(day.to_datetime(time)).expect("the end exists locally");
+        let day = tilo_ui_base::clock::today().tomorrow().expect("a tomorrow");
+        let time = tilo_ui_base::format::Time::new(hour, minute, 0, 0).expect("a time of day");
+        let at = tilo_ui_base::clock::instant_of(day.to_datetime(time)).expect("the end exists locally");
         u64::try_from(at.as_millisecond()).expect("after the epoch")
     }
 
     #[test]
     fn a_lifetime_that_ends_says_when_it_ends() {
-        assert_eq!(ui::format::lifetime(Lifetime::UntilRevoked), "Always");
+        assert_eq!(tilo_ui_base::format::lifetime(Lifetime::UntilRevoked), "Always");
         assert_eq!(
-            ui::format::lifetime(Lifetime::Until(tomorrow_at(17, 30))),
+            tilo_ui_base::format::lifetime(Lifetime::Until(tomorrow_at(17, 30))),
             "Until Tomorrow 5:30 PM",
             "a timed grant shows its end in the composer's own date words"
         );

@@ -1,10 +1,10 @@
 //! Shared, modality-aware help overlay for pan/orbit + zoom canvases.
 
 use crate::color_compat::ColorCompat;
-use crate::interaction::{InteractionEnvironment, PointerPrecision};
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::{interaction::InteractionEnvironment, interaction::PointerPrecision};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::Fill;
@@ -43,8 +43,8 @@ impl CanvasNavigationHint {
         canvas: Rect,
         kind: CanvasNavigation,
         environment: InteractionEnvironment,
-    ) -> crate::a11y::AccessNode {
-        crate::a11y::AccessNode::new(crate::a11y::Role::StaticText)
+    ) -> tilo_ui_base::a11y::AccessNode {
+        tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::StaticText)
             .with_name(Self::label(kind, environment))
             .with_bounds(Self::bounds(canvas))
     }

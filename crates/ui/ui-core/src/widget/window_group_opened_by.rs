@@ -2,8 +2,8 @@
 //! window's keyboard order: laid out right after the bar, so Tab reaches it after the tab list and
 //! before the app. Focus, the focus ring the bar paints on the mark, the accessibility node and the
 //! press all name the same control, so a keyboard-only person reaches what a pointer does.
-use crate::a11y::AccessNode;
-use crate::widget::Widget;
+use tilo_ui_base::a11y::AccessNode;
+use tilo_ui_base::widget::Widget;
 use taffy::{NodeId, TaffyTree};
 use vello::kurbo::Rect;
 
@@ -45,10 +45,10 @@ impl Widget for OpenedByStop {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &crate::theme::Theme,
+        _theme: &tilo_ui_base::theme::Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        use crate::widget::TaffyTreeExt;
+        use tilo_ui_base::widget::TaffyTreeExt;
         let style = taffy::Style {
             position: taffy::Position::Absolute,
             ..Default::default()
@@ -83,7 +83,7 @@ impl Widget for OpenedByStop {
         let (_, node) = self.shown.as_ref()?;
         Some(
             node.clone().with_state(
-                crate::a11y::AccessState::new()
+                tilo_ui_base::a11y::AccessState::new()
                     .focusable(true)
                     .focused(self.focused),
             ),
@@ -92,12 +92,12 @@ impl Widget for OpenedByStop {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _root: &crate::widget::ModelPath,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _root: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
-        if self.shown.is_none() || !matches!(action, crate::a11y::Action::Activate) {
+        if self.shown.is_none() || !matches!(action, tilo_ui_base::a11y::Action::Activate) {
             return false;
         }
         self.pressed = true;
@@ -142,7 +142,7 @@ impl super::WindowGroup {
     pub(super) fn build_opened_by_stop(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        theme: &crate::theme::Theme,
+        theme: &tilo_ui_base::theme::Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         nodes: &mut Vec<NodeId>,
         bar: bool,
@@ -162,7 +162,7 @@ impl super::WindowGroup {
             )
     }
 
-    pub(super) fn draw_bar_tips(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub(super) fn draw_bar_tips(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,

@@ -1,7 +1,8 @@
 //! What a [`super::DescribedList`] reads of an item beside building its row.
 
-use crate::component::{Component as _, Event, Moment, Person, ResourceId, Source};
-use crate::widget::{ListRowProps, Tone};
+use tilo_ui_base::{component::Component as _, component::Event, component::Moment, component::Person, component::ResourceId, component::Source};
+use crate::widget::ListRowProps;
+use tilo_ui_base::widget::Tone;
 
 use super::{DescribedRows, Held, ItemRow, ListItemProps};
 
@@ -25,7 +26,7 @@ pub(super) struct ItemFacts {
     pub(super) title: Option<String>,
 }
 
-fn prop_of<T: crate::component::PropType + Default>(
+fn prop_of<T: tilo_ui_base::component::PropType + Default>(
     source: &mut dyn Source,
     name: &str,
 ) -> Result<T, String> {

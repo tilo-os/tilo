@@ -43,7 +43,7 @@ impl<L: Loads> Platform for OnSession<L> {
     /// The families this device sets text in: the toolkit's catalog, which a session running a
     /// window has.
     fn fonts(&self) -> Vec<String> {
-        ui::font_catalog::installed_families()
+        tilo_ui_base::font_catalog::installed_families()
     }
 
     fn now(&self) -> String {
@@ -130,17 +130,17 @@ mod tests {
         fn enter(person: Option<&str>) -> Self {
             tilo_app_window::i18n::ensure();
             Self {
-                prev_locale: ui::i18n::I18nManager::current_locale(),
-                prev_person: ui::i18n::set_person_locale(person),
+                prev_locale: tilo_ui_base::i18n::I18nManager::current_locale(),
+                prev_person: tilo_ui_base::i18n::set_person_locale(person),
             }
         }
     }
 
     impl Drop for ThreadLocaleGuard {
         fn drop(&mut self) {
-            let _ = ui::i18n::set_person_locale(self.prev_person.as_deref());
-            ui::i18n::I18nManager::set_locale(&self.prev_locale);
-            ui::format::region::install_here(None, None);
+            let _ = tilo_ui_base::i18n::set_person_locale(self.prev_person.as_deref());
+            tilo_ui_base::i18n::I18nManager::set_locale(&self.prev_locale);
+            tilo_ui_base::format::region::install_here(None, None);
         }
     }
 
@@ -155,15 +155,15 @@ mod tests {
             loads: Nothing,
             waker: std::sync::Arc::new(|| {}),
         };
-        let monday = ui::format::region::RegionFormats {
-            first_day: ui::format::region::FirstDayOfWeek::Monday,
-            ..ui::format::region::RegionFormats::default()
+        let monday = tilo_ui_base::format::region::RegionFormats {
+            first_day: tilo_ui_base::format::region::FirstDayOfWeek::Monday,
+            ..tilo_ui_base::format::region::RegionFormats::default()
         };
-        ui::format::region::install_here(Some(monday), None);
+        tilo_ui_base::format::region::install_here(Some(monday), None);
         assert_eq!(platform.week_start(), 0, "a week that starts on Monday");
-        ui::format::region::install_here(
-            Some(ui::format::region::RegionFormats {
-                first_day: ui::format::region::FirstDayOfWeek::Sunday,
+        tilo_ui_base::format::region::install_here(
+            Some(tilo_ui_base::format::region::RegionFormats {
+                first_day: tilo_ui_base::format::region::FirstDayOfWeek::Sunday,
                 ..monday
             }),
             None,
@@ -173,9 +173,9 @@ mod tests {
             6,
             "the person starts their week on Sunday"
         );
-        ui::format::region::install_here(
-            Some(ui::format::region::RegionFormats {
-                first_day: ui::format::region::FirstDayOfWeek::Saturday,
+        tilo_ui_base::format::region::install_here(
+            Some(tilo_ui_base::format::region::RegionFormats {
+                first_day: tilo_ui_base::format::region::FirstDayOfWeek::Saturday,
                 ..monday
             }),
             None,
@@ -208,22 +208,22 @@ mod tests {
         };
 
         let _guard = ThreadLocaleGuard::enter(Some("en-US"));
-        ui::i18n::I18nManager::set_locale("en-US");
+        tilo_ui_base::i18n::I18nManager::set_locale("en-US");
 
         let (compiled, actions) = compile_probe();
         let platform = Rc::new(OnSession {
             loads: CompiledProbe(compiled),
             waker: std::sync::Arc::new(|| {}),
         });
-        let utc = ui::clock::Zone::of(ui::format::TimeZone::UTC);
+        let utc = tilo_ui_base::clock::Zone::of(tilo_ui_base::format::TimeZone::UTC);
         let mut harness = LocalAgreementHost::open(
             "OnSession",
             Rc::clone(&platform) as Rc<dyn Platform>,
             move |formats| {
-                ui::format::region::install_here(Some(formats), Some(utc.clone()));
+                tilo_ui_base::format::region::install_here(Some(formats), Some(utc.clone()));
             },
             |locale| {
-                let _ = ui::i18n::set_person_locale(Some(locale));
+                let _ = tilo_ui_base::i18n::set_person_locale(Some(locale));
             },
         );
         assert_platform_agrees(&mut harness, &actions);
@@ -233,12 +233,12 @@ mod tests {
         let catalog_rev = || {
             platform
                 .words_revision()
-                .wrapping_sub(ui::format::region::revision())
+                .wrapping_sub(tilo_ui_base::format::region::revision())
         };
         let rev_before = catalog_rev();
-        let _ = ui::i18n::set_person_locale(Some("en-US"));
+        let _ = tilo_ui_base::i18n::set_person_locale(Some("en-US"));
         assert_eq!(catalog_rev(), rev_before);
-        ui::i18n::I18nManager::set_locale("de-DE");
+        tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
         assert_ne!(
             catalog_rev(),
             rev_before,

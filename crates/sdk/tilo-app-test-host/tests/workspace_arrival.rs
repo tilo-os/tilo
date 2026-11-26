@@ -12,7 +12,7 @@ use tilo_app::framework::testing::drive_live_window;
 use tilo_app::prelude::*;
 use tilo_app::winit::dpi::PhysicalSize;
 use tilo_app::winit::window::CursorIcon;
-use tilo_app::workspace_sync::{self, WorkspaceSync, WorkspaceSyncState, WorkspaceUnavailable};
+use tilo_ui_base::{workspace_sync, workspace_sync::WorkspaceSync, workspace_sync::WorkspaceSyncState, workspace_sync::WorkspaceUnavailable};
 use tilo_app_test_host::TestApp;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -173,7 +173,7 @@ fn a_button_works_after_a_first_sync_slow_enough_to_show_the_skeleton() {
     let mut app = TestApp::<ButtonBoards>::new().unwrap();
     app.harness().relayout();
     // Past the grace, the arrival shows its skeleton.
-    std::thread::sleep(tilo_app::arriving::GRACE + tilo_app::time::Duration::from_millis(50));
+    std::thread::sleep(tilo_ui_base::arriving::GRACE + tilo_app::time::Duration::from_millis(50));
     app.harness().relayout();
     assert!(workspace_sync::set(Some(sync(WorkspaceSyncState::Synced))));
     assert!(
@@ -187,7 +187,7 @@ fn a_button_works_after_a_first_sync_slow_enough_to_show_the_skeleton() {
     let harness = app.harness();
     let button = harness.a11y_node_named("board-add-card").unwrap();
     harness
-        .perform_a11y_action(button, &tilo_app::a11y::Action::Activate)
+        .perform_a11y_action(button, &tilo_ui_base::a11y::Action::Activate)
         .expect("the button is pressed");
     app.settle();
     assert_eq!(app.state().cards, ["card"], "the press added the card");
@@ -224,13 +224,13 @@ fn a_workspace_that_cannot_be_dialled_says_why_and_recovers(cause: WorkspaceUnav
         "the window shows why the workspace cannot arrive: {reason}"
     );
     assert_eq!(VIEWS.with(Cell::get), 0, "the view waits");
-    let retry = tilo_app::i18n::widget_text("arriving-retry");
+    let retry = tilo_ui_base::i18n::widget_text("arriving-retry");
     let harness = app.harness();
     let button = harness
         .a11y_node_named(&retry)
         .expect("the failure offers a retry");
     harness
-        .perform_a11y_action(button, &tilo_app::a11y::Action::Activate)
+        .perform_a11y_action(button, &tilo_ui_base::a11y::Action::Activate)
         .expect("the retry is pressed");
     assert!(
         workspace_sync::take_retry(),

@@ -2,9 +2,7 @@
 
 use tilo_ui_graph::component::{CaseDescription, EnumDescription};
 
-use crate::component::{
-    Component, Described, PropType, Type, Value, case_field, case_field_description,
-};
+use tilo_ui_base::{component::Component, component::Described, component::PropType, component::Type, component::Value, component::case_field, component::case_field_description};
 
 use super::PolarAreaChart;
 use crate::widget::chart_data::ChartItem;
@@ -25,7 +23,7 @@ impl PropType for PolarAreaValue {
 
     fn from_value(value: &Value) -> Result<Self, String> {
         let Value::Case { case, fields } = value else {
-            return Err(crate::component::wrong(&Self::ty(), value));
+            return Err(tilo_ui_base::component::wrong(&Self::ty(), value));
         };
         if case != "area" {
             return Err(format!(

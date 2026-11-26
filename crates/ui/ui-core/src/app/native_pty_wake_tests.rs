@@ -113,9 +113,9 @@ impl PtyRoot {
     }
 }
 impl Widget for PtyRoot {
-    crate::provides!(
-        dyn crate::widget::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn tilo_ui_base::widget::ResourceOperations
     );
     fn sync(&mut self, _: &AppModel, _: &ModelPath) {}
     fn update(&mut self, _: &AppModel, _: &ModelPath) -> bool {
@@ -126,13 +126,13 @@ impl Widget for PtyRoot {
         }
         self.queued.len() != prior
     }
-    fn settle(&mut self, doc: &mut crate::widget::Edits<'_>, _: &automerge::ObjId) {
+    fn settle(&mut self, doc: &mut tilo_ui_base::widget::Edits<'_>, _: &automerge::ObjId) {
         doc.document_mut()
             .put(ROOT, "pty-output", self.queued.as_str())
             .unwrap();
     }
     crate::testing::inert_widget_methods!(unregistered_leaf_layout);
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -146,17 +146,17 @@ impl Widget for PtyRoot {
     }
 }
 
-impl crate::widget::ResourceOperations for PtyRoot {
+impl tilo_ui_base::widget::ResourceOperations for PtyRoot {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[TYPE]
     }
 
     fn start_operation(
         &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
+        op: &tilo_ui_base::widget::ResourceOperation<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         _: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
         let request = op.request();
         if request.type_id != TYPE {
             return Ok(None);
@@ -175,7 +175,7 @@ impl crate::widget::ResourceOperations for PtyRoot {
                 serde_json::json!({"text": doc.get(ROOT, "pty-output").unwrap().and_then(|(value,_)| value.as_str().map(str::to_owned)).unwrap_or_default()}),
             ),
         };
-        Ok(Some(crate::widget::ResourceOperationStart::Completed(
+        Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput {
                 value,
                 resources: vec![],
@@ -183,7 +183,7 @@ impl crate::widget::ResourceOperations for PtyRoot {
         )))
     }
 }
-impl crate::widget::resources::PublishesResources for PtyRoot {
+impl tilo_ui_base::widget::resources::PublishesResources for PtyRoot {
     fn resources(&self, _: &AutoCommit) -> Vec<ResourceSpec> {
         vec![
             ResourceSpec::new(TYPE, TYPE, "PTY")

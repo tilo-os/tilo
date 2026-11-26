@@ -7,7 +7,7 @@ use vello::kurbo::Rect;
 
 use super::WindowGroup;
 
-use crate::widget::Widget as _;
+use tilo_ui_base::widget::Widget as _;
 
 impl WindowGroup {
     /// Whether the window covers its display and shows its bar over its content now.
@@ -46,7 +46,7 @@ impl WindowGroup {
             && let Ok(mut bar_style) = taffy.style(bar).cloned()
         {
             bar_style.position = taffy::Position::Absolute;
-            bar_style.inset.top = taffy::LengthPercentageAuto::length(crate::num::f32_of_f64(top));
+            bar_style.inset.top = taffy::LengthPercentageAuto::length(tilo_ui_base::num::f32_of_f64(top));
             bar_style.inset.left = taffy::LengthPercentageAuto::length(0.0);
             bar_style.size.width = Dimension::percent(1.0);
             let _ = taffy.set_style(bar, bar_style);
@@ -55,7 +55,7 @@ impl WindowGroup {
 
     /// The bar over the content stands on its own ground, so the app's top row never shows
     /// through it.
-    pub(super) fn draw_bar_over_content(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub(super) fn draw_bar_over_content(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -69,7 +69,7 @@ impl WindowGroup {
             None,
             &self.bar.get_rect(),
         );
-        self.draw_bar(&mut crate::draw::DrawCtx::new(
+        self.draw_bar(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             tr,

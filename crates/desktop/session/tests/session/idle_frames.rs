@@ -7,7 +7,7 @@ use super::*;
 /// needs a frame must settle, or the loop draws the same shell again and again.
 #[test]
 fn a_settled_shell_asks_for_no_frame() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     settle(&mut session, 300);
     // What the shell asks for is the property; the frames above are only how far it was stepped. A
@@ -35,7 +35,7 @@ fn a_settled_shell_asks_for_no_frame() {
 /// second: nothing of it asks to be looked at.
 #[test]
 fn an_idle_shell_wakes_for_nothing() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     settle(&mut session, 60);
     let window = Duration::from_secs(2);
@@ -59,7 +59,7 @@ fn an_idle_shell_wakes_for_nothing() {
 /// takes them in at its blank, so the shell's turn is taken once per refresh, not once per event.
 #[test]
 fn a_held_frame_takes_the_turns_of_a_gesture() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     settle(&mut session, 30);
     let drawn = session.compositor().frames_presented();
@@ -103,7 +103,7 @@ fn a_held_frame_takes_the_turns_of_a_gesture() {
 /// sleeps.
 #[test]
 fn a_turn_handed_to_a_settled_shell_paints_nothing() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     let mut quiet = 0_u32;
     let mut drawn = session.compositor().frames_presented();

@@ -80,8 +80,8 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
-use ui::widget::TaffyTreeExt;
-use ui::widget::{AppModel, ModelPath};
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 #[cfg(test)]
@@ -93,12 +93,12 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhas
 
 use crate::actions::SetPreference;
 use crate::learned::{Learned, Lesson};
-use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Role};
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Action as AccessibilityAction, a11y::Role};
 
 #[cfg(test)]
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::Widget;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
 
 use crate::autocorrect::{Autocorrector, KeyAdjacency};
 use crate::dict::Language;
@@ -130,25 +130,25 @@ use crate::touch_model::{HitCell, NextKeyCache, TouchKey, TouchModel};
 /// A key row is one header-bar tall: well above the minimum touch target, and
 /// the same code serves a phone (small surface) and a desktop (wide surface);
 /// only the width differs.
-pub fn key_row_height(metrics: &ui::tokens::Metrics) -> f32 {
+pub fn key_row_height(metrics: &tilo_ui_base::tokens::Metrics) -> f32 {
     metrics.header_height
 }
-pub fn toolbar_row_height(spacing: &ui::tokens::Spacing) -> f32 {
+pub fn toolbar_row_height(spacing: &tilo_ui_base::tokens::Spacing) -> f32 {
     spacing.s12
 }
-pub fn suggestion_row_height(metrics: &ui::tokens::Metrics) -> f32 {
+pub fn suggestion_row_height(metrics: &tilo_ui_base::tokens::Metrics) -> f32 {
     metrics.bar_height
 }
 pub fn keyboard_height(
     rows: usize,
-    spacing: &ui::tokens::Spacing,
-    metrics: &ui::tokens::Metrics,
+    spacing: &tilo_ui_base::tokens::Spacing,
+    metrics: &tilo_ui_base::tokens::Metrics,
 ) -> f32 {
     toolbar_row_height(spacing)
         + suggestion_row_height(metrics)
         + rows as f32 * key_row_height(metrics)
 }
-pub fn keyboard_gutter(spacing: &ui::tokens::Spacing) -> f64 {
+pub fn keyboard_gutter(spacing: &tilo_ui_base::tokens::Spacing) -> f64 {
     f64::from(spacing.s2)
 }
 pub(crate) const MAX_SUGGESTIONS: usize = 5;
@@ -220,7 +220,7 @@ pub struct OskWidget {
     /// Decoder behind the [`SwipeModel`] boundary (geometric today; FUTO later).
     swipe_model: Box<dyn SwipeModel>,
     predictor: Predictor,
-    personal_vocabulary: Option<std::sync::Arc<dyn ui::personal_dictionary::Vocabulary>>,
+    personal_vocabulary: Option<std::sync::Arc<dyn tilo_ui_base::personal_dictionary::Vocabulary>>,
     language: Language,
     typing_language: Option<Language>,
     suggestions: Vec<Suggestion>,
@@ -258,8 +258,8 @@ pub struct OskWidget {
     /// The theme's spacing scale and metrics, captured at `build_layout`,
     /// for the emoji panel; and the whole theme, so the panel's search field
     /// places its controls in the type the frame measures with.
-    spacing: ui::tokens::Spacing,
-    metrics: ui::tokens::Metrics,
+    spacing: tilo_ui_base::tokens::Spacing,
+    metrics: tilo_ui_base::tokens::Metrics,
     layout_theme: Theme,
 
     // --- output ---
@@ -345,9 +345,9 @@ impl OskWidget {
             context_generation: None,
             context_handler: None,
             context_error: None,
-            target_key_height: key_row_height(&ui::tokens::Metrics::BASE),
-            toolbar_height: toolbar_row_height(&ui::tokens::Spacing::BASE),
-            suggestion_height: suggestion_row_height(&ui::tokens::Metrics::BASE),
+            target_key_height: key_row_height(&tilo_ui_base::tokens::Metrics::BASE),
+            toolbar_height: toolbar_row_height(&tilo_ui_base::tokens::Spacing::BASE),
+            suggestion_height: suggestion_row_height(&tilo_ui_base::tokens::Metrics::BASE),
             suggestions_enabled: true,
             autocorrect_enabled: true,
             key_size: KeyboardSize::Standard,
@@ -389,11 +389,11 @@ impl OskWidget {
             cursor_drag: None,
             hit_overlay: false,
             emoji_panel: EmojiPanel::new(emoji::Catalogue::for_locale(
-                &ui::i18n::I18nManager::current_locale(),
+                &tilo_ui_base::i18n::I18nManager::current_locale(),
             )),
             emoji_recents: emoji::Recents::default(),
-            spacing: ui::tokens::Spacing::BASE,
-            metrics: ui::tokens::Metrics::BASE,
+            spacing: tilo_ui_base::tokens::Spacing::BASE,
+            metrics: tilo_ui_base::tokens::Metrics::BASE,
             layout_theme: Theme::default(),
             mirror: TextMirror::new(MAX_PENDING_TEXT_BYTES),
             output: VecDeque::new(),
@@ -473,7 +473,7 @@ impl OskWidget {
         self.toolbar = items;
         self.toolbar.push(OskToolbarItem::new(
             "dismiss",
-            Some(ui::icons::Icon::ChevronDown),
+            Some(tilo_ui_base::icons::Icon::ChevronDown),
             &crate::i18n::t("osk-toolbar-dismiss"),
             OskToolbarAction::Dismiss,
         ));
@@ -553,7 +553,7 @@ impl OskWidget {
     /// This does not learn words or persist an OSK-specific vocabulary.
     pub fn set_personal_vocabulary(
         &mut self,
-        source: Option<std::sync::Arc<dyn ui::personal_dictionary::Vocabulary>>,
+        source: Option<std::sync::Arc<dyn tilo_ui_base::personal_dictionary::Vocabulary>>,
     ) {
         self.personal_vocabulary = source;
         self.last_correction = None;
@@ -564,7 +564,7 @@ impl OskWidget {
         self.refresh_completion_suggestions();
     }
 
-    fn personal_words(&self) -> ui::personal_dictionary::Snapshot {
+    fn personal_words(&self) -> tilo_ui_base::personal_dictionary::Snapshot {
         self.personal_vocabulary
             .as_ref()
             .and_then(|source| source.snapshot().ok())
@@ -1063,7 +1063,7 @@ impl OskWidget {
             }
             OskToolbarAction::Modifier(key) => self.modifiers.tap(*key),
             OskToolbarAction::Paste => {
-                if let Some(text) = ui::clipboard_paste() {
+                if let Some(text) = tilo_ui_base::clipboard_paste() {
                     self.finish_editing_word();
                     // Clipboard text is literal and never training input.
                     self.emit(OskOutput::Commit(text));
@@ -2671,11 +2671,11 @@ impl Widget for OskWidget {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.layout_bands();
     }
 
-    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2737,7 +2737,7 @@ impl Widget for OskWidget {
         .draw(scene, transform, text_renderer, theme);
 
         // Last, so the skin-tone row floats over the keys.
-        self.emoji_panel.draw(&mut ui::DrawCtx::new(
+        self.emoji_panel.draw(&mut tilo_ui_base::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -2746,7 +2746,7 @@ impl Widget for OskWidget {
         ));
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         // A hidden keyboard occupies no area and draws nothing, so it should
         // not consume or react to pointer events meant for the app behind it.
@@ -2846,11 +2846,11 @@ impl Widget for OskWidget {
     }
 
     fn needs_redraw(&self) -> bool {
-        ui::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        ui::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -2967,7 +2967,7 @@ impl Widget for OskWidget {
         &mut self,
         target: &str,
         action: &AccessibilityAction,
-        _state: &mut ui::widget::Edits<'_>,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !self.visible {

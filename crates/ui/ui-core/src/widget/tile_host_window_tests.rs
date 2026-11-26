@@ -2,7 +2,7 @@
 //! screen the shell's shared layout tree is rooted at.
 
 use super::*;
-use crate::widget::TaffyTreeExt;
+use tilo_ui_base::widget::TaffyTreeExt;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -32,7 +32,7 @@ impl Widget for DialogApp {
         )
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         let child = taffy.children(node).unwrap()[0];
         self.dialog
             .apply_layout(taffy, child, Point::new(rect.x0, rect.y0));
@@ -41,14 +41,14 @@ impl Widget for DialogApp {
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![&mut self.dialog]
     }
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        self.dialog.draw_overlay(&mut crate::draw::DrawCtx::new(
+        self.dialog.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -81,7 +81,7 @@ impl crate::widget::app_widget::AppWidget for DialogApp {
 #[test]
 fn an_apps_dialog_centres_inside_its_window_not_the_screen() {
     use taffy::prelude::TaffyMaxContent;
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let theme = Theme::dark();
     let seen = std::rc::Rc::new(std::cell::Cell::new(Rect::ZERO));
     let dialog = crate::widget::ModalDialog::new(
@@ -139,9 +139,9 @@ fn an_apps_dialog_centres_inside_its_window_not_the_screen() {
     };
     inside(seen.get(), "before its first paint");
 
-    let presence = crate::presence::PresenceCtx::default();
+    let presence = tilo_ui_base::presence::PresenceCtx::default();
     presence.viewport.set(Some(screen));
-    host.draw_overlay(&mut crate::draw::DrawCtx::new(
+    host.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut Scene::new(),
         Affine::IDENTITY,
         &mut TextRenderer::new(),
@@ -161,7 +161,7 @@ struct WindowProbe {
 }
 
 impl Widget for WindowProbe {
-    crate::provides!(dyn crate::bound_dispatch::BoundTraversal);
+    tilo_ui_base::provides!(dyn crate::bound_dispatch::BoundTraversal);
     crate::testing::inert_widget_methods!(unregistered_leaf_layout);
     fn name(&self) -> &'static str {
         "WindowProbe"

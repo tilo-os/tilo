@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 use tilo_content::ContentStore;
-use tilo_ui::TextRenderer;
+use tilo_ui_base::TextRenderer;
 
 use crate::model::Artwork;
 use crate::render::Renderer;

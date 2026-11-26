@@ -396,7 +396,7 @@ impl DesktopHandle {
 pub fn is_search_chord(
     event: &WindowEvent,
     modifiers: ui::winit::event::Modifiers,
-    platform: ui::platform::PlatformConventions,
+    platform: tilo_ui_base::platform::PlatformConventions,
 ) -> bool {
     let WindowEvent::KeyboardInput { event: key, .. } = event else {
         return false;
@@ -409,7 +409,7 @@ pub fn is_search_chord(
         return false;
     }
     let command = mods.super_key()
-        || (mods.control_key() && platform.platform() != ui::platform::Platform::MacOs);
+        || (mods.control_key() && platform.platform() != tilo_ui_base::platform::Platform::MacOs);
     match &key.logical_key {
         Key::Character(text) => command && text.eq_ignore_ascii_case("k"),
         Key::Named(NamedKey::Space) => mods.super_key() && !mods.control_key(),
@@ -628,7 +628,7 @@ pub struct HostAction {
     pub label: Option<String>,
     #[serde(default)]
     pub subtitle: Option<String>,
-    /// The action's own picture, by its Lucide name ([`ui::icons::Icon::name`]): every list of it
+    /// The action's own picture, by its Lucide name ([`tilo_ui_base::icons::Icon::name`]): every list of it
     /// draws the one the action declares, never a generic glyph of its kind.
     #[serde(default)]
     pub icon: Option<String>,
@@ -726,11 +726,11 @@ pub fn host_choice(key: &str) -> Option<&str> {
 
 /// The search chord `is_search_chord` answers to, as the keyboard spells it on `platform` : ⌘K on a
 /// Mac, where Ctrl+K does not open search, and Ctrl K elsewhere.
-pub fn search_chord_keys(platform: ui::platform::PlatformConventions) -> Vec<String> {
-    let keycaps = ui::keycaps::active();
-    if platform.platform() == ui::platform::Platform::MacOs {
+pub fn search_chord_keys(platform: tilo_ui_base::platform::PlatformConventions) -> Vec<String> {
+    let keycaps = tilo_ui_base::keycaps::active();
+    if platform.platform() == tilo_ui_base::platform::Platform::MacOs {
         keycaps
-            .on_family(ui::interaction::KeyboardFamily::Apple)
+            .on_family(tilo_ui_base::interaction::KeyboardFamily::Apple)
             .chord_keys(["Super"], "k")
     } else {
         keycaps.chord_keys(["Ctrl"], "k")
@@ -853,7 +853,7 @@ pub fn commands(
             id: format!("{HOST_PREFIX}{}", action.id),
             title: action.title.clone(),
             subtitle: action.subtitle.clone(),
-            icon: action.icon.as_deref().and_then(ui::icons::Icon::from_name),
+            icon: action.icon.as_deref().and_then(tilo_ui_base::icons::Icon::from_name),
             unasked: action.unasked && !action.destructive,
         })
         .collect();
@@ -870,7 +870,7 @@ pub fn commands(
                 id: CLOSE_WINDOW.into(),
                 title: "Close window".into(),
                 subtitle: title.clone(),
-                icon: Some(ui::icons::Icon::X),
+                icon: Some(tilo_ui_base::icons::Icon::X),
                 unasked: false,
             });
         }
@@ -883,9 +883,9 @@ pub fn commands(
             },
             subtitle: title,
             icon: Some(if group.maximized {
-                ui::icons::Icon::Minimize2
+                tilo_ui_base::icons::Icon::Minimize2
             } else {
-                ui::icons::Icon::Maximize2
+                tilo_ui_base::icons::Icon::Maximize2
             }),
             unasked: false,
         });
@@ -903,7 +903,7 @@ pub fn commands(
                     crate::desktop::names::workspace(&workspace.name)
                 ),
                 subtitle: Some("Workspace".into()),
-                icon: Some(ui::icons::Icon::LayoutGrid),
+                icon: Some(tilo_ui_base::icons::Icon::LayoutGrid),
                 unasked: false,
             });
         }

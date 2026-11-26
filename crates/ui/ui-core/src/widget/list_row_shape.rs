@@ -5,12 +5,13 @@ use vello::kurbo::{Rect, RoundedRect};
 use vello::peniko::Fill;
 
 use super::{ListRow, ListRowFace, RowLeading, RowMetrics, RowValue};
-use crate::paint::PaintCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 use crate::widget::skeleton::{LAST_LINE_SHARE, TITLE_SHARE, paint_bar};
-use crate::widget::{AvatarFace, MediaArt};
-use crate::widget::{RowLeadingShape, RowShape};
+use crate::widget::MediaArt;
+use tilo_ui_base::widget::AvatarFace;
+use tilo_ui_base::{widget::RowLeadingShape, widget::RowShape};
 
 impl RowShape {
     /// A face of this kind that says nothing: the geometry of the row.
@@ -31,7 +32,7 @@ impl RowShape {
         }
         match self.leading {
             RowLeadingShape::None => face,
-            RowLeadingShape::Mark => face.leading(RowLeading::Icon(crate::icons::Icon::Circle)),
+            RowLeadingShape::Mark => face.leading(RowLeading::Icon(tilo_ui_base::icons::Icon::Circle)),
             RowLeadingShape::Avatar => face.leading(RowLeading::Avatar(AvatarFace::new("", ""))),
             RowLeadingShape::Tile => {
                 face.leading(RowLeading::Avatar(AvatarFace::new("", "").square()))

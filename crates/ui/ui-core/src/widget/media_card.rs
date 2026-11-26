@@ -10,15 +10,16 @@ use vello::kurbo::{Point, Rect, RoundedRect};
 use vello::peniko::{self, Brush, Fill, Gradient};
 use winit::event::WindowEvent;
 
-use crate::ImageStore;
-use crate::icons::{AppImage, Icon};
-use crate::paint::PaintCtx;
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::DrawChild;
+use tilo_ui_base::ImageStore;
+use tilo_ui_base::{icons::AppImage, icons::Icon};
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::DrawChild;
 use crate::widget::activation::{Activation, Interaction};
-use crate::widget::{Element, MediaAspect, TaffyTreeExt, Widget, card_column_width, card_columns};
+use crate::{widget::card_column_width, widget::card_columns};
+use tilo_ui_base::{widget::Element, widget::MediaAspect, widget::TaffyTreeExt, widget::Widget};
 
 /// Where a card stands in its grid, and the cell the grid reads the card the pointer is over
 /// from: what a range of cards is taken by.
@@ -43,7 +44,7 @@ pub enum MediaArt<'a> {
     Kind(Icon),
     Paint(ArtPainter<'a>),
     Placeholder,
-    Arriving(crate::arriving::Step),
+    Arriving(tilo_ui_base::arriving::Step),
 }
 
 impl std::fmt::Debug for MediaArt<'_> {
@@ -85,7 +86,7 @@ pub enum MediaSize {
     Large,
 }
 
-crate::choice!(MediaSize, "MediaSize", {
+tilo_ui_base::choice!(MediaSize, "MediaSize", {
     Small => "small",
     Regular => "regular",
     Large => "large",
@@ -143,7 +144,7 @@ impl MediaMetrics {
             icon: f64::from(metrics.icon_md),
             mark: f64::from(metrics.icon_sm),
             mark_gap: f64::from(spacing.s1),
-            creator_side: crate::widget::AvatarSize::Small.side(theme),
+            creator_side: tilo_ui_base::widget::AvatarSize::Small.side(theme),
             compact: f64::from(metrics.bar_control_height),
         }
     }
@@ -163,7 +164,7 @@ pub struct MediaCardFace<'a> {
     seed: Option<&'a str>,
     meta: [Option<&'a str>; 2],
     meta_mark: Option<Icon>,
-    creator: Option<crate::widget::AvatarFace<'a>>,
+    creator: Option<tilo_ui_base::widget::AvatarFace<'a>>,
     badges: &'a [MediaBadge<'a>],
     hover_action: Option<Icon>,
     selected: bool,
@@ -268,7 +269,7 @@ impl<'a> MediaCardFace<'a> {
 
     /// Creator attribution beside the metadata, using the shared avatar painter.
     #[must_use]
-    pub fn creator(mut self, avatar: crate::widget::AvatarFace<'a>) -> Self {
+    pub fn creator(mut self, avatar: tilo_ui_base::widget::AvatarFace<'a>) -> Self {
         self.creator = Some(avatar);
         self
     }
@@ -291,13 +292,13 @@ impl<'a> MediaCardFace<'a> {
             return (0.0, 0.0);
         };
         let lines = width.map_or(2, |width| {
-            let wrap = crate::num::f32_of_f64(width.max(1.0));
+            let wrap = tilo_ui_base::num::f32_of_f64(width.max(1.0));
             text.clamp_to_lines(title, &m.title, wrap, 2).len().max(1)
         });
-        let title = crate::num::f64_of_usize(lines) * MediaMetrics::line(text, &m.title);
+        let title = tilo_ui_base::num::f64_of_usize(lines) * MediaMetrics::line(text, &m.title);
         let mut h = title;
         let meta_lines = self.meta.iter().flatten().count();
-        let metadata = crate::num::f64_of_usize(meta_lines) * MediaMetrics::line(text, &m.meta);
+        let metadata = tilo_ui_base::num::f64_of_usize(meta_lines) * MediaMetrics::line(text, &m.meta);
         h += if self.creator.is_some() {
             metadata.max(m.creator_side)
         } else {
@@ -386,11 +387,11 @@ impl<'a> MediaCardFace<'a> {
             && let Some(target) = self.hover_action_rect(rect, theme)
         {
             let disc = RoundedRect::from_rect(target, target.width() / 2.0);
-            crate::part_paint::material::paint_material(
+            tilo_ui_base::part_paint::material::paint_material(
                 ctx.scene,
                 ctx.transform,
                 &disc,
-                crate::part_paint::material::Material::Floating,
+                tilo_ui_base::part_paint::material::Material::Floating,
                 theme,
             );
             let glyph = Rect::from_center_size(target.center(), (m.icon, m.icon));
@@ -413,7 +414,7 @@ impl<'a> MediaCardFace<'a> {
                 let room = (rect.x1 - text_x).max(1.0);
                 let line =
                     ctx.text
-                        .elide_to_width_style(title, crate::num::f32_of_f64(room), &m.title);
+                        .elide_to_width_style(title, tilo_ui_base::num::f32_of_f64(room), &m.title);
                 let title_line = MediaMetrics::line(ctx.text, &m.title);
                 let y = rect.y0 + ((rect.height() - title_line) / 2.0).max(0.0);
                 ctx.text(
@@ -428,7 +429,7 @@ impl<'a> MediaCardFace<'a> {
         }
 
         if let Some(title) = self.title {
-            let width = crate::num::f32_of_f64(rect.width().max(1.0));
+            let width = tilo_ui_base::num::f32_of_f64(rect.width().max(1.0));
             let mut y = art.y1 + m.text_gap;
             let centred = self.aspect == MediaAspect::Circle;
             let start = |ctx: &mut PaintCtx<'_>, line: &str, style: &TextStyle, extra: f64| {
@@ -458,7 +459,7 @@ impl<'a> MediaCardFace<'a> {
                 let mark_w = mark.map_or(0.0, |_| m.mark + m.mark_gap);
                 let line = ctx.text.elide_to_width_style(
                     meta,
-                    crate::num::f32_of_f64((f64::from(width) - mark_w - creator_inset).max(1.0)),
+                    tilo_ui_base::num::f32_of_f64((f64::from(width) - mark_w - creator_inset).max(1.0)),
                     &m.meta,
                 );
                 let x = start(ctx, &line, &m.meta, mark_w) + creator_inset;
@@ -488,8 +489,8 @@ impl<'a> MediaCardFace<'a> {
 
     /// The card's accessibility node: named by its title, valued by its meta lines and
     /// badges.
-    pub fn accessibility(&self, rect: Rect) -> crate::a11y::AccessNode {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    pub fn accessibility(&self, rect: Rect) -> tilo_ui_base::a11y::AccessNode {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let mut value: Vec<String> = self
             .meta
             .iter()
@@ -540,9 +541,9 @@ fn inner_hairline(ctx: &mut PaintCtx<'_>, art: Rect, radius: f64) {
     ctx.scene.stroke(
         &vello::kurbo::Stroke::new(1.0),
         ctx.transform,
-        crate::tokens::colors::Colors::hairline_on(ground, INNER_HAIRLINE_ALPHA),
+        tilo_ui_base::tokens::colors::Colors::hairline_on(ground, INNER_HAIRLINE_ALPHA),
         None,
-        &crate::surface::edge_outline(art, radius),
+        &tilo_ui_base::surface::edge_outline(art, radius),
     );
 }
 
@@ -583,13 +584,13 @@ fn paint_art(
     };
     match kind {
         MediaArt::Image(image) => {
-            crate::image_store::paint_image_cover(ctx.scene, ctx.transform, art, image, radius);
+            tilo_ui_base::image_store::paint_image_cover(ctx.scene, ctx.transform, art, image, radius);
         }
         MediaArt::AppIcon(icon) => {
             neutral_tile(ctx);
             let side = art.width().min(art.height()) * 0.6;
             let slot = Rect::from_center_size(art.center(), (side, side));
-            if !crate::icons::draw_app_image(ctx.scene, ctx.transform, slot, icon) {
+            if !tilo_ui_base::icons::draw_app_image(ctx.scene, ctx.transform, slot, icon) {
                 paint_placeholder(ctx, m, art, radius, title);
             }
         }
@@ -620,7 +621,7 @@ fn paint_art(
                 ]
             };
             for (quad, image) in quads.iter().zip(images) {
-                crate::image_store::paint_image_cover(ctx.scene, ctx.transform, *quad, image, 0.0);
+                tilo_ui_base::image_store::paint_image_cover(ctx.scene, ctx.transform, *quad, image, 0.0);
             }
             ctx.scene.pop_layer();
         }
@@ -641,7 +642,7 @@ fn paint_art(
             paint_placeholder(ctx, m, art, radius, title);
         }
         MediaArt::Arriving(step) => {
-            if step == crate::arriving::Step::Skeleton {
+            if step == tilo_ui_base::arriving::Step::Skeleton {
                 let tone = crate::widget::skeleton_tone(ctx.theme.tokens.colors.surfaces.content);
                 ctx.scene.fill(
                     Fill::NonZero,
@@ -674,7 +675,7 @@ fn paint_placeholder(
         None,
         &RoundedRect::from_rect(art, radius),
     );
-    let initials = crate::widget::initials_for_name(title);
+    let initials = tilo_ui_base::widget::initials_for_name(title);
     if initials.is_empty() {
         return;
     }
@@ -682,7 +683,7 @@ fn paint_placeholder(
     let style = m
         .initials
         .clone()
-        .with_content_size(crate::num::f32_of_f64(side * PLACEHOLDER_INITIALS_SHARE));
+        .with_content_size(tilo_ui_base::num::f32_of_f64(side * PLACEHOLDER_INITIALS_SHARE));
     let (w, h) = ctx.text.measure_style(&initials, None, &style);
     ctx.text(
         &initials,
@@ -712,11 +713,11 @@ fn paint_badge(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, badge: Media
                 art.y1 - pad,
             );
             let shape = RoundedRect::from_rect(pill, pill.height() / 2.0);
-            crate::part_paint::material::paint_material(
+            tilo_ui_base::part_paint::material::paint_material(
                 ctx.scene,
                 ctx.transform,
                 &shape,
-                crate::part_paint::material::Material::Floating,
+                tilo_ui_base::part_paint::material::Material::Floating,
                 theme,
             );
             ctx.text(
@@ -753,7 +754,7 @@ fn paint_badge(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, badge: Media
                 colors.ink_on(
                     fill,
                     theme.text_primary,
-                    crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+                    tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST,
                 ),
                 Point::new(pill.x0 + pad / 2.0, pill.y0 + pad / 4.0),
                 None,
@@ -767,11 +768,11 @@ fn paint_badge(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, badge: Media
                 art.x1 - pad,
                 art.y0 + pad + side,
             );
-            crate::part_paint::material::paint_material(
+            tilo_ui_base::part_paint::material::paint_material(
                 ctx.scene,
                 ctx.transform,
                 &RoundedRect::from_rect(disc, side / 2.0),
-                crate::part_paint::material::Material::Floating,
+                tilo_ui_base::part_paint::material::Material::Floating,
                 theme,
             );
             let glyph = Rect::from_center_size(disc.center(), (m.icon * 0.75, m.icon * 0.75));
@@ -806,11 +807,11 @@ fn paint_badge(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, badge: Media
                 art.x1 - pad,
                 art.y1 - pad,
             );
-            crate::part_paint::material::paint_material(
+            tilo_ui_base::part_paint::material::paint_material(
                 ctx.scene,
                 ctx.transform,
                 &RoundedRect::from_rect(plate, pad),
-                crate::part_paint::material::Material::Floating,
+                tilo_ui_base::part_paint::material::Material::Floating,
                 theme,
             );
             ctx.text(
@@ -892,7 +893,7 @@ struct HoverAction {
 }
 
 enum HoverPress {
-    Bound(crate::widget::ActionEmitter<()>),
+    Bound(tilo_ui_base::widget::ActionEmitter<()>),
     Plain(Box<dyn FnMut()>),
 }
 
@@ -908,14 +909,14 @@ impl HoverAction {
         }
     }
 
-    fn emitter(&self) -> Option<&crate::widget::ActionEmitter<()>> {
+    fn emitter(&self) -> Option<&tilo_ui_base::widget::ActionEmitter<()>> {
         match &self.press {
             HoverPress::Bound(emitter) => Some(emitter),
             HoverPress::Plain(_) => None,
         }
     }
 
-    fn emitter_mut(&mut self) -> Option<&mut crate::widget::ActionEmitter<()>> {
+    fn emitter_mut(&mut self) -> Option<&mut tilo_ui_base::widget::ActionEmitter<()>> {
         match &mut self.press {
             HoverPress::Bound(emitter) => Some(emitter),
             HoverPress::Plain(_) => None,
@@ -1071,7 +1072,7 @@ impl MediaCard {
         self.hover_action = Some(HoverAction {
             icon,
             label: label.into(),
-            press: HoverPress::Bound(crate::widget::ActionEmitter::new(binding)),
+            press: HoverPress::Bound(tilo_ui_base::widget::ActionEmitter::new(binding)),
         });
         self
     }
@@ -1172,7 +1173,7 @@ impl MediaCard {
         }
         if let Some(creator) = &self.creator {
             face = face.creator(
-                crate::widget::AvatarFace::new(&creator.name, &creator.identity)
+                tilo_ui_base::widget::AvatarFace::new(&creator.name, &creator.identity)
                     .image(creator.image.as_ref()),
             );
         }
@@ -1219,20 +1220,20 @@ impl MediaCard {
 }
 
 impl crate::widget::ReservedShape for MediaCard {
-    fn reserved_shape(&self) -> crate::widget::SkeletonShape {
-        crate::widget::SkeletonShape::Media(self.aspect)
+    fn reserved_shape(&self) -> tilo_ui_base::widget::SkeletonShape {
+        tilo_ui_base::widget::SkeletonShape::Media(self.aspect)
     }
 }
 
 impl Widget for MediaCard {
-    crate::described!();
+    tilo_ui_base::described!();
 
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::controls::ActionControls,
         dyn crate::widget::ReservedShape
     );
 
-    fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
+    fn sync(&mut self, _state: &tilo_ui_base::widget::AppModel, _path: &tilo_ui_base::widget::ModelPath) {
         if let Some(creator) = &mut self.creator
             && creator.image.is_none()
             && let Some((store, url)) = &creator.image_url
@@ -1271,7 +1272,7 @@ impl Widget for MediaCard {
                     percent(1.0_f32)
                 },
                 height: if self.compact {
-                    length(crate::num::f32_of_f64(compact_height))
+                    length(tilo_ui_base::num::f32_of_f64(compact_height))
                 } else {
                     auto()
                 },
@@ -1284,7 +1285,7 @@ impl Widget for MediaCard {
             // stands on a page as a card, never as the page's whole width.
             max_size: taffy::Size {
                 width: match self.bound {
-                    Some(width) => length(crate::num::f32_of_f64(width)),
+                    Some(width) => length(tilo_ui_base::num::f32_of_f64(width)),
                     None => auto(),
                 },
                 height: auto(),
@@ -1303,7 +1304,7 @@ impl Widget for MediaCard {
     ) -> taffy::Size<f32> {
         let width = f64::from(known.width.unwrap_or(match available.width {
             taffy::AvailableSpace::Definite(w) => w,
-            _ => self.bound.map_or(160.0, crate::num::f32_of_f64),
+            _ => self.bound.map_or(160.0, tilo_ui_base::num::f32_of_f64),
         }));
         // The card's height is the height at the width taffy gives it, which a card of its own
         // is bounded at: measure is asked before the bound is applied.
@@ -1321,21 +1322,21 @@ impl Widget for MediaCard {
             });
             let width = (height + text).min(width);
             return taffy::Size {
-                width: crate::num::f32_of_f64(width),
-                height: crate::num::f32_of_f64(height),
+                width: tilo_ui_base::num::f32_of_f64(width),
+                height: tilo_ui_base::num::f32_of_f64(height),
             };
         }
         let text = self.shared_text_height.unwrap_or_else(|| {
             self.own_text_height(text_renderer, (!self.text_estimated).then_some(width))
         });
         taffy::Size {
-            width: crate::num::f32_of_f64(width),
-            height: crate::num::f32_of_f64(width / self.aspect.ratio() + text),
+            width: tilo_ui_base::num::f32_of_f64(width),
+            height: tilo_ui_base::num::f32_of_f64(width / self.aspect.ratio() + text),
         }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.dirty = true;
         }
@@ -1356,7 +1357,7 @@ impl Widget for MediaCard {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1375,7 +1376,7 @@ impl Widget for MediaCard {
         });
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         use winit::event::{ElementState, MouseButton};
         let target = self.action_target();
         let shown = self.activation.state.hovered || self.activation.state.focused;
@@ -1442,7 +1443,7 @@ impl Widget for MediaCard {
         }
     }
 
-    crate::pressable!(rect);
+    tilo_ui_base::pressable!(rect);
 
     fn needs_redraw(&self) -> bool {
         self.dirty || self.wants_measure
@@ -1450,7 +1451,7 @@ impl Widget for MediaCard {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -1469,20 +1470,20 @@ impl Widget for MediaCard {
         self.rect
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let mut node = self
             .with_face(|face| face.accessibility(self.rect))
             .with_semantic_key(self.activation.id());
         if let Some(creator) = &self.creator {
             node.children.push(
-                crate::a11y::AccessNode::new(crate::a11y::Role::Image)
+                tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Image)
                     .with_name(creator.name.clone())
                     .with_bounds(self.creator_rect),
             );
         }
         if let Some(action) = &self.hover_action {
             node.children.push(
-                crate::a11y::AccessNode::new(crate::a11y::Role::Button)
+                tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button)
                     .with_name(action.label.clone()),
             );
         }
@@ -1490,18 +1491,18 @@ impl Widget for MediaCard {
     }
 }
 
-impl crate::widget::controls::ActionControls for MediaCard {
+impl tilo_ui_base::widget::controls::ActionControls for MediaCard {
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         self.activation.attach(domain, attachment);
         if let Some(emitter) = self.hover_action_mut().and_then(HoverAction::emitter_mut) {
             let _ = emitter.attach(domain, attachment);
         }
-        for child in crate::widget::Widget::children_mut(self) {
-            crate::widget::controls::attach_controls(child, domain, attachment);
+        for child in tilo_ui_base::widget::Widget::children_mut(self) {
+            tilo_ui_base::widget::controls::attach_controls(child, domain, attachment);
         }
     }
 
@@ -1509,21 +1510,21 @@ impl crate::widget::controls::ActionControls for MediaCard {
         let hover = self
             .hover_action_mut()
             .and_then(HoverAction::emitter_mut)
-            .and_then(crate::widget::ActionEmitter::take);
+            .and_then(tilo_ui_base::widget::ActionEmitter::take);
         self.activation.take_invocation().or(hover).or_else(|| {
-            crate::widget::Widget::children_mut(self)
+            tilo_ui_base::widget::Widget::children_mut(self)
                 .into_iter()
-                .find_map(crate::widget::controls::take_control_invocation)
+                .find_map(tilo_ui_base::widget::controls::take_control_invocation)
         })
     }
 
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         let mut bindings = self.activation.bindings();
         if let Some(emitter) = self.hover_action_ref().and_then(HoverAction::emitter) {
             bindings.push(emitter.metadata(format!("{}/action", self.activation.id())));
         }
-        for child in crate::widget::Widget::children(self) {
-            bindings.extend(crate::widget::controls::control_action_bindings(child));
+        for child in tilo_ui_base::widget::Widget::children(self) {
+            bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(child));
         }
         bindings
     }
@@ -1536,8 +1537,8 @@ impl crate::widget::controls::ActionControls for MediaCard {
         if let Some(emitter) = self.hover_action_mut().and_then(HoverAction::emitter_mut) {
             emitter.refresh_availability(allowed);
         }
-        for child in crate::widget::Widget::children_mut(self) {
-            crate::widget::controls::refresh_control_action_availability(child, allowed);
+        for child in tilo_ui_base::widget::Widget::children_mut(self) {
+            tilo_ui_base::widget::controls::refresh_control_action_availability(child, allowed);
         }
     }
 }
@@ -1560,12 +1561,12 @@ pub fn justified_rows(aspects: &[f64], width: f64, target_height: f64, gap: f64)
         while end < aspects.len() {
             row_ratio += ratio(aspects[end]);
             end += 1;
-            let gaps = crate::num::f64_of_usize(end - start - 1) * gap;
+            let gaps = tilo_ui_base::num::f64_of_usize(end - start - 1) * gap;
             if row_ratio * target_height + gaps >= width {
                 break;
             }
         }
-        let gaps = crate::num::f64_of_usize(end - start - 1) * gap;
+        let gaps = tilo_ui_base::num::f64_of_usize(end - start - 1) * gap;
         let full = row_ratio * target_height + gaps >= width;
         let height = if full {
             (width - gaps) / row_ratio
@@ -1620,7 +1621,7 @@ pub struct MediaGrid {
     columns: Option<Rc<Cell<usize>>>,
 
     /// Every card's item, by the place it stands in: what a range of cards reports.
-    pub(crate) order: Rc<std::cell::RefCell<Vec<Option<crate::component::ResourceId>>>>,
+    pub(crate) order: Rc<std::cell::RefCell<Vec<Option<tilo_ui_base::component::ResourceId>>>>,
     /// The place of the card the pointer is over, as the card itself says it.
     pub(crate) hovered: Rc<Cell<Option<usize>>>,
     /// The card the pointer pressed last, without shift: where a range taken with shift starts.
@@ -1630,7 +1631,7 @@ pub struct MediaGrid {
     /// The places the drag has swept: the range reported, so a move reports only when it grows.
     swept: std::cell::RefCell<Vec<usize>>,
     /// The cards a range took, as the view takes them, in the order they stand.
-    select: crate::component::Event,
+    select: tilo_ui_base::component::Event,
 
     dirty: bool,
 }
@@ -1665,7 +1666,7 @@ impl MediaGrid {
             anchor: Cell::new(None),
             pressed: Cell::new(None),
             swept: std::cell::RefCell::new(Vec::new()),
-            select: crate::component::Event::None,
+            select: tilo_ui_base::component::Event::None,
         }
     }
 
@@ -1689,7 +1690,7 @@ impl MediaGrid {
     /// what a grid whose cards a host builds registers them through.
     pub(crate) fn set_range(
         &mut self,
-        order: Rc<std::cell::RefCell<Vec<Option<crate::component::ResourceId>>>>,
+        order: Rc<std::cell::RefCell<Vec<Option<tilo_ui_base::component::ResourceId>>>>,
         hovered: Rc<Cell<Option<usize>>>,
     ) {
         self.order = order;
@@ -1697,7 +1698,7 @@ impl MediaGrid {
     }
 
     /// The cards a range took, as the view takes them.
-    pub(crate) fn set_select(&mut self, select: crate::component::Event) {
+    pub(crate) fn set_select(&mut self, select: tilo_ui_base::component::Event) {
         self.select = select;
     }
 
@@ -1706,7 +1707,7 @@ impl MediaGrid {
     pub(crate) fn range_cells(
         &self,
     ) -> (
-        Rc<std::cell::RefCell<Vec<Option<crate::component::ResourceId>>>>,
+        Rc<std::cell::RefCell<Vec<Option<tilo_ui_base::component::ResourceId>>>>,
         Rc<Cell<Option<usize>>>,
     ) {
         (Rc::clone(&self.order), Rc::clone(&self.hovered))
@@ -1717,17 +1718,17 @@ impl MediaGrid {
     fn take_range(&self, from: usize, to: usize) {
         let (low, high) = if from <= to { (from, to) } else { (to, from) };
         let order = self.order.borrow();
-        let picked: Vec<crate::component::Value> = (low..=high)
+        let picked: Vec<tilo_ui_base::component::Value> = (low..=high)
             .filter_map(|at| order.get(at).and_then(Option::as_ref))
-            .map(|item| crate::component::Value::Resource(item.0.clone()))
+            .map(|item| tilo_ui_base::component::Value::Resource(item.0.clone()))
             .collect();
         self.select
-            .fire(Some(crate::component::Value::List(picked)));
+            .fire(Some(tilo_ui_base::component::Value::List(picked)));
     }
 
     /// A press with shift takes the cards from the one pressed last to the one pressed now; a
     /// press held and dragged over the cards takes the ones it sweeps. Whether it took the press.
-    fn range_event(&self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
+    fn range_event(&self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) -> bool {
         if self.select.is_none() {
             return false;
         }
@@ -1882,7 +1883,7 @@ impl MediaGrid {
     pub fn arriving(
         count: usize,
         aspect: MediaAspect,
-        from: &crate::arriving::Source,
+        from: &tilo_ui_base::arriving::Source,
         since: crate::time::Instant,
     ) -> Self {
         Self::of(
@@ -1891,7 +1892,7 @@ impl MediaGrid {
                     crate::widget::ArrivingView::placeholder_since(
                         from.clone(),
                         since,
-                        crate::widget::SkeletonShape::Media(aspect),
+                        tilo_ui_base::widget::SkeletonShape::Media(aspect),
                     )
                 })
                 .collect(),
@@ -2002,20 +2003,20 @@ impl MediaGrid {
             let mut style = current.clone();
             style.position = taffy::Position::Absolute;
             style.inset = taffy::Rect {
-                left: length(crate::num::f32_of_f64(rect.x0)),
-                top: length(crate::num::f32_of_f64(rect.y0)),
+                left: length(tilo_ui_base::num::f32_of_f64(rect.x0)),
+                top: length(tilo_ui_base::num::f32_of_f64(rect.y0)),
                 right: auto(),
                 bottom: auto(),
             };
             style.size = taffy::Size {
-                width: length(crate::num::f32_of_f64(rect.width())),
-                height: length(crate::num::f32_of_f64(rect.height())),
+                width: length(tilo_ui_base::num::f32_of_f64(rect.width())),
+                height: length(tilo_ui_base::num::f32_of_f64(rect.height())),
             };
             if *current != style {
                 styles.set_style(child, style);
             }
         }
-        let target = length(crate::num::f32_of_f64(height));
+        let target = length(tilo_ui_base::num::f32_of_f64(height));
         if let Some(rows) = self.rows_height
             && styles.style(rows).size.height != target
         {
@@ -2027,7 +2028,7 @@ impl MediaGrid {
 }
 
 impl Widget for MediaGrid {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -2078,8 +2079,8 @@ impl Widget for MediaGrid {
                 )],
                 grid_auto_rows: vec![taffy::style_helpers::min_content()],
                 gap: taffy::Size {
-                    width: length(crate::num::f32_of_f64(column_gap)),
-                    height: length(crate::num::f32_of_f64(row_gap)),
+                    width: length(tilo_ui_base::num::f32_of_f64(column_gap)),
+                    height: length(tilo_ui_base::num::f32_of_f64(row_gap)),
                 },
                 size: taffy::Size {
                     width: percent(1.0_f32),
@@ -2152,14 +2153,14 @@ impl Widget for MediaGrid {
             inner.apply_layout(taffy, node, origin);
             return;
         }
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         let origin = self.rect.origin();
         for (card, &child) in self.cards.iter_mut().zip(&self.nodes) {
             card.apply_layout(taffy, child, origin);
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2167,7 +2168,7 @@ impl Widget for MediaGrid {
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let Some(inner) = self.inner.as_mut() {
-            crate::widget::draw_child(&mut **inner, scene, transform, text_renderer, theme, &env);
+            tilo_ui_base::widget::draw_child(&mut **inner, scene, transform, text_renderer, theme, &env);
             return;
         }
         if matches!(self.mode, GridMode::Columns) {
@@ -2188,7 +2189,7 @@ impl Widget for MediaGrid {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if self.range_event(event, ctx) {
             return;
         }
@@ -2263,7 +2264,7 @@ impl Widget for MediaGrid {
         if let Some(inner) = &self.inner {
             return inner.needs_redraw();
         }
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
 
     fn name(&self) -> &'static str {

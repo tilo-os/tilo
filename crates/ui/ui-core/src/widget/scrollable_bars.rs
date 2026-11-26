@@ -7,8 +7,8 @@ use super::{
     ScrollAxis, Scrollable, deadline_after, f32_of_f64,
 };
 use crate::color_compat::ColorCompat;
-use crate::theme::Theme;
-use crate::widget::ScrollMetrics;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::ScrollMetrics;
 use vello::Scene;
 use vello::kurbo::{Point, RoundedRect};
 
@@ -129,7 +129,7 @@ impl Scrollable {
     }
 
     pub(super) fn bar_opacity(&self, theme: &Theme) -> f32 {
-        self.bar_opacity_at(crate::motion::frame_now(), theme.reduce_motion)
+        self.bar_opacity_at(tilo_ui_base::motion::frame_now(), theme.reduce_motion)
     }
 
     pub(super) fn fade_held(&self) -> bool {
@@ -141,7 +141,7 @@ impl Scrollable {
     }
 
     pub(super) fn fade_in_progress(&self) -> bool {
-        self.fade_in_progress_at(crate::motion::frame_now())
+        self.fade_in_progress_at(tilo_ui_base::motion::frame_now())
     }
 
     pub(super) fn fade_start_deadline_at(&self, now: Instant) -> Option<Instant> {
@@ -159,7 +159,7 @@ impl Scrollable {
     }
 
     pub(super) fn needs_terminal_fade_frame(&self) -> bool {
-        self.needs_terminal_fade_frame_at(crate::motion::frame_now())
+        self.needs_terminal_fade_frame_at(tilo_ui_base::motion::frame_now())
     }
 
     pub(super) fn advance_hold(&mut self, now: Instant) {
@@ -204,8 +204,8 @@ impl Scrollable {
         }
     }
 
-    pub(super) fn faded_edges(&self) -> Vec<crate::surface::ContentEdge> {
-        use crate::surface::ContentEdge;
+    pub(super) fn faded_edges(&self) -> Vec<tilo_ui_base::surface::ContentEdge> {
+        use tilo_ui_base::surface::ContentEdge;
         let mut edges = Vec::new();
         if !self.edge_fade {
             return edges;
@@ -238,7 +238,7 @@ impl Scrollable {
             .flatten()
             .collect();
         if self.edge_fade {
-            let reach = crate::surface::CONTENT_FADE_PX;
+            let reach = tilo_ui_base::surface::CONTENT_FADE_PX;
             if self.axis_has_vertical() {
                 overlays.push(Rect::new(clip.x0, clip.y0, clip.x1, clip.y0 + reach));
                 overlays.push(Rect::new(clip.x0, clip.y1 - reach, clip.x1, clip.y1));
@@ -265,7 +265,7 @@ impl Scrollable {
         }
         let ground = theme.tokens.colors.surfaces.content;
         for edge in edges {
-            crate::surface::content_edge_fade(scene, transform, area, edge, ground);
+            tilo_ui_base::surface::content_edge_fade(scene, transform, area, edge, ground);
         }
     }
 

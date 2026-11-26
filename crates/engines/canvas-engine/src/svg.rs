@@ -649,7 +649,7 @@ impl Writer {
         let family = font
             .as_deref()
             .and_then(crate::fonts::family)
-            .unwrap_or(tilo_ui::UI_SANS_FAMILY);
+            .unwrap_or(tilo_ui_base::UI_SANS_FAMILY);
         let family = format!("'{}', {generic}", escape(family));
         let (anchor, at) = match (align.as_deref(), width) {
             (Some("center"), Some(width)) => ("middle", x + width / 2.0),

@@ -1,7 +1,7 @@
 use super::*;
 use crate::bound_dispatch::ToolkitPart as _;
 use crate::history_mode::*;
-use crate::widget::{AppModel, ModelPath};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use automerge::{ROOT, transaction::Transactable};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -35,7 +35,7 @@ fn app_on(state: State) -> App {
     app_with_root(state, Box::new(crate::widget::Column::new()))
 }
 /// An app on `state` showing `root` under the framework's registered History.
-pub(crate) fn app_with_root(state: State, root: Box<dyn crate::widget::Widget>) -> App {
+pub(crate) fn app_with_root(state: State, root: Box<dyn tilo_ui_base::widget::Widget>) -> App {
     let registration = HistoryRegistration::new(
         &HISTORY,
         vec![HistorySourceRegistration::HostDocument {
@@ -97,7 +97,7 @@ fn native_key(app: &mut App, key: &str) {
             "Tab" => winit::keyboard::NamedKey::Tab,
             _ => panic!("unsupported fixture key"),
         });
-        let event = crate::synthetic_input::key_input(&logical, state);
+        let event = tilo_ui_base::synthetic_input::key_input(&logical, state);
         let framework = app.history_controls_event(&event, 1.0);
         assert!(
             framework,
@@ -111,7 +111,7 @@ fn native_key(app: &mut App, key: &str) {
 
 /// `mutation` of `route`'s record, as the device's store sends it.
 fn routed_document(
-    route: &crate::collaboration::RouteSpec,
+    route: &tilo_ui_base::collaboration::RouteSpec,
     mutation: collab_types::DocumentMutation,
 ) -> CollabEvent {
     CollabEvent::Document {
@@ -127,8 +127,8 @@ fn owned_routes_isolate_documents_and_admit_only_owned_bytes() {
             State::new(),
             Box::new(crate::widget::Text::new("root")),
         );
-        let installed = crate::collaboration::RouteSpec::app("installed-app", uuid::Uuid::new_v4());
-        app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
+        let installed = tilo_ui_base::collaboration::RouteSpec::app("installed-app", uuid::Uuid::new_v4());
+        app.actions.bound_broker_route_for_test = Some(tilo_ui_base::collaboration::AcceptedRoute {
             route: installed.clone(),
             epoch: uuid::Uuid::new_v4(),
         });
@@ -266,7 +266,7 @@ fn owned_routes_isolate_documents_and_admit_only_owned_bytes() {
 
     {
         let mut fixture = RoutedOwners::new();
-        let refusal = crate::collaboration::CollabSendError::TooLarge {
+        let refusal = tilo_ui_base::collaboration::CollabSendError::TooLarge {
             actual: collab_types::MAX_DOCUMENT_TRANSFER_BYTES + 1,
             max: collab_types::MAX_DOCUMENT_TRANSFER_BYTES,
         };
@@ -286,7 +286,7 @@ fn owned_routes_isolate_documents_and_admit_only_owned_bytes() {
         );
 
         fixture.app.document_routes.refuse_for_test =
-            Some(crate::collaboration::CollabSendError::Busy);
+            Some(tilo_ui_base::collaboration::CollabSendError::Busy);
         fixture.app.publish_owned_documents();
         assert!(fixture.app.document_routes.sent.is_empty());
 
@@ -325,7 +325,7 @@ fn owned_routes_isolate_documents_and_admit_only_owned_bytes() {
         );
         let mut app = App::new_with_controlled_inputs(State::new(), probe.root);
         let foreign =
-            crate::collaboration::RouteSpec::document("foreign", uuid::Uuid::new_v4(), "other");
+            tilo_ui_base::collaboration::RouteSpec::document("foreign", uuid::Uuid::new_v4(), "other");
         let mut doc = automerge::AutoCommit::new();
         doc.put(ROOT, "body", "foreign").unwrap();
         let envelope = routed_document(
@@ -518,8 +518,8 @@ impl RoutedOwners {
         let mut app = App::new_with_controlled_inputs(state, Box::new(root));
         let (manager, hold_join) = CollaborationManager::connected_holding_joins_for_test();
         app.collaboration.manager = manager;
-        app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
-            route: crate::collaboration::RouteSpec::app(
+        app.actions.bound_broker_route_for_test = Some(tilo_ui_base::collaboration::AcceptedRoute {
+            route: tilo_ui_base::collaboration::RouteSpec::app(
                 "outer-shell",
                 uuid::Uuid::parse_str(workspace).unwrap(),
             ),
@@ -586,7 +586,7 @@ impl RoutedOwners {
         Vec<(
             tilo_actions::MemberId,
             crate::application::InstanceId,
-            crate::widget::undo_access::UndoStatus,
+            tilo_ui_base::widget::undo_access::UndoStatus,
         )>,
     ) {
         let checkout = &self.bindings[index].checkout;
@@ -785,10 +785,10 @@ impl RoutedPrimary {
                 views,
                 device_id: "D".into(),
                 instance_id: 70,
-                permissions: crate::permissions::SharedPermissions::new(
-                    crate::permissions::PermissionContext::permissive(),
+                permissions: tilo_ui_base::permissions::SharedPermissions::new(
+                    tilo_ui_base::permissions::PermissionContext::permissive(),
                 ),
-                author: crate::permissions::MemberId::person("primary-author"),
+                author: tilo_ui_base::permissions::MemberId::person("primary-author"),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &target,
@@ -821,7 +821,7 @@ impl RoutedPrimary {
             Box::new(crate::widget::BoundAppWidget::new(component)),
         );
         app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
-        app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
+        app.actions.bound_broker_route_for_test = Some(tilo_ui_base::collaboration::AcceptedRoute {
             route: binding.broker_route().unwrap(),
             epoch: uuid::Uuid::new_v4(),
         });
@@ -843,7 +843,7 @@ impl RoutedPrimary {
         Vec<(
             tilo_actions::MemberId,
             crate::application::InstanceId,
-            crate::widget::undo_access::UndoStatus,
+            tilo_ui_base::widget::undo_access::UndoStatus,
         )>,
     ) {
         self.records
@@ -962,11 +962,11 @@ impl RoutedOwners {
 fn select_native_version(app: &mut App, hash: automerge::ChangeHash) {
     let target = format!(
         "timeline-entry:{}",
-        crate::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
+        tilo_ui_base::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
             &hash.to_string()
         ))
     );
-    fn find(node: &crate::a11y::AccessNode, target: &str) -> Option<vello::kurbo::Rect> {
+    fn find(node: &tilo_ui_base::a11y::AccessNode, target: &str) -> Option<vello::kurbo::Rect> {
         if node.action_target.as_deref() == Some(target) {
             return node.bounds.map(|bounds| bounds.to_rect());
         }
@@ -1005,7 +1005,7 @@ tilo_test_env::scenario! {
         let target = named(&mut fixture.app, "History");
         fixture
             .app
-            .dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+            .dispatch_a11y_action(target, &tilo_ui_base::a11y::Action::Activate);
         layout(&mut fixture.app);
         select_native_version(&mut fixture.app, selected);
         let preview_before = fixture
@@ -1052,9 +1052,7 @@ tilo_test_env::scenario! {
 
     phase round1_top_level_wide_activity_detaches_focused_native_view_until_live_return;
     {
-        use crate::widget::native_view::{
-            NativeView, NativeViewBackend, NativeViewGeometry, NativeViewHost,
-        };
+        use tilo_ui_base::{widget::native_view::NativeView, widget::native_view::NativeViewBackend, widget::native_view::NativeViewGeometry, widget::native_view::NativeViewHost};
         use std::{cell::Cell, rc::Rc};
         #[derive(Default)]
         struct NativeState {
@@ -1091,7 +1089,7 @@ tilo_test_env::scenario! {
         let mut app = app();
         app.root_widget = Box::new(view);
         let host = NativeViewHost::headless(
-            crate::platform::PlatformConventions::new(crate::platform::Platform::MacOs),
+            tilo_ui_base::platform::PlatformConventions::new(tilo_ui_base::platform::Platform::MacOs),
             1.0,
         );
         app.init_layout();
@@ -1105,7 +1103,7 @@ tilo_test_env::scenario! {
                 && native.focused.get()
         );
         let target = named(&mut app, "History");
-        app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+        app.dispatch_a11y_action(target, &tilo_ui_base::a11y::Action::Activate);
         let root = app.layout.root_node.unwrap();
         run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
         assert!(
@@ -1123,7 +1121,7 @@ tilo_test_env::scenario! {
             "drawing the live backdrop must not reactivate native controls"
         );
         let target = named(&mut app, "History");
-        app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+        app.dispatch_a11y_action(target, &tilo_ui_base::a11y::Action::Activate);
         let root = app.layout.root_node.unwrap();
         run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
         draw_frame_content(&mut app, &mut Scene::new(), 900, 650, 1.0, None);
@@ -1794,7 +1792,7 @@ tilo_test_env::scenario! {
                 .find(|(_, node)| node.label() == Some("History"))
                 .map(|(id, _)| *id)
                 .expect("native managed App must expose shared History");
-            app.dispatch_a11y_action(history, &crate::a11y::Action::Activate);
+            app.dispatch_a11y_action(history, &tilo_ui_base::a11y::Action::Activate);
             layout(&mut app);
             assert!(
                 app.build_a11y_tree_update(1.0)
@@ -1813,11 +1811,11 @@ tilo_test_env::scenario! {
             layout(&mut app);
             let editor = node_for_test_id(&app, "draft-editor");
             app.set_focused_node(Some(editor));
-            app.perform_node_action(editor, &crate::a11y::Action::SetValue("unfinished".into()))
+            app.perform_node_action(editor, &tilo_ui_base::a11y::Action::SetValue("unfinished".into()))
                 .unwrap();
             app.perform_node_action(
                 editor,
-                &crate::a11y::Action::SetSelection {
+                &tilo_ui_base::a11y::Action::SetSelection {
                     anchor: 2,
                     focus: 7,
                 },
@@ -1837,7 +1835,7 @@ tilo_test_env::scenario! {
             assert_eq!(app.state.doc.base_heads(), heads);
             assert_eq!(app.state.doc.pending_ops(), ops);
             let close = named(&mut app, "History");
-            app.dispatch_a11y_action(close, &crate::a11y::Action::Activate);
+            app.dispatch_a11y_action(close, &tilo_ui_base::a11y::Action::Activate);
             layout(&mut app);
             assert_eq!(app.state.doc.base_heads(), heads);
             assert_eq!(app.state.doc.pending_ops(), ops);
@@ -1855,7 +1853,7 @@ tilo_test_env::scenario! {
             layout(&mut app);
             let before = app.state.doc.base_heads();
             let target = named(&mut app, "History");
-            app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+            app.dispatch_a11y_action(target, &tilo_ui_base::a11y::Action::Activate);
             layout(&mut app);
             let node = app
                 .build_a11y_tree_update(1.0)
@@ -1877,7 +1875,7 @@ tilo_test_env::scenario! {
                         .is_some_and(|label| label.starts_with("Notebook:")))
             );
             let target = named(&mut app, "Restore…");
-            app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+            app.dispatch_a11y_action(target, &tilo_ui_base::a11y::Action::Activate);
             layout(&mut app);
             assert!(
                 app.build_a11y_tree_update(1.0)
@@ -1888,7 +1886,7 @@ tilo_test_env::scenario! {
             native_key(&mut app, "Escape");
             assert_eq!(app.state.doc.base_heads(), before);
             let target = named(&mut app, "Back to live");
-            app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+            app.dispatch_a11y_action(target, &tilo_ui_base::a11y::Action::Activate);
             layout(&mut app);
             assert!(app.history.as_ref().unwrap().live_visible());
         }
@@ -1898,8 +1896,8 @@ tilo_test_env::scenario! {
             let mut app = App::from_component(
                 component,
                 crate::application::ComponentRunnerInputs {
-                    theme: crate::Theme::dark(),
-                    text_renderer: crate::font_catalog::fixture_renderer(),
+                    theme: tilo_ui_base::Theme::dark(),
+                    text_renderer: tilo_ui_base::font_catalog::fixture_renderer(),
                 },
             )
             .unwrap();
@@ -1910,7 +1908,7 @@ tilo_test_env::scenario! {
             layout(&mut app);
             assert!(app.validate_history_registration().is_ok());
             let history = named(&mut app, "History");
-            app.dispatch_a11y_action(history, &crate::a11y::Action::Activate);
+            app.dispatch_a11y_action(history, &tilo_ui_base::a11y::Action::Activate);
             layout(&mut app);
             assert!(
                 app.build_a11y_tree_update(1.0)
@@ -1936,10 +1934,10 @@ tilo_test_env::scenario! {
             let violations = tilo_actions::validate_surface(
                 &declared,
                 &app.actions.action_registry,
-                &crate::widget::resource_operation_handlers(&*app.root_widget),
+                &tilo_ui_base::widget::resource_operation_handlers(&*app.root_widget),
             );
             assert!(violations.is_empty(), "{violations:?}");
-            let export = crate::accesskit_bridge::resource_action_node_id("live", "export");
+            let export = tilo_ui_base::accesskit_bridge::resource_action_node_id("live", "export");
             assert!(
                 app.build_a11y_tree_update(1.0)
                     .nodes
@@ -1947,7 +1945,7 @@ tilo_test_env::scenario! {
                     .any(|(id, _)| *id == export),
                 "the live resource action remains exported beside closed History chrome"
             );
-            app.dispatch_a11y_action(export, &crate::a11y::Action::Activate);
+            app.dispatch_a11y_action(export, &tilo_ui_base::a11y::Action::Activate);
             assert_eq!(starts.get(), 1, "live positive control must execute");
             probe.finish.set(true);
             assert!(app.poll_directed_invocations());
@@ -1957,9 +1955,9 @@ tilo_test_env::scenario! {
                 "hidden retry cannot be rejected merely because first invocation is in flight"
             );
             let target = named(&mut app, "History");
-            app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+            app.dispatch_a11y_action(target, &tilo_ui_base::a11y::Action::Activate);
             layout(&mut app);
-            app.dispatch_a11y_action(export, &crate::a11y::Action::Activate);
+            app.dispatch_a11y_action(export, &tilo_ui_base::a11y::Action::Activate);
             assert_eq!(
                 starts.get(),
                 1,
@@ -1973,12 +1971,12 @@ tilo_test_env::scenario! {
             layout(&mut app);
             let editor = node_for_test_id(&app, "pending-editor");
             app.set_focused_node(Some(editor));
-            app.perform_node_action(editor, &crate::a11y::Action::SetValue("draft".into()))
+            app.perform_node_action(editor, &tilo_ui_base::a11y::Action::SetValue("draft".into()))
                 .unwrap();
             app.state.doc.put(ROOT, "unrelated", "pending").unwrap();
             let before = (app.state.doc.base_heads(), app.state.doc.pending_ops());
             let target = named(&mut app, "History");
-            app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+            app.dispatch_a11y_action(target, &tilo_ui_base::a11y::Action::Activate);
             layout(&mut app);
             native_key(&mut app, "Tab");
             let tabbed = app.focused_node;
@@ -2042,7 +2040,7 @@ tilo_test_env::scenario! {
         probe.emitter.borrow_mut().emit(()).unwrap();
 
         let named_action_target = named(&mut app, "History");
-        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Focus);
+        app.dispatch_a11y_action(named_action_target, &tilo_ui_base::a11y::Action::Focus);
 
         assert!(
             probe.emitter.borrow_mut().take().is_some(),
@@ -2231,10 +2229,10 @@ impl PaletteHistoryOwner {
     }
 }
 
-impl crate::widget::Widget for PaletteHistoryOwner {
-    crate::provides!(
-        dyn crate::widget::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
+impl tilo_ui_base::widget::Widget for PaletteHistoryOwner {
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn tilo_ui_base::widget::ResourceOperations
     );
 
     fn name(&self) -> &str {
@@ -2249,11 +2247,11 @@ impl crate::widget::Widget for PaletteHistoryOwner {
     fn build_layout(
         &mut self,
         tree: &mut taffy::TaffyTree<()>,
-        theme: &crate::Theme,
-        nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
+        theme: &tilo_ui_base::Theme,
+        nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,
     ) -> taffy::NodeId {
         let node = self.text.build_layout(tree, theme, nodes);
-        nodes.insert(node, std::ptr::from_mut::<dyn crate::widget::Widget>(self));
+        nodes.insert(node, std::ptr::from_mut::<dyn tilo_ui_base::widget::Widget>(self));
         node
     }
     fn apply_layout(
@@ -2264,14 +2262,14 @@ impl crate::widget::Widget for PaletteHistoryOwner {
     ) {
         self.text.apply_layout(tree, node, origin);
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.text.draw(&mut crate::draw::DrawCtx::new(
+        self.text.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -2285,13 +2283,13 @@ impl crate::widget::Widget for PaletteHistoryOwner {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         self.text.handle_event(event, ctx);
     }
 }
 
-impl crate::widget::ResourceOperations for PaletteHistoryOwner {
+impl tilo_ui_base::widget::ResourceOperations for PaletteHistoryOwner {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         [PALETTE_TEXT_OPERATION.into(), PALETTE_JSON_OPERATION.into()]
             .into_iter()
@@ -2300,14 +2298,14 @@ impl crate::widget::ResourceOperations for PaletteHistoryOwner {
 
     fn start_operation(
         &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        _: &mut crate::widget::Edits<'_>,
+        op: &tilo_ui_base::widget::ResourceOperation<'_>,
+        _: &mut tilo_ui_base::widget::Edits<'_>,
         _: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
         let crate::host_operation::OperationRequest {
             type_id, payload, ..
         } = op.request();
-        if !crate::widget::resource_operation_handlers(self).contains(type_id) {
+        if !tilo_ui_base::widget::resource_operation_handlers(self).contains(type_id) {
             return Ok(None);
         }
         self.state
@@ -2315,13 +2313,13 @@ impl crate::widget::ResourceOperations for PaletteHistoryOwner {
             .lock()
             .unwrap()
             .push((type_id.to_owned(), payload.to_vec()));
-        Ok(Some(crate::widget::ResourceOperationStart::Completed(
+        Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))
     }
 }
 
-impl crate::widget::resources::PublishesResources for PaletteHistoryOwner {
+impl tilo_ui_base::widget::resources::PublishesResources for PaletteHistoryOwner {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         if self.state.authority.load(Ordering::SeqCst) == 1 {
             return vec![];
@@ -2362,7 +2360,7 @@ fn palette_activate(app: &mut App, action: &str, value: &str) {
 }
 
 fn palette_enter(app: &mut App) {
-    let event = crate::synthetic_input::key_input(
+    let event = tilo_ui_base::synthetic_input::key_input(
         &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
         winit::event::ElementState::Pressed,
     );
@@ -2377,7 +2375,7 @@ fn palette_confirm(app: &mut App) {
         winit::keyboard::NamedKey::Tab,
         winit::keyboard::NamedKey::Enter,
     ] {
-        let event = crate::synthetic_input::key_input(
+        let event = tilo_ui_base::synthetic_input::key_input(
             &winit::keyboard::Key::Named(key),
             winit::event::ElementState::Pressed,
         );
@@ -2387,10 +2385,10 @@ fn palette_confirm(app: &mut App) {
 
 fn palette_history_round_trip(app: &mut App) {
     let named_action_target = named(app, "History");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+    app.dispatch_a11y_action(named_action_target, &tilo_ui_base::a11y::Action::Activate);
     layout(app);
     let named_action_target = named(app, "History");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+    app.dispatch_a11y_action(named_action_target, &tilo_ui_base::a11y::Action::Activate);
     layout(app);
 }
 
@@ -2509,7 +2507,7 @@ tilo_test_env::scenario! {
                 .set_query(PALETTE_CONFIRMATION);
 
             let named_action_target = named(&mut app, "History");
-            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            app.dispatch_a11y_action(named_action_target, &tilo_ui_base::a11y::Action::Activate);
             layout(&mut app);
             if mutation == "target-before-return" {
                 state.target_epoch.store(2, Ordering::SeqCst);
@@ -2520,7 +2518,7 @@ tilo_test_env::scenario! {
                     .unwrap();
             }
             let named_action_target = named(&mut app, "History");
-            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            app.dispatch_a11y_action(named_action_target, &tilo_ui_base::a11y::Action::Activate);
             layout(&mut app);
             assert_eq!(
                 editor_snapshot(&app),
@@ -2651,7 +2649,7 @@ fn header_history_control_opens_framework_history() {
     );
 
     let close = named(&mut app, "History");
-    app.dispatch_a11y_action(close, &crate::a11y::Action::Activate);
+    app.dispatch_a11y_action(close, &tilo_ui_base::a11y::Action::Activate);
     layout(&mut app);
     assert!(!app.history.as_ref().unwrap().is_open());
     assert_eq!(history_buttons(&mut app), [Some(accesskit::Toggled::False)]);
@@ -2720,7 +2718,7 @@ fn a_pointer_press_on_restore_opens_the_review() {
     let mut app = app();
     layout(&mut app);
     let target = named(&mut app, "History");
-    app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+    app.dispatch_a11y_action(target, &tilo_ui_base::a11y::Action::Activate);
     layout(&mut app);
     let row = app
         .build_a11y_tree_update(1.0)

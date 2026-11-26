@@ -382,7 +382,7 @@ impl Table {
 
     pub(super) fn draw_projected_focus(
         &mut self,
-        ctx: &mut tilo_ui::DrawCtx<'_>,
+        ctx: &mut tilo_ui_base::DrawCtx<'_>,
         suppress_caret: bool,
     ) {
         #[allow(
@@ -1114,7 +1114,7 @@ impl Widget for Table {
         }
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,

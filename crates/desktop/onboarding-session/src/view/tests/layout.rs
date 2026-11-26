@@ -7,17 +7,17 @@ pub struct LaidOut {
     /// The widget's own node.
     pub node: taffy::NodeId,
     /// Every widget of the tree by its node, as `build_layout` mapped them.
-    pub nodes: std::collections::HashMap<taffy::NodeId, *mut dyn ui::widget::Widget>,
+    pub nodes: std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,
 }
 
 /// `widget` built, solved with its measured leaves inside a `width` by
 /// `height` root, and applied, measuring text with `text`.
-pub fn lay_out_as_root_with_text<W: ui::widget::Widget + ?Sized>(
+pub fn lay_out_as_root_with_text<W: tilo_ui_base::widget::Widget + ?Sized>(
     widget: &mut W,
     width: f32,
     height: f32,
-    theme: &ui::theme::Theme,
-    text: &mut ui::text_render::TextRenderer,
+    theme: &tilo_ui_base::theme::Theme,
+    text: &mut tilo_ui_base::text_render::TextRenderer,
 ) -> LaidOut {
     let mut taffy = taffy::TaffyTree::<()>::new();
     let mut nodes = std::collections::HashMap::new();
@@ -46,26 +46,26 @@ pub fn lay_out_as_root_with_text<W: ui::widget::Widget + ?Sized>(
 /// `widget` laid out and drawn until it stops asking for frames, as a host draws it, and
 /// reported as drawn after every frame: the last frame's tree, or the `limit`-th when it never
 /// rests.
-pub fn draw_until_rest<W: ui::widget::Widget + ?Sized>(
+pub fn draw_until_rest<W: tilo_ui_base::widget::Widget + ?Sized>(
     widget: &mut W,
     width: f32,
     height: f32,
-    theme: &ui::theme::Theme,
-    text: &mut ui::text_render::TextRenderer,
+    theme: &tilo_ui_base::theme::Theme,
+    text: &mut tilo_ui_base::text_render::TextRenderer,
     limit: usize,
 ) -> LaidOut {
     let mut laid = lay_out_as_root_with_text(widget, width, height, theme, text);
     for _ in 1..limit {
-        ui::widget::draw_child_at(
+        tilo_ui_base::widget::draw_child_at(
             widget,
             None,
             &mut vello::Scene::new(),
             vello::kurbo::Affine::IDENTITY,
             text,
             theme,
-            &ui::presence::PresenceCtx::empty().draw_env(),
+            &tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
         );
-        ui::motion::frame_drawn(ui::motion::frame_now());
+        tilo_ui_base::motion::frame_drawn(tilo_ui_base::motion::frame_now());
         if !widget.needs_animation_frame() {
             break;
         }

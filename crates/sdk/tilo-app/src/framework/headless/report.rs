@@ -8,7 +8,7 @@ use std::rc::Rc;
 use tilo_resource::Resource;
 use ui_core::application::Capture;
 use ui_core::headless::Driver;
-use ui_core::permissions::Role;
+use tilo_ui_base::permissions::Role;
 
 use super::super::{PersonKind, controls, reserved_action_ids};
 use super::{

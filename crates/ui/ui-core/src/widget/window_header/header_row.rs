@@ -22,14 +22,14 @@
 //! let body = face.body();
 //! ```
 
-use crate::num::f32_of_f64;
-use crate::num::f64_of_usize;
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::num::f64_of_usize;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Vec2};
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::window_header::HistoryControl;
 
 /// The header row's sizes, resolved against one theme.
@@ -54,20 +54,20 @@ impl HeaderRowMetrics {
     /// [`Self::resolve_for`].
     #[must_use]
     pub fn resolve(theme: &Theme) -> Self {
-        Self::resolve_for(theme, crate::interaction::InteractionEnvironment::POINTER)
+        Self::resolve_for(theme, tilo_ui_base::interaction::InteractionEnvironment::POINTER)
     }
 
     /// The row for a person using `input`: a shell button is a square of the minimum target `input`
     /// needs, as an app's buttons are (a coarse pointer grows the face to it; a fine one keeps
     /// `min_pointer_target` and reaches the target through its hit rect).
     #[must_use]
-    pub fn resolve_for(theme: &Theme, input: crate::interaction::InteractionEnvironment) -> Self {
-        let pointer = f64::from(crate::tokens::Metrics::BASE.min_pointer_target);
-        let pointer_chip = crate::widget::text_control_height(pointer, theme);
+    pub fn resolve_for(theme: &Theme, input: tilo_ui_base::interaction::InteractionEnvironment) -> Self {
+        let pointer = f64::from(tilo_ui_base::tokens::Metrics::BASE.min_pointer_target);
+        let pointer_chip = tilo_ui_base::widget::text_control_height(pointer, theme);
         let chip = if input.supports_hover() {
             pointer_chip
         } else {
-            crate::widget::text_control_height(
+            tilo_ui_base::widget::text_control_height(
                 pointer.max(f64::from(input.minimum_target())),
                 theme,
             )
@@ -81,7 +81,7 @@ impl HeaderRowMetrics {
             chip,
             inset,
             gap: f64::from(theme.tokens.spacing.s2),
-            gutter: crate::chrome::column_gutter(theme),
+            gutter: tilo_ui_base::chrome::column_gutter(theme),
         }
     }
 
@@ -326,7 +326,7 @@ impl HeaderRowFace {
         if self.rule.width() <= 0.0 {
             return;
         }
-        crate::surface::separator(
+        tilo_ui_base::surface::separator(
             scene,
             transform,
             self.rule.x0,
@@ -362,11 +362,11 @@ fn rule_under(row: Rect) -> Rect {
     Rect::new(row.x0, row.y1, row.x1, row.y1)
 }
 
-pub(crate) fn title_style(theme: &Theme) -> crate::text_render::TextStyle {
+pub(crate) fn title_style(theme: &Theme) -> tilo_ui_base::text_render::TextStyle {
     theme.text(TextRole::Heading)
 }
 
-fn count_style(theme: &Theme) -> crate::text_render::TextStyle {
+fn count_style(theme: &Theme) -> tilo_ui_base::text_render::TextStyle {
     theme.text(TextRole::Caption).numeric()
 }
 
@@ -396,7 +396,7 @@ fn count_pill_size(text: &mut TextRenderer, theme: &Theme, count: usize) -> (f64
 /// letter and the ellipsis that says the rest is cut. The count beside it gives way first, so it
 /// never takes that width from the words.
 pub(crate) fn least_title_width(text: &mut TextRenderer, theme: &Theme, title: &str) -> f64 {
-    let first = match crate::text_break::grapheme_indices(title).nth(1) {
+    let first = match tilo_ui_base::text_break::grapheme_indices(title).nth(1) {
         Some((end, _)) => title.get(..end).unwrap_or(title),
         None => title,
     };
@@ -404,7 +404,7 @@ pub(crate) fn least_title_width(text: &mut TextRenderer, theme: &Theme, title: &
         return 0.0;
     }
     let mut kept = String::from(first);
-    kept.push(crate::text_render::ELLIPSIS);
+    kept.push(tilo_ui_base::text_render::ELLIPSIS);
     let (w, _) = text.measure_style(&kept, None, &title_style(theme));
     f64::from(w)
 }
@@ -435,7 +435,7 @@ pub(crate) fn paint_title_in(
     let spare = (band.width() - pill_width).max(0.0);
     let shown = text.elide_to_width_style(title, f32_of_f64(spare), &style);
     let (w, line_h) = text.measure_style(&shown, None, &style);
-    let y = crate::text_metrics::centered_text_top(band.y0, band.height(), f64::from(line_h));
+    let y = tilo_ui_base::text_metrics::centered_text_top(band.y0, band.height(), f64::from(line_h));
     text.draw_style(
         scene,
         &shown,
@@ -457,7 +457,7 @@ pub(crate) fn paint_title_in(
         x0 + pill_w,
         band.center().y + pill_h / 2.0,
     );
-    crate::surface::card(
+    tilo_ui_base::surface::card(
         scene,
         transform,
         rect,
@@ -494,8 +494,8 @@ pub fn paint_history_control(
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    let name = crate::i18n::I18nManager::lookup_plain("history-mode-title");
-    let face = crate::widget::ButtonFace::icon_only(rect, crate::icons::Icon::History, &name)
+    let name = tilo_ui_base::i18n::I18nManager::lookup_plain("history-mode-title");
+    let face = crate::widget::ButtonFace::icon_only(rect, tilo_ui_base::icons::Icon::History, &name)
         .toggled(control.is_open())
         .hovered(hovered);
     crate::widget::Button::paint(scene, transform, text, theme, &face);

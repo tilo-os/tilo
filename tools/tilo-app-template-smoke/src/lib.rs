@@ -42,8 +42,8 @@ starter-clear = Leeren\n";
 
     /// Two templates' history verbs share a message id; the first one wins,
     /// as when a catalog repeats a message.
-    pub static CATALOG: ui::i18n::EmbeddedCatalog =
-        ui::i18n::EmbeddedCatalog::new("en-US", &[("de-DE", DE_DE), ("en-US", EN_US)])
+    pub static CATALOG: tilo_ui_base::i18n::EmbeddedCatalog =
+        tilo_ui_base::i18n::EmbeddedCatalog::new("en-US", &[("de-DE", DE_DE), ("en-US", EN_US)])
             .with_system_locale();
 }
 
@@ -69,8 +69,9 @@ pub mod graph {
 }
 
 pub mod screens {
-    use ui::widget::Widget;
-    use ui::{RouteError, Router, Theme, UiBuildContext, UiGraphError, UiGraphHandle};
+    use tilo_ui_base::widget::Widget;
+    use ui::{UiBuildContext, UiGraphError, UiGraphHandle};
+    use tilo_ui_base::{RouteError, Router, Theme};
 
     const UI_SOURCE: &str = r#"{
       "version": 1,
@@ -203,7 +204,7 @@ generated_tests! {
 
 #[cfg(test)]
 mod tests {
-    use ui::a11y::Role;
+    use tilo_ui_base::a11y::Role;
     use ui::headless::SemanticExpectation;
     use ui::prelude::HeadlessApp;
 
@@ -214,13 +215,13 @@ mod tests {
         // Phase: generated_starter_can_switch_locale_without_rebuilding_its_widget_tree.
         {
             let mut app = HeadlessApp::<super::starter::App>::new().expect("app opens");
-            ui::i18n::I18nManager::set_locale("de-DE");
+            tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
             app.harness().relayout();
             let snapshot = app
                 .harness()
                 .inspection_json()
                 .expect("localized semantic snapshot");
-            ui::i18n::I18nManager::set_locale("en-US");
+            tilo_ui_base::i18n::I18nManager::set_locale("en-US");
             assert!(snapshot.contains("Dein Name"), "{snapshot}");
             assert!(snapshot.contains("Wen sollen wir begrüßen?"), "{snapshot}");
             assert!(snapshot.contains("Leeren"), "{snapshot}");

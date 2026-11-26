@@ -758,7 +758,7 @@ tilo_test_env::scenario! {
         let mut scratch = tilo_app::automerge::AutoCommit::new();
         chain
             .dispatcher()
-            .submit_now(&mut tilo_app::widget::Edits::lend(&mut scratch), group)
+            .submit_now(&mut tilo_ui_base::widget::Edits::lend(&mut scratch), group)
             .unwrap();
         let written: Vec<String> = texts(&chain.parts()).into_iter().map(|(_, text)| text).collect();
         assert_eq!(written, ["one", "two"]);

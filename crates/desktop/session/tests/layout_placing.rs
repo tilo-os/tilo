@@ -228,7 +228,7 @@ fn with_mailbox(session: &mut Session) -> (String, Rc<std::cell::RefCell<Vec<Str
 // one undoable step.
 #[test]
 fn a_resource_a_view_and_a_point_make_an_layout_entry() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     let (app, _) = with_mailbox(&mut session);
@@ -289,7 +289,7 @@ fn a_resource_a_view_and_a_point_make_an_layout_entry() {
 // itself shows it: the layout carries the act.
 #[test]
 fn an_unnamed_view_is_the_resources_primary_and_no_resource_action_shows_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     let (app, asked) = with_mailbox(&mut session);
@@ -391,7 +391,7 @@ fn index_mailbox(app: &str, workspace: &str) {
 // caret: the same action, attributed and undoable.
 #[test]
 fn text_typed_on_the_canvas_places_what_find_finds() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     // The workspace in front, the one the device's daemon holds: where search reads its entries.
@@ -442,7 +442,7 @@ fn text_typed_on_the_canvas_places_what_find_finds() {
 // in — nothing stands on the canvas for it (shell.md §8.1, "Asking from the canvas").
 #[test]
 fn text_that_finds_nothing_asks_the_kept_agent_instead_of_being_dropped() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     let before = layout(&session).places.len();
@@ -469,7 +469,7 @@ fn text_that_finds_nothing_asks_the_kept_agent_instead_of_being_dropped() {
 // typed there, or a conversation an ask starts.
 #[test]
 fn a_workspace_with_no_row_yet_takes_a_place_and_the_row_it_stands_in() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     let (app, _) = with_mailbox(&mut session);
@@ -557,7 +557,7 @@ fn a_workspace_with_no_row_yet_takes_a_place_and_the_row_it_stands_in() {
 // rather than on the canvas, and that is the same one undoable step.
 #[test]
 fn a_place_asked_to_float_stands_above_the_windows_at_its_corner() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     with_mailbox(&mut session);
@@ -623,7 +623,7 @@ fn a_place_asked_to_float_stands_above_the_windows_at_its_corner() {
 // a second place being made.
 #[test]
 fn the_system_open_brings_what_is_placed_forward() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     let (app, asked) = with_mailbox(&mut session);
@@ -685,7 +685,7 @@ fn the_system_open_brings_what_is_placed_forward() {
 /// own arranging step (`docs/designs/app-language/one-app-model.md` §3).
 #[test]
 fn the_system_open_stands_a_new_place() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     let (app, _) = with_mailbox(&mut session);
@@ -764,7 +764,7 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
         }
     }
 
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     session.publish(Rc::new(std::cell::RefCell::new(Things)));
@@ -900,7 +900,7 @@ fn the_open_brings_a_place_of_the_same_root_forward_rather_than_opening_a_second
         }
     }
 
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     session.publish(Rc::new(std::cell::RefCell::new(Mail)));

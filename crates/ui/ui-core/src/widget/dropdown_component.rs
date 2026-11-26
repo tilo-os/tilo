@@ -1,7 +1,7 @@
 //! [`Dropdown`] as a described component.
 
-use crate::component::{Bound, Component, Described, Event, Value};
-use crate::icons::Icon;
+use tilo_ui_base::{component::Bound, component::Component, component::Described, component::Event, component::Value};
+use tilo_ui_base::icons::Icon;
 use crate::widget::ControlSize;
 
 use super::Dropdown;

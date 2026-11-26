@@ -154,7 +154,7 @@ fn read(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> 
     pixels
 }
 
-fn draw(gpu: &crate::offscreen::SharedGpu, renderer: &mut Renderer, scene: &Scene) -> Vec<u8> {
+fn draw(gpu: &tilo_ui_base::offscreen::SharedGpu, renderer: &mut Renderer, scene: &Scene) -> Vec<u8> {
     let target = target(&gpu.device);
     renderer
         .render_to_texture(
@@ -174,7 +174,7 @@ fn draw(gpu: &crate::offscreen::SharedGpu, renderer: &mut Renderer, scene: &Scen
 }
 
 fn assert_same(what: &str, got: &[u8], expected: &[u8]) {
-    let differing = crate::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(got, expected);
+    let differing = tilo_ui_base::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(got, expected);
     assert_eq!(
         differing, 0,
         "{what}: {differing} pixels differ from the eager renderer"
@@ -183,7 +183,7 @@ fn assert_same(what: &str, got: &[u8], expected: &[u8]) {
 
 #[test]
 fn a_window_s_first_frame_needs_none_of_the_pipelines_it_defers() {
-    let gpu = crate::offscreen::shared_gpu().expect("shared GPU context");
+    let gpu = tilo_ui_base::offscreen::shared_gpu().expect("shared GPU context");
     let mut eager = Renderer::new(&gpu.device, options()).unwrap();
     assert_eq!(
         eager.deferred_pipelines().pending,
@@ -254,7 +254,7 @@ fn a_window_s_first_frame_needs_none_of_the_pipelines_it_defers() {
 
 #[test]
 fn a_renderer_that_defers_everything_builds_what_a_frame_dispatches() {
-    let gpu = crate::offscreen::shared_gpu().expect("shared GPU context");
+    let gpu = tilo_ui_base::offscreen::shared_gpu().expect("shared GPU context");
     let mut eager = Renderer::new(&gpu.device, options()).unwrap();
     let window = window_scene();
     let expected = draw(&gpu, &mut eager, &window);
@@ -278,7 +278,7 @@ fn a_renderer_that_defers_everything_builds_what_a_frame_dispatches() {
 /// What a window on a software adapter does: everything deferred, the build started at once.
 #[test]
 fn a_build_started_at_once_serves_the_first_frame() {
-    let gpu = crate::offscreen::shared_gpu().expect("shared GPU context");
+    let gpu = tilo_ui_base::offscreen::shared_gpu().expect("shared GPU context");
     let mut eager = Renderer::new(&gpu.device, options()).unwrap();
     let window = window_scene();
     let expected = draw(&gpu, &mut eager, &window);
@@ -313,7 +313,7 @@ fn a_build_started_at_once_serves_the_first_frame() {
 /// the rest compile asynchronously once the first frame is out.
 #[test]
 fn the_web_renderer_awaits_only_the_first_frame_s_pipelines() {
-    let gpu = crate::offscreen::shared_gpu().expect("shared GPU context");
+    let gpu = tilo_ui_base::offscreen::shared_gpu().expect("shared GPU context");
     let mut eager = Renderer::new(&gpu.device, options()).unwrap();
     let window = window_scene();
     let clips = many_clips_scene();
@@ -377,7 +377,7 @@ fn the_web_renderer_awaits_only_the_first_frame_s_pipelines() {
 /// drawing.
 #[test]
 fn the_web_renderer_compiles_deferred_pipelines_one_at_a_time_but_a_frame_takes_its_own_at_once() {
-    let gpu = crate::offscreen::shared_gpu().expect("shared GPU context");
+    let gpu = tilo_ui_base::offscreen::shared_gpu().expect("shared GPU context");
     let mut eager = Renderer::new(&gpu.device, options()).unwrap();
     let clips = many_clips_scene();
     let expected_clips = draw(&gpu, &mut eager, &clips);
@@ -428,7 +428,7 @@ fn the_web_renderer_compiles_deferred_pipelines_one_at_a_time_but_a_frame_takes_
 
 #[test]
 fn a_window_s_damage_only_frame_builds_no_pipeline_once_the_deferred_build_is_done() {
-    let gpu = crate::offscreen::shared_gpu().expect("shared GPU context");
+    let gpu = tilo_ui_base::offscreen::shared_gpu().expect("shared GPU context");
     let mut window =
         Renderer::new_deferring(&gpu.device, options(), PipelineDeferral::Unused).unwrap();
     assert!(

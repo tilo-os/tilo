@@ -28,13 +28,13 @@
 use tilo_app::advanced::{Scene, WindowEvent};
 use tilo_app::app::{AppSurface, SurfaceDamage};
 use tilo_app::framework::testing::drive_live_window;
-use tilo_app::i18n::EmbeddedCatalog;
-use tilo_app::offscreen::OffscreenRenderer;
+use tilo_ui_base::i18n::EmbeddedCatalog;
+use tilo_ui_base::offscreen::OffscreenRenderer;
 use tilo_app::prelude::*;
 
 use crate::support_checklist;
 use crate::support_checklist::{Checklist, Task};
-use tilo_app::theme::Theme;
+use tilo_ui_base::theme::Theme;
 use tilo_app::winit::dpi::{PhysicalPosition, PhysicalSize};
 use tilo_app::winit::event::{DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase};
 use tilo_app::winit::window::CursorIcon;

@@ -1,10 +1,8 @@
 //! Form composition that keeps visible and accessible labels in one contract.
 
-use super::{
-    Autocomplete, Checkbox, ColorPicker, Column, DatePicker, Dropdown, NumberInput, Row, Slider,
-    Text, TextInput, TimePicker, Toggle, ToggleGroup, Widget,
-};
-use crate::tokens::TextRole;
+use super::{Autocomplete, Checkbox, ColorPicker, Column, DatePicker, Dropdown, NumberInput, Row, Slider, Text, TextInput, TimePicker, Toggle, ToggleGroup};
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::tokens::TextRole;
 
 #[path = "labelled_component.rs"]
 mod component;
@@ -12,7 +10,7 @@ pub use component::LabelledProps;
 
 /// `label` names `content`, which is a control composed as plain elements
 /// rather than one [`FormControl`] — a chooser, a field holding parts of its
-/// own, anything already boxed as an [`Element`](super::Element). It is the
+/// own, anything already boxed as an [`Element`](tilo_ui_base::widget::Element). It is the
 /// naming a [`Field`](crate::widget::Field)'s label gives its control, for a
 /// layout that places the label itself (over the control, in a stack).
 ///
@@ -43,7 +41,7 @@ impl Labelled {
     }
 }
 
-impl super::Decorator for Labelled {
+impl tilo_ui_base::widget::Decorator for Labelled {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -57,14 +55,14 @@ impl super::Decorator for Labelled {
     /// The control's own node, named by its label where it had no name (or
     /// only the value or placeholder it shows): the visible label is read
     /// once, as the control's name.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let mut node = self.content.accessibility()?;
         if node.name.is_none() || node.name_found {
-            node.name = Some(crate::i18n::widget_text(&self.label));
+            node.name = Some(tilo_ui_base::i18n::widget_text(&self.label));
             node.name_found = false;
         }
         if node.description.is_none() && !self.description.is_empty() {
-            node.description = Some(crate::i18n::widget_text(&self.description));
+            node.description = Some(tilo_ui_base::i18n::widget_text(&self.description));
         }
         Some(node)
     }
@@ -209,7 +207,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::a11y::Role;
+    use tilo_ui_base::a11y::Role;
 
     #[test]
     fn labeled_controls_share_one_key_for_visible_and_spoken_labels() {
@@ -362,7 +360,7 @@ mod tests {
             let block = Labelled::new(
                 "Turn left onto Main Street in Tasks",
                 Box::new(crate::widget::Skeleton::new(
-                    crate::widget::SkeletonShape::Block { height: 160.0 },
+                    tilo_ui_base::widget::SkeletonShape::Block { height: 160.0 },
                 )),
             );
             let node = block.accessibility().expect("the block's semantics");

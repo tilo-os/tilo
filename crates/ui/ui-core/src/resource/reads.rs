@@ -1,7 +1,7 @@
 //! What a component's pass reads of the resource store: each record it reads, followed until its
 //! frontier moves.
 
-use crate::component_inputs::{Key, Reads, fold, probe};
+use tilo_ui_base::{component_inputs::Key, component_inputs::Reads, component_inputs::fold, component_inputs::probe};
 use crate::wake::WakeHandle;
 
 /// Run `pass` as the pass of the component `owner` names, gathering what it reads outside the
@@ -9,7 +9,7 @@ use crate::wake::WakeHandle;
 pub(crate) fn reading<R>(owner: &WakeHandle, pass: impl FnOnce() -> R) -> (R, Reads) {
     // The store tells this pass which resources it read.
     super::observe_reads(read_resource);
-    crate::component_inputs::reading(owner, pass)
+    tilo_ui_base::component_inputs::reading(owner, pass)
 }
 
 /// A pass read `document`, record `id` of `store`: the pass reads it again once its frontier moved,
@@ -34,7 +34,7 @@ fn read_resource(
 }
 
 fn frontier(document: &automerge::AutoCommit) -> u64 {
-    let (heads, pending) = crate::doc::settle_mark(document);
+    let (heads, pending) = tilo_ui_base::doc::settle_mark(document);
     heads
         .iter()
         .fold(pending as u64, |folded, head| fold(folded, &head.0))

@@ -5,10 +5,8 @@ use crate::{
     view::{Choice, Selection, Sources},
 };
 use tilo_messaging::{MessagingClient, SendRequest};
-use ui::{
-    LocalState,
-    framework::{EffectAnswer, EffectCx, EffectStatus, Effected},
-};
+use ui::{framework::EffectAnswer, framework::EffectCx, framework::EffectStatus, framework::Effected};
+use tilo_ui_base::LocalState;
 #[derive(Clone)]
 pub(crate) struct Sending {
     client: Option<MessagingClient>,

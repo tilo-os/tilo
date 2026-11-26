@@ -8,9 +8,9 @@ use std::rc::Rc;
 use vello::kurbo::{Rect, Vec2};
 
 use super::{Part, Parts, WindowToolbar};
-use crate::collection_transition::RowMotions;
+use tilo_ui_base::collection_transition::RowMotions;
 use crate::time::Instant;
-use crate::tokens::{EffectiveMotion, MotionSource};
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum PartKey {
@@ -132,7 +132,7 @@ impl PartChanges {
     ) {
         // The app changed the row: it moves unless a key just asked for the
         // change, which lands.
-        let source = crate::motion::recent_input(now).unwrap_or(MotionSource::Pointer);
+        let source = tilo_ui_base::motion::recent_input(now).unwrap_or(MotionSource::Pointer);
         let old = placed(&before.0, &before.1);
         let new = placed(toolbar, parts);
         let at = |placed: &[(PartKey, Rect)]| {

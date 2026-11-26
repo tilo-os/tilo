@@ -171,9 +171,9 @@ impl InstallerPreview {
             let mut text = Text::new(status)
                 .with_id("installer.migrate.status")
                 .with_live(if self.sign_in.status_is_error {
-                    ui::a11y::Politeness::Assertive
+                    tilo_ui_base::a11y::Politeness::Assertive
                 } else {
-                    ui::a11y::Politeness::Polite
+                    tilo_ui_base::a11y::Politeness::Polite
                 });
             if !self.sign_in.status_is_error {
                 text = text.with_role(TextRole::Caption);

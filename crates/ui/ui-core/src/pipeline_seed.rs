@@ -12,7 +12,7 @@ pub fn seed_file(dir: &Path, adapter: &wgpu::AdapterInfo) -> Option<PathBuf> {
     wgpu::util::pipeline_cache_key(adapter).map(|key| dir.join(key))
 }
 
-pub(crate) fn supported(device: &crate::gpu::DeviceHandle) -> bool {
+pub(crate) fn supported(device: &tilo_ui_base::gpu::DeviceHandle) -> bool {
     device
         .device
         .features()
@@ -24,7 +24,7 @@ pub(crate) fn supported(device: &crate::gpu::DeviceHandle) -> bool {
     reason = "wgpu marks pipeline cache creation unsafe; see the SAFETY note"
 )]
 pub(crate) fn create(
-    device: &crate::gpu::DeviceHandle,
+    device: &tilo_ui_base::gpu::DeviceHandle,
     data: Option<&[u8]>,
 ) -> wgpu::PipelineCache {
     // SAFETY: `data` is either absent, a blob the session published from
@@ -47,7 +47,7 @@ pub(crate) fn create(
 
 /// A pipeline cache started from the session's seed, when the launcher provided one for this device.
 #[must_use]
-pub fn seeded(device: &crate::gpu::DeviceHandle) -> Option<wgpu::PipelineCache> {
+pub fn seeded(device: &tilo_ui_base::gpu::DeviceHandle) -> Option<wgpu::PipelineCache> {
     if !supported(device) {
         return None;
     }
@@ -56,7 +56,7 @@ pub fn seeded(device: &crate::gpu::DeviceHandle) -> Option<wgpu::PipelineCache> 
 }
 
 /// The session's seed blob for this device, when the launcher provided one.
-pub(crate) fn seed_data(device: &crate::gpu::DeviceHandle) -> Option<Vec<u8>> {
+pub(crate) fn seed_data(device: &tilo_ui_base::gpu::DeviceHandle) -> Option<Vec<u8>> {
     let dir = crate::process::environment().paths.pipeline_seed.clone()?;
     let file = seed_file(&dir, &device.adapter.get_info())?;
     let (dir, name) = tilo_files::file_at(&file).ok()?;
@@ -66,14 +66,14 @@ pub(crate) fn seed_data(device: &crate::gpu::DeviceHandle) -> Option<Vec<u8>> {
 /// An empty pipeline cache for the session to fill and then publish: what `cache.get_data()` returns
 /// afterwards, written to [`seed_file`] in the directory the launcher binds.
 #[must_use]
-pub fn empty(device: &crate::gpu::DeviceHandle) -> Option<wgpu::PipelineCache> {
+pub fn empty(device: &tilo_ui_base::gpu::DeviceHandle) -> Option<wgpu::PipelineCache> {
     supported(device).then(|| create(device, None))
 }
 
 /// Replace the seed for `device` under `dir` with what `cache` holds, atomically, readable by every app
 /// and writable by its owner only. # Errors When the directory or the file cannot be written.
 pub fn publish(
-    device: &crate::gpu::DeviceHandle,
+    device: &tilo_ui_base::gpu::DeviceHandle,
     cache: &wgpu::PipelineCache,
     dir: &Path,
 ) -> std::io::Result<bool> {
@@ -118,7 +118,7 @@ mod tests {
         gl.backend = wgpu::Backend::Gl;
         assert_eq!(seed_file(dir, &gl), None);
 
-        let mut context = crate::gpu::RenderContext::new();
+        let mut context = tilo_ui_base::gpu::RenderContext::new();
         let Some(index) = pollster::block_on(context.device(None)) else {
             return;
         };

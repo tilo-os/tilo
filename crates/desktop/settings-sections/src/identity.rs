@@ -21,7 +21,7 @@ impl IdentityPrefs {
     /// A colour is one of the hues the palette has, or none at all.
     fn valid(&self) -> Result<(), tilo_resource::Refusal> {
         match &self.colour {
-            Some(id) if ui::tokens::PresenceHue::from_id(id).is_none() => Err(
+            Some(id) if tilo_ui_base::tokens::PresenceHue::from_id(id).is_none() => Err(
                 tilo_resource::Refusal::new(format!("`{id}` is not a colour")),
             ),
             _ => Ok(()),
@@ -44,7 +44,7 @@ pub mod colours {
     /// Every hue the palette has, by id as it is stored.
     #[must_use]
     pub fn ids() -> Vec<&'static str> {
-        ui::tokens::PresenceHue::ALL
+        tilo_ui_base::tokens::PresenceHue::ALL
             .iter()
             .map(|hue| hue.id())
             .collect()
@@ -54,7 +54,7 @@ pub mod colours {
     /// this build does not know.
     #[must_use]
     pub fn label(id: &str) -> String {
-        ui::tokens::PresenceHue::from_id(id)
+        tilo_ui_base::tokens::PresenceHue::from_id(id)
             .map_or_else(|| id.to_owned(), |hue| hue.label().to_owned())
     }
 }
@@ -71,6 +71,6 @@ mod tests {
         assert_eq!(prefs.valid(), Ok(()));
         prefs.colour = Some("chartreuse".into());
         assert!(prefs.valid().is_err());
-        assert_eq!(colours::ids().len(), ui::tokens::PresenceHue::ALL.len());
+        assert_eq!(colours::ids().len(), tilo_ui_base::tokens::PresenceHue::ALL.len());
     }
 }

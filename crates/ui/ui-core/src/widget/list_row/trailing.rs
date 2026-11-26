@@ -2,13 +2,13 @@
 //! row once it wraps under the text.
 
 use super::{ListRow, MIN_TEXT_LINES};
-use crate::a11y::Role;
-use crate::widget::{Element, Widget};
+use tilo_ui_base::a11y::Role;
+use tilo_ui_base::{widget::Element, widget::Widget};
 use taffy::prelude::length;
 use taffy::{NodeId, TaffyTree};
 use vello::kurbo::Rect;
 
-use crate::text_render::TextRenderer;
+use tilo_ui_base::text_render::TextRenderer;
 
 /// Whether `control` draws a face of one size whatever width it gets (a
 /// switch, a checkbox), so stretching it under the text would only move it
@@ -87,7 +87,7 @@ impl ListRow {
             // control wraps at by the one reckoning and fits at by the
             // other, and the row fills and stops filling on every pass of
             // the solve; or keeps filling where a fresh layout would not.
-            let beside = crate::num::f32_of_f64(min_text) + (trailing.natural + trailing.margins);
+            let beside = tilo_ui_base::num::f32_of_f64(min_text) + (trailing.natural + trailing.margins);
             (
                 f64::from(trailing.natural),
                 beside > taffy.unrounded_layout(node).size.width,
@@ -102,13 +102,13 @@ impl ListRow {
             let band_rect = Rect::new(-bleed, 0.0, row_width + bleed, band_height);
             let m = self.metrics(&theme);
             let text_edge = self.with_face(|face| face.text_x(band_rect, &m, text, &theme));
-            crate::num::f32_of_f64((row_width - text_edge.max(0.0)).max(0.0))
+            tilo_ui_base::num::f32_of_f64((row_width - text_edge.max(0.0)).max(0.0))
         });
         let Some(trailing) = &mut self.trailing else {
             return false;
         };
         if trailing.fill.is_none() {
-            trailing.natural = crate::num::f32_of_f64(natural);
+            trailing.natural = tilo_ui_base::num::f32_of_f64(natural);
         }
         let same = match (trailing.fill, fill) {
             (Some(a), Some(b)) => (a - b).abs() < 0.5,

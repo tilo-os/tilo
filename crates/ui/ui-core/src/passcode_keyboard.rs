@@ -7,11 +7,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
 
-use crate::icons::Icon;
-use crate::surface::{control_face, edge_outline};
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{surface::control_face, surface::edge_outline};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::{ButtonRole, Interaction, REST_BORDER_WIDTH, face_colors, paint_disabled};
 
 /// What a key shows: its character, or the icon of what it does.

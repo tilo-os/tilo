@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use tilo_actions::ResourceSpec;
 use ui_core::automerge::AutoCommit;
-use ui_core::widget::Element;
+use tilo_ui_base::widget::Element;
 
 use super::shared_tree::mark_document_jobs;
 use super::{
@@ -22,7 +22,7 @@ impl ResourceRoot {
     pub(super) fn binding_head(&self) -> BindingHead {
         let state = self.typed.state();
         let label = self.name_of(&*state);
-        let version = (self.version(), ui_core::i18n::I18nManager::revision());
+        let version = (self.version(), tilo_ui_base::i18n::I18nManager::revision());
         let epoch = self.typed.cache_epoch(&*state);
         let resource = if let Some(reason) = &self.typed.unreadable() {
             // The state is the last that read, not what the document holds,
@@ -126,7 +126,7 @@ impl ResourceRoot {
     #[inline(never)]
     pub(super) fn refresh_bindings(&self, head: Option<BindingHead>) -> BindingHead {
         let _profile = tilo_resource::profiling::Phase::start("framework.action_bindings");
-        let version = (self.version(), ui_core::i18n::I18nManager::revision());
+        let version = (self.version(), tilo_ui_base::i18n::I18nManager::revision());
         let head = match head {
             Some(head) if head.version == version => head,
             _ => self.binding_head(),

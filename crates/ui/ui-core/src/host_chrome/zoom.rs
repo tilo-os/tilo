@@ -5,7 +5,7 @@
 use tilo_actions::{ActionSpec, EncodedAction, OperationKind, ResourceSpec};
 
 use crate::content_zoom::ZoomStep;
-use crate::i18n::I18nManager;
+use tilo_ui_base::i18n::I18nManager;
 
 pub(crate) const ZOOM_RESOURCE: &str = "tilo.host:zoom";
 pub(crate) const ZOOM_OPERATION: &str = "tilo.host.zoom";

@@ -8,8 +8,8 @@ use std::collections::HashMap;
 
 use vello::kurbo::{Point, Rect};
 
-use crate::a11y::{AccessNode, Role};
-use crate::widget::Widget;
+use tilo_ui_base::{a11y::AccessNode, a11y::Role};
+use tilo_ui_base::widget::Widget;
 
 /// A node a person can pick.
 #[derive(Clone, Debug, PartialEq)]
@@ -116,17 +116,17 @@ fn child_paths<'a>(widget: &'a dyn Widget, path: &str) -> Vec<(&'a dyn Widget, S
         .enumerate()
         .map(|(index, child)| {
             let (_, path, _) =
-                crate::widget::widget_path(child, path, widget.child_path_name(index), &mut counts);
+                tilo_ui_base::widget::widget_path(child, path, widget.child_path_name(index), &mut counts);
             (child, path)
         })
         .collect()
 }
 
 fn access(widget: &dyn Widget) -> Option<AccessNode> {
-    let _entry = crate::widget::bound_nodes::enter_widget(widget).ok()?;
+    let _entry = tilo_ui_base::widget::bound_nodes::enter_widget(widget).ok()?;
     widget
         .accessibility()
-        .map(|node| crate::a11y::with_synthetic_bounds(node, widget))
+        .map(|node| tilo_ui_base::a11y::with_synthetic_bounds(node, widget))
 }
 
 /// The named nodes under `point`, outermost first, ending with the deepest one: the chain a picker
@@ -158,7 +158,7 @@ fn visit_at(
     }
     let mut pushed = false;
     if let Some(node) = &node {
-        let bounds = node.bounds.map_or(rect, crate::a11y::AccessBounds::to_rect);
+        let bounds = node.bounds.map_or(rect, tilo_ui_base::a11y::AccessBounds::to_rect);
         if nameable(node) && usable(bounds) && bounds.contains(point) {
             chain.push(target(path.clone(), node, bounds));
             pushed = true;
@@ -218,7 +218,7 @@ fn visit_synthetic_at(
             } else {
                 format!("{path}#{index}")
             };
-            let bounds = child.bounds.map(crate::a11y::AccessBounds::to_rect);
+            let bounds = child.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect);
             let inside = bounds.is_some_and(|bounds| usable(bounds) && bounds.contains(point));
             if inside && nameable(child) {
                 let Some(bounds) = bounds else { continue };
@@ -283,7 +283,7 @@ fn visit_within(
         return;
     }
     if let Some(node) = &node {
-        let bounds = node.bounds.map_or(rect, crate::a11y::AccessBounds::to_rect);
+        let bounds = node.bounds.map_or(rect, tilo_ui_base::a11y::AccessBounds::to_rect);
         if nameable(node) && usable(bounds) && encloses(area, bounds) {
             found.push(target(path, node, bounds));
             return;
@@ -329,7 +329,7 @@ fn within_synthetic(
         } else {
             format!("{path}#{index}")
         };
-        match child.bounds.map(crate::a11y::AccessBounds::to_rect) {
+        match child.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect) {
             Some(bounds) if nameable(child) && usable(bounds) && encloses(area, bounds) => {
                 found.push(target(child_path, child, bounds));
             }
@@ -364,13 +364,13 @@ pub fn capture(root: &dyn Widget, path: &str) -> Option<PickCapture> {
         }
         capture.role = Some(node.role);
         capture.kind.clone_from(&node.role_description);
-        capture.label = label(&node, node.bounds.map(crate::a11y::AccessBounds::to_rect));
+        capture.label = label(&node, node.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect));
         read_synthetic(&node, &mut capture.texts);
     } else {
         if let Some(node) = &node {
             let rect = node
                 .bounds
-                .map_or_else(|| widget.get_rect(), crate::a11y::AccessBounds::to_rect);
+                .map_or_else(|| widget.get_rect(), tilo_ui_base::a11y::AccessBounds::to_rect);
             capture.role = Some(node.role);
             capture.kind.clone_from(&node.role_description);
             capture.label = label(node, Some(rect));
@@ -460,7 +460,7 @@ fn read_synthetic(node: &AccessNode, texts: &mut Vec<PickedText>) {
         }
         read_node(
             child,
-            child.bounds.map(crate::a11y::AccessBounds::to_rect),
+            child.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect),
             texts,
         );
         read_synthetic(child, texts);
@@ -478,7 +478,7 @@ fn read_widget(widget: &dyn Widget, texts: &mut Vec<PickedText>, depth: usize) {
         }
         let rect = node
             .bounds
-            .map_or_else(|| widget.get_rect(), crate::a11y::AccessBounds::to_rect);
+            .map_or_else(|| widget.get_rect(), tilo_ui_base::a11y::AccessBounds::to_rect);
         read_node(node, usable(rect).then_some(rect), texts);
         read_synthetic(node, texts);
     }
@@ -531,7 +531,7 @@ fn sensitive_node(node: &AccessNode, rect: Option<Rect>, whole: Rect, areas: &mu
     }
     let rect = node
         .bounds
-        .map(crate::a11y::AccessBounds::to_rect)
+        .map(tilo_ui_base::a11y::AccessBounds::to_rect)
         .or(rect)
         .unwrap_or(whole);
     let named = node

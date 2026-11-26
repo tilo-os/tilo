@@ -8,14 +8,12 @@
 
 use std::collections::BTreeMap;
 
-use ui::format::{Date, Time};
-use ui::icons::Icon;
+use tilo_ui_base::{format::Date, format::Time};
+use tilo_ui_base::icons::Icon;
 use ui::prelude::*;
-use ui::tokens::Rhythm;
-use ui::widget::{
-    Button, ButtonRole, Column, ControlSize, DateField, Dropdown, Element, EmptyState, ListRow,
-    Row, Section, Segment, Text, TimeField, ToggleGroup,
-};
+use tilo_ui_base::tokens::Rhythm;
+use ui::{widget::Button, widget::ButtonRole, widget::Column, widget::ControlSize, widget::DateField, widget::Dropdown, widget::EmptyState, widget::ListRow, widget::Row, widget::Section, widget::Segment, widget::Text, widget::TimeField, widget::ToggleGroup};
+use tilo_ui_base::widget::Element;
 
 use super::agents::{Intro, column, intro};
 use super::general::{buttons, caption};
@@ -409,11 +407,11 @@ const UNTIL: &str = "until";
 /// The day an `until` permission ends, picked on the toolkit's date field, and the time of that
 /// day in its popover.
 fn until_fields(day: Option<Date>, time: Option<Time>, parts: &Parts) -> Element {
-    use ui::component::{Bound, Described as _};
+    use tilo_ui_base::{component::Bound, component::Described as _};
     let (on_day, on_time) = (parts.clone(), parts.clone());
     let props = ui::widget::DateFieldProps {
         value: Bound {
-            state: ui::LocalState::new(day.map(|day| day.to_string()).unwrap_or_default()),
+            state: tilo_ui_base::LocalState::new(day.map(|day| day.to_string()).unwrap_or_default()),
             ..Bound::default()
         },
         at: time.map(|time| time.strftime("%H:%M").to_string()),
@@ -432,8 +430,8 @@ fn until_fields(day: Option<Date>, time: Option<Time>, parts: &Parts) -> Element
 /// The instant a permission picked to end on `day` at `time` ends, in Unix milliseconds: `None`
 /// until both are picked, and for one already past.
 fn ends_at(day: Option<Date>, time: Option<Time>) -> Option<u64> {
-    let at = ui::clock::instant_of(day?.to_datetime(time?))?;
-    (at > ui::clock::local_now().timestamp())
+    let at = tilo_ui_base::clock::instant_of(day?.to_datetime(time?))?;
+    (at > tilo_ui_base::clock::local_now().timestamp())
         .then(|| u64::try_from(at.as_millisecond()).ok())
         .flatten()
 }
@@ -453,7 +451,7 @@ fn picker(
     let choose = parts.clone();
     let mut chooser = Dropdown::from_state(
         choices.iter().map(|choice| choice.label.clone()).collect(),
-        &ui::LocalState::new(chosen.key.clone()),
+        &tilo_ui_base::LocalState::new(chosen.key.clone()),
     )
     .with_id(id)
     .with_accessible_name(caption_text)

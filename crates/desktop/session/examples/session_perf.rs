@@ -493,7 +493,7 @@ fn focus_note(session: &mut Session, title: &str) {
     );
     let (place, field) = text_field(session, title).expect("the note's field");
     assert!(
-        session.a11y_perform(place, field, &ui::a11y::Action::Focus),
+        session.a11y_perform(place, field, &tilo_ui_base::a11y::Action::Focus),
         "the note takes the keyboard"
     );
     session.step(REFRESH).expect("a turn of the session");

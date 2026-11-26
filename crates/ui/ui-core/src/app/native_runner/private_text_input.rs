@@ -91,7 +91,7 @@ impl Bridge {
             .flatten()?;
         Some(Scope {
             node,
-            stamp: crate::ime::scoped_fingerprint(&u64::from(node).to_le_bytes(), stamp, &self.key),
+            stamp: tilo_ui_base::ime::scoped_fingerprint(&u64::from(node).to_le_bytes(), stamp, &self.key),
         })
     }
     fn cancel(&mut self) {

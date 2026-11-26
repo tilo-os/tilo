@@ -60,7 +60,7 @@ tilo_test_env::scenario! {
             doc.set_actor(automerge::ActorId::from(b"committed-peer".as_slice()));
             doc.put(ROOT, name, "remote").unwrap();
             doc.commit();
-            crate::collaboration::CommittedDocument::for_test(doc.save_after(&base), Some(base))
+            tilo_ui_base::collaboration::CommittedDocument::for_test(doc.save_after(&base), Some(base))
         };
 
         commit_local(&fixture, "initial");
@@ -77,7 +77,7 @@ tilo_test_env::scenario! {
         // The same record is also the app's primary document, published on its
         // own frontier.
         fixture.app.actions.bound_broker_route_for_test =
-            Some(crate::collaboration::AcceptedRoute {
+            Some(tilo_ui_base::collaboration::AcceptedRoute {
                 route: route.clone(),
                 epoch: uuid::Uuid::new_v4(),
             });
@@ -177,7 +177,7 @@ tilo_test_env::scenario! {
         fn committed_read(
             fixture: &RoutedOwners,
         ) -> (
-            crate::collaboration::CommittedDocument,
+            tilo_ui_base::collaboration::CommittedDocument,
             Vec<automerge::ChangeHash>,
         ) {
             let id = &fixture.bindings[0].checkout.id;
@@ -186,7 +186,7 @@ tilo_test_env::scenario! {
             remote.set_actor(automerge::ActorId::from(b"committed-peer".as_slice()));
             remote.put(ROOT, "remote-key", "remote").unwrap();
             remote.commit();
-            let read = crate::collaboration::CommittedDocument::for_test(
+            let read = tilo_ui_base::collaboration::CommittedDocument::for_test(
                 remote.save_after(&base),
                 Some(base.clone()),
             );
@@ -383,8 +383,8 @@ tilo_test_env::scenario! {
             fixture.app.publish_owned_documents();
             assert!(fixture.app.document_routes.sent.is_empty());
             fixture.app.actions.bound_broker_route_for_test =
-                Some(crate::collaboration::AcceptedRoute {
-                    route: crate::collaboration::RouteSpec::app(
+                Some(tilo_ui_base::collaboration::AcceptedRoute {
+                    route: tilo_ui_base::collaboration::RouteSpec::app(
                         "outer-shell",
                         fixture.bindings[0].broker_route().unwrap().cluster_id,
                     ),
@@ -498,7 +498,7 @@ tilo_test_env::scenario! {
             );
             assert!(
                 binding
-                    .history_request(&mut fixture.app.state.doc, crate::widget::undo_access::UndoRequest::Undo)
+                    .history_request(&mut fixture.app.state.doc, tilo_ui_base::widget::undo_access::UndoRequest::Undo)
                     .unwrap()
                     .is_some_and(|step| step.author == Some(fixture.bindings[0].author.clone())),
                 "taking the words back takes back this person's step, not the peer's change"
@@ -715,7 +715,7 @@ tilo_test_env::scenario! {
         let binding = fixture.bindings[0].clone();
         let route = binding.broker_route().unwrap();
         fixture.app.actions.bound_broker_route_for_test =
-            Some(crate::collaboration::AcceptedRoute {
+            Some(tilo_ui_base::collaboration::AcceptedRoute {
                 route: route.clone(),
                 epoch: uuid::Uuid::new_v4(),
             });

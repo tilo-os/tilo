@@ -77,7 +77,7 @@ mod construction_owner {
 
     fn refresh_prepared_owner(context: &ProcessContext) {
         tilo_test_env::wait_until("original applied capture must leave staging", || {
-            !crate::collaboration::native_initial::component_history_phase_for_test(
+            !tilo_ui_base::collaboration::native_initial::component_history_phase_for_test(
                 &context.callback_binding(),
             )
             .is_some_and(|phase| phase.1)
@@ -85,10 +85,10 @@ mod construction_owner {
         let mut refresh =
             REFRESH.with_borrow_mut(|refresh| refresh.take().expect("original socket fixture"));
         let before = refresh();
-        let read = crate::collaboration::native_initial::component_history_read_for_test(
+        let read = tilo_ui_base::collaboration::native_initial::component_history_read_for_test(
             &context.callback_binding(),
         )
-        .unwrap_or_else(|error| panic!("actual owner requests the newer committed capture: {error}, reads={before}->{}, phase={:?}", refresh(), crate::collaboration::native_initial::component_history_phase_for_test(&context.callback_binding())));
+        .unwrap_or_else(|error| panic!("actual owner requests the newer committed capture: {error}, reads={before}->{}, phase={:?}", refresh(), tilo_ui_base::collaboration::native_initial::component_history_phase_for_test(&context.callback_binding())));
         read.with_mutation(|mutation| {
             let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
                 panic!("full committed owner capture required")
@@ -105,7 +105,7 @@ mod construction_owner {
         })
         .unwrap();
         assert_eq!(
-            crate::collaboration::native_initial::component_history_phase_for_test(
+            tilo_ui_base::collaboration::native_initial::component_history_phase_for_test(
                 &context.callback_binding()
             ),
             Some((true, true, false))
@@ -230,7 +230,7 @@ mod construction_owner {
             .unwrap();
         history.commit();
         let (manager, probe) =
-            crate::collaboration::CollaborationManager::native_refresh_fixture_for_test(
+            tilo_ui_base::collaboration::CollaborationManager::native_refresh_fixture_for_test(
                 probe::APP,
                 workspace,
                 original,

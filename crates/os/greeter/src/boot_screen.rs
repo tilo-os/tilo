@@ -136,7 +136,7 @@ pub fn run(args: impl Iterator<Item = String>) -> Result<(), Box<dyn std::error:
     app.set_text_scale(comforts.text_scale);
     app.set_high_contrast(comforts.high_contrast);
     if comforts.screen_reader {
-        let mut reader = ui::screen_reader::ScreenReader::new();
+        let mut reader = tilo_ui_base::screen_reader::ScreenReader::new();
         let settings = comforts.screen_reader_settings();
         reader.configure(&settings);
         // The system voice is the screen's language, where espeak-ng has it.

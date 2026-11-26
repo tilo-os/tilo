@@ -1,5 +1,5 @@
 use super::*;
-use crate::i18n::widget_text;
+use tilo_ui_base::i18n::widget_text;
 use crate::testing::Dispatch;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, transaction::Transactable};
 
@@ -15,12 +15,12 @@ fn opts() -> Vec<String> {
 fn paint_list(dd: &mut Dropdown, renderer: &mut TextRenderer, theme: &Theme) -> f64 {
     dd.adopt_theme(theme);
     dd.place_list();
-    dd.draw_overlay(&mut crate::draw::DrawCtx::new(
+    dd.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut Scene::new(),
         Affine::IDENTITY,
         renderer,
         theme,
-        crate::presence::PresenceCtx::empty().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
     ));
     dd.list_rect().width()
 }
@@ -87,13 +87,13 @@ tilo_test_env::scenario! {
 
     phase the_open_list_insets_its_rows_like_every_menu;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut dd = Dropdown::new(opts(), "tz");
         dd.rect = Rect::new(0.0, 0.0, 240.0, 32.0);
         let n = dd.options.len();
         let list = list_of(&mut dd);
         let inset = crate::widget::floating_surface::menu_inset(&Theme::dark());
-        let row = f64::from(crate::tokens::Metrics::BASE.menu_row_height);
+        let row = f64::from(tilo_ui_base::tokens::Metrics::BASE.menu_row_height);
         let x = list.center().x;
         assert_eq!(dd.list.row_at(Point::new(x, list.y0 + 2.0)), None);
         assert_eq!(dd.list.row_at(Point::new(4.0, list.y0 + 20.0)), None);
@@ -102,7 +102,7 @@ tilo_test_env::scenario! {
             Some(0)
         );
         assert!(
-            (list.height() - (crate::num::f64_of_usize(n) * row + 2.0 * inset)).abs() < 1e-9,
+            (list.height() - (tilo_ui_base::num::f64_of_usize(n) * row + 2.0 * inset)).abs() < 1e-9,
             "the list hugs its rows plus the inset: {list:?}"
         );
     }
@@ -127,7 +127,7 @@ tilo_test_env::scenario! {
             let mut dd = Dropdown::new(opts(), "tz");
             dd.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
             let (mut doc, root) = doc_with_tz("UTC");
-            let enter = crate::synthetic_input::cursor_moved(20.0, 20.0);
+            let enter = tilo_ui_base::synthetic_input::cursor_moved(20.0, 20.0);
             assert!(
                 !feed_key(&mut dd, &enter, &mut doc, &root),
                 "a hover change must not mark the move handled"
@@ -148,12 +148,12 @@ tilo_test_env::scenario! {
                 below.y0 >= dd.rect.y1,
                 "without a viewport the list opens below"
             );
-            let presence = crate::presence::PresenceCtx::default();
+            let presence = tilo_ui_base::presence::PresenceCtx::default();
             presence
                 .viewport
                 .set(Some(Rect::new(0.0, 0.0, 800.0, 760.0)));
             let mut scene = Scene::new();
-            dd.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), presence.draw_env()));
+            dd.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), presence.draw_env()));
             assert_eq!(dd.viewport, Some(Rect::new(0.0, 0.0, 800.0, 760.0)));
             let mut hosted =
                 Dropdown::new(opts(), "tz").with_viewport(Rect::new(0.0, 0.0, 800.0, 760.0));
@@ -167,7 +167,7 @@ tilo_test_env::scenario! {
             );
             assert!(flipped.y0 >= 0.0, "and stays inside the viewport");
             assert!((flipped.height() - below.height()).abs() < 1e-6);
-            let row = f64::from(crate::tokens::Metrics::BASE.menu_row_height);
+            let row = f64::from(tilo_ui_base::tokens::Metrics::BASE.menu_row_height);
             assert_eq!(
                 dd.list.row_at(Point::new(10.0, flipped.y0 + row / 2.0)),
                 Some(0),
@@ -247,7 +247,7 @@ tilo_test_env::scenario! {
             assert_eq!(node.name.as_deref(), Some("Level"));
         }
 
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         losing_focus_closes_the_list();
         hover_changes_do_not_consume_the_move_and_cursor_left_clears_hover();
         open_list_flips_above_when_it_would_leave_the_viewport();
@@ -257,7 +257,7 @@ tilo_test_env::scenario! {
 
     phase an_open_list_places_its_filter_field_and_rows_before_it_draws;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let theme = Theme::dark();
         let values = zones();
         let window = Rect::new(0.0, 0.0, 640.0, 420.0);
@@ -265,7 +265,7 @@ tilo_test_env::scenario! {
         text.set_text_scale(theme.text_scale);
         text.apply_typography(&theme.tokens.typography);
         let mut dd = Dropdown::new(values.clone(), "zone");
-        crate::widget::layout::lay_out_detached(&mut dd, window, &theme, &mut text)
+        tilo_ui_base::widget::layout::lay_out_detached(&mut dd, window, &theme, &mut text)
             .expect("the closed control lays out");
 
         dd.do_open();
@@ -315,14 +315,14 @@ tilo_test_env::scenario! {
             })
             .collect();
 
-        crate::widget::layout::lay_out_detached(&mut dd, window, &theme, &mut text)
+        tilo_ui_base::widget::layout::lay_out_detached(&mut dd, window, &theme, &mut text)
             .expect("the open list lays out");
         stands_where("the filter field", query, dd.query_rect);
         stands_where("the panel", panel, dd.list_rect());
         let mut scene = Scene::new();
-        let presence = crate::presence::PresenceCtx::empty();
-        dd.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
-        dd.draw_overlay(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
+        let presence = tilo_ui_base::presence::PresenceCtx::empty();
+        dd.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
+        dd.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
         stands_where("the filter field", query, dd.query_rect);
         stands_where("the panel", panel, dd.list_rect());
         for (row, placed) in rows.iter().enumerate() {
@@ -334,13 +334,13 @@ tilo_test_env::scenario! {
         let at = Point::new(query.x0 + 2.0, query.center().y);
         let _ = feed_key(
             &mut dd,
-            &crate::synthetic_input::cursor_moved(at.x, at.y),
+            &tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y),
             &mut doc,
             &root,
         );
         let _ = feed_key(
             &mut dd,
-            &crate::synthetic_input::mouse_press(),
+            &tilo_ui_base::synthetic_input::mouse_press(),
             &mut doc,
             &root,
         );
@@ -378,10 +378,10 @@ tilo_test_env::scenario! {
 
     phase dropdown_touch_choices_use_host_targets_and_select_stable_values;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
             for scale in [1.0, 1.5] {
-                let selected = crate::LocalState::new(String::new());
+                let selected = tilo_ui_base::LocalState::new(String::new());
                 let mut frame = crate::app::driver::Driver::new_with_theme(
                     crate::State::new(),
                     Box::new(Dropdown::from_state(zones(), &selected).with_id("language-picker")),
@@ -397,7 +397,7 @@ tilo_test_env::scenario! {
                 let point = frame
                     .with_widget_mut::<Dropdown, _>(|dropdown| {
                         assert!(dropdown.is_open());
-                        let minimum = f64::from(crate::InteractionEnvironment::TOUCH.minimum_target());
+                        let minimum = f64::from(tilo_ui_base::InteractionEnvironment::TOUCH.minimum_target());
                         assert!(
                             dropdown.rect.height() >= minimum,
                             "the actual touch field must use the host minimum target"
@@ -422,7 +422,7 @@ tilo_test_env::scenario! {
                     })
                     .unwrap();
                 assert_eq!(selected.get(), "Europe/Amsterdam");
-                frame.set_interaction_environment(crate::InteractionEnvironment::default());
+                frame.set_interaction_environment(tilo_ui_base::InteractionEnvironment::default());
                 frame
                     .with_widget_mut::<Dropdown, _>(|dropdown| {
                         assert_eq!(
@@ -439,8 +439,8 @@ tilo_test_env::scenario! {
 
     phase updating_placeholder_does_not_select_or_replace_a_private_value;
     {
-        let _settled = crate::motion::testing::settled();
-        let selection = crate::LocalState::new(String::new());
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let selection = tilo_ui_base::LocalState::new(String::new());
         let mut dropdown = Dropdown::from_state(opts(), &selection);
         dropdown.set_placeholder("Waiting for tasks");
         assert_eq!(
@@ -509,8 +509,8 @@ tilo_test_env::scenario! {
 
         fn enter_emits_selection_action_and_closes() {
             let mut dd =
-                Dropdown::new(opts(), "tz").on_action(crate::widget::test_string_action_binding());
-            crate::widget::controls::refresh_control_action_availability(
+                Dropdown::new(opts(), "tz").on_action(tilo_ui_base::widget::test_string_action_binding());
+            tilo_ui_base::widget::controls::refresh_control_action_availability(
                 &mut dd,
                 &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                     "test:control",
@@ -541,13 +541,13 @@ tilo_test_env::scenario! {
             ));
             assert!(!dd.is_open(), "selecting closes the list");
             assert_eq!(
-                crate::widget::controls::take_control_invocation(&mut dd)
+                tilo_ui_base::widget::controls::take_control_invocation(&mut dd)
                     .unwrap()
                     .arguments["value"],
                 "America/New_York"
             );
             assert_eq!(
-                crate::doc::read_str_or_text(&doc, &root, "tz").as_deref(),
+                tilo_ui_base::doc::read_str_or_text(&doc, &root, "tz").as_deref(),
                 Some("UTC"),
                 "selecting submits an action and preserves the read model"
             );
@@ -580,12 +580,12 @@ tilo_test_env::scenario! {
             assert!(!dd.is_open());
             assert_eq!(dd.selected(), "UTC", "Esc must not change the value");
             assert_eq!(
-                crate::doc::read_str_or_text(&doc, &root, "tz").as_deref(),
+                tilo_ui_base::doc::read_str_or_text(&doc, &root, "tz").as_deref(),
                 Some("UTC")
             );
         }
 
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         starts_closed_and_reads_value_on_sync();
         down_opens_when_closed_and_focused();
         arrows_move_highlight_while_open();
@@ -752,7 +752,7 @@ tilo_test_env::scenario! {
 
             let mut scene = Scene::new();
             let mut renderer = TextRenderer::new();
-            Widget::draw(&mut dd, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &Theme::dark(), crate::presence::PresenceCtx::empty().draw_env()));
+            Widget::draw(&mut dd, &mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &Theme::dark(), tilo_ui_base::presence::PresenceCtx::empty().draw_env()));
             let candidate = Widget::ime_cursor_rect(&dd).expect("open combobox publishes its caret");
             assert!(dd.get_rect().contains(candidate.center()));
 
@@ -770,7 +770,7 @@ tilo_test_env::scenario! {
             );
         }
 
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         typing_filters_options_case_insensitively();
         space_is_part_of_an_open_combobox_query();
         backspace_edits_the_filter();
@@ -782,7 +782,7 @@ tilo_test_env::scenario! {
     phase committed_selection_binds_process_local_state;
     {
         fn local_state_binding_is_two_way_across_dropdowns() {
-            let state = crate::LocalState::new(String::from("UTC"));
+            let state = tilo_ui_base::LocalState::new(String::from("UTC"));
             let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             let captured = std::rc::Rc::clone(&changes);
             let mut first = Dropdown::from_state(opts(), &state)
@@ -799,9 +799,9 @@ tilo_test_env::scenario! {
 
             assert!(Widget::perform_action(
                 &mut first,
-                &crate::a11y::Action::SetValue(String::from("Europe/Amsterdam")),
+                &tilo_ui_base::a11y::Action::SetValue(String::from("Europe/Amsterdam")),
                 &[],
-                &mut crate::widget::Edits::lend(&mut document),
+                &mut tilo_ui_base::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             assert_eq!(state.get(), "Europe/Amsterdam");
@@ -816,18 +816,18 @@ tilo_test_env::scenario! {
             assert_eq!(&*changes.borrow(), &["Europe/Amsterdam"]);
         }
 
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         local_state_binding_is_two_way_across_dropdowns();
     }
 
     phase a_menu_button_reports_a_choice_without_keeping_it;
     {
-        let _settled = crate::motion::testing::settled();
-        let state = crate::LocalState::new(String::new());
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let state = tilo_ui_base::LocalState::new(String::new());
         let chosen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let captured = std::rc::Rc::clone(&chosen);
         let mut menu = Dropdown::from_state(opts(), &state)
-            .as_menu(crate::icons::Icon::Plus)
+            .as_menu(tilo_ui_base::icons::Icon::Plus)
             .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
         menu.rect = Rect::new(560.0, 100.0, 592.0, 132.0);
         let mut document = AutoCommit::new();
@@ -876,13 +876,13 @@ tilo_test_env::scenario! {
         assert_eq!(menu.selected(), "", "a command is not kept as a value");
         assert_eq!(state.get(), "");
         let node = menu.accessibility().expect("a menu button is announced");
-        assert_eq!(node.role, crate::a11y::Role::Button);
+        assert_eq!(node.role, tilo_ui_base::a11y::Role::Button);
     }
 
     phase dropdown_accessibility_semantics_and_disabled_state;
     {
         fn semantic_actions_expand_collapse_and_reject_unknown_values() {
-            use crate::a11y::Action;
+            use tilo_ui_base::a11y::Action;
 
             let mut dropdown = Dropdown::new(opts(), "tz");
             let (mut document, root) = doc_with_tz("UTC");
@@ -892,7 +892,7 @@ tilo_test_env::scenario! {
                 &mut dropdown,
                 &Action::Expand,
                 &[],
-                &mut crate::widget::Edits::lend(&mut document),
+                &mut tilo_ui_base::widget::Edits::lend(&mut document),
                 &root,
             ));
             assert!(dropdown.is_open());
@@ -900,7 +900,7 @@ tilo_test_env::scenario! {
                 &mut dropdown,
                 &Action::Collapse,
                 &[],
-                &mut crate::widget::Edits::lend(&mut document),
+                &mut tilo_ui_base::widget::Edits::lend(&mut document),
                 &root,
             ));
             assert!(!dropdown.is_open());
@@ -908,12 +908,12 @@ tilo_test_env::scenario! {
                 &mut dropdown,
                 &Action::SetValue(String::from("not an option")),
                 &[],
-                &mut crate::widget::Edits::lend(&mut document),
+                &mut tilo_ui_base::widget::Edits::lend(&mut document),
                 &root,
             ));
             assert_eq!(dropdown.selected(), "UTC");
             assert_eq!(
-                crate::doc::read_str_or_text(&document, &root, "tz").as_deref(),
+                tilo_ui_base::doc::read_str_or_text(&document, &root, "tz").as_deref(),
                 Some("UTC")
             );
         }
@@ -939,7 +939,7 @@ tilo_test_env::scenario! {
         }
 
         fn accessibility_reports_combobox_role_value_and_collapsed() {
-            use crate::a11y::Role;
+            use tilo_ui_base::a11y::Role;
             let mut dd = Dropdown::new(opts(), "tz");
             let (doc, root) = doc_with_tz("Asia/Tokyo");
             dd.sync(&doc, &root);
@@ -957,7 +957,7 @@ tilo_test_env::scenario! {
         }
 
         fn accessibility_unselected_uses_placeholder_name_and_no_value() {
-            use crate::a11y::Role;
+            use tilo_ui_base::a11y::Role;
             let dd = Dropdown::new(opts(), "tz").with_placeholder("Pick a zone");
             let node = Widget::accessibility(&dd).unwrap();
             assert_eq!(node.role, Role::ComboBox);
@@ -986,14 +986,14 @@ tilo_test_env::scenario! {
 
         fn action_binding_owns_accessibility_selection() {
             let mut dropdown = Dropdown::new(opts(), "tz")
-                .on_action(crate::widget::test_string_action_binding());
+                .on_action(tilo_ui_base::widget::test_string_action_binding());
             let mut doc = AutoCommit::new();
-            crate::widget::controls::refresh_control_action_availability(
+            tilo_ui_base::widget::controls::refresh_control_action_availability(
                 &mut dropdown,
                 &std::collections::HashSet::new(),
             );
             assert!(!Widget::is_enabled(&dropdown));
-            crate::widget::controls::refresh_control_action_availability(
+            tilo_ui_base::widget::controls::refresh_control_action_availability(
                 &mut dropdown,
                 &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                     "test:control",
@@ -1003,21 +1003,21 @@ tilo_test_env::scenario! {
             assert!(Widget::is_enabled(&dropdown));
             assert!(Widget::perform_action(
                 &mut dropdown,
-                &crate::a11y::Action::SetValue("Asia/Tokyo".into()),
+                &tilo_ui_base::a11y::Action::SetValue("Asia/Tokyo".into()),
                 &[],
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(doc.get(&automerge::ROOT, "tz").unwrap().is_none());
             assert_eq!(
-                crate::widget::controls::take_control_invocation(&mut dropdown)
+                tilo_ui_base::widget::controls::take_control_invocation(&mut dropdown)
                     .unwrap()
                     .arguments["value"],
                 "Asia/Tokyo"
             );
         }
 
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         semantic_actions_expand_collapse_and_reject_unknown_values();
         disabled_dropdown_does_not_open();
         accessibility_reports_combobox_role_value_and_collapsed();
@@ -1028,7 +1028,8 @@ tilo_test_env::scenario! {
 
     phase a_sections_choosers_share_one_width_and_line_up_on_both_edges;
     {
-        use crate::widget::{Element, Row, Section, Spacer, Text};
+        use crate::{widget::Row, widget::Section, widget::Text};
+        use tilo_ui_base::{widget::Element, widget::Spacer};
         fn row(label: &str, dropdown: Dropdown) -> Element {
             Box::new(
                 Row::new()
@@ -1038,7 +1039,7 @@ tilo_test_env::scenario! {
                     .push(Box::new(dropdown)),
             )
         }
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let short = || vec!["A".to_string(), "B".to_string()];
         let section = Section::titled(
             "Formats",
@@ -1202,7 +1203,7 @@ tilo_test_env::scenario! {
             assert!(dd.rect.y0 > 0.0);
         }
 
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         hugs_its_widest_option_unless_it_fills();
         a_short_list_jumps_instead_of_filtering();
         a_caption_placed_externally_never_covers_the_field();
@@ -1211,11 +1212,11 @@ tilo_test_env::scenario! {
 
 #[test]
 fn dropdown_language_popup_stays_visible_in_a_short_scaled_window() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut frame = crate::app::driver::Driver::new_with_theme(
         crate::State::new(),
         Box::new(
-            Dropdown::from_state(zones(), &crate::LocalState::new(String::new()))
+            Dropdown::from_state(zones(), &tilo_ui_base::LocalState::new(String::new()))
                 .with_id("language-picker"),
         ),
         (420, 180),
@@ -1250,8 +1251,8 @@ fn dropdown_language_popup_stays_visible_in_a_short_scaled_window() {
 /// window publishes.
 #[test]
 fn an_open_languages_options_are_controls_by_name_that_choose() {
-    let _settled = crate::motion::testing::settled();
-    let chosen = crate::LocalState::new(String::new());
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let chosen = tilo_ui_base::LocalState::new(String::new());
     let picker = Dropdown::from_state(
         vec![
             "Device".to_string(),
@@ -1269,7 +1270,7 @@ fn an_open_languages_options_are_controls_by_name_that_choose() {
         .a11y_node_named("Language")
         .expect("the chooser is announced");
     frame
-        .perform_a11y_action(opener, &crate::a11y::Action::Expand)
+        .perform_a11y_action(opener, &tilo_ui_base::a11y::Action::Expand)
         .expect("the chooser opens");
     frame.relayout();
 
@@ -1299,11 +1300,11 @@ tilo_test_env::scenario! {
 
     phase dropdown_language_shared_scrollbar_and_search_field_are_interactive;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut frame = crate::app::driver::Driver::new_with_theme(
             crate::State::new(),
             Box::new(
-                Dropdown::from_state(zones(), &crate::LocalState::new(String::new()))
+                Dropdown::from_state(zones(), &tilo_ui_base::LocalState::new(String::new()))
                     .with_id("language-picker"),
             ),
             (420, 180),
@@ -1365,8 +1366,8 @@ tilo_test_env::scenario! {
 
     phase dropdown_language_accessibility_selects_stable_ids_with_duplicate_labels;
     {
-        let _settled = crate::motion::testing::settled();
-        let state = crate::LocalState::new(String::new());
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let state = tilo_ui_base::LocalState::new(String::new());
         let mut dropdown = Dropdown::from_state(Vec::new(), &state);
         dropdown.set_value_options(vec![
             ("first".into(), "Same label".into()),
@@ -1375,17 +1376,17 @@ tilo_test_env::scenario! {
         let (mut document, root) = doc_with_tz("");
         assert!(Widget::perform_action(
             &mut dropdown,
-            &crate::a11y::Action::SetValue("second".into()),
+            &tilo_ui_base::a11y::Action::SetValue("second".into()),
             &[],
-            &mut crate::widget::Edits::lend(&mut document),
+            &mut tilo_ui_base::widget::Edits::lend(&mut document),
             &root
         ));
         assert_eq!(state.get(), "second");
         assert!(!Widget::perform_action(
             &mut dropdown,
-            &crate::a11y::Action::SetValue("foreign".into()),
+            &tilo_ui_base::a11y::Action::SetValue("foreign".into()),
             &[],
-            &mut crate::widget::Edits::lend(&mut document),
+            &mut tilo_ui_base::widget::Edits::lend(&mut document),
             &root
         ));
         assert_eq!(state.get(), "second");
@@ -1393,8 +1394,8 @@ tilo_test_env::scenario! {
 
     phase dropdown_language_empty_stable_value_keeps_its_human_label;
     {
-        let _settled = crate::motion::testing::settled();
-        let state = crate::LocalState::new(String::new());
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let state = tilo_ui_base::LocalState::new(String::new());
         let mut dropdown = Dropdown::from_state(Vec::new(), &state);
         dropdown.set_value_options(vec![
             (String::new(), "Session language".into()),
@@ -1414,35 +1415,35 @@ tilo_test_env::scenario! {
 
     phase dropdown_language_revoked_action_releases_modal_capture;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut dropdown =
-            Dropdown::new(opts(), "tz").on_action(crate::widget::test_string_action_binding());
+            Dropdown::new(opts(), "tz").on_action(tilo_ui_base::widget::test_string_action_binding());
         let allowed =
             std::collections::HashSet::from([tilo_actions::ActionAddress::new("test:control", "set")]);
-        crate::widget::controls::refresh_control_action_availability(&mut dropdown, &allowed);
+        tilo_ui_base::widget::controls::refresh_control_action_availability(&mut dropdown, &allowed);
         let mut doc = AutoCommit::new();
         assert!(Widget::perform_action(
             &mut dropdown,
-            &crate::a11y::Action::Expand,
+            &tilo_ui_base::a11y::Action::Expand,
             &[],
-            &mut crate::widget::Edits::lend(&mut doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(Widget::modal_capture(&dropdown).is_some());
-        crate::widget::controls::refresh_control_action_availability(
+        tilo_ui_base::widget::controls::refresh_control_action_availability(
             &mut dropdown,
             &std::collections::HashSet::new(),
         );
         assert!(!Widget::is_enabled(&dropdown));
         assert!(!dropdown.is_open());
         assert!(Widget::modal_capture(&dropdown).is_none());
-        assert!(crate::widget::controls::take_control_invocation(&mut dropdown).is_none());
+        assert!(tilo_ui_base::widget::controls::take_control_invocation(&mut dropdown).is_none());
 
         // Unavailable capture-only fixtures retain their authored open state.
         let mut capture = Dropdown::new(opts(), "tz")
-            .on_action(crate::widget::test_string_action_binding())
+            .on_action(tilo_ui_base::widget::test_string_action_binding())
             .open();
-        crate::widget::controls::refresh_control_action_availability(
+        tilo_ui_base::widget::controls::refresh_control_action_availability(
             &mut capture,
             &std::collections::HashSet::new(),
         );
@@ -1458,7 +1459,7 @@ fn doc_with_tz(value: &str) -> (AutoCommit, ObjId) {
     (doc, root)
 }
 
-use crate::synthetic_input::key_press;
+use tilo_ui_base::synthetic_input::key_press;
 
 fn feed_key(dd: &mut Dropdown, ev: &WindowEvent, doc: &mut AutoCommit, root: &ObjId) -> bool {
     Dispatch::new().doc(doc).path(root).send(dd, ev).handled

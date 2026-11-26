@@ -127,7 +127,7 @@ pub fn relative_time(notification: &Notification, now: Instant) -> String {
     let seconds = now
         .saturating_duration_since(notification.created_at)
         .as_secs();
-    ui::format::relative(i64::try_from(seconds).unwrap_or(i64::MAX))
+    tilo_ui_base::format::relative(i64::try_from(seconds).unwrap_or(i64::MAX))
 }
 
 fn severity_label(severity: NotificationSeverity) -> String {

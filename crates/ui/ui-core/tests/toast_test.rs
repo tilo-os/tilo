@@ -11,9 +11,9 @@
 )]
 
 use crate::support::render::write_png;
-use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::Theme;
+use tilo_ui_base::offscreen::OffscreenRenderer;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 use tilo_ui::widget::toast::{ToastCard, ToastKind, paint_card};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -56,10 +56,10 @@ fn a_notification_card_registers_its_edge() {
             let delta = (luminance_of(edge) - luminance_of(inside)).abs();
             eprintln!("toast/{name}: edge {edge:?} vs fill {inside:?} → Δlum={delta:.4}");
             assert!(
-                delta >= tilo_ui::tokens::colors::FLOATING_EDGE_MIN_DELTA,
+                delta >= tilo_ui_base::tokens::colors::FLOATING_EDGE_MIN_DELTA,
                 "{name}: toast edge {edge:?} does not register against its fill {inside:?} \
              (Δlum={delta:.4} < {})",
-                tilo_ui::tokens::colors::FLOATING_EDGE_MIN_DELTA
+                tilo_ui_base::tokens::colors::FLOATING_EDGE_MIN_DELTA
             );
         }
     }
@@ -71,5 +71,5 @@ const CANVAS_H: u32 = 120;
 const CARD_INSET: f64 = 20.0;
 
 fn luminance_of(px: (u8, u8, u8, u8)) -> f64 {
-    tilo_ui::a11y::relative_luminance(Color::from_rgba8(px.0, px.1, px.2, px.3))
+    tilo_ui_base::a11y::relative_luminance(Color::from_rgba8(px.0, px.1, px.2, px.3))
 }

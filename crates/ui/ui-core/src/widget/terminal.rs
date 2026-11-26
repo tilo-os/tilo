@@ -13,17 +13,18 @@ use winit::event::{ElementState, Ime, MouseButton as WMouseButton, WindowEvent};
 use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
 
 use crate::color_compat::ColorCompat as _;
-use crate::key_input::{self, Button, Held, Keys};
+use tilo_ui_base::{key_input, key_input::Button, key_input::Held, key_input::Keys};
 use crate::terminal::{
     CellColor, GridPos, GridSelection, Modes, Palette, Placement, Screen, Session, SessionEvent,
     SessionHandle, Style,
 };
-use crate::text_render::{TextRenderer, TextStyle, TextWeight};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::ScrollMetrics;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::ScrollMetrics;
 use crate::widget::scrollbar::PressOutcome;
-use crate::widget::{OverlayScrollbar, TaffyTreeExt, Widget};
+use crate::widget::OverlayScrollbar;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[path = "terminal/terminal_component.rs"]
 mod component;
@@ -55,7 +56,7 @@ pub struct Terminal {
     scroll_rows: usize,
     /// The pixel part of a scroll between two rows, as the wheel and the glide moved it.
     sub: f64,
-    glide: crate::ScrollMomentum,
+    glide: tilo_ui_base::ScrollMomentum,
     scrollbar: OverlayScrollbar,
     /// The first row the last frame drew, and how many it drew: where a pointer lands.
     first_row: usize,
@@ -67,7 +68,7 @@ pub struct Terminal {
     presses: u8,
     pressed_at: Option<crate::time::Instant>,
     pointer: Point,
-    placement_images: Option<crate::image_store::ImageStore>,
+    placement_images: Option<tilo_ui_base::image_store::ImageStore>,
     placements: Vec<Placement>,
     focused: bool,
     test_id: String,
@@ -77,11 +78,11 @@ pub struct Terminal {
     bell_at: Option<crate::time::Instant>,
     reduce_motion: bool,
     event_cursor: u64,
-    title: crate::component::Event,
-    exit: crate::component::Event,
-    finished: crate::component::Event,
-    selected: crate::component::Event,
-    rung: crate::component::Event,
+    title: tilo_ui_base::component::Event,
+    exit: tilo_ui_base::component::Event,
+    finished: tilo_ui_base::component::Event,
+    selected: tilo_ui_base::component::Event,
+    rung: tilo_ui_base::component::Event,
     /// What a find in the scrollback found, by the rows the matches stand on, and which one is
     /// current.
     found: Vec<crate::widget::FindMatch>,
@@ -112,7 +113,7 @@ impl Terminal {
             painted_revision: 0,
             scroll_rows: 0,
             sub: 0.0,
-            glide: crate::ScrollMomentum::new(),
+            glide: tilo_ui_base::ScrollMomentum::new(),
             scrollbar: OverlayScrollbar::vertical(),
             first_row: 0,
             viewport_rows: 0,
@@ -131,11 +132,11 @@ impl Terminal {
             bell_at: None,
             reduce_motion: false,
             event_cursor: 0,
-            title: crate::component::Event::None,
-            exit: crate::component::Event::None,
-            finished: crate::component::Event::None,
-            selected: crate::component::Event::None,
-            rung: crate::component::Event::None,
+            title: tilo_ui_base::component::Event::None,
+            exit: tilo_ui_base::component::Event::None,
+            finished: tilo_ui_base::component::Event::None,
+            selected: tilo_ui_base::component::Event::None,
+            rung: tilo_ui_base::component::Event::None,
             found: Vec::new(),
             found_spans: Vec::new(),
             found_at: 0,
@@ -212,11 +213,11 @@ impl Terminal {
     /// Take the events a host attached to this grid, and report through them from now on.
     pub fn update_events(
         &mut self,
-        title: crate::component::Event,
-        finished: crate::component::Event,
-        exit: crate::component::Event,
-        selected: crate::component::Event,
-        rung: crate::component::Event,
+        title: tilo_ui_base::component::Event,
+        finished: tilo_ui_base::component::Event,
+        exit: tilo_ui_base::component::Event,
+        selected: tilo_ui_base::component::Event,
+        rung: tilo_ui_base::component::Event,
     ) {
         self.title = title;
         self.finished = finished;
@@ -312,18 +313,18 @@ impl Terminal {
                 }
                 SessionEvent::Clipboard(text, primary) => {
                     if primary {
-                        crate::text_selection::clipboard_copy_primary(&text);
+                        tilo_ui_base::text_selection::clipboard_copy_primary(&text);
                     } else {
-                        crate::text_selection::clipboard_copy(&text);
+                        tilo_ui_base::text_selection::clipboard_copy(&text);
                     }
                 }
             }
         }
     }
 
-    fn fired(&self, event: &crate::component::Event, value: String) {
-        if let crate::component::Event::View(intent) = event {
-            intent.fire(Some(crate::component::Value::Text(value)));
+    fn fired(&self, event: &tilo_ui_base::component::Event, value: String) {
+        if let tilo_ui_base::component::Event::View(intent) = event {
+            intent.fire(Some(tilo_ui_base::component::Value::Text(value)));
         }
     }
 
@@ -423,7 +424,7 @@ impl Terminal {
     fn word_at(&self, at: GridPos) -> (GridPos, GridPos) {
         let line = self.line(at.row);
         let byte = self.char_at(at).map_or(0, |(byte, _)| byte);
-        let (start, end) = crate::text_selection::word_boundaries(line, byte);
+        let (start, end) = tilo_ui_base::text_selection::word_boundaries(line, byte);
         let cell = |byte: usize| {
             line.get(..byte.min(line.len()))
                 .map_or(0, |head| head.chars().count())
@@ -469,9 +470,9 @@ impl Terminal {
             return;
         }
         if let Some(text) = self.selected_text().filter(|text| !text.is_empty()) {
-            crate::text_selection::clipboard_copy_primary(&text);
+            tilo_ui_base::text_selection::clipboard_copy_primary(&text);
             if self.copy_on_select {
-                crate::text_selection::clipboard_copy(&text);
+                tilo_ui_base::text_selection::clipboard_copy(&text);
             }
             self.fired(&self.selected, text);
         }
@@ -495,7 +496,7 @@ impl Terminal {
         (at.col.saturating_add(1), at.row.saturating_add(1))
     }
 
-    fn press(&mut self, button: WMouseButton, held: Held, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn press(&mut self, button: WMouseButton, held: Held, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let at = self.cell_at(self.pointer);
         let report = self.modes.mouse_report && !held.shift;
         match button {
@@ -540,7 +541,7 @@ impl Terminal {
                 *ctx.handled = true;
             }
             WMouseButton::Middle if !report => {
-                if let Some(text) = crate::text_selection::clipboard_paste_primary() {
+                if let Some(text) = tilo_ui_base::text_selection::clipboard_paste_primary() {
                     self.keys.paste(&text);
                 }
                 *ctx.handled = true;
@@ -562,7 +563,7 @@ impl Terminal {
         }
     }
 
-    fn release(&mut self, button: WMouseButton, held: Held, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn release(&mut self, button: WMouseButton, held: Held, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let report = self.modes.mouse_report && !held.shift;
         if report {
             let mapped = match button {
@@ -586,7 +587,7 @@ impl Terminal {
                     .link_at(self.selection.map_or(GridPos::default(), |s| s.cursor))
                     .map(str::to_owned)
                 {
-                    crate::platform::os_open(&url);
+                    tilo_ui_base::platform::os_open(&url);
                 }
             }
             self.finish_selection();
@@ -650,7 +651,7 @@ impl Terminal {
             }
             let url = format!("tilo-blob://{}", placement.hash);
             if let Some(image) = store.get(&url) {
-                crate::image_store::paint_image_contain(scene, transform, rect, &image, 0.0);
+                tilo_ui_base::image_store::paint_image_contain(scene, transform, rect, &image, 0.0);
             } else {
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.0),
@@ -853,7 +854,7 @@ struct Pen<'a> {
 }
 
 impl Widget for Terminal {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn name(&self) -> &'static str {
         "Terminal"
@@ -884,7 +885,7 @@ impl Widget for Terminal {
     }
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.rect = rect;
             self.dirty = true;
@@ -897,7 +898,7 @@ impl Widget for Terminal {
         self.rect == Rect::ZERO
     }
 
-    fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
+    fn sync(&mut self, _state: &tilo_ui_base::widget::AppModel, _path: &tilo_ui_base::widget::ModelPath) {
         self.report();
         self.refresh();
         if self.bell_flashing() {
@@ -905,7 +906,7 @@ impl Widget for Terminal {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(unused_variables, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text_renderer, theme, _env) = ctx.parts();
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
@@ -982,7 +983,7 @@ impl Widget for Terminal {
         self.dirty = false;
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let held = key_input::held(&ctx.modifiers.state());
         match event {
             WindowEvent::Ime(Ime::Commit(text)) if self.focused && !text.is_empty() => {
@@ -1006,13 +1007,13 @@ impl Widget for Terminal {
                 {
                     if c.eq_ignore_ascii_case("c") {
                         if let Some(text) = self.selected_text() {
-                            crate::text_selection::clipboard_copy(&text);
+                            tilo_ui_base::text_selection::clipboard_copy(&text);
                         }
                         *ctx.handled = true;
                         return;
                     }
                     if c.eq_ignore_ascii_case("v") {
-                        if let Some(text) = crate::text_selection::clipboard_paste() {
+                        if let Some(text) = tilo_ui_base::text_selection::clipboard_paste() {
                             self.keys.paste(&text);
                             self.scroll_to(0);
                         }
@@ -1023,7 +1024,7 @@ impl Widget for Terminal {
                 if modifiers.shift_key()
                     && matches!(key.logical_key, WKey::Named(WNamedKey::Insert))
                 {
-                    if let Some(text) = crate::text_selection::clipboard_paste() {
+                    if let Some(text) = tilo_ui_base::text_selection::clipboard_paste() {
                         self.keys.paste(&text);
                         self.scroll_to(0);
                     }
@@ -1122,12 +1123,12 @@ impl Widget for Terminal {
                 }
                 let step = self.glide.wheel(delta, *phase, self.reduce_motion);
                 match step {
-                    crate::WheelStep::Scroll(px) => {
+                    tilo_ui_base::WheelStep::Scroll(px) => {
                         self.scroll_px(-px);
                         *ctx.handled = true;
                     }
-                    crate::WheelStep::Fling => *ctx.handled = true,
-                    crate::WheelStep::Ignored => {}
+                    tilo_ui_base::WheelStep::Fling => *ctx.handled = true,
+                    tilo_ui_base::WheelStep::Ignored => {}
                 }
             }
             _ => {}
@@ -1191,8 +1192,8 @@ impl Widget for Terminal {
         })
     }
 
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
-        (self.focused && !self.session.ended()).then_some(crate::ime::InputContent::TERMINAL)
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
+        (self.focused && !self.session.ended()).then_some(tilo_ui_base::ime::InputContent::TERMINAL)
     }
 
     fn commit_deferred_text(&mut self, text: &str) -> Option<tilo_webview::text_input::Receipt> {
@@ -1205,8 +1206,8 @@ impl Widget for Terminal {
         None
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         Some(
             AccessNode::new(Role::Terminal)
                 .with_name(self.accessible_name.clone())
@@ -1373,12 +1374,12 @@ impl Session for Missing {
 
 impl Terminal {
     /// Build the image store the placements' pictures load through, once the session is known.
-    fn images(&mut self) -> &mut crate::image_store::ImageStore {
+    fn images(&mut self) -> &mut tilo_ui_base::image_store::ImageStore {
         let session = Arc::clone(&self.session);
         self.placement_images.get_or_insert_with(|| {
-            let fetch: crate::image_store::Fetcher =
+            let fetch: tilo_ui_base::image_store::Fetcher =
                 Arc::new(move |url: &str| session.image_bytes(url.strip_prefix("tilo-blob://")?));
-            crate::image_store::ImageStore::new(&fetch)
+            tilo_ui_base::image_store::ImageStore::new(&fetch)
         })
     }
 }

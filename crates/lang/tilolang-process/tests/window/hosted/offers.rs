@@ -42,7 +42,7 @@ fn call(
 fn a_task_checked_off_offers_reopen_and_the_finished_ones_can_be_cleared() {
     use ui::tilo_actions::Availability;
     use ui::winit::keyboard::NamedKey;
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = Session::live_tasks();
     // A project's list folds the finished work under its foot: the task stays where the person
     // reads it once it is checked off, so what the window shows is unchanged and only the

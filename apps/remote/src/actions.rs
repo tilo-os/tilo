@@ -8,7 +8,7 @@ use ui::tilo_resource::{self, AbsolutePath, Effect, RowBindings};
 
 use crate::model::{Connection, ConnectionId, ConnectionKind};
 use crate::resource::CATALOG;
-use ui::i18n::ArgValue;
+use tilo_ui_base::i18n::ArgValue;
 
 /// A saved connection, as Remote publishes it: a row of the `remote.connection`
 /// type, its effects bound to the connection's id.

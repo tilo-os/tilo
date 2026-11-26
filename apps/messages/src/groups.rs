@@ -4,11 +4,8 @@ use std::rc::Rc;
 use tilo_messaging::{
     AccountState, GroupList, GroupMembership, GroupRole, MessagingClient, ServiceAccount,
 };
-use ui::{
-    LocalState,
-    framework::{Actions, EffectAnswer, EffectCx, Effected},
-    widget::{Button, Column, Element, Scrollable, Text},
-};
+use ui::{framework::Actions, framework::EffectAnswer, framework::EffectCx, framework::Effected, widget::Button, widget::Column, widget::Scrollable, widget::Text};
+use tilo_ui_base::{LocalState, widget::Element};
 
 mod operations;
 
@@ -172,7 +169,7 @@ impl GroupsView {
             );
         let account_label = CATALOG.t_args(
             "messages-account-groups",
-            &[("account", ui::i18n::ArgValue::Text(label))],
+            &[("account", tilo_ui_base::i18n::ArgValue::Text(label))],
         );
         let mut body = Column::new()
             .with_id("messages.groups")
@@ -254,7 +251,7 @@ impl GroupsView {
                 "messages-account-groups",
                 &[(
                     "account",
-                    ui::i18n::ArgValue::Text(format!("{} ({id})", a.display_name)),
+                    tilo_ui_base::i18n::ArgValue::Text(format!("{} ({id})", a.display_name)),
                 )],
             );
             any = true;

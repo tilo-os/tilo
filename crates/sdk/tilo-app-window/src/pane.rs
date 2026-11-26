@@ -1,6 +1,6 @@
 //! A column's content that the window swaps or reconciles in place.
 
-use ui::widget::{Decorator, Element, StructureChange, Widget};
+use tilo_ui_base::{widget::Decorator, widget::Element, widget::StructureChange, widget::Widget};
 
 /// A column's content. The window reaches it by type through the shell
 /// (`NavShell::content_mut::<Pane>()`) and reconciles it, so a view that runs again keeps its

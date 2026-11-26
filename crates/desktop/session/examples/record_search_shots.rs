@@ -175,7 +175,7 @@ fn main() -> std::process::ExitCode {
         .into();
     std::fs::create_dir_all(&dir).expect("the pictures' directory");
 
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let content = Arc::new(AppContentIndex::in_memory());
     let mut session = Session::headless(
         Options {

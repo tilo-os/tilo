@@ -1,5 +1,5 @@
-use super::*;
-use crate::text_render::TextStyle;
+use tilo_ui_base::richtext::*;
+use tilo_ui_base::text_render::TextStyle;
 
 fn shape(fs: &mut FontSystem, text: &str, width: f32, style: &TextStyle) -> RichTextLayout {
     RichTextLayout::shape_styled(
@@ -18,7 +18,7 @@ tilo_test_env::scenario! {
 
     phase resize_retains_shaping_but_invalidates_line_wrapping;
     {
-        let mut fs = crate::font_catalog::fixture_font_system();
+        let mut fs = tilo_ui_base::font_catalog::fixture_font_system();
         let style = TextStyle::new(16.0);
         let text = "alpha beta gamma delta epsilon\nשלום mixed paragraph\né 👩‍💻 tail";
         let old = shape(&mut fs, text, 240.0, &style);
@@ -48,7 +48,7 @@ tilo_test_env::scenario! {
 
     phase retained_idle_paragraphs_keep_both_caches_across_many_layout_owners;
     {
-        let mut fs = crate::font_catalog::fixture_font_system();
+        let mut fs = tilo_ui_base::font_catalog::fixture_font_system();
         let style = TextStyle::new(16.0);
         let mut owners: Vec<_> = (0..64)
             .map(|i| {
@@ -76,7 +76,7 @@ tilo_test_env::scenario! {
 
     phase separated_edits_retain_unchanged_interior_paragraphs;
     {
-        let mut fs = crate::font_catalog::fixture_font_system();
+        let mut fs = tilo_ui_base::font_catalog::fixture_font_system();
         let style = TextStyle::new(16.0);
         let old_text = "first before\nשלום interior é\n👩‍💻 another interior\nlast before";
         let text = "first changed\nשלום interior é\n👩‍💻 another interior\nlast changed";
@@ -110,7 +110,7 @@ tilo_test_env::scenario! {
 
     phase interior_reuse_handles_insertions_repeated_text_and_marks;
     {
-        let mut fs = crate::font_catalog::fixture_font_system();
+        let mut fs = tilo_ui_base::font_catalog::fixture_font_system();
         let style = TextStyle::new(16.0);
         let old_spans = [
             RichSpan::new("start old\n"),
@@ -176,7 +176,7 @@ tilo_test_env::scenario! {
 
     phase changed_paragraph_default_attributes_match_cold_geometry;
     {
-        let mut fs = crate::font_catalog::fixture_font_system();
+        let mut fs = tilo_ui_base::font_catalog::fixture_font_system();
         let style = TextStyle::new(16.0);
         let old_spans = [
             RichSpan::new("start old\n"),
@@ -234,7 +234,7 @@ tilo_test_env::scenario! {
             atomic::{AtomicU64, Ordering},
         };
         struct MutableBreaks(AtomicU64);
-        impl crate::text_render::Hyphenator for MutableBreaks {
+        impl tilo_ui_base::text_render::Hyphenator for MutableBreaks {
             fn breaks(&self, _: &str) -> Vec<usize> {
                 if self.0.load(Ordering::Relaxed) == 0 {
                     vec![]
@@ -246,7 +246,7 @@ tilo_test_env::scenario! {
                 self.0.load(Ordering::Relaxed)
             }
         }
-        let mut fs = crate::font_catalog::fixture_font_system();
+        let mut fs = tilo_ui_base::font_catalog::fixture_font_system();
         let spans = [RichSpan::new("customizable")];
         let base = TextStyle::new(16.0);
         let old = RichTextLayout::shape_styled(
@@ -333,7 +333,7 @@ fn assert_geometry(actual: &RichTextLayout, fresh: &RichTextLayout, text: &str) 
 
 #[test]
 fn unchanged_rich_preparation_allocates_nothing() {
-    let mut fs = crate::font_catalog::fixture_font_system();
+    let mut fs = tilo_ui_base::font_catalog::fixture_font_system();
     let spans = [RichSpan::new("first é\nשלום interior\n👩‍💻 last\n")];
     let style = TextStyle::new(16.0);
     let old = RichTextLayout::shape_styled(

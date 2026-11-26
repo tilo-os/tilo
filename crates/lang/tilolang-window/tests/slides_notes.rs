@@ -41,7 +41,7 @@ fn packages() -> Rc<Packages> {
 /// The window at `WINDOW`, laid out and at rest.
 fn open() -> Window {
     tilo_app_window::i18n::ensure();
-    let mut window = Window::open(APP, &packages(), Opening::new(WINDOW, ui::Theme::light()))
+    let mut window = Window::open(APP, &packages(), Opening::new(WINDOW, tilo_ui_base::Theme::light()))
         .expect("the window opens");
     settle(&mut window);
     window
@@ -56,14 +56,14 @@ fn settle(window: &mut Window) {
 }
 
 /// Every accessible node of the window, as a screen reader reads it.
-fn accessible(window: &Window) -> Vec<ui::a11y::AccessNode> {
+fn accessible(window: &Window) -> Vec<tilo_ui_base::a11y::AccessNode> {
     let snapshot = window.harness.inspection();
     snapshot
         .root
         .nodes()
         .into_iter()
         .filter_map(|node| node.semantics.as_ref())
-        .flat_map(ui::a11y::AccessNode::nodes)
+        .flat_map(tilo_ui_base::a11y::AccessNode::nodes)
         .cloned()
         .collect()
 }
@@ -93,7 +93,7 @@ fn press(window: &mut Window, name: &str) {
 fn press_slide(window: &mut Window, number: &str) {
     let at = accessible(window)
         .into_iter()
-        .find(|node| node.role == ui::a11y::Role::ListItem && node.name.as_deref() == Some(number))
+        .find(|node| node.role == tilo_ui_base::a11y::Role::ListItem && node.name.as_deref() == Some(number))
         .and_then(|node| node.bounds)
         .unwrap_or_else(|| panic!("the rail offers slide {number}"));
     window
@@ -107,12 +107,12 @@ fn press_slide(window: &mut Window, number: &str) {
 fn click_the_notes(window: &mut Window) {
     let at = accessible(window)
         .into_iter()
-        .filter(|node| node.role == ui::a11y::Role::MultilineTextInput)
+        .filter(|node| node.role == tilo_ui_base::a11y::Role::MultilineTextInput)
         .filter_map(|node| node.bounds)
         .filter(|bounds| bounds.x0 > 900.0 && bounds.y1 > bounds.y0)
         .max_by(|a, b| a.y0.total_cmp(&b.y0))
         .unwrap_or_else(|| {
-            let names: Vec<(String, Option<ui::a11y::Role>)> = accessible(window)
+            let names: Vec<(String, Option<tilo_ui_base::a11y::Role>)> = accessible(window)
                 .into_iter()
                 .map(|node| (node.name.unwrap_or_default(), Some(node.role)))
                 .collect();

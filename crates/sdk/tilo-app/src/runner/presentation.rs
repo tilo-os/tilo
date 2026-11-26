@@ -4,14 +4,15 @@ use super::RENDER_TYPE;
 use crate::framework::ViewCx;
 use std::cell::Cell;
 use tilo_resource::Resource;
-use ui_core::presence::PresenceCtx;
+use tilo_ui_base::presence::PresenceCtx;
 use ui_core::vello::{
     Scene,
     kurbo::{Affine, Rect},
     peniko::Color,
 };
-use ui_core::widget::DrawChild;
-use ui_core::{Theme, automerge::AutoCommit, text_render::TextRenderer};
+use tilo_ui_base::widget::DrawChild;
+use ui_core::automerge::AutoCommit;
+use tilo_ui_base::{Theme, text_render::TextRenderer};
 
 pub(crate) type DrawPast = fn(AutoCommit, Rect, &mut Scene, Affine, &Theme) -> Result<(), String>;
 
@@ -75,7 +76,7 @@ impl Presentation {
         &mut self,
         op: &ui_core::host_operation::ResourceOperation<'_>,
         doc: &AutoCommit,
-        content: &mut dyn ui_core::widget::Widget,
+        content: &mut dyn tilo_ui_base::widget::Widget,
     ) -> Result<Option<tilo_actions::ActionOutput>, String> {
         let request = op.request();
         match request.type_id {
@@ -100,7 +101,7 @@ impl Presentation {
         &mut self,
         payload: &[u8],
         doc: &AutoCommit,
-        content: &mut dyn ui_core::widget::Widget,
+        content: &mut dyn tilo_ui_base::widget::Widget,
         mut output: tilo_actions::ActionOutput,
     ) -> Result<tilo_actions::ActionOutput, String> {
         let (picture, _) = super::outline::asked(payload)?;
@@ -125,7 +126,7 @@ impl Presentation {
         &mut self,
         payload: &[u8],
         doc: &AutoCommit,
-        content: &mut dyn ui_core::widget::Widget,
+        content: &mut dyn tilo_ui_base::widget::Widget,
     ) -> Result<tilo_actions::ActionOutput, String> {
         let args: serde_json::Value =
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;
@@ -196,7 +197,7 @@ impl Presentation {
         };
         // On the GPU, only a frame that kept all of its geometry; without an
         // adapter (a confined app worker, a machine with no GPU), on the CPU.
-        let rgba = ui_core::offscreen::render_picture(&scene, width, height, ground)?;
+        let rgba = tilo_ui_base::offscreen::render_picture(&scene, width, height, ground)?;
         let png =
             ui_core::png::encode_rgba8(width, height, &rgba).map_err(|error| error.to_string())?;
         let hash = self
@@ -257,8 +258,8 @@ pub(crate) fn with_native_presentations(
 
 fn activate_spec() -> tilo_actions::ActionSpec {
     tilo_actions::remote::activate_spec(
-        ui_core::i18n::widget_text("app-activate-window"),
-        ui_core::i18n::widget_text("app-activate-window-description"),
+        tilo_ui_base::i18n::widget_text("app-activate-window"),
+        tilo_ui_base::i18n::widget_text("app-activate-window-description"),
     )
 }
 

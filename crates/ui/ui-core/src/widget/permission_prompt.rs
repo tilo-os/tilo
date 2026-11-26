@@ -1,8 +1,8 @@
 //! Inline permission prompt — the bar that pops in at the top of the active strip when a
 //! sandboxed app requests a capability.
 
-use crate::i18n::{widget_format, widget_text};
-use crate::widget::ModelPath;
+use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
+use tilo_ui_base::widget::ModelPath;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect, RoundedRect, Vec2};
@@ -10,12 +10,13 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::text_metrics::centered_text_top;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::text_metrics::centered_text_top;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::control_size::ControlSize;
-use crate::widget::{Button, ButtonFace, ButtonRole, TaffyTreeExt, Widget};
+use crate::{widget::Button, widget::ButtonFace, widget::ButtonRole};
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 pub const PROMPT_HEIGHT: f64 = 80.0;
 const PADDING_X: f64 = 16.0;
@@ -52,7 +53,7 @@ pub enum PromptChoice {
 
 /// Inline permission prompt widget.
 #[derive(Clone, Debug)]
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     system,
     "only the system asks for a permission; an app must not be able to forge the prompt"
 )]
@@ -84,9 +85,9 @@ pub struct PermissionPrompt {
     /// The choices offered, in order, under their own words, when the
     /// request is not the usual capability one ([`Self::with_choices`]).
     own_choices: Option<OwnChoices>,
-    icon: Option<crate::icons::Icon>,
+    icon: Option<tilo_ui_base::icons::Icon>,
     /// How it is pressed: a button is never shorter than its smallest target.
-    interaction: crate::interaction::InteractionEnvironment,
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
 
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
@@ -127,7 +128,7 @@ impl PermissionPrompt {
             local_input: None,
             own_choices: None,
             icon: None,
-            interaction: crate::interaction::InteractionEnvironment::default(),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
         }
     }
 
@@ -156,7 +157,7 @@ impl PermissionPrompt {
     }
 
     #[must_use]
-    pub fn with_icon(mut self, icon: crate::icons::Icon) -> Self {
+    pub fn with_icon(mut self, icon: tilo_ui_base::icons::Icon) -> Self {
         self.icon = Some(icon);
         self
     }
@@ -397,7 +398,7 @@ impl Widget for PermissionPrompt {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.apply_layout_helper();
     }
 
@@ -407,7 +408,7 @@ impl Widget for PermissionPrompt {
         self.rect == Rect::ZERO
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -420,11 +421,11 @@ impl Widget for PermissionPrompt {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                crate::chrome::panel_ground(theme),
+                tilo_ui_base::chrome::panel_ground(theme),
                 None,
                 &body,
             );
-            crate::chrome::shell::paint_panel_edge(scene, transform, self.rect, radius, theme);
+            tilo_ui_base::chrome::shell::paint_panel_edge(scene, transform, self.rect, radius, theme);
 
             // Placeholder pulled from the accent ramp until the portal layer
             // surfaces real icons via the app's `.desktop` file metadata.
@@ -527,7 +528,7 @@ impl Widget for PermissionPrompt {
         });
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -626,7 +627,7 @@ impl Widget for PermissionPrompt {
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         if self.interaction != environment {
             self.interaction = environment;
@@ -636,19 +637,19 @@ impl Widget for PermissionPrompt {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
         "PermissionPrompt"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let children = self
             .visible_choices()
             .iter()
@@ -743,13 +744,13 @@ impl Widget for PermissionPrompt {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if key_path.is_empty() {
-            return matches!(action, crate::a11y::Action::Activate)
+            return matches!(action, tilo_ui_base::a11y::Action::Activate)
                 && self
                     .focused_choice
                     .is_some_and(|choice| self.choose(choice));
@@ -762,12 +763,12 @@ impl Widget for PermissionPrompt {
             return false;
         };
         match action {
-            crate::a11y::Action::Focus => {
+            tilo_ui_base::a11y::Action::Focus => {
                 self.has_keyboard_focus = true;
                 self.focused_choice = Some(choice);
                 self.choice_enabled(choice)
             }
-            crate::a11y::Action::Activate => {
+            tilo_ui_base::a11y::Action::Activate => {
                 self.focused_choice = Some(choice);
                 self.choose(choice)
             }
@@ -781,7 +782,7 @@ mod tests {
     //! `apply_layout_helper` populates the hit-test rects from a synthetic
     //! `self.rect` so tests don't depend on a GPU/text-renderer.
     use super::*;
-    use crate::presence::PresenceCtx;
+    use tilo_ui_base::presence::PresenceCtx;
     use automerge::AutoCommit;
     use vello::Scene;
     use vello::kurbo::Affine;
@@ -804,7 +805,7 @@ mod tests {
             let height = prompt.preferred_height(&mut text, &theme);
             assert!(height > PROMPT_HEIGHT, "the complete explanation must wrap");
             prompt.set_rect(Rect::new(16.0, 16.0, 784.0, 16.0 + height));
-            prompt.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, PresenceCtx::default().draw_env()));
+            prompt.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, PresenceCtx::default().draw_env()));
             assert!(prompt.get_rect().contains(prompt.allow_rect().center()));
             assert!(prompt.get_rect().contains(prompt.deny_rect().center()));
             let node = prompt.accessibility().unwrap();
@@ -833,9 +834,9 @@ mod tests {
             let mut doc = AutoCommit::new();
             for key in [SESSION_KEY, ALWAYS_KEY] {
                 assert!(!prompt.perform_action(
-                    &crate::a11y::Action::Activate,
+                    &tilo_ui_base::a11y::Action::Activate,
                     &[key],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT
                 ));
                 assert!(prompt.pending_choice.is_none());
@@ -874,7 +875,7 @@ mod tests {
         phase permission_dialog_semantics_focus_and_owner_only_always;
         {
             {
-                use crate::a11y::Role;
+                use tilo_ui_base::a11y::Role;
                 let p = PermissionPrompt::new("org.gnome.gedit".into(), "Camera access".into(), true);
                 let node = Widget::accessibility(&p).expect("prompt is not presentational");
                 assert_eq!(node.role, Role::Dialog);
@@ -910,9 +911,9 @@ mod tests {
                 let mut doc = AutoCommit::new();
                 assert!(Widget::perform_action(
                     &mut p,
-                    &crate::a11y::Action::Activate,
+                    &tilo_ui_base::a11y::Action::Activate,
                     &[],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ));
                 assert_eq!(p.pending_choice, Some(PromptChoice::Deny));
@@ -920,9 +921,9 @@ mod tests {
                 p.pending_choice = None;
                 assert!(Widget::perform_action(
                     &mut p,
-                    &crate::a11y::Action::Activate,
+                    &tilo_ui_base::a11y::Action::Activate,
                     &[SESSION_KEY],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ));
                 assert_eq!(p.pending_choice, Some(PromptChoice::Session));
@@ -931,9 +932,9 @@ mod tests {
                 assert!(
                     !Widget::perform_action(
                         &mut p,
-                        &crate::a11y::Action::Activate,
+                        &tilo_ui_base::a11y::Action::Activate,
                         &[ALWAYS_KEY],
-                        &mut crate::widget::Edits::lend(&mut doc),
+                        &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                         &automerge::ROOT,
                     ),
                     "a disabled persistent grant cannot be activated through AT"
@@ -1049,10 +1050,10 @@ mod tests {
     }
 
     fn cursor_at(p: Point) -> WindowEvent {
-        crate::synthetic_input::cursor_moved(p.x, p.y)
+        tilo_ui_base::synthetic_input::cursor_moved(p.x, p.y)
     }
 
-    use crate::synthetic_input::mouse_press;
+    use tilo_ui_base::synthetic_input::mouse_press;
     use crate::testing::dispatch;
 
     /// 600x80 with computed button rects; `is_owner` is the only

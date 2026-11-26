@@ -530,7 +530,7 @@ fn place_of<E: Effect>(
 fn shown_elsewhere(
     decl: &tilo_resource::effect::EffectDecl,
     row: Option<&str>,
-    me: Option<&ui_core::permissions::MemberId>,
+    me: Option<&tilo_ui_base::permissions::MemberId>,
 ) -> Option<(tilo_actions::PresenceId, tilo_resource::Place)> {
     if !decl.tags.contains(&tilo_actions::SCREEN_PLACE_TAG) {
         return None;
@@ -1234,7 +1234,7 @@ pub(crate) fn kept_specs_of(
     statuses: &[EffectStatus],
     specs: fn() -> Vec<ActionSpec>,
 ) -> Vec<ActionSpec> {
-    let locale = ui_core::i18n::I18nManager::revision();
+    let locale = tilo_ui_base::i18n::I18nManager::revision();
     if let Some((_, _, specs)) = kept
         .borrow()
         .as_ref()
@@ -1800,16 +1800,16 @@ trait ViewHandler {
         &mut self,
         op: &ResourceOperation<'_>,
         doc: &tilo_resource::Doc,
-        view: &mut dyn ui_core::widget::Widget,
+        view: &mut dyn tilo_ui_base::widget::Widget,
     ) -> Result<Option<ResourceOperationStart>, String>;
     fn poll(
         &mut self,
         invocation: InvocationId,
         cancel: bool,
-        view: &mut dyn ui_core::widget::Widget,
+        view: &mut dyn tilo_ui_base::widget::Widget,
     ) -> Option<InvocationUpdate>;
     /// Finish the jobs a window started on its own.
-    fn poll_jobs(&mut self, _view: &mut dyn ui_core::widget::Widget) {}
+    fn poll_jobs(&mut self, _view: &mut dyn tilo_ui_base::widget::Widget) {}
 }
 
 type Handle<R, E> = Box<dyn FnMut(E, &mut EffectCx<R>) -> EffectAnswer>;
@@ -1824,7 +1824,7 @@ impl<R: Resource, E: Effect> ViewHandler for Handler<R, E> {
         &mut self,
         op: &ResourceOperation<'_>,
         doc: &tilo_resource::Doc,
-        _view: &mut dyn ui_core::widget::Widget,
+        _view: &mut dyn tilo_ui_base::widget::Widget,
     ) -> Result<Option<ResourceOperationStart>, String> {
         let handle = &mut self.handle;
         // The handler reads the document as it stands
@@ -1837,7 +1837,7 @@ impl<R: Resource, E: Effect> ViewHandler for Handler<R, E> {
         &mut self,
         invocation: InvocationId,
         cancel: bool,
-        _view: &mut dyn ui_core::widget::Widget,
+        _view: &mut dyn tilo_ui_base::widget::Widget,
     ) -> Option<InvocationUpdate> {
         self.runner.poll(invocation, cancel, &mut ())
     }
@@ -1947,11 +1947,11 @@ struct Settlement {
 
 type Settling = Rc<RefCell<Vec<Settlement>>>;
 type ApplySettlement =
-    Box<dyn FnOnce(&mut ui_core::widget::Edits<'_>) -> Result<(), tilo_actions::ActionError>>;
+    Box<dyn FnOnce(&mut tilo_ui_base::widget::Edits<'_>) -> Result<(), tilo_actions::ActionError>>;
 
 /// Write the settlements in `settling`, then tell the invocations waiting on
 /// them how they settled.
-fn apply_settlements(settling: &Settling, edits: &mut ui_core::widget::Edits<'_>) {
+fn apply_settlements(settling: &Settling, edits: &mut tilo_ui_base::widget::Edits<'_>) {
     let settling = std::mem::take(&mut *settling.borrow_mut());
     for Settlement { apply, waiting } in settling {
         let applied = apply(edits);
@@ -2517,7 +2517,7 @@ impl<R: Resource> Effects<R> {
         &self,
         op: &ResourceOperation<'_>,
         doc: &tilo_resource::Doc,
-        view: &mut dyn ui_core::widget::Widget,
+        view: &mut dyn tilo_ui_base::widget::Widget,
     ) -> Result<Option<ResourceOperationStart>, String> {
         let operation = op.request().type_id;
         self.with_handlers(|handlers| {
@@ -2536,7 +2536,7 @@ impl<R: Resource> Effects<R> {
         &self,
         invocation: InvocationId,
         cancel: bool,
-        view: &mut dyn ui_core::widget::Widget,
+        view: &mut dyn tilo_ui_base::widget::Widget,
     ) -> Option<InvocationUpdate> {
         let causal = self
             .inner
@@ -2555,7 +2555,7 @@ impl<R: Resource> Effects<R> {
     /// Finish the jobs the view's windows started
     /// ([`ViewCx::window_jobs`](super::ViewCx::window_jobs)).
     #[inline(never)]
-    pub(crate) fn poll_window_jobs(&self, view: &mut dyn ui_core::widget::Widget) {
+    pub(crate) fn poll_window_jobs(&self, view: &mut dyn tilo_ui_base::widget::Widget) {
         self.with_handlers(|handlers| {
             for entry in handlers {
                 entry.handler.poll_jobs(view);
@@ -2586,7 +2586,7 @@ impl<R: Resource> Effects<R> {
     pub(crate) fn start_document_effects(
         &self,
         operation: &ResourceOperation<'_>,
-        applied: &ui_core::widget::document_effects::AppliedDocument<'_>,
+        applied: &tilo_ui_base::widget::document_effects::AppliedDocument<'_>,
     ) -> Result<Option<ResourceOperationStart>, String> {
         self.inner
             .borrow_mut()
@@ -2597,7 +2597,7 @@ impl<R: Resource> Effects<R> {
     /// Write the outbox settlements learned since the last settle pass, then
     /// tell the invocations waiting on them how they settled.
     #[inline(never)]
-    pub(crate) fn apply_settlements(&self, edits: &mut ui_core::widget::Edits<'_>) {
+    pub(crate) fn apply_settlements(&self, edits: &mut tilo_ui_base::widget::Edits<'_>) {
         let settling = Rc::clone(&self.inner.borrow().settling);
         apply_settlements(&settling, edits);
     }

@@ -22,10 +22,10 @@ use tilo_desktop_model::Layout;
 use tilo_desktop_model::ids::WorkspaceId;
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_session_core::desktop::warmth::WindowWarmth;
-use ui::Theme;
+use tilo_ui_base::Theme;
 use ui::floating_surface::HostNetworkStatus;
-use ui::tokens::PresenceHue;
-use ui::workspace_sync::WorkspaceSync;
+use tilo_ui_base::tokens::PresenceHue;
+use tilo_ui_base::workspace_sync::WorkspaceSync;
 
 use crate::app_tabs::AppTabs;
 use crate::wallpapers::Wallpapers;
@@ -101,8 +101,8 @@ impl Windows {
     fn stage_applied_bundle(&mut self) {
         let package = self
             .document
-            .get(ui::theme::APPEARANCE_SECTION)
-            .and_then(|appearance| appearance.get(ui::theme::THEME_PACKAGE_KEY))
+            .get(tilo_ui_base::theme::APPEARANCE_SECTION)
+            .and_then(|appearance| appearance.get(tilo_ui_base::theme::THEME_PACKAGE_KEY))
             .and_then(Value::as_str)
             .map(str::to_owned);
         if package == self.bundled {
@@ -140,7 +140,7 @@ impl Windows {
                     .collect();
                 self.warmth.update(&workspaces, active, now, &mut |id| {
                     let id = id.to_string();
-                    ui::theme::workspace_temperature_override(&settings, &id)
+                    tilo_ui_base::theme::workspace_temperature_override(&settings, &id)
                         .or_else(|| wallpapers.hue(&id))
                 });
             }
@@ -226,7 +226,7 @@ fn shell_theme(document: &Map<String, Value>) -> Theme {
         .and_then(Value::as_str)
         .and_then(settings_sections::prefs::applied_theme);
     Theme::configured_with(document, applied).with_a11y(
-        &ui::a11y::A11ySettings {
+        &tilo_ui_base::a11y::A11ySettings {
             high_contrast: accessibility.high_contrast,
             reduce_motion: accessibility.reduce_motion,
             ..Default::default()

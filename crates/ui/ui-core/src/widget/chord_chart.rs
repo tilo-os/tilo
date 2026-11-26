@@ -12,10 +12,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, Shape, Stroke};
 use vello::peniko::{Color, Fill};
 
-use crate::paint::with_alpha;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::paint::with_alpha;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::chart_data::{ChartLink, ChartNode, graph_items};
 use crate::widget::chart_geometry::{annulus, append_arc, polar};
 use crate::widget::chart_labels::format_compact;

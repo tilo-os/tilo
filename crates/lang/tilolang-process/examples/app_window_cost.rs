@@ -32,8 +32,8 @@ use tilolang_tilo::instance::{
 use tilolang_tilo::publish::{Planner, Publications};
 use tilolang_tilo::runtime::{Actor, NameHost};
 use tilolang_tilo::tilolang::Compiled;
-use ui::widget::DrawChild;
-use ui::widget::Widget as _;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::Widget as _;
 
 /// The package and what it uses, compiled once for every instance.
 struct Packages(Rc<Vec<Compiled>>);
@@ -81,7 +81,7 @@ impl Platform for Packages {
     }
 
     /// Fixed instant for the instance's runtime (`now`, `today`, `shown` and `sentence`); widget
-    /// date controls on the `AppWindow` side still read `ui::clock`.
+    /// date controls on the `AppWindow` side still read `tilo_ui_base::clock`.
     fn now(&self) -> String {
         "2026-10-27T10:00:00Z".to_owned()
     }
@@ -153,7 +153,7 @@ struct Shown {
     scene: ui::vello::Scene,
 }
 
-fn show(end: End, text: &mut ui::TextRenderer, theme: &ui::Theme) -> Shown {
+fn show(end: End, text: &mut tilo_ui_base::TextRenderer, theme: &tilo_ui_base::Theme) -> Shown {
     let mut window = AppWindow::new(Box::new(end), Vec::new());
     window.receive();
     lay_out(&mut window, theme);
@@ -163,12 +163,12 @@ fn show(end: End, text: &mut ui::TextRenderer, theme: &ui::Theme) -> Shown {
         ui::kurbo::Affine::IDENTITY,
         text,
         theme,
-        &ui::presence::PresenceCtx::default().draw_env(),
+        &tilo_ui_base::presence::PresenceCtx::default().draw_env(),
     );
     Shown { window, scene }
 }
 
-fn lay_out(window: &mut AppWindow, theme: &ui::Theme) {
+fn lay_out(window: &mut AppWindow, theme: &tilo_ui_base::Theme) {
     use ui::taffy::prelude::{AvailableSpace, Size};
     let mut taffy = ui::taffy::TaffyTree::new();
     let mut nodes = std::collections::HashMap::new();
@@ -230,8 +230,8 @@ fn first_frame(
     app: &str,
     platform: &Rc<Packages>,
     scenario: Option<&str>,
-    text: &mut ui::TextRenderer,
-    theme: &ui::Theme,
+    text: &mut tilo_ui_base::TextRenderer,
+    theme: &tilo_ui_base::Theme,
 ) -> Result<(), String> {
     let started = Instant::now();
     let mut first = open(app, platform, scenario);
@@ -318,8 +318,8 @@ fn main() -> Result<(), String> {
         .flatten();
     let platform = Rc::new(Packages(Rc::new(packages)));
     tilo_app_window::i18n::ensure();
-    let theme = ui::Theme::dark();
-    let mut text = ui::TextRenderer::new();
+    let theme = tilo_ui_base::Theme::dark();
+    let mut text = tilo_ui_base::TextRenderer::new();
 
     first_frame(&app, &platform, scenario.as_deref(), &mut text, &theme)?;
 

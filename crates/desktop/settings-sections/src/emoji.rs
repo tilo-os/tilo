@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use ui::tilo_resource;
 
 /// The most the picker counts: its own list's length.
-pub const KEPT: usize = ui::emoji_catalogue::EmojiUses::KEPT;
+pub const KEPT: usize = tilo_ui_base::emoji_catalogue::EmojiUses::KEPT;
 
 /// How often the person used each emoji.
 #[derive(

@@ -10,9 +10,9 @@
 use super::local_target::ResourceReadRequest;
 use super::{BoundDispatchError, CallbackBinding, ComponentRequest, callback_binding_of};
 use crate::history_mode::HistoryOwner;
-use crate::widget::Widget;
-use crate::widget::capability::{capability, capability_mut};
-use crate::widget::component_walk::{ComponentBoundary, binding_of};
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{widget::capability::capability, widget::capability::capability_mut};
+use tilo_ui_base::{widget::component_walk::ComponentBoundary, widget::component_walk::binding_of};
 
 /// Which record owner a widget stands in ([`ComponentBoundary`]: the runtime
 /// binding descendants in a matching layout topology inherit), and the history

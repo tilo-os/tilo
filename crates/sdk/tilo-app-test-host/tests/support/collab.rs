@@ -20,7 +20,7 @@ use runtime_collab::wire::{
 };
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::mpsc;
-use ui_core::collaboration::CollaborationManager;
+use tilo_ui_base::collaboration::CollaborationManager;
 use uuid::Uuid;
 
 const TEST_APP_ID: &str = "ui-integration-test";
@@ -192,7 +192,7 @@ impl TypedBroker {
     /// Wait until `peer` holds its context subscription on the `app_id` workspace.
     fn wait_subscribed(&self, app_id: &str, peer: u64, user_id: &str) {
         let channel =
-            ui_core::collaboration::channel_key::format(app_id, &Uuid::nil().to_string(), "");
+            tilo_ui_base::collaboration::channel_key::format(app_id, &Uuid::nil().to_string(), "");
         tilo_test_env::wait_until(
             format!("{user_id}'s context subscription on {channel}"),
             || {
@@ -295,7 +295,7 @@ impl Connection {
         match request {
             Operation::Say { record, frame } => {
                 let heard = ContextUpdate::Heard {
-                    member: ui_core::permissions::MemberId::person(self.user_id.clone()),
+                    member: tilo_ui_base::permissions::MemberId::person(self.user_id.clone()),
                     frame: Box::new(frame),
                 };
                 self.hub.tell_heard(&record.key, self.peer, &heard);

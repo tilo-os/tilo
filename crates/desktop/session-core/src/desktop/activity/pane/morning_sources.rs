@@ -10,7 +10,7 @@ fn morning_source_name(target: &ui::HistoryResourceTarget) -> String {
     target
         .app_label
         .as_deref()
-        .and_then(|label| ui::human_label(label, target.app_id.as_deref().unwrap_or_default()))
+        .and_then(|label| tilo_ui_base::human_label(label, target.app_id.as_deref().unwrap_or_default()))
         .or_else(|| target.display_name())
         .map_or_else(|| t("activity-morning-source-unnamed"), str::to_owned)
 }

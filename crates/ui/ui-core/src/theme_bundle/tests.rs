@@ -9,11 +9,12 @@ use tilo_theme_sdk::wire;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
-use super::*;
-use crate::part_paint::{PainterSet, PartPainter as _};
-use crate::text_render::TextRenderer;
-use crate::tokens::SurfaceRole;
-use crate::widget::{Button, ButtonRole, Widget as _};
+use tilo_ui_base::theme_bundle::*;
+use tilo_ui_base::{part_paint::PainterSet, part_paint::PartPainter as _};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::tokens::SurfaceRole;
+use crate::{widget::Button, widget::ButtonRole};
+use tilo_ui_base::widget::Widget as _;
 
 const BAUHAUS: &str = include_str!("../../../themes/bauhaus/theme.json");
 
@@ -103,11 +104,11 @@ tilo_test_env::scenario! {
 
 #[test]
 fn the_bauhaus_theme_is_legible_and_draws_through_the_host() {
-    assert!(crate::part_paint::register_painter_set(PainterSet::new(
+    assert!(tilo_ui_base::part_paint::register_painter_set(PainterSet::new(
         "bauhaus",
         Arc::new(Bauhaus)
     )));
-    let document: crate::theme::ThemeDocument = serde_json::from_str(BAUHAUS).unwrap();
+    let document: tilo_ui_base::theme::ThemeDocument = serde_json::from_str(BAUHAUS).unwrap();
     assert_eq!(document.validate(), Ok(()));
     assert!(document.findings().is_empty(), "{:?}", document.findings());
     let theme = Theme::from_document(&document).unwrap();
@@ -115,12 +116,12 @@ fn the_bauhaus_theme_is_legible_and_draws_through_the_host() {
     let mut button = Button::new("go", "Go").role(ButtonRole::Primary);
     button.apply_layout_external(Rect::new(100.0, 50.0, 220.0, 90.0));
     let mut scene = Scene::new();
-    button.draw(&mut crate::draw::DrawCtx::new(
+    button.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut TextRenderer::new(),
         &theme,
-        crate::presence::PresenceCtx::default().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::default().draw_env(),
     ));
     let at = (218.0, 88.0);
     crate::testing::Dispatch::new().send(
@@ -141,7 +142,7 @@ fn the_bauhaus_theme_is_legible_and_draws_through_the_host() {
 /// and nothing else: what a process reads there is the theme package's bundle, never the package.
 #[test]
 fn staging_places_only_the_bundle_files_a_theme_names() {
-    use crate::theme::PresetDesign as _;
+    use tilo_ui_base::theme::PresetDesign as _;
 
     const SET: &str = "test.staged-files";
     let source = tempfile::tempdir().expect("a bundle");
@@ -180,7 +181,7 @@ fn staging_places_only_the_bundle_files_a_theme_names() {
     // A document naming only built-in sets carries no module, and the one staged before is gone.
     std::fs::write(
         source.path().join(DOCUMENT),
-        serde_json::to_string(&crate::theme::Preset::Dark.document()).expect("the theme writes"),
+        serde_json::to_string(&tilo_ui_base::theme::Preset::Dark.document()).expect("the theme writes"),
     )
     .expect("the document");
     stage(source.path(), dest.path()).expect("the bundle stages again");

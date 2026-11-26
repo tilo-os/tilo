@@ -22,7 +22,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use tilo_ui::num::f32_of_f64;
+use tilo_ui_base::num::f32_of_f64;
 
 use tilo_ui::vello::kurbo::{Affine, Rect};
 use tilo_ui::vello::peniko::ImageData;

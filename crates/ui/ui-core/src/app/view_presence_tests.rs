@@ -1,10 +1,10 @@
 use super::*;
-use crate::Theme;
+use tilo_ui_base::Theme;
 use crate::resource::{DocumentCheckout, DocumentId, ResourceType};
 use crate::state::State;
 use crate::view::{FreezeThaw, ViewContribution, ViewSubset};
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use taffy::TaffyTree;
@@ -30,7 +30,7 @@ impl ViewRoot {
 }
 
 impl Widget for ViewRoot {
-    crate::provides!(
+    tilo_ui_base::provides!(
         dyn crate::resource::capability::ResourceScoped,
         dyn crate::view::capability::ViewState
     );
@@ -88,7 +88,7 @@ fn continuation_restores_framework_view_fidelity_before_custom_semantics() {
         });
         sender.layout.last_frame_size = Some(winit::dpi::PhysicalSize::new(900, 600));
         let view = <App as FreezeThaw>::capture_view(&sender);
-        let metadata = crate::collaboration::ContinuationMetadata {
+        let metadata = tilo_ui_base::collaboration::ContinuationMetadata {
             schema_version: GENERIC_VIEW_CONTINUATION_SCHEMA,
             bytes: postcard::to_stdvec(&PortableContinuationView::capture(view)).unwrap(),
         };
@@ -143,7 +143,7 @@ fn continuation_restores_framework_view_fidelity_before_custom_semantics() {
         };
         let metadata = compose_structural_continuation_metadata(
             view,
-            Some(crate::collaboration::ContinuationMetadata {
+            Some(tilo_ui_base::collaboration::ContinuationMetadata {
                 schema_version: 7,
                 bytes: b"custom-safe-projection".to_vec(),
             }),
@@ -171,7 +171,7 @@ fn continuation_restores_framework_view_fidelity_before_custom_semantics() {
                 viewport: crate::view::ViewRect::default(),
                 view_mode: Some("grid".into()),
             },
-            Some(crate::collaboration::ContinuationMetadata {
+            Some(tilo_ui_base::collaboration::ContinuationMetadata {
                 schema_version: 1,
                 bytes: b"opaque-unknown-payload".to_vec(),
             }),
@@ -197,7 +197,7 @@ fn continuation_restores_framework_view_fidelity_before_custom_semantics() {
                 viewport: crate::view::ViewRect::default(),
                 view_mode: Some("list".into()),
             },
-            Some(crate::collaboration::ContinuationMetadata {
+            Some(tilo_ui_base::collaboration::ContinuationMetadata {
                 schema_version: 1,
                 bytes: vec![b'x'; 32 * 1024],
             }),
@@ -284,19 +284,19 @@ fn view_presence_broadcasts_and_follow_binds_the_local_viewport() {
         assert!(
             receiver
                 .presence_ctx()
-                .peer_view(&crate::permissions::MemberId::person("alice"))
+                .peer_view(&tilo_ui_base::permissions::MemberId::person("alice"))
                 .is_none(),
             "no View known for the peer before their broadcast arrives"
         );
         receiver.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            member: crate::permissions::MemberId::person("alice"),
+            member: tilo_ui_base::permissions::MemberId::person("alice"),
             key: key.clone(),
             payload: PresencePayload::Arrived,
         });
 
         let peer_view = receiver
             .presence_ctx()
-            .peer_view(&crate::permissions::MemberId::person("alice"))
+            .peer_view(&tilo_ui_base::permissions::MemberId::person("alice"))
             .expect("the peer's View is stored after their broadcast");
         assert_eq!(
             peer_view, &sent,
@@ -319,7 +319,7 @@ fn view_presence_broadcasts_and_follow_binds_the_local_viewport() {
                 view_mode: Some(mode.into()),
             };
             app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-                member: crate::permissions::MemberId::person(peer),
+                member: tilo_ui_base::permissions::MemberId::person(peer),
                 key: PresenceKey::view(&subset),
                 payload: PresencePayload::Arrived,
             });
@@ -334,7 +334,7 @@ fn view_presence_broadcasts_and_follow_binds_the_local_viewport() {
             "receiving a peer's View must not move the local view on its own"
         );
 
-        app.follow(crate::permissions::MemberId::person("bob"));
+        app.follow(tilo_ui_base::permissions::MemberId::person("bob"));
         let v = <App as FreezeThaw>::capture_view(&app);
         assert_eq!(
             v.scroll,
@@ -371,7 +371,7 @@ fn view_presence_broadcasts_and_follow_binds_the_local_viewport() {
             rect: KurboRect::ZERO,
         });
 
-        app.follow(crate::permissions::MemberId::person("ghost"));
+        app.follow(tilo_ui_base::permissions::MemberId::person("ghost"));
 
         let v = <App as FreezeThaw>::capture_view(&app);
         assert_eq!(
@@ -381,7 +381,7 @@ fn view_presence_broadcasts_and_follow_binds_the_local_viewport() {
         );
         assert_eq!(
             app.followed_peer(),
-            Some(&crate::permissions::MemberId::person("ghost")),
+            Some(&tilo_ui_base::permissions::MemberId::person("ghost")),
             "the follow intent is still latched"
         );
     }

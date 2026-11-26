@@ -5,10 +5,10 @@ use greetd_ipc::{AuthMessageType, ErrorType, Request, Response};
 use std::collections::HashMap;
 use std::os::unix::net::UnixListener;
 use taffy::AvailableSpace;
-use ui::a11y::Politeness;
-use ui::presence::PresenceCtx;
-use ui::widget::DrawChild;
-use ui::widget::find_test_id;
+use tilo_ui_base::a11y::Politeness;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::find_test_id;
 
 /// The shipped Tilo session plus a second, separately installed one, so
 /// there is a real choice and the picker is in the footer. Human names,
@@ -57,8 +57,8 @@ fn set_focus_by_id(widget: &mut dyn Widget, id: &str) {
 fn key_event(key: Key, text: Option<&str>) -> WindowEvent {
     // winit intentionally keeps the platform-specific key field private;
     // these are the same inert placeholders used by ui::App's key tests.
-    let event = ui::synthetic_input::key_event(key, text.map(Into::into), ElementState::Pressed);
-    ui::synthetic_input::keyboard_input(event)
+    let event = tilo_ui_base::synthetic_input::key_event(key, text.map(Into::into), ElementState::Pressed);
+    tilo_ui_base::synthetic_input::keyboard_input(event)
 }
 
 fn named_key_event(key: NamedKey) -> WindowEvent {
@@ -167,16 +167,16 @@ impl Screen {
         let control = find_mut(composed, id).unwrap_or_else(|| panic!("{id} is on the screen"));
         assert!(
             control.perform_action(
-                &ui::a11y::Action::Activate,
+                &tilo_ui_base::a11y::Action::Activate,
                 &[],
-                &mut ui::widget::Edits::lend(&mut self.doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut self.doc),
                 &automerge::ROOT
             ),
             "{id} accepts activation"
         );
-        ui::widget::controls::start_pending_control_invocations(
+        tilo_ui_base::widget::controls::start_pending_control_invocations(
             composed,
-            &mut ui::widget::Edits::lend(&mut self.doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut self.doc),
             &automerge::ROOT,
         );
         self.sync();
@@ -297,7 +297,7 @@ fn count_named(w: &dyn Widget, name: &str) -> usize {
 /// Everything the panel announces, in tree order: the accessible name of
 /// every node that has one — what a screen reader reads out.
 fn spoken(w: &dyn Widget) -> Vec<String> {
-    fn said(node: ui::a11y::AccessNode, out: &mut Vec<String>) {
+    fn said(node: tilo_ui_base::a11y::AccessNode, out: &mut Vec<String>) {
         if let Some(name) = node.name {
             out.push(name);
         }
@@ -320,7 +320,7 @@ fn spoken(w: &dyn Widget) -> Vec<String> {
 
 fn live_politeness_for(w: &dyn Widget, name: &str) -> Option<Politeness> {
     /// The node named `name` in `node`'s subtree.
-    fn named<'a>(node: &'a ui::a11y::AccessNode, name: &str) -> Option<&'a ui::a11y::AccessNode> {
+    fn named<'a>(node: &'a tilo_ui_base::a11y::AccessNode, name: &str) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
         if node.name.as_deref() == Some(name) {
             return Some(node);
         }
@@ -337,7 +337,7 @@ fn live_politeness_for(w: &dyn Widget, name: &str) -> Option<Politeness> {
 }
 
 /// The passcode prompt's accessible node.
-fn passcode_node(w: &dyn Widget) -> ui::a11y::AccessNode {
+fn passcode_node(w: &dyn Widget) -> tilo_ui_base::a11y::AccessNode {
     find_test_id(w, "greeter.password")
         .and_then(Widget::accessibility)
         .expect("the passcode prompt is accessible")
@@ -349,7 +349,7 @@ fn passcode_field_rect(w: &dyn Widget) -> Option<Rect> {
     let field = node
         .children
         .iter()
-        .find(|child| child.role == ui::a11y::Role::TextInput)?;
+        .find(|child| child.role == tilo_ui_base::a11y::Role::TextInput)?;
     let b = field.bounds?;
     Some(Rect::new(b.x0, b.y0, b.x1, b.y1))
 }
@@ -360,7 +360,7 @@ struct Laid {
     taffy: TaffyTree<()>,
     node: NodeId,
     node_map: HashMap<NodeId, *mut dyn Widget>,
-    bindings: ui::widget::bound_nodes::BoundNodeMap,
+    bindings: tilo_ui_base::widget::bound_nodes::BoundNodeMap,
     text: TextRenderer,
     viewport: (f32, f32),
 }
@@ -375,7 +375,7 @@ impl Laid {
                 taffy: TaffyTree::new(),
                 node: NodeId::from(0usize),
                 node_map: HashMap::new(),
-                bindings: ui::widget::bound_nodes::BoundNodeMap::new(),
+                bindings: tilo_ui_base::widget::bound_nodes::BoundNodeMap::new(),
                 text,
                 viewport,
             };
@@ -399,7 +399,7 @@ impl Laid {
     fn relayout(&mut self, app: &mut GreeterApp) {
         // SAFETY: as above; the tree was built by this helper for `app`.
         unsafe {
-            ui::widget::compute_widget_layout(
+            tilo_ui_base::widget::compute_widget_layout(
                 &mut self.taffy,
                 self.node,
                 Size {
@@ -777,14 +777,14 @@ fn a_person_signs_in_on_a_device_of_theirs() {
             is_error: false,
         }
         .encode(),
-        &mut ui::widget::Edits::lend(&mut screen.doc),
+        &mut tilo_ui_base::widget::Edits::lend(&mut screen.doc),
         &automerge::ROOT,
     );
     assert_eq!(screen.app.phase, AuthPhase::Authenticating);
     assert_eq!(screen.app.status_text(), "Place your finger on the reader");
     screen.app.on_external_event(
         &AuthUpdate::Accepted.encode(),
-        &mut ui::widget::Edits::lend(&mut screen.doc),
+        &mut tilo_ui_base::widget::Edits::lend(&mut screen.doc),
         &automerge::ROOT,
     );
     assert_eq!(screen.app.phase, AuthPhase::Starting);
@@ -862,7 +862,7 @@ fn a_refused_passcode_leaves_a_ready_form_and_the_next_attempt_works() {
 
         screen.app.on_external_event(
             &AuthUpdate::Failed(failure).encode(),
-            &mut ui::widget::Edits::lend(&mut screen.doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut screen.doc),
             &automerge::ROOT,
         );
 
@@ -1373,13 +1373,13 @@ fn the_screen_is_laid_out_on_the_outputs_it_runs_on() {
             (window.width() * 2.0) as u32,
             (window.height() * 2.0) as u32,
         );
-        let limit = ui::gpu::requested_texture_limit();
-        let extent = ui::scale::fit_to_texture_limit(physical, 2.0, limit);
+        let limit = tilo_ui_base::gpu::requested_texture_limit();
+        let extent = tilo_ui_base::scale::fit_to_texture_limit(physical, 2.0, limit);
         assert!(
             extent.width <= limit && extent.height <= limit,
             "{extent:?} exceeds the device limit {limit}"
         );
-        let logical = ui::scale::logical_size((extent.width, extent.height), extent.scale);
+        let logical = tilo_ui_base::scale::logical_size((extent.width, extent.height), extent.scale);
         assert!(
             (logical.0 - window.width()).abs() <= 1.0 && (logical.1 - window.height()).abs() <= 1.0,
             "the frame keeps the window's layout: {logical:?} vs {window:?}"
@@ -1610,7 +1610,7 @@ fn the_screen_is_laid_out_on_the_outputs_it_runs_on() {
             .children
             .iter()
             .flat_map(|field| field.children.iter())
-            .find(|node| node.role == ui::a11y::Role::ToggleButton)
+            .find(|node| node.role == tilo_ui_base::a11y::Role::ToggleButton)
             .expect("the shared field retains an addressable reveal control");
         assert_eq!(reveal.name.as_deref(), Some("Show password"));
         assert!(
@@ -1649,7 +1649,7 @@ fn the_screen_is_laid_out_on_the_outputs_it_runs_on() {
             passcode_node(card_of(app).as_ref())
                 .children
                 .iter()
-                .find(|node| node.role == ui::a11y::Role::StaticText)
+                .find(|node| node.role == tilo_ui_base::a11y::Role::StaticText)
                 .and_then(|node| node.name.clone())
         };
         let hint = line(&screen.app);
@@ -1845,13 +1845,13 @@ fn in_time<T>(zero: ui::time::Instant, wall_ms: u64, t: u64, operation: impl FnO
 /// its own.
 #[test]
 fn at_rest_on_the_kms_host_the_clock_turns_each_minute_with_one_wake() {
-    let started = ui::clock::instant_of(jiff::civil::date(2026, 6, 30).at(10, 41, 20, 0))
+    let started = tilo_ui_base::clock::instant_of(jiff::civil::date(2026, 6, 30).at(10, 41, 20, 0))
         .expect("a local time");
     let wall_ms = u64::try_from(started.as_millisecond()).expect("after the epoch");
     let zero = ui::time::now();
     let shown = |app: &mut ui::App, t: u64| {
         let time = in_time(zero, wall_ms, t, || {
-            ui::clock::time_of_day(ui::clock::local_now())
+            tilo_ui_base::clock::time_of_day(tilo_ui_base::clock::local_now())
         });
         app.refresh_semantic_tree();
         app.semantic_tree()
@@ -2030,7 +2030,7 @@ fn the_on_screen_keyboard_suits_the_secret_and_types_into_the_passcode() {
         app.autofocus_first = true;
         app.autofocus_on_structure_change = true;
         let heard = Heard::default();
-        app.set_screen_reader(Some(ui::screen_reader::ScreenReader::with_speaker(
+        app.set_screen_reader(Some(tilo_ui_base::screen_reader::ScreenReader::with_speaker(
             Box::new(heard.clone()),
         )));
         let touchscreen = Touchscreen::default();
@@ -2039,7 +2039,7 @@ fn the_on_screen_keyboard_suits_the_secret_and_types_into_the_passcode() {
         let anywhere = vello::kurbo::Point::new(640.0, 120.0);
 
         for (index, digit) in ["2", "5", "8", "0"].into_iter().enumerate() {
-            let key = semantic_centre(&mut app, ui::a11y::Role::Button, digit);
+            let key = semantic_centre(&mut app, tilo_ui_base::a11y::Role::Button, digit);
             let base = u64::try_from(index).unwrap().saturating_mul(2_000);
             let before = heard.spoken().len();
             // Rest a finger on the key: it is read, and nothing is typed.
@@ -2087,7 +2087,7 @@ fn the_on_screen_keyboard_suits_the_secret_and_types_into_the_passcode() {
         assert_eq!(*typed.lock_recover(), "2580");
 
         // The field is read as protected, with nothing of what it holds.
-        let field = semantic_centre(&mut app, ui::a11y::Role::TextInput, "PIN");
+        let field = semantic_centre(&mut app, tilo_ui_base::a11y::Role::TextInput, "PIN");
         touchscreen.finger(&mut app, zero, (4, Started), field, 10_000);
         app.tick_screen_reader(after(zero, 10_200));
         let said = heard.spoken();
@@ -2166,7 +2166,7 @@ impl tts::Speaker for Heard {
 /// login screen on it.
 #[derive(Default)]
 struct Touchscreen {
-    emulator: std::cell::RefCell<ui::TouchPointerEmulator>,
+    emulator: std::cell::RefCell<tilo_ui_base::TouchPointerEmulator>,
 }
 
 impl ui::app::AppSurface for Touchscreen {
@@ -2219,7 +2219,7 @@ fn after(zero: ui::time::Instant, t: u64) -> ui::time::Instant {
 }
 
 /// Where the screen reader finds the node called `name` with `role`.
-fn semantic_centre(app: &mut ui::App, role: ui::a11y::Role, name: &str) -> vello::kurbo::Point {
+fn semantic_centre(app: &mut ui::App, role: tilo_ui_base::a11y::Role, name: &str) -> vello::kurbo::Point {
     app.refresh_semantic_tree();
     app.semantic_tree()
         .iter()
@@ -2335,7 +2335,7 @@ fn a_second_factor_is_asked_and_answered_once() {
             .expect("the conversation asks for a second factor");
         screen.app.on_external_event(
             &update.encode(),
-            &mut ui::widget::Edits::lend(&mut screen.doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut screen.doc),
             &root,
         );
         if let AuthUpdate::Challenge(challenge) = update {
@@ -2432,7 +2432,7 @@ fn a_second_factor_is_asked_and_answered_once() {
     assert_eq!(update, AuthUpdate::Failed(Failure::Credentials));
     screen.app.on_external_event(
         &update.encode(),
-        &mut ui::widget::Edits::lend(&mut screen.doc),
+        &mut tilo_ui_base::widget::Edits::lend(&mut screen.doc),
         &root,
     );
     assert_eq!(screen.app.phase, AuthPhase::Idle);
@@ -2784,7 +2784,7 @@ fn a_boot_sign_in_shows_the_transition_and_falls_back_to_the_form() {
 
         screen.app.on_external_event(
             &AuthUpdate::Accepted.encode(),
-            &mut ui::widget::Edits::lend(&mut screen.doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut screen.doc),
             &root,
         );
         assert_eq!(screen.app.phase, AuthPhase::Starting);
@@ -2794,7 +2794,7 @@ fn a_boot_sign_in_shows_the_transition_and_falls_back_to_the_form() {
         let _ = Widget::take_focus_reset(&mut screen.app);
         screen.app.on_external_event(
             &AuthUpdate::Failed(Failure::Cancelled).encode(),
-            &mut ui::widget::Edits::lend(&mut screen.doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut screen.doc),
             &root,
         );
         assert_eq!(screen.app.phase, AuthPhase::Idle);
@@ -2816,7 +2816,7 @@ fn a_boot_sign_in_shows_the_transition_and_falls_back_to_the_form() {
         screen.app.begin_authenticating();
         screen.app.on_external_event(
             &AuthUpdate::Failed(Failure::Credentials).encode(),
-            &mut ui::widget::Edits::lend(&mut screen.doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut screen.doc),
             &root,
         );
         assert_eq!(screen.app.notice, Notice::Error("greeter-error-passcode"));
@@ -2831,7 +2831,7 @@ fn a_boot_sign_in_shows_the_transition_and_falls_back_to_the_form() {
         assert_eq!(screen.app.attempt_username(), "svc");
         screen.app.on_external_event(
             &AuthUpdate::Failed(Failure::NotPermitted).encode(),
-            &mut ui::widget::Edits::lend(&mut screen.doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut screen.doc),
             &root,
         );
         assert_eq!(screen.app.phase, AuthPhase::Idle);

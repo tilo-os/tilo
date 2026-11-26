@@ -5,11 +5,11 @@
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
 use ui::framework::{ResourceApp, ViewCx};
-use ui::i18n::EmbeddedCatalog;
+use tilo_ui_base::i18n::EmbeddedCatalog;
 #[cfg(feature = "samples")]
 use ui::tilo_resource::Invoke;
 use ui::tilo_resource::items::item_resource_id;
-use ui::widget::Element;
+use tilo_ui_base::widget::Element;
 
 use crate::app::RemoteApp;
 use crate::model::ConnectionId;
@@ -17,7 +17,7 @@ pub use crate::model::Remote;
 
 pub use ui::apps::REMOTE as REMOTE_APP_ID;
 
-ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
+tilo_ui_base::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
 pub fn connection_resource_id(id: ConnectionId) -> String {
     item_resource_id::<Remote>("connections", &Remote::item(id))

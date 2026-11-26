@@ -487,7 +487,7 @@ pub extern "C" fn tilo_dev_publish_root() -> i32 {
 
     struct ReloadedProbe;
 
-    impl crate::widget::Widget for ReloadedProbe {
+    impl tilo_ui_base::widget::Widget for ReloadedProbe {
         crate::testing::inert_widget_methods!(leaf_layout, name = "reloaded");
     }
 

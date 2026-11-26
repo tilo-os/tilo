@@ -25,7 +25,7 @@ use ui_core::native_media::{
     Command, Issue, PICTURES_LOST, PictureLayer, PictureSource, REPLY_LOST, Request, Shown,
     Snapshot, State, WATCH_LOST,
 };
-use ui_core::permissions::MemberId;
+use tilo_ui_base::permissions::MemberId;
 use ui_core::time::{Duration, Instant};
 
 /// What an instance knows of the system's calls, and what it asked of them.

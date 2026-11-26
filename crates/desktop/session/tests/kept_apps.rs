@@ -448,7 +448,7 @@ fn signal(pid: u32, signal: libc::c_int) {
 
 #[test]
 fn a_kept_app_stays_through_an_in_place_restart_in_its_tabs_and_a_logout_ends_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let titles = ["First", "Second", "Third"];
     let rig = Rig::new(&titles);
     let mut first = rig.desktop(false);
@@ -515,7 +515,7 @@ fn a_kept_app_stays_through_an_in_place_restart_in_its_tabs_and_a_logout_ends_it
 /// once: what it waits for is the layouts its own store holds, never the network.
 #[test]
 fn kept_windows_show_without_waiting_for_a_relay_that_never_answers() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let rig = Rig::new(&["Only"]).on_a_silent_relay();
     let mut first = rig.desktop(false);
     rig.launch(&first);
@@ -541,7 +541,7 @@ fn kept_windows_show_without_waiting_for_a_relay_that_never_answers() {
 /// — a GPU node a driver opened, a saved document — does not reach the app behind its keeper.
 #[test]
 fn a_launched_app_inherits_no_descriptor_it_was_not_handed() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
     // The desktop's own descriptor, left without close-on-exec as a driver's own is.
     let leaked = rig.app.join("the-desktops-own");
@@ -574,7 +574,7 @@ fn a_launched_app_inherits_no_descriptor_it_was_not_handed() {
 /// open, and the next key reaches it.
 #[test]
 fn a_kept_apps_closed_window_hands_the_keyboard_to_its_window_still_open() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let titles = ["Untitled", "Open"];
     let rig = Rig::new(&titles);
     let mut pass = rig.desktop(false);
@@ -615,7 +615,7 @@ fn a_kept_apps_closed_window_hands_the_keyboard_to_its_window_still_open() {
 /// its window was in, and nothing else opens.
 #[test]
 fn an_app_whose_keeper_stops_says_so_in_its_own_tab() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
     let mut pass = rig.desktop(false);
     rig.launch(&pass);
@@ -657,7 +657,7 @@ fn an_app_whose_keeper_stops_says_so_in_its_own_tab() {
 /// opens.
 #[test]
 fn a_keeper_killed_while_no_desktop_was_there_says_the_app_stopped_in_its_tab() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
     let mut first = rig.desktop(false);
     rig.launch(&first);
@@ -699,7 +699,7 @@ fn a_keeper_killed_while_no_desktop_was_there_says_the_app_stopped_in_its_tab() 
 /// handed over for exactly that launch.
 #[test]
 fn a_kept_window_whose_id_differs_from_its_launch_takes_the_launchs_tab() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let rig = Rig::launched_by(&["Only"], false, "org.example.Launched");
     let mut pass = rig.desktop(false);
     // As a press on the app's tile does: the shell holds the tab the window takes.
@@ -735,7 +735,7 @@ fn a_kept_window_whose_id_differs_from_its_launch_takes_the_launchs_tab() {
 
 #[test]
 fn the_launcher_takes_the_command_line_the_session_starts_an_app_with() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
     let mut first = rig.desktop(false);
     rig.launch(&first);
@@ -766,7 +766,7 @@ fn the_launcher_takes_the_command_line_the_session_starts_an_app_with() {
 
 #[test]
 fn a_start_that_follows_no_restart_ends_what_a_restart_left() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
     let mut first = rig.desktop(false);
     rig.launch(&first);
@@ -782,7 +782,7 @@ fn a_start_that_follows_no_restart_ends_what_a_restart_left() {
 
 #[test]
 fn a_window_the_app_closed_while_no_desktop_was_there_closes_its_tab() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let titles = ["Stays", "Closes"];
     let rig = Rig::new(&titles);
     let mut first = rig.desktop(false);
@@ -835,7 +835,7 @@ fn ended_while_away(rig: &Rig) -> TabId {
 
 #[test]
 fn an_app_that_ended_while_no_desktop_was_there_says_it_stopped_in_its_tab() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
     let tab = ended_while_away(&rig);
     let [pid] = rig.starts()[..] else {
@@ -869,7 +869,7 @@ fn an_app_that_ended_while_no_desktop_was_there_says_it_stopped_in_its_tab() {
 /// opens the app in it again, once, as a start after a reboot does, and the notice is gone.
 #[test]
 fn the_tab_of_an_app_that_ended_while_away_opens_it_again_at_the_next_login() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
     let tab = ended_while_away(&rig);
     let mut second = rig.desktop(true);
@@ -899,7 +899,7 @@ fn the_tab_of_an_app_that_ended_while_away_opens_it_again_at_the_next_login() {
 
 #[test]
 fn a_start_after_a_reboot_opens_the_tab_of_an_app_that_ended_again() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
     let tab = ended_while_away(&rig);
 
@@ -917,7 +917,7 @@ fn a_start_after_a_reboot_opens_the_tab_of_an_app_that_ended_again() {
 /// load, and a delay in scheduling a healthy keeper must not cost the person what the app holds.
 #[test]
 fn a_restart_keeps_an_app_whose_keeper_is_slow() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
     let mut first = rig.desktop(false);
     rig.launch(&first);
@@ -949,7 +949,7 @@ fn a_restart_keeps_an_app_whose_keeper_is_slow() {
 /// keeper that ended does.
 #[test]
 fn a_restart_ends_an_app_whose_keepers_socket_refuses() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
     let mut first = rig.desktop(false);
     rig.launch(&first);
@@ -974,7 +974,7 @@ fn a_restart_ends_an_app_whose_keepers_socket_refuses() {
 /// desktop could take it back.
 #[test]
 fn a_restart_ends_an_app_whose_keeper_is_gone() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
     let mut first = rig.desktop(false);
     rig.launch(&first);
@@ -996,7 +996,7 @@ fn a_restart_ends_an_app_whose_keeper_is_gone() {
 
 #[test]
 fn an_app_from_before_an_update_says_so_in_its_tab_and_restart_opens_it_again() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
     let mut first = rig.desktop(false);
     rig.launch(&first);
@@ -1037,7 +1037,7 @@ fn an_app_from_before_an_update_says_so_in_its_tab_and_restart_opens_it_again() 
 
 #[test]
 fn a_logout_ends_an_app_from_before_an_update() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
     let mut first = rig.desktop(false);
     rig.launch(&first);
@@ -1058,7 +1058,7 @@ fn a_logout_ends_an_app_from_before_an_update() {
 
 #[test]
 fn an_app_from_before_an_update_that_left_no_tab_says_so_in_a_tab_of_its_own() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
     let mut first = rig.desktop(false);
     rig.launch(&first);
@@ -1103,7 +1103,7 @@ fn an_app_from_before_an_update_that_left_no_tab_says_so_in_a_tab_of_its_own() {
 #[test]
 fn a_kept_launchs_own_x11_display_is_served_to_the_input_method() {
     tilo_test_env::require_capability!(XServer, x_servers(), "the keeper's X server");
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let rig = Rig::keeping_x11(&["Only"]);
     let merged = || {
         rig.home
@@ -1188,7 +1188,7 @@ fn named_display(rig: &Rig, pass: &mut Pass, which: &str) -> PathBuf {
 #[test]
 fn a_kept_launchs_x11_display_leaves_nothing_in_tmp_however_its_keeper_ends() {
     tilo_test_env::require_capability!(XServer, x_servers(), "the keeper's X11 display");
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let rig = Rig::keeping_x11(&["Only"]);
     let mut pass = rig.desktop(false);
 
@@ -1246,7 +1246,7 @@ fn a_kept_launchs_x11_display_leaves_nothing_in_tmp_however_its_keeper_ends() {
 #[test]
 fn a_kept_x_programs_server_ending_closes_its_windows_and_the_session_goes_on() {
     tilo_test_env::require_capability!(XServer, x_servers(), "the keeper's X server");
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let rig = Rig::keeping_x11(&["Only"]);
     let mut first = rig.desktop(false);
     rig.launch(&first);
@@ -1440,7 +1440,7 @@ fn start_service_keeper(rig: &Rig) -> std::process::Child {
 
 #[test]
 fn a_services_window_takes_the_keyboard_on_a_click_and_hears_the_keys() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let rig = Rig::new(&["Guest"]);
     let mut desktop = rig.desktop(false);
     let mut keeper = start_service_keeper(&rig);

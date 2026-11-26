@@ -5,9 +5,9 @@ use std::sync::OnceLock;
 
 /// The generic names a text's `font` may use, and the family each is.
 pub const GENERIC: [(&str, &str); 3] = [
-    ("sans", tilo_ui::UI_SANS_FAMILY),
-    ("serif", tilo_ui::UI_SERIF_FAMILY),
-    ("mono", tilo_ui::UI_MONOSPACE_FAMILY),
+    ("sans", tilo_ui_base::UI_SANS_FAMILY),
+    ("serif", tilo_ui_base::UI_SERIF_FAMILY),
+    ("mono", tilo_ui_base::UI_MONOSPACE_FAMILY),
 ];
 
 /// The families Tilo ships, in catalog order, each generic family under
@@ -16,7 +16,7 @@ pub const GENERIC: [(&str, &str); 3] = [
 pub fn families() -> &'static [String] {
     static FAMILIES: OnceLock<Vec<String>> = OnceLock::new();
     FAMILIES.get_or_init(|| {
-        let mut families = tilo_ui::font_catalog::shipped_families();
+        let mut families = tilo_ui_base::font_catalog::shipped_families();
         for (_, family) in GENERIC.iter().rev() {
             if !families.iter().any(|known| known == family) {
                 families.insert(0, (*family).to_owned());

@@ -128,7 +128,7 @@ fn note(
     let message = RemoteActionMessage::Invoke(request);
     if send(CollabRequest::RemoteAction {
         message,
-        press: ui_core::press::current(),
+        press: tilo_ui_base::press::current(),
     }) {
         true
     } else {
@@ -209,7 +209,7 @@ impl PagePrompts {
         let message = RemoteActionMessage::Invoke(request);
         if send(CollabRequest::RemoteAction {
             message,
-            press: ui_core::press::current(),
+            press: tilo_ui_base::press::current(),
         }) {
             self.raised.insert(key, Raised { invocation, no });
         } else {
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn a_camera_request_is_the_apps_call_naming_the_site() {
         // The person's press in the window, which the page's call names.
-        ui_core::press::note(7);
+        tilo_ui_base::press::note(7);
         let mut prompts = PagePrompts::default();
         let sent = raise(&mut prompts, &camera());
         assert!(raise(&mut prompts, &camera()).is_empty(), "raised once");

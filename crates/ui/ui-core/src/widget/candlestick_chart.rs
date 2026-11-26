@@ -10,9 +10,9 @@ use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
 use crate::color_compat::ColorCompat;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::chart_navigation::draw_title;
 use crate::widget::chart_readout::{Highlight, Readout};
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks, ValueAxis};
@@ -446,7 +446,7 @@ impl PlotMarks for CandlestickMarks {
                         x - f64::from(width) / 2.0,
                         self.frame.inside().y1 + crate::widget::plot::step(theme),
                     )),
-                Some(crate::num::f32_of_f64(self.slot_width().max(0.0))),
+                Some(tilo_ui_base::num::f32_of_f64(self.slot_width().max(0.0))),
                 &theme.text(TextRole::Caption),
             );
         }

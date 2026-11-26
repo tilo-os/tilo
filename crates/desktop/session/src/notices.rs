@@ -17,7 +17,7 @@ use settings_store::system_sounds::SystemSoundEvent;
 use tilo_files::native::ChangeWatch;
 use tilo_notifications_service::Notifications;
 use tilo_system_service::update;
-use ui::format::Date;
+use tilo_ui_base::format::Date;
 
 use crate::drives::Medium;
 use crate::i18n::{t, t_args};
@@ -95,7 +95,7 @@ pub fn storage_notice(
     if after <= before {
         return None;
     }
-    let free = ui::format::size(space.available);
+    let free = tilo_ui_base::format::size(space.available);
     let volume = match volume {
         Volume::Home => t("storage-volume-home"),
         Volume::System => t("storage-volume-system"),
@@ -149,7 +149,7 @@ pub fn medium_notice(medium: &Medium) -> Notice {
         "drives-medium-title",
         &[
             ("name", name.into()),
-            ("size", ui::format::size(medium.size).into()),
+            ("size", tilo_ui_base::format::size(medium.size).into()),
         ],
     );
     Notice::new(t("drives-app-name"), 1, title, t("drives-body")).choosing(vec![
@@ -392,9 +392,9 @@ pub fn codec_notice(
 #[must_use]
 pub fn news_notice(news: &tilo_crash_reports::News, today: Date) -> Notice {
     let time = if news.at.date() == today {
-        ui::format::time_of(&news.at)
+        tilo_ui_base::format::time_of(&news.at)
     } else {
-        ui::format::timestamp(&news.at)
+        tilo_ui_base::format::timestamp(&news.at)
     };
     let (urgency, title, body) = match news.ended {
         tilo_crash_reports::Ended::Froze => (
@@ -432,12 +432,12 @@ fn graphics_notice() -> Notice {
 static GRAPHICS_TOLD: AtomicBool = AtomicBool::new(false);
 
 /// Tell the person, once, that the graphics stopped and everything keeps working, only slower: each
-/// pass reads one record (`ui::gpu::recover`) and says nothing until it is set.
+/// pass reads one record (`tilo_ui_base::gpu::recover`) and says nothing until it is set.
 pub fn tell_graphics_fallback(notifications: &Notifications) {
     if TELLING.get().is_none() || GRAPHICS_TOLD.load(Ordering::Relaxed) {
         return;
     }
-    if ui::gpu::software_fallback().is_none() {
+    if tilo_ui_base::gpu::software_fallback().is_none() {
         return;
     }
     GRAPHICS_TOLD.store(true, Ordering::Relaxed);
@@ -671,7 +671,7 @@ pub fn tell_crash_news(notifications: &Notifications, dir: &Path) {
     let Some(news) = tilo_crash_reports::take_news(dir) else {
         return;
     };
-    let today = ui::clock::local_now().date();
+    let today = tilo_ui_base::clock::local_now().date();
     tell_daemon(&news_notice(&news, today), notifications);
 }
 
@@ -1081,9 +1081,9 @@ mod tests {
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].summary, "The desktop restarted");
         let at =
-            ui::format::DateTime::strptime("%Y-%m-%d %H:%M:%S", "2026-10-24 22:52:01").unwrap();
+            tilo_ui_base::format::DateTime::strptime("%Y-%m-%d %H:%M:%S", "2026-10-24 22:52:01").unwrap();
         assert!(
-            live[0].body.contains(&ui::format::timestamp(&at)),
+            live[0].body.contains(&tilo_ui_base::format::timestamp(&at)),
             "{}",
             live[0].body
         );
@@ -1102,7 +1102,7 @@ mod tests {
         // The notice sources speak only in the session that owns the machine (`start`); a test
         // tells as that session does.
         TELLING.get_or_init(|| ());
-        ui::gpu::reset_software_fallback_for_test();
+        tilo_ui_base::gpu::reset_software_fallback_for_test();
         let notifications = Notifications::new();
 
         // While the GPU draws the frames there is nothing to say.
@@ -1128,8 +1128,8 @@ mod tests {
             transient_saves_memory: false,
         };
         assert_eq!(
-            ui::gpu::recover(&adapter, false, "Device is lost"),
-            ui::gpu::Recovery::Software,
+            tilo_ui_base::gpu::recover(&adapter, false, "Device is lost"),
+            tilo_ui_base::gpu::Recovery::Software,
             "a device lost before its first frame is on a GPU that cannot come back"
         );
 
@@ -1158,7 +1158,7 @@ mod tests {
             .expect("the person closes it");
         assert!(notifications.live().is_empty());
 
-        ui::gpu::reset_software_fallback_for_test();
+        tilo_ui_base::gpu::reset_software_fallback_for_test();
     }
 
     tilo_test_env::scenario! {
@@ -1168,7 +1168,7 @@ mod tests {
         {
             let news = tilo_crash_reports::News {
                 ended: tilo_crash_reports::Ended::Stopped,
-                at: ui::format::DateTime::strptime("%Y-%m-%d %H:%M:%S", "2026-10-24 22:52:01")
+                at: tilo_ui_base::format::DateTime::strptime("%Y-%m-%d %H:%M:%S", "2026-10-24 22:52:01")
                 .unwrap(),
             };
             let notice = news_notice(&news, news.at.date().tomorrow().unwrap());
@@ -1319,9 +1319,9 @@ mod tests {
             for mismatch in [&newer, &older] {
                 for device in [Some("Framework 16"), None] {
                     let notice = version_mismatch_notice(mismatch, device);
-                    let mut text = ui::text_render::TextRenderer::new();
-                    let theme = ui::theme::Theme::dark();
-                    let words = |text: &mut ui::text_render::TextRenderer, width| {
+                    let mut text = tilo_ui_base::text_render::TextRenderer::new();
+                    let theme = tilo_ui_base::theme::Theme::dark();
+                    let words = |text: &mut tilo_ui_base::text_render::TextRenderer, width| {
                         ui::widget::toast::painted_words(
                             text,
                             &theme,
@@ -1358,9 +1358,9 @@ mod tests {
         };
         let words = || [Some("Research"), Some(""), Some("  "), None].map(title);
         let english = words();
-        ui::i18n::I18nManager::set_locale("de-DE");
+        tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
         let german = words();
-        ui::i18n::I18nManager::set_locale("en-US");
+        tilo_ui_base::i18n::I18nManager::set_locale("en-US");
         assert_eq!(
             english,
             [

@@ -16,8 +16,8 @@ tilo_test_env::scenario! {
     // beside that name.
     {
         use crate::window_toolbar::{ToolbarLocation, WindowToolbar};
-        let _settled = crate::motion::testing::settled();
-        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
         for width in [1280.0, 390.0] {
             let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Notes")], 1);
             b.set_window_controls(true);
@@ -45,8 +45,8 @@ tilo_test_env::scenario! {
     // app's Back and Forward, and the name the window goes by stand in that order, none painted
     // over another, and all of them inside the bar.
     {
-        let _settled = crate::motion::testing::settled();
-        let theme = crate::theme::Theme::light().with_reduce_motion(true);
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let theme = tilo_ui_base::theme::Theme::light().with_reduce_motion(true);
         let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Notes")], 1);
         b.set_window_controls(true);
         b.set_toolbar(1, Some(browser_parts()));
@@ -92,14 +92,14 @@ tilo_test_env::scenario! {
     // and the strip's "+" in the same row): every tab stays a tab a person can read and press, the
     // active one keeps its ×, and the window keeps its maximize and close.
     {
-        let _settled = crate::motion::testing::settled();
-        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
         for width in [326.0, 400.0, 636.0] {
             let mut b = TabBar::new(
                 "g1",
                 [
                     (1, "Projects", AppKind::Editor),
-                    (2, "Sheets", AppKind::App(crate::icons::Icon::Table)),
+                    (2, "Sheets", AppKind::App(tilo_ui_base::icons::Icon::Table)),
                     (3, "Files", AppKind::Files),
                 ]
                 .into_iter()

@@ -3,12 +3,13 @@
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::component::{Component, Described, Event, Value};
+use tilo_ui_base::{component::Component, component::Described, component::Event, component::Value};
 use crate::pictures::{Pictures, Shown};
-use crate::widget::{ImageCropEditor, TaffyTreeExt, Widget};
+use crate::widget::ImageCropEditor;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 use super::CropSelection;
-use crate::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 use crate::widget::PictureSource;
 
 /// A picture with a crop its four corners set (a scanned page, a photo to trim): drag a
@@ -92,7 +93,7 @@ impl CropEditor {
             return;
         };
         let rgba: std::sync::Arc<[u8]> = std::sync::Arc::from(image.data.data().to_vec());
-        let selection = crate::LocalState::new(self.selection);
+        let selection = tilo_ui_base::LocalState::new(self.selection);
         self.editor = Some(ImageCropEditor::new(
             rgba,
             image.width,
@@ -129,7 +130,7 @@ impl Widget for CropEditor {
         Some(self)
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
         self.take_picture();
         if let Some(editor) = &mut self.editor {
             editor.sync(state, path);
@@ -137,7 +138,7 @@ impl Widget for CropEditor {
         self.report_crop();
     }
 
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
         let arrived = self.shown.waiting();
         self.take_picture();
         if let Some(editor) = &mut self.editor {
@@ -159,7 +160,7 @@ impl Widget for CropEditor {
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
-        theme: &crate::theme::Theme,
+        theme: &tilo_ui_base::theme::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         // One leaf of its own: the editor paints into the rect it is given, so it never takes
@@ -174,7 +175,7 @@ impl Widget for CropEditor {
                 },
                 // A box with no shape still stands at 4:3, so a leaf that is not yet sized
                 // does not collapse to nothing.
-                aspect_ratio: Some(crate::num::f32_of_f64(self.aspect.unwrap_or(4.0 / 3.0))),
+                aspect_ratio: Some(tilo_ui_base::num::f32_of_f64(self.aspect.unwrap_or(4.0 / 3.0))),
                 flex_shrink: 0.0,
                 ..taffy::Style::default()
             },
@@ -184,13 +185,13 @@ impl Widget for CropEditor {
     }
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if let Some(editor) = &mut self.editor {
             editor.apply_layout(taffy, node, origin);
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -202,7 +203,7 @@ impl Widget for CropEditor {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let Some(editor) = &mut self.editor {
             editor.handle_event(event, ctx);
         }
@@ -216,7 +217,7 @@ impl Widget for CropEditor {
         "ImageCropEditor"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.editor.as_ref().and_then(Widget::accessibility)
     }
 }

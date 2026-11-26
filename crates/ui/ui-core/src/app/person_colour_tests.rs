@@ -4,9 +4,9 @@
 
 use super::*;
 
-use crate::permissions::MemberId;
-use crate::presence::identity_rgb;
-use crate::tokens::PresenceHue;
+use tilo_ui_base::permissions::MemberId;
+use tilo_ui_base::presence::identity_rgb;
+use tilo_ui_base::tokens::PresenceHue;
 
 /// Settings holding exactly `document`, for this test's thread.
 fn settings(document: serde_json::Value) -> settings_store::SourceScope {
@@ -39,7 +39,7 @@ tilo_test_env::scenario! {
             identity_rgb(PresenceHue::Violet)
         );
         assert_eq!(
-            crate::local_identity::own_colour(),
+            tilo_ui_base::local_identity::own_colour(),
             Some(PresenceHue::Violet),
             "the windows' accent is the one colour as well"
         );
@@ -56,7 +56,7 @@ tilo_test_env::scenario! {
             app.presence_ctx.hue_for(&me),
             PresenceHue::of_identity(me.id())
         );
-        assert_eq!(crate::local_identity::own_colour(), None);
+        assert_eq!(tilo_ui_base::local_identity::own_colour(), None);
     }
 
     phase an_app_paints_a_person_in_the_colour_the_member_list_announces;
@@ -69,13 +69,13 @@ tilo_test_env::scenario! {
             &collab_types::Person::new("bo", "Bo").wearing(PresenceHue::Teal),
             None,
         )]);
-        assert_eq!(app.presence_ctx.hue_for(&crate::permissions::MemberId::person("bo")), PresenceHue::Teal);
+        assert_eq!(app.presence_ctx.hue_for(&tilo_ui_base::permissions::MemberId::person("bo")), PresenceHue::Teal);
         assert_eq!(
             app.presence_ctx.color_for(&MemberId::person("bo")),
             identity_rgb(PresenceHue::Teal)
         );
         assert_eq!(
-            app.presence_ctx.hue_for(&crate::permissions::MemberId::person("ada")),
+            app.presence_ctx.hue_for(&tilo_ui_base::permissions::MemberId::person("ada")),
             PresenceHue::of_identity("ada"),
             "someone the list names no colour for keeps their identity's"
         );

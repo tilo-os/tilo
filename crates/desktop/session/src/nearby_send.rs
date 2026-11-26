@@ -706,7 +706,7 @@ fn air_drops(
         }),
         permitted: Box::new(move || permitting.file_transfer_permitted()),
         changed: Box::new(move || changing()),
-        language: Box::new(|| Some(ui::i18n::window_language(&["en-US", "de-DE"]))),
+        language: Box::new(|| Some(tilo_ui_base::i18n::window_language(&["en-US", "de-DE"]))),
         helper_timeout: HELPER_TIMEOUT,
     }))
 }

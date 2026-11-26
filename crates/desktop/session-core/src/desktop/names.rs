@@ -55,10 +55,10 @@ mod tests {
     #[test]
     fn a_german_shell_names_what_nobody_named_in_german() {
         crate::desktop::i18n::ensure();
-        ui::i18n::I18nManager::set_locale("de-DE");
+        tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
         assert_eq!(workspace(""), "Arbeitsbereich");
         assert_eq!(strip_named("", 0), "Leiste 1");
         assert_eq!(workspace("Forschung"), "Forschung");
-        ui::i18n::I18nManager::set_locale("en-US");
+        tilo_ui_base::i18n::I18nManager::set_locale("en-US");
     }
 }

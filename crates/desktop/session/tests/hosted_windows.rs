@@ -210,7 +210,7 @@ fn host_frames(
 /// an agent and a test press a tilolang window's bar by.
 #[test]
 fn a_hosted_windows_control_pressed_by_what_it_does_reaches_the_app() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_windowed(&mut home);
     let handed = home.home().join("started");
@@ -313,7 +313,7 @@ fn a_hosted_windows_control_pressed_by_what_it_does_reaches_the_app() {
 fn a_hosted_windows_tree_reaches_the_export_and_a_clients_action_reaches_the_app() {
     use ui::accesskit::{Action, ActionRequest, Node, NodeId, Role, TreeId, TreeInfo, TreeUpdate};
 
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_windowed(&mut home);
     let handed = home.home().join("started");
@@ -408,7 +408,7 @@ fn a_hosted_windows_tree_reaches_the_export_and_a_clients_action_reaches_the_app
 
     // A client activates the button through the export: the window that drew it hears the action.
     assert!(
-        session.a11y_perform(place, NodeId(1), &ui::a11y::Action::Activate),
+        session.a11y_perform(place, NodeId(1), &tilo_ui_base::a11y::Action::Activate),
         "the export takes the activation"
     );
     let asked = ActionRequest {
@@ -444,7 +444,7 @@ fn an_app_drawn_route_card_stands_where_the_shells_card_holds_it() {
     use ui::live_activity::{Control, ControlKind, Kind, Published, Summary};
     use ui::vello::kurbo::{Rect, Size};
 
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_windowed(&mut home);
     let handed = home.home().join("started");
@@ -693,7 +693,7 @@ fn a_presented_picture_in_picture_stands_follows_and_returns() {
     use ui::floating_surface::{FloatingRole, FloatingSource, FloatingSurfaceRequest};
     use ui::vello::kurbo::{Rect, Size};
 
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_windowed(&mut home);
     let handed = home.home().join("started");
@@ -886,7 +886,7 @@ fn a_picture_of_another_apps_window_is_refused() {
     use ui::floating_surface::{FloatingRole, FloatingSource, FloatingSurfaceRequest};
     use ui::vello::kurbo::Size;
 
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_windowed(&mut home);
     let handed = home.home().join("started");
@@ -993,7 +993,7 @@ fn invoke(session: &mut Session, resource: &str, action: &str, arguments: serde_
 /// stood in: that window, though another window of the same app closed after it.
 #[test]
 fn a_window_whose_app_ended_reopens_on_its_record_in_its_place() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_windowed(&mut home);
     let handed = home.home().join("handed");

@@ -41,7 +41,7 @@ fn colours(frame: &tilo_compositor::Screenshot) -> std::collections::BTreeSet<[u
 /// lock screen.
 #[test]
 fn a_capture_of_the_lock_screen_withholds_the_password_field() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = super::lock::private_home();
     let mut session = super::lock::lockable_session(
         &home.path().join("collab.sock"),
@@ -153,7 +153,7 @@ fn answer(
 fn an_app_that_shows_a_secret_has_its_window_withheld_in_copies() {
     use ui::floating_surface::{FLOATING_SURFACE_PROTOCOL_VERSION, FloatingSurfaceClientMessage};
 
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let launches = Arc::new(tilo_session::Launches::default());
     let mut session = crate::common::headless(Options {
         collab: false,

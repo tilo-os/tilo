@@ -305,7 +305,7 @@ pub(crate) struct Shared {
     #[cfg(target_os = "linux")]
     pub(crate) wallpapers: std::sync::Arc<crate::wallpapers::Wallpapers>,
     /// The picture the workspace in front shows, as the views' host draws it under everything.
-    pub(crate) wallpaper: ui::part_paint::wallpaper::Source,
+    pub(crate) wallpaper: tilo_ui_base::part_paint::wallpaper::Source,
     /// The keyboard layouts the person switches between, and which one is
     /// in use, as the lock screen shows them.
     pub(crate) lock_layouts: Vec<String>,
@@ -439,7 +439,7 @@ pub(crate) struct Shared {
     pub(crate) invitable: Rc<Cell<bool>>,
     /// The controller the person last drove the desktop with: the guide
     /// leads with its buttons until a key of their own is pressed.
-    pub(crate) controller: Rc<Cell<Option<ui::ControllerFamily>>>,
+    pub(crate) controller: Rc<Cell<Option<tilo_ui_base::ControllerFamily>>>,
     /// Whether the keys being routed now are a controller's own,
     /// for its presses: those say nothing about a keyboard.
     pub(crate) controller_keys: Rc<Cell<bool>>,

@@ -7,10 +7,10 @@ use automerge::AutoCommit;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
-use crate::richtext::RichSpan;
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::text_selection::TextPosition;
-use crate::theme::Theme;
+use tilo_ui_base::richtext::RichSpan;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::text_selection::TextPosition;
+use tilo_ui_base::theme::Theme;
 use crate::time::Instant;
 
 use super::TextInput;
@@ -28,7 +28,7 @@ pub trait DocumentLine {
     fn set_compact_multiline(&mut self, compact: bool);
     /// Narrow the rows beside a floating picture: a row whose top stands in a band wraps to the
     /// width that band leaves and starts where its left inset puts it.
-    fn set_row_bands(&mut self, bands: crate::text_render::RowBands);
+    fn set_row_bands(&mut self, bands: tilo_ui_base::text_render::RowBands);
     /// The inset above the line's first row, inside its rect.
     fn text_top_inset(&self) -> f64;
     /// The text size the line's role gives it, before the person's text scale.
@@ -109,7 +109,7 @@ impl DocumentLine for TextInput {
         TextInput::set_compact_multiline(self, compact);
     }
 
-    fn set_row_bands(&mut self, bands: crate::text_render::RowBands) {
+    fn set_row_bands(&mut self, bands: tilo_ui_base::text_render::RowBands) {
         TextInput::set_row_bands(self, bands);
     }
 

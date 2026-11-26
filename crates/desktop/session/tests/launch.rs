@@ -173,7 +173,7 @@ fn choose(session: &mut Session, query: &str, title: &str) {
 
 #[test]
 fn choosing_a_host_app_starts_it_through_the_launcher_on_the_sessions_display() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let socket = home.runtime().join("wayland-7");
     let records = home.home().join("records");
@@ -201,7 +201,7 @@ fn choosing_a_host_app_starts_it_through_the_launcher_on_the_sessions_display() 
 
 #[test]
 fn a_document_opens_in_the_app_that_claims_its_type() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let records = home.home().join("records");
     host_app_claiming(
@@ -220,7 +220,7 @@ fn a_document_opens_in_the_app_that_claims_its_type() {
     // path the app opens is not.
     let uri = format!(
         "file://{}",
-        ui::uri::encode_component(document.to_str().unwrap())
+        tilo_ui_base::uri::encode_component(document.to_str().unwrap())
     );
     apps.open_uri("", &uri).expect("the document opens");
     until(&mut session, "the launcher starts", |_| records.exists());
@@ -241,7 +241,7 @@ fn a_document_opens_in_the_app_that_claims_its_type() {
 
 #[test]
 fn an_app_that_stops_on_its_own_leaves_a_notice_in_its_place() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     host_app(&home, "org.example.Probe.desktop", "#!/bin/sh\nexit 3\n");
     // The launcher is the app's process: it ends with it.
@@ -300,7 +300,7 @@ fn window_of(id: u64, app: &str, pid: u32) -> Window {
 
 #[test]
 fn a_window_a_launchs_own_process_maps_says_the_launch_opened() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, _launches, _launcher) = probe_session(&mut home, &started);
@@ -331,7 +331,7 @@ fn a_window_a_launchs_own_process_maps_says_the_launch_opened() {
 
 #[test]
 fn an_app_that_ends_before_its_window_could_open_says_why() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_probe_package(&mut home);
     // The app says why it cannot come and goes, before any window of it appears.
@@ -415,7 +415,7 @@ fn described(session: &Session) -> String {
 
 #[test]
 fn an_app_whose_window_came_and_then_ended_stopped_and_did_not_fail_to_open() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_probe_package(&mut home);
     let started = home.home().join("starts");
@@ -482,7 +482,7 @@ fn titled_window(id: u64, app: &str, title: &str) -> Window {
 
 #[test]
 fn a_second_launch_raises_the_window_the_app_already_has() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let records = home.home().join("records");
     host_app_declaring(
@@ -887,7 +887,7 @@ fn session_through(
 fn a_windows_app_describes_the_controls_of_its_content_and_hears_the_press() {
     use ui::window_targets::{TargetAction, WindowTarget};
 
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
@@ -977,7 +977,7 @@ fn a_windows_app_describes_the_controls_of_its_content_and_hears_the_press() {
 fn a_window_whose_held_tab_left_still_describes_its_controls() {
     use ui::window_targets::{TargetAction, WindowTarget};
 
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, _apps, launches, _launcher) = probe_session(&mut home, &started);
@@ -1097,7 +1097,7 @@ fn unanswered(frames: &[FloatingSurfaceHostMessage], name: &str) -> bool {
 fn a_windows_action_markers_are_read_without_the_host_refusing_them() {
     use ui::PaintedActionMarker;
 
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
@@ -1242,7 +1242,7 @@ fn unanswerable() -> Vec<(&'static str, FloatingSurfaceClientMessage)> {
 /// app as the app sent it, in the order the app sent them.
 #[test]
 fn a_message_the_session_cannot_answer_is_said_so() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
@@ -1315,7 +1315,7 @@ fn front_workspace(session: &Session) -> (String, Option<String>) {
 /// says the person may make a note in the workspace nobody else has joined.
 #[test]
 fn the_person_who_made_a_workspace_may_add_a_note_in_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let (_identity, person) = this_computer(&mut home);
     let started = home.home().join("started");
@@ -1393,7 +1393,7 @@ fn the_person_who_made_a_workspace_may_add_a_note_in_it() {
 /// again for a second one.
 #[test]
 fn an_app_opened_in_a_joined_workspace_opens_there() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let (_identity, _person) = this_computer(&mut home);
     let started = home.home().join("started");
@@ -1487,7 +1487,7 @@ fn open_from_the_shell(session: &Session, app: &str) {
 /// grants, never in the one the shell stands in by then.
 #[test]
 fn an_app_runs_in_the_workspace_the_shell_made_its_tab_in() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let (_identity, _person) = this_computer(&mut home);
     let started = home.home().join("started");
@@ -1701,7 +1701,7 @@ fn ask(
 
 #[test]
 fn a_window_the_app_asks_for_opens_beside_its_own_tab() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
@@ -1756,7 +1756,7 @@ fn tell(connection: &mut UnixStream, message: &FloatingSurfaceClientMessage) {
 fn a_sideways_wheel_the_app_leaves_pans_the_strip_its_window_stands_in() {
     use ui::window_targets::{TargetAction, WindowTarget};
 
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
@@ -1860,7 +1860,7 @@ fn a_sideways_wheel_the_app_leaves_pans_the_strip_its_window_stands_in() {
 
 #[test]
 fn an_address_the_app_does_not_claim_opens_no_tab() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
@@ -1949,7 +1949,7 @@ fn capture_to(session: &mut Session, name: &str) {
 fn an_apps_own_slots_stand_in_its_windows_bar_in_a_running_session() {
     use ui::window_toolbar::{ToolbarAction, ToolbarLocation, WindowToolbar};
 
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
@@ -2033,7 +2033,7 @@ fn probe_declares_ush(home: &tilo_test_env::TestHome) {
 /// the target stays closed, and why.
 #[test]
 fn only_an_app_handed_the_device_shell_asks_for_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let bus = tilo_test_env::PrivateBus::start();
@@ -2055,7 +2055,7 @@ fn only_an_app_handed_the_device_shell_asks_for_it() {
 /// records, and the app hears on the connection it asked on that the target is open.
 #[test]
 fn the_answer_to_the_device_shell_question_reaches_the_app() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let bus = tilo_test_env::PrivateBus::start();
@@ -2133,7 +2133,7 @@ const X11_CLASS: &str = "tilo.test.class";
 /// while it shows another window, rather than raising that one and leaving the tab empty.
 #[test]
 fn reopening_a_closed_window_starts_its_app_again() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let records = home.home().join("records");
     host_app_declaring(
@@ -2203,7 +2203,7 @@ fn reopening_a_closed_window_starts_its_app_again() {
 
 #[test]
 fn an_app_closes_only_its_own_tab() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
@@ -2275,7 +2275,7 @@ fn an_app_closes_only_its_own_tab() {
 
 #[test]
 fn a_session_dropped_while_its_app_runs_leaves_no_launcher_behind() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, _launches, launcher) = probe_session(&mut home, &started);
@@ -2350,7 +2350,7 @@ fn an_app_failing_after_its_window_closed_brings_nothing_back() {
 /// process end with `status`, and open it again: a new window. Then the explicit reopen puts the
 /// closed one back where it was.
 fn close_then_open_again(status: &str) {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let stops = home.home().join("stops");

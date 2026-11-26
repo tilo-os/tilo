@@ -1,10 +1,10 @@
-//! An opening window's content is an arrival ([`crate::arriving`]): a first frame from this device
+//! An opening window's content is an arrival ([`tilo_ui_base::arriving`]): a first frame from this device
 //! inside its frame budget shows with no placeholder on any frame; a later one, or one from another
 //! device, reserves the window's place, shows the skeleton after the grace period (for at least its
 //! minimum), says where it comes from, and cross-fades in without moving anything; a failure takes
 //! the same place; and a window waiting between two steps asks for no frames.
 use super::*;
-use crate::arriving::{GRACE, MIN_SHOWN, Source, Step, frame_budget};
+use tilo_ui_base::{arriving::GRACE, arriving::MIN_SHOWN, arriving::Source, arriving::Step, arriving::frame_budget};
 use crate::widget::{AppKind, TabDescriptor, TileContent};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -25,7 +25,7 @@ impl Widget for FirstFrame {
     ) -> NodeId {
         taffy.leaf_node(taffy::Style::default())
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -127,12 +127,12 @@ impl Opening {
                 .unwrap();
             self.group.apply_layout(&taffy, node, Point::ZERO);
             let mut scene = Scene::new();
-            self.group.draw(&mut crate::draw::DrawCtx::new(
+            self.group.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut TextRenderer::new(),
                 &theme,
-                crate::presence::PresenceCtx::empty().draw_env(),
+                tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
             ));
             self.group.mark_drawn();
             Shown {

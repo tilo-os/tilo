@@ -1,10 +1,10 @@
 //! The row's resolved metrics: every length and style a row lays its columns out by, read
 //! off one theme, so the retained row and the immediate face measure alike.
 
-use crate::chrome::row_bleed;
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::chrome::row_bleed;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 
 /// The resolved geometry of every row in `theme`: what the face paints and the retained row
 /// measures, from one place.
@@ -60,7 +60,7 @@ impl RowMetrics {
             dot: f64::from(spacing.s2),
             radius: f64::from(theme.tokens.radii.item),
             tag_gap: f64::from(spacing.s1),
-            nest: crate::chrome::disclosure_gutter(theme),
+            nest: tilo_ui_base::chrome::disclosure_gutter(theme),
         }
     }
 
@@ -95,7 +95,7 @@ impl RowMetrics {
         let mut m = Self::new(theme);
         let name = theme
             .text(TextRole::Label)
-            .with_weight(crate::text_render::TextWeight::Regular);
+            .with_weight(tilo_ui_base::text_render::TextWeight::Regular);
         m.title = name.clone();
         m.title_strong = name.clone().strong();
         m.subtitle = name;

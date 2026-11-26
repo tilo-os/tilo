@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::icons::Icon;
+use tilo_ui_base::icons::Icon;
 
 use super::Place;
 

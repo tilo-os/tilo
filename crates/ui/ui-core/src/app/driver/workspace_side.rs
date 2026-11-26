@@ -11,7 +11,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionOutput, Actor, ApiError};
 
 use super::Driver;
-use crate::collaboration::{CollabEvent, CollabRequest};
+use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest};
 use crate::shown_actions::{ActionDecision, ShownAction};
 
 /// One invocation of another provider's action ([`Driver::serve_provider`]).
@@ -88,7 +88,7 @@ impl Served {
     pub(super) fn owes_decision(&self) -> bool {
         self.shown
             .as_ref()
-            .is_some_and(|(_, _, decided)| *decided != Some(crate::permissions::shared_revision()))
+            .is_some_and(|(_, _, decided)| *decided != Some(tilo_ui_base::permissions::shared_revision()))
     }
 
     /// The verdicts a decision owed now gives.
@@ -102,7 +102,7 @@ impl Served {
 
     fn decide_shown(&mut self) -> Option<CollabEvent> {
         let (host, shown, decided) = self.shown.as_mut()?;
-        *decided = Some(crate::permissions::shared_revision());
+        *decided = Some(tilo_ui_base::permissions::shared_revision());
         if shown.is_empty() {
             return None;
         }

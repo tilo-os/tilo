@@ -295,7 +295,7 @@ pub mod prelude {
         Effect, Id, Invoke, MemberId, Model, Outbox, Params, Path, PlainText, Refusal, Replica,
         Resource, SearchEntry, Set, Settled, TextEdit, Undoing, resource,
     };
-    pub use ui_core::i18n::LabelKey;
+    pub use tilo_ui_base::i18n::LabelKey;
 
     pub use settings_model::{DeviceClass, Scope, SettingsSchema};
     pub use ui_core::application::{
@@ -304,8 +304,8 @@ pub mod prelude {
         PreparedComponentInputs, ProcessContext, ProcessContextInputs, RestoreInput,
     };
     pub use ui_core::application_view::{InstanceViewStore, SavedInstanceView};
-    pub use ui_core::arriving::{Arrival, Arriving};
-    pub use ui_core::collection_transition::ListModelChange;
+    pub use tilo_ui_base::{arriving::Arrival, arriving::Arriving};
+    pub use tilo_ui_base::collection_transition::ListModelChange;
     pub use ui_core::floating_surface::FloatingSurfaceProvider;
     pub use ui_core::launch::ComponentHostPreparer;
     pub use ui_core::resource::{
@@ -314,7 +314,7 @@ pub mod prelude {
     };
     pub use ui_core::tilo_actions;
     pub use ui_core::tilo_actions::{ActionError, ActionNeed, ActionRegistry, ExecutionLocus};
-    pub use ui_core::tokens::TextRole;
+    pub use tilo_ui_base::tokens::TextRole;
     pub use ui_core::vello::kurbo::{Point, Rect, Size};
     pub use ui_core::widget::data_table::{
         ColumnDef, ColumnWidth, DataTable, TableModel, TableModelChange,
@@ -322,18 +322,8 @@ pub mod prelude {
     pub use ui_core::widget::resource_actions;
     pub use ui_core::widget::resource_actions::{ActionForm, ActionValue};
     pub use ui_core::widget::virtual_list::{ListModel, VirtualList};
-    pub use ui_core::widget::{
-        ActionEmitter, AudiencePresentationProvider, Banner, Button, Card, Checkbox, Collaborative,
-        Column, CompleteContentProvider, Container, ContentKind, Continuable, ControlBindingKind,
-        ControlBindingMetadata, Dropdown, Element, EmptyState, EventCtx, FilterCount, Filterable,
-        Filtered, FindBar, FindMatch, FindOptions, FindScope, Findable, FullscreenProvider,
-        ModelView, NativeViewLifecycle, NavItem, NavList, NavMode, NavPane, NavSection, NavShell,
-        NumberInput, QrWidget, Row, Scrollable, SearchField, SearchResultsView, Slider, Spacer,
-        Spinner, Stack, Text, TextInput, Toggle, Widget, labeled_check, labeled_field,
-    };
-    pub use ui_core::{
-        LatestRequest, LatestTask, LocalState, PresenceCtx, SearchRegistry, State, TextRenderer,
-        Theme, UndoAccess, UndoRequest, UndoStatus, collaboration, column, history_source,
-        presence, row, search, stack,
-    };
+    pub use ui_core::{widget::Banner, widget::Button, widget::Card, widget::Checkbox, widget::Column, widget::Container, widget::Dropdown, widget::EmptyState, widget::FilterCount, widget::Filterable, widget::Filtered, widget::FindBar, widget::FindMatch, widget::FindOptions, widget::FindScope, widget::Findable, widget::ModelView, widget::NavItem, widget::NavList, widget::NavMode, widget::NavPane, widget::NavSection, widget::NavShell, widget::NumberInput, widget::QrWidget, widget::Row, widget::Scrollable, widget::SearchField, widget::SearchResultsView, widget::Slider, widget::Spinner, widget::Stack, widget::Text, widget::TextInput, widget::Toggle, widget::labeled_check, widget::labeled_field};
+    pub use tilo_ui_base::{widget::ActionEmitter, widget::AudiencePresentationProvider, widget::Collaborative, widget::CompleteContentProvider, widget::ContentKind, widget::Continuable, widget::ControlBindingKind, widget::ControlBindingMetadata, widget::Element, widget::EventCtx, widget::FullscreenProvider, widget::NativeViewLifecycle, widget::Spacer, widget::Widget};
+    pub use ui_core::{SearchRegistry, State, UndoAccess, UndoRequest, UndoStatus, column, history_source, row, search, stack};
+    pub use tilo_ui_base::{LatestRequest, LatestTask, LocalState, PresenceCtx, TextRenderer, Theme, collaboration, presence};
 }

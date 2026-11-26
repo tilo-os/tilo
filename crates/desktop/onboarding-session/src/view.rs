@@ -46,8 +46,8 @@ use std::time::{Duration, Instant};
 use std::{cell::RefCell, rc::Rc};
 use taffy::{NodeId, TaffyTree};
 use ui::ColorCompat as _;
-use ui::theme::Theme;
-use ui::widget::{AppModel, ModelPath, TaffyTreeExt, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 use zeroize::{Zeroize, Zeroizing};
@@ -426,7 +426,7 @@ pub struct OnboardingView {
     /// The code another of the person's devices printed, as typed or pasted.
     ticket: Arc<Mutex<String>>,
     /// The backup file to restore from, as typed or chosen.
-    connect_path: ui::LocalState<String>,
+    connect_path: tilo_ui_base::LocalState<String>,
     backup_passphrase: Arc<Mutex<String>>,
     backup_confirmation: Arc<Mutex<String>>,
     identity_dir: Option<PathBuf>,
@@ -652,7 +652,7 @@ impl OnboardingView {
             connect_source_selected: false,
             connect_passphrase: Arc::new(Mutex::new(String::new())),
             ticket: Arc::new(Mutex::new(String::new())),
-            connect_path: ui::LocalState::new(String::new()),
+            connect_path: tilo_ui_base::LocalState::new(String::new()),
             backup_passphrase: Arc::new(Mutex::new(String::new())),
             backup_confirmation: Arc::new(Mutex::new(String::new())),
             identity_dir: None,
@@ -749,17 +749,17 @@ impl OnboardingView {
             }
         }
         let theme = Theme::dark();
-        let mut text = ui::text_render::TextRenderer::new();
+        let mut text = tilo_ui_base::text_render::TextRenderer::new();
         let _ = crate::view::tests::layout::lay_out_as_root_with_text(
             self, 1280.0, 800.0, &theme, &mut text,
         );
-        ui::widget::DrawChild::draw_child(
+        tilo_ui_base::widget::DrawChild::draw_child(
             self,
             &mut vello::Scene::new(),
             vello::kurbo::Affine::IDENTITY,
             &mut text,
             &theme,
-            &ui::presence::PresenceCtx::empty().draw_env(),
+            &tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
         );
         let mut lines = Vec::new();
         if let Some(app) = self.app.root_mut() {
@@ -1613,7 +1613,7 @@ impl OnboardingView {
 }
 
 impl Widget for OnboardingView {
-    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
+    fn settle(&mut self, edits: &mut tilo_ui_base::widget::Edits<'_>, path: &ObjId) {
         for child in self.children_mut() {
             child.settle(edits, path);
         }
@@ -1638,7 +1638,7 @@ impl Widget for OnboardingView {
         reason = "one ordered reducer owns all modal OOBE actions and secret cleanup transitions"
     )]
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        let (state, root) = ui::doc::document_ref(state, root);
+        let (state, root) = tilo_ui_base::doc::document_ref(state, root);
         let before = self.flow.screen();
         let tour_before = self.tour_page;
         let ready_before = self.identity_ready_page;
@@ -1646,7 +1646,7 @@ impl Widget for OnboardingView {
         // A verification pass replays the tree's sync without taking new
         // inputs. Requester progress can arrive after the frame made its
         // decision, so leave it for the next actual frame.
-        let proving = ui::component_inputs::is_proving();
+        let proving = tilo_ui_base::component_inputs::is_proving();
         if !proving {
             self.synced_at = Instant::now();
         }
@@ -1970,7 +1970,7 @@ impl Widget for OnboardingView {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = ui::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         let resized = (rect.height() <= 540.0) != (self.rect.height() <= 540.0);
         self.rect = rect;
         if let Some(ask) = self.file_ask.as_mut() {
@@ -1984,7 +1984,7 @@ impl Widget for OnboardingView {
         }
     }
 
-    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2009,7 +2009,7 @@ impl Widget for OnboardingView {
                 &self.rect,
             );
             ask.set_rect(file_ask::rect(self.rect));
-            ask.draw(&mut ui::DrawCtx::new(
+            ask.draw(&mut tilo_ui_base::DrawCtx::new(
                 scene,
                 transform,
                 text_renderer,
@@ -2018,7 +2018,7 @@ impl Widget for OnboardingView {
             ));
             return;
         }
-        self.app.draw(&mut ui::DrawCtx::new(
+        self.app.draw(&mut tilo_ui_base::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -2027,7 +2027,7 @@ impl Widget for OnboardingView {
         ));
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let Some(ask) = self.file_ask.as_mut() {
             ask.handle_event(event, ctx);
             *ctx.handled = true;
@@ -2502,7 +2502,7 @@ mod tests {
                     "the ready screen offers the way into the desktop"
                 );
                 assert!(
-                    ui::widget::find_test_id(composition, "onboarding.done.body").is_none(),
+                    tilo_ui_base::widget::find_test_id(composition, "onboarding.done.body").is_none(),
                     "the confirmation is one line"
                 );
                 assert!(
@@ -2571,12 +2571,12 @@ mod tests {
     fn escape_event() -> WindowEvent {
         // winit keeps the platform field private. These inert placeholders
         // match the toolkit and greeter keyboard-event tests.
-        let event = ui::synthetic_input::key_event(
+        let event = tilo_ui_base::synthetic_input::key_event(
             Key::Named(NamedKey::Escape),
             None,
             ElementState::Pressed,
         );
-        ui::synthetic_input::keyboard_input(event)
+        tilo_ui_base::synthetic_input::keyboard_input(event)
     }
 
     fn dispatch_escape(view: &mut OnboardingView, document: &mut AutoCommit) -> bool {
@@ -2589,12 +2589,12 @@ mod tests {
     }
 
     fn pointer_event(position: Point) -> WindowEvent {
-        ui::synthetic_input::cursor_moved(position.x, position.y)
+        tilo_ui_base::synthetic_input::cursor_moved(position.x, position.y)
     }
 
-    use ui::synthetic_input::mouse_press;
+    use tilo_ui_base::synthetic_input::mouse_press;
 
-    use ui::synthetic_input::mouse_release;
+    use tilo_ui_base::synthetic_input::mouse_release;
 
     fn accessible_names(widget: &dyn Widget, names: &mut Vec<String>) {
         if let Some(name) = widget.accessibility().and_then(|node| node.name) {
@@ -2614,8 +2614,8 @@ mod tests {
         }
     }
 
-    fn accessibility_for_id(widget: &dyn Widget, id: &str) -> Option<ui::a11y::AccessNode> {
-        ui::widget::find_test_id(widget, id)?.accessibility()
+    fn accessibility_for_id(widget: &dyn Widget, id: &str) -> Option<tilo_ui_base::a11y::AccessNode> {
+        tilo_ui_base::widget::find_test_id(widget, id)?.accessibility()
     }
 
     fn write_fixture_identity(directory: &std::path::Path) {
@@ -3420,9 +3420,9 @@ mod tests {
                 "onboarding.nearby.status",
             )
             .expect("the join's wait has one status region");
-            assert_eq!(node.role, ui::a11y::Role::StaticText);
+            assert_eq!(node.role, tilo_ui_base::a11y::Role::StaticText);
             assert_eq!(node.name, Some(t("onboarding-nearby-joining")));
-            assert_eq!(node.live, Some(ui::a11y::Politeness::Polite));
+            assert_eq!(node.live, Some(tilo_ui_base::a11y::Politeness::Polite));
             assert!(
                 accessibility_for_id(laid_out_themed(&mut view, &theme), "onboarding.nearby.code")
                     .is_none(),
@@ -3729,7 +3729,7 @@ mod tests {
     fn frame(view: &mut OnboardingView) {
         FRAMES.with(|doc| {
             let mut doc = doc.borrow_mut();
-            view.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            view.settle(&mut tilo_ui_base::widget::Edits::lend(&mut doc), &automerge::ROOT);
             view.sync(&*doc, &automerge::ROOT);
         });
     }
@@ -4539,7 +4539,7 @@ mod tests {
                 collect(child, out);
             }
         }
-        let mut text = ui::text_render::TextRenderer::new();
+        let mut text = tilo_ui_base::text_render::TextRenderer::new();
         let mut laid =
             crate::view::tests::layout::draw_until_rest(view, width, height, theme, &mut text, 6);
         // The app lays out its own tree in its own frame: its widgets join
@@ -4589,7 +4589,7 @@ mod tests {
 
     /// The setup card's own rect, inside the app's surface.
     fn panel_rect(view: &mut OnboardingView) -> Rect {
-        ui::widget::find_test_id(ceremony(view), "onboarding")
+        tilo_ui_base::widget::find_test_id(ceremony(view), "onboarding")
             .and_then(|root| root.children().first().map(|card| card.get_rect()))
             .expect("the setup card is laid out")
     }
@@ -4915,7 +4915,7 @@ mod tests {
                         previous = Some(rect);
                         let node =
                             accessibility_for_id(ceremony(&mut view), id).expect("row semantics");
-                        assert_eq!(node.role, ui::a11y::Role::ListItem);
+                        assert_eq!(node.role, tilo_ui_base::a11y::Role::ListItem);
                         // The card's description is said once: as the row's description, or
                         // after its title in its name, and never again among its values.
                         let said = node
@@ -5053,10 +5053,10 @@ mod tests {
                 let mut handled = false;
                 view.handle_event(
                     &event,
-                    &mut ui::widget::EventCtx {
+                    &mut tilo_ui_base::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &Modifiers::default(),
-                        state: ui::widget::Edits::lend(&mut document),
+                        state: tilo_ui_base::widget::Edits::lend(&mut document),
                         path: &automerge::ROOT,
                         handled: &mut handled,
                         focus_target: &mut focus,
@@ -5074,14 +5074,14 @@ mod tests {
                 }
             }
             assert!(
-                ui::widget::find_test_id(ceremony(&mut view), "onboarding.understood.row")
+                tilo_ui_base::widget::find_test_id(ceremony(&mut view), "onboarding.understood.row")
                     .is_some_and(Widget::is_focused),
                 "the label press must focus the acknowledgement checkbox"
             );
             // What the person ticked reaches the ceremony on its next frame.
             view.sync(&document, &automerge::ROOT);
             view.settle(
-                &mut ui::widget::Edits::lend(&mut document),
+                &mut tilo_ui_base::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             );
             assert!(read_bool(&document, &automerge::ROOT, UNDERSTOOD));
@@ -5126,10 +5126,10 @@ mod tests {
                 let mut handled = false;
                 view.handle_event(
                     &event,
-                    &mut ui::widget::EventCtx {
+                    &mut tilo_ui_base::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &Modifiers::default(),
-                        state: ui::widget::Edits::lend(&mut document),
+                        state: tilo_ui_base::widget::Edits::lend(&mut document),
                         path: &automerge::ROOT,
                         handled: &mut handled,
                         focus_target: &mut focus,
@@ -5305,7 +5305,7 @@ mod tests {
                 // brings the focused control into the shared scroller.
                 let mut document = AutoCommit::new();
                 let save_focused = |view: &mut OnboardingView| {
-                    ui::widget::find_test_id(ceremony(view), "onboarding.backup.button")
+                    tilo_ui_base::widget::find_test_id(ceremony(view), "onboarding.backup.button")
                         .is_some_and(Widget::is_focused)
                 };
                 for _ in 0..16 {
@@ -5314,12 +5314,12 @@ mod tests {
                     }
                     ui::testing::Dispatch::new()
                         .doc(&mut document)
-                        .send(&mut view, &ui::synthetic_input::named_key(NamedKey::Tab));
+                        .send(&mut view, &tilo_ui_base::synthetic_input::named_key(NamedKey::Tab));
                     let _ = lay_out_as_root(&mut view, width, height, &theme);
                 }
                 assert!(save_focused(&mut view), "Tab reaches Save");
                 let revealed_save =
-                    ui::widget::find_test_id(ceremony(&mut view), "onboarding.backup.button")
+                    tilo_ui_base::widget::find_test_id(ceremony(&mut view), "onboarding.backup.button")
                         .expect("Save")
                         .get_rect();
                 let viewport = view

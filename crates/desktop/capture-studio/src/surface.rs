@@ -9,22 +9,19 @@ use std::path::PathBuf;
 use tilo_sheets::{Phase, SheetState as _};
 use ui::framework::{EffectAnswer, EffectCx, Effected, ResourceSurface, SurfaceCx};
 
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::tokens::TextRole;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use ui::vello::Scene as VelloScene;
 use ui::vello::kurbo::{Affine, Point, Rect};
-use ui::widget::{
-    AudioCaptureMode, CaptureDestination, CaptureIntent, CaptureMode, CaptureStudio, EventCtx,
-    MarkupStroke, MarkupTool, RecordingCommand, ReplayCommand, ScreenshotCommand, ScreenshotMarkup,
-    ScreenshotMarkupCommand, ScreenshotSendTarget, SourceMode, SurfaceLevel, TaffyTreeExt, Widget,
-};
+use ui::{widget::AudioCaptureMode, widget::CaptureDestination, widget::CaptureIntent, widget::CaptureMode, widget::CaptureStudio, widget::MarkupStroke, widget::MarkupTool, widget::RecordingCommand, widget::ReplayCommand, widget::ScreenshotCommand, widget::ScreenshotMarkup, widget::ScreenshotMarkupCommand, widget::ScreenshotSendTarget, widget::SourceMode, widget::SurfaceLevel};
+use tilo_ui_base::{widget::EventCtx, widget::TaffyTreeExt, widget::Widget};
 use ui::winit::event::WindowEvent;
 
 use crate::i18n;
 use crate::link::{Ask, Scene, Studio, Take};
 use crate::resource::{Capture, CaptureEffect};
-use ui::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 
 /// How long what became of a send stays up once it is known, the same as the
 /// receipt it belongs to.
@@ -712,7 +709,7 @@ fn said_chip(
         return Rect::ZERO;
     }
     let style = theme.text(TextRole::Label);
-    let room = ui::num::f32_of_f64((rect.width() * 0.8).min(520.0));
+    let room = tilo_ui_base::num::f32_of_f64((rect.width() * 0.8).min(520.0));
     let shown = text.elide_to_width_style(said, room, &style);
     let (w, h) = text.measure_style(&shown, None, &style);
     let (pad_x, pad_y) = (12.0, 8.0);
@@ -873,7 +870,7 @@ impl Widget for StudioSurface {
         node: ui::taffy::NodeId,
         origin: ui::vello::kurbo::Point,
     ) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         let inner = ui::vello::kurbo::Point::new(self.rect.x0, self.rect.y0);
         let kids = taffy.children(node).unwrap_or_default();
         if self.markup.is_some() {
@@ -894,7 +891,7 @@ impl Widget for StudioSurface {
         self.rect
     }
 
-    fn update(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) -> bool {
+    fn update(&mut self, _state: &tilo_ui_base::widget::AppModel, _path: &tilo_ui_base::widget::ModelPath) -> bool {
         // What the session published, and whether it has the studio up, live
         // outside the document: a scene the studio has not shown yet is what
         // this frame is for, so it is never a frame that syncs nothing.
@@ -905,11 +902,11 @@ impl Widget for StudioSurface {
         behind
     }
 
-    fn sync(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) {
+    fn sync(&mut self, _state: &tilo_ui_base::widget::AppModel, _path: &tilo_ui_base::widget::ModelPath) {
         self.catch_up();
     }
 
-    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1035,14 +1032,14 @@ impl Widget for StudioSurface {
         }
     }
 
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         if let Some(markup) = &self.markup {
             return markup.widget.accessibility();
         }
         let said = self.saying.as_ref().map(|(said, _)| {
-            ui::a11y::AccessNode::new(ui::a11y::Role::Label)
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Label)
                 .with_name(said.clone())
-                .with_live(ui::a11y::Politeness::Polite)
+                .with_live(tilo_ui_base::a11y::Politeness::Polite)
         });
         match (self.widget.accessibility(), said) {
             (Some(mut bar), Some(said)) => {
@@ -1057,9 +1054,9 @@ impl Widget for StudioSurface {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &ui::a11y::Action,
-        state: &mut ui::widget::Edits<'_>,
-        path: &ui::widget::ModelPath,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         let pressed = match self.markup.as_mut() {
             Some(markup) => markup

@@ -188,7 +188,7 @@ impl PartType {
         let changes = doc.diff(before, &after);
         let value = answer.and_then(|(verb, answer)| answer(doc, verb, &changes));
         match wrote
-            .then(|| ui_core::presence::written_by(doc, &changes))
+            .then(|| tilo_ui_base::presence::written_by(doc, &changes))
             .flatten()
         {
             Some(wrote) => tilo_actions::ActionOutput::noting_wrote(value, &wrote),
@@ -357,12 +357,12 @@ fn child<P: Chained>(state: &dyn Any, id: &str) -> Option<tilo_actions::Resource
 }
 
 fn new_view<P: Chained>() -> Box<dyn Any> {
-    Box::new(ui_core::LocalState::<super::Parts<P>>::new(Rc::default()))
+    Box::new(tilo_ui_base::LocalState::<super::Parts<P>>::new(Rc::default()))
 }
 
 fn set_view<P: Chained>(view: &dyn Any, parts: TypedParts) {
     if let (Some(view), Ok(parts)) = (
-        view.downcast_ref::<ui_core::LocalState<super::Parts<P>>>(),
+        view.downcast_ref::<tilo_ui_base::LocalState<super::Parts<P>>>(),
         parts.downcast::<Vec<(u64, Rc<P::State>)>>(),
     ) {
         view.set((*parts).into());

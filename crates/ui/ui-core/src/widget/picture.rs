@@ -6,10 +6,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Compose, Fill, Mix};
 
-use crate::text_render::TextRenderer;
-use crate::theme::{Look, Theme};
-use crate::theme_document::PresetDesign;
-use crate::tokens::{Emphasis, PresenceHue, TextRole};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::{theme::Look, theme::Theme};
+use tilo_ui_base::theme_document::PresetDesign;
+use tilo_ui_base::{tokens::Emphasis, tokens::PresenceHue, tokens::TextRole};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ColourFilter {
@@ -550,9 +550,9 @@ fn paint_pad(
     scene.stroke(
         &Stroke::new(1.0),
         transform,
-        crate::surface::edge_on(ground),
+        tilo_ui_base::surface::edge_on(ground),
         None,
-        &crate::surface::edge_outline(pad, radius),
+        &tilo_ui_base::surface::edge_outline(pad, radius),
     );
     pad
 }
@@ -774,9 +774,9 @@ fn paint_scroll_direction(
     scene.stroke(
         &Stroke::new(1.0),
         transform,
-        crate::surface::edge_on(ground),
+        tilo_ui_base::surface::edge_on(ground),
         None,
-        &crate::surface::edge_outline(window, radius),
+        &tilo_ui_base::surface::edge_outline(window, radius),
     );
     let edge_x = window.x1 - unit * 1.6;
     paint_motion(
@@ -802,9 +802,9 @@ fn paint_scroll_direction(
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            crate::surface::edge_on(ground),
+            tilo_ui_base::surface::edge_on(ground),
             None,
-            &crate::surface::edge_outline(body, body_radius),
+            &tilo_ui_base::surface::edge_outline(body, body_radius),
         );
         let wheel_rect = Rect::from_center_size(
             Point::new(body.center().x, body.y0 + body.height() * 0.3),
@@ -862,7 +862,7 @@ fn paint_density(scene: &mut Scene, transform: Affine, area: Rect, density: f32,
     let content = area.inset(-inset);
     let row = content.height() / 3.6 * density;
     let mark = row * 0.36;
-    let edge = crate::surface::edge_on(theme.tokens.colors.surfaces.raised);
+    let edge = tilo_ui_base::surface::edge_on(theme.tokens.colors.surfaces.raised);
     for index in 0..3_u8 {
         let top = content.y0 + f64::from(index) * row;
         if top + row > area.y1 {
@@ -966,9 +966,9 @@ fn paint_banner(scene: &mut Scene, transform: Affine, area: Rect, message: bool,
     scene.stroke(
         &Stroke::new(1.0),
         transform,
-        crate::surface::edge_on(colors.surfaces.overlay),
+        tilo_ui_base::surface::edge_on(colors.surfaces.overlay),
         None,
-        &crate::surface::edge_outline(banner, radius),
+        &tilo_ui_base::surface::edge_outline(banner, radius),
     );
     let unit = height / 6.0;
     let icon = Rect::new(

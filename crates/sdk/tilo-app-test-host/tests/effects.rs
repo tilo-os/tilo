@@ -509,7 +509,7 @@ tilo_test_env::scenario! {
 
     phase a_viewer_invokes_read_effects_only_and_sees_its_refused_edits;
     {
-        let mut app = TestApp::<MailApp>::with_role(tilo_app::Role::Viewer).unwrap();
+        let mut app = TestApp::<MailApp>::with_role(tilo_ui_base::Role::Viewer).unwrap();
         assert_eq!(
             app.effect(&MailEffect::Count).unwrap().value,
             Some(serde_json::json!(0))
@@ -550,7 +550,7 @@ tilo_test_env::scenario! {
 
         // One that writes and answers nothing is a viewer's no more than any write: refused at
         // once as not theirs to take, saying why, and nothing is written.
-        app.set_role(tilo_app::Role::Viewer);
+        app.set_role(tilo_ui_base::Role::Viewer);
         let refused = app
             .effect_by(
                 &MemberId::agent("viewer", "ada"),
@@ -584,7 +584,7 @@ tilo_test_env::scenario! {
         );
 
         // The writer's is kept.
-        app.set_role(tilo_app::Role::Owner);
+        app.set_role(tilo_ui_base::Role::Owner);
         app.effect_by(
             &MemberId::agent("writer", "ada"),
             &MailEffect::Note {
@@ -975,7 +975,7 @@ thread_local! {
 struct NestedChild {
     tally: Tally,
 }
-impl tilo_app::widget::Decorator for NestedChild {
+impl tilo_ui_base::widget::Decorator for NestedChild {
     type Inner = Tally;
     fn inner(&self) -> &Tally {
         &self.tally
@@ -1026,7 +1026,7 @@ impl Default for NestedParent {
         }
     }
 }
-impl tilo_app::widget::Decorator for NestedParent {
+impl tilo_ui_base::widget::Decorator for NestedParent {
     type Inner = Column;
     fn inner(&self) -> &Column {
         &self.body
@@ -1800,7 +1800,7 @@ tilo_test_env::scenario! {
     {
         let shown = |app: &mut TestApp<FolderApp>| app.harness().inspection_json().unwrap();
 
-        let mut viewer = TestApp::<FolderApp>::with_role(tilo_app::Role::Viewer)
+        let mut viewer = TestApp::<FolderApp>::with_role(tilo_ui_base::Role::Viewer)
             .unwrap()
             .relaunch(&["sent"])
             .unwrap();
@@ -1809,7 +1809,7 @@ tilo_test_env::scenario! {
         assert!(seen.contains("Showing sent"), "{seen}");
         assert!(!seen.contains("Refused"), "{seen}");
 
-        let mut fetcher = TestApp::<FolderApp>::with_role(tilo_app::Role::Viewer)
+        let mut fetcher = TestApp::<FolderApp>::with_role(tilo_ui_base::Role::Viewer)
             .unwrap()
             .relaunch(&["fetch"])
             .unwrap();

@@ -22,7 +22,7 @@ fn fixture() -> TestHost {
 
 fn focus(app: &mut TestHost, id: &str) {
     app.harness()
-        .perform_named(id, &ui::a11y::Action::Focus)
+        .perform_named(id, &tilo_ui_base::a11y::Action::Focus)
         .unwrap();
     app.settle();
 }

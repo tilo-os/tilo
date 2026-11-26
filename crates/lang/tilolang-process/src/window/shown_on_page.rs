@@ -11,7 +11,7 @@
 
 use tilo_server_protocol::page::window::{self, WindowAnswer, WindowAsk};
 use tilo_server_protocol::page::{PageAction, PagePatch, PointerEvent, PointerKind};
-use ui::a11y::Action;
+use tilo_ui_base::a11y::Action;
 use ui::composition::Composition;
 use ui::composition::page::{PAGE_CSS, Page, Patch, theme_css};
 use ui::headless::Driver;
@@ -179,9 +179,9 @@ impl ShownOnPage {
     /// runs on: the whole page again, in the theme's tokens.
     pub fn appearance(&mut self, frame: &mut Driver, dark: bool) -> Shown {
         frame.set_theme(if dark {
-            ui::Theme::dark()
+            tilo_ui_base::Theme::dark()
         } else {
-            ui::Theme::light()
+            tilo_ui_base::Theme::light()
         });
         self.open(frame, None)
     }
@@ -225,7 +225,7 @@ fn await_app(frame: &mut Driver, waits: impl Fn(&HostedWindow) -> bool) {
 /// `frame` laid out with everything that reached its view, as a window lays out while it is
 /// looked at, with a picture of each part a page shows as one.
 fn composition(frame: &mut Driver) -> Composition {
-    let _still = ui::arriving::still_frames();
+    let _still = tilo_ui_base::arriving::still_frames();
     for _ in 0..PAGE_FRAMES {
         if !frame.poll_frame().unwrap_or(false) {
             break;

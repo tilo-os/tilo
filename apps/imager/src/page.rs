@@ -4,8 +4,9 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use ui::tokens::{Rhythm, TextRole};
-use ui::widget::{Column, Container, Form, Row, Scrollable, Stepper, Text, Widget};
+use tilo_ui_base::{tokens::Rhythm, tokens::TextRole};
+use ui::{widget::Column, widget::Container, widget::Form, widget::Row, widget::Scrollable, widget::Stepper, widget::Text};
+use tilo_ui_base::widget::Widget;
 
 pub(crate) fn stack() -> Column {
     Column::new().with_no_padding().with_intrinsic_height()

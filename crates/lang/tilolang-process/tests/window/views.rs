@@ -41,9 +41,9 @@ fn an_answer_is_a_live_view_over_other_apps_at_every_size_and_theme() {
             let mut app = TestApp::<TlApp>::capture_at(Some("a release answer"), viewport)
                 .expect("the scenario stages");
             app.harness().set_theme(if dark {
-                ui::Theme::dark()
+                tilo_ui_base::Theme::dark()
             } else {
-                ui::Theme::light()
+                tilo_ui_base::Theme::light()
             });
             app.harness()
                 .settle_for_capture(ui::time::Duration::from_millis(600));

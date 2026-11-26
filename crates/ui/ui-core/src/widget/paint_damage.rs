@@ -7,7 +7,7 @@ use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
-use crate::Theme;
+use tilo_ui_base::Theme;
 
 use std::cell::RefCell;
 use std::mem;

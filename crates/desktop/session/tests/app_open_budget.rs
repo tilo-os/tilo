@@ -679,7 +679,7 @@ impl Drop for Load {
 /// work the open takes, idle and while the job's cores are all busy.
 #[test]
 fn every_installed_app_opens_within_the_budget_its_manifest_declares() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (_programs, session) = session_beside_launcher();
     let ada = Person::new("Ada");
     let apps: Vec<&str> = APPS.iter().chain(TL_APPS.iter()).copied().collect();

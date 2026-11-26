@@ -36,6 +36,7 @@ tilo-keyboard-engine = { path = "../../crates/engines/keyboard" }
 tilo-keyboard-map = { path = "../../crates/desktop/tilo-keyboard-map" }
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 tilo-emoji-engine = { path = "../../crates/engines/loadable/emoji", optional = true }
+tilo-ui-base = { version = "0.1.0", path = "../../crates/ui/ui-base", default-features = false }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 settings-model = { package = "tilo-settings-model", path = "../../crates/sdk/settings-model" }
 tilo-actions = { path = "../../crates/core/actions" }
@@ -74,6 +75,7 @@ xkbcommon = "0.8"
 tempfile.workspace = true
 tilo-test-env = { path = "../../tools/test-env" }
 tilo-history = { path = "../../crates/sdk/tilo-history" }
+tilo-ui-base = { version = "0.1.0", path = "../../crates/ui/ui-base", default-features = false }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # The headless test host the tests open the app in, as a person's device hosts it.
 tilo-app-test-host = { path = "../../crates/sdk/tilo-app-test-host" }

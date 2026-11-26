@@ -4,12 +4,12 @@
 use super::card::{self, Contents, Frame, Look};
 use super::coach::{Coach, Phase, Timing};
 use super::{HintSpec, Learned, Quiet};
-use crate::a11y::{AccessNode, Politeness, Role};
-use crate::motion::{Beckon, stage};
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
+use tilo_ui_base::{a11y::AccessNode, a11y::Politeness, a11y::Role};
+use tilo_ui_base::{motion::Beckon, motion::stage};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 use crate::time::Instant;
-use crate::tokens::EffectiveMotion;
+use tilo_ui_base::tokens::EffectiveMotion;
 use crate::widget::floating_surface::PopoverSide;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke, Vec2};
@@ -693,7 +693,7 @@ fn lit_edge(scene: &mut Scene, transform: Affine, edge: Line, look: &Look, opaci
         bounds,
         look.glow.multiply_alpha(opacity),
         3.0,
-        crate::surface::std_dev_for(14.0),
+        tilo_ui_base::surface::std_dev_for(14.0),
     );
     scene.stroke(
         &Stroke::new(3.0).with_caps(vello::kurbo::Cap::Round),

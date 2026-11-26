@@ -2,12 +2,12 @@
 
 use super::super::{TabBar, TabDescriptor};
 use super::tests::lay_out_at_width_with;
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 #[test]
 fn a_tab_names_its_whole_title_in_a_tooltip() {
-    let _settled = crate::motion::testing::settled();
-    let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
     let long = "A note whose title is far longer than its pill";
     let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, long)], 1);
     lay_out_at_width_with(&mut b, 900.0, &theme);

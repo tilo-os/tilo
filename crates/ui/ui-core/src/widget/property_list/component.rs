@@ -1,6 +1,6 @@
 //! [`PropertyList`] and its [`Property`] rows as described components.
 
-use crate::component::{Component, Described};
+use tilo_ui_base::{component::Component, component::Described};
 
 use super::{Property, PropertyList};
 
@@ -62,16 +62,16 @@ impl Described for PropertyList {
     }
 }
 
-impl crate::component::PartType for Vec<PropertyProps> {
+impl tilo_ui_base::component::PartType for Vec<PropertyProps> {
     const MANY: bool = true;
 
-    fn accepts() -> crate::component::Accepts {
-        crate::component::Accepts::Component(PropertyProps::NAME.into())
+    fn accepts() -> tilo_ui_base::component::Accepts {
+        tilo_ui_base::component::Accepts::Component(PropertyProps::NAME.into())
     }
 
     fn fill(
         &mut self,
-        source: &mut dyn crate::component::Source,
+        source: &mut dyn tilo_ui_base::component::Source,
         part: &str,
     ) -> Result<(), String> {
         self.clear();

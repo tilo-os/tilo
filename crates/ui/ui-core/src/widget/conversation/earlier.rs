@@ -2,8 +2,8 @@
 
 use vello::kurbo::Rect;
 
-use crate::paint::PaintCtx;
-use crate::tokens::TextRole;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::tokens::TextRole;
 
 /// "Earlier messages aren't on this device", centred in
 /// the band the earlier lines would take.
@@ -19,7 +19,7 @@ impl EarlierUnavailableFace {
         let theme = paint.theme;
         let label = Self::label();
         let style = theme.text(TextRole::Caption);
-        let spare = crate::num::f32_of_f64((trailing - leading).max(0.0));
+        let spare = tilo_ui_base::num::f32_of_f64((trailing - leading).max(0.0));
         let shown = paint.text.elide_to_width_style(&label, spare, &style);
         let width = f64::from(paint.text.measure_style(&shown, None, &style).0);
         let x = leading + ((trailing - leading) - width).max(0.0) / 2.0;

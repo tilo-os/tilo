@@ -41,7 +41,7 @@ fn clock() -> Clock {
 
 /// The minute now, as this service's cadence counts it.
 fn minute() -> i64 {
-    ui::clock::local_now()
+    tilo_ui_base::clock::local_now()
         .timestamp()
         .as_second()
         .div_euclid(60)
@@ -51,16 +51,16 @@ fn minute() -> i64 {
 /// day, its weekday, the month's name and the month's own shape, in the person's formats and
 /// language, so a view that draws a month needs no clock and no words of its own.
 fn now() -> Time {
-    let local = ui::clock::local_now();
+    let local = tilo_ui_base::clock::local_now();
     let day = local.datetime().date();
-    let formats = ui::format::region::current();
-    let words = ui::format::words();
+    let formats = tilo_ui_base::format::region::current();
+    let words = tilo_ui_base::format::words();
     let week = tilo_formats::week(formats);
     let first = day
         .checked_sub(jiff::Span::new().days(i64::from(day.day().saturating_sub(1))))
         .unwrap_or(day);
     Time {
-        clock: ui::clock::time_of_day(local),
+        clock: tilo_ui_base::clock::time_of_day(local),
         year: i64::from(day.year()),
         month: i64::from(day.month()),
         day: i64::from(day.day()),
@@ -209,7 +209,7 @@ impl Service for Served {
     }
 
     fn wakes_in(&self) -> Option<std::time::Duration> {
-        let second = ui::clock::local_now()
+        let second = tilo_ui_base::clock::local_now()
             .timestamp()
             .as_second()
             .rem_euclid(60);

@@ -1,6 +1,6 @@
 //! [`KeyHints`] and its hints as described components.
 
-use crate::component::{Component, Described};
+use tilo_ui_base::{component::Component, component::Described};
 
 use super::{KeyHint, KeyHints};
 
@@ -26,7 +26,7 @@ pub struct KeyHintProps {
     pub label: String,
 }
 
-crate::component::part_type!(KeyHintProps);
+tilo_ui_base::component::part_type!(KeyHintProps);
 
 impl Described for KeyHints {
     type Props = KeyHintsProps;

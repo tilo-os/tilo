@@ -3,20 +3,21 @@
 //! steps and the geometry are the palette, shared with an app's Ctrl+K search; what differs is where
 //! the rows come from and where a choice goes.
 
-use crate::i18n::{widget_format, widget_text};
+use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::platform::PlatformConventions;
+use tilo_ui_base::platform::PlatformConventions;
 use crate::search::{ActivationModifier, Facet, FacetFilter, SearchGroup, SearchResult};
-use crate::text_match::FieldWeight;
-use crate::theme::Theme;
-use crate::widget::{SearchField, Widget};
+use tilo_ui_base::text_match::FieldWeight;
+use tilo_ui_base::theme::Theme;
+use crate::widget::SearchField;
+use tilo_ui_base::widget::Widget;
 
 use super::rows::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome};
 use super::{ActionPalette, FIELD_SIZE, HostStep};
-use crate::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 
 const DEFAULT_LIST_ROWS: f64 = 10.0;
 const EMPTY_STATE_HEIGHT: f64 = 104.0;
@@ -41,7 +42,7 @@ impl ActionPalette {
     pub fn set_entries(&mut self, entries: Vec<CommandEntry>) {
         // Rows of their own replace any kept for an earlier query, and come in at full strength.
         self.stale = false;
-        self.stale_dim = crate::motion::CrossFade::new(false);
+        self.stale_dim = tilo_ui_base::motion::CrossFade::new(false);
         self.host_rows = Some(entries);
         self.planned_host_rows();
         self.set_cursor(0);
@@ -819,7 +820,7 @@ impl ActionPalette {
     }
 
     /// Paint the card over the host's rows: the field, the band its host paints into, and the list.
-    pub(crate) fn draw_host(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub(crate) fn draw_host(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -841,7 +842,7 @@ impl ActionPalette {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                crate::surface::edge_on(crate::chrome::panel_ground(theme)),
+                tilo_ui_base::surface::edge_on(tilo_ui_base::chrome::panel_ground(theme)),
                 None,
                 &rule,
             );
@@ -871,7 +872,7 @@ impl ActionPalette {
     pub(crate) fn route_host_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         if !self.is_presented() {
             return false;
@@ -995,7 +996,7 @@ impl ActionPalette {
     fn host_pointer_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor =
@@ -1027,7 +1028,7 @@ impl ActionPalette {
         false
     }
 
-    fn edit_host_field(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn edit_host_field(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let mut taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
         let Ok(node) = taffy.new_leaf(taffy::Style::default()) else {
             return;
@@ -1035,7 +1036,7 @@ impl ActionPalette {
         let mut focus = None;
         self.field.handle_event(
             event,
-            &mut crate::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
                 state: ctx.state.reborrow(),
@@ -1125,8 +1126,8 @@ impl ActionPalette {
 
     /// The accessibility tree of the host-driven card: the query as a text field, the results, and the
     /// scope token when it is a control.
-    pub(crate) fn host_accessibility(&self) -> crate::a11y::AccessNode {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    pub(crate) fn host_accessibility(&self) -> tilo_ui_base::a11y::AccessNode {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let open = self.is_open();
         let mut node = AccessNode::new(Role::Dialog)
             .with_name(widget_text("palette-name"))
@@ -1196,12 +1197,12 @@ impl ActionPalette {
     pub(crate) fn host_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &crate::widget::ModelPath,
+        action: &tilo_ui_base::a11y::Action,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
-        let (state, path) = crate::doc::document(doc, path);
+        use tilo_ui_base::a11y::Action;
+        let (state, path) = tilo_ui_base::doc::document(doc, path);
         if target == SCOPE_TOKEN_TARGET {
             return match action {
                 Action::Activate if self.scope_token_action.is_some() => {
@@ -1239,7 +1240,7 @@ impl ActionPalette {
         for &index in path {
             node = node.children.into_iter().nth(index)?;
         }
-        node.bounds.map(crate::a11y::AccessBounds::to_rect)
+        node.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect)
     }
 
     /// Focus what an assistive tree path names.
@@ -1268,7 +1269,7 @@ impl ActionPalette {
     pub(crate) fn host_ime_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         let field = self.field.ime_edit_fingerprint(key)?;
         Some(match &self.host_step {
-            Some(step) => crate::ime::scoped_fingerprint(step.id.as_bytes(), field, key),
+            Some(step) => tilo_ui_base::ime::scoped_fingerprint(step.id.as_bytes(), field, key),
             None => field,
         })
     }

@@ -59,7 +59,7 @@ pub struct Ask {
 /// the shell's own widgets use, so a glove and a mouse reach the same distance.
 #[must_use]
 pub fn reach_pad() -> f64 {
-    f64::from(ui::tokens::Spacing::BASE.s2)
+    f64::from(tilo_ui_base::tokens::Spacing::BASE.s2)
 }
 
 /// A window as the compositor shows it, for what the chrome needs of it: where it stands.

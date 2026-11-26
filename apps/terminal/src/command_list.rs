@@ -9,11 +9,11 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use ui::LocalState;
+use tilo_ui_base::LocalState;
 use ui::framework::{People, Query, ResourceApp as _, ResourceEnv, ViewCx};
 use ui::prelude::{Arrival, Button, Column, Container, Element, Row, Scrollable, Text, TextInput};
 use ui::tilo_actions::remote::{InvokeArgument, RESOURCE_PROVIDER, RemoteActionTarget};
-use ui::tokens::{Rhythm, TextRole};
+use tilo_ui_base::{tokens::Rhythm, tokens::TextRole};
 use ui::widget::{ButtonRole, ListRow, Surface, SurfaceLevel};
 
 use crate::i18n::{t, t_args};
@@ -317,7 +317,7 @@ fn command_line(
 fn status(command: &Command) -> String {
     let took = u64::try_from(command.ended_ms.saturating_sub(command.started_ms))
         .ok()
-        .map(|ms| ui::format::duration(std::time::Duration::from_millis(ms)));
+        .map(|ms| tilo_ui_base::format::duration(std::time::Duration::from_millis(ms)));
     match took {
         Some(took) => t_args(
             "terminal-commands-exit-after",
@@ -364,7 +364,7 @@ fn well(text: &str, truncated: bool) -> Element {
         column = column.push(Box::new(
             Text::new(line)
                 .with_role(TextRole::Code)
-                .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph),
+                .with_wrap_mode(tilo_ui_base::text_render::TextWrapMode::WordOrGlyph),
         ));
     }
     Box::new(Surface::new(SurfaceLevel::Raised, Box::new(column)).padded(Rhythm::Tight))

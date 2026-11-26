@@ -1,11 +1,11 @@
 //! [`Image`] as a described component: a picture by its address.
 
-use crate::component::{Component, Described};
+use tilo_ui_base::{component::Component, component::Described};
 use crate::pictures::Pictures;
 
 use super::{Image, ImageFit};
 
-crate::choice!(ImageFit, "ImageFit", {
+tilo_ui_base::choice!(ImageFit, "ImageFit", {
     Contain => "contain",
     Cover => "cover",
     Fill => "fill",

@@ -19,6 +19,7 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-resource = { path = "../../core/tilo-resource" }
 # Keyboards coming and going in /dev/input.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # Mirrors the dep set used by the in-tree `ui`-based apps
 # (file-explorer / terminal): the toolkit plus the trait crates its
 # `Widget` impls reference directly.
@@ -52,11 +53,13 @@ ui-kms = { package = "tilo-ui-kms", path = "../../ui/ui-kms" }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model"] }
 
 [dev-dependencies]
 tilo-test-env = { path = "../../../tools/test-env" }
 tempfile.workspace = true
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support", "model"] }
 # The screen reader's recording speaker, to hear what it said.
 tilo-tts = { path = "../../engines/tts" }

@@ -153,7 +153,7 @@ fn overlap(a: (i64, i64, i64, i64), b: (i64, i64, i64, i64)) -> bool {
 /// which is what a person sees as "no title bars".
 #[test]
 fn the_desktop_draws_every_window_with_a_bar_naming_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let (mut session, notes) = session(root.path());
     until(&mut session, "the bar", |session| {
@@ -184,7 +184,7 @@ fn the_desktop_draws_every_window_with_a_bar_naming_it() {
 /// comes to the front, and the dock says it runs.
 #[test]
 fn a_dock_item_press_opens_or_focuses_what_it_stands_for() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let (mut session, notes) = session(root.path());
     until(&mut session, "the bar", |session| {
@@ -253,7 +253,7 @@ const BTN_MIDDLE: u32 = 0x112;
 /// place stands at on the screen.
 #[test]
 fn every_pan_gesture_pans_every_time() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let (mut session, notes) = session(root.path());
     until(&mut session, "the bar", |session| {
@@ -407,7 +407,7 @@ const BAR_FOOT: f64 = 40.0;
 /// the two cannot both stand in the viewport at that zoom the person pans back to the rest.
 #[test]
 fn opening_beside_a_conversation_opens_it_without_shrinking_the_conversation() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let mut session = crate::common::seeded_session(root.path());
     let notes = note_ids(&session);
@@ -495,7 +495,7 @@ fn opening_beside_a_conversation_opens_it_without_shrinking_the_conversation() {
 /// resource publishes.
 #[test]
 fn the_top_bar_lists_the_focused_windows_actions_and_runs_one() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let (mut session, notes) = session(root.path());
     until(&mut session, "the bar", |session| {
@@ -546,7 +546,7 @@ fn the_top_bar_lists_the_focused_windows_actions_and_runs_one() {
 /// takes the free space nearest its anchor and never covers what is already there (canvas.md §6).
 #[test]
 fn two_frames_placed_at_one_point_do_not_overlap() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let (mut session, notes) = session(root.path());
     until(&mut session, "the bar", |session| {
@@ -576,7 +576,7 @@ fn two_frames_placed_at_one_point_do_not_overlap() {
 /// the centre on a press, not the quick settings, and the next press closes it again.
 #[test]
 fn the_bells_press_opens_the_notification_centre_in_every_preset() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let (mut session, notes) = session(root.path());
     until(&mut session, "the bar", |session| {

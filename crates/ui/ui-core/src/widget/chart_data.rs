@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use tilo_ui_graph::component::{CaseDescription, EnumDescription};
 use vello::peniko::Color;
 
-use crate::component::{PropType, Type, Value, case_field, case_field_description};
+use tilo_ui_base::{component::PropType, component::Type, component::Value, component::case_field, component::case_field_description};
 
 #[derive(Clone, Debug)]
 pub struct ChartItem {
@@ -221,7 +221,7 @@ impl PropType for ChartPart {
 
     fn from_value(value: &Value) -> Result<Self, String> {
         let Value::Case { case, fields } = value else {
-            return Err(crate::component::wrong(&Self::ty(), value));
+            return Err(tilo_ui_base::component::wrong(&Self::ty(), value));
         };
         if case != "part" {
             return Err(format!("a hierarchy's part is a `part`, not `{case}`"));
@@ -287,7 +287,7 @@ impl PropType for ChartNode {
 
     fn from_value(value: &Value) -> Result<Self, String> {
         let Value::Case { case, fields } = value else {
-            return Err(crate::component::wrong(&Self::ty(), value));
+            return Err(tilo_ui_base::component::wrong(&Self::ty(), value));
         };
         if case != "node" {
             return Err(format!("a graph's node is a `node`, not `{case}`"));
@@ -331,7 +331,7 @@ impl PropType for ChartLink {
 
     fn from_value(value: &Value) -> Result<Self, String> {
         let Value::Case { case, fields } = value else {
-            return Err(crate::component::wrong(&Self::ty(), value));
+            return Err(tilo_ui_base::component::wrong(&Self::ty(), value));
         };
         if case != "link" {
             return Err(format!("a graph's link is a `link`, not `{case}`"));

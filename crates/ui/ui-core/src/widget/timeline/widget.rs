@@ -12,15 +12,16 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::a11y::{AccessNode, AccessState, Role};
-use crate::component::{Event, Value};
-use crate::motion::{Direction, MotionValue};
-use crate::paint::PaintCtx;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+use tilo_ui_base::{component::Event, component::Value};
+use tilo_ui_base::{motion::Direction, motion::MotionValue};
+use tilo_ui_base::paint::PaintCtx;
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::MotionSource;
-use crate::widget::{Scrollable, TaffyTreeExt, Widget};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::MotionSource;
+use crate::widget::Scrollable;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 use super::Ghost;
 use super::face::{MonthFace, TimelineFace};
@@ -29,7 +30,7 @@ use super::{
     column_at, geometry, in_split, minute_at, natural_height, snap_minute, splits_for,
 };
 
-const DRAG_THRESHOLD: f64 = crate::dnd::DRAG_START_THRESHOLD_PX;
+const DRAG_THRESHOLD: f64 = tilo_ui_base::dnd::DRAG_START_THRESHOLD_PX;
 
 /// A time grid: one day, a week, or a month, at 10k events as at three (only what the viewport
 /// shows is laid out and painted).
@@ -121,7 +122,7 @@ enum Effect {
 
 impl Timeline {
     pub(crate) fn new(mode: TimelineMode, anchor: Date, items: Vec<TimelineItem>) -> Self {
-        let today = crate::clock::today();
+        let today = tilo_ui_base::clock::today();
         let days = period_days(mode, anchor);
         let rows = super::all_day_rows(&items);
         Self {
@@ -197,12 +198,12 @@ impl Timeline {
     fn start_slide(&mut self, theme: &Theme) {
         if let Some(sign) = self.slide_pending.take() {
             self.slide.snap(sign);
-            let timing = crate::motion::CROSS_FADE.timing(
+            let timing = tilo_ui_base::motion::CROSS_FADE.timing(
                 Direction::Enter,
                 theme.motion(),
                 MotionSource::Pointer,
             );
-            self.slide.set(0.0, timing, crate::motion::frame_now());
+            self.slide.set(0.0, timing, tilo_ui_base::motion::frame_now());
         }
     }
 
@@ -215,7 +216,7 @@ impl Timeline {
         if !self.show_now || self.mode == TimelineMode::Month {
             return None;
         }
-        let now = crate::clock::local_now();
+        let now = tilo_ui_base::clock::local_now();
         let day = now.date();
         self.days.iter().position(|d| *d == day)?;
         Some((day, i64::from(now.hour()) * 60 + i64::from(now.minute())))
@@ -261,15 +262,15 @@ impl Timeline {
         self.scroll
             .set_viewport_rect(geom.body(self.rect.x0, self.rect.x1));
         self.scroll.set_content_size(
-            crate::num::f32_of_f64(self.rect.width()),
-            crate::num::f32_of_f64(geom.content_h),
+            tilo_ui_base::num::f32_of_f64(self.rect.width()),
+            tilo_ui_base::num::f32_of_f64(geom.content_h),
         );
         if !self.seeded && self.scroll.vertical_overflows() {
             let viewport_h = geom.body_bottom - geom.body_top;
             let max_hours = ((geom.content_h - viewport_h).max(0.0) / geom.hour_h).floor();
             let hour = 8.0_f64.min(max_hours);
             self.scroll
-                .set_offset_y(crate::num::f32_of_f64(hour * geom.hour_h));
+                .set_offset_y(tilo_ui_base::num::f32_of_f64(hour * geom.hour_h));
             self.seeded = true;
         }
     }
@@ -343,7 +344,7 @@ impl Timeline {
     }
 
     fn on_resize_grip(&self, rect: Rect, point: Point) -> bool {
-        let grip = f64::from(crate::tokens::Layout::BASE.resize_grip);
+        let grip = f64::from(tilo_ui_base::tokens::Layout::BASE.resize_grip);
         rect.height() >= 3.0 * grip && point.y >= rect.y1 - grip && point.y <= rect.y1
     }
 
@@ -502,7 +503,7 @@ impl Timeline {
                             colors.surfaces.content,
                             item.color,
                             0.4,
-                            crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+                            tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
                         )
                         .fill,
                     item.color,
@@ -520,7 +521,7 @@ impl Timeline {
                             colors.surfaces.content,
                             item.color,
                             0.4,
-                            crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+                            tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
                         )
                         .fill,
                     item.color,
@@ -690,12 +691,12 @@ impl Timeline {
     /// The key the day `day` is known by among its days: what an action on one of its events
     /// comes back with.
     fn day_key(day: Date) -> u64 {
-        crate::a11y::hash_key(&("timeline.day", day.to_string()))
+        tilo_ui_base::a11y::hash_key(&("timeline.day", day.to_string()))
     }
 
     /// The key an event is known by among its day's events.
     fn item_key(item: &TimelineItem) -> u64 {
-        crate::a11y::hash_key(&("timeline.item", &item.id))
+        tilo_ui_base::a11y::hash_key(&("timeline.item", &item.id))
     }
 
     /// The one thing an action on `item`'s element acts on: the item, by its day and its own key.
@@ -711,12 +712,12 @@ impl Timeline {
     fn item_time_text(item: &TimelineItem) -> String {
         if item.all_day {
             if item.spans_days() {
-                crate::format::day_range(item.day, item.end_day)
+                tilo_ui_base::format::day_range(item.day, item.end_day)
             } else {
-                crate::format::date(item.day)
+                tilo_ui_base::format::date(item.day)
             }
         } else {
-            crate::format::range(
+            tilo_ui_base::format::range(
                 &super::minute_text(item.start_min),
                 &super::minute_text(item.clock_end_min.min(MINUTES_PER_DAY)),
             )
@@ -733,7 +734,7 @@ impl Timeline {
                 datetime_iso(item.day, item.clock_end_min.min(MINUTES_PER_DAY)),
             )
         };
-        crate::format::machine!(
+        tilo_ui_base::format::machine!(
             "the span of time an event covers, as a page's <time> holds it",
             if start == end {
                 start
@@ -768,8 +769,8 @@ impl Timeline {
     /// `<time>`, and what stands on it.
     fn day_access(day: Date, bounds: Rect, items: Vec<AccessNode>) -> AccessNode {
         AccessNode::new(Role::Group)
-            .with_name(crate::format::day_heading(day, false))
-            .with_value(crate::format::machine!(
+            .with_name(tilo_ui_base::format::day_heading(day, false))
+            .with_value(tilo_ui_base::format::machine!(
                 "a day on a timeline, as a page's <time> holds it",
                 day.to_string()
             ))
@@ -787,7 +788,7 @@ impl Timeline {
     pub(crate) fn layout_for(&mut self, area: Rect, theme: &Theme) {
         self.theme = Some(theme.clone());
         let tokens =
-            crate::text_render::with_layout_renderer(theme, |text| TimelineTokens::of(theme, text));
+            tilo_ui_base::text_render::with_layout_renderer(theme, |text| TimelineTokens::of(theme, text));
         self.tokens = Some(tokens);
         self.rect = area;
         self.drag = None;
@@ -844,7 +845,7 @@ fn period_days(mode: TimelineMode, anchor: Date) -> Vec<Date> {
     match mode {
         TimelineMode::Day => vec![anchor],
         TimelineMode::Week => {
-            let first = crate::format::first_weekday();
+            let first = tilo_ui_base::format::first_weekday();
             let into_week = i64::from(anchor.weekday().since(first));
             let start = anchor - jiff::Span::new().days(into_week);
             (0..7).map(|i| start + jiff::Span::new().days(i)).collect()
@@ -866,7 +867,7 @@ fn datetime_iso(day: Date, minute: i64) -> String {
 }
 
 impl Widget for Timeline {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -925,12 +926,12 @@ impl Widget for Timeline {
         };
         taffy::Size {
             width,
-            height: crate::num::f32_of_f64(height),
+            height: tilo_ui_base::num::f32_of_f64(height),
         }
     }
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.layout_scroll();
     }
 
@@ -946,7 +947,7 @@ impl Widget for Timeline {
         self.layout_dirty = false;
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -962,7 +963,7 @@ impl Widget for Timeline {
         let mut tokens = TimelineTokens::of(theme, text_renderer);
         tokens.zoom = self.zoom;
         self.tokens = Some(tokens.clone());
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let slide = self.slide.get(now) * self.rect.width();
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         let moved = transform * Affine::translate((slide, 0.0));
@@ -1021,7 +1022,7 @@ impl Widget for Timeline {
         self.dirty = false;
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if self.mode != TimelineMode::Month
             && ctx.modifiers.state().control_key()
             && let WindowEvent::MouseWheel { delta, .. } = event
@@ -1133,14 +1134,14 @@ impl Widget for Timeline {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.slide.is_moving(crate::motion::frame_now()) || self.scroll.needs_animation_frame()
+        self.slide.is_moving(tilo_ui_base::motion::frame_now()) || self.scroll.needs_animation_frame()
     }
 
     /// Wake at the next whole minute while the now line is shown, so it is repainted when it
     /// crosses a pixel row and never every frame.
     fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
         self.now_here()?;
-        let second = i64::from(crate::clock::local_now().second());
+        let second = i64::from(tilo_ui_base::clock::local_now().second());
         let wait = u64::try_from((60 - second).clamp(1, 60)).unwrap_or(60);
         Some(crate::time::now() + crate::time::Duration::from_secs(wait))
     }
@@ -1267,12 +1268,12 @@ impl Widget for Timeline {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &crate::widget::ModelPath,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         if !matches!(action, Action::Activate | Action::Focus) {
             return false;
         }

@@ -6,8 +6,8 @@
 //! instead.
 use super::paint::{labelled_face, layered};
 use super::{Affine, CONTROL_PX, LOCATION_ICON_PX, Point, Rect, Scene, TextRenderer, Theme};
-use crate::motion::Appearing;
-use crate::tokens::{EffectiveMotion, TextRole};
+use tilo_ui_base::motion::Appearing;
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::TextRole};
 use crate::window_toolbar::ToolbarNotice;
 
 const MAX_LINES: usize = 2;
@@ -93,7 +93,7 @@ impl NoticeStrip {
             return false;
         }
         let gap = f64::from(theme.tokens.spacing.s2);
-        let measured = crate::text_render::with_layout_renderer(theme, |text| {
+        let measured = tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
             let widths: Vec<f64> = actions
                 .iter()
                 .map(|name| labelled_face(Rect::ZERO, name, false).intrinsic_width(text, theme))
@@ -104,7 +104,7 @@ impl NoticeStrip {
                 text.clamp_to_lines(
                     &notice.text,
                     &style,
-                    crate::num::f32_of_f64(spare.max(0.0)),
+                    tilo_ui_base::num::f32_of_f64(spare.max(0.0)),
                     MAX_LINES,
                 )
             };
@@ -256,7 +256,7 @@ impl NoticeStrip {
         if self.rect.area() <= 0.0 || !self.appearing.is_drawn() {
             return;
         }
-        let opacity = crate::num::f32_of_f64(self.appearing.progress().clamp(0.0, 1.0));
+        let opacity = tilo_ui_base::num::f32_of_f64(self.appearing.progress().clamp(0.0, 1.0));
         let text_rect = self.text_rect();
         let origin = self.rect.origin().to_vec2();
         layered(scene, transform, self.rect, opacity, |scene| {
@@ -264,13 +264,13 @@ impl NoticeStrip {
                 text_rect.x0 + LOCATION_ICON_PX / 2.0,
                 text_rect.y0 + measured.line_height / 2.0,
             );
-            crate::icons::draw_icon(
+            tilo_ui_base::icons::draw_icon(
                 scene,
                 transform,
                 Rect::from_center_size(icon, (LOCATION_ICON_PX, LOCATION_ICON_PX)),
                 crate::widget::toast::kind_icon(notice.kind),
                 crate::widget::toast::kind_color(notice.kind, theme),
-                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
             let style = theme.text(TextRole::Body);
             let x = text_rect.x0 + LOCATION_ICON_PX + measured.gap;

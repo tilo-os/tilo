@@ -58,7 +58,7 @@ fn ask(session: &mut Session, text: &str) {
 /// second is the ask after the first, as it is for the person.
 #[test]
 fn the_first_ask_on_the_canvas_makes_the_workspaces_agent_and_the_second_goes_to_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
     let places = layout(&session).places.len();
@@ -118,7 +118,7 @@ fn the_first_ask_on_the_canvas_makes_the_workspaces_agent_and_the_second_goes_to
 /// the ask, from the Enter on, no send is waiting.
 #[test]
 fn an_ask_goes_out_in_the_pass_that_took_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
     let at = crate::common::free_point(&mut session);
@@ -221,7 +221,7 @@ fn placed_as_agent(
 /// again brings the place showing it forward rather than opening a second one.
 #[test]
 fn an_agents_place_without_a_point_stands_beside_what_it_names() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
     let (inbox_root, notes_root) = (
@@ -296,7 +296,7 @@ fn an_agents_place_without_a_point_stands_beside_what_it_names() {
 /// beside is refused rather than sent to the canvas' origin.
 #[test]
 fn a_place_positioned_beside_another_stands_next_to_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
     let (inbox_root, notes_root) = (
@@ -489,7 +489,7 @@ fn moved_and_drawn(session: &mut Session, key: &str, row: PlaceOrigin) {
 /// stood anything on; the rows share only the app store this process built its apps into.
 #[test]
 fn a_place_moved_to_a_point_is_drawn_there() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     for row in [PlaceOrigin::PlacedRecord, PlaceOrigin::AppWindow] {
         let root = private_home();
         let mut session = wide_session(root.path());

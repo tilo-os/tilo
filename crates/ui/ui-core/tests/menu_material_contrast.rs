@@ -26,13 +26,13 @@ use vello::peniko::{Color, Fill};
 use crate::support::render::write_png;
 use std::sync::Arc;
 use tilo_ui::color::contrast_ratio;
-use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::part_paint::backdrop::{BackdropFrame, BackdropRecording, layer_scene};
-use tilo_ui::presence::PresenceCtx;
-use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::Theme;
-use tilo_ui::tokens::colors::{ON_FILL_MIN_CONTRAST, SMALL_TEXT_MIN_CONTRAST};
-use tilo_ui::widget::Widget;
+use tilo_ui_base::offscreen::OffscreenRenderer;
+use tilo_ui_base::{part_paint::backdrop::BackdropFrame, part_paint::backdrop::BackdropRecording, part_paint::backdrop::layer_scene};
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{tokens::colors::ON_FILL_MIN_CONTRAST, tokens::colors::SMALL_TEXT_MIN_CONTRAST};
+use tilo_ui_base::widget::Widget;
 use tilo_ui::widget::context_menu::{ContextMenu, MenuItem};
 
 const CANVAS_W: u32 = 480;
@@ -164,11 +164,11 @@ fn body_pixels(panel: Rect, radius: f64, inset: f64) -> impl Iterator<Item = (u3
 #[test]
 fn a_menus_text_keeps_its_contrast_over_any_backdrop() {
     // Motion reads at its end: this test checks the resting frame.
-    let _settled = tilo_ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let presence = PresenceCtx::default();
     for (theme_name, theme) in themes() {
         let colors = &theme.tokens.colors;
-        let ground = tilo_ui::chrome::panel_ground(&theme);
+        let ground = tilo_ui_base::chrome::panel_ground(&theme);
         // The inks a panel draws: primary labels, and a disabled row's
         // dim ink, each chosen against the opaque ground.
         let disabled_ink = colors
@@ -179,7 +179,7 @@ fn a_menus_text_keeps_its_contrast_over_any_backdrop() {
             let case = format!("{theme_name} over {backdrop_name}");
             let mut shown = menu();
             let with_text = render(&theme, backdrop_name, |scene, text| {
-                shown.draw_overlay(&mut tilo_ui::draw::DrawCtx::new(
+                shown.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                     scene,
                     Affine::IDENTITY,
                     text,
@@ -271,7 +271,7 @@ fn a_menus_text_keeps_its_contrast_over_any_backdrop() {
 fn the_words_menu_of_dark_words_on_a_light_slide_reads_in_the_dark_theme() {
     use tilo_rich_edit::{BlockContent, BlockEditor};
     use tilo_ui::widget::Embedded;
-    let _settled = tilo_ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let theme = Theme::dark();
     let presence = PresenceCtx::default();
     presence.viewport.set(Some(canvas()));
@@ -281,7 +281,7 @@ fn the_words_menu_of_dark_words_on_a_light_slide_reads_in_the_dark_theme() {
         .present_blocks(&[BlockContent::paragraph("a", "Goals for this phase")]);
     host.set_text_color(Some(Color::from_rgb8(0x12, 0x14, 0x18)));
     host.layout(Rect::new(40.0, 30.0, 400.0, 30.0), &theme, &mut text);
-    host.draw(&mut tilo_ui::draw::DrawCtx::new(
+    host.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut Scene::new(),
         Affine::IDENTITY,
         &mut text,
@@ -306,7 +306,7 @@ fn the_words_menu_of_dark_words_on_a_light_slide_reads_in_the_dark_theme() {
         .collect();
     assert!(rows.len() >= 5, "the words' menu has its rows: {rows:?}");
     let with_text = render(&theme, "white", |scene, text| {
-        host.draw_overlay(&mut tilo_ui::draw::DrawCtx::new(
+        host.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             Affine::IDENTITY,
             text,

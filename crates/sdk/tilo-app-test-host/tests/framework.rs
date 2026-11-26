@@ -344,13 +344,13 @@ tilo_test_env::scenario! {
         let entry = tilo_app::history_source::entry_id_from_hash(&version.to_string());
         let target = format!(
             "timeline-entry:{}",
-            tilo_app::HistoryEntryId::hex(&entry)
+            tilo_ui_base::HistoryEntryId::hex(&entry)
         );
         harness
             .perform_semantic_named(
                 "activity_timeline",
                 Some(&target),
-                &tilo_app::a11y::Action::Activate,
+                &tilo_ui_base::a11y::Action::Activate,
             )
             .unwrap();
         harness.click_named("history-restore").unwrap();
@@ -411,12 +411,12 @@ fn restore_in_history(
     let harness = app.harness();
     harness.click_named("history-open").unwrap();
     let entry = tilo_app::history_source::entry_id_from_hash(&version.to_string());
-    let target = format!("timeline-entry:{}", tilo_app::HistoryEntryId::hex(&entry));
+    let target = format!("timeline-entry:{}", tilo_ui_base::HistoryEntryId::hex(&entry));
     harness
         .perform_semantic_named(
             "activity_timeline",
             Some(&target),
-            &tilo_app::a11y::Action::Activate,
+            &tilo_ui_base::a11y::Action::Activate,
         )
         .unwrap();
     harness.click_named("history-restore").unwrap();
@@ -432,7 +432,7 @@ tilo_test_env::scenario! {
 
     phase a_viewer_cannot_edit;
     {
-        let mut app = TestApp::<ChecklistApp>::with_role(tilo_app::Role::Viewer).unwrap();
+        let mut app = TestApp::<ChecklistApp>::with_role(tilo_ui_base::Role::Viewer).unwrap();
         assert!(app.invoke(Checklist::ADD.with("sneaky")).is_err());
         assert!(app.state().items.is_empty());
     }
@@ -502,11 +502,9 @@ tilo_test_env::scenario! {
     // Where nothing can revoke it, it is never relied on at all.
     {
         use std::sync::{Arc, Mutex};
-        use tilo_app::permissions::policy::{
-            Answer, Grant, GrantId, Grantee, KindSet, Lifetime, TreePath,
-        };
+        use tilo_ui_base::{permissions::policy::Answer, permissions::policy::Grant, permissions::policy::GrantId, permissions::policy::Grantee, permissions::policy::KindSet, permissions::policy::Lifetime, permissions::policy::TreePath};
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
-        app.set_role(tilo_app::permissions::Role::Viewer);
+        app.set_role(tilo_ui_base::permissions::Role::Viewer);
         let viewer = app.permissions();
         let mut access = viewer.access().clone();
         let workspace = TreePath::workspace(&access.policy.workspace);
@@ -678,7 +676,7 @@ struct Fragile {
 }
 
 impl Widget for Fragile {
-    fn sync(&mut self, _: &tilo_app::widget::AppModel, _: &tilo_app::widget::ModelPath) {
+    fn sync(&mut self, _: &tilo_ui_base::widget::AppModel, _: &tilo_ui_base::widget::ModelPath) {
         assert!(!FRAGILE_FAILS.get(), "the fragile view failed");
     }
 

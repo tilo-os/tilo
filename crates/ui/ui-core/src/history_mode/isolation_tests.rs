@@ -1,12 +1,9 @@
 use super::host_tests::registration;
 use super::*;
-use crate::theme::Theme;
-use crate::widget::{AppModel, ModelPath};
-use crate::{
-    State,
-    headless::Driver,
-    widget::{ActionEmitter, Text, Widget},
-};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
+use crate::{State, headless::Driver, widget::Text};
+use tilo_ui_base::{widget::ActionEmitter, widget::Widget};
 use automerge::{AutoCommit, ObjId, ROOT, transaction::Transactable};
 use std::{
     cell::{Cell, RefCell},
@@ -167,15 +164,15 @@ struct LiveOwner {
     collab_events: Rc<Cell<usize>>,
     collab_wake_handles: Rc<RefCell<Vec<crate::WakeHandle>>>,
     bracket: Rc<RefCell<Option<Vec<automerge::ChangeHash>>>>,
-    undo_request: Rc<Cell<Option<crate::widget::undo_access::UndoRequest>>>,
+    undo_request: Rc<Cell<Option<tilo_ui_base::widget::undo_access::UndoRequest>>>,
     active: Option<tilo_actions::InvocationId>,
     manual: Rc<RefCell<Option<tilo_actions::ControlInvocation>>>,
     confirmation: tilo_actions::ConfirmationPolicy,
     prompted: bool,
     mutable_identity: Option<Rc<MutableContinuationIdentity>>,
 }
-impl crate::widget::Collaborative for LiveOwner {
-    fn handle_collab_event(&mut self, _: &crate::collaboration::CollabEvent) {
+impl tilo_ui_base::widget::Collaborative for LiveOwner {
+    fn handle_collab_event(&mut self, _: &tilo_ui_base::collaboration::CollabEvent) {
         self.collab_events.set(self.collab_events.get() + 1);
         self.collab_wake_handles
             .borrow_mut()
@@ -184,14 +181,14 @@ impl crate::widget::Collaborative for LiveOwner {
 }
 
 impl Widget for LiveOwner {
-    crate::provides!(
-        dyn crate::widget::Collaborative,
-        dyn crate::widget::undo_access::CommittedActions,
-        dyn crate::widget::undo_access::UndoControl,
-        dyn crate::widget::undo_access::LocalUndo,
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::widget::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::Collaborative,
+        dyn tilo_ui_base::widget::undo_access::CommittedActions,
+        dyn tilo_ui_base::widget::undo_access::UndoControl,
+        dyn tilo_ui_base::widget::undo_access::LocalUndo,
+        dyn tilo_ui_base::widget::controls::ActionControls,
+        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn tilo_ui_base::widget::ResourceOperations
     );
 
     fn name(&self) -> &str {
@@ -220,14 +217,14 @@ impl Widget for LiveOwner {
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.text.apply_layout(tree, node, origin);
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.text.draw(&mut crate::draw::DrawCtx::new(
+        self.text.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -238,22 +235,22 @@ impl Widget for LiveOwner {
     fn get_rect(&self) -> Rect {
         self.text.get_rect()
     }
-    fn handle_event(&mut self, _: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, _: &WindowEvent, _ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.local_events.set(self.local_events.get() + 1);
     }
 }
 
-impl crate::widget::ResourceOperations for LiveOwner {
+impl tilo_ui_base::widget::ResourceOperations for LiveOwner {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         [self.type_id.to_owned()].into_iter().collect()
     }
 
     fn start_operation(
         &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        _: &mut crate::widget::Edits<'_>,
+        op: &tilo_ui_base::widget::ResourceOperation<'_>,
+        _: &mut tilo_ui_base::widget::Edits<'_>,
         _: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
         let crate::host_operation::OperationRequest {
             invocation,
             type_id,
@@ -264,7 +261,7 @@ impl crate::widget::ResourceOperations for LiveOwner {
         }
         self.starts.set(self.starts.get() + 1);
         self.active = Some(invocation);
-        Ok(Some(crate::widget::ResourceOperationStart::Accepted))
+        Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Accepted))
     }
 
     fn poll_resource_operation(
@@ -286,7 +283,7 @@ impl crate::widget::ResourceOperations for LiveOwner {
     }
 }
 
-impl crate::widget::resources::PublishesResources for LiveOwner {
+impl tilo_ui_base::widget::resources::PublishesResources for LiveOwner {
     fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         if let Some(identity) = &self.mutable_identity {
             return mutable_identity_resources(self.resource_id, self.type_id, identity);
@@ -301,7 +298,7 @@ impl crate::widget::resources::PublishesResources for LiveOwner {
     }
 }
 
-impl crate::widget::controls::ActionControls for LiveOwner {
+impl tilo_ui_base::widget::controls::ActionControls for LiveOwner {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.manual
             .borrow_mut()
@@ -310,20 +307,20 @@ impl crate::widget::controls::ActionControls for LiveOwner {
     }
 }
 
-impl crate::widget::undo_access::LocalUndo for LiveOwner {
-    fn handle_local_undo_request(&mut self, _: crate::widget::undo_access::UndoRequest) -> bool {
+impl tilo_ui_base::widget::undo_access::LocalUndo for LiveOwner {
+    fn handle_local_undo_request(&mut self, _: tilo_ui_base::widget::undo_access::UndoRequest) -> bool {
         self.local_events.set(self.local_events.get() + 1);
         true
     }
 }
 
-impl crate::widget::undo_access::UndoControl for LiveOwner {
-    fn take_undo_request(&mut self) -> Option<crate::widget::undo_access::UndoRequest> {
+impl tilo_ui_base::widget::undo_access::UndoControl for LiveOwner {
+    fn take_undo_request(&mut self) -> Option<tilo_ui_base::widget::undo_access::UndoRequest> {
         self.undo_request.take()
     }
 }
 
-impl crate::widget::undo_access::CommittedActions for LiveOwner {
+impl tilo_ui_base::widget::undo_access::CommittedActions for LiveOwner {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.bracket.borrow_mut().take()
     }
@@ -387,7 +384,7 @@ fn preview_discards_unadmitted_local_intents_but_polls_an_already_admitted_effec
         crate::history_mode::pending_controls::PendingControlStatus::Suspended
     );
     driver
-        .perform_named("activity_timeline", &crate::a11y::Action::Focus)
+        .perform_named("activity_timeline", &tilo_ui_base::a11y::Action::Focus)
         .unwrap();
     driver.key("End");
     driver.key("Enter");
@@ -543,7 +540,7 @@ fn retained_phrase_confirmation_requires_fresh_visible_input_and_preserves_argum
     driver
         .perform_named(
             "history-pending-1-phrase",
-            &crate::a11y::Action::SetValue("wrong".into()),
+            &tilo_ui_base::a11y::Action::SetValue("wrong".into()),
         )
         .unwrap();
     driver.click_named("history-pending-1").unwrap();
@@ -551,7 +548,7 @@ fn retained_phrase_confirmation_requires_fresh_visible_input_and_preserves_argum
     driver
         .perform_named(
             "history-pending-1-phrase",
-            &crate::a11y::Action::SetValue("ERASE phrase-owner".into()),
+            &tilo_ui_base::a11y::Action::SetValue("ERASE phrase-owner".into()),
         )
         .unwrap();
     driver.click_named("history-pending-1").unwrap();

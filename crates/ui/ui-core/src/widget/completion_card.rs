@@ -5,12 +5,12 @@
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Vec2};
 
-use crate::icons::{LUCIDE_DEFAULT_STROKE_PX, draw_icon};
-use crate::num::f32_of_f64;
-use crate::paint::PaintCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::{icons::LUCIDE_DEFAULT_STROKE_PX, icons::draw_icon};
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::completion::Candidate;
 
 /// Paint `candidate`'s card beside `drawer`, inside `viewport`: on the trailing side where it
@@ -40,7 +40,7 @@ pub(crate) fn paint(
     let body_style = theme.text(TextRole::Body);
     let caption_style = theme.text(TextRole::Caption);
     let mark = f64::from(tokens.metrics.icon_lg) * 1.5;
-    let mut lines: Vec<(String, &crate::text_render::TextStyle, bool)> = Vec::new();
+    let mut lines: Vec<(String, &tilo_ui_base::text_render::TextStyle, bool)> = Vec::new();
     if let Some(handle) = &candidate.handle {
         lines.push((handle.clone(), &caption_style, true));
     }
@@ -72,13 +72,13 @@ pub(crate) fn paint(
     let y0 = drawer.y0.min(viewport.y1 - height).max(viewport.y0);
     let card = Rect::new(x0, y0, x0 + width, y0 + height);
     let radius = f64::from(tokens.radii.panel);
-    crate::surface::shadow(scene, transform, card, radius, &tokens.elevation.floating);
-    crate::surface::panel(scene, transform, card, radius, theme);
+    tilo_ui_base::surface::shadow(scene, transform, card, radius, &tokens.elevation.floating);
+    tilo_ui_base::surface::panel(scene, transform, card, radius, theme);
     let ink = theme.text_primary;
     let dim = tokens.colors.ink_on_any(
-        &[crate::chrome::panel_ground(theme)],
+        &[tilo_ui_base::chrome::panel_ground(theme)],
         theme.text_dim,
-        crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+        tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST,
     );
     let mut x = card.x0 + pad;
     let mut y = card.y0 + pad;
@@ -90,7 +90,7 @@ pub(crate) fn paint(
         y + (head + mark) / 2.0,
     );
     if let Some(person) = &candidate.person {
-        crate::widget::AvatarFace::of(person)
+        tilo_ui_base::widget::AvatarFace::of(person)
             .paint(&mut PaintCtx::new(scene, transform, text, theme), mark_rect);
         x += mark + f64::from(tokens.spacing.s3);
     } else if let Some(icon) = candidate.icon {

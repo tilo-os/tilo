@@ -1,8 +1,8 @@
 //! Presentation state (scroll offset, view mode) a root contributes to the
 //! App's [`View`](super::View).
 
-use crate::widget::Widget;
-use crate::widget::capability::{capability, capability_mut};
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{widget::capability::capability, widget::capability::capability_mut};
 
 /// A root with restorable presentation state.
 pub trait ViewState: Widget {

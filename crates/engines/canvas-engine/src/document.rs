@@ -19,7 +19,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use tilo_ui::icons::Icon;
+use tilo_ui_base::icons::Icon;
 
 use crate::media::MediumSpec;
 use crate::model::{Artwork, Ground, MarkBody};

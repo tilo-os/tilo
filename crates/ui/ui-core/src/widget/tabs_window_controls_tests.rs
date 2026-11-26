@@ -20,8 +20,8 @@ tilo_test_env::scenario! {
     // close among its controls, to the pointer or to assistive technology,
     // and keeps the rest.
     {
-        let _settled = crate::motion::testing::settled();
-        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
         let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Notes")], 1);
         b.set_window_controls(true);
         b.set_holder(
@@ -37,7 +37,7 @@ tilo_test_env::scenario! {
         assert!(controls.close.area() <= 0.0);
         assert!(controls.maximize.area() > 0.0);
         let node = Widget::accessibility(&b).expect("the bar is described");
-        fn targets(node: &crate::a11y::AccessNode, into: &mut Vec<String>) {
+        fn targets(node: &tilo_ui_base::a11y::AccessNode, into: &mut Vec<String>) {
             into.extend(node.action_target.clone());
             for child in &node.children {
                 targets(child, into);
@@ -66,8 +66,8 @@ tilo_test_env::scenario! {
     // action of the app's own, on the window's ground before it — never a
     // control inside it, and never the same thing as one.
     {
-        let _settled = crate::motion::testing::settled();
-        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
         let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Notes")], 1);
         b.set_window_controls(true);
         b.set_history_control(1, Some(HistoryControl::Closed));
@@ -99,8 +99,8 @@ tilo_test_env::scenario! {
 
     phase the_pills_padding_is_the_windows_and_its_controls_hover_alone;
     {
-        let _settled = crate::motion::testing::settled();
-        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
         let mut b = TabBar::new(
             "g1",
             vec![
@@ -117,7 +117,7 @@ tilo_test_env::scenario! {
 
         let hover = |b: &mut TabBar, p: Point| {
             let (taffy, node) = built_layout(b);
-            let event = crate::synthetic_input::cursor_moved(p.x, p.y);
+            let event = tilo_ui_base::synthetic_input::cursor_moved(p.x, p.y);
             Dispatch::new().layout(&taffy, node).send(b, &event);
         };
 
@@ -137,7 +137,7 @@ tilo_test_env::scenario! {
             "the pill's padding belongs to no control"
         );
 
-        let press = crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Left);
+        let press = tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Left);
         let (taffy, node) = built_layout(&mut b);
         assert!(
             Dispatch::new()
@@ -152,16 +152,16 @@ tilo_test_env::scenario! {
 
     phase each_window_control_reports_the_rect_it_is_drawn_in;
     {
-        let _settled = crate::motion::testing::settled();
-        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
         let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Notes")], 1);
         b.set_window_controls(true);
         lay_out_at_width_with(&mut b, 900.0, &theme);
         let node = Widget::accessibility(&b).expect("the bar is described");
         fn find<'a>(
-            node: &'a crate::a11y::AccessNode,
+            node: &'a tilo_ui_base::a11y::AccessNode,
             target: &str,
-        ) -> Option<&'a crate::a11y::AccessNode> {
+        ) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
             if node.action_target.as_deref() == Some(target) {
                 return Some(node);
             }
@@ -193,7 +193,7 @@ tilo_test_env::scenario! {
             let close = find(&node, &format!("tab-close:{id}")).expect("a pill can be closed");
             let drawn = b.close_rects[index];
             assert_eq!(
-                close.bounds.map(crate::a11y::AccessBounds::to_rect),
+                close.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect),
                 (drawn.area() > 0.0).then_some(drawn),
                 "tab-close:{id}"
             );
@@ -240,14 +240,14 @@ tilo_test_env::scenario! {
     phase a_secondary_press_on_the_location_opens_the_windows_menu;
     {
         let mut b = solo_bar_with_slots();
-        lay_out_at_width_with(&mut b, 900.0, &crate::theme::Theme::dark());
+        lay_out_at_width_with(&mut b, 900.0, &tilo_ui_base::theme::Theme::dark());
         let location = b.location_rect();
         assert!(
             location.area() > 0.0,
             "the app's location stands in the row"
         );
         let reload = b.toolbar_rects().3[0];
-        let right = crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
+        let right = tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
         move_to(&mut b, location.center().x, location.center().y);
         assert!(dispatch(&mut b, &right), "the bar takes the press");
         assert_eq!(
@@ -267,7 +267,7 @@ tilo_test_env::scenario! {
         );
         b.set_window_controls(true);
         assert!(b.set_toolbar(1, Some(browser_parts())));
-        lay_out_at_width_with(&mut b, 900.0, &crate::theme::Theme::dark());
+        lay_out_at_width_with(&mut b, 900.0, &tilo_ui_base::theme::Theme::dark());
         let location = b.location_rect();
         assert!(location.y0 >= b.tab_row().y1, "{location:?}");
         move_to(&mut b, location.center().x, location.center().y);
@@ -306,8 +306,8 @@ tilo_test_env::scenario! {
     // slots carry the app's location, so the title is not painted over the location beside it.
     {
         let mut b = solo_bar_with_slots();
-        let theme = crate::theme::Theme::light();
-        let mut text = crate::text_render::TextRenderer::new();
+        let theme = tilo_ui_base::theme::Theme::light();
+        let mut text = tilo_ui_base::text_render::TextRenderer::new();
         b.tab_rects = vec![Rect::new(0.0, 6.0, 40.0, 34.0)];
         b.visible_titles = vec![b.visible_title(0, &mut text, &theme)];
         assert!(
@@ -327,12 +327,12 @@ tilo_test_env::scenario! {
 
     phase the_bar_reports_the_words_it_paints_where_they_stand;
     {
-        let _settled = crate::motion::testing::settled();
-        let theme = crate::theme::Theme::light().with_reduce_motion(true);
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let theme = tilo_ui_base::theme::Theme::light().with_reduce_motion(true);
         let mut b = solo_bar_with_slots();
         lay_out_at_width_with(&mut b, 900.0, &theme);
         let mut scene = Scene::new();
-        b.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &theme, crate::presence::PresenceCtx::default().draw_env()));
+        b.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &theme, tilo_ui_base::presence::PresenceCtx::default().draw_env()));
         let labels = b.bar_layout().labels;
         let location = labels
             .iter()
@@ -361,12 +361,12 @@ tilo_test_env::scenario! {
 
     phase the_words_the_old_pill_painted_beside_its_mark_are_reported_where_they_stood;
     {
-        let _settled = crate::motion::testing::settled();
-        let theme = crate::theme::Theme::light().with_reduce_motion(true);
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let theme = tilo_ui_base::theme::Theme::light().with_reduce_motion(true);
         let mut b = solo_bar_with_slots();
         lay_out_at_width_with(&mut b, 900.0, &theme);
         let mut text = TextRenderer::new();
-        b.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, crate::presence::PresenceCtx::default().draw_env()));
+        b.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, tilo_ui_base::presence::PresenceCtx::default().draw_env()));
         let pill = b.tab_rects[0];
         let style = tab_title_style(&theme).with_weight(TextWeight::Semibold);
         let (width, height) = text.measure_style("DuckDuckGo", None, &style);

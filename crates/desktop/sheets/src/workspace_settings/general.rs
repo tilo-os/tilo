@@ -3,11 +3,9 @@
 //! workspaces, and leaving it, last and apart.
 
 use ui::prelude::*;
-use ui::tokens::Rhythm;
-use ui::widget::{
-    Button, ButtonRole, Column, Divider, Element, ListRow, Row, Section, StatGroup, StatTile, Text,
-    TextInput,
-};
+use tilo_ui_base::tokens::Rhythm;
+use ui::{widget::Button, widget::ButtonRole, widget::Column, widget::Divider, widget::ListRow, widget::Row, widget::Section, widget::StatGroup, widget::StatTile, widget::Text, widget::TextInput};
+use tilo_ui_base::widget::Element;
 
 use super::{Confirm, Decision, Parts, Settings, WorkspaceSettingsEffect};
 

@@ -1,17 +1,18 @@
-use crate::icons;
-use crate::num::f32_of_f64;
+use tilo_ui_base::icons;
+use tilo_ui_base::num::f32_of_f64;
 
 use crate::floating_surface::FloatingSurfaceProvider;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 use crate::time::{Duration, Instant};
-use crate::widget::DrawChild;
-use crate::widget::TaffyTreeExt;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::TaffyTreeExt;
 use crate::widget::edge_resize::{WidthLimits, WindowEdge};
 use crate::widget::tabs::close_fade;
 use crate::widget::window_controls::WindowControl;
-use crate::widget::{AppModel, ModelPath};
-use crate::widget::{TabBar, TabDescriptor, TileContent, TileHost, Widget};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
+use crate::{widget::TabBar, widget::TabDescriptor, widget::TileContent, widget::TileHost};
+use tilo_ui_base::widget::Widget;
 use automerge::AutoCommit;
 use std::collections::HashMap;
 use taffy::style_helpers::length;
@@ -64,20 +65,20 @@ const DRAG_SOURCE_CONTENT_ALPHA: f32 = 0.18;
 /// handle instead of turning into a second opaque window under the pointer.
 const DRAG_CONTENT_SCALE_END: f64 = 0.96;
 
-fn window_progress(direction: crate::motion::Direction, elapsed: Duration) -> f64 {
-    crate::motion::WindowMotion::OPEN.progress_after(
+fn window_progress(direction: tilo_ui_base::motion::Direction, elapsed: Duration) -> f64 {
+    tilo_ui_base::motion::WindowMotion::OPEN.progress_after(
         direction,
-        crate::tokens::EffectiveMotion::default(),
-        crate::tokens::MotionSource::Pointer,
+        tilo_ui_base::tokens::EffectiveMotion::default(),
+        tilo_ui_base::tokens::MotionSource::Pointer,
         elapsed,
     )
 }
 
 fn window_close_time() -> Duration {
-    crate::motion::WindowMotion::OPEN.settle_time(
-        crate::motion::Direction::Exit,
-        crate::tokens::EffectiveMotion::default(),
-        crate::tokens::MotionSource::Pointer,
+    tilo_ui_base::motion::WindowMotion::OPEN.settle_time(
+        tilo_ui_base::motion::Direction::Exit,
+        tilo_ui_base::tokens::EffectiveMotion::default(),
+        tilo_ui_base::tokens::MotionSource::Pointer,
     )
 }
 
@@ -136,7 +137,7 @@ const SEARCH_CONTROL_WIDTH: f64 =
     clippy::struct_excessive_bools,
     reason = "independent UI flags on a widely-shared pub struct; not a state bitset"
 )]
-#[crate::component::not_a_component(shell, "a group of windows")]
+#[tilo_ui_base::component::not_a_component(shell, "a group of windows")]
 pub struct WindowGroup {
     external_navigation: bool,
     /// Transient presentation from the parent row; never a persisted maximize.
@@ -196,7 +197,7 @@ pub struct WindowGroup {
     /// shown before it: the window keeps showing that one meanwhile, so its
     /// body is never blank.
     tab_waiting: Option<(u64, u64)>,
-    tab_fade: Option<crate::motion::CrossFade<u64>>,
+    tab_fade: Option<tilo_ui_base::motion::CrossFade<u64>>,
     rect_spring: Option<FrameSpring<Rect>>,
     width_spring: Option<FrameSpring<f64>>,
     /// The width the window's bar and content are laid out at while its part width is in flight:
@@ -246,7 +247,7 @@ pub struct WindowGroup {
     /// `needs_animation_frame` query can avoid waking for transitions that
     /// must snap to their endpoint.
     reduce_motion: bool,
-    motion_source: crate::tokens::MotionSource,
+    motion_source: tilo_ui_base::tokens::MotionSource,
 }
 
 const EDGE_HOVER_DWELL: Duration = Duration::from_millis(120);
@@ -256,14 +257,14 @@ impl WindowGroup {
     /// Paint a whole group while its window handle is being reordered. The
     /// handle remains half-transparent and the app pixels recede further,
     /// matching the tab-drag visual without duplicating layout state.
-    pub(crate) fn draw_group_drag_visual(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub(crate) fn draw_group_drag_visual(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
-        crate::surface::shadow(
+        tilo_ui_base::surface::shadow(
             scene,
             transform,
             self.rect,
@@ -390,7 +391,7 @@ impl WindowGroup {
             close_duration: window_close_time(),
             close_lands: false,
             reduce_motion: false,
-            motion_source: crate::tokens::MotionSource::default(),
+            motion_source: tilo_ui_base::tokens::MotionSource::default(),
             style_dirty: false,
             bar_offer_dirty: false,
             built_active: Some(active_id),
@@ -455,7 +456,7 @@ impl WindowGroup {
             // The window the person left keeps no control of it on the keyboard: what they type
             // next is the window they moved to.
             for (_, host) in &mut self.hosts {
-                crate::widget::release_keyboard(host.as_mut());
+                tilo_ui_base::widget::release_keyboard(host.as_mut());
             }
         }
         true
@@ -492,7 +493,7 @@ impl WindowGroup {
         self.active_host()?.holds_first_frame_until(now)
     }
 
-    pub(crate) fn set_motion_source(&mut self, source: crate::tokens::MotionSource) {
+    pub(crate) fn set_motion_source(&mut self, source: tilo_ui_base::tokens::MotionSource) {
         if self.motion_source == source {
             return;
         }
@@ -634,7 +635,7 @@ impl WindowGroup {
         // The frame's time: after a stall the width lands where the motion
         // is, rather than crawling in slow motion; it is exactly at rest
         // once settled, so no sub-pixel remainder keeps asking for frames.
-        spring.step(crate::motion::frame_now());
+        spring.step(tilo_ui_base::motion::frame_now());
         self.style_dirty = true;
         if spring.is_settled() && !self.is_closing() {
             self.width_spring = None;
@@ -685,7 +686,7 @@ impl WindowGroup {
     fn part_at_rest(&self) -> bool {
         self.width_spring
             .as_ref()
-            .is_none_or(|spring| !spring.motion.is_moving(crate::motion::frame_now()))
+            .is_none_or(|spring| !spring.motion.is_moving(tilo_ui_base::motion::frame_now()))
     }
 
     /// When a tab's close starts: now, or, for a shortcut that lands, as long
@@ -715,7 +716,7 @@ impl WindowGroup {
         self.top_overlay_inset
     }
 
-    fn draw_bar(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_bar(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -740,13 +741,13 @@ impl WindowGroup {
             return to;
         }
         let direction = if to >= self.top_slide_from {
-            crate::motion::Direction::Enter
+            tilo_ui_base::motion::Direction::Enter
         } else {
-            crate::motion::Direction::Exit
+            tilo_ui_base::motion::Direction::Exit
         };
-        let spec = crate::motion::PanelSlide::SPEC;
-        let motion = crate::tokens::EffectiveMotion::default();
-        let source = crate::tokens::MotionSource::Pointer;
+        let spec = tilo_ui_base::motion::PanelSlide::SPEC;
+        let motion = tilo_ui_base::tokens::EffectiveMotion::default();
+        let source = tilo_ui_base::tokens::MotionSource::Pointer;
         let elapsed = crate::time::now().saturating_duration_since(since);
         if elapsed >= spec.settle_time(direction, motion, source) {
             return to;
@@ -777,9 +778,9 @@ impl WindowGroup {
         let mut pressed = false;
         if self.bar.take_search().is_some() {
             if self.search.is_open() {
-                self.close_search(crate::tokens::MotionSource::Pointer);
+                self.close_search(tilo_ui_base::tokens::MotionSource::Pointer);
             } else {
-                self.open_search(crate::tokens::MotionSource::Pointer);
+                self.open_search(tilo_ui_base::tokens::MotionSource::Pointer);
             }
             pressed = true;
         }
@@ -868,16 +869,16 @@ impl WindowGroup {
         }
         let (edge, since) = self.edge_highlight?;
         (now.saturating_duration_since(since) >= EDGE_HOVER_DWELL
-            || crate::motion::testing::is_settled())
+            || tilo_ui_base::motion::testing::is_settled())
         .then_some(edge)
     }
 
     fn size_label_fading(&self, now: Instant) -> Option<f64> {
         let (released, ..) = self.size_label_fade?;
-        let progress = crate::motion::CROSS_FADE.progress_after(
-            crate::motion::Direction::Exit,
-            crate::tokens::EffectiveMotion::default(),
-            crate::tokens::MotionSource::Pointer,
+        let progress = tilo_ui_base::motion::CROSS_FADE.progress_after(
+            tilo_ui_base::motion::Direction::Exit,
+            tilo_ui_base::tokens::EffectiveMotion::default(),
+            tilo_ui_base::tokens::MotionSource::Pointer,
             now.saturating_duration_since(released),
         );
         (!self.reduce_motion && progress < 1.0).then_some(progress)
@@ -1093,13 +1094,13 @@ impl WindowGroup {
     /// Open the window's search on the active tab: in place where its app
     /// offers a document or a list, else the platform search narrowed to
     /// the app (what the control always did).
-    pub fn open_search(&mut self, source: crate::tokens::MotionSource) {
+    pub fn open_search(&mut self, source: tilo_ui_base::tokens::MotionSource) {
         self.open_search_as(source, crate::window_toolbar::SearchOpening::Find);
     }
 
     pub fn open_search_as(
         &mut self,
-        source: crate::tokens::MotionSource,
+        source: tilo_ui_base::tokens::MotionSource,
         opening: crate::window_toolbar::SearchOpening,
     ) {
         let active = self.bar.active_id();
@@ -1162,7 +1163,7 @@ impl WindowGroup {
                 self.window_offers.remove(at);
                 if self.search_tab == Some(id) && self.search.is_remote() {
                     self.search.detach();
-                    self.close_search(crate::tokens::MotionSource::Pointer);
+                    self.close_search(tilo_ui_base::tokens::MotionSource::Pointer);
                 }
             }
             (None, None) => return false,
@@ -1199,11 +1200,11 @@ impl WindowGroup {
             }
             return true;
         }
-        self.open_search_as(crate::tokens::MotionSource::Keyboard, opening);
+        self.open_search_as(tilo_ui_base::tokens::MotionSource::Keyboard, opening);
         self.search.is_open() || self.pending_search_open.is_some()
     }
 
-    pub fn close_search(&mut self, source: crate::tokens::MotionSource) {
+    pub fn close_search(&mut self, source: tilo_ui_base::tokens::MotionSource) {
         self.search.close(source);
         self.search_active = false;
         self.drive_search();
@@ -1325,7 +1326,7 @@ impl WindowGroup {
             style.size.width = Dimension::auto();
             // A maximized window takes the strip's width and no more: it is not
             // measured at its content's least width (`filling`).
-            style = crate::widget::layout::filling(style, 1.0e6);
+            style = tilo_ui_base::widget::layout::filling(style, 1.0e6);
         }
         // While the shell's bar shows over the windows' top edge (a maximized
         // window, or a bar hidden by choice) the window is the space below it:
@@ -1367,7 +1368,7 @@ impl WindowGroup {
     /// bar and tile take their widths. The row sets the window's own node
     /// style (from [`Self::own_style`]). Returns `false` when the window
     /// must be built again.
-    pub(crate) fn remount_in_row(&mut self, remount: &mut super::Remount<'_>) -> bool {
+    pub(crate) fn remount_in_row(&mut self, remount: &mut tilo_ui_base::widget::Remount<'_>) -> bool {
         if self.node.is_none() || self.laid_shape != Some(self.layout_shape()) {
             return false;
         }
@@ -1466,7 +1467,7 @@ impl WindowGroup {
             self.rect_spring = None;
             return;
         }
-        spring.step(crate::motion::frame_now());
+        spring.step(tilo_ui_base::motion::frame_now());
         if spring.is_settled() {
             self.rect_spring = None;
             if !self.maximized {
@@ -1541,19 +1542,19 @@ impl WindowGroup {
                     && (Widget::presented(&**h)
                         || h.holds_first_frame_until(crate::time::now()).is_none())
             }) {
-                let mut fade = crate::motion::CrossFade::new(from);
+                let mut fade = tilo_ui_base::motion::CrossFade::new(from);
                 fade.show(
                     to,
                     theme.motion(),
-                    crate::tokens::MotionSource::Pointer,
-                    crate::motion::frame_now(),
+                    tilo_ui_base::tokens::MotionSource::Pointer,
+                    tilo_ui_base::motion::frame_now(),
                 );
                 self.tab_fade = Some(fade);
                 self.tab_waiting = None;
             }
         }
         if self.tab_fade.as_ref().is_some_and(|fade| {
-            *fade.shown() != active || !fade.is_moving(crate::motion::frame_now())
+            *fade.shown() != active || !fade.is_moving(tilo_ui_base::motion::frame_now())
         }) {
             self.tab_fade = None;
         }
@@ -1799,7 +1800,7 @@ impl WindowGroup {
     pub fn location_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         let took = self.bar.location_event(event, ctx);
         if took {
@@ -1821,7 +1822,7 @@ impl WindowGroup {
         self.bar.tooltip_target_at(p)
     }
 
-    pub fn draw_bar_popups(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub fn draw_bar_popups(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1829,7 +1830,7 @@ impl WindowGroup {
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.navigation_bar_visible() {
-            self.bar.draw_overlay(&mut crate::draw::DrawCtx::new(
+            self.bar.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text_renderer,
@@ -1838,7 +1839,7 @@ impl WindowGroup {
             ));
         }
         if self.shows_its_bar() {
-            self.search.draw_overlay(&mut crate::draw::DrawCtx::new(
+            self.search.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text_renderer,
@@ -2279,7 +2280,7 @@ impl WindowGroup {
         }
         if let Some(started) = self.closing_at {
             let eased = window_progress(
-                crate::motion::Direction::Exit,
+                tilo_ui_base::motion::Direction::Exit,
                 crate::time::now().saturating_duration_since(started),
             );
             let alpha = f32_of_f64((1.0 - eased).max(0.0));
@@ -2320,7 +2321,7 @@ impl WindowGroup {
         self.rect_draw_affine(transform)
     }
 
-    fn draw_closing_hosts(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_closing_hosts(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2344,10 +2345,10 @@ impl WindowGroup {
             .map(|(id, t)| (*id, *t))
             .collect();
         for (id, started) in closing_ids {
-            let eased = crate::motion::ListChange::FADE.progress_after(
-                crate::motion::Direction::Exit,
-                crate::tokens::EffectiveMotion::default(),
-                crate::tokens::MotionSource::Pointer,
+            let eased = tilo_ui_base::motion::ListChange::FADE.progress_after(
+                tilo_ui_base::motion::Direction::Exit,
+                tilo_ui_base::tokens::EffectiveMotion::default(),
+                tilo_ui_base::tokens::MotionSource::Pointer,
                 crate::time::now().saturating_duration_since(started),
             );
             let alpha = f32_of_f64(1.0 - eased);
@@ -2470,7 +2471,7 @@ impl WindowGroup {
         let chip = crate::widget::tooltip::hover_chip_rect_on(
             tr,
             theme,
-            (anchor, crate::widget::TooltipSide::Beside),
+            (anchor, tilo_ui_base::widget::TooltipSide::Beside),
             &label,
             within,
         );
@@ -2494,7 +2495,7 @@ impl WindowGroup {
     /// under the translucent tab handle. This runs in the floating-surface pass
     /// so the preview can cross group and strip clips without changing hit-test
     /// geometry or client configure sizes.
-    fn draw_tab_drag_visual(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_tab_drag_visual(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2505,7 +2506,7 @@ impl WindowGroup {
             return;
         };
         let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == visual.tab_id) else {
-            self.bar.draw_drag_ghost(&mut crate::draw::DrawCtx::new(
+            self.bar.draw_drag_ghost(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 tr,
@@ -2518,7 +2519,7 @@ impl WindowGroup {
         if source.width() <= 0.0 || source.height() <= 0.0 {
             // Inactive hosts intentionally have no layout until selected.
             // Keep the carried handle visible without waking/rendering them.
-            self.bar.draw_drag_ghost(&mut crate::draw::DrawCtx::new(
+            self.bar.draw_drag_ghost(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 tr,
@@ -2543,7 +2544,7 @@ impl WindowGroup {
             * Affine::scale(scale)
             * Affine::translate((-source_top_center.x, -source_top_center.y));
 
-        crate::surface::shadow(
+        tilo_ui_base::surface::shadow(
             scene,
             preview_transform,
             source,
@@ -2563,7 +2564,7 @@ impl WindowGroup {
         host.set_focused(was_focused);
         scene.pop_layer();
 
-        self.bar.draw_drag_ghost(&mut crate::draw::DrawCtx::new(
+        self.bar.draw_drag_ghost(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             tr,
@@ -2596,14 +2597,14 @@ impl FloatingSurfaceProvider for WindowGroup {
         &mut self,
         id: &str,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         self.hosts.iter_mut().any(|(_, host)| {
             FloatingSurfaceProvider::floating_surface_event(&mut **host, id, event, ctx)
         })
     }
 
-    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
+    fn floating_surface_accessibility(&self, id: &str) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.hosts.iter().find_map(|(_, host)| {
             FloatingSurfaceProvider::floating_surface_accessibility(&**host, id)
         })
@@ -2613,8 +2614,8 @@ impl FloatingSurfaceProvider for WindowGroup {
         &mut self,
         id: &str,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> bool {
         self.hosts.iter_mut().any(|(_, host)| {
@@ -2629,7 +2630,7 @@ impl FloatingSurfaceProvider for WindowGroup {
         })
     }
 
-    fn floating_surface_ime(&self, id: &str) -> Option<(crate::ime::InputContent, Rect)> {
+    fn floating_surface_ime(&self, id: &str) -> Option<(tilo_ui_base::ime::InputContent, Rect)> {
         self.hosts
             .iter()
             .find_map(|(_, host)| FloatingSurfaceProvider::floating_surface_ime(&**host, id))
@@ -2659,7 +2660,7 @@ impl FloatingSurfaceProvider for WindowGroup {
             .collect()
     }
 
-    fn draw_floating_surfaces(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_floating_surfaces(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2669,10 +2670,10 @@ impl FloatingSurfaceProvider for WindowGroup {
         for (_, host) in &mut self.hosts {
             FloatingSurfaceProvider::draw_floating_surfaces(
                 &mut **host,
-                &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+                &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
             );
         }
-        self.draw_tab_drag_visual(&mut crate::draw::DrawCtx::new(
+        self.draw_tab_drag_visual(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -2681,7 +2682,7 @@ impl FloatingSurfaceProvider for WindowGroup {
         ));
     }
 
-    fn draw_floating_surface(&mut self, id: &str, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
+    fn draw_floating_surface(&mut self, id: &str, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) -> bool {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2692,7 +2693,7 @@ impl FloatingSurfaceProvider for WindowGroup {
             FloatingSurfaceProvider::draw_floating_surface(
                 &mut **host,
                 id,
-                &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+                &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
             )
         })
     }
@@ -2731,8 +2732,8 @@ impl FloatingSurfaceProvider for WindowGroup {
 
 /// A group stands in no record of its own; its keyboard shortcuts are those
 /// of the window it shows.
-impl crate::widget::component_walk::ComponentBoundary for WindowGroup {
-    fn component_scope(&self) -> Option<crate::widget::component_walk::Binding> {
+impl tilo_ui_base::widget::component_walk::ComponentBoundary for WindowGroup {
+    fn component_scope(&self) -> Option<tilo_ui_base::widget::component_walk::Binding> {
         None
     }
 }
@@ -2744,12 +2745,12 @@ impl crate::bound_dispatch::BoundWidget for WindowGroup {
 }
 
 impl Widget for WindowGroup {
-    crate::provides!(
+    tilo_ui_base::provides!(
         dyn crate::floating_surface::FloatingSurfaceProvider,
         #[cfg(feature = "model")]
-        dyn crate::widget::presence_topology::CollaborationTopology,
+        dyn tilo_ui_base::widget::presence_topology::CollaborationTopology,
         dyn crate::history_mode::capability::FrameworkHistoryTopology,
-        dyn crate::widget::controls::ActionControls,
+        dyn tilo_ui_base::widget::controls::ActionControls,
         dyn crate::component_lifecycle::ComponentLifecycle,
         dyn crate::bound_dispatch::BoundWidget
     );
@@ -2764,8 +2765,8 @@ impl Widget for WindowGroup {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if let Some(performed) = self.perform_held_furniture_action(target, action) {
@@ -2775,15 +2776,15 @@ impl Widget for WindowGroup {
             .perform_semantic_action(target, action, state, path)
     }
 
-    fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
+    fn primary_vertical_scroll(&self) -> Option<tilo_ui_base::widget::PrimaryScrollRegion> {
         self.active_host()?.primary_vertical_scroll()
     }
     fn apply_primary_vertical_scroll(
         &mut self,
-        action: crate::widget::PrimaryScrollAction,
-    ) -> crate::widget::PrimaryScrollResult {
+        action: tilo_ui_base::widget::PrimaryScrollAction,
+    ) -> tilo_ui_base::widget::PrimaryScrollResult {
         self.active_host_mut()
-            .map_or(crate::widget::PrimaryScrollResult::Unsupported, |host| {
+            .map_or(tilo_ui_base::widget::PrimaryScrollResult::Unsupported, |host| {
                 host.apply_primary_vertical_scroll(action)
             })
     }
@@ -2801,7 +2802,7 @@ impl Widget for WindowGroup {
             .min()
     }
 
-    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+    fn set_platform_conventions(&mut self, conventions: tilo_ui_base::platform::PlatformConventions) {
         self.bar.set_platform_conventions(conventions);
         for child in self
             .hosts
@@ -2814,7 +2815,7 @@ impl Widget for WindowGroup {
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         self.bar.set_interaction_environment(environment);
         for child in self
@@ -2826,7 +2827,7 @@ impl Widget for WindowGroup {
         }
     }
 
-    fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
+    fn mount_native_views(&mut self, host: &tilo_ui_base::widget::native_view::NativeViewHost<'_>) {
         self.bar.mount_native_views(host);
         for child in self
             .hosts
@@ -2876,7 +2877,7 @@ impl Widget for WindowGroup {
         }
         children
     }
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2885,7 +2886,7 @@ impl Widget for WindowGroup {
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let active = self.bar.active_id();
         if let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
-            host.draw_overlay(&mut crate::draw::DrawCtx::new(
+            host.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text_renderer,
@@ -2894,7 +2895,7 @@ impl Widget for WindowGroup {
             ));
         }
         if self.shows_its_bar() {
-            self.search.draw_overlay(&mut crate::draw::DrawCtx::new(
+            self.search.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text_renderer,
@@ -2903,7 +2904,7 @@ impl Widget for WindowGroup {
             ));
         }
         if self.navigation_bar_visible() {
-            self.bar.draw_overlay(&mut crate::draw::DrawCtx::new(
+            self.bar.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text_renderer,
@@ -3042,7 +3043,7 @@ impl Widget for WindowGroup {
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.retarget_rect_spring();
         let children = taffy.children(node).unwrap_or_default();
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
@@ -3072,7 +3073,7 @@ impl Widget for WindowGroup {
         self.place_search();
         self.sync_host_keyboard();
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -3146,7 +3147,7 @@ impl Widget for WindowGroup {
         }
         let bar_over = self.bar_over_content();
         if self.navigation_bar_visible() && !bar_over {
-            self.draw_bar(&mut crate::draw::DrawCtx::new(
+            self.draw_bar(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 tr,
@@ -3159,7 +3160,7 @@ impl Widget for WindowGroup {
         let dragged_tab = self.bar.drag_visual(theme).map(|visual| visual.tab_id);
         let bar_visible = self.navigation_bar_visible();
         self.advance_tab_handover(theme);
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let outgoing = self
             .tab_fade
             .as_ref()
@@ -3209,14 +3210,14 @@ impl Widget for WindowGroup {
                 scene.pop_layer();
             }
         }
-        self.draw_held_furniture(&mut crate::draw::DrawCtx::new(
+        self.draw_held_furniture(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             tr,
             theme,
             env.clone(),
         ));
-        self.draw_closing_hosts(&mut crate::draw::DrawCtx::new(
+        self.draw_closing_hosts(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             tr,
@@ -3224,7 +3225,7 @@ impl Widget for WindowGroup {
             env.clone(),
         ));
         if bar_over {
-            self.draw_bar_over_content(&mut crate::draw::DrawCtx::new(
+            self.draw_bar_over_content(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 tr,
@@ -3233,7 +3234,7 @@ impl Widget for WindowGroup {
             ));
         }
         if self.navigation_bar_visible() {
-            self.draw_bar_tips(&mut crate::draw::DrawCtx::new(
+            self.draw_bar_tips(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 tr,
@@ -3253,7 +3254,7 @@ impl Widget for WindowGroup {
             scene.pop_layer();
         }
     }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if self.is_closing() {
             return;
         }
@@ -3355,16 +3356,16 @@ impl Widget for WindowGroup {
     }
     fn wants_pointer_capture(&self) -> bool {
         self.edge_drag.is_some()
-            || super::Widget::wants_pointer_capture(&self.bar)
+            || tilo_ui_base::widget::Widget::wants_pointer_capture(&self.bar)
             || self
                 .active_host()
-                .is_some_and(super::Widget::wants_pointer_capture)
+                .is_some_and(tilo_ui_base::widget::Widget::wants_pointer_capture)
     }
     fn take_structure_dirty(&mut self) -> bool {
         self.take_structure_change().rebuilds()
     }
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
-        use crate::widget::StructureChange;
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
+        use tilo_ui_base::widget::StructureChange;
         let bar = self.bar.take_structure_dirty();
         let active = self.bar.active_id();
         let mut active_host = StructureChange::None;
@@ -3392,7 +3393,7 @@ impl Widget for WindowGroup {
         own.join(active_host)
     }
 
-    fn remount_children(&mut self, remount: &mut super::Remount<'_>) -> bool {
+    fn remount_children(&mut self, remount: &mut tilo_ui_base::widget::Remount<'_>) -> bool {
         if !self.remount_in_row(remount) {
             return false;
         }
@@ -3532,10 +3533,10 @@ impl Widget for WindowGroup {
         let tab_fade = self
             .tab_fade
             .as_ref()
-            .is_some_and(|fade| fade.is_moving(crate::motion::frame_now()));
+            .is_some_and(|fade| fade.is_moving(tilo_ui_base::motion::frame_now()));
         let size_label_fading = self.size_label_fade.is_some_and(|(released, ..)| {
             crate::time::now().saturating_duration_since(released)
-                < crate::tokens::Durations::default().fast().saturating_mul(2)
+                < tilo_ui_base::tokens::Durations::default().fast().saturating_mul(2)
         });
         tab_fade
             || size_label_fading
@@ -3596,7 +3597,7 @@ impl crate::component_lifecycle::ComponentLifecycle for WindowGroup {
     }
 }
 
-impl crate::widget::controls::ActionControls for WindowGroup {
+impl tilo_ui_base::widget::controls::ActionControls for WindowGroup {
     fn has_pending_control_invocation(&self) -> bool {
         self.hosts
             .iter()
@@ -3624,7 +3625,7 @@ impl crate::history_mode::capability::FrameworkHistoryTopology for WindowGroup {
 }
 
 #[cfg(feature = "model")]
-impl crate::widget::presence_topology::CollaborationTopology for WindowGroup {
+impl tilo_ui_base::widget::presence_topology::CollaborationTopology for WindowGroup {
     fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.hosts
             .iter_mut()

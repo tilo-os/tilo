@@ -21,7 +21,7 @@ fn external_navigation_omits_bar_from_layout_and_semantics_but_retains_tabs() {
 }
 #[test]
 fn external_windows_paint_to_their_border_without_spilling_into_neighbors() {
-    use crate::offscreen::OffscreenRenderer;
+    use tilo_ui_base::offscreen::OffscreenRenderer;
     use taffy::prelude::TaffyMaxContent;
     let theme = Theme::dark();
     let mut renderer = OffscreenRenderer::new(400, 300);
@@ -48,12 +48,12 @@ fn external_windows_paint_to_their_border_without_spilling_into_neighbors() {
         group.apply_layout(&tree, node, Point::new(100.0, 50.0));
         assert_eq!(group.rect, Rect::new(100.0, 50.0, 300.0, 250.0));
         let mut scene = Scene::new();
-        group.draw(&mut crate::draw::DrawCtx::new(
+        group.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),
             &theme,
-            crate::presence::PresenceCtx::empty().draw_env(),
+            tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
         ));
         let rgba = renderer.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 255));
         for x in [96, 97, 98, 99, 300, 301, 302, 303] {
@@ -82,7 +82,7 @@ fn external_windows_paint_to_their_border_without_spilling_into_neighbors() {
     reason = "sample points are small positive pixel coordinates"
 )]
 fn a_resting_pointer_lights_the_whole_edge_that_will_change() {
-    use crate::offscreen::OffscreenRenderer;
+    use tilo_ui_base::offscreen::OffscreenRenderer;
     use taffy::prelude::TaffyMaxContent;
     let theme = Theme::dark();
     let mut renderer = OffscreenRenderer::new(400, 300);
@@ -105,12 +105,12 @@ fn a_resting_pointer_lights_the_whole_edge_that_will_change() {
         tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
         group.apply_layout(&tree, node, Point::new(100.0, 30.0));
         let mut scene = Scene::new();
-        group.draw(&mut crate::draw::DrawCtx::new(
+        group.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),
             &theme,
-            crate::presence::PresenceCtx::empty().draw_env(),
+            tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
         ));
         renderer.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 255))
     };
@@ -273,9 +273,9 @@ struct RetainedTraversalProbe {
 }
 
 impl Widget for RetainedTraversalProbe {
-    crate::provides!(
+    tilo_ui_base::provides!(
         dyn crate::history_mode::capability::FrameworkHistoryTopology,
-        dyn crate::widget::controls::ActionControls,
+        dyn tilo_ui_base::widget::controls::ActionControls,
         dyn crate::component_lifecycle::ComponentLifecycle
     );
 
@@ -311,7 +311,7 @@ impl crate::component_lifecycle::ComponentLifecycle for RetainedTraversalProbe {
     }
 }
 
-impl crate::widget::controls::ActionControls for RetainedTraversalProbe {
+impl tilo_ui_base::widget::controls::ActionControls for RetainedTraversalProbe {
     fn has_pending_control_invocation(&self) -> bool {
         self.pending_control
     }
@@ -363,7 +363,7 @@ fn inactive_tabs_retain_session_collaboration_delivery() {
     ];
     let mut group = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
 
-    crate::widget::handle_collab_event(
+    tilo_ui_base::widget::handle_collab_event(
         &mut group,
         &::collaboration::CollabEvent::FollowChanged { peer_id: None },
     );
@@ -399,7 +399,7 @@ fn inactive_tabs_remain_in_lifecycle_history_and_resource_traversal() {
     crate::component_lifecycle::finish_admitted_close(&mut group);
     crate::history_mode::capability::visit_framework_history(&group, &mut |_, _| {});
     crate::history_mode::capability::visit_framework_history_mut(&mut group, &mut |_, _| {});
-    assert!(crate::widget::controls::has_pending_control_invocation(
+    assert!(tilo_ui_base::widget::controls::has_pending_control_invocation(
         &group
     ));
 
@@ -432,14 +432,14 @@ fn inactive_tabs_remain_in_lifecycle_history_and_resource_traversal() {
 
 struct Starting {
     presented: bool,
-    from: crate::arriving::Source,
+    from: tilo_ui_base::arriving::Source,
 }
 
 impl Widget for Starting {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _t: &crate::theme::Theme,
+        _t: &tilo_ui_base::theme::Theme,
         _m: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         taffy.leaf_node(taffy::Style::default())
@@ -450,7 +450,7 @@ impl Widget for Starting {
     fn presented(&self) -> bool {
         self.presented
     }
-    fn arrives_from(&self) -> crate::arriving::Source {
+    fn arrives_from(&self) -> tilo_ui_base::arriving::Source {
         self.from.clone()
     }
 }
@@ -467,7 +467,7 @@ impl crate::widget::app_widget::AppWidget for Starting {
     }
 }
 
-fn group_opening(title: &str, presented: bool, from: crate::arriving::Source) -> WindowGroup {
+fn group_opening(title: &str, presented: bool, from: tilo_ui_base::arriving::Source) -> WindowGroup {
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
         TabDescriptor::new(1, title),
         TileContent::App(Box::new(Starting { presented, from })),
@@ -491,12 +491,12 @@ fn painted_anything(g: &mut WindowGroup) -> bool {
 
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
-    g.draw(&mut crate::draw::DrawCtx::new(
+    g.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut tr,
         &theme,
-        crate::presence::PresenceCtx::empty().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
     ));
     !scene.encoding().path_data.is_empty()
 }
@@ -513,10 +513,10 @@ fn a_window_holds_its_first_frame_only_for_its_budget_then_reserves_its_place() 
     }
 
     let t0 = crate::time::now();
-    let budget = crate::arriving::frame_budget();
+    let budget = tilo_ui_base::arriving::frame_budget();
     {
         let mut g = crate::time::testing::with_monotonic_time(t0, || {
-            group_opening("Files", false, crate::arriving::Source::Local)
+            group_opening("Files", false, tilo_ui_base::arriving::Source::Local)
         });
         crate::time::testing::with_monotonic_time(t0, || {
             assert_eq!(
@@ -547,7 +547,7 @@ fn a_window_holds_its_first_frame_only_for_its_budget_then_reserves_its_place() 
         // Another device's frame never holds this one's: the place is
         // reserved from the first frame.
         let mut g = crate::time::testing::with_monotonic_time(t0, || {
-            group_opening("Notes", false, crate::arriving::Source::Remote)
+            group_opening("Notes", false, tilo_ui_base::arriving::Source::Remote)
         });
         crate::time::testing::with_monotonic_time(t0, || {
             assert_eq!(Widget::holds_frame_until(&g, t0), None);
@@ -562,14 +562,14 @@ fn a_window_holds_its_first_frame_only_for_its_budget_then_reserves_its_place() 
                 TabDescriptor::new(1, "Files"),
                 TileContent::App(Box::new(Starting {
                     presented: true,
-                    from: crate::arriving::Source::Local,
+                    from: tilo_ui_base::arriving::Source::Local,
                 })),
             ),
             (
                 TabDescriptor::new(2, "Notes"),
                 TileContent::App(Box::new(Starting {
                     presented: false,
-                    from: crate::arriving::Source::Local,
+                    from: tilo_ui_base::arriving::Source::Local,
                 })),
             ),
         ];
@@ -620,7 +620,7 @@ impl Widget for Latching {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _t: &crate::theme::Theme,
+        _t: &tilo_ui_base::theme::Theme,
         _m: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         taffy.leaf_node(taffy::Style::default())
@@ -873,7 +873,7 @@ fn tab_bar_requests_reorder_search_and_pin_keep_hosts_aligned() {
     }
 
     {
-        use crate::theme::Theme;
+        use tilo_ui_base::theme::Theme;
         use std::collections::HashMap;
         use taffy::Style;
         use taffy::prelude::TaffyMaxContent;
@@ -881,7 +881,7 @@ fn tab_bar_requests_reorder_search_and_pin_keep_hosts_aligned() {
         use winit::keyboard::{Key, ModifiersState, SmolStr};
 
         fn key_press(logical_key: Key) -> WindowEvent {
-            crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            tilo_ui_base::synthetic_input::keyboard_input(tilo_ui_base::synthetic_input::key_event(
                 logical_key,
                 None,
                 ElementState::Pressed,
@@ -1021,7 +1021,7 @@ fn closing_tab_hosts_fade_out_and_the_last_one_closes_the_group() {
         }
 
         {
-            use crate::theme::Theme;
+            use tilo_ui_base::theme::Theme;
             use std::collections::HashMap;
             use taffy::Style;
             use taffy::prelude::TaffyMaxContent;
@@ -1082,7 +1082,7 @@ fn closing_tab_hosts_fade_out_and_the_last_one_closes_the_group() {
         // sequence the prune, so if `closing_at` never flips the group
         // stays around as an empty shell forever.
         {
-            use crate::theme::Theme;
+            use tilo_ui_base::theme::Theme;
             use std::collections::HashMap;
             use taffy::Style;
             use taffy::prelude::TaffyMaxContent;

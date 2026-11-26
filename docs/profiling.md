@@ -2,7 +2,7 @@
 
 Every Tilo app is built on the `ui` toolkit and runs the same five-pass frame —
 `sync`, `build_layout`, `apply_layout`, `draw`, `handle_event` (see
-`crates/ui/ui-core/src/widget/mod.rs`). The profiler measures each of those passes so an app's
+`crates/ui/ui-base/src/widget/mod.rs`). The profiler measures each of those passes so an app's
 frame cost can be **read off, not guessed**, and the headless harness guards
 against a regression by driving a scripted interaction and reporting frame-time
 statistics.

@@ -9,10 +9,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
 
-use super::ScrollMetrics;
+use tilo_ui_base::widget::ScrollMetrics;
 use super::scrollbar::{BarFade, PressOutcome, Scrollbar, thumb_color};
 use crate::color_compat::ColorCompat;
-use crate::theme::Theme;
+use tilo_ui_base::theme::Theme;
 
 /// A vertical overlay scroll bar.
 #[derive(Debug)]
@@ -37,7 +37,7 @@ impl Default for OverlayScrollbar {
 impl OverlayScrollbar {
     #[must_use]
     pub fn vertical() -> Self {
-        let metrics = crate::tokens::Metrics::BASE;
+        let metrics = tilo_ui_base::tokens::Metrics::BASE;
         Self {
             bar: Scrollbar::vertical(),
             fade: Cell::new(BarFade::default()),
@@ -163,7 +163,7 @@ impl OverlayScrollbar {
     pub fn opacity(&self) -> f32 {
         self.fade
             .get()
-            .opacity_at(crate::motion::frame_now(), self.held())
+            .opacity_at(tilo_ui_base::motion::frame_now(), self.held())
     }
 
     /// Paint the thumb over `area` for `metrics`, faded as the bar is now.
@@ -202,14 +202,14 @@ impl OverlayScrollbar {
     pub fn needs_animation_frame(&self) -> bool {
         self.fade
             .get()
-            .fading_at(crate::motion::frame_now(), self.held())
+            .fading_at(tilo_ui_base::motion::frame_now(), self.held())
     }
 
     #[must_use]
     pub fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
         self.fade
             .get()
-            .fade_deadline_at(crate::motion::frame_now(), self.held())
+            .fade_deadline_at(tilo_ui_base::motion::frame_now(), self.held())
     }
 }
 

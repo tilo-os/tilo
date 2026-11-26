@@ -2,7 +2,7 @@
 // This fixture grants no native caller authority.
 use super::*;
 
-struct ResponsiveNav(crate::widget::Element);
+struct ResponsiveNav(tilo_ui_base::widget::Element);
 crate::testing::test_app_widget!(ResponsiveNav, "Responsive navigation");
 impl Widget for ResponsiveNav {
     crate::testing::delegate_widget_methods!(
@@ -88,7 +88,7 @@ fn responsive_nav_publication_tracks_layout_model_and_revocation() {
             device_id: "fixture-device".into(),
             instance_id: 92,
             permissions: crate::application_test_support::runner_permissions(),
-            author: crate::permissions::MemberId::person("probe-author"),
+            author: tilo_ui_base::permissions::MemberId::person("probe-author"),
             action_context: tilo_actions::ActionContext::default(),
         },
         &LaunchTarget::New,
@@ -169,7 +169,7 @@ fn responsive_nav_publication_tracks_layout_model_and_revocation() {
         "replacing the navigation tree must not withdraw the native publication"
     );
     owner.permissions.set(
-        crate::permissions::PermissionContext::stranger(&crate::permissions::MemberId::person(
+        tilo_ui_base::permissions::PermissionContext::stranger(&tilo_ui_base::permissions::MemberId::person(
             "probe-author",
         ))
         .at_unix_time(100),

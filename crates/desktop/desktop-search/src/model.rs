@@ -174,7 +174,7 @@ impl Target {
 /// to a full stop is still the same line said twice.
 #[must_use]
 pub fn spoken(text: &str) -> String {
-    ui::text_match::fold_search_text(text.trim())
+    tilo_ui_base::text_match::fold_search_text(text.trim())
         .trim_end_matches(['.', ',', ';', ':', '!', '?', '\u{2026}', ' '])
         .to_owned()
 }
@@ -412,7 +412,7 @@ pub struct Hit {
     pub score: i32,
     /// The row's own picture, when its source gives one (an app's hit, an
     /// action's declared icon); else its kind's.
-    pub icon: Option<ui::icons::Icon>,
+    pub icon: Option<tilo_ui_base::icons::Icon>,
     /// Faces laid out beside the row: who is there, who is in a call.
     pub faces: Vec<ui::search::RowFace>,
     /// What choosing the row gets you, when it is worth saying ("Open",
@@ -916,13 +916,13 @@ impl SearchStream {
                     && hit.kind != ResourceKind::Custom(crate::providers::WINDOWS_KIND.into())
                     && !hit.title.trim().is_empty()
             })
-            .map(|(hit, _)| ui::text_match::fold_search_text(&hit.title))
+            .map(|(hit, _)| tilo_ui_base::text_match::fold_search_text(&hit.title))
             .collect();
         self.merged
             .iter()
             .filter(|(hit, _)| {
                 !matches!(hit.thing(), Thing::Window(_))
-                    || !shown.contains(&ui::text_match::fold_search_text(&hit.title))
+                    || !shown.contains(&tilo_ui_base::text_match::fold_search_text(&hit.title))
             })
             .cloned()
             .collect()
@@ -1266,12 +1266,12 @@ mod tests {
         }
 
         fn query(&self, needle: &str) -> Vec<Hit> {
-            let typed = ui::text_match::fold_search_text(needle.trim());
+            let typed = tilo_ui_base::text_match::fold_search_text(needle.trim());
             self.hits
                 .iter()
                 .filter(|hit| {
                     typed.is_empty()
-                        || ui::text_match::fold_search_text(&hit.title).contains(&typed)
+                        || tilo_ui_base::text_match::fold_search_text(&hit.title).contains(&typed)
                 })
                 .cloned()
                 .collect()
@@ -2197,12 +2197,12 @@ mod tests {
             }
 
             fn query(&self, needle: &str) -> Vec<Hit> {
-                let typed = ui::text_match::fold_search_text(needle.trim());
+                let typed = tilo_ui_base::text_match::fold_search_text(needle.trim());
                 self.hits
                     .iter()
                     .filter(|hit| {
                         typed.is_empty()
-                            || ui::text_match::fold_search_text(&hit.title).contains(&typed)
+                            || tilo_ui_base::text_match::fold_search_text(&hit.title).contains(&typed)
                     })
                     .cloned()
                     .collect()

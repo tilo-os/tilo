@@ -8,11 +8,11 @@ use super::{
     ModalAction, ModalEmphasis, ModalHit, ModalLayout, ModalSpec, action_height, card_width, pad,
     title_icon_side, title_lines, title_row_height, uses_full_window,
 };
-use crate::interaction::InteractionEnvironment;
-use crate::platform::DialogActionOrder;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::interaction::InteractionEnvironment;
+use tilo_ui_base::platform::DialogActionOrder;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::control_size::ControlSize;
 use crate::widget::floating_surface;
 use tilo_sort::CompactSort as _;

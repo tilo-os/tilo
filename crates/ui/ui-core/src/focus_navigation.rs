@@ -50,7 +50,7 @@ pub(crate) fn next(
     best
 }
 
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 use taffy::TaffyTree;
 
 /// Whether `widget` and what it has stay out of the focus order: the `hidden` flag of its accessibility
@@ -95,7 +95,7 @@ fn collect_focusable(
     owners: &NodeOwners,
     order: &mut Vec<NodeId>,
 ) {
-    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
+    let Ok(_entry) = tilo_ui_base::widget::bound_nodes::enter_widget(widget) else {
         return;
     };
     if widget.is_focusable() && widget.is_enabled() {
@@ -111,7 +111,7 @@ fn find_trap_focusables(
     taffy: &TaffyTree<()>,
     owners: &NodeOwners,
 ) -> Option<Vec<NodeId>> {
-    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
+    let Ok(_entry) = tilo_ui_base::widget::bound_nodes::enter_widget(widget) else {
         return None;
     };
     for (child_widget, child_node) in laid_out_children(node_id, widget, taffy, owners) {

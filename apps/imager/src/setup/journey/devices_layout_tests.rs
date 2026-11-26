@@ -72,7 +72,7 @@ fn names_retain_form_anchors_and_mid_string_caret() {
         assert!(heading.y1 <= intro.y0 && intro.y1 <= input.y0);
         assert!(input.x0 >= 0.0 && input.x1 <= f64::from(viewport.0));
         app.harness()
-            .perform_named("installer.device-name", &ui::a11y::Action::Focus)
+            .perform_named("installer.device-name", &tilo_ui_base::a11y::Action::Focus)
             .unwrap();
         app.harness().key("Home");
         for text in ["a", " longer ", "日本語のコンピューター ", "e\u{301} "] {
@@ -86,7 +86,7 @@ fn names_retain_form_anchors_and_mid_string_caret() {
                 );
                 let input = control(preview, "installer.device-name").unwrap();
                 assert!(input.is_focused());
-                let caret = ui::widget::undo_points::get_state(input).unwrap();
+                let caret = tilo_ui_base::widget::undo_points::get_state(input).unwrap();
                 assert_eq!(
                     caret.split(':').next().unwrap().parse::<usize>().unwrap(),
                     preview.journey.device_name.len() - 2

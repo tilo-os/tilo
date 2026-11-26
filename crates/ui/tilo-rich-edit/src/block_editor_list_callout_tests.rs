@@ -45,7 +45,7 @@ fn lay_out_and_draw(editor: &mut BlockEditor, theme: &Theme) -> (Scene, TextRend
     .unwrap();
     editor.apply_layout(&tree, node, Point::ORIGIN);
     let mut scene = Scene::new();
-    editor.draw(&mut tilo_ui::DrawCtx::new(
+    editor.draw(&mut tilo_ui_base::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut renderer,

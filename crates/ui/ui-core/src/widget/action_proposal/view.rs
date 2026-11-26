@@ -5,8 +5,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::{ActionProposal, DiffTag, MAX_DIFF_LINES, ProposalDecision, ProposalTarget, titled};
-use crate::i18n::ArgValue;
-use crate::tokens::TextRole;
+use tilo_ui_base::i18n::ArgValue;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::{Button, ButtonRole, Column, Text};
 
 pub struct ActionProposalView<R: tilo_resource::Resource> {
@@ -19,7 +19,7 @@ pub struct ActionProposalView<R: tilo_resource::Resource> {
 impl<R: tilo_resource::Resource> ActionProposalView<R> {
     #[must_use]
     pub fn new(proposal: ActionProposal, target: ProposalTarget<R>) -> Self {
-        let mut sheet = Column::new().with_rhythm(crate::tokens::Rhythm::Related);
+        let mut sheet = Column::new().with_rhythm(tilo_ui_base::tokens::Rhythm::Related);
         let mut index = 0;
         let push = |sheet: Column, widget: Text, index: &mut usize| {
             let id = format!("proposal-{index}");
@@ -144,7 +144,7 @@ impl<R: tilo_resource::Resource> ActionProposalView<R> {
         Self { sheet, ..self }
     }
 
-    pub fn into_widget(mut self) -> Box<dyn crate::widget::Widget> {
+    pub fn into_widget(mut self) -> Box<dyn tilo_ui_base::widget::Widget> {
         let sheet = std::mem::take(&mut self.sheet);
         Box::new(sheet)
     }

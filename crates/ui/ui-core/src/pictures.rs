@@ -6,8 +6,8 @@
 
 use vello::peniko::ImageData as PenikoImage;
 
-use crate::ImageStore;
-use crate::image_store::Fetcher;
+use tilo_ui_base::ImageStore;
+use tilo_ui_base::image_store::Fetcher;
 use crate::widget::PictureSource;
 
 /// How an app names a picture by its content address.
@@ -136,7 +136,7 @@ pub(crate) fn carried(url: &str) -> Option<PenikoImage> {
         return kept;
     }
     let bytes = data_bytes(url)?;
-    let picture = crate::image_decoders::page(&bytes)?;
+    let picture = tilo_ui_base::image_decoders::page(&bytes)?;
     CARRIED.with_borrow_mut(|carried| {
         carried.insert(0, (url.to_owned(), picture.clone()));
         carried.truncate(KEPT);
@@ -257,7 +257,7 @@ impl PictureRefusal {
     /// Why the picture was not kept, in the person's words.
     #[must_use]
     pub fn words(&self) -> String {
-        use crate::i18n::{widget_text, widget_text_with};
+        use tilo_ui_base::{i18n::widget_text, i18n::widget_text_with};
         match self {
             Self::NotAPicture => widget_text("picture-not-a-picture"),
             Self::TooLarge => widget_text("picture-too-large"),

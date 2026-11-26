@@ -1285,7 +1285,7 @@ impl RichTextLine {
 
     /// Draw everything this line shows into `scene`, which the line keeps and
     /// moves while it holds (see [`Self::keeps_its_drawing`]).
-    fn paint_into(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn paint_into(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1341,7 +1341,7 @@ impl RichTextLine {
     /// document did not, and nothing in it moves on its own — the person's
     /// own caret, a settling suggestion, a completion list, a scroll glide,
     /// or someone else in the document.
-    fn keeps_its_drawing(&self, theme: &Theme, env: &tilo_ui::DrawEnv<'_>) -> bool {
+    fn keeps_its_drawing(&self, theme: &Theme, env: &tilo_ui_base::DrawEnv<'_>) -> bool {
         if self.paint_dirty || self.face.is_empty() {
             return false;
         }
@@ -1751,7 +1751,7 @@ impl Widget for RichTextLine {
         size
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1766,7 +1766,7 @@ impl Widget for RichTextLine {
         } else {
             let rect = self.inner.get_rect();
             let mut face = std::mem::take(&mut self.face);
-            self.paint_into(&mut tilo_ui::DrawCtx::new(
+            self.paint_into(&mut tilo_ui_base::DrawCtx::new(
                 face.repaint(rect),
                 Affine::IDENTITY,
                 text_renderer,
@@ -2089,7 +2089,7 @@ mod tests {
         let mut renderer = TextRenderer::new();
         renderer.set_text_scale(theme.text_scale);
         let mut scene = Scene::new();
-        line.draw(&mut tilo_ui::DrawCtx::new(
+        line.draw(&mut tilo_ui_base::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut renderer,

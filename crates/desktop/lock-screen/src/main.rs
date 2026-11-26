@@ -53,8 +53,8 @@ fn prepared(
 /// it says, arrives with the session's first reading.
 fn shown() -> Shown {
     Shown {
-        clock: ui::clock::time_of_day(ui::clock::local_now()),
-        date: ui::format::day_heading(ui::clock::today(), false),
+        clock: tilo_ui_base::clock::time_of_day(tilo_ui_base::clock::local_now()),
+        date: tilo_ui_base::format::day_heading(tilo_ui_base::clock::today(), false),
         ..Shown::default()
     }
 }

@@ -17,8 +17,8 @@ use super::super::host_commands::HostCommandsKey;
 use crate::host_chrome::HostChrome;
 use crate::host_chrome::frame::app_draws_frame;
 use crate::host_chrome::header_bar::{HeaderBar, HeaderRequest, resize_edge};
-use crate::widget::DrawChild;
-use crate::widget::Widget;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::Widget;
 
 pub(super) enum Decorations {
     /// Waiting for the first configure.
@@ -95,7 +95,7 @@ impl Decorations {
             header
                 .bar
                 .draw_child(scene, transform, text, theme, &presence.draw_env());
-            header.bar.draw_overlay(&mut crate::draw::DrawCtx::new(
+            header.bar.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text,
@@ -135,7 +135,7 @@ impl LiveHeader {
     fn refresh(&mut self, app: &mut App, window: &Window, part_row_shown: bool) {
         let physical = window.inner_size();
         let size =
-            crate::scale::logical_size((physical.width, physical.height), window.scale_factor());
+            tilo_ui_base::scale::logical_size((physical.width, physical.height), window.scale_factor());
         let bounds = Rect::new(0.0, 0.0, size.0, size.1);
         let hidden = window.fullscreen().is_some();
         if hidden != self.hidden {
@@ -195,7 +195,7 @@ impl LiveHeader {
     /// Leave `top` for the bar above the app's content, or none when the
     /// bar draws nothing.
     fn insets(app: &mut App, top: f64) {
-        let area = crate::scale::SafeArea {
+        let area = tilo_ui_base::scale::SafeArea {
             top,
             ..app.layout.safe_area
         };
@@ -258,10 +258,10 @@ impl LiveHeader {
         let mut focus = None;
         self.bar.handle_event(
             event,
-            &mut crate::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 scale_factor: window.scale_factor(),
                 modifiers: &app.input.modifiers,
-                state: crate::widget::Edits::lend(&mut app.state.doc),
+                state: tilo_ui_base::widget::Edits::lend(&mut app.state.doc),
                 path: &app.state.root,
                 handled: &mut handled,
                 focus_target: &mut focus,

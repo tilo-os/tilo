@@ -73,7 +73,7 @@ impl ResourceKind {
             ResourceKind::WindowGroup => "search-kind-window-groups",
             ResourceKind::Custom(s) => return s.clone(),
         };
-        crate::i18n::widget_format(key, &[])
+        tilo_ui_base::i18n::widget_format(key, &[])
     }
 
     /// Stable sort key pinning the well-known kinds to a fixed palette order.
@@ -138,8 +138,8 @@ pub fn query_input_is_bounded(needle: &str) -> bool {
 }
 /// The package id in full names exactly one app, so an exact id is as strong as the name;
 /// a shared id prefix names a publisher and stays below an exact name.
-pub const PACKAGE_ID_WEIGHT: crate::text_match::FieldWeight =
-    crate::text_match::FieldWeight::new(88);
+pub const PACKAGE_ID_WEIGHT: tilo_ui_base::text_match::FieldWeight =
+    tilo_ui_base::text_match::FieldWeight::new(88);
 
 /// An app's searchable fields: its name, the words it is known by and what kind of app it
 /// is. The package id in full, or its last segment, identifies exactly one app and weighs
@@ -150,8 +150,8 @@ pub fn application_fields<'a>(
     name: &'a str,
     package_id: &'a str,
     category: Option<&'a str>,
-) -> [(&'a str, crate::text_match::FieldWeight); 4] {
-    use crate::text_match::FieldWeight;
+) -> [(&'a str, tilo_ui_base::text_match::FieldWeight); 4] {
+    use tilo_ui_base::text_match::FieldWeight;
     let last_segment = package_id.rsplit('.').next().unwrap_or(package_id);
     [
         (name, FieldWeight::TITLE),
@@ -170,7 +170,7 @@ pub fn action_search_fields<'a>(
     keywords: &'a [String],
     resource_label: &'a str,
 ) -> Vec<RankField<'a>> {
-    use crate::text_match::FieldWeight;
+    use tilo_ui_base::text_match::FieldWeight;
     let mut fields = vec![
         (action_label, FieldWeight::TITLE),
         (resource_label, FieldWeight::SUBTITLE),
@@ -191,7 +191,7 @@ pub const FILLER_WORDS: &[&str] = &["my", "mine", "our", "the", "all", "of"];
 #[must_use]
 pub fn without_filler(needle: &str) -> std::borrow::Cow<'_, str> {
     let filler = |word: &str| {
-        let folded = crate::text_match::fold_search_text(word);
+        let folded = tilo_ui_base::text_match::fold_search_text(word);
         FILLER_WORDS.contains(&folded.as_str())
     };
     let words: Vec<&str> = needle.split_whitespace().collect();
@@ -224,7 +224,7 @@ const ROOT_BONUS: i32 = 3;
 const TYPE_AND_TEXT_BONUS: i32 = 5;
 
 fn named_at(words: &[String], name: &str, out: &mut Vec<usize>) -> bool {
-    let name: Vec<String> = crate::text_match::fold_search_text(name)
+    let name: Vec<String> = tilo_ui_base::text_match::fold_search_text(name)
         .split_whitespace()
         .map(str::to_owned)
         .collect();
@@ -276,7 +276,7 @@ pub fn named_by_own_noun(needle: &str, ty: &tilo_actions::ResourceType) -> bool 
 }
 
 fn split_words(needle: &str) -> Vec<String> {
-    crate::text_match::fold_search_text(needle)
+    tilo_ui_base::text_match::fold_search_text(needle)
         .split_whitespace()
         .map(str::to_owned)
         .collect()
@@ -291,15 +291,15 @@ fn type_coverage(
     let type_names: Vec<String> = std::iter::once(ty.noun.clone())
         .chain(kin.iter().map(|noun| (*noun).clone()))
         .flat_map(|noun| [noun.one, noun.many])
-        .map(|name| crate::text_match::fold_search_text(&name))
+        .map(|name| tilo_ui_base::text_match::fold_search_text(&name))
         .collect();
     let app_names: Vec<String> = [&ty.app.one, &ty.app.many]
         .into_iter()
-        .map(|name| crate::text_match::fold_search_text(name))
+        .map(|name| tilo_ui_base::text_match::fold_search_text(name))
         .chain(
             keywords
                 .iter()
-                .map(|keyword| crate::text_match::fold_search_text(keyword))
+                .map(|keyword| tilo_ui_base::text_match::fold_search_text(keyword))
                 .filter(|keyword| !type_names.contains(keyword)),
         )
         .collect();
@@ -313,11 +313,11 @@ fn type_coverage(
     let mut covered = own;
     let title: Vec<String> = [&ty.app.one, &ty.app.many]
         .into_iter()
-        .map(|name| crate::text_match::fold_search_text(name))
+        .map(|name| tilo_ui_base::text_match::fold_search_text(name))
         .collect();
     for noun in kin {
         for name in [&noun.one, &noun.many] {
-            if !title.contains(&crate::text_match::fold_search_text(name)) {
+            if !title.contains(&tilo_ui_base::text_match::fold_search_text(name)) {
                 named_at(words, name, &mut covered);
             }
         }
@@ -347,7 +347,7 @@ pub fn type_match_score_with<'k>(
     keywords: &[&str],
     text: impl FnOnce(&str) -> Option<i32>,
 ) -> Option<i32> {
-    let words: Vec<String> = crate::text_match::fold_search_text(needle)
+    let words: Vec<String> = tilo_ui_base::text_match::fold_search_text(needle)
         .split_whitespace()
         .map(str::to_owned)
         .collect();
@@ -358,15 +358,15 @@ pub fn type_match_score_with<'k>(
     let type_names: Vec<String> = std::iter::once(ty.noun.clone())
         .chain(kin.iter().map(|noun| (*noun).clone()))
         .flat_map(|noun| [noun.one, noun.many])
-        .map(|name| crate::text_match::fold_search_text(&name))
+        .map(|name| tilo_ui_base::text_match::fold_search_text(&name))
         .collect();
     let app_names: Vec<String> = [&ty.app.one, &ty.app.many]
         .into_iter()
-        .map(|name| crate::text_match::fold_search_text(name))
+        .map(|name| tilo_ui_base::text_match::fold_search_text(name))
         .chain(
             keywords
                 .iter()
-                .map(|keyword| crate::text_match::fold_search_text(keyword))
+                .map(|keyword| tilo_ui_base::text_match::fold_search_text(keyword))
                 .filter(|keyword| !type_names.contains(keyword)),
         )
         .collect();
@@ -382,11 +382,11 @@ pub fn type_match_score_with<'k>(
     let mut kin_named = false;
     let title: Vec<String> = [&ty.app.one, &ty.app.many]
         .into_iter()
-        .map(|name| crate::text_match::fold_search_text(name))
+        .map(|name| tilo_ui_base::text_match::fold_search_text(name))
         .collect();
     for noun in kin {
         for name in [&noun.one, &noun.many] {
-            if !title.contains(&crate::text_match::fold_search_text(name)) {
+            if !title.contains(&tilo_ui_base::text_match::fold_search_text(name)) {
                 kin_named |= named_at(&words, name, &mut covered);
             }
         }
@@ -441,7 +441,7 @@ pub fn rank_actions_fields<'a, R>(
 where
     R: IntoIterator<Item = RankField<'a>>,
 {
-    crate::text_match::ListIndex::default()
+    tilo_ui_base::text_match::ListIndex::default()
         .with_ranks(action_ranks)
         .ranks(needle, rows)
         .into_iter()
@@ -482,8 +482,8 @@ pub fn application_search_fields<'a>(
     category: Option<&'a str>,
     other_names: impl IntoIterator<Item = &'a str>,
     keywords: impl IntoIterator<Item = &'a str>,
-) -> Vec<(String, crate::text_match::FieldWeight)> {
-    use crate::text_match::FieldWeight;
+) -> Vec<(String, tilo_ui_base::text_match::FieldWeight)> {
+    use tilo_ui_base::text_match::FieldWeight;
     let mut fields: Vec<(String, FieldWeight)> = application_fields(name, package_id, category)
         .into_iter()
         .map(|(text, weight)| (text.to_owned(), weight))
@@ -491,11 +491,11 @@ pub fn application_search_fields<'a>(
     for other in other_names {
         fields.push((other.to_owned(), FieldWeight::TITLE));
         fields.extend(
-            crate::text_match::initials(other).map(|initials| (initials, FieldWeight::KEYWORD)),
+            tilo_ui_base::text_match::initials(other).map(|initials| (initials, FieldWeight::KEYWORD)),
         );
     }
     fields
-        .extend(crate::text_match::initials(name).map(|initials| (initials, FieldWeight::KEYWORD)));
+        .extend(tilo_ui_base::text_match::initials(name).map(|initials| (initials, FieldWeight::KEYWORD)));
     fields.extend(
         keywords
             .into_iter()
@@ -510,7 +510,7 @@ pub fn application_search_fields<'a>(
 #[must_use]
 pub fn application_ranks(
     tier: super::MatchTier,
-    weight: crate::text_match::FieldWeight,
+    weight: tilo_ui_base::text_match::FieldWeight,
 ) -> Option<i32> {
     use super::MatchTier;
     if matches!(
@@ -519,13 +519,13 @@ pub fn application_ranks(
     ) {
         return None;
     }
-    if weight == crate::text_match::FieldWeight::KEYWORD {
+    if weight == tilo_ui_base::text_match::FieldWeight::KEYWORD {
         match tier {
             MatchTier::Exact | MatchTier::PrefixWord => {
-                return MatchTier::Prefix.rank_in(crate::text_match::FieldWeight::TITLE);
+                return MatchTier::Prefix.rank_in(tilo_ui_base::text_match::FieldWeight::TITLE);
             }
             MatchTier::Prefix => {
-                return MatchTier::Word.rank_in(crate::text_match::FieldWeight::TITLE);
+                return MatchTier::Word.rank_in(tilo_ui_base::text_match::FieldWeight::TITLE);
             }
             _ => {}
         }
@@ -540,19 +540,19 @@ pub fn application_ranks(
 /// tie — and a keyword begun ranks as the start of the title, as an app's other names rank as its
 /// name ([`application_ranks`]).
 #[must_use]
-pub fn action_ranks(tier: super::MatchTier, weight: crate::text_match::FieldWeight) -> Option<i32> {
+pub fn action_ranks(tier: super::MatchTier, weight: tilo_ui_base::text_match::FieldWeight) -> Option<i32> {
     // An action is found by a word of it begun, never by letters a longer word hides it
     // in: "shut" is not the incomplete items a command's sentence happens to hold.
     if tier == super::MatchTier::Contains {
         return None;
     }
-    if weight == crate::text_match::FieldWeight::KEYWORD {
+    if weight == tilo_ui_base::text_match::FieldWeight::KEYWORD {
         match tier {
             super::MatchTier::Exact => {
-                return super::MatchTier::Exact.rank_in(crate::text_match::FieldWeight::TITLE);
+                return super::MatchTier::Exact.rank_in(tilo_ui_base::text_match::FieldWeight::TITLE);
             }
             super::MatchTier::PrefixWord => {
-                return super::MatchTier::Prefix.rank_in(crate::text_match::FieldWeight::TITLE);
+                return super::MatchTier::Prefix.rank_in(tilo_ui_base::text_match::FieldWeight::TITLE);
             }
             _ => {}
         }
@@ -638,7 +638,7 @@ pub fn starting_point_rank(package_id: &str) -> i32 {
 pub const MAX_PROVIDER_SCORE: i32 = 100;
 
 /// One searchable field and its weight, as the shared ranker takes it.
-pub type RankField<'a> = (&'a str, crate::text_match::FieldWeight);
+pub type RankField<'a> = (&'a str, tilo_ui_base::text_match::FieldWeight);
 
 /// A field rank on the provider scale.
 #[must_use]
@@ -652,7 +652,7 @@ pub fn provider_score(rank: i32) -> i32 {
 
 /// The shared ranker's rank of `fields` for `needle`, on the provider scale.
 pub fn rank_fields(needle: &str, fields: &[RankField<'_>]) -> Option<i32> {
-    crate::text_match::ListIndex::default()
+    tilo_ui_base::text_match::ListIndex::default()
         .ranks(needle, [fields.iter().copied()])
         .into_iter()
         .next()
@@ -670,7 +670,7 @@ pub fn lexical_strength(
     subtitle: Option<&str>,
 ) -> f32 {
     use super::{MatchTier, rank::match_tier};
-    use crate::text_match::fold_search_text;
+    use tilo_ui_base::text_match::fold_search_text;
     let needle = fold_search_text(needle.trim());
     if needle.is_empty() {
         return 0.0;
@@ -750,7 +750,7 @@ const TITLE_NAMES_FIT: f32 = 3.0;
 /// merely mentions it.
 fn title_names_query(needle: &str, kind: &ResourceKind, title: &str) -> bool {
     use super::{MatchTier, rank::match_tier};
-    use crate::text_match::fold_search_text;
+    use tilo_ui_base::text_match::fold_search_text;
     let needle = fold_search_text(needle.trim());
     if needle.is_empty() {
         return false;
@@ -913,14 +913,14 @@ impl<Row> KindGroup<Row> {
 pub fn show_all_entry(id: impl Into<String>, group: &str, total: usize) -> CommandEntry {
     CommandEntry::new(
         id,
-        crate::i18n::widget_format("search-show-all", &[("count", total.into())]),
+        tilo_ui_base::i18n::widget_format("search-show-all", &[("count", total.into())]),
     )
-    .icon(crate::icons::Icon::ChevronDown)
+    .icon(tilo_ui_base::icons::Icon::ChevronDown)
     .group(group)
     .group_total(total)
 }
-pub fn icon_for_kind(kind: &ResourceKind) -> crate::icons::Icon {
-    use crate::icons::Icon;
+pub fn icon_for_kind(kind: &ResourceKind) -> tilo_ui_base::icons::Icon {
+    use tilo_ui_base::icons::Icon;
     use ResourceKind as K;
     match kind {
         K::Action => Icon::Settings2,

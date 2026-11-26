@@ -8,7 +8,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use vello::peniko::Color;
 
 use super::{ARRIVAL_MARGIN, Map, MapCamera};
-use crate::theme::Theme;
+use tilo_ui_base::theme::Theme;
 use crate::widget::primitives::SurfaceLevel;
 
 impl Map {
@@ -20,10 +20,10 @@ impl Map {
         self.answer = None;
         self.asked_among = self.pins.iter().map(|(key, _, _)| key.clone()).collect();
         if let Some(seen) = self.seen_rect() {
-            self.seen.fire(Some(crate::component::Value::List(
+            self.seen.fire(Some(tilo_ui_base::component::Value::List(
                 [seen.x0, seen.y0, seen.width(), seen.height()]
                     .into_iter()
-                    .map(|value| crate::component::Value::Int(value.round() as i64))
+                    .map(|value| tilo_ui_base::component::Value::Int(value.round() as i64))
                     .collect(),
             )));
         }

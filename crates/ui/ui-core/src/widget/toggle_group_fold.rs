@@ -10,9 +10,10 @@ use super::super::window_toolbar_row::{LocationLift, PickerText, paint_picker};
 use super::{
     NONE_CHOSEN, Orientation, Segment, SegmentedFace, SegmentedStyle, StripMetrics, ToggleGroup,
 };
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::{ControlSize, Widget};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use crate::widget::ControlSize;
+use tilo_ui_base::widget::Widget;
 
 pub(super) fn labels_fit(width: f64, naturals: &[(f64, f64)]) -> bool {
     let needed: f64 = naturals.iter().map(|(full, short)| full.min(*short)).sum();
@@ -76,7 +77,7 @@ impl SegmentedFace<'_> {
         match self.items.get(self.selected) {
             Some(item) if self.selected != NONE_CHOSEN => std::borrow::Cow::Borrowed(item.label),
             _ => {
-                std::borrow::Cow::Owned(crate::i18n::I18nManager::lookup_plain("segmented-choose"))
+                std::borrow::Cow::Owned(tilo_ui_base::i18n::I18nManager::lookup_plain("segmented-choose"))
             }
         }
     }
@@ -95,7 +96,7 @@ impl SegmentedFace<'_> {
         if self.disabled {
             ink = crate::color_compat::ColorCompat::with_alpha_factor(
                 ink,
-                crate::widget::DISABLED_ALPHA,
+                tilo_ui_base::widget::DISABLED_ALPHA,
             );
         }
         paint_picker(
@@ -115,8 +116,8 @@ impl ToggleGroup {
     /// The folded strip as a reader meets it: one picker that says what it holds, and, while its
     /// menu is open, the choices that menu offers. Its bounds are the picker's face, never the
     /// shares the folded segments no longer paint.
-    pub(super) fn folded_accessibility(&self, name: Option<String>) -> crate::a11y::AccessNode {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    pub(super) fn folded_accessibility(&self, name: Option<String>) -> tilo_ui_base::a11y::AccessNode {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let open = self.menu.is_open();
         let picker = AccessNode::new(Role::ComboBox)
             .with_optional_name(name.clone())
@@ -166,7 +167,7 @@ impl ToggleGroup {
                 std::borrow::Cow::Borrowed(segment.label.as_str())
             }
             _ => {
-                std::borrow::Cow::Owned(crate::i18n::I18nManager::lookup_plain("segmented-choose"))
+                std::borrow::Cow::Owned(tilo_ui_base::i18n::I18nManager::lookup_plain("segmented-choose"))
             }
         }
     }
@@ -177,15 +178,15 @@ impl ToggleGroup {
             .map_or_else(|| "fold:".to_owned(), |id| format!("{id}~fold"))
     }
 
-    pub(super) fn fold_semantic_action(&mut self, action: &crate::a11y::Action) -> bool {
+    pub(super) fn fold_semantic_action(&mut self, action: &tilo_ui_base::a11y::Action) -> bool {
         match action {
-            crate::a11y::Action::Activate | crate::a11y::Action::Expand => {
+            tilo_ui_base::a11y::Action::Activate | tilo_ui_base::a11y::Action::Expand => {
                 if !self.menu.is_open() {
                     self.open_fold_menu();
                 }
                 true
             }
-            crate::a11y::Action::Collapse => {
+            tilo_ui_base::a11y::Action::Collapse => {
                 if self.menu.is_open() {
                     self.menu.close();
                     self.cache_dirty = true;
@@ -248,7 +249,7 @@ impl ToggleGroup {
     pub(super) fn fold_menu_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         if !self.menu.is_open() {
             return false;
@@ -256,7 +257,7 @@ impl ToggleGroup {
         let mut handled = false;
         self.menu.handle_event(
             event,
-            &mut crate::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 handled: &mut handled,
                 ..ctx.reborrow(ctx.path, ctx.node_id)
             },
@@ -278,7 +279,7 @@ impl ToggleGroup {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        (text, theme, env): (&mut TextRenderer, &Theme, &crate::draw::DrawEnv<'_>),
+        (text, theme, env): (&mut TextRenderer, &Theme, &tilo_ui_base::draw::DrawEnv<'_>),
     ) {
         if let Some(viewport) = env.viewport {
             if self.menu.is_open() && self.viewport != Some(viewport) {
@@ -286,9 +287,9 @@ impl ToggleGroup {
             }
             self.viewport = Some(viewport);
         }
-        crate::widget::Widget::draw_overlay(
+        tilo_ui_base::widget::Widget::draw_overlay(
             &mut self.menu,
-            &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text, theme, env.clone()),
         );
     }
 
@@ -304,7 +305,7 @@ mod tests {
 
     use super::super::Segment;
     use super::*;
-    use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
+    use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release};
     use crate::testing::dispatch;
 
     const LABELS: [&str; 5] = ["Cut", "Dissolve", "Fade", "Dip to black", "Wipe"];
@@ -322,14 +323,14 @@ mod tests {
     fn frame(group: &mut ToggleGroup) -> Vec<u32> {
         let mut text = TextRenderer::new();
         let theme = Theme::high_contrast();
-        let presence = crate::presence::PresenceCtx::default();
+        let presence = tilo_ui_base::presence::PresenceCtx::default();
         presence
             .viewport
             .set(Some(Rect::new(0.0, 0.0, 640.0, 480.0)));
         let mut scene = Scene::new();
         Widget::draw(
             group,
-            &mut crate::draw::DrawCtx::new(
+            &mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut text,
@@ -339,7 +340,7 @@ mod tests {
         );
         Widget::draw_overlay(
             group,
-            &mut crate::draw::DrawCtx::new(
+            &mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut text,
@@ -369,7 +370,7 @@ mod tests {
             assert!(narrow.is_folded(), "too narrow: a picker, not cut labels");
             frame(&mut narrow);
             let closed = Widget::accessibility(&narrow).expect("the strip reaches assistive technology");
-            assert_eq!(closed.role, crate::a11y::Role::ComboBox, "one picker");
+            assert_eq!(closed.role, tilo_ui_base::a11y::Role::ComboBox, "one picker");
             assert_eq!(
                 closed.value.as_deref(),
                 Some("Dissolve"),
@@ -399,7 +400,7 @@ mod tests {
             let [menu] = node.children.as_slice() else {
                 panic!("the open picker offers one menu: {:?}", node.children);
             };
-            assert_eq!(menu.role, crate::a11y::Role::Menu);
+            assert_eq!(menu.role, tilo_ui_base::a11y::Role::Menu);
             assert!(!menu.state.hidden, "the menu a reader opened is offered");
             let spoken: Vec<_> = menu
                 .children

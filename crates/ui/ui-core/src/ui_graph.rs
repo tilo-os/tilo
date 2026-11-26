@@ -1,15 +1,13 @@
 //! Versioned, serializable UI object graphs compiled into ordinary widgets. The graph is
 //! a source format, not a second rendering system.
 
-use crate::LocalState;
-use crate::theme::Theme;
+use tilo_ui_base::LocalState;
+use tilo_ui_base::theme::Theme;
 use crate::time::SystemTime;
-use crate::tokens::TextRole;
-use crate::widget::{AppModel, ModelPath};
-use crate::widget::{
-    Button, ButtonRole, Checkbox, Column, Container, Element, Row, Scrollable, Spacer, Text,
-    TextInput, Toggle, Widget, labeled_check, labeled_field,
-};
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
+use crate::{widget::Button, widget::ButtonRole, widget::Checkbox, widget::Column, widget::Container, widget::Row, widget::Scrollable, widget::Text, widget::TextInput, widget::Toggle, widget::labeled_check, widget::labeled_field};
+use tilo_ui_base::{widget::Element, widget::Spacer, widget::Widget};
 use automerge::{AutoCommit, ObjId};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -191,7 +189,7 @@ type UiComponentFactory =
 /// Process-local services available while compiling a serialized graph.
 #[derive(Clone, Default)]
 pub struct UiBuildContext {
-    router: Option<crate::widget::RouteHandle>,
+    router: Option<tilo_ui_base::widget::RouteHandle>,
     components: Rc<HashMap<String, Rc<UiComponentFactory>>>,
     component_placeholders: bool,
     values: UiValues,
@@ -213,7 +211,7 @@ impl fmt::Debug for UiBuildContext {
 
 impl UiBuildContext {
     #[must_use]
-    pub fn with_router(mut self, router: crate::widget::RouteHandle) -> Self {
+    pub fn with_router(mut self, router: tilo_ui_base::widget::RouteHandle) -> Self {
         self.router = Some(router);
         self
     }
@@ -746,7 +744,7 @@ fn widget_state_snapshot(widget: &dyn Widget) -> HashMap<String, Option<String>>
     let mut states = HashMap::new();
     fn walk(widget: &dyn Widget, states: &mut HashMap<String, Option<String>>) {
         if let Some(id) = widget.test_id() {
-            states.insert(id.to_owned(), crate::widget::undo_points::get_state(widget));
+            states.insert(id.to_owned(), tilo_ui_base::widget::undo_points::get_state(widget));
         }
         widget.for_each_child(&mut |child| walk(child, states));
     }
@@ -758,7 +756,7 @@ fn restore_widget_states(widget: &mut dyn Widget, states: &HashMap<String, Optio
     if let Some(id) = widget.test_id().map(str::to_owned)
         && let Some(Some(state)) = states.get(&id)
     {
-        crate::widget::undo_points::set_state(widget, state);
+        tilo_ui_base::widget::undo_points::set_state(widget, state);
     }
     for child in widget.children_mut() {
         restore_widget_states(child, states);
@@ -967,24 +965,24 @@ impl UiGraphHandle {
     /// [`UiGraphError::Poisoned`] if another thread panicked while holding the graph
     /// lock.
     pub fn undo(&self) -> Result<bool, UiGraphError> {
-        self.step_history(crate::widget::undo_access::UndoRequest::Undo)
+        self.step_history(tilo_ui_base::widget::undo_access::UndoRequest::Undo)
     }
 
     /// Reapply the most recently undone graph edit. Returns [`UiGraphError::Poisoned`] if
     /// another thread panicked while holding the graph lock.
     pub fn redo(&self) -> Result<bool, UiGraphError> {
-        self.step_history(crate::widget::undo_access::UndoRequest::Redo)
+        self.step_history(tilo_ui_base::widget::undo_access::UndoRequest::Redo)
     }
 
     fn step_history(
         &self,
-        request: crate::widget::undo_access::UndoRequest,
+        request: tilo_ui_base::widget::undo_access::UndoRequest,
     ) -> Result<bool, UiGraphError> {
         let mut guard = self.inner.write().map_err(|_| UiGraphError::Poisoned)?;
         let state = &mut *guard;
         let (from, to) = match request {
-            crate::widget::undo_access::UndoRequest::Undo => (&mut state.undo, &mut state.redo),
-            crate::widget::undo_access::UndoRequest::Redo => (&mut state.redo, &mut state.undo),
+            tilo_ui_base::widget::undo_access::UndoRequest::Undo => (&mut state.undo, &mut state.redo),
+            tilo_ui_base::widget::undo_access::UndoRequest::Redo => (&mut state.redo, &mut state.undo),
         };
         if from.is_empty() {
             return Ok(false);
@@ -1397,9 +1395,9 @@ fn filling() -> Style {
 }
 
 impl Widget for LiveUi {
-    crate::provides!(
-        dyn crate::widget::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn tilo_ui_base::widget::ResourceOperations
     );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -1420,10 +1418,10 @@ impl Widget for LiveUi {
     ) -> NodeId {
         self.theme = theme.clone();
         let child = self.child.build_layout(taffy, theme, node_map);
-        crate::widget::TaffyTreeExt::widget_node(taffy, filling(), &[child], node_map, self)
+        tilo_ui_base::widget::TaffyTreeExt::widget_node(taffy, filling(), &[child], node_map, self)
     }
 
-    crate::forward_to_child!(child, rect);
+    tilo_ui_base::forward_to_child!(child, rect);
 
     fn name(&self) -> &'static str {
         "LiveUi"
@@ -1444,7 +1442,7 @@ impl Widget for LiveUi {
     }
 }
 
-impl crate::widget::ResourceOperations for LiveUi {
+impl tilo_ui_base::widget::ResourceOperations for LiveUi {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             "tilo.ui.graph.dump",
@@ -1456,11 +1454,11 @@ impl crate::widget::ResourceOperations for LiveUi {
 
     fn start_operation(
         &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
+        op: &tilo_ui_base::widget::ResourceOperation<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
+        if let Some(started) = tilo_ui_base::widget::start_in_children(self, op, doc, path)? {
             return Ok(Some(started));
         }
         let request = op.request();
@@ -1470,13 +1468,13 @@ impl crate::widget::ResourceOperations for LiveUi {
             return Ok(None);
         }
         self.invoke_graph_operation(request.type_id, request.payload)
-            .map(|output| Some(crate::widget::ResourceOperationStart::Completed(output)))
+            .map(|output| Some(tilo_ui_base::widget::ResourceOperationStart::Completed(output)))
     }
 }
 
-impl crate::widget::resources::PublishesResources for LiveUi {
+impl tilo_ui_base::widget::resources::PublishesResources for LiveUi {
     fn resources(&self, doc: &AutoCommit) -> Vec<crate::tilo_actions::ResourceSpec> {
-        let mut resources = crate::widget::resources::resources(self.child.as_ref(), doc);
+        let mut resources = tilo_ui_base::widget::resources::resources(self.child.as_ref(), doc);
         resources.push(self.graph_resource());
         resources
     }
@@ -1581,7 +1579,7 @@ fn focused_widget_snapshot(widget: &dyn Widget) -> Option<(String, Option<String
     if widget.is_focused()
         && let Some(id) = widget.test_id()
     {
-        return Some((id.to_owned(), crate::widget::undo_points::get_state(widget)));
+        return Some((id.to_owned(), tilo_ui_base::widget::undo_points::get_state(widget)));
     }
     widget
         .children()
@@ -1590,12 +1588,12 @@ fn focused_widget_snapshot(widget: &dyn Widget) -> Option<(String, Option<String
 }
 
 fn restore_widget_focus(widget: &mut dyn Widget, id: &str, state: Option<&str>) -> bool {
-    let Some(widget) = crate::widget::find_test_id_mut(widget, id) else {
+    let Some(widget) = tilo_ui_base::widget::find_test_id_mut(widget, id) else {
         return false;
     };
     widget.set_focus(true);
     if let Some(state) = state {
-        crate::widget::undo_points::set_state(widget, state);
+        tilo_ui_base::widget::undo_points::set_state(widget, state);
     }
     true
 }
@@ -2952,7 +2950,7 @@ fn delete_button(
 }
 
 impl Widget for UiGraphEditor {
-    crate::provides!(dyn crate::widget::undo_access::LocalUndo);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::undo_access::LocalUndo);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
@@ -2972,10 +2970,10 @@ impl Widget for UiGraphEditor {
     ) -> NodeId {
         self.theme = theme.clone();
         let child = self.child.build_layout(taffy, theme, node_map);
-        crate::widget::TaffyTreeExt::widget_node(taffy, filling(), &[child], node_map, self)
+        tilo_ui_base::widget::TaffyTreeExt::widget_node(taffy, filling(), &[child], node_map, self)
     }
 
-    crate::forward_to_child!(child, rect);
+    tilo_ui_base::forward_to_child!(child, rect);
 
     fn name(&self) -> &'static str {
         "UiGraphEditor"
@@ -2997,24 +2995,24 @@ impl Widget for UiGraphEditor {
     }
 }
 
-impl crate::widget::undo_access::LocalUndo for UiGraphEditor {
+impl tilo_ui_base::widget::undo_access::LocalUndo for UiGraphEditor {
     fn handle_local_undo_request(
         &mut self,
-        request: crate::widget::undo_access::UndoRequest,
+        request: tilo_ui_base::widget::undo_access::UndoRequest,
     ) -> bool {
         if !widget_tree_has_focus(self.child.as_ref()) {
             return false;
         }
         let status = self.shared.borrow().status.clone();
         let result = match request {
-            crate::widget::undo_access::UndoRequest::Undo => self.handle.undo(),
-            crate::widget::undo_access::UndoRequest::Redo => self.handle.redo(),
+            tilo_ui_base::widget::undo_access::UndoRequest::Undo => self.handle.undo(),
+            tilo_ui_base::widget::undo_access::UndoRequest::Redo => self.handle.redo(),
         };
         match (request, result) {
-            (crate::widget::undo_access::UndoRequest::Undo, Ok(true)) => {
+            (tilo_ui_base::widget::undo_access::UndoRequest::Undo, Ok(true)) => {
                 status.set("Undid graph edit".to_owned());
             }
-            (crate::widget::undo_access::UndoRequest::Redo, Ok(true)) => {
+            (tilo_ui_base::widget::undo_access::UndoRequest::Redo, Ok(true)) => {
                 status.set("Redid graph edit".to_owned());
             }
             (request, Ok(false)) => status.set(format!("Nothing to {}", request.verb())),

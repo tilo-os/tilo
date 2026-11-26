@@ -4,8 +4,8 @@
 //! `RemoteCursorOverlay` actually renders from.
 
 use tilo_ui::app::App;
-use tilo_ui::collaboration::{CollabEvent, MemberId};
-use tilo_ui::presence::user_color;
+use tilo_ui_base::{collaboration::CollabEvent, collaboration::MemberId};
+use tilo_ui_base::presence::user_color;
 use tilo_ui::state::State;
 use tilo_ui::widget::Container;
 

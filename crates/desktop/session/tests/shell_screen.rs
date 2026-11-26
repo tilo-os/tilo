@@ -106,7 +106,7 @@ fn place(session: &mut Session, resource: &str) -> u64 {
 /// note placed on the canvas stands on it as the notes app draws it.
 #[test]
 fn the_shell_is_the_screen_and_its_layout_follows_the_published_actions() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, note) = session();
 
     // The shell is up: its bar's controls stand on screen, over the whole output.
@@ -160,7 +160,7 @@ fn the_shell_is_the_screen_and_its_layout_follows_the_published_actions() {
 /// stands in what the shell lays out, and the same action closes it again.
 #[test]
 fn the_overview_through_the_api_is_the_shells_own_on_its_screen() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, _) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, NO_WINDOW).is_some()
@@ -198,7 +198,7 @@ fn the_overview_through_the_api_is_the_shells_own_on_its_screen() {
 /// shell's launcher — with what the person asked for, when a query comes with it.
 #[test]
 fn the_chromes_actions_show_the_shells_surfaces() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, _) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, NO_WINDOW).is_some()
@@ -263,7 +263,7 @@ fn the_chromes_actions_show_the_shells_surfaces() {
 /// through the API, and back by a step; the windows' workspace changes under it.
 #[test]
 fn switching_workspace_through_the_api_shows_it_on_the_shell() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, _) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, NO_WINDOW).is_some()
@@ -326,7 +326,7 @@ fn active_workspace(session: &Session) -> String {
 #[test]
 fn the_preset_switch_and_the_strips_stand_apart_and_each_placed_note_is_on_screen() {
     for (width, height) in [(WIDTH, HEIGHT), (390, 844)] {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let (mut session, notes) = session_at(width, height);
         until(&mut session, "the preset switch", |session| {
             within(session, "Showing Strips", width, height).is_some()
@@ -377,7 +377,7 @@ fn the_preset_switch_and_the_strips_stand_apart_and_each_placed_note_is_on_scree
 /// reading as the app's own window draws it, so the shell refuses nothing of it.
 #[test]
 fn a_placed_note_with_no_reactions_opens_its_page() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session_at(WIDTH, HEIGHT);
     place(&mut session, &notes[1]);
     let shown = shown_as(&session, TITLES[1]);
@@ -393,7 +393,7 @@ fn a_placed_note_with_no_reactions_opens_its_page() {
 /// height to make a place's app the window's.
 #[test]
 fn a_placed_notes_body_stands_at_the_shells_height_under_one_bar() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, note) = session();
     until(&mut session, "the bar's preset menu", |session| {
         on_screen(session, "Showing Strips").is_some()
@@ -656,7 +656,7 @@ fn strip_width(session: &Session, strip: u64) -> Option<u32> {
 /// `i64::MAX` : a key read as a number reaches nothing of this session.
 #[test]
 fn the_arranging_controls_press_the_place_they_name_on_a_salted_device() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = salted_session();
     let note = notes.first().expect("a note").clone();
     until(&mut session, "the bar's controls", |session| {
@@ -733,7 +733,7 @@ fn the_arranging_controls_press_the_place_they_name_on_a_salted_device() {
 /// takes that place off the strip and nothing else.
 #[test]
 fn two_places_in_one_strip_are_its_tabs_on_the_shells_screen() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session_at(WIDTH, HEIGHT);
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
@@ -824,7 +824,7 @@ fn two_places_in_one_strip_are_its_tabs_on_the_shells_screen() {
 /// person's, the same an agent or the REPL makes.
 #[test]
 fn a_found_resource_opens_as_a_tab_of_the_strip_in_front() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session_at(WIDTH, HEIGHT);
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
@@ -890,10 +890,10 @@ fn a_place_arrives_over_the_frames_between() {
     // it is the window at its motion's start however long the machine takes to get there: read
     // at the running clock, a loaded machine could see the window already landed.
     let note = notes.first().expect("a note").clone();
-    let held = ui::motion::testing::frozen();
+    let held = tilo_ui_base::motion::testing::frozen();
     // The person asks for it with the pointer (a press on the dock, a drop on the canvas): what a
     // hand asks for comes in, where a script's place lands at once (`motion::source`).
-    ui::motion::note_source(ui::tokens::MotionSource::Pointer);
+    tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
     place(&mut session, &note);
     let shown = shown_as(&session, NOTE_TITLE);
     let arriving = crate::common::wait_for(&mut session, "the note on the shell", |session| {
@@ -926,7 +926,7 @@ fn a_place_arrives_over_the_frames_between() {
 /// app's window is on screen.
 #[test]
 fn an_app_the_shell_opens_stands_on_the_framed_canvas() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, _note) = session_at(WIDTH, HEIGHT);
     until(&mut session, "the bar's controls", |session| {
         on_screen(session, "Notifications").is_some()
@@ -991,7 +991,7 @@ fn an_app_the_shell_opens_stands_on_the_framed_canvas() {
 /// person's viewing), so the press and an agent's call switch the same way.
 #[test]
 fn the_styles_settings_offer_the_canvas_and_a_press_there_shows_it_live() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     crate::common::app_store();
     // This computer's daemon: the styles a shell offers are the style packages its daemon lists,
     // so the session starts as its shell.
@@ -1109,7 +1109,7 @@ fn the_styles_settings_offer_the_canvas_and_a_press_there_shows_it_live() {
 /// over the windows. It is read here, on that shell, before the person goes back.
 #[test]
 fn the_shell_draws_the_workspace_in_front_and_no_other_and_carries_no_strip_label() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session_at(WIDTH, HEIGHT);
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
@@ -1208,7 +1208,7 @@ fn the_shell_draws_the_workspace_in_front_and_no_other_and_carries_no_strip_labe
 /// each key — so nothing reached the window beside it.
 #[test]
 fn a_window_beside_a_place_on_the_canvas_takes_the_press_and_the_keys() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session_at(WIDTH, HEIGHT);
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
@@ -1297,7 +1297,7 @@ fn a_window_beside_a_place_on_the_canvas_takes_the_press_and_the_keys() {
 /// no record holds it.
 #[test]
 fn a_german_shell_reads_its_own_words_in_german() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // Chosen on a device whose session is not running yet, as the CLI chooses it there: the
     // session that follows reads it in the person's language.
     settings_store::outside::set_on_this_device(
@@ -1307,11 +1307,11 @@ fn a_german_shell_reads_its_own_words_in_german() {
     )
     .expect("the person's language is saved");
     assert_eq!(
-        ui::i18n::preferred_language().as_deref(),
+        tilo_ui_base::i18n::preferred_language().as_deref(),
         Some("de-DE"),
         "the person's language is the one every window reads"
     );
-    ui::i18n::I18nManager::set_locale("de-DE");
+    tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
     let (mut session, _notes) = session_at(WIDTH, HEIGHT);
     until(&mut session, "the shell's words in German", |session| {
         session.shell_says("Zeigt Strips")
@@ -1344,7 +1344,7 @@ fn a_german_shell_reads_its_own_words_in_german() {
         &Value::Null,
     )
     .expect("the language is the system's again");
-    ui::i18n::I18nManager::set_locale("en-US");
+    tilo_ui_base::i18n::I18nManager::set_locale("en-US");
 }
 
 /// The left Super key and the period, as the keyboard sends them: the emoji picker's chord.
@@ -1366,7 +1366,7 @@ fn press_key(session: &mut Session, keycode: u32, pressed: bool) {
 /// presses and the action the pick runs.
 #[test]
 fn the_emoji_chord_shows_the_picker_and_a_pick_closes_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, _) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, NO_WINDOW).is_some()
@@ -1401,7 +1401,7 @@ fn the_emoji_chord_shows_the_picker_and_a_pick_closes_it() {
 /// session says the groups and the shell draws them, taking no key or pointer.
 #[test]
 fn holding_super_shows_the_keys_on_the_shells_screen() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, _) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, NO_WINDOW).is_some()
@@ -1437,7 +1437,7 @@ fn holding_super_shows_the_keys_on_the_shells_screen() {
 /// same verb, as the person's menu asks it.
 #[test]
 fn the_about_sheet_opens_from_the_chromes_verb() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, _) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, NO_WINDOW).is_some()
@@ -1469,7 +1469,7 @@ fn a_window_on_another_device_says_where_it_runs_in_its_place() {
     use tilo_desktop_model::{
         Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
     };
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let tab = Tab {
         id: 40,
         title: "Launch checklist".into(),
@@ -1519,7 +1519,7 @@ fn a_window_on_another_device_says_where_it_runs_in_its_place() {
 /// chrome's `activity` action does: the Activity app's window stands on the shell.
 #[test]
 fn the_workspace_history_opens_the_systems_history_view() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, _) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, NO_WINDOW).is_some()
@@ -1548,7 +1548,7 @@ fn the_workspace_history_opens_the_systems_history_view() {
 /// The card under the pointer is chosen on sight, and a press on it goes to that window.
 #[test]
 fn a_card_under_the_pointer_is_chosen_on_sight_and_a_press_goes_there() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = switcher::session();
     session
         .step(Duration::from_millis(300))
@@ -1592,7 +1592,7 @@ fn a_card_under_the_pointer_is_chosen_on_sight_and_a_press_goes_there() {
 /// A press off the panel is no press on the window behind it: the walk ends where it stood.
 #[test]
 fn a_press_off_the_panel_ends_the_walk_where_it_stood() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = switcher::session();
     session
         .step(Duration::from_millis(300))
@@ -1631,7 +1631,7 @@ fn a_press_off_the_panel_ends_the_walk_where_it_stood() {
 /// session's action does.
 #[test]
 fn the_power_menu_stands_over_the_windows_from_the_sessions_verb() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, _) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, NO_WINDOW).is_some()
@@ -1694,7 +1694,7 @@ tilo_test_env::scenario! {
     phase letting_alt_go_goes_to_the_window_the_walk_reached;
     // Letting Alt go goes to the window the walk reached, and the panel comes down.
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = switcher::session();
         switcher::hold_alt_tab(&mut session);
         assert_eq!(switcher::panel(&session).expect("the panel is up").selected, 1);
@@ -1724,7 +1724,7 @@ tilo_test_env::scenario! {
     phase a_flick_shows_no_panel_and_switches_windows;
     // A flick shorter than the reveal delay switches windows and flashes nothing.
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = switcher::session();
         session
             .step(Duration::from_millis(300))
@@ -1763,7 +1763,7 @@ tilo_test_env::scenario! {
     // Alt+Tab with one window open does nothing: there is nowhere to walk, and no panel stands over
     // the shell.
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = switcher::session();
         let handle = session.handle().clone();
         let mut tree = handle.read(Clone::clone);
@@ -1797,7 +1797,7 @@ tilo_test_env::scenario! {
     // across its strips and no other workspace's windows; Shift walks the other way and Escape leaves
     // the person where they were.
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = switcher::session();
         switcher::settle(&mut session);
         let plain = shot(&mut session, "switcher-shell");
@@ -1863,7 +1863,7 @@ tilo_test_env::scenario! {
 /// the first and last of them by place, and Enter goes to the chosen one.
 #[test]
 fn alt_grave_walks_only_the_front_apps_windows() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = switcher::session();
     switcher::key(&mut session, switcher::KEY_LEFTALT, true);
     switcher::key(&mut session, switcher::KEY_GRAVE, true);
@@ -1919,7 +1919,7 @@ fn alt_grave_walks_only_the_front_apps_windows() {
 #[test]
 fn a_workspace_too_full_for_cards_shows_the_page_the_walk_reached() {
     const SMALL: (i32, i32) = (640, 400);
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = switcher::session_on(SMALL.0, SMALL.1);
     let handle = session.handle().clone();
     let mut tree = handle.read(Clone::clone);
@@ -2003,7 +2003,7 @@ fn a_workspace_too_full_for_cards_shows_the_page_the_walk_reached() {
 /// hears them after the windows: the same hints the panel draws.
 #[test]
 fn the_panels_keys_are_read_under_its_windows() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = switcher::session();
     switcher::hold_alt_tab(&mut session);
     switcher::until_drawn(&mut session);
@@ -2023,7 +2023,7 @@ fn the_panels_keys_are_read_under_its_windows() {
 /// which window Alt+Tab would go to reads at a glance, whatever the theme.
 #[test]
 fn the_walked_card_wears_the_accent_at_its_edge() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = switcher::session();
     switcher::hold_alt_tab(&mut session);
     switcher::until_drawn(&mut session);
@@ -2037,8 +2037,8 @@ fn the_walked_card_wears_the_accent_at_its_edge() {
     // as the headless runner's inputs say, worn in the colour of the person at this machine. They
     // chose none, so it is the one their identity derives.
     let person = Options::default().person;
-    let ring = ui::theme::Theme::dark()
-        .with_your_colour(ui::tokens::PresenceHue::of_identity(&person))
+    let ring = tilo_ui_base::theme::Theme::dark()
+        .with_your_colour(tilo_ui_base::tokens::PresenceHue::of_identity(&person))
         .tokens
         .colors
         .intent
@@ -2071,7 +2071,7 @@ fn the_walked_card_wears_the_accent_at_its_edge() {
 /// workspace, even when another workspace holds two or more windows.
 #[test]
 fn an_empty_active_workspace_never_walks_to_another_workspace() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = switcher::session();
     let handle = session.handle().clone();
     let empty_id = WorkspaceId::from_u128(1);
@@ -2140,7 +2140,7 @@ fn an_empty_active_workspace_never_walks_to_another_workspace() {
 /// stays inside that workspace when Alt+Tab walks its windows.
 #[test]
 fn a_stale_recorded_strip_keeps_the_walk_inside_its_workspace() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = switcher::session();
     let handle = session.handle().clone();
     let work_id = WorkspaceId::from_u128(1);
@@ -2202,7 +2202,7 @@ fn a_stale_recorded_strip_keeps_the_walk_inside_its_workspace() {
 /// rather than skipping it, and subsequent steps walk on from there.
 #[test]
 fn alt_tab_with_two_windows_and_none_in_front_reaches_the_first() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = switcher::session();
     let handle = session.handle().clone();
     let work_id = WorkspaceId::from_u128(1);
@@ -2296,7 +2296,7 @@ fn alt_tab_with_two_windows_and_none_in_front_reaches_the_first() {
 /// last window of the walk rather than skipping it, and stepping backward walks from there.
 #[test]
 fn alt_shift_tab_with_none_in_front_reaches_the_last_window() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = switcher::session();
     let handle = session.handle().clone();
     let work_id = WorkspaceId::from_u128(1);
@@ -2379,7 +2379,7 @@ fn alt_shift_tab_with_none_in_front_reaches_the_last_window() {
 /// while the active strip is empty), Alt+Tab opens and reaches that window.
 #[test]
 fn alt_tab_with_one_window_and_none_in_front_reaches_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = switcher::session();
     let handle = session.handle().clone();
     let work_id = WorkspaceId::from_u128(1);
@@ -2439,7 +2439,7 @@ fn alt_tab_with_one_window_and_none_in_front_reaches_it() {
 /// switcher down, shows no panel and holds no keys.
 #[test]
 fn show_surface_switcher_does_not_open_on_an_empty_workspace() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = switcher::session();
     let handle = session.handle().clone();
     let empty_id = WorkspaceId::from_u128(1);
@@ -2503,7 +2503,7 @@ fn show_surface_switcher_does_not_open_on_an_empty_workspace() {
 /// focused window opens the switcher with that one card: only an empty walk is refused.
 #[test]
 fn show_surface_switcher_opens_with_one_focused_window() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = switcher::session();
     let handle = session.handle().clone();
     let work_id = WorkspaceId::from_u128(1);
@@ -2576,7 +2576,7 @@ fn show_surface_switcher_opens_with_one_focused_window() {
 /// produces an empty walk and takes the switcher down immediately instead of holding the keyboard.
 #[test]
 fn walk_switcher_in_app_scope_closes_when_no_window_is_in_front() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = switcher::session();
     let handle = session.handle().clone();
     let work_id = WorkspaceId::from_u128(1);
@@ -2693,7 +2693,7 @@ fn switcher_dialog(session: &Session) -> Option<(String, String)> {
 /// with — never an unnamed panel over the windows.
 #[test]
 fn the_switcher_is_a_named_dialog_a_screen_reader_hears() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = switcher::session();
     switcher::hold_alt_tab(&mut session);
     until(&mut session, "the panel's dialog", |session| {

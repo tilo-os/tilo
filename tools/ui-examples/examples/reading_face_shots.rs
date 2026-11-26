@@ -14,11 +14,11 @@
 
 use std::path::{Path, PathBuf};
 
-use tilo_ui::font_catalog::FontCatalog;
-use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::text_render::{OpenTypeTag, OpticalSizing, TextRenderer, TextStyle};
-use tilo_ui::theme::Theme;
-use tilo_ui::tokens::{ReadingFace, TextRole};
+use tilo_ui_base::font_catalog::FontCatalog;
+use tilo_ui_base::offscreen::OffscreenRenderer;
+use tilo_ui_base::{text_render::OpenTypeTag, text_render::OpticalSizing, text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{tokens::ReadingFace, tokens::TextRole};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Rect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -487,7 +487,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or("page")
         .to_owned();
     // The checked-in catalog, without host fonts: the faces Tilo ships.
-    let catalog = FontCatalog::controlled_fixture(tilo_ui::font_catalog::checkout_root(), "en-US");
+    let catalog = FontCatalog::controlled_fixture(tilo_ui_base::font_catalog::checkout_root(), "en-US");
     let mut text = TextRenderer::with_font_catalog(&catalog)?;
     // The SDK's standalone catalog, as a third-party app bundles it: no
     // New Computer Modern Regular, so Book sets the title.

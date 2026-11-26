@@ -1,11 +1,10 @@
 //! A menu's commands and the button that opens them as described components.
 
-use crate::component::{
-    Component, Described, Event, OfferedAction, PartType, Person, ResourceId, Source,
-};
-use crate::icons::Icon;
-use crate::text_render::FontChoice;
-use crate::widget::{ButtonRole, MenuEntry, Press};
+use tilo_ui_base::{component::Component, component::Described, component::Event, component::OfferedAction, component::PartType, component::Person, component::ResourceId, component::Source};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::text_render::FontChoice;
+use crate::{widget::ButtonRole, widget::MenuEntry};
+use tilo_ui_base::widget::Press;
 
 use super::{MenuButton, MenuItem};
 
@@ -166,8 +165,8 @@ const MENU_ROW_PARTS: [&str; 2] = ["MenuItem", "MenuSeparator"];
 impl PartType for Vec<MenuItemProps> {
     const MANY: bool = true;
 
-    fn accepts() -> crate::component::Accepts {
-        crate::component::Accepts::OneOf(
+    fn accepts() -> tilo_ui_base::component::Accepts {
+        tilo_ui_base::component::Accepts::OneOf(
             MENU_ROW_PARTS
                 .iter()
                 .map(|name| (*name).to_owned())
@@ -318,7 +317,7 @@ impl Described for MenuButton {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::component::PartType;
+    use tilo_ui_base::component::PartType;
 
     /// A row that is a way to a page leads there when chosen, as a link does; a row bound to a
     /// command keeps its command whatever address it also names.
@@ -334,11 +333,11 @@ mod tests {
         assert!(press.is_available() && press.address().is_none());
         assert_eq!(format!("{press:?}"), "Press::Link(/w/studio/desktop)");
 
-        let queue = crate::Intents::<crate::component::Fired>::default();
+        let queue = tilo_ui_base::Intents::<tilo_ui_base::component::Fired>::default();
         let command = MenuItemProps {
             label: "Studio".to_owned(),
             link: Some("/w/studio/desktop".to_owned()),
-            choose: Event::View(crate::component::Intent::new(&queue, "row", "choose")),
+            choose: Event::View(tilo_ui_base::component::Intent::new(&queue, "row", "choose")),
             ..MenuItemProps::default()
         }
         .into_item();
@@ -363,7 +362,7 @@ mod tests {
     #[test]
     fn a_menu_button_takes_a_separator_between_its_commands() {
         let accepts = Vec::<MenuItemProps>::accepts();
-        let crate::component::Accepts::OneOf(names) = accepts else {
+        let tilo_ui_base::component::Accepts::OneOf(names) = accepts else {
             panic!("a menu's rows take more than one part: {accepts:?}");
         };
         assert!(names.iter().any(|name| name == "MenuItem"));

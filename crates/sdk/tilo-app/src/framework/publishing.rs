@@ -15,7 +15,8 @@ use std::rc::Rc;
 
 use tilo_resource::{ActionDecl, Resource, SearchEntry};
 use ui_core::search::SearchQuery;
-use ui_core::widget::{AppModel, AppProcessIntent, Decorator, Element, ModelPath, Widget};
+use ui_core::widget::AppProcessIntent;
+use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::Element, widget::ModelPath, widget::Widget};
 
 use super::effect::EffectStatus;
 use super::rows::LiveRow;
@@ -42,7 +43,7 @@ type Answering = Rc<dyn Fn() -> bool>;
 
 /// What a part of a view publishes beside the resource. Each source is read
 /// whenever the resource is published or searched, so it reads the view's
-/// [`LocalState`](ui_core::LocalState)s and settings as they are then.
+/// [`LocalState`](tilo_ui_base::LocalState)s and settings as they are then.
 pub struct Publishes<R: Resource> {
     sources: Sources,
     resource: PhantomData<fn() -> R>,
@@ -303,10 +304,10 @@ impl Decorator for Publishing {
         self.content.as_mut()
     }
 
-    ui_core::provides!(
+    tilo_ui_base::provides!(
         dyn SurfacePublication,
-        dyn ui_core::widget::Decorated,
-        dyn ui_core::widget::DecoratedMut;
+        dyn tilo_ui_base::widget::Decorated,
+        dyn tilo_ui_base::widget::DecoratedMut;
         inner = content
     );
 
@@ -327,7 +328,7 @@ impl Decorator for Publishing {
     // Publishing adds no structure of its own: a change its content describes
     // stays described, so a list mounting rows settles instead of rebuilding
     // the window's tree around it.
-    fn take_structure_change(&mut self) -> ui_core::widget::StructureChange {
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
         self.content.take_structure_change()
     }
 

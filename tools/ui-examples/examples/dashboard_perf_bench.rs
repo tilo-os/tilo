@@ -16,19 +16,17 @@ use std::fmt::Write as _;
 
 use automerge::AutoCommit;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-use tilo_ui::TextRole;
-use tilo_ui::i18n::I18nManager;
-use tilo_ui::offscreen::{OffscreenRenderTiming, OffscreenRenderer};
-use tilo_ui::presence::PresenceCtx;
-use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::Theme;
-use tilo_ui::widget::DrawChild;
-use tilo_ui::widget::bound_nodes::BoundNodeMap;
+use tilo_ui_base::TextRole;
+use tilo_ui_base::i18n::I18nManager;
+use tilo_ui_base::{offscreen::OffscreenRenderTiming, offscreen::OffscreenRenderer};
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
 use tilo_ui::widget::toggle_group::Segment;
-use tilo_ui::widget::{
-    Avatar, AvatarSize, Badge, Button, Column, ProgressBar, Row, ScrollAxis, Scrollable, Spinner,
-    Text, ToggleGroup, Widget,
-};
+use tilo_ui::{widget::Avatar, widget::Badge, widget::Button, widget::Column, widget::ProgressBar, widget::Row, widget::Scrollable, widget::Spinner, widget::Text, widget::ToggleGroup};
+use tilo_ui_base::{widget::AvatarSize, widget::ScrollAxis, widget::Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use winit::dpi::PhysicalPosition;
@@ -304,11 +302,11 @@ struct BenchRun {
     allocations: Option<crate::AllocationSnapshot>,
     allocation_breakdown: Option<AllocationBreakdown>,
     render_timings: Option<Vec<OffscreenRenderTiming>>,
-    sparse_submission_accounting: tilo_ui::offscreen::SparseSubmissionAccounting,
+    sparse_submission_accounting: tilo_ui_base::offscreen::SparseSubmissionAccounting,
     canonical_segment_order_attempt_accounting:
-        tilo_ui::offscreen::CanonicalSegmentOrderAttemptAccounting,
-    area_ppt8_attempt_accounting: tilo_ui::offscreen::AreaPpt8AttemptAccounting,
-    clip_single_group_attempt_accounting: tilo_ui::offscreen::ClipSingleGroupAttemptAccounting,
+        tilo_ui_base::offscreen::CanonicalSegmentOrderAttemptAccounting,
+    area_ppt8_attempt_accounting: tilo_ui_base::offscreen::AreaPpt8AttemptAccounting,
+    clip_single_group_attempt_accounting: tilo_ui_base::offscreen::ClipSingleGroupAttemptAccounting,
     resources_before: ResourceSnapshot,
     resources_after: ResourceSnapshot,
 }
@@ -883,7 +881,7 @@ impl FrameClock {
 /// are, never the whole window.
 struct PeerBench {
     presence: PresenceCtx,
-    layer: tilo_ui::presence::PresenceLayer,
+    layer: tilo_ui_base::presence::PresenceLayer,
     /// visible member repainted the whole window, for comparison.
     full_repaint: bool,
 }
@@ -901,7 +899,7 @@ impl PeerBench {
         };
         Some(Self {
             presence: PresenceCtx::default(),
-            layer: tilo_ui::presence::PresenceLayer::new(),
+            layer: tilo_ui_base::presence::PresenceLayer::new(),
             full_repaint,
         })
     }
@@ -920,7 +918,7 @@ impl PeerBench {
             (h / 2.0 + h / 3.0 * (t * 0.023).cos()) as f32,
         ];
         self.presence.upsert_remote_cursor(
-            tilo_ui::permissions::MemberId::person("peer-ada"),
+            tilo_ui_base::permissions::MemberId::person("peer-ada"),
             at,
             Some("Ada Lovelace"),
         );
@@ -937,13 +935,13 @@ impl PeerBench {
     ) -> Option<Vec<vello::kurbo::Rect>> {
         let presence = &self.presence;
         self.layer.record(|layer| {
-            tilo_ui::scene_parts::part_drawn(
+            tilo_ui_base::scene_parts::part_drawn(
                 layer,
-                tilo_ui::scene_parts::PartKey::new("bench.remote-presence", ()),
+                tilo_ui_base::scene_parts::PartKey::new("bench.remote-presence", ()),
                 |layer| {
-                    tilo_ui::presence::draw_remote_presence(
+                    tilo_ui_base::presence::draw_remote_presence(
                         viewport,
-                        &mut tilo_ui::DrawCtx::new(
+                        &mut tilo_ui_base::DrawCtx::new(
                             layer,
                             Affine::IDENTITY,
                             text_renderer,
@@ -984,7 +982,7 @@ fn full_draw(
             // SAFETY: the bench owns the live tree, its layout and its node map
             // for the whole loop, and nothing replaces them.
             let solved = unsafe {
-                tilo_ui::widget::compute_widget_layout(
+                tilo_ui_base::widget::compute_widget_layout(
                     state.taffy,
                     state.root_node,
                     Size {
@@ -999,7 +997,7 @@ fn full_draw(
             if solved.is_err() {
                 println!("layout: the dashboard tree did not solve: {solved:?}");
             }
-            if let Some(line) = tilo_ui::widget::take_unsettled_report() {
+            if let Some(line) = tilo_ui_base::widget::take_unsettled_report() {
                 println!("{line}");
             }
             state
@@ -1144,10 +1142,10 @@ fn dispatch(state: &mut BenchState<'_>, doc: &mut AutoCommit, event: &WindowEven
     state.clock.pin(|| {
         state.root.handle_event(
             event,
-            &mut tilo_ui::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: tilo_ui::widget::Edits::lend(doc),
+                state: tilo_ui_base::widget::Edits::lend(doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1350,7 +1348,7 @@ fn prime_frozen_cursor(state: &mut BenchState<'_>, doc: &mut AutoCommit) {
 /// warm, not with their first use.
 fn warm_up(state: &mut BenchState<'_>) {
     for _ in 0..2 {
-        state.clock.advance(tilo_ui::animation::INDICATOR_STEP);
+        state.clock.advance(tilo_ui_base::animation::INDICATOR_STEP);
         let mut warm = Phase::default();
         full_draw(state, &mut warm, None, None);
     }
@@ -2932,7 +2930,7 @@ pub fn run(_args: &[String]) {
     // Damage verification compares every frame it asks for, so there each
     // event moves the indicators one step and redraws.
     let clock = FrameClock::new(if verify_damage {
-        tilo_ui::animation::INDICATOR_STEP
+        tilo_ui_base::animation::INDICATOR_STEP
     } else {
         EVENT_INTERVAL
     });

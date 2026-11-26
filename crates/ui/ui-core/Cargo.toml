@@ -28,77 +28,77 @@ default = ["native", "broker-transport"]
 # history and undo, presence, search and the resource-backed views. Without
 # it the crate is a UI toolkit that knows nothing about Tilo. `tilo-app` turns
 # it on.
-model = ["dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-automerge", "tilo-doc/model", "dep:tilo-desktop-model", "dep:fs-protocol", "dep:tilo-reference", "settings-model/model", "tilo-process-services/models", "tilo-actions/document-read"]
+model = ["dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-automerge", "tilo-doc/model", "dep:tilo-desktop-model", "dep:fs-protocol", "dep:tilo-reference", "settings-model/model", "tilo-process-services/models", "tilo-actions/document-read", "tilo-ui-base/model"]
 # The native runner and its services: the winit event loop with its
 # AccessKit adapter, the Wayland clipboard, the OS URI handler, startup
 # warmup, the system appearance a standalone app follows, and the
 # `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::process::ProcessServices`.
-native = ["local-daemons", "collaboration?/audio", "tilo-process-services/native", "tilo-process-services/system-status", "dep:tilo-appearance", "tilo-appearance/host-portals", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store?/watch"]
+native = ["local-daemons", "collaboration?/audio", "tilo-process-services/native", "tilo-process-services/system-status", "dep:tilo-appearance", "tilo-appearance/host-portals", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store?/watch", "tilo-ui-base/native"]
 # X11 windows (winit's X11 backend), for development builds on an X11 host:
 # `cargo run -p <app> --features ui/x11` (through `tilo-app`'s `x11`). Every
 # Tilo app runs as a Wayland client in its sandbox, so the shared runtime
 # leaves X11 (x11rb, x11-dl) out. winit's X11 backend comes through
 # tilo-winit-x11, which the workspace hack's analysis skips
 # (.config/hakari.toml).
-x11 = ["dep:tilo-winit-x11"]
+x11 = ["dep:tilo-winit-x11", "tilo-ui-base/x11"]
 # two-face's grammars for the code editor's highlighting (about 0.9 MB of
 # data). Without it every language highlights as plain text; the browser
 # toolkit core leaves it out.
-syntax-definitions = ["tilo-highlight-grammars/syntax-definitions"]
+syntax-definitions = ["tilo-highlight-grammars/syntax-definitions", "tilo-ui-base/syntax-definitions"]
 # The grammar set is not linked: the code editor's highlighter opens it from
 # libtilo_highlight_engine.so the first time code is highlighted. The engine
 # library's own build (crates/engines/loadable/highlight) turns this on, so the
 # shared runtime every app maps leaves syntect and the grammars out; any
 # other build links them.
-lazy-highlight = ["dep:tilo-engine-loader"]
+lazy-highlight = ["dep:tilo-engine-loader", "tilo-ui-base/lazy-highlight"]
 # The interpreter a theme's painter sets run on is not linked: `part_paint`
 # opens it from libtilo_theme_painter_engine.so the first time a theme names
 # a set. The engine library's own build (crates/engines/loadable/theme-painter)
 # turns this on, so the shared runtime every app maps leaves wasmi out; any
 # other build links it.
-lazy-painter = ["dep:tilo-engine-loader"]
+lazy-painter = ["dep:tilo-engine-loader", "tilo-ui-base/lazy-painter"]
 # Clients of the local session daemons: the runtime portal's inherited
 # service descriptors and the runtime identity service with its on-disk
 # identity. Without it the host installs a `local_identity::LocalIdentitySource`
 # (default: none). Settings are not guarded here: `settings-store` reads
 # `settings.json` unless the host installs a `settings_store::SettingsSource`.
-local-daemons = ["dep:runtime-portal", "dep:tilo-identity-client", "collaboration?/local-daemons", "tilo-webview/local-daemons"]
+local-daemons = ["dep:runtime-portal", "dep:tilo-identity-client", "collaboration?/local-daemons", "tilo-webview/local-daemons", "tilo-ui-base/local-daemons"]
 # The collaboration manager's built-in transport: the collaboration wire's
 # client on a worker thread (`collaboration::broker`). Without it the
 # manager is driven only through `CollaborationManager::with_transport`, and
 # `CollaborationManager::new` starts disabled.
-broker-transport = ["local-daemons", "collaboration?/broker-transport", "runtime-collab?/client", "tokio/full"]
+broker-transport = ["local-daemons", "collaboration?/broker-transport", "runtime-collab?/client", "tokio/full", "tilo-ui-base/broker-transport"]
 # An integration test links the library once, without its `cfg(test)`: the
 # fixtures a test draws with ([`headless::Driver::mount`], the pinned font
 # catalogue) come with it.
-test-support = ["tilo-process-services/test-support", "collaboration?/test-support", "dep:tilo-test-env", "runtime-collab?/settings-host"]
+test-support = ["tilo-process-services/test-support", "collaboration?/test-support", "dep:tilo-test-env", "runtime-collab?/settings-host", "tilo-ui-base/test-support"]
 # Push-mode decode in `VideoPlayer` (`feed_frame` / `feed_encoded`) through
 # `media`'s GStreamer real-time decoder. Apps that stream video enable
 # `media/realtime` themselves; this feature exists so the widget's own tests
 # can exercise the path.
-realtime-video = ["media/realtime"]
+realtime-video = ["media/realtime", "tilo-ui-base/realtime-video"]
 # File and stream decode in `VideoPlayer` (its `MediaEngine`): `media`'s GStreamer `playbin`
 # backend. A host that draws a declared `ui.VideoPlayer` enables this so the video a person
 # opened actually plays; a build without it (layout checks, the web) leaves the decoder out.
-decode = ["media/decode"]
-presentation-feedback = ["dep:wgpu-hal"]
+decode = ["media/decode", "tilo-ui-base/decode"]
+presentation-feedback = ["dep:wgpu-hal", "tilo-ui-base/presentation-feedback"]
 # Persist DXC-compiled shaders between runs on Windows. It needs the patched
 # wgpu-hal (vendor/wgpu-hal), which crates.io does not have, so it stays off
 # for apps built on the published SDK.
-dx12-shader-cache = []
+dx12-shader-cache = ["tilo-ui-base/dx12-shader-cache"]
 # Brave/EasyList filter-list → WebKit content-blocker JSON compiler
 # (`webview::adblock`). Off by default: only the browser app (and any
 # other app embedding a WebView with built-in blocking) pays for the
 # adblock-rust dependency.
-webview-adblock = ["tilo-webview/webview-adblock"]
+webview-adblock = ["tilo-webview/webview-adblock", "tilo-ui-base/webview-adblock"]
 # The compiler is not linked: `webview::adblock` opens it from
 # libtilo_adblock_engine.so the first time an app compiles lists. The engine
 # library's own build (crates/engines/loadable/adblock) turns this on, so the
 # shared runtime every app maps leaves adblock-rust out; any other build links
 # the compiler.
-lazy-adblock = ["webview-adblock", "tilo-webview/lazy-adblock", "dep:tilo-engine-loader"]
+lazy-adblock = ["webview-adblock", "tilo-webview/lazy-adblock", "dep:tilo-engine-loader", "tilo-ui-base/lazy-adblock"]
 # Zero-copy DMA-BUF -> wgpu texture import via Vulkan external memory
 # (`dmabuf_import`). Shared by the WebView's rendered pages and the video
 # decoder's hardware frames — both hand over a GPU buffer as a dmabuf. Pulls
@@ -106,29 +106,30 @@ lazy-adblock = ["webview-adblock", "tilo-webview/lazy-adblock", "dep:tilo-engine
 # neither. It needs Tilo's wgpu-hal (vendor/wgpu-hal) for the queue's wait semaphores and foreign
 # external memory, which crates.io does not have, so it stays off for apps built on the
 # published SDK.
-dmabuf-import = ["dep:ash"]
+dmabuf-import = ["dep:ash", "tilo-ui-base/dmabuf-import"]
 # Zero-copy GPU video frames: the dmabuf import above for a hardware
 # decoder's output. Plane upload and the YUV->RGB conversion (`gpu_video`)
 # are always built; without this, frames are uploaded instead.
-gpu-video = ["dmabuf-import"]
+gpu-video = ["dmabuf-import", "tilo-ui-base/gpu-video"]
 # System media integration (MPRIS `org.mpris.MediaPlayer2`) for the
 # `VideoPlayer` widget: media keys + the system top-bar now-playing widget can
 # drive playback and show the current title/artist/art. Off by default so the
 # hermetic build / `--shots` / CI need no D-Bus; an app enables it (e.g. Tube's
 # `media` feature turns on `ui/media-session`). zbus runs on the workspace's tokio
 # backend; the server lives on its own thread with a private runtime.
-mpris = ["native", "tilo-process-services/mpris"]
+mpris = ["native", "tilo-process-services/mpris", "tilo-ui-base/mpris"]
 # Location and screen capture through the XDG Desktop Portal (Linux). The SDK's
 # native runner enables it on Linux targets; apps do not. File choosers
 # (`ui::portal`) and notifications (`ui::notify`) need no feature: their
 # platform crates select each target's backend.
-portal = ["native", "tilo-process-services/portal"]
+portal = ["native", "tilo-process-services/portal", "tilo-ui-base/portal"]
 # The host's own portal clients (a foreign desktop's chooser, opener and wallpaper), for a
 # runner hosting an app outside Tilo. A Tilo app process reaches the session's chooser and
 # opener over their sockets and never enables this.
-host-portals = ["tilo-process-services/host-portals"]
+host-portals = ["tilo-process-services/host-portals", "tilo-ui-base/host-portals"]
 
 [dependencies]
+tilo-ui-base = { version = "0.1.0", path = "../ui-base", default-features = false }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 # Sorts without a copy of std's sort per call site, which kept the web
 # shell's start module large.
@@ -381,7 +382,7 @@ rand_core.workspace = true
 # The `serde` feature carries a window's tree and the actions a client asks
 # back over the shell-ui protocol. `accesskit_winit` 0.34 targets winit
 # 0.30.x — the same pin as the `winit` dep above. See
-# `crates/ui/ui-core/src/accesskit_bridge.rs` (tree builder + role/action mapping) and the
+# `crates/ui/ui-base/src/accesskit_bridge.rs` (tree builder + role/action mapping) and the
 # adapter wiring in `crates/ui/ui-core/src/app.rs`.
 accesskit = { version = "0.25.0", features = ["serde"] }
 # Built on tilo-winit, so it shares the toolkit's winit types when published.

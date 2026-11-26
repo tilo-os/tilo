@@ -724,7 +724,7 @@ impl<R: Resource> Actions<R> {
     /// The id the resource is published at: the resource an action address
     /// on it names, as a surface binding a control of its own to one of its
     /// actions says where that action lands
-    /// ([`ControlBindingMetadata`](ui_core::widget::ControlBindingMetadata)).
+    /// ([`ControlBindingMetadata`](tilo_ui_base::widget::ControlBindingMetadata)).
     pub fn resource_id(&self) -> String {
         self.table.resource.borrow().base.id.0.clone()
     }
@@ -888,7 +888,7 @@ impl<R: Resource> Actions<R> {
     pub fn bind_draft<A, T, F>(
         &self,
         button: Button,
-        draft: &ui_core::LocalState<String>,
+        draft: &tilo_ui_base::LocalState<String>,
         action: TryMapped<R, A, F>,
     ) -> Button
     where
@@ -905,8 +905,8 @@ impl<R: Resource> Actions<R> {
     pub fn bind_draft_clearing<A, T, F>(
         &self,
         button: Button,
-        draft: &ui_core::LocalState<String>,
-        others: &[&ui_core::LocalState<String>],
+        draft: &tilo_ui_base::LocalState<String>,
+        others: &[&tilo_ui_base::LocalState<String>],
         action: TryMapped<R, A, F>,
     ) -> Button
     where
@@ -927,7 +927,7 @@ impl<R: Resource> Actions<R> {
         button: Button,
         key: ActionKey,
         parse: DraftArguments,
-        drafts: Vec<ui_core::LocalState<String>>,
+        drafts: Vec<tilo_ui_base::LocalState<String>>,
     ) -> Button {
         let Some(draft) = drafts.first().cloned() else {
             return button.unavailable();
@@ -960,7 +960,7 @@ impl<R: Resource> Actions<R> {
     pub fn submit_draft<A, T, F>(
         &self,
         field: TextInput,
-        draft: &ui_core::LocalState<String>,
+        draft: &tilo_ui_base::LocalState<String>,
         action: TryMapped<R, A, F>,
     ) -> TextInput
     where
@@ -978,7 +978,7 @@ impl<R: Resource> Actions<R> {
         field: TextInput,
         key: ActionKey,
         parse: DraftArguments,
-        draft: ui_core::LocalState<String>,
+        draft: tilo_ui_base::LocalState<String>,
     ) -> TextInput {
         let submit = move |text: String| {
             let arguments = parse(text)?;

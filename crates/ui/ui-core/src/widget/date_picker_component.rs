@@ -1,6 +1,6 @@
 //! [`DatePicker`] as a described component.
 
-use crate::component::{Bound, Component, Described, Event};
+use tilo_ui_base::{component::Bound, component::Component, component::Described, component::Event};
 
 use super::DatePicker;
 
@@ -9,7 +9,7 @@ use super::DatePicker;
 #[component(name = "DatePicker", role = "Group", label = "label")]
 pub struct DatePickerProps {
     /// The day chosen, as the moment a component binds (its ISO text), and where choosing one goes.
-    #[component(bind(ty = crate::component::Moment))]
+    #[component(bind(ty = tilo_ui_base::component::Moment))]
     pub value: Bound<String>,
     /// Days that hold something (an event, a note): a dot under the number.
     #[component(data)]
@@ -17,7 +17,7 @@ pub struct DatePickerProps {
     /// Its spoken name.
     pub label: Option<String>,
     /// A day was chosen: carries the moment.
-    #[component(event(value = crate::component::Moment))]
+    #[component(event(value = tilo_ui_base::component::Moment))]
     pub change: Event,
 }
 
@@ -45,12 +45,12 @@ impl Described for DatePicker {
         let shown = value.clone();
         let mut picker = Self::from_text_state(&value.state)
             .on_choose(key, move |day| {
-                shown.edited(crate::component::Value::Text(day.to_string()));
+                shown.edited(tilo_ui_base::component::Value::Text(day.to_string()));
             })
             .marked(
                 marked
                     .iter()
-                    .filter_map(|day| crate::component::moment_day(day)),
+                    .filter_map(|day| tilo_ui_base::component::moment_day(day)),
             );
         if let Some(label) = label {
             picker = picker.with_accessible_name(&label);

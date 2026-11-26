@@ -2,7 +2,7 @@
 //! while agents and assistive technology still reach every item.
 
 use tilo_app::accesskit::Role;
-use tilo_app::i18n::EmbeddedCatalog;
+use tilo_ui_base::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
 use tilo_app::winit::event::WindowEvent;
 use tilo_app_test_host::TestApp;
@@ -284,7 +284,7 @@ fn a_long_list_mounts_only_the_rows_near_the_view_while_every_item_is_reached() 
     let focused = task_id(&app, steps);
     assert!(!mounted(&mut app, &focused), "the row starts out unmounted");
     app.harness()
-        .perform_named(&control(&first), &tilo_app::a11y::Action::Focus)
+        .perform_named(&control(&first), &tilo_ui_base::a11y::Action::Focus)
         .unwrap();
     for _ in 0..steps {
         app.harness().key("Tab");
@@ -457,7 +457,7 @@ fn host_frame(app: &mut tilo_app::App) {
 fn checkboxes(app: &tilo_app::App) -> Vec<String> {
     app.semantic_tree()
         .iter()
-        .filter(|node| node.role == tilo_app::a11y::Role::Checkbox)
+        .filter(|node| node.role == tilo_ui_base::a11y::Role::Checkbox)
         .map(|node| format!("{:?} {:?}", node.name, node.bounds))
         .collect()
 }

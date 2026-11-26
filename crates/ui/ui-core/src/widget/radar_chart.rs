@@ -11,11 +11,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 
-use crate::chart_palette::ChartPalette;
+use tilo_ui_base::chart_palette::ChartPalette;
 use crate::color_compat::ColorCompat;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::chart_geometry;
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::draw_title;
@@ -83,7 +83,7 @@ impl RadarSeries {
 
     fn color_in(&self, theme: &Theme) -> Color {
         self.palette.map_or(self.color, |index| {
-            crate::chart_palette::ChartPalette::from_theme(theme).categorical(index)
+            tilo_ui_base::chart_palette::ChartPalette::from_theme(theme).categorical(index)
         })
     }
 

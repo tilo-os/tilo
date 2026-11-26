@@ -6,8 +6,8 @@
 use vello::kurbo::Rect;
 
 use super::Driver;
-use crate::permissions::MemberId;
-use crate::widget::Widget;
+use tilo_ui_base::permissions::MemberId;
+use tilo_ui_base::widget::Widget;
 
 #[cfg(feature = "model")]
 /// Where a view that follows someone has gone for their newest action: each action is gone to
@@ -63,8 +63,8 @@ impl Driver {
     pub fn focus_presence(
         &self,
     ) -> Option<(
-        crate::presence::PresenceKey,
-        crate::collaboration::PresencePayload,
+        tilo_ui_base::presence::PresenceKey,
+        tilo_ui_base::collaboration::PresencePayload,
     )> {
         self.app.focus_presence()
     }
@@ -141,8 +141,8 @@ impl Driver {
     /// and its box.
     fn text_locus(&self, actor: &MemberId) -> Option<(*const dyn Widget, Rect)> {
         let (key, range) =
-            crate::presence::capability::actor_text_range(&self.app.presence_ctx, actor)?;
-        crate::presence::capability::range_locus(
+            tilo_ui_base::presence::capability::actor_text_range(&self.app.presence_ctx, actor)?;
+        tilo_ui_base::presence::capability::range_locus(
             self.app.root_widget.as_ref(),
             &self.app.theme,
             key,
@@ -153,7 +153,7 @@ impl Driver {
     #[cfg(feature = "model")]
     /// The action bindings of the app's controls as they are laid out now; `None` while something
     /// stands over the app, whose controls then show nothing.
-    fn action_bindings(&self) -> Option<Vec<crate::widget::ControlBindingMetadata>> {
+    fn action_bindings(&self) -> Option<Vec<tilo_ui_base::widget::ControlBindingMetadata>> {
         let app = &*self.app;
         let covered = app.palette_presented()
             || app.close_admission.dialog.is_some()
@@ -165,7 +165,7 @@ impl Driver {
             return None;
         }
         app.with_native_presentation(|root, _, _, _, _| {
-            crate::widget::controls::control_action_bindings(root)
+            tilo_ui_base::widget::controls::control_action_bindings(root)
         })
         .ok()
     }
@@ -221,7 +221,7 @@ impl Driver {
 impl Driver {
     /// The system's back (or forward) gesture, as the host delivers it once it recognised one,
     /// then the frame that shows what it did. Whether something took it.
-    pub fn nav_gesture(&mut self, dir: crate::gesture::NavDirection) -> bool {
+    pub fn nav_gesture(&mut self, dir: tilo_ui_base::gesture::NavDirection) -> bool {
         let taken = {
             let _running = self.running();
             self.app.surface_nav_gesture(dir)
@@ -260,7 +260,7 @@ impl Driver {
     ) -> Result<serde_json::Value, String> {
         let outcome = {
             let _running = self.running();
-            crate::widget::capability::capability_mut::<dyn crate::AppWidget>(
+            tilo_ui_base::widget::capability::capability_mut::<dyn crate::AppWidget>(
                 &mut *self.app.root_widget,
             )
             .ok_or_else(|| "Terminal is not available".to_owned())
@@ -275,7 +275,7 @@ impl Driver {
     pub fn request_device_shell(&mut self) -> bool {
         let taken = {
             let _running = self.running();
-            crate::widget::capability::capability_mut::<dyn crate::AppWidget>(
+            tilo_ui_base::widget::capability::capability_mut::<dyn crate::AppWidget>(
                 &mut *self.app.root_widget,
             )
             .is_some_and(crate::AppWidget::request_device_shell)

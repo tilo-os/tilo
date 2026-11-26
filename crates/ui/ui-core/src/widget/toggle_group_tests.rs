@@ -1,7 +1,7 @@
 use super::*;
-use crate::presence::PresenceCtx;
+use tilo_ui_base::presence::PresenceCtx;
 use crate::testing::dispatch;
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 use automerge::AutoCommit;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -10,8 +10,8 @@ use taffy::prelude::TaffyMaxContent;
 #[test]
 fn hosted_mode_swipes_commit_once_and_reject_scroll_cancel_and_multitouch() {
     use winit::event::TouchPhase::{Cancelled, Ended, Moved, Started};
-    let _settled = crate::motion::testing::settled();
-    let selected = crate::LocalState::new(0_usize);
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let selected = tilo_ui_base::LocalState::new(0_usize);
     let next = selected.clone();
     let commits = Rc::new(RefCell::new(Vec::new()));
     let receipts = Rc::clone(&commits);
@@ -89,7 +89,7 @@ tilo_test_env::scenario! {
     phase painted_strips_refuse_removed_changed_and_interrupted_touch_owners;
     {
         use winit::event::TouchPhase::{Cancelled, Ended, Started};
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let rects = [
             Rect::new(0.0, 0.0, 100.0, 48.0),
             Rect::new(100.0, 0.0, 200.0, 48.0),
@@ -140,7 +140,7 @@ tilo_test_env::scenario! {
 
     phase a_press_focuses_without_a_ring_until_the_keys_are_used;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut g = group_at(
             vec![Segment::new("A"), Segment::new("B")],
             0,
@@ -159,7 +159,7 @@ tilo_test_env::scenario! {
 
     phase a_disabled_segment_is_never_chosen_and_the_keys_step_over_it;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut g = group_at(
             vec![
                 Segment::new("Whole"),
@@ -187,7 +187,7 @@ tilo_test_env::scenario! {
 
     phase toggle_group_selection_follows_pointer_touch_and_keyboard;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let g = ToggleGroup::new(vec![Segment::new("a"), Segment::new("b")], 0);
             assert_eq!(g.selected(), 0);
@@ -286,7 +286,7 @@ tilo_test_env::scenario! {
             .on_action(appearance_binding());
             // The setting's action is withdrawn: nothing the strip offers can choose it. The
             // person's press is sent to be refused with why, and the strip keeps its choice.
-            crate::widget::controls::refresh_control_action_availability(
+            tilo_ui_base::widget::controls::refresh_control_action_availability(
                 &mut group,
                 &std::collections::HashSet::new(),
             );
@@ -296,7 +296,7 @@ tilo_test_env::scenario! {
             dispatch(&mut group, &cursor_moved(150.0, 22.0));
             assert!(dispatch(&mut group, &mouse_press()));
             assert!(
-                crate::widget::controls::take_control_invocation(&mut group).is_some(),
+                tilo_ui_base::widget::controls::take_control_invocation(&mut group).is_some(),
                 "the press is sent, to be refused"
             );
             assert_eq!(group.selected(), 0);
@@ -311,9 +311,9 @@ tilo_test_env::scenario! {
 
     phase accessibility_and_actions_expose_and_drive_the_selected_segment;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
-            use crate::a11y::Role;
+            use tilo_ui_base::a11y::Role;
             let g = ToggleGroup::new(
                 vec![
                     Segment::new("Light"),
@@ -372,8 +372,8 @@ tilo_test_env::scenario! {
             assert!(Widget::perform_semantic_action(
                 &mut group,
                 "choice:segment:1",
-                &crate::a11y::Action::Activate,
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                &tilo_ui_base::a11y::Action::Activate,
+                &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(group.selected(), 1);
@@ -383,7 +383,7 @@ tilo_test_env::scenario! {
 
     phase a_multi_select_toggle_runs_its_action_with_the_chosen_indices;
     {
-        use crate::widget::controls::ActionControls;
+        use tilo_ui_base::widget::controls::ActionControls;
         let mut g = ToggleGroup::multiple(
             vec![
                 Segment::new("Mon"),
@@ -406,8 +406,8 @@ tilo_test_env::scenario! {
         assert!(Widget::perform_semantic_action(
             &mut g,
             "days:segment:2",
-            &crate::a11y::Action::ToggleCheck,
-            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+            &tilo_ui_base::a11y::Action::ToggleCheck,
+            &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
             &automerge::ROOT,
         ));
         let invocation = g
@@ -453,7 +453,7 @@ tilo_test_env::scenario! {
         group.set_presses(
             edges
                 .iter()
-                .map(|edge| Press::Action(crate::widget::ActionEmitter::new(binding(edge))))
+                .map(|edge| Press::Action(tilo_ui_base::widget::ActionEmitter::new(binding(edge))))
                 .collect(),
         );
         let mut text = TextRenderer::new();
@@ -464,8 +464,8 @@ tilo_test_env::scenario! {
         assert!(Widget::perform_semantic_action(
             &mut group,
             "segment:2",
-            &crate::a11y::Action::Activate,
-            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+            &tilo_ui_base::a11y::Action::Activate,
+            &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
             &automerge::ROOT,
         ));
         assert_eq!(
@@ -473,14 +473,14 @@ tilo_test_env::scenario! {
             1,
             "the strip holds the case the setting says, not the one pressed"
         );
-        let invocation = crate::widget::controls::take_control_invocation(&mut group)
+        let invocation = tilo_ui_base::widget::controls::take_control_invocation(&mut group)
             .expect("the choice pressed queues its own action");
         assert_eq!(
             invocation.address,
             crate::tilo_actions::ActionAddress::new("fixture", "dock_left")
         );
         assert!(
-            crate::widget::controls::take_control_invocation(&mut group).is_none(),
+            tilo_ui_base::widget::controls::take_control_invocation(&mut group).is_none(),
             "one press runs one choice"
         );
     }
@@ -509,11 +509,11 @@ fn group_at(segments: Vec<Segment>, selected: usize, rect: Rect) -> ToggleGroup 
     g
 }
 
-use crate::synthetic_input::cursor_moved;
+use tilo_ui_base::synthetic_input::cursor_moved;
 
-use crate::synthetic_input::mouse_press;
+use tilo_ui_base::synthetic_input::mouse_press;
 
-use crate::synthetic_input::named_key;
+use tilo_ui_base::synthetic_input::named_key;
 
 fn touch(phase: winit::event::TouchPhase, point: Point) -> WindowEvent {
     WindowEvent::Touch(winit::event::Touch {
@@ -530,8 +530,8 @@ tilo_test_env::scenario! {
 
     phase a_vertical_rail_stacks_square_segments_bound_to_view_state;
     {
-        let _settled = crate::motion::testing::settled();
-        let state = crate::LocalState::new('b');
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let state = tilo_ui_base::LocalState::new('b');
         let mut rail = ToggleGroup::from_state(
             vec![
                 (
@@ -623,7 +623,7 @@ tilo_test_env::scenario! {
 
     phase segment_colours_follow_selection_focus_and_style;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let theme = Theme::high_contrast();
             let unfocused = group_draw_data(false, &theme);
@@ -638,7 +638,7 @@ tilo_test_env::scenario! {
         // its style's selector lift (on a light raised track the one white
         // object in the well), tinted at most by the accent's faint hue.
         {
-            use crate::a11y::contrast_ratio;
+            use tilo_ui_base::a11y::contrast_ratio;
             for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
                 let colors = &theme.tokens.colors;
                 for (style, ground) in [
@@ -656,7 +656,7 @@ tilo_test_env::scenario! {
                     );
                     let chroma = crate::color::Oklch::from_color(fill).c;
                     assert!(
-                        chroma <= crate::tokens::palette::TINTED_LIFT_CHROMA + 0.01,
+                        chroma <= tilo_ui_base::tokens::palette::TINTED_LIFT_CHROMA + 0.01,
                         "{} {style:?}: the chosen segment carries more than a faint tint ({chroma})",
                         theme.name
                     );
@@ -676,7 +676,7 @@ tilo_test_env::scenario! {
                 assert_eq!(
                     fill,
                     Some(
-                        crate::chrome::selector_tier(
+                        tilo_ui_base::chrome::selector_tier(
                             &theme,
                             SelectionState::active(true),
                             colors.surfaces.content
@@ -710,7 +710,7 @@ tilo_test_env::scenario! {
         }
 
         fn a_bound_selection_follows_its_state_both_ways() {
-            let state = crate::LocalState::new(1usize);
+            let state = tilo_ui_base::LocalState::new(1usize);
             let mut g =
                 ToggleGroup::new(vec![Segment::new("A"), Segment::new("B")], 0).bind_selection(&state);
             assert_eq!(g.selected(), 1);
@@ -726,7 +726,7 @@ tilo_test_env::scenario! {
 
         fn many_toggle_on_their_own_and_wrap() {
             let days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-            let state = crate::LocalState::new(std::collections::BTreeSet::from([0_usize]));
+            let state = tilo_ui_base::LocalState::new(std::collections::BTreeSet::from([0_usize]));
             let mut g = ToggleGroup::multiple_from_state(
                 days.iter()
                     .enumerate()
@@ -754,8 +754,8 @@ tilo_test_env::scenario! {
 
         fn icon_segments_are_named_and_square() {
             let segments = vec![
-                Segment::icon(crate::icons::Icon::List, "List"),
-                Segment::icon(crate::icons::Icon::LayoutGrid, "Grid"),
+                Segment::icon(tilo_ui_base::icons::Icon::List, "List"),
+                Segment::icon(tilo_ui_base::icons::Icon::LayoutGrid, "Grid"),
             ];
             let mut g = ToggleGroup::new(segments, 0);
             let mut text = TextRenderer::new();
@@ -853,7 +853,7 @@ tilo_test_env::scenario! {
         }
 
         fn a_folded_strip_meets_a_reader_as_one_picker() {
-            use crate::a11y::{Action, Role};
+            use tilo_ui_base::{a11y::Action, a11y::Role};
             let mut g = ToggleGroup::new(
                 vec![
                     Segment::new("Always"),
@@ -874,7 +874,7 @@ tilo_test_env::scenario! {
             assert_eq!(node.name.as_deref(), Some("When the dock shows"));
             let bounds = node
                 .bounds
-                .map(crate::a11y::AccessBounds::to_rect)
+                .map(tilo_ui_base::a11y::AccessBounds::to_rect)
                 .expect("the picker is placed");
             let side = f64::from(g.interaction.minimum_target());
             assert!(
@@ -893,7 +893,7 @@ tilo_test_env::scenario! {
                 &mut g,
                 &target,
                 &Action::Expand,
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             let node = g.accessibility().expect("semantics");
@@ -910,7 +910,7 @@ tilo_test_env::scenario! {
         }
 
         fn a_folded_strips_bindings_name_the_picker_until_its_menu_opens() {
-            use crate::widget::controls::ActionControls;
+            use tilo_ui_base::widget::controls::ActionControls;
             let mut g = ToggleGroup::new(
                 vec![
                     Segment::new("Always"),
@@ -927,7 +927,7 @@ tilo_test_env::scenario! {
             g.measure_naturals(&mut TextRenderer::new());
             g.apply_layout_external(Rect::new(0.0, 0.0, 140.0, 48.0));
             assert!(g.is_folded(), "the labels do not fit 140 px");
-            let ids = |bindings: Vec<crate::widget::ControlBindingMetadata>| {
+            let ids = |bindings: Vec<tilo_ui_base::widget::ControlBindingMetadata>| {
                 bindings
                     .into_iter()
                     .map(|binding| binding.control_id)
@@ -942,8 +942,8 @@ tilo_test_env::scenario! {
             assert!(Widget::perform_semantic_action(
                 &mut g,
                 &target,
-                &crate::a11y::Action::Activate,
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                &tilo_ui_base::a11y::Action::Activate,
+                &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(
@@ -958,7 +958,7 @@ tilo_test_env::scenario! {
             );
         }
 
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         nothing_chosen_until_the_person_picks();
         a_bound_selection_follows_its_state_both_ways();
         many_toggle_on_their_own_and_wrap();
@@ -977,7 +977,7 @@ fn a_click_slides_the_chosen_pill_from_the_old_segment_to_the_new_one() {
     let strip = std::env::var_os("TILO_SEGMENT_FRAMES").map(std::path::PathBuf::from);
     for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
         let sizes = ["Small", "Default", "Large", "Larger"];
-        let chosen = crate::LocalState::new("Default".to_owned());
+        let chosen = tilo_ui_base::LocalState::new("Default".to_owned());
         let t0 = crate::time::now();
         let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
         let mut frame = with_monotonic_time(t0, || {
@@ -1086,7 +1086,7 @@ fn a_click_slides_the_chosen_pill_from_the_old_segment_to_the_new_one() {
 #[test]
 fn the_thumb_slides_to_a_clicked_segment_and_lands_on_a_key() {
     use crate::time::testing::with_monotonic_time;
-    use crate::tokens::MotionSource;
+    use tilo_ui_base::tokens::MotionSource;
     let theme = Theme::dark();
     let mut g = ToggleGroup::new(
         vec![
@@ -1117,7 +1117,7 @@ fn the_thumb_slides_to_a_clicked_segment_and_lands_on_a_key() {
     let presence = PresenceCtx::default();
     let mut paint = |g: &mut ToggleGroup| {
         let mut scene = Scene::new();
-        g.draw(&mut crate::draw::DrawCtx::new(
+        g.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
@@ -1131,7 +1131,7 @@ fn the_thumb_slides_to_a_clicked_segment_and_lands_on_a_key() {
     assert!(!g.needs_animation_frame(), "the first paint rests");
     let (first, last) = (g.segment_rects[0], g.segment_rects[2]);
     with_monotonic_time(t0, || {
-        crate::motion::note_source(MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(MotionSource::Pointer);
         g.set_selected(2);
         paint(&mut g);
         assert!(
@@ -1143,7 +1143,7 @@ fn the_thumb_slides_to_a_clicked_segment_and_lands_on_a_key() {
             g.selected,
             g.chosen,
             g.thumb.settles_at(),
-            crate::motion::input_source(),
+            tilo_ui_base::motion::input_source(),
             theme.motion().reduced()
         );
     });
@@ -1161,7 +1161,7 @@ fn the_thumb_slides_to_a_clicked_segment_and_lands_on_a_key() {
         paint(&mut g);
         assert!(!g.needs_animation_frame());
         assert_eq!(g.last_thumb, None, "landed on its segment");
-        crate::motion::note_source(MotionSource::Keyboard);
+        tilo_ui_base::motion::note_source(MotionSource::Keyboard);
         g.set_selected(0);
         paint(&mut g);
         assert!(!g.needs_animation_frame(), "a key's choice lands at once");
@@ -1179,7 +1179,7 @@ fn group_draw_data(focused: bool, theme: &Theme) -> Vec<u32> {
 
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    g.draw(&mut crate::draw::DrawCtx::new(
+    g.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut tr,
@@ -1191,7 +1191,7 @@ fn group_draw_data(focused: bool, theme: &Theme) -> Vec<u32> {
 
 #[test]
 fn a_strip_told_of_a_finger_stands_as_tall_as_its_target() {
-    use crate::interaction::InteractionEnvironment;
+    use tilo_ui_base::interaction::InteractionEnvironment;
     let mut harness = crate::app::driver::Driver::new(
         crate::State::new(),
         Box::new(

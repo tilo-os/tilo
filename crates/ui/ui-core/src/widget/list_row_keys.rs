@@ -16,7 +16,7 @@ impl ListRow {
     pub(super) fn handle_key(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         let WindowEvent::KeyboardInput { event, .. } = event else {
             return false;
@@ -63,10 +63,10 @@ impl ListRow {
             _ => false,
         };
         let handled = handled
-            || crate::platform::Shortcut::pressed(
+            || tilo_ui_base::platform::Shortcut::pressed(
                 &event.logical_key,
                 ctx.modifiers.state(),
-                crate::platform::PlatformConventions::default(),
+                tilo_ui_base::platform::PlatformConventions::default(),
             )
             .and_then(|pressed| {
                 self.shortcuts

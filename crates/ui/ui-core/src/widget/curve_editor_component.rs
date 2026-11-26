@@ -1,6 +1,6 @@
 //! [`CurveEditor`] as a described component: the points of a tone curve, shaped by hand.
 
-use crate::component::{Component, Described, Event};
+use tilo_ui_base::{component::Component, component::Described, component::Event};
 use crate::widget::CurveEditor;
 
 /// A tone curve a person shapes: a box over the whole range each way, the straight line a plain

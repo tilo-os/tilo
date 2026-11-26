@@ -1,4 +1,4 @@
-use super::*;
+use tilo_ui_base::widget::manual::*;
 use crate::application::{
     ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
 };
@@ -13,15 +13,15 @@ struct BoundRoot {
     binding: CallbackBinding,
 }
 impl crate::bound_dispatch::BoundWidget for BoundRoot {}
-impl crate::widget::component_walk::ComponentBoundary for BoundRoot {
-    fn component_scope(&self) -> Option<crate::widget::component_walk::Binding> {
+impl tilo_ui_base::widget::component_walk::ComponentBoundary for BoundRoot {
+    fn component_scope(&self) -> Option<tilo_ui_base::widget::component_walk::Binding> {
         Some(std::rc::Rc::new(self.binding.clone()))
     }
 }
 impl Widget for BoundRoot {
-    crate::provides!(
+    tilo_ui_base::provides!(
         dyn crate::bound_dispatch::BoundWidget,
-        dyn crate::widget::component_walk::ComponentBoundary
+        dyn tilo_ui_base::widget::component_walk::ComponentBoundary
     );
     retained_parts!("BoundRoot");
     fn build_layout(
@@ -34,14 +34,14 @@ impl Widget for BoundRoot {
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.parts.draw(&mut crate::draw::DrawCtx::new(
+        self.parts.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -126,13 +126,13 @@ fn owner_execution_scope_spans_probes_and_closed_or_cross_record_policies_never_
     unsafe {
         bindings.rebuild(&widget, &tree, root, &nodes);
     }
-    let mut text = crate::font_catalog::fixture_renderer();
+    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
     let available = Size {
         width: AvailableSpace::Definite(300.0),
         height: AvailableSpace::Definite(200.0),
     };
     let mut solve = || unsafe {
-        super::super::compute_widget_layout(
+        tilo_ui_base::widget::compute_widget_layout(
             &mut tree, root, available, &nodes, &bindings, &mut text,
         )
         .unwrap()

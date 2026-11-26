@@ -4,7 +4,7 @@
 //! Prove its platform journey without a display with
 //! `cargo test --locked -p tilo-app --example resource-journey`.
 
-use tilo_app::i18n::EmbeddedCatalog;
+use tilo_ui_base::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
 
 static CATALOG: EmbeddedCatalog =
@@ -66,7 +66,7 @@ struct AddTask {
     button: Button,
 }
 
-impl tilo_app::widget::Decorator for AddTask {
+impl tilo_ui_base::widget::Decorator for AddTask {
     type Inner = Button;
 
     fn inner(&self) -> &Button {
@@ -102,13 +102,13 @@ impl ResourceApp for ChecklistApp {
         let actions = cx.actions();
         let icon = actions.bind_invocation(
             Button::new("add-icon", "")
-                .with_icon(tilo_app::icons::Icon::Plus)
+                .with_icon(tilo_ui_base::icons::Icon::Plus)
                 .with_accessible_name("journey-add")
                 .tooltip("journey-add"),
             Checklist::ADD.invoke(),
         );
         let label = actions.bind_invocation(
-            Button::new("add-label", "journey-add-label").with_icon(tilo_app::icons::Icon::Plus),
+            Button::new("add-label", "journey-add-label").with_icon(tilo_ui_base::icons::Icon::Plus),
             Checklist::ADD.invoke(),
         );
         let component = AddTask {
@@ -147,7 +147,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tilo_actions::{ActionDescriptor, ApiError};
-    use tilo_app::Role;
+    use tilo_ui_base::Role;
 
     fn task_action(app: &mut TestApp<ChecklistApp>, action: &str) -> ActionDescriptor {
         app.actions()
@@ -175,7 +175,7 @@ mod tests {
         app.harness()
             .perform_named(
                 "draft",
-                &tilo_app::a11y::Action::SetValue("Pack lunch".into()),
+                &tilo_ui_base::a11y::Action::SetValue("Pack lunch".into()),
             )
             .expect("the bound input edits the draft");
         app.call("add", json!({})).expect("add");
@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn progressively_customized_controls_keep_semantics_focus_and_permissions() {
-        use tilo_app::a11y::{Action, Role as AccessibleRole};
+        use tilo_ui_base::{a11y::Action, a11y::Role as AccessibleRole};
         use tilo_app::headless::SemanticExpectation;
 
         let mut app = TestApp::<ChecklistApp>::new().expect("open");
@@ -243,9 +243,9 @@ mod tests {
             .find(|entry| entry.address.action == "add")
             .expect("the checklist publishes Add")
             .address;
-        let add_binding = tilo_app::widget::ControlBindingKind::Action(add_address);
+        let add_binding = tilo_ui_base::widget::ControlBindingKind::Action(add_address);
         let bindings =
-            tilo_app::widget::controls::control_action_bindings(app.harness().root_widget());
+            tilo_ui_base::widget::controls::control_action_bindings(app.harness().root_widget());
         let controls = [
             ("add", "Add task"),
             ("add-icon", "Add task"),

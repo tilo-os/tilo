@@ -22,11 +22,11 @@ use std::collections::BTreeMap;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 
-use crate::component::{Component, Described};
+use tilo_ui_base::{component::Component, component::Described};
 
-use crate::theme::Theme;
+use tilo_ui_base::theme::Theme;
 use crate::widget::window_well::Wells;
-use crate::widget::{TaffyTreeExt, Widget};
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 /// The width of a window for every ten of its height, as every shell shapes a window's
 /// picture (the well the old switcher and the overview draw).
@@ -239,12 +239,12 @@ impl Widget for WindowPreview {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.on_screen = true;
         report(&self.window, self.rect);
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,

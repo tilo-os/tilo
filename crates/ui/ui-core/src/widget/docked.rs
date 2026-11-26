@@ -1,9 +1,9 @@
 //! Content above a bar docked at the foot of its column, as a described component.
 
-use crate::component::{Component, Described, PartViews};
-use crate::widget::Length;
+use tilo_ui_base::{component::Component, component::Described, component::PartViews};
+use tilo_ui_base::widget::Length;
 use crate::widget::arrange::{Fit, Page, Part, Stack};
-use crate::widget::{Decorator, Element, Widget};
+use tilo_ui_base::{widget::Decorator, widget::Element, widget::Widget};
 
 /// Content that fills its column above a bar that stays at the column's foot: a
 /// conversation above its composer.
@@ -45,7 +45,7 @@ impl Described for Docked {
     fn from_props(_key: &str, props: DockedProps) -> Self {
         let DockedProps { content, foot } = props;
         let empty =
-            || Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0)) as Element;
+            || Box::new(tilo_ui_base::widget::Spacer::token(tilo_ui_base::tokens::SpacingStep::S0)) as Element;
         let content = content.unwrap_or_else(empty);
         // The bar stands in the column the content is read at: what follows those words in their
         // own column rather than across the window.
@@ -105,8 +105,8 @@ impl PartViews for Docked {
 
     fn remove(&mut self, _index: usize) {
         if self.editing == 0 {
-            self.put(Box::new(crate::widget::Spacer::token(
-                crate::tokens::SpacingStep::S0,
+            self.put(Box::new(tilo_ui_base::widget::Spacer::token(
+                tilo_ui_base::tokens::SpacingStep::S0,
             )));
         } else {
             // Nothing stands at the foot: the bar goes with what it held.
@@ -139,7 +139,7 @@ impl Decorator for Docked {
     /// A column adds no structure of its own: what changes is what it holds, and a change
     /// it can carry out in place (a list mounting the rows a scroll brought near) stays
     /// described, so the window keeps its tree.
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
         self.stack.take_structure_change()
     }
 }

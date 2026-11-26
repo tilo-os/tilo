@@ -268,7 +268,7 @@ fn in_window<R: Send>(
 /// tasks it reads.
 #[test]
 fn the_seeded_tasks_are_in_the_store_the_tasks_window_opens() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let launches = std::sync::Arc::new(tilo_session::Launches::default());
     let (mut session, workspace) = session(root.path(), std::sync::Arc::clone(&launches));
@@ -312,7 +312,7 @@ fn held_of(host: &Host, app: &str, name: &str) -> usize {
 /// opens on the channels and the person's one conversation.
 #[test]
 fn the_seeded_chat_holds_only_the_persons_own_steps() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let launches = std::sync::Arc::new(tilo_session::Launches::default());
     let (mut session, workspace) = session(root.path(), std::sync::Arc::clone(&launches));
@@ -367,7 +367,7 @@ fn lists_task(session: &Session, title: &str) -> bool {
 /// and once they moved the person's REPL finds them in the workspace's store.
 #[test]
 fn a_fresh_sessions_seeded_tasks_move_into_the_workspace_it_founds_without_going_missing() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let mut session = crate::common::on_its_daemon_with(
         &[OutputConfig::new(
@@ -414,7 +414,7 @@ fn a_fresh_sessions_seeded_tasks_move_into_the_workspace_it_founds_without_going
 /// workspace's store: the app's window reads it, and the person's REPL finds it.
 #[test]
 fn a_task_made_by_the_apps_action_is_found_by_the_repl_and_the_window() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let launches = std::sync::Arc::new(tilo_session::Launches::default());
     let (mut session, workspace) = session(root.path(), std::sync::Arc::clone(&launches));
@@ -480,7 +480,7 @@ fn a_task_made_by_the_apps_action_is_found_by_the_repl_and_the_window() {
 /// at the session's API reads it there.
 #[test]
 fn a_task_checked_in_the_apps_window_is_read_at_the_api() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let launches = std::sync::Arc::new(tilo_session::Launches::default());
     let (mut session, workspace) = session(root.path(), std::sync::Arc::clone(&launches));
@@ -574,7 +574,7 @@ fn add_task(host: &Host, me: &tilo_actions::Actor, title: &str) -> Option<()> {
 /// of it as a change someone else made that they have not seen.
 #[test]
 fn a_task_added_in_the_window_is_the_persons_and_marks_nothing_for_them() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let launches = std::sync::Arc::new(tilo_session::Launches::default());
     let (mut session, workspace) = session(root.path(), std::sync::Arc::clone(&launches));
@@ -623,7 +623,7 @@ fn typing_a_title_in_the_window_is_one_act_of_its_history() {
     use tilolang_tilo::runtime::store::{FieldSpec, FieldValue, Store as _};
 
     const TYPED: &str = "Milk and eggs";
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let launches = std::sync::Arc::new(tilo_session::Launches::default());
     let (mut session, workspace) = session(root.path(), std::sync::Arc::clone(&launches));

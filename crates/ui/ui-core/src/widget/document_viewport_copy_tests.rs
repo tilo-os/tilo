@@ -16,7 +16,7 @@
 
 use super::*;
 use crate::app::{App, AppSurface, SurfaceDamage};
-use crate::offscreen::OffscreenRenderer;
+use tilo_ui_base::offscreen::OffscreenRenderer;
 
 struct Window {
     scale: f64,
@@ -72,7 +72,7 @@ fn pan(theme: &Theme, scale: f64, (step, frames): (f64, usize)) -> Run {
     let mut scene = Scene::new();
     app.surface_input(
         &window,
-        crate::synthetic_input::cursor_moved(200.0 * scale, 200.0 * scale),
+        tilo_ui_base::synthetic_input::cursor_moved(200.0 * scale, 200.0 * scale),
         false,
     );
     for _ in 0..5 {

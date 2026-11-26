@@ -31,7 +31,7 @@ fn is_row(node: &ui::headless::InspectionNode) -> bool {
     node.semantics.as_ref().is_some_and(|access| {
         matches!(
             access.role,
-            ui::a11y::Role::ListItem | ui::a11y::Role::TreeItem
+            tilo_ui_base::a11y::Role::ListItem | tilo_ui_base::a11y::Role::TreeItem
         ) && !access.state.disabled
     })
 }
@@ -70,7 +70,7 @@ fn first_tree(node: &ui::headless::InspectionNode) -> Option<&ui::headless::Insp
     let is_tree = node
         .semantics
         .as_ref()
-        .is_some_and(|access| access.role == ui::a11y::Role::Tree);
+        .is_some_and(|access| access.role == tilo_ui_base::a11y::Role::Tree);
     if is_tree {
         return Some(node);
     }
@@ -85,7 +85,7 @@ fn unchosen_destinations(
     out: &mut Vec<(String, (f64, f64))>,
 ) {
     let unchosen = node.semantics.as_ref().and_then(|access| {
-        let destination = access.role == ui::a11y::Role::TreeItem
+        let destination = access.role == tilo_ui_base::a11y::Role::TreeItem
             && !access.state.disabled
             && !access.state.selected
             && reachable(node, viewport);

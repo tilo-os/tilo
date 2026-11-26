@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use tilo_content::ContentStore;
-use tilo_ui::text_render::TextRenderer;
+use tilo_ui_base::text_render::TextRenderer;
 
 use crate::document::{ArtworkFile, pack, unpack};
 use crate::model::{Adjust, Artwork, Ground, Layer, Mark, Selection, Shape, Style};

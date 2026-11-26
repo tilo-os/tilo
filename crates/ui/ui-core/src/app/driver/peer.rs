@@ -21,7 +21,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use super::Driver;
-use crate::collaboration::{CollabEvent, CollabRequest};
+use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest};
 
 /// What passed between the app and its peer.
 struct Exchange {
@@ -30,13 +30,13 @@ struct Exchange {
     /// What the app asked of its peer, oldest first.
     sent: Vec<CollabRequest>,
     /// The route the app last announced, until the peer acknowledges it.
-    announced: Option<crate::collaboration::RouteSpec>,
+    announced: Option<tilo_ui_base::collaboration::RouteSpec>,
 }
 
 /// The peer the driver connects the app to ([`Driver::connect_peer`]).
 struct RecordingPeer(Rc<RefCell<Exchange>>);
 
-impl crate::collaboration::PeerTransport for RecordingPeer {
+impl tilo_ui_base::collaboration::PeerTransport for RecordingPeer {
     fn is_connected(&self) -> bool {
         true
     }
@@ -50,7 +50,7 @@ impl crate::collaboration::PeerTransport for RecordingPeer {
             ..
         } = &request
         {
-            exchange.announced = Some(crate::collaboration::RouteSpec {
+            exchange.announced = Some(tilo_ui_base::collaboration::RouteSpec {
                 app_id: app_id.clone(),
                 cluster_id: *cluster_id,
                 document: record.clone(),
@@ -62,7 +62,7 @@ impl crate::collaboration::PeerTransport for RecordingPeer {
 
     fn take_primary_route_result(
         &mut self,
-    ) -> Option<Result<crate::collaboration::RouteSpec, String>> {
+    ) -> Option<Result<tilo_ui_base::collaboration::RouteSpec, String>> {
         self.0.borrow_mut().announced.take().map(Ok)
     }
 
@@ -72,7 +72,7 @@ impl crate::collaboration::PeerTransport for RecordingPeer {
 
     fn join_route(
         &mut self,
-        _: crate::collaboration::RouteSpec,
+        _: tilo_ui_base::collaboration::RouteSpec,
         _: crate::resource::ResourceType,
     ) -> Result<(), String> {
         Ok(())
@@ -80,7 +80,7 @@ impl crate::collaboration::PeerTransport for RecordingPeer {
 
     fn send_to_route(
         &mut self,
-        _: crate::collaboration::RouteSpec,
+        _: tilo_ui_base::collaboration::RouteSpec,
         request: CollabRequest,
     ) -> Result<(), String> {
         self.send(request)
@@ -123,12 +123,12 @@ fn admit_declared(
 /// How the session finally answered a forwarded request, as its receipt says it; `None` while it
 /// has not finished, since what it says first (that it took the request) may still end refused.
 fn receipt_status(
-    arrival: &crate::arriving::Arrival<
+    arrival: &tilo_ui_base::arriving::Arrival<
         tilo_actions::InvocationUpdate,
         tilo_actions::remote::ActionCallError,
     >,
 ) -> Option<tilo_actions::remote::ReceiptStatus> {
-    use crate::arriving::Arrival;
+    use tilo_ui_base::arriving::Arrival;
     use tilo_actions::InvocationUpdate;
     use tilo_actions::remote::ReceiptStatus;
     Some(match arrival {
@@ -218,7 +218,7 @@ impl Peer {
         resources: &[tilo_actions::ResourceSpec],
         request: tilo_actions::remote::InvokeRequest,
         actor: tilo_actions::Actor,
-        grants: Option<&crate::permissions::PermissionContext>,
+        grants: Option<&tilo_ui_base::permissions::PermissionContext>,
     ) {
         use tilo_actions::ConfirmationPolicy;
         use tilo_actions::remote::{
@@ -270,7 +270,7 @@ impl Peer {
                     };
                     crate::bound_dispatch::admit_local_action(
                         grants,
-                        (&crate::collaboration::local_app_id(), resource, spec),
+                        (&tilo_ui_base::collaboration::local_app_id(), resource, spec),
                         typed,
                         slot.as_deref(),
                     )
@@ -457,11 +457,11 @@ pub(super) struct Peer {
     /// How many of the app's requests the peer has answered as its broker.
     served: usize,
     /// The session other providers' requests go to ([`Driver::set_session_api`]).
-    session: Option<crate::RemoteActions>,
+    session: Option<tilo_ui_base::RemoteActions>,
     /// The requests handed to the session whose answer has not come yet.
     forwarded: Vec<(
         tilo_actions::InvocationId,
-        crate::remote_actions::InvocationCall,
+        tilo_ui_base::remote_actions::InvocationCall,
     )>,
     /// The providers the caller serves, and what decides the window's shown actions.
     served_by_caller: super::workspace_side::Served,
@@ -500,7 +500,7 @@ impl Driver {
             announced: None,
         }));
         self.app.connect_workspace(
-            crate::collaboration::CollaborationManager::with_peer_transport(RecordingPeer(
+            tilo_ui_base::collaboration::CollaborationManager::with_peer_transport(RecordingPeer(
                 Rc::clone(&exchange),
             )),
         );
@@ -592,7 +592,7 @@ impl Driver {
     pub fn approval_typing(&self, typed: Option<&str>) -> tilo_actions::remote::asked::Approval {
         let mut approval = tilo_actions::remote::asked::Approval::new(
             tilo_actions::remote::asked::RecordRef {
-                workspace: crate::permissions::LOCAL_WORKSPACE.to_owned(),
+                workspace: tilo_ui_base::permissions::LOCAL_WORKSPACE.to_owned(),
                 record: format!("invocations/{}", tilo_actions::InvocationId::new().0),
                 device: None,
             },
@@ -708,7 +708,7 @@ impl Driver {
     ///
     /// # Panics
     /// If `workspace` is not a workspace id.
-    pub fn set_session_api(&mut self, client: crate::RemoteActions, workspace: Option<String>) {
+    pub fn set_session_api(&mut self, client: tilo_ui_base::RemoteActions, workspace: Option<String>) {
         if self.peer.is_none() {
             self.connect_peer();
         }
@@ -722,7 +722,7 @@ impl Driver {
                 .and_then(|binding| binding.broker_route())
                 .filter(|route| route.cluster_id == cluster_id);
             let (app_id, record) = carried.map_or_else(
-                || (crate::collaboration::local_app_id(), None),
+                || (tilo_ui_base::collaboration::local_app_id(), None),
                 |route| (route.app_id, route.document),
             );
             assert!(
@@ -832,7 +832,7 @@ impl Driver {
             let Some(resource) = self
                 .app
                 .permission_ctx
-                .permitted_resource(&crate::collaboration::local_app_id(), resource)
+                .permitted_resource(&tilo_ui_base::collaboration::local_app_id(), resource)
             else {
                 continue;
             };

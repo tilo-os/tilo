@@ -1,8 +1,8 @@
 //! How a widget contributes to the unified search: providers folded into the
 //! Ctrl+K palette and system search, and activating one of its hits.
 
-use crate::widget::capability::{capability, capability_mut};
-use crate::widget::{ModelPath, Widget};
+use tilo_ui_base::{widget::capability::capability, widget::capability::capability_mut};
+use tilo_ui_base::{widget::ModelPath, widget::Widget};
 
 /// A widget whose content is searchable.
 pub trait SearchSource: Widget {
@@ -40,7 +40,7 @@ pub trait SearchSource: Widget {
     fn activate_search_result(
         &mut self,
         _action_id: &str,
-        _doc: &mut crate::widget::Edits<'_>,
+        _doc: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) {
     }
@@ -66,7 +66,7 @@ pub struct SearchProviderDescriptor {
     pub(crate) name: String,
     pub(crate) owner: Option<uuid::Uuid>,
     pub(crate) generation: Option<u64>,
-    pub(crate) invocation_domain: crate::widget::ActionDirectoryInvocationDomain,
+    pub(crate) invocation_domain: tilo_ui_base::widget::ActionDirectoryInvocationDomain,
 }
 
 /// The component whose answers `provider` serves: only Tilo's model hosts one.
@@ -90,7 +90,7 @@ impl SearchProviderDescriptor {
     pub fn new(
         name: impl Into<String>,
         generation: Option<u64>,
-        invocation_domain: crate::widget::ActionDirectoryInvocationDomain,
+        invocation_domain: tilo_ui_base::widget::ActionDirectoryInvocationDomain,
     ) -> Self {
         Self {
             name: name.into(),
@@ -137,7 +137,7 @@ pub fn search_index_entries(
 pub fn activate_search_result(
     widget: &mut (impl Widget + ?Sized),
     action_id: &str,
-    doc: &mut crate::widget::Edits<'_>,
+    doc: &mut tilo_ui_base::widget::Edits<'_>,
     path: &ModelPath,
 ) {
     if let Some(source) = capability_mut::<dyn SearchSource>(widget) {

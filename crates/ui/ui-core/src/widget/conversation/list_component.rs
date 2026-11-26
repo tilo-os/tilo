@@ -1,11 +1,11 @@
 //! [`ConversationList`] as a described component: the lines of a conversation as parts, each what it
 //! says, who said it and when, and how it is on its way.
 
-use crate::component::{Component, Described, Moment, ResourceId};
-use crate::widget::Widget;
+use tilo_ui_base::{component::Component, component::Described, component::Moment, component::ResourceId};
+use tilo_ui_base::widget::Widget;
 use crate::widget::conversation::{ConversationLine, ConversationList, DeliveryState};
 
-crate::choice!(crate::widget::conversation::DeliveryState, "Delivery", {
+tilo_ui_base::choice!(crate::widget::conversation::DeliveryState, "Delivery", {
     Queued => "queued",
     Sending => "sending",
     Submitted => "submitted",
@@ -44,7 +44,7 @@ pub struct ConversationEntryProps {
     pub delivery: Option<DeliveryState>,
 }
 
-crate::component::part_type!(ConversationEntryProps);
+tilo_ui_base::component::part_type!(ConversationEntryProps);
 
 /// A conversation, drawn as every conversation is drawn: each line on its own side, runs of one
 /// person's consecutive messages under their name once, a divider where the day changes, and the time
@@ -133,7 +133,7 @@ impl Described for DescribedConversationList {
     }
 }
 
-impl crate::widget::Decorator for DescribedConversationList {
+impl tilo_ui_base::widget::Decorator for DescribedConversationList {
     type Inner = ConversationList;
 
     fn inner(&self) -> &ConversationList {
@@ -148,7 +148,7 @@ impl crate::widget::Decorator for DescribedConversationList {
         "ConversationList"
     }
 
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
         self.list.take_structure_change()
     }
 }

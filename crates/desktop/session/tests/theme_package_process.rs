@@ -166,7 +166,7 @@ fn frame_pixels(session: &mut Session, colour: [u8; 4]) -> usize {
 /// The painter module a bundle carries: it declares no parameters and fills every part it is
 /// asked for with `colour`, so a window drawn by it is visibly its own.
 fn filling_module(colour: [u8; 3]) -> Vec<u8> {
-    use ui::part_paint::{Brush, PaintedPart, PartScene};
+    use tilo_ui_base::{part_paint::Brush, part_paint::PaintedPart, part_paint::PartScene};
 
     let mut part = PartScene::new();
     let mut field = ui::kurbo::BezPath::new();
@@ -225,7 +225,7 @@ fn document(id: &str, set: &str) -> String {
 fn install_theme_package(store: &Path, id: &str, set: &str, colour: [u8; 3]) {
     let payload = store.join("pkgs").join(set);
     std::fs::create_dir_all(&payload).expect("the payload tree");
-    std::fs::write(payload.join(ui::theme_bundle::DOCUMENT), document(id, set))
+    std::fs::write(payload.join(tilo_ui_base::theme_bundle::DOCUMENT), document(id, set))
         .expect("the document");
     let bytes = filling_module(colour);
     std::fs::write(payload.join(format!("{set}.wasm")), &bytes).expect("the module");
@@ -264,7 +264,7 @@ fn step(fixture: &mut Fixture) {
 /// while it runs: the window's pixels are the first bundle's painters', then the second's.
 #[test]
 fn an_applied_theme_package_draws_the_app_in_its_own_process_and_follows_a_change() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // The person's settings service beside the desktop's own: the appearance section it
     // publishes is where the applied package is written and read.
     let mut fixture = Builder::installing(APP)

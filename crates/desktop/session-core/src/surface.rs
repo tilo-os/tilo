@@ -179,7 +179,7 @@ impl Default for WindowFrame {
     /// foreign window.
     fn default() -> Self {
         Self {
-            radius: f64::from(ui::tokens::Radii::WINDOW),
+            radius: f64::from(tilo_ui_base::tokens::Radii::WINDOW),
             shadow: Some(Shadow {
                 offset_y: 2.0,
                 blur: 16.0,

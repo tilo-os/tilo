@@ -7,8 +7,8 @@ tilo_test_env::scenario! {
 
     phase attributed_single_line_style_inputs_invalidate_cached_shape;
     {
-        use crate::richtext::{BaselineShift, FontFamily};
-        let _settled = crate::motion::testing::settled();
+        use tilo_ui_base::{richtext::BaselineShift, richtext::FontFamily};
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut input = TextInput::local().with_initial_value("WWW");
         input.apply_layout_external(Rect::new(0.0, 0.0, 400.0, 60.0));
         let mut attributes = SingleLineAttributes {

@@ -1,6 +1,6 @@
 //! Presentation-only inputs. No live widget, document loan or service enters a preview.
 use super::HistorySnapshot;
-use crate::{text_render::TextRenderer, theme::Theme};
+use tilo_ui_base::{text_render::TextRenderer, theme::Theme};
 use std::{collections::BTreeMap, sync::Arc};
 use vello::{
     Scene,

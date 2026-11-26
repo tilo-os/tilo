@@ -3,13 +3,9 @@ use crate::layout::{Key, KeyAction, KeyId, KeyboardLayout, ShiftState, key_rects
 use crate::suggest::{Suggestion, suggestion_rects};
 use crate::toolbar::{Latch, ModifierLatches, OskToolbarAction, OskToolbarItem, toolbar_rects};
 use crate::touch_model::{CORE_FRACTION, HitCell, core_zone};
-use ui::text_render::TextWeight;
+use tilo_ui_base::text_render::TextWeight;
 use ui::widget::{Button, ButtonFace, ButtonRole, ChipFace, Interaction};
-use ui::{
-    TextRenderer, TextRole, TextStyle, Theme,
-    icons::{self, Icon},
-    paint::PaintCtx,
-};
+use tilo_ui_base::{TextRenderer, TextRole, TextStyle, Theme, icons, icons::Icon, paint::PaintCtx};
 use vello::{
     Scene,
     kurbo::{Affine, Point, Rect},
@@ -257,11 +253,11 @@ impl KeyboardPresentation<'_> {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let ground = ui::surface::region(
+        let ground = tilo_ui_base::surface::region(
             scene,
             transform,
             self.rect,
-            ui::surface::Region::Content,
+            tilo_ui_base::surface::Region::Content,
             theme,
         );
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
@@ -283,7 +279,7 @@ impl KeyboardPresentation<'_> {
         if self.suggestion_area.area() > 0.0 {
             let (x0, x1) = (self.rect.x0, self.rect.x1);
             for y in [self.suggestion_area.y0, self.suggestion_area.y1] {
-                ui::surface::separator(ctx.scene, ctx.transform, x0, x1, y, 0.0, ground);
+                tilo_ui_base::surface::separator(ctx.scene, ctx.transform, x0, x1, y, 0.0, ground);
             }
         }
 
@@ -435,14 +431,14 @@ fn key_fill(theme: &Theme, tone: CellTone, hovered: bool, pressed: bool) -> Colo
 
 fn draw_float_panel(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) -> f64 {
     let radius = f64::from(theme.tokens.radii.panel);
-    ui::surface::shadow(
+    tilo_ui_base::surface::shadow(
         scene,
         transform,
         rect,
         radius,
         &theme.tokens.elevation.floating,
     );
-    ui::surface::panel(scene, transform, rect, radius, theme);
+    tilo_ui_base::surface::panel(scene, transform, rect, radius, theme);
     radius
 }
 
@@ -661,7 +657,7 @@ pub(crate) fn draw_cell(ctx: &mut PaintCtx<'_>, rect: Rect, face: CellFace<'_>, 
     let cell = rect.inset(-key_pad(rect));
     let radius = f64::from(theme.tokens.radii.control);
     if tone != CellTone::Flat {
-        ui::surface::card(
+        tilo_ui_base::surface::card(
             ctx.scene,
             ctx.transform,
             cell,

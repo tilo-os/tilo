@@ -161,7 +161,7 @@ fn opening_and_switching_panes_stay_within_their_budget() {
     // what a person waits for, so it happens outside the step.
     let mut launched = None;
     let opening = timed(|| {
-        launched = Some(open_with(&packages, WINDOW, ui::Theme::light()));
+        launched = Some(open_with(&packages, WINDOW, tilo_ui_base::Theme::light()));
     });
     drop(launched);
     eprintln!(
@@ -169,7 +169,7 @@ fn opening_and_switching_panes_stay_within_their_budget() {
         opening.cpu_us, opening.reference_us
     );
 
-    let mut window = open_with(&packages, WINDOW, ui::Theme::light());
+    let mut window = open_with(&packages, WINDOW, tilo_ui_base::Theme::light());
     // One warm switch each, as a person's first look is not what the budget holds.
     for pane in PANES {
         support::open_pane(&mut window, pane);

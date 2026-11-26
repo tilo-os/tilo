@@ -12,9 +12,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 
-use crate::text_render::{TextRenderer, TextWeight};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextWeight};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::chart_geometry;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_readout::Readout;
@@ -376,7 +376,7 @@ impl SunburstMarks {
         let target = colors.surfaces.base;
         let amount = (f64::from(u32::try_from(depth.saturating_sub(1)).unwrap_or(u32::MAX)) * 0.12)
             .min(0.48);
-        crate::tokens::colors::mix8(base, target, crate::num::f32_of_f64(amount))
+        tilo_ui_base::tokens::colors::mix8(base, target, tilo_ui_base::num::f32_of_f64(amount))
     }
 }
 
@@ -582,7 +582,7 @@ impl Ring {
     }
 }
 
-fn label_style(theme: &Theme) -> crate::text_render::TextStyle {
+fn label_style(theme: &Theme) -> tilo_ui_base::text_render::TextStyle {
     theme
         .text(TextRole::Label)
         .with_weight(TextWeight::Semibold)
@@ -672,7 +672,7 @@ fn wrapped_label(
     label: &str,
     ring: &Ring,
     anchor: Point,
-    style: &crate::text_render::TextStyle,
+    style: &tilo_ui_base::text_render::TextStyle,
     air: f64,
 ) -> Option<ShownLabel> {
     let words: Vec<&str> = label.split_whitespace().collect();

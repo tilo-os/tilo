@@ -39,7 +39,7 @@ impl Driver {
         let app = &mut *self.app;
         self.cards.cards.draw(
             app.root_widget.as_mut(),
-            &mut crate::draw::DrawCtx::new(
+            &mut tilo_ui_base::draw::DrawCtx::new(
                 &mut self.scene,
                 transform,
                 &mut app.text_renderer,
@@ -53,7 +53,7 @@ impl Driver {
     /// pointer, or the one last pressed for a key. Answers whether a card took it.
     pub(super) fn route_to_card(&mut self, event: &WindowEvent) -> bool {
         let scale = self.surface.scale.get().max(f64::EPSILON);
-        if let Some(at) = crate::motion::pointer_of(event) {
+        if let Some(at) = tilo_ui_base::motion::pointer_of(event) {
             self.cards.pointer = Some(Point::new(at.x / scale, at.y / scale));
         }
         if self.cards.cards.is_empty() {

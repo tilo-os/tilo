@@ -6,7 +6,7 @@
 use std::rc::{Rc, Weak};
 
 use tilo_resource::Resource;
-use ui_core::LocalState;
+use tilo_ui_base::LocalState;
 use ui_core::resource::ResourceSaveStatus;
 
 use super::dispatch::Dispatcher;
@@ -436,9 +436,9 @@ impl<R: Resource> ResourceEnv<R> {
     pub fn follow_resource(
         &self,
         read: tilo_actions::remote::ResourceReadRequest,
-    ) -> ui_core::ResourceReadCall {
+    ) -> tilo_ui_base::ResourceReadCall {
         if !self.run.mode.is_live() {
-            return ui_core::arriving::Arriving::pending(ui_core::arriving::Source::Local);
+            return tilo_ui_base::arriving::Arriving::pending(tilo_ui_base::arriving::Source::Local);
         }
         let opener = self.dispatch.opener();
         let followed = opener.follow_resource(read);
@@ -518,7 +518,7 @@ impl<R: Resource> ResourceEnv<R> {
     /// asks the session for what is the session's to decide (Mail an account's password,
     /// Settings keeping one, Browser a website's session). `None` outside a session, in a past
     /// version and in a capture.
-    pub fn session(&self) -> Option<ui_core::collaboration::browser_service_sessions::Client> {
+    pub fn session(&self) -> Option<tilo_ui_base::collaboration::browser_service_sessions::Client> {
         if self.is_past() {
             return None;
         }

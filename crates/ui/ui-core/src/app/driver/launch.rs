@@ -217,7 +217,7 @@ impl Driver {
     /// person would see it, and write the frame as a PNG.
     fn write_capture(&mut self, capture: &Capture) -> Result<(), String> {
         if let Some(name) = &capture.theme {
-            let theme = crate::theme::Theme::named(name)
+            let theme = tilo_ui_base::theme::Theme::named(name)
                 .ok_or_else(|| format!("capture {}: unknown theme {name:?}", capture.path))?;
             self.set_theme(theme.with_reduce_motion(true));
         }

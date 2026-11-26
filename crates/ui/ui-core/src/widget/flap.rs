@@ -1,9 +1,9 @@
 //! The reveal kernel every collapsible panel shares: `NavShell`'s sidebar and inspector,
 //! and the headless [`crate::widget::SidebarDrawer`].
 
-use crate::motion::{Direction, MotionValue, PanelSlide};
+use tilo_ui_base::{motion::Direction, motion::MotionValue, motion::PanelSlide};
 use crate::time::Instant;
-use crate::tokens::{EffectiveMotion, MotionSource};
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
 
 /// How a sidebar resolves at the current width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -228,7 +228,7 @@ impl FlapState {
 mod tests {
     use super::*;
     use crate::time::Duration;
-    use crate::tokens::Motion;
+    use tilo_ui_base::tokens::Motion;
 
     fn motion() -> EffectiveMotion {
         EffectiveMotion::new(Motion::default(), false)

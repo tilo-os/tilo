@@ -39,9 +39,9 @@ impl Driver {
     pub fn relayout_window_themed_for(
         &mut self,
         viewport: (u32, u32),
-        theme: crate::theme::Theme,
-        input: crate::interaction::InteractionEnvironment,
-    ) -> Result<(), crate::widget::WidgetLayoutError> {
+        theme: tilo_ui_base::theme::Theme,
+        input: tilo_ui_base::interaction::InteractionEnvironment,
+    ) -> Result<(), tilo_ui_base::widget::WidgetLayoutError> {
         self.present_in_window_bar();
         self.relayout_for(viewport, theme, input)
     }
@@ -171,7 +171,7 @@ impl Driver {
     /// The window's bar as automation reaches it: the app's parts, the window's History, its
     /// search and its own controls, each with the target [`Self::perform_window_part`] runs.
     #[must_use]
-    pub fn window_parts(&self) -> Vec<crate::a11y::AccessNode> {
+    pub fn window_parts(&self) -> Vec<tilo_ui_base::a11y::AccessNode> {
         self.bar
             .as_deref()
             .map(super::super::part_bar::PartBar::parts)
@@ -186,14 +186,14 @@ impl Driver {
     pub fn perform_window_part(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
     ) -> Result<(), String> {
         if !self.presents_window_bar() {
             return Err(format!(
                 "{target} is part of the window's bar: present it (present_in_window_bar)"
             ));
         }
-        crate::motion::note_source(crate::tokens::MotionSource::Action);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Action);
         let running = self.running();
         let took = self
             .bar
@@ -219,7 +219,7 @@ impl Driver {
     /// When neither the bar nor the header row shows anything by that name.
     pub fn press_window_action(&mut self, name: &str) -> Result<(), String> {
         fn find(
-            nodes: &[crate::a11y::AccessNode],
+            nodes: &[tilo_ui_base::a11y::AccessNode],
             name: &str,
             offered: &mut Vec<String>,
         ) -> Option<String> {
@@ -239,7 +239,7 @@ impl Driver {
         }
         let mut offered = Vec::new();
         if let Some(target) = find(&self.window_parts(), name, &mut offered) {
-            return self.perform_window_part(&target, &crate::a11y::Action::Activate);
+            return self.perform_window_part(&target, &tilo_ui_base::a11y::Action::Activate);
         }
         // An app whose own header row carries its actions across the window's top shows them
         // there, beside the bar's: the person clicks the one they read.
@@ -284,7 +284,7 @@ impl Driver {
             .window_history_control()
             .ok_or("History is unavailable")?;
         if !self.presents_window_bar() && self.bar.is_some() {
-            crate::motion::note_source(crate::tokens::MotionSource::Action);
+            tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Action);
             let running = self.running();
             let pressed = self.app.invoke_window_history_control(control);
             drop(running);
@@ -296,7 +296,7 @@ impl Driver {
             crate::widget::window_toolbar_row::ACTION_TARGET_PREFIX,
             crate::part_row::HISTORY
         );
-        self.perform_window_part(&target, &crate::a11y::Action::Activate)
+        self.perform_window_part(&target, &tilo_ui_base::a11y::Action::Activate)
     }
 
     /// Type `query` into the window's search, opened with Find or Replace as its chord opens it,
@@ -319,7 +319,7 @@ impl Driver {
         drop(running);
         self.perform_window_part(
             "window-search-query",
-            &crate::a11y::Action::SetValue(query.into()),
+            &tilo_ui_base::a11y::Action::SetValue(query.into()),
         )
         .ok()?;
         self.window_search_position()
@@ -342,7 +342,7 @@ impl Driver {
         if self
             .perform_window_part(
                 "window-search-replacement",
-                &crate::a11y::Action::SetValue(with.into()),
+                &tilo_ui_base::a11y::Action::SetValue(with.into()),
             )
             .is_err()
         {

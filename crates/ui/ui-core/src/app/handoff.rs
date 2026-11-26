@@ -1,5 +1,5 @@
 //! An instance's side of moving its window to another workspace
-//! ([`crate::collaboration::handoff`]): making what it shows durable when
+//! ([`tilo_ui_base::collaboration::handoff`]): making what it shows durable when
 //! asked, so the record the workspace's store moves holds what the person
 //! left in it.
 //!
@@ -7,8 +7,8 @@
 //! to, else the App's own document.
 
 use super::App;
-use crate::collaboration::CollabRequest;
-use crate::collaboration::handoff::{HandoffReport, HandoffRequest};
+use tilo_ui_base::collaboration::CollabRequest;
+use tilo_ui_base::{collaboration::handoff::HandoffReport, collaboration::handoff::HandoffRequest};
 
 impl App {
     /// Make the document this window shows durable now, without closing
@@ -55,7 +55,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collaboration::{CollabEvent, CollaborationManager, PeerTransport, RouteSpec};
+    use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollaborationManager, collaboration::PeerTransport, collaboration::RouteSpec};
     use crate::state::State;
     use automerge::transaction::Transactable as _;
     use std::cell::RefCell;

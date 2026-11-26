@@ -1,6 +1,6 @@
 //! What a row's group is: the heading a run of rows stands under, and the tone it reads in.
 
-use crate::widget::Tone;
+use tilo_ui_base::widget::Tone;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RowGroup {

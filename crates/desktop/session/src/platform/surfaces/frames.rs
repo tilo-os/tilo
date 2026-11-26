@@ -1,7 +1,7 @@
 //! Where a hosted surface's frame is drawn.
 //!
 //! A surface app's scene is drawn the way every toolkit app's frame is: by
-//! the toolkit's own renderer ([`ui::offscreen::OffscreenRenderer`]), and
+//! the toolkit's own renderer ([`tilo_ui_base::offscreen::OffscreenRenderer`]), and
 //! delivered as an app's frame is, in dma-bufs on the compositor's GPU
 //! (`tilo_render_service::buffers`) that the compositor composites straight
 //! from: the pixels never leave the GPU. What the frame shows (which cells
@@ -23,7 +23,7 @@ use tilo_render_service::buffers::{self as delivery, Allocator, BufferSet, Histo
 use tilo_session_core::surface::{CELL, Region, SurfaceBuffer, SurfaceBuffers, SurfaceFrame};
 
 use super::raster::OffThread;
-use ui::offscreen::OffscreenRenderer;
+use tilo_ui_base::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::Rect;
 use vello::peniko::Color;
@@ -60,7 +60,7 @@ impl Frames {
     pub(crate) fn new(size: (u32, u32)) -> Self {
         // The first surface comes before the compositor's display; which GPU
         // draws is chosen with the first frame, once the display is up.
-        ui::offscreen::load_drivers();
+        tilo_ui_base::offscreen::load_drivers();
         Self {
             size,
             target: None,
@@ -188,7 +188,7 @@ impl Target {
     /// its GPU cannot be brought back. `None` where this build has no
     /// rasterizer.
     fn cpu(size: (u32, u32), replaces: Option<SurfaceFrame>) -> Option<Self> {
-        let canvas = ui::offscreen::CpuSurface::new(size.0, size.1, RASTER_THREADS)?;
+        let canvas = tilo_ui_base::offscreen::CpuSurface::new(size.0, size.1, RASTER_THREADS)?;
         Some(Self::Cpu(OffThread::new(
             Box::new(canvas),
             SurfaceFrame::new(size),
@@ -206,24 +206,24 @@ impl Target {
     }
 
     /// What draws a `size` surface after this target lost its GPU device for
-    /// `reason`: the answer `ui::gpu::recover` decides, and the drawing that
+    /// `reason`: the answer `tilo_ui_base::gpu::recover` decides, and the drawing that
     /// fits it — the CPU rasterizer once the GPU cannot be brought back, the
     /// GPU again after a reset that left it working.
     fn after_loss(self, reason: &str, size: (u32, u32)) -> Option<Self> {
         let Self::Gpu(gpu) = self else {
             return Self::new(size, None);
         };
-        let recovery = ui::gpu::recover(&gpu.adapter, gpu.finished_frames, reason);
+        let recovery = tilo_ui_base::gpu::recover(&gpu.adapter, gpu.finished_frames, reason);
         tracing::error!(%reason, ?recovery, "a hosted surface's GPU device was lost");
         match recovery {
             // The GPU was reset and works again: open a renderer on it. A
             // device that stays lost ends here again on the next pass, then
             // with no frame finished and gives way to the CPU.
-            ui::gpu::Recovery::SameAdapter => Self::new(size, None),
+            tilo_ui_base::gpu::Recovery::SameAdapter => Self::new(size, None),
             // The surface draws on the CPU from here on, which the error above
             // already said: nothing more to report until a size or a device
             // changes again.
-            ui::gpu::Recovery::Software => Self::cpu(size, None),
+            tilo_ui_base::gpu::Recovery::Software => Self::cpu(size, None),
         }
     }
 }
@@ -240,7 +240,7 @@ fn prefer_render_node(node: &std::path::Path) {
         return;
     };
     let _ = COMPOSITORS_GPU.set(numbers);
-    ui::gpu::prefer_adapter(on_compositors_gpu);
+    tilo_ui_base::gpu::prefer_adapter(on_compositors_gpu);
 }
 
 /// Whether `adapter` is the GPU behind the compositor's render node.
@@ -256,7 +256,7 @@ fn on_compositors_gpu(adapter: &wgpu::Adapter) -> bool {
 struct Gpu {
     renderer: OffscreenRenderer,
     /// The adapter this renderer draws on: what a loss of its device is
-    /// decided by ([`ui::gpu::recover`]).
+    /// decided by ([`tilo_ui_base::gpu::recover`]).
     adapter: AdapterInfo,
     /// Whether this renderer finished at least one frame before the loss: a
     /// device that did was reset and works again, one that did not is on a
@@ -295,7 +295,7 @@ impl Gpu {
         };
         let adapter = renderer
             .adapter_info()
-            .filter(|info| !ui::gpu::rasterizes_on_cpu(info))?;
+            .filter(|info| !tilo_ui_base::gpu::rasterizes_on_cpu(info))?;
         let (device, _, _) = renderer.target();
         let Some(numbers) = tilo_presentation::device_numbers(node) else {
             tracing::warn!(?node, "hosted frames: no device node to draw on");
@@ -755,8 +755,8 @@ fn covered(regions: &[Region]) -> Option<Region> {
 fn draws_on_gpu() -> bool {
     static DRAWS_ON_GPU: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *DRAWS_ON_GPU.get_or_init(|| {
-        let gpu = ui::offscreen::shared_adapter_info()
-            .is_some_and(|adapter| !ui::gpu::rasterizes_on_cpu(&adapter));
+        let gpu = tilo_ui_base::offscreen::shared_adapter_info()
+            .is_some_and(|adapter| !tilo_ui_base::gpu::rasterizes_on_cpu(&adapter));
         if !gpu {
             tracing::info!(
                 "surface apps' frames are drawn on the CPU: this machine has no GPU to draw them on"
@@ -844,12 +844,12 @@ mod tests {
     /// sees everything, only slower, instead of a surface that stops or a
     /// process that panics on a dead device.
     ///
-    /// The decision itself is the toolkit's (`ui::gpu::recover`, tested in
+    /// The decision itself is the toolkit's (`tilo_ui_base::gpu::recover`, tested in
     /// `ui-core`): this drives what follows it for a surface, from the loss
     /// of a device that never finished a frame, which cannot be brought back.
     #[test]
     fn a_gpu_given_up_leaves_the_surface_drawing_on_the_cpu() {
-        ui::gpu::reset_software_fallback_for_test();
+        tilo_ui_base::gpu::reset_software_fallback_for_test();
         let adapter = AdapterInfo {
             name: "Adreno X1-85".to_owned(),
             vendor: 0,
@@ -864,8 +864,8 @@ mod tests {
             transient_saves_memory: false,
         };
         assert_eq!(
-            ui::gpu::recover(&adapter, false, "Device is lost"),
-            ui::gpu::Recovery::Software,
+            tilo_ui_base::gpu::recover(&adapter, false, "Device is lost"),
+            tilo_ui_base::gpu::Recovery::Software,
             "a device lost before its first frame is on a GPU that cannot come back"
         );
 
@@ -889,6 +889,6 @@ mod tests {
             frames.covers(32, 24),
             "the frames are still drawn, in software"
         );
-        ui::gpu::reset_software_fallback_for_test();
+        tilo_ui_base::gpu::reset_software_fallback_for_test();
     }
 }

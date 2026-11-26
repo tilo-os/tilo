@@ -10,21 +10,22 @@
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use super::*;
-use crate::a11y::Role;
-use crate::component::{Described, Event, Fired, Intent, Value};
-use crate::theme::Theme;
-use crate::widget::{Ink, Widget};
+use tilo_ui_base::a11y::Role;
+use tilo_ui_base::{component::Described, component::Event, component::Fired, component::Intent, component::Value};
+use tilo_ui_base::theme::Theme;
+use crate::widget::Ink;
+use tilo_ui_base::widget::Widget;
 use vello::kurbo::{Point, Rect};
 
 fn area() -> Rect {
     Rect::new(0.0, 0.0, 1132.0, 400.0)
 }
 
-fn on(queue: &crate::Intents<Fired>, key: &str, event: &str) -> Event {
+fn on(queue: &tilo_ui_base::Intents<Fired>, key: &str, event: &str) -> Event {
     Event::View(Intent::new(queue, key, event))
 }
 
-fn span(queue: &crate::Intents<Fired>, key: &str, start: f64, length: f64) -> TimelineSpanProps {
+fn span(queue: &tilo_ui_base::Intents<Fired>, key: &str, start: f64, length: f64) -> TimelineSpanProps {
     TimelineSpanProps {
         key: key.into(),
         label: Some(key.to_uppercase()),
@@ -39,7 +40,7 @@ fn span(queue: &crate::Intents<Fired>, key: &str, start: f64, length: f64) -> Ti
 }
 
 fn track(
-    queue: &crate::Intents<Fired>,
+    queue: &tilo_ui_base::Intents<Fired>,
     key: &str,
     spans: Vec<TimelineSpanProps>,
 ) -> TimelineTrackProps {
@@ -55,7 +56,7 @@ fn track(
 
 /// A cut of 20 seconds across 1000 pixels (50 a second) at 30 frames a second: V1 holds `a`
 /// from 2 s to 6 s and `b` from 10 s to 14 s, A1 holds `c` from 0 s to 4 s, and a marker at 8 s.
-fn cut(queue: &crate::Intents<Fired>) -> TrackTimelineProps {
+fn cut(queue: &tilo_ui_base::Intents<Fired>) -> TrackTimelineProps {
     TrackTimelineProps {
         label: Some("The cut".into()),
         span: 20.0,
@@ -128,7 +129,7 @@ tilo_test_env::scenario! {
 
     phase the_lane_is_fifty_pixels_a_second_right_of_the_headers;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let timeline = laid(cut(&queue));
         let geom = timeline.geom_for_test();
         assert!((geom.px_per_second - 50.0).abs() < 1e-9, "{}", geom.px_per_second);
@@ -138,7 +139,7 @@ tilo_test_env::scenario! {
 
     phase dragging_a_span_moves_it_and_lines_it_up_with_a_neighbour;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut timeline = laid(cut(&queue));
         let y = row_y(&timeline, 0);
         // Grab `a` at 4 s, two seconds in, and let go so its end lands 3 px short of `b`'s start
@@ -160,7 +161,7 @@ tilo_test_env::scenario! {
 
     phase a_free_drag_lands_on_the_frame_grid_and_another_track;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut timeline = laid(cut(&queue));
         // `b` from 12 s dragged down to A1, to 16.01 s: nothing near, so the nearest frame.
         let from = Point::new(x(&timeline, 12.0), row_y(&timeline, 0));
@@ -180,7 +181,7 @@ tilo_test_env::scenario! {
 
     phase dragging_an_edge_trims_the_span;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut timeline = laid(cut(&queue));
         let y = row_y(&timeline, 0);
         // `a`'s trailing edge, at 6 s, dragged to the marker at 8 s.
@@ -202,7 +203,7 @@ tilo_test_env::scenario! {
 
     phase a_press_on_a_span_carries_its_place_on_the_track;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut timeline = laid(cut(&queue));
         let at = Point::new(x(&timeline, 11.0), row_y(&timeline, 0));
         assert!(timeline.press_at_for_test(at, ModifiersState::SHIFT));
@@ -215,7 +216,7 @@ tilo_test_env::scenario! {
 
     phase the_ruler_seeks_and_a_drag_along_it_scrubs;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut timeline = laid(cut(&queue));
         let ruler = timeline.geom_for_test().ruler();
         let y = ruler.y1 - 2.0;
@@ -230,7 +231,7 @@ tilo_test_env::scenario! {
 
     phase a_marker_drags_along_the_ruler;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut timeline = laid(cut(&queue));
         let ruler = timeline.geom_for_test().ruler();
         let from = Point::new(x(&timeline, 8.0) + 1.0, ruler.y0 + 6.0);
@@ -244,7 +245,7 @@ tilo_test_env::scenario! {
 
     phase a_locked_track_holds_its_spans_still;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut props = cut(&queue);
         props.tracks[0].locked = true;
         let mut timeline = laid(props);
@@ -260,7 +261,7 @@ tilo_test_env::scenario! {
 
     phase the_header_toggles_report_their_new_state;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut timeline = laid(cut(&queue));
         let header = timeline.geom_for_test().header(1);
         // The lock stands at the trailing edge, the mute beside it (no solo is handled).
@@ -269,13 +270,13 @@ tilo_test_env::scenario! {
         timeline.release_at_for_test(mute);
         assert_eq!(
             queue.take(),
-            [crate::component::testing::fired("a1", "toggled_mute", Some(Value::Bool(true)))]
+            [tilo_ui_base::component::testing::fired("a1", "toggled_mute", Some(Value::Bool(true)))]
         );
     }
 
     phase keys_move_the_focus_nudge_a_span_and_step_the_playhead;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut timeline = laid(cut(&queue));
         // Focus starts at the playhead; down reaches V1's span nearest it, `a`.
         assert!(timeline.key_for_test(&Key::Named(NamedKey::ArrowDown), ModifiersState::empty()));
@@ -293,7 +294,7 @@ tilo_test_env::scenario! {
 
     phase zooming_keeps_the_moment_under_the_pointer;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut timeline = laid(cut(&queue));
         let pointer = x(&timeline, 10.0);
         timeline.wheel_for_test(1.0, pointer);
@@ -306,7 +307,7 @@ tilo_test_env::scenario! {
 
     phase a_pinch_scales_the_lane_about_the_pointer;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut timeline = laid(cut(&queue));
         let pointer = x(&timeline, 10.0);
         timeline.pinch_for_test(2.0, pointer);
@@ -318,7 +319,7 @@ tilo_test_env::scenario! {
 
     phase the_bar_under_the_tracks_scrolls_the_lane;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut props = cut(&queue);
         // Forty seconds of cut in a lane that shows twenty: there is somewhere to scroll.
         props.length = 40.0;
@@ -356,7 +357,7 @@ tilo_test_env::scenario! {
 
     phase shift_on_an_empty_stretch_keeps_the_selection;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut timeline = laid(cut(&queue));
         // V1 after `b` (which ends at 14 s) is empty.
         let empty = Point::new(x(&timeline, 16.0), row_y(&timeline, 0));
@@ -373,7 +374,7 @@ tilo_test_env::scenario! {
 
     phase a_reader_hears_the_playhead_the_tracks_and_their_spans;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let timeline = laid(cut(&queue));
         let root = timeline.accessibility().unwrap();
         assert_eq!(root.name.as_deref(), Some("The cut"));
@@ -402,7 +403,7 @@ tilo_test_env::scenario! {
 
     phase ten_thousand_spans_name_only_the_ones_in_view;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut props = cut(&queue);
         props.tracks[0].spans = (0..10_000)
             .map(|i| span(&queue, &format!("s{i}"), f64::from(i) * 2.0, 1.5))

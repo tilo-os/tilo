@@ -6,13 +6,13 @@ use std::ops::Range;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
 
-use crate::text_edit::word_at_caret;
-use crate::text_render::TextRenderer;
-use crate::text_selection::{line_boundaries, prev_char_boundary, word_boundaries};
-use crate::theme::Theme;
+use tilo_ui_base::text_edit::word_at_caret;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::{text_selection::line_boundaries, text_selection::prev_char_boundary, text_selection::word_boundaries};
+use tilo_ui_base::theme::Theme;
 use crate::time::{Duration, Instant};
-use crate::tokens::TextRole;
-use crate::widget::Widget;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::Widget;
 
 impl super::TextInput {
     pub(super) fn activate_spelling(&mut self) {
@@ -57,7 +57,7 @@ impl super::TextInput {
         if language == self.spell_language && !self.spell_spans_stale {
             // Words never cross a line feed: check only the lines the edit
             // touched and move the marks after them.
-            let edit = crate::text_break::LineEdit::between(&checked, &self.text);
+            let edit = tilo_ui_base::text_break::LineEdit::between(&checked, &self.text);
             let fresh = self.misspelled_in(edit.start..edit.new_end);
             let (old_len, new_len) = (checked.len(), self.text.len());
             let previous = std::mem::take(&mut self.spell_spans);
@@ -137,10 +137,10 @@ impl super::TextInput {
 
     /// Keep `word` as spelled right for this person, in every field and every document.
     pub fn add_word_to_dictionary(&mut self, word: &str) {
-        let result = crate::personal_dictionary::snapshot().and_then(|snapshot| {
-            crate::personal_dictionary::edit(
+        let result = tilo_ui_base::personal_dictionary::snapshot().and_then(|snapshot| {
+            tilo_ui_base::personal_dictionary::edit(
                 snapshot.revision,
-                crate::personal_dictionary::Edit::Add(crate::personal_dictionary::Word::new(
+                tilo_ui_base::personal_dictionary::Edit::Add(tilo_ui_base::personal_dictionary::Word::new(
                     word, None,
                 )?),
             )
@@ -224,7 +224,7 @@ pub(super) struct PersonalSpelling {
     generation: u64,
     configured: String,
     pub(super) language: String,
-    pub(super) snapshot: Option<crate::personal_dictionary::Snapshot>,
+    pub(super) snapshot: Option<tilo_ui_base::personal_dictionary::Snapshot>,
 }
 
 impl super::TextInput {
@@ -310,7 +310,7 @@ impl super::TextInput {
     }
 
     pub(super) fn refresh_autocorrection_preview(&mut self) {
-        self.refresh_suggestion_at(crate::motion::frame_now());
+        self.refresh_suggestion_at(tilo_ui_base::motion::frame_now());
     }
 
     /// Bring the correction offered for the word under the caret up to
@@ -381,8 +381,8 @@ impl super::TextInput {
         // hold, the words already read — and the dictionary built from them —
         // stand, and reading them again would copy and decode the whole
         // dictionary for every frame of every field that has been used.
-        let generation = crate::local_identity::generation();
-        let view = crate::personal_dictionary::revision();
+        let generation = tilo_ui_base::local_identity::generation();
+        let view = tilo_ui_base::personal_dictionary::revision();
         if self.last_personal_spelling_read == Some((generation, view))
             && self.personal_spelling.as_ref().is_some_and(|personal| {
                 personal.generation == generation && personal.configured == self.spell_language
@@ -392,11 +392,11 @@ impl super::TextInput {
         }
         self.last_personal_spelling_read = Some((generation, view));
         let current = PersonalSpelling {
-            owner: crate::local_identity::load().map(|identity| identity.group_public_key),
+            owner: tilo_ui_base::local_identity::load().map(|identity| identity.group_public_key),
             generation,
             configured: self.spell_language.clone(),
             language: self.spell_language.replace('_', "-").to_ascii_lowercase(),
-            snapshot: crate::personal_dictionary::snapshot().ok(),
+            snapshot: tilo_ui_base::personal_dictionary::snapshot().ok(),
         };
         if self.personal_spelling.as_ref() != Some(&current) {
             if self.personal_spelling.as_ref().is_some_and(|previous| {
@@ -721,7 +721,7 @@ impl super::TextInput {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            crate::surface::edge_on(theme.tokens.colors.surfaces.overlay),
+            tilo_ui_base::surface::edge_on(theme.tokens.colors.surfaces.overlay),
             None,
             &shape,
         );

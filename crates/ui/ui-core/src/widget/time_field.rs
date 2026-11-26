@@ -4,11 +4,12 @@ use std::rc::Rc;
 
 use jiff::civil::Time;
 
-use crate::icons::Icon;
+use tilo_ui_base::icons::Icon;
 use crate::widget::arrange::Stack;
-use crate::widget::binding::{BoxedBinding, Pulled, derived};
+use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled, widget::binding::derived};
 use crate::widget::date_field::time_in;
-use crate::widget::{AppModel, Button, ButtonRole, Decorator, ModelPath, TimePicker, Widget};
+use crate::{widget::Button, widget::ButtonRole, widget::TimePicker};
+use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::ModelPath, widget::Widget};
 
 #[path = "time_field_component.rs"]
 mod component;
@@ -32,7 +33,7 @@ enum Waiting {
 pub struct TimeField {
     inner: Stack,
     id: String,
-    source: Option<crate::LocalState<String>>,
+    source: Option<tilo_ui_base::LocalState<String>>,
     value: Option<Time>,
     picked: Picked,
     on_change: Option<Box<dyn FnMut(Option<Time>)>>,
@@ -45,7 +46,7 @@ impl TimeField {
     #[must_use]
     pub fn new(id: &str, value: Option<Time>) -> Self {
         let picked: Picked = Rc::default();
-        let accessible_name = crate::i18n::widget_format("time-field-name", &[]);
+        let accessible_name = tilo_ui_base::i18n::widget_format("time-field-name", &[]);
         Self {
             inner: row(id, value, &picked, &accessible_name),
             id: id.to_owned(),
@@ -59,7 +60,7 @@ impl TimeField {
         }
     }
 
-    pub(super) fn from_state(id: &str, state: &crate::LocalState<String>) -> Self {
+    pub(super) fn from_state(id: &str, state: &tilo_ui_base::LocalState<String>) -> Self {
         let (value, binding) = derived(state, |text: &String| time_in(Some(text)));
         let mut field = Self::new(id, value);
         field.bound = Some(binding);
@@ -118,7 +119,7 @@ fn row(id: &str, value: Option<Time>, picked: &Picked, accessible_name: &str) ->
         let on_add = Rc::clone(picked);
         let add = Button::new(
             &format!("{id}-add"),
-            &crate::i18n::widget_format("time-field-add", &[]),
+            &tilo_ui_base::i18n::widget_format("time-field-add", &[]),
         )
         .role(ButtonRole::Plain)
         .with_icon(Icon::Clock)
@@ -147,7 +148,7 @@ fn row(id: &str, value: Option<Time>, picked: &Picked, accessible_name: &str) ->
     let on_remove = Rc::clone(picked);
     let remove = Button::new(
         &format!("{id}-remove"),
-        &crate::i18n::widget_format("time-field-remove", &[]),
+        &tilo_ui_base::i18n::widget_format("time-field-remove", &[]),
     )
     .role(ButtonRole::Plain)
     .with_placeholder()
@@ -229,7 +230,7 @@ mod tests {
 
         phase a_bound_time_shows_the_time_of_day_it_holds;
         {
-            let state = crate::LocalState::new("09:00".to_owned());
+            let state = tilo_ui_base::LocalState::new("09:00".to_owned());
             let mut field = TimeField::from_state("at", &state);
             assert_eq!(field.value(), Some(nine()));
             state.set(String::new());

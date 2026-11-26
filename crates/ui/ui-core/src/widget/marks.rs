@@ -10,7 +10,7 @@ use tilo_sort::CompactSort as _;
 
 use uuid::Uuid;
 
-use crate::richtext::{BaselineShift, FontFamily};
+use tilo_ui_base::{richtext::BaselineShift, richtext::FontFamily};
 
 /// Stable identifier for a page link target. `RichTextLine` doesn't own page
 /// identity — that's the notes app's concern — so a UUID is used here; the

@@ -17,7 +17,7 @@ use crate::history_window::{after, press_history, shoot, shows_history, sleeps_f
 const NOTES: &str = "so.tilo.notes";
 #[test]
 fn a_notes_history_shows_who_changed_it_and_when_and_reads_anew_as_time_passes() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut app = Session::notes();
     let root = super::root_id(&app, NOTES);
     let notebook = format!("tl:{NOTES}:{root}");

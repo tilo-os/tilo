@@ -9,13 +9,13 @@ use crate::time::Instant;
 /// frame lands where the motion is, and a new target mid-flight keeps the
 /// value and its velocity, so Super+M twice is one motion, not a queue.
 #[derive(Debug)]
-pub(super) struct FrameSpring<T: crate::motion::Animatable> {
-    pub(super) motion: crate::motion::MotionValue<T>,
+pub(super) struct FrameSpring<T: tilo_ui_base::motion::Animatable> {
+    pub(super) motion: tilo_ui_base::motion::MotionValue<T>,
     drawn: T,
     at: Instant,
 }
 
-impl<T: crate::motion::Animatable> Drop for FrameSpring<T> {
+impl<T: tilo_ui_base::motion::Animatable> Drop for FrameSpring<T> {
     fn drop(&mut self) {
         let target = self.motion.target();
         self.motion.snap(target);
@@ -30,22 +30,22 @@ impl FrameSpring<f64> {
     }
 }
 
-impl<T: crate::motion::Animatable> FrameSpring<T> {
+impl<T: tilo_ui_base::motion::Animatable> FrameSpring<T> {
     pub(super) fn new(value: T) -> Self {
         Self {
-            motion: crate::motion::MotionValue::new(value),
+            motion: tilo_ui_base::motion::MotionValue::new(value),
             drawn: value,
             at: crate::time::now(),
         }
     }
 
     pub(super) fn set_target(&mut self, target: T) {
-        let timing = crate::motion::WindowMotion::MOVE.timing(
-            crate::motion::Direction::Enter,
-            crate::tokens::EffectiveMotion::default(),
-            crate::tokens::MotionSource::Pointer,
+        let timing = tilo_ui_base::motion::WindowMotion::MOVE.timing(
+            tilo_ui_base::motion::Direction::Enter,
+            tilo_ui_base::tokens::EffectiveMotion::default(),
+            tilo_ui_base::tokens::MotionSource::Pointer,
         );
-        self.motion.set(target, timing, crate::motion::frame_now());
+        self.motion.set(target, timing, tilo_ui_base::motion::frame_now());
     }
 
     pub(super) fn snap(&mut self, value: T) {

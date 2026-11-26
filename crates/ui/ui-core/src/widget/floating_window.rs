@@ -1,6 +1,6 @@
 //! A movable + resizable in-app overlay window: draggable title bar, edge/corner resize
 //! grips, on-screen clamping that keeps the title bar reachable. Modal while open via
-//! [`crate::widget::Widget::modal_capture`] — it consumes every event inside its rect and
+//! [`tilo_ui_base::widget::Widget::modal_capture`] — it consumes every event inside its rect and
 //! swallows out-of-rect clicks without closing (use the title-bar close affordance or an
 //! explicit host action to dismiss).
 //!
@@ -14,7 +14,7 @@
 )]
 
 use crate::time::{Duration, Instant};
-use crate::widget::ModelPath;
+use tilo_ui_base::widget::ModelPath;
 use automerge::ObjId;
 use std::collections::HashMap;
 use taffy::{NodeId, Size, TaffyTree};
@@ -24,15 +24,15 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
-use crate::motion::{Appear, Direction, Snap, Zoom};
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::Metrics;
-use crate::tokens::TextRole;
-use crate::tokens::{EffectiveMotion, Layout, MotionSource};
-use crate::widget::DrawChild;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use tilo_ui_base::{motion::Appear, motion::Direction, motion::Snap, motion::Zoom};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::Metrics;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::Layout, tokens::MotionSource};
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 use crate::widget::edge_resize::{RectEdge, WindowEdge};
 
 /// The unscaled title-bar height: a floating window's title bar is a Bar
@@ -49,7 +49,7 @@ pub const MIN_HEIGHT: f64 = 200.0;
 const MINIMUM: vello::kurbo::Size = vello::kurbo::Size::new(MIN_WIDTH, MIN_HEIGHT);
 const OVERLAY_CHROME_HOLD: Duration = Duration::from_millis(1_050);
 
-fn progress(spec: crate::motion::MotionSpec, direction: Direction, elapsed: Duration) -> f64 {
+fn progress(spec: tilo_ui_base::motion::MotionSpec, direction: Direction, elapsed: Duration) -> f64 {
     spec.progress_after(
         direction,
         EffectiveMotion::default(),
@@ -58,7 +58,7 @@ fn progress(spec: crate::motion::MotionSpec, direction: Direction, elapsed: Dura
     )
 }
 
-fn runs(spec: crate::motion::MotionSpec, direction: Direction) -> Duration {
+fn runs(spec: tilo_ui_base::motion::MotionSpec, direction: Direction) -> Duration {
     spec.settle_time(direction, EffectiveMotion::default(), MotionSource::Pointer)
 }
 
@@ -75,7 +75,7 @@ fn squish_settle() -> Duration {
 }
 
 fn overlay_chrome_fade() -> Duration {
-    runs(crate::motion::CROSS_FADE, Direction::Exit)
+    runs(tilo_ui_base::motion::CROSS_FADE, Direction::Exit)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -94,7 +94,7 @@ enum Drag {
     clippy::struct_excessive_bools,
     reason = "independent retained interaction flags model modal, chrome, and hover state"
 )]
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     shell,
     "a window the shell places; apps have no floating windows"
 )]
@@ -305,7 +305,7 @@ impl<C: Widget> FloatingWindow<C> {
                 return target;
             }
             let eased = progress(
-                crate::motion::CROSS_FADE,
+                tilo_ui_base::motion::CROSS_FADE,
                 Direction::of(self.overlay_chrome_hovered),
                 now.saturating_duration_since(changed_at),
             );
@@ -319,7 +319,7 @@ impl<C: Widget> FloatingWindow<C> {
             return 0.0;
         }
         1.0 - progress(
-            crate::motion::CROSS_FADE,
+            tilo_ui_base::motion::CROSS_FADE,
             Direction::Exit,
             open_elapsed.saturating_sub(OVERLAY_CHROME_HOLD),
         )
@@ -610,7 +610,7 @@ impl<C: Widget> FloatingWindow<C> {
             width: taffy::AvailableSpace::Definite(inner.width() as f32),
             height: taffy::AvailableSpace::Definite(inner.height() as f32),
         };
-        let _ = super::layout::solve_layout(
+        let _ = tilo_ui_base::widget::layout::solve_layout(
             &mut taffy,
             node,
             available,
@@ -633,7 +633,7 @@ impl<C: Widget> FloatingWindow<C> {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
     ) {
@@ -643,7 +643,7 @@ impl<C: Widget> FloatingWindow<C> {
         let mut inner_handled = false;
         self.content.handle_event(
             event,
-            &mut crate::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 scale_factor,
                 modifiers: &modifiers,
                 state: state.reborrow(),
@@ -662,7 +662,7 @@ impl<C: Widget> FloatingWindow<C> {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
     ) -> bool {
@@ -708,7 +708,7 @@ impl<C: Widget> FloatingWindow<C> {
                     self.apply_drag(drag, pt);
                     self.last_cursor = pt;
                     let theme = self.layout_theme.clone();
-                    crate::text_render::with_layout_renderer(&theme, |tr| {
+                    tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| {
                         self.place_content(&theme, tr)
                     });
                 }
@@ -753,7 +753,7 @@ impl<C: Widget> FloatingWindow<C> {
         self.rect = Rect::from_origin_size(origin, self.rect.size());
         self.clamp_into_bounds();
         let theme = self.layout_theme.clone();
-        crate::text_render::with_layout_renderer(&theme, |tr| self.place_content(&theme, tr));
+        tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| self.place_content(&theme, tr));
         true
     }
 }
@@ -771,21 +771,21 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let viewport = crate::widget::layout_rect(taffy, node, origin);
+        let viewport = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if self.bounds.width() <= 0.0 {
             self.bounds = viewport;
         }
         let bounds = self.bounds;
         self.layout_within(bounds);
         let theme = self.layout_theme.clone();
-        crate::text_render::with_layout_renderer(&theme, |tr| self.place_content(&theme, tr));
+        tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| self.place_content(&theme, tr));
     }
 
     #[allow(
         clippy::too_many_lines,
         reason = "the immediate-mode frame painter intentionally keeps paint order explicit"
     )]
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -807,7 +807,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 visual,
                 &self.rect.inflate(48.0, 48.0),
             );
-            crate::surface::shadow(
+            tilo_ui_base::surface::shadow(
                 scene,
                 visual,
                 self.rect,
@@ -817,7 +817,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
             scene.pop_layer();
         }
 
-        let body = crate::surface::soft_outline(self.rect);
+        let body = tilo_ui_base::surface::soft_outline(self.rect);
         let material = theme.tokens.colors.surfaces.raised;
         scene.fill(
             Fill::NonZero,
@@ -882,13 +882,13 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         // Chrome enters only in the landing half of the motion. The person
         // first sees their selected pixels becoming one object; title,
         // close, grip and resize affordance appear once they are useful.
-        let landing_alpha = crate::motion::stage(spawn_progress, 0.42, 1.0);
+        let landing_alpha = tilo_ui_base::motion::stage(spawn_progress, 0.42, 1.0);
         let presence_alpha = if pinned_handoff {
             // Deterministic handoff frames must show the same discoverable
             // landing chrome regardless of slow software readback time.
             1.0
         } else {
-            self.overlay_chrome_alpha_at(crate::motion::frame_now(), theme.reduce_motion)
+            self.overlay_chrome_alpha_at(tilo_ui_base::motion::frame_now(), theme.reduce_motion)
         };
         self.drawn_chrome_alpha = presence_alpha;
         let chrome_alpha = landing_alpha * presence_alpha;
@@ -912,23 +912,23 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     self.rect.x1,
                     self.rect.y0 + self.title_bar_height(),
                 );
-                crate::part_paint::material::paint_material(
+                tilo_ui_base::part_paint::material::paint_material(
                     scene,
                     visual,
                     &strip,
-                    crate::part_paint::material::Material::Floating,
+                    tilo_ui_base::part_paint::material::Material::Floating,
                     theme,
                 );
-                crate::surface::separator(
+                tilo_ui_base::surface::separator(
                     scene,
                     visual,
                     strip.x0,
                     strip.x1,
                     strip.y1 - 0.5,
                     0.0,
-                    crate::chrome::panel_ground(theme),
+                    tilo_ui_base::chrome::panel_ground(theme),
                 );
-                on_strip = theme.on_ground(crate::chrome::panel_ground(theme));
+                on_strip = theme.on_ground(tilo_ui_base::chrome::panel_ground(theme));
                 &on_strip
             } else {
                 theme
@@ -943,7 +943,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     &title_band,
                 );
             }
-            crate::surface::floating_drag_grip(
+            tilo_ui_base::surface::floating_drag_grip(
                 scene,
                 visual,
                 self.rect,
@@ -971,11 +971,11 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 &title_style,
             );
             if self.closable {
-                crate::icons::draw_icon(
+                tilo_ui_base::icons::draw_icon(
                     scene,
                     visual,
                     self.close_rect().inset(-6.0),
-                    crate::icons::Icon::X,
+                    tilo_ui_base::icons::Icon::X,
                     if self.close_rect().contains(self.last_cursor) {
                         theme.tokens.colors.semantic.danger
                     } else {
@@ -1007,7 +1007,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         clippy::too_many_lines,
         reason = "the floating surface routes pointer, keyboard, and touch ownership in one event boundary"
     )]
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         if !self.open {
             return;
@@ -1020,7 +1020,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     self.apply_drag(drag, pt);
                     self.last_cursor = pt;
                     let theme = self.layout_theme.clone();
-                    crate::text_render::with_layout_renderer(&theme, |tr| {
+                    tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| {
                         self.place_content(&theme, tr)
                     });
                     *ctx.handled = true;
@@ -1058,7 +1058,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 if self.closable
                     && self.close_rect().contains(pt)
                     && (!self.overlay_chrome
-                        || self.overlay_chrome_alpha_at(crate::motion::frame_now(), false) > 0.2)
+                        || self.overlay_chrome_alpha_at(tilo_ui_base::motion::frame_now(), false) > 0.2)
                 {
                     self.set_open(false);
                     *ctx.handled = true;
@@ -1159,12 +1159,12 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
         self.paint_generation = self.paint_generation.wrapping_add(1);
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -1246,8 +1246,8 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         self.focused
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         if !self.open {
             return None;
         }
@@ -1260,7 +1260,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         if self.closable {
             children.push(
                 AccessNode::new(Role::Button)
-                    .with_name(crate::i18n::widget_format(
+                    .with_name(tilo_ui_base::i18n::widget_format(
                         "tab-close-named",
                         &[("title", self.title.clone().into())],
                     ))
@@ -1271,7 +1271,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         Some(
             AccessNode::new(role)
                 .with_name(&self.title)
-                .with_description(crate::i18n::widget_format("floating-window-move-hint", &[]))
+                .with_description(tilo_ui_base::i18n::widget_format("floating-window-move-hint", &[]))
                 .with_bounds(self.rect)
                 .with_state(AccessState::new().focusable(true).focused(self.focused))
                 .with_children(children),
@@ -1281,12 +1281,12 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if target == "floating-window.close"
-            && matches!(action, crate::a11y::Action::Activate)
+            && matches!(action, tilo_ui_base::a11y::Action::Activate)
             && self.closable
         {
             self.set_open(false);
@@ -1360,7 +1360,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
 /// multi-region selection does not flash a union-sized slab or shadow behind
 /// otherwise disjoint areas.
 fn handoff_material_alpha(progress: f64) -> f64 {
-    crate::motion::stage(progress, 0.0, 0.58)
+    tilo_ui_base::motion::stage(progress, 0.0, 0.58)
 }
 
 /// Affine that maps one axis-aligned rect onto another. Floating content is
@@ -1517,7 +1517,7 @@ mod tests {
             }
 
             fn accessibility_exposes_surface_and_operable_close_button() {
-                use crate::a11y::{Action, Role};
+                use tilo_ui_base::{a11y::Action, a11y::Role};
                 let (mut w, _e) = laid_out(true);
                 w.closable = true;
                 Widget::set_focus(&mut w, true);
@@ -1534,7 +1534,7 @@ mod tests {
                     &mut w,
                     "floating-window.close",
                     &Action::Activate,
-                    &mut crate::widget::Edits::lend(&mut state),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut state),
                     &automerge::ROOT,
                 ));
                 assert!(!w.is_open());
@@ -1669,7 +1669,7 @@ mod tests {
                 origin.y + f64::from(l.size.height),
             );
         }
-        fn handle_event(&mut self, _e: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
+        fn handle_event(&mut self, _e: &WindowEvent, _ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
             self.events.set(self.events.get().saturating_add(1));
         }
         fn name(&self) -> &'static str {
@@ -1705,10 +1705,10 @@ mod tests {
     }
 
     fn cursor_at(p: Point) -> WindowEvent {
-        crate::synthetic_input::cursor_moved(p.x, p.y)
+        tilo_ui_base::synthetic_input::cursor_moved(p.x, p.y)
     }
-    use crate::synthetic_input::mouse_press;
-    use crate::synthetic_input::mouse_release;
+    use tilo_ui_base::synthetic_input::mouse_press;
+    use tilo_ui_base::synthetic_input::mouse_release;
     fn touch(phase: winit::event::TouchPhase, id: u64, point: Point) -> WindowEvent {
         WindowEvent::Touch(winit::event::Touch {
             device_id: winit::event::DeviceId::dummy(),
@@ -1722,11 +1722,11 @@ mod tests {
 
     #[test]
     fn a_german_shell_names_the_close_and_the_move_hint_in_german() {
-        use crate::i18n::I18nManager;
-        const EN: &str = include_str!("../../locales/en-US.ftl");
-        const DE: &str = include_str!("../../locales/de-DE.ftl");
+        use tilo_ui_base::i18n::I18nManager;
+        const EN: &str = include_str!("../../../ui-base/locales/en-US.ftl");
+        const DE: &str = include_str!("../../../ui-base/locales/de-DE.ftl");
         I18nManager::install("en-US", "de-DE", &[("en-US", EN), ("de-DE", DE)]).unwrap();
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let (mut w, _e) = laid_out(true);
         w.closable = true;
 

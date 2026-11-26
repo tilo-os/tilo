@@ -20,13 +20,11 @@ use winit::event::{ElementState, TouchPhase, WindowEvent};
 use super::{LiveView, VIEW, Views, placed as place_of, view_transform};
 use crate::hosted_window::HostedWindow;
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 use crate::time::Instant;
-use crate::widget::{
-    AppModel, DrawChild, Edits, EventCtx, ModelPath, StructureChange, TaffyTreeExt, TileContent,
-    TileHost, Widget,
-};
+use crate::{widget::TileContent, widget::TileHost};
+use tilo_ui_base::{widget::AppModel, widget::DrawChild, widget::Edits, widget::EventCtx, widget::ModelPath, widget::StructureChange, widget::TaffyTreeExt, widget::Widget};
 use crate::window_share::{EmbedState, ResourceView};
 
 /// How many views deep a view worked in may show views of its own.
@@ -59,7 +57,7 @@ impl Asking {
 
 /// One view as its shell runs it: its app and, while a person works in it, its place in the
 /// shell's tree.
-#[crate::component::not_a_component(shell, "a view the shell runs at its window's place")]
+#[tilo_ui_base::component::not_a_component(shell, "a view the shell runs at its window's place")]
 pub struct Shown {
     host: TileHost,
     /// What the embedding app calls what the view shows.
@@ -131,14 +129,14 @@ impl Widget for Shown {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if let Some(&child) = taffy.children(node).unwrap_or_default().first() {
             self.host
                 .apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -179,7 +177,7 @@ impl Widget for Shown {
 
     /// What the view shows, named before what it holds: the embedding app's name for it, or its
     /// app's.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let name = if self.label.is_empty() {
             match self.host.content() {
                 TileContent::App(app) => app.app_title().to_owned(),
@@ -188,7 +186,7 @@ impl Widget for Shown {
         } else {
             self.label.clone()
         };
-        let mut node = crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+        let mut node = tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group)
             .with_hashed_key(("embedded-view", &name))
             .with_bounds(self.rect);
         if !name.is_empty() {
@@ -393,7 +391,7 @@ impl Stage {
         }) {
             // Its window moved it (a conversation scrolled): it is laid out again where it stands
             // now.
-            crate::widget::note_layout_moved();
+            tilo_ui_base::widget::note_layout_moved();
         }
         self.working = working;
         for held in [&mut self.keyboard, &mut self.pressed] {
@@ -766,7 +764,7 @@ impl Stage {
     /// Draw each view over the window that asked for it, clipped to what of its place may show: a
     /// miniature laid out at a window's size and scaled into its place, a view worked in as it is
     /// laid out.
-    pub fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -852,12 +850,12 @@ fn lay_out(host: &mut TileHost, theme: &Theme, text: &mut TextRenderer) -> bool 
         width: taffy::AvailableSpace::Definite(VIEW.0 as f32),
         height: taffy::AvailableSpace::Definite(VIEW.1 as f32),
     };
-    let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
+    let mut bindings = tilo_ui_base::widget::bound_nodes::BoundNodeMap::new();
     // SAFETY: the arena and node map were just built from `host` alone, which stays in place and
     // unaliased for both calls.
     let solved = unsafe {
         bindings.rebuild(&*host, &taffy, child, &nodes);
-        crate::widget::compute_widget_layout(&mut taffy, root, available, &nodes, &bindings, text)
+        tilo_ui_base::widget::compute_widget_layout(&mut taffy, root, available, &nodes, &bindings, text)
     };
     if solved.is_err() {
         return false;

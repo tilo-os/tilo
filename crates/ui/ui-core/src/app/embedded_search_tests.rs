@@ -3,7 +3,8 @@
 use super::theme_repaint_tests::{layout, paint};
 use super::*;
 use crate::widget::find_bar::{FindMatch, FindOptions, Findable};
-use crate::widget::{InPlace, SearchDriver, TaffyTreeExt};
+use crate::{widget::InPlace, widget::SearchDriver};
+use tilo_ui_base::widget::TaffyTreeExt;
 use std::cell::Cell;
 use std::rc::Rc;
 use taffy::Style;
@@ -39,7 +40,7 @@ impl Findable for Document {
 }
 
 impl Widget for Document {
-    crate::provides!(dyn Findable);
+    tilo_ui_base::provides!(dyn Findable);
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -49,12 +50,12 @@ impl Widget for Document {
         taffy.widget_leaf(Style::default(), node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
     }
     fn get_rect(&self) -> Rect {
         self.rect
     }
-    fn settle(&mut self, _edits: &mut crate::widget::Edits<'_>, _path: &automerge::ObjId) {
+    fn settle(&mut self, _edits: &mut tilo_ui_base::widget::Edits<'_>, _path: &automerge::ObjId) {
         if std::mem::take(&mut self.asked) {
             self.written.set(self.written.get() + 1);
         }

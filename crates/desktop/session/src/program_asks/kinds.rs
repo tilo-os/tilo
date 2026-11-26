@@ -560,7 +560,7 @@ fn admitted(who: &str, details: Value) -> Kind {
 /// the file.
 #[cfg(target_os = "linux")]
 fn receiver(details: Value) -> Kind {
-    use ui::i18n::ArgValue;
+    use tilo_ui_base::i18n::ArgValue;
     let asked: tilo_app_host::nearby_send::VerifyQuestion = serde_json::from_value(details).ok()?;
     let mut facts = asking(
         crate::i18n::t("airdrop-verify-title"),
@@ -702,7 +702,7 @@ fn wallpaper(who: &str, details: Value) -> Kind {
 
 fn printing(who: &str, details: Value) -> Kind {
     let asked: PrintQuestion = serde_json::from_value(details).ok()?;
-    let copies = ui::i18n::ArgValue::Number(f64::from(asked.copies));
+    let copies = tilo_ui_base::i18n::ArgValue::Number(f64::from(asked.copies));
     let mut facts = asking(
         words(
             "portal-print-title",

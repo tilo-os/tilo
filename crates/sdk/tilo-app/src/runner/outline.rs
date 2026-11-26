@@ -10,7 +10,7 @@
 use tilo_actions::ActionOutput;
 use ui_core::automerge::AutoCommit;
 use ui_core::automerge::transaction::Transactable as _;
-use ui_core::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 /// The `outline` payload's parameter naming an item to show before reading.
 pub(crate) const ANCHOR_PARAM: &str = "anchor";
@@ -107,7 +107,7 @@ pub(crate) fn asked(payload: &[u8]) -> Result<(bool, f64), String> {
 pub(crate) fn answer(
     content: &dyn Widget,
     doc: &AutoCommit,
-    theme: &ui_core::Theme,
+    theme: &tilo_ui_base::Theme,
 ) -> ActionOutput {
     let outline = ui_core::semantic_outline::outline(content);
     let rect = content.get_rect();

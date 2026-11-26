@@ -734,7 +734,7 @@ since changed to `panic = "unwind"` so the compositor can restart its collaborat
 `tilo_rt::panic_boundary::isolate` (`crates/platform/tilo-rt/src/panic_boundary.rs`), so a bare
 `catch_unwind` is still not a recovery path and `try_new` remains the fix.
 
-**Residual:** `OffscreenRenderer::render` still `expect`s internally (`crates/ui/ui-core/src/offscreen.rs`, the
+**Residual:** `OffscreenRenderer::render` still `expect`s internally (`crates/ui/ui-base/src/offscreen.rs`, the
 `render_to_texture` and buffer-map paths). Those were nominally inside the same dead
 `catch_unwind`s, so nothing regressed, but a mid-render driver failure still aborts a release
 build. The `catch_unwind` pair in `crates/core/key-group/src/group.rs:237,379` (now `:523`,

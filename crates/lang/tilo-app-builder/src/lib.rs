@@ -1463,7 +1463,7 @@ fn parse_locale_registry(source: &str) -> Result<Vec<String>> {
             }
             _ => None,
         })
-        .context("the locale registry declares no `ui::embedded_catalog!`")?;
+        .context("the locale registry declares no `tilo_ui_base::embedded_catalog!`")?;
     let mut literals = Vec::new();
     string_literals(declaration, &mut literals);
     let mut locales: Vec<String> = Vec::new();
@@ -1504,7 +1504,7 @@ pub(crate) fn catalog_message_ids(contract: &FluentCatalogContract) -> Vec<Strin
 
 fn catalog_declaration(locales: &[String]) -> String {
     format!(
-        "ui::embedded_catalog!(pub static CATALOG, [{}]);",
+        "tilo_ui_base::embedded_catalog!(pub static CATALOG, [{}]);",
         locales
             .iter()
             .map(|locale| format!("{locale:?}"))
@@ -2626,8 +2626,9 @@ fn component_source(
 )]
 fn display_component_source(name: &str, module_name: &str, type_name: &str) -> String {
     format!(
-        r##"use ui::tokens::TextRole;
-use ui::widget::{{Element, Text}};
+        r##"use tilo_ui_base::tokens::TextRole;
+use ui::widget::Text;
+use tilo_ui_base::widget::Element;
 use ui::{{GraphPropKind, UiBuildContext, UiComponentRequest}};
 
 /// The props a serialized UI graph node names, and what each must hold. `tilolang doctor` reads it.
@@ -2685,7 +2686,7 @@ pub fn register_ui_graph(context: UiBuildContext) -> UiBuildContext {{
 #[cfg(test)]
 mod tests {{
     use super::*;
-    use ui::a11y::Role;
+    use tilo_ui_base::a11y::Role;
     use ui::headless::SemanticExpectation;
 
     #[test]
@@ -2719,7 +2720,7 @@ mod tests {{
         let context = register_ui_graph(UiBuildContext::default());
         let widget = ui::UiDocumentExt::build_with(
             &document,
-            &ui::Theme::default(),
+            &tilo_ui_base::Theme::default(),
             &context,
         )
         .expect("registered component");
@@ -2736,7 +2737,7 @@ mod tests {{
         )
         .expect("structurally valid component graph");
         assert!(matches!(
-            ui::UiDocumentExt::build_with(&invalid, &ui::Theme::default(), &context),
+            ui::UiDocumentExt::build_with(&invalid, &tilo_ui_base::Theme::default(), &context),
             Err(ui::UiGraphError::ComponentBuild {{ message, .. }})
                 if message == "detail must be a string"
         ));
@@ -2760,8 +2761,10 @@ fn form_component_source(
     let enabled_label = ScreenMessage::new(name, "enabled-label", "Enabled");
     let flags = ScreenMessage::new(name, "flags", "Form flags");
     let source = format!(
-        r##"use ui::widget::{{Checkbox, Element, TextInput, labeled_check, labeled_field}};
-use ui::{{GraphPropKind, LocalState, UiBuildContext, UiComponentRequest}};
+        r##"use ui::{widget::Checkbox, widget::TextInput, widget::labeled_check, widget::labeled_field};
+use tilo_ui_base::widget::Element;
+use ui::{GraphPropKind, UiBuildContext, UiComponentRequest};
+use tilo_ui_base::LocalState;
 
 /// The props a serialized UI graph node names, and what each must hold. `tilolang doctor` reads it.
 pub const GRAPH_PROPS: &[(&str, GraphPropKind)] = &[
@@ -2857,7 +2860,7 @@ pub fn register_ui_graph(context: UiBuildContext) -> UiBuildContext {{
 #[cfg(test)]
 mod tests {{
     use super::*;
-    use ui::a11y::{{Action, Role}};
+    use tilo_ui_base::{a11y::Action, a11y::Role};
     use ui::headless::SemanticExpectation;
     use ui::prelude::*;
 
@@ -2896,16 +2899,16 @@ mod tests {{
         values: ui::UiValues,
     }}
 
-    impl ui::widget::Widget for GraphForm {{
+    impl tilo_ui_base::widget::Widget for GraphForm {{
         fn name(&self) -> &'static str {{ "GraphForm" }}
-        fn children(&self) -> Vec<&dyn ui::widget::Widget> {{ vec![self.root.as_ref()] }}
-        fn children_mut(&mut self) -> Vec<&mut (dyn ui::widget::Widget + '_)> {{ vec![self.root.as_mut()] }}
-        fn build_layout(&mut self, tree: &mut ui::taffy::TaffyTree<()>, theme: &ui::Theme, nodes: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn ui::widget::Widget>) -> ui::taffy::NodeId {{
+        fn children(&self) -> Vec<&dyn tilo_ui_base::widget::Widget> {{ vec![self.root.as_ref()] }}
+        fn children_mut(&mut self) -> Vec<&mut (dyn tilo_ui_base::widget::Widget + '_)> {{ vec![self.root.as_mut()] }}
+        fn build_layout(&mut self, tree: &mut ui::taffy::TaffyTree<()>, theme: &tilo_ui_base::Theme, nodes: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>) -> ui::taffy::NodeId {{
             self.root.build_layout(tree, theme, nodes)
         }}
         fn apply_layout(&mut self, tree: &ui::taffy::TaffyTree<()>, node: ui::taffy::NodeId, origin: ui::kurbo::Point) {{ self.root.apply_layout(tree, node, origin); }}
-        fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {{ let (scene, transform, text, theme, env) = ctx.parts(); ui::widget::DrawChild::draw_child(&mut self.root, scene, transform, text, theme, &env); }}
-        fn handle_event(&mut self, event: &ui::winit::event::WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {{ self.root.handle_event(event, ctx); }}
+        fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {{ let (scene, transform, text, theme, env) = ctx.parts(); tilo_ui_base::widget::DrawChild::draw_child(&mut self.root, scene, transform, text, theme, &env); }}
+        fn handle_event(&mut self, event: &ui::winit::event::WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {{ self.root.handle_event(event, ctx); }}
         fn get_rect(&self) -> ui::kurbo::Rect {{ self.root.get_rect() }}
         fn as_any(&self) -> Option<&dyn std::any::Any> {{ Some(self) }}
         fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {{ Some(self) }}
@@ -2922,7 +2925,7 @@ mod tests {{
             let context = register_ui_graph(UiBuildContext::default());
             cx.route_graph_bool(context.values(), "shared-enabled", GraphFlags::paths().enabled);
             let document = graph_document();
-            let root = ui::UiDocumentExt::build_with(&document, &ui::Theme::default(), &context).expect("registered form component");
+            let root = ui::UiDocumentExt::build_with(&document, &tilo_ui_base::Theme::default(), &context).expect("registered form component");
             Box::new(GraphForm {{ root, values: context.values().clone() }})
         }}
     }}
@@ -2941,7 +2944,7 @@ mod tests {{
         assert!(app.state().enabled);
         app.harness().expect(&SemanticExpectation::named("second-enabled").checked(true))
             .expect("the component follows the ordinary graph toggle");
-        app.set_role(ui::Role::Viewer);
+        app.set_role(tilo_ui_base::Role::Viewer);
         let off = Invoke::edit(&GraphFlags::paths().enabled.set(false)).expect("an edit");
         assert!(app.invoke(off).is_err(), "a viewer cannot make the routed edit");
         let _ = app.harness().perform_named("ordinary-enabled", &Action::ToggleCheck);
@@ -2993,7 +2996,7 @@ mod tests {{
         )
         .expect("structurally valid component graph");
         assert!(matches!(
-            ui::UiDocumentExt::build_with(&invalid, &ui::Theme::default(), &context),
+            ui::UiDocumentExt::build_with(&invalid, &tilo_ui_base::Theme::default(), &context),
             Err(ui::UiGraphError::ComponentBuild {{ message, .. }})
                 if message == "value_path must be a non-empty string"
         ));
@@ -3016,9 +3019,10 @@ fn tree_component_source(
     let mut source = format!(
         r#"use std::hash::Hash;
 use std::rc::Rc;
-use ui::selection::KeySelection;
+use tilo_ui_base::selection::KeySelection;
 use ui::widget::virtual_list::{{ListModel, VirtualList}};
-use ui::widget::{{Element, TreeMarks}};
+use ui::widget::TreeMarks;
+use tilo_ui_base::widget::Element;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct {type_name}Config<K: Clone + Eq + Hash> {{
@@ -3086,7 +3090,7 @@ fn tree_component_test_source(module_name: &str, type_name: &str) -> String {
 #[cfg(test)]
 mod tests {{
     use super::*;
-    use ui::a11y::{{Action, Role}};
+    use tilo_ui_base::{a11y::Action, a11y::Role};
     use ui::headless::SemanticExpectation;
     use ui::widget::{{ListRow, VecListModel}};
 
@@ -3150,9 +3154,9 @@ fn list_component_source(
     let accessible_name = ScreenMessage::new(name, "accessible-name", title_from_name(name));
     let mut source = format!(
         r#"use std::hash::Hash;
-use ui::selection::KeySelection;
+use tilo_ui_base::selection::KeySelection;
 use ui::widget::virtual_list::{{ListModel, VirtualList}};
-use ui::widget::Element;
+use tilo_ui_base::widget::Element;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct {type_name}Config<K: Clone + Eq + Hash> {{
@@ -3209,7 +3213,7 @@ fn list_component_test_source(module_name: &str, type_name: &str) -> String {
 #[cfg(test)]
 mod tests {{
     use super::*;
-    use ui::a11y::{{Action, Role}};
+    use tilo_ui_base::{a11y::Action, a11y::Role};
     use ui::headless::SemanticExpectation;
     use ui::widget::{{Button, Container, Text}};
 
@@ -3244,7 +3248,7 @@ mod tests {{
             selection,
             ..{type_name}Config::default()
         }};
-        let activated = ui::LocalState::new(None::<String>);
+        let activated = tilo_ui_base::LocalState::new(None::<String>);
         let rows_activated = activated.clone();
         let list = {module_name}(
             "example-list",
@@ -3303,7 +3307,7 @@ fn table_component_source(
 ) -> (String, Vec<ScreenMessage>) {
     let accessible_name = ScreenMessage::new(name, "accessible-name", title_from_name(name));
     let mut source = format!(
-        r#"use ui::selection::KeySelection;
+        r#"use tilo_ui_base::selection::KeySelection;
 use ui::widget::data_table::{{ColumnDef, DataTable, TableModel}};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3360,11 +3364,11 @@ fn table_component_test_source(module_name: &str, type_name: &str) -> String {
 #[cfg(test)]
 mod tests {{
     use super::*;
-    use ui::a11y::{{Action, Role}};
+    use tilo_ui_base::{a11y::Action, a11y::Role};
     use ui::headless::SemanticExpectation;
     use ui::widget::{{Button, ControlSize}};
     use ui::widget::data_table::ColumnWidth;
-    use ui::Arrival;
+    use tilo_ui_base::Arrival;
 
     struct Row {{
         name: String,
@@ -3404,7 +3408,7 @@ mod tests {{
     #[test]
     fn component_keeps_sparse_variable_interactive_table_rows() {{
         const ROW_COUNT: usize = 100_000_000;
-        let activated = ui::LocalState::new(None::<String>);
+        let activated = tilo_ui_base::LocalState::new(None::<String>);
         let cells_activated = activated.clone();
         let columns = vec![
             ColumnDef::<Row>::new("name", "Name", ColumnWidth::Flex(1.0))
@@ -3474,7 +3478,7 @@ fn text_component_source(
     let body = ScreenMessage::new(name, "body", "Replace this copy with application content.");
     let mut source = format!(
         r#"use ui::widget::Text;
-use ui::{{PolygonTextLayout, TextFlowRegion, TextLayoutEngine, TextRole}};
+use tilo_ui_base::{PolygonTextLayout, TextFlowRegion, TextLayoutEngine, TextRole};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct {type_name}Props {{
@@ -3536,10 +3540,10 @@ mod tests {{
     use super::*;
     use std::cell::Cell;
     use std::rc::Rc;
-    use ui::a11y::Role;
+    use tilo_ui_base::a11y::Role;
     use ui::headless::SemanticExpectation;
     use ui::kurbo::Point;
-    use ui::{{TextLayoutConstraints, TextRenderer, TextStyle}};
+    use tilo_ui_base::{TextLayoutConstraints, TextRenderer, TextStyle};
 
     struct RecordingLayout(Rc<Cell<u32>>);
 
@@ -3683,7 +3687,7 @@ fn screen_registry_source(names: &[String]) -> String {
         let _ = writeln!(source, "{SCREEN_ENTRY_PREFIX}{name}");
     }
     source.push_str(
-        "\nuse ui::widget::Widget;\nuse ui::{RouteError, RouteHandle, Router, Theme, UiBuildContext, UiGraphError, UiGraphHandle};\n\n",
+        "\nuse tilo_ui_base::widget::Widget;\nuse ui::{RouteError, RouteHandle, Router, Theme, UiBuildContext, UiGraphError, UiGraphHandle};\n\n",
     );
     source.push_str("pub const NAMES: &[&str] = &[\n");
     for name in names {

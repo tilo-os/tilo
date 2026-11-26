@@ -9,7 +9,7 @@ use std::path::Path;
 #[cfg(all(feature = "native", unix))]
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
-use crate::widget::RouteSnapshot;
+use tilo_ui_base::widget::RouteSnapshot;
 
 const DEV_CHECKPOINT_VERSION: u32 = 1;
 const CHECKPOINT_FILE: &str = "checkpoint.bin";
@@ -275,7 +275,7 @@ pub(crate) fn reload_dev_locale_catalogs_from(dir: &std::path::Path) -> bool {
         .iter()
         .map(|(stem, text)| (stem.as_str(), text.as_str()))
         .collect::<Vec<_>>();
-    crate::i18n::I18nManager::install_system(source, &borrowed).is_ok()
+    tilo_ui_base::i18n::I18nManager::install_system(source, &borrowed).is_ok()
 }
 
 #[cfg(feature = "native")]
@@ -291,8 +291,8 @@ struct DevCaretField {
 }
 
 #[cfg(test)]
-impl crate::widget::Widget for DevCaretField {
-    crate::provides!(dyn crate::widget::undo_points::UndoPoints);
+impl tilo_ui_base::widget::Widget for DevCaretField {
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::undo_points::UndoPoints);
 
     crate::testing::inert_widget_methods!(leaf_layout, name = "DevCaretField");
 
@@ -302,7 +302,7 @@ impl crate::widget::Widget for DevCaretField {
 }
 
 #[cfg(test)]
-impl crate::widget::undo_points::UndoPoints for DevCaretField {
+impl tilo_ui_base::widget::undo_points::UndoPoints for DevCaretField {
     fn get_state(&self) -> Option<String> {
         Some(self.caret.clone())
     }
@@ -318,15 +318,15 @@ fn dev_reload_replaces_a_baked_translation_in_place() {
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(directory.join("en-US.ftl"), "document-heading = After\n").unwrap();
-    crate::i18n::I18nManager::install_system("en-US", &[("en-US", "document-heading = Before\n")])
+    tilo_ui_base::i18n::I18nManager::install_system("en-US", &[("en-US", "document-heading = Before\n")])
         .expect("baked catalog installs");
     assert_eq!(
-        crate::i18n::I18nManager::lookup_plain("document-heading"),
+        tilo_ui_base::i18n::I18nManager::lookup_plain("document-heading"),
         "Before"
     );
     assert!(reload_dev_locale_catalogs_from(&directory));
     assert_eq!(
-        crate::i18n::I18nManager::lookup_plain("document-heading"),
+        tilo_ui_base::i18n::I18nManager::lookup_plain("document-heading"),
         "After"
     );
     let _ = std::fs::remove_dir_all(&directory);
@@ -335,8 +335,9 @@ fn dev_reload_replaces_a_baked_translation_in_place() {
 #[cfg(test)]
 #[test]
 fn dev_checkpoint_restores_document_and_route() {
-    use crate::theme::Theme;
-    use crate::widget::{Button, RouteHandle, Router};
+    use tilo_ui_base::theme::Theme;
+    use crate::widget::Button;
+    use tilo_ui_base::{widget::RouteHandle, widget::Router};
     use automerge::{ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
     let directory =
@@ -349,7 +350,7 @@ fn dev_checkpoint_restores_document_and_route() {
         route: &str,
         _: &Theme,
         _: &RouteHandle,
-    ) -> Result<Box<dyn crate::widget::Widget>, String> {
+    ) -> Result<Box<dyn tilo_ui_base::widget::Widget>, String> {
         if route == "settings" {
             Ok(Box::new(DevCaretField {
                 caret: String::new(),
@@ -375,7 +376,7 @@ fn dev_checkpoint_restores_document_and_route() {
     app.init_layout();
     let focused = app.focused_node.expect("settings caret field is focused");
     app.mutate_node(focused, |widget| {
-        crate::widget::undo_points::set_state(widget, "12")
+        tilo_ui_base::widget::undo_points::set_state(widget, "12")
     })
     .expect("caret state is writable");
     assert!(write_dev_checkpoint(&app, &directory));
@@ -394,7 +395,7 @@ fn dev_checkpoint_restores_document_and_route() {
         .expect("restored settings field is focused");
     let caret = restored
         .inspect_node(restored_focus, |widget| {
-            crate::widget::undo_points::get_state(widget)
+            tilo_ui_base::widget::undo_points::get_state(widget)
         })
         .expect("restored field is addressable");
     assert_eq!(caret.as_deref(), Some("12"));

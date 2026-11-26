@@ -2,9 +2,7 @@
 
 use tilo_ui_graph::component::{CaseDescription, EnumDescription};
 
-use crate::component::{
-    Component, Described, PropType, Type, Value, case_field, case_field_description,
-};
+use tilo_ui_base::{component::Component, component::Described, component::PropType, component::Type, component::Value, component::case_field, component::case_field_description};
 
 use super::{PieChart, PieSlice, PieStyle};
 
@@ -24,7 +22,7 @@ impl PropType for PiePart {
 
     fn from_value(value: &Value) -> Result<Self, String> {
         let Value::Case { case, fields } = value else {
-            return Err(crate::component::wrong(&Self::ty(), value));
+            return Err(tilo_ui_base::component::wrong(&Self::ty(), value));
         };
         if case != "slice" {
             return Err(format!("a pie's part is a `slice`, not `{case}`"));
@@ -143,8 +141,8 @@ mod tests {
     )]
 
     use super::*;
-    use crate::chart_palette::ChartPalette;
-    use crate::theme::Theme;
+    use tilo_ui_base::chart_palette::ChartPalette;
+    use tilo_ui_base::theme::Theme;
 
     fn slice(label: &str, value: f64) -> Value {
         Value::Case {

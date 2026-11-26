@@ -63,7 +63,8 @@ macro_rules! stack {
 
 #[cfg(test)]
 mod tests {
-    use crate::widget::{Button, Text, Widget};
+    use crate::{widget::Button, widget::Text};
+    use tilo_ui_base::widget::Widget;
 
     #[test]
     fn layouts_accept_heterogeneous_or_no_children() {

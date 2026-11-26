@@ -4,9 +4,8 @@
 //! of an app that did not open, the row of a search that could not run), or, when nothing of it is
 //! left on the shell, told as a notice. Nothing else words a failure of the person's own action.
 
-use ui::widget::{
-    AppKind, AppWidget, Button, ButtonRole, Column, Container, Element, Text, Widget,
-};
+use ui::{widget::AppKind, widget::AppWidget, widget::Button, widget::ButtonRole, widget::Column, widget::Container, widget::Text};
+use tilo_ui_base::{widget::Element, widget::Widget};
 
 /// The button that tries the outcome's action again, for tests and assistive technology.
 pub const RETRY_ID: &str = "outcome-retry";
@@ -258,9 +257,9 @@ impl OutcomeCard {
         }
         let mut body = Column::new()
             .with_intrinsic_height()
-            .with_rhythm(ui::tokens::Rhythm::Related)
+            .with_rhythm(tilo_ui_base::tokens::Rhythm::Related)
             .push(Box::new(
-                Text::new(&outcome.what).with_role(ui::TextRole::Title),
+                Text::new(&outcome.what).with_role(tilo_ui_base::TextRole::Title),
             ));
         if !outcome.why.trim().is_empty() {
             body = body.push(Box::new(Text::new(&outcome.why).dimmed()));
@@ -280,7 +279,7 @@ impl OutcomeCard {
     }
 }
 
-impl ui::widget::Decorator for OutcomeCard {
+impl tilo_ui_base::widget::Decorator for OutcomeCard {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -327,7 +326,7 @@ mod tests {
         let mut frame =
             ui::headless::Driver::new(ui::state::State::new(), Box::new(card), (640, 420));
         frame.relayout();
-        let texts = ui::a11y::texts(frame.root_widget());
+        let texts = tilo_ui_base::a11y::texts(frame.root_widget());
         assert!(
             texts.iter().any(|text| text == "Notes could not open"),
             "{texts:?}"
@@ -339,7 +338,7 @@ mod tests {
             "{texts:?}"
         );
         frame
-            .perform_named(RETRY_ID, &ui::a11y::Action::Activate)
+            .perform_named(RETRY_ID, &tilo_ui_base::a11y::Action::Activate)
             .unwrap();
         assert_eq!(asked.get(), 1, "Try again asked for it once");
     }
@@ -370,7 +369,7 @@ mod tests {
         let mut frame =
             ui::headless::Driver::new(ui::state::State::new(), Box::new(card), (640, 420));
         frame.relayout();
-        let texts = ui::a11y::texts(frame.root_widget());
+        let texts = tilo_ui_base::a11y::texts(frame.root_widget());
         assert!(
             texts.iter().any(|text| text == "Notes could not open"),
             "{texts:?}"
@@ -389,7 +388,7 @@ mod tests {
         assert!(texts.iter().any(|shown| shown == "Details"), "{texts:?}");
         assert!(described.iter().any(|kept| kept == reason), "{described:?}");
         frame
-            .perform_named(RETRY_ID, &ui::a11y::Action::Activate)
+            .perform_named(RETRY_ID, &tilo_ui_base::a11y::Action::Activate)
             .unwrap();
         assert_eq!(asked.get(), 1, "Try again asked for it once");
     }
@@ -409,7 +408,7 @@ mod tests {
         let mut frame =
             ui::headless::Driver::new(ui::state::State::new(), Box::new(card), (640, 420));
         frame.relayout();
-        let texts = ui::a11y::texts(frame.root_widget());
+        let texts = tilo_ui_base::a11y::texts(frame.root_widget());
         let described = descriptions_under(frame.root_widget());
         // The card is described by its cause: the generic words are for a window whose cause is
         // unknown, and what the link answered stays behind Details.
@@ -452,7 +451,7 @@ mod tests {
         let mut frame =
             ui::headless::Driver::new(ui::state::State::new(), Box::new(card), (640, 420));
         frame.relayout();
-        let texts = ui::a11y::texts(frame.root_widget());
+        let texts = tilo_ui_base::a11y::texts(frame.root_widget());
         let described = descriptions_under(frame.root_widget());
         assert!(
             texts.iter().any(|text| text == "Notes could not open"),
@@ -507,7 +506,7 @@ mod tests {
         let mut frame =
             ui::headless::Driver::new(ui::state::State::new(), Box::new(card), (640, 420));
         frame.relayout();
-        let texts = ui::a11y::texts(frame.root_widget());
+        let texts = tilo_ui_base::a11y::texts(frame.root_widget());
         let described = descriptions_under(frame.root_widget());
         assert!(
             texts.iter().any(|text| text == "Photos could not open"),
@@ -530,7 +529,7 @@ mod tests {
 
     /// The middle of the control named `name` under `root`, where it is drawn.
     fn centre_of_control(root: &dyn Widget, name: &str) -> Option<(f64, f64)> {
-        fn centre_in(access: &ui::a11y::AccessNode, name: &str) -> Option<(f64, f64)> {
+        fn centre_in(access: &tilo_ui_base::a11y::AccessNode, name: &str) -> Option<(f64, f64)> {
             if access.name.as_deref() == Some(name)
                 && let Some(bounds) = access.bounds
             {
@@ -559,7 +558,7 @@ mod tests {
 
     /// Every description `root` and its descendants give assistive technology, depth first.
     fn descriptions_under(root: &dyn Widget) -> Vec<String> {
-        fn described_in(access: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+        fn described_in(access: &tilo_ui_base::a11y::AccessNode, out: &mut Vec<String>) {
             out.extend(access.description.clone());
             for child in &access.children {
                 described_in(child, out);
@@ -595,7 +594,7 @@ mod tests {
         let mut frame =
             ui::headless::Driver::new(ui::state::State::new(), Box::new(card), (720, 480));
         frame.relayout();
-        let texts = ui::a11y::texts(frame.root_widget());
+        let texts = tilo_ui_base::a11y::texts(frame.root_widget());
         assert!(
             !texts.iter().any(|text| text.contains("Restart it")),
             "the instruction is gone once Restart is pressed: {texts:?}"
@@ -620,7 +619,7 @@ mod tests {
         let mut frame =
             ui::headless::Driver::new(ui::state::State::new(), Box::new(card), (640, 420));
         frame.relayout();
-        let texts = ui::a11y::texts(frame.root_widget());
+        let texts = tilo_ui_base::a11y::texts(frame.root_widget());
         assert!(
             texts
                 .iter()

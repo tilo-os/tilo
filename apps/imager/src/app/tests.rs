@@ -245,7 +245,7 @@ fn startup_state_is_blank_local_and_reconciled_before_writes() {
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn wizard_semantics_labels_live_regions_and_keyboard_order() {
-    use ui::a11y::Action as AccessAction;
+    use tilo_ui_base::a11y::Action as AccessAction;
     let (mut app, _) = seeded_app();
     let mut generic = crate::model::sample_releases().remove(0);
     generic.architecture = "aarch64".into();
@@ -297,11 +297,11 @@ fn wizard_semantics_labels_live_regions_and_keyboard_order() {
     assert!(browse < next);
     let mut host = TestHost::capture(Some("customize"));
     for (id, role) in [
-        ("imager.profile.hostname", ui::a11y::Role::TextInput),
-        ("imager.profile.locale", ui::a11y::Role::ComboBox),
-        ("imager.profile.timezone", ui::a11y::Role::ComboBox),
-        ("imager.profile.keyboard", ui::a11y::Role::ComboBox),
-        ("imager.profile.filesystem", ui::a11y::Role::ComboBox),
+        ("imager.profile.hostname", tilo_ui_base::a11y::Role::TextInput),
+        ("imager.profile.locale", tilo_ui_base::a11y::Role::ComboBox),
+        ("imager.profile.timezone", tilo_ui_base::a11y::Role::ComboBox),
+        ("imager.profile.keyboard", tilo_ui_base::a11y::Role::ComboBox),
+        ("imager.profile.filesystem", tilo_ui_base::a11y::Role::ComboBox),
     ] {
         host.harness()
             .expect(&ui::headless::SemanticExpectation::named(id).role(role))
@@ -369,7 +369,7 @@ fn step_rail_keeps_six_stations_inside_the_viewport() {
         assert!(bounds.x0 >= 0.0 && bounds.x1 <= f64::from(viewport.0));
         assert!(
             bounds.height()
-                >= f64::from(Theme::dark().text(ui::TextRole::Caption).line_height_px()),
+                >= f64::from(Theme::dark().text(tilo_ui_base::TextRole::Caption).line_height_px()),
             "the passive progress label fits its measured line"
         );
         assert!(
@@ -860,7 +860,7 @@ fn owner_ssh_key_can_be_typed_before_the_complete_key_is_validated() {
     host.harness()
         .perform_named(
             "imager.write-setup.ssh-key",
-            &ui::a11y::Action::SetValue("ssh-".into()),
+            &tilo_ui_base::a11y::Action::SetValue("ssh-".into()),
         )
         .unwrap();
     assert_eq!(
@@ -1251,7 +1251,7 @@ fn terminal_progress_defers_close_until_owned_writer_exits() {
     );
     assert!(matches!(
         app.on_window_close_requested(),
-        ui::widget::WindowCloseAdmission::Defer
+        tilo_ui_base::widget::WindowCloseAdmission::Defer
     ));
     assert!(control.is_cancelled());
     assert!(!app.take_window_close_intent());

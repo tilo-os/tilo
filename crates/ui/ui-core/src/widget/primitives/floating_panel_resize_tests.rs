@@ -2,11 +2,11 @@
 //! hand, and the width it is let go at is what the view hears.
 
 use super::surfaces_component::{DeclaredPanel, FloatingPanelProps};
-use crate::component::{Described, Event, Intent, Value};
+use tilo_ui_base::{component::Described, component::Event, component::Intent, component::Value};
 use crate::headless::Driver;
-use crate::synthetic_input;
+use tilo_ui_base::synthetic_input;
 
-fn harness(queue: &crate::Intents<crate::component::Fired>) -> Driver {
+fn harness(queue: &tilo_ui_base::Intents<tilo_ui_base::component::Fired>) -> Driver {
     let panel = DeclaredPanel::from_props(
         "card",
         FloatingPanelProps {
@@ -19,7 +19,7 @@ fn harness(queue: &crate::Intents<crate::component::Fired>) -> Driver {
     Driver::new(crate::State::new(), Box::new(panel), (800, 600))
 }
 
-fn resized(queue: &crate::Intents<crate::component::Fired>) -> Vec<f64> {
+fn resized(queue: &tilo_ui_base::Intents<tilo_ui_base::component::Fired>) -> Vec<f64> {
     queue
         .take()
         .into_iter()
@@ -33,7 +33,7 @@ fn resized(queue: &crate::Intents<crate::component::Fired>) -> Vec<f64> {
 
 #[test]
 fn the_trailing_edge_resizes_the_panel_and_says_its_width() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let mut host = harness(&queue);
     host.relayout();
     let rect = host.root_widget().get_rect();

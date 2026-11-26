@@ -3,7 +3,7 @@ use tilo_desktop_model::{Layout, Member, Present};
 use ui::peniko::Color;
 
 /// Everything a reader is told of `node` and its children: names and descriptions both.
-fn spoken(node: &ui::a11y::AccessNode, said: &mut Vec<String>) {
+fn spoken(node: &tilo_ui_base::a11y::AccessNode, said: &mut Vec<String>) {
     said.extend(
         [node.name.clone(), node.description.clone()]
             .into_iter()

@@ -18,7 +18,7 @@ fn draw_rich_line_for_test(line: &mut RichTextLine, theme: &Theme) -> Scene {
     let mut renderer = TextRenderer::new();
     renderer.set_text_scale(theme.text_scale);
     let mut scene = Scene::new();
-    line.draw(&mut tilo_ui::DrawCtx::new(
+    line.draw(&mut tilo_ui_base::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut renderer,

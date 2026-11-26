@@ -7,10 +7,10 @@ use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::platform::PlatformConventions;
+use tilo_ui_base::platform::PlatformConventions;
 
-use crate::theme::Theme;
-use crate::widget::{AppModel, ModelPath, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::Widget};
 
 use super::{ContextMenu, MenuItem, PanelAlign};
 
@@ -114,7 +114,7 @@ impl MenuButton {
     }
 }
 
-impl crate::widget::Decorator for MenuButton {
+impl tilo_ui_base::widget::Decorator for MenuButton {
     type Inner = crate::widget::Button;
 
     fn inner(&self) -> &crate::widget::Button {
@@ -142,7 +142,7 @@ impl crate::widget::Decorator for MenuButton {
     // the size of a target the next time it opens.
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         self.button.set_interaction_environment(environment);
         self.menu.set_interaction_environment(environment);
@@ -157,11 +157,11 @@ impl crate::widget::Decorator for MenuButton {
         let node = Widget::build_layout(&mut self.button, taffy, theme, node_map);
         // Focus and keyboard activation reach the menu button, not the
         // button inside it.
-        crate::widget::register_node(node_map, node, self);
+        tilo_ui_base::widget::register_node(node_map, node, self);
         node
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if self.menu.is_open() {
             self.menu.handle_event(event, ctx);
             // The press that closed the menu on the button itself must not
@@ -184,7 +184,7 @@ impl crate::widget::Decorator for MenuButton {
         // (an app's window, a sheet the page draws) rather than on a later frame nothing may
         // draw.
         let path = ctx.path;
-        crate::widget::controls::start_pending_control_invocations(
+        tilo_ui_base::widget::controls::start_pending_control_invocations(
             &mut self.button,
             &mut ctx.edits(),
             path,
@@ -194,12 +194,12 @@ impl crate::widget::Decorator for MenuButton {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
-        if matches!(action, crate::a11y::Action::Activate) && Widget::is_enabled(&self.button) {
+        if matches!(action, tilo_ui_base::a11y::Action::Activate) && Widget::is_enabled(&self.button) {
             if self.menu.is_open() {
                 self.menu.close();
             } else {
@@ -226,12 +226,12 @@ impl crate::widget::Decorator for MenuButton {
         clippy::disallowed_methods,
         reason = "a decorator is the widget it wraps: that widget draws under the decorator's key"
     )]
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         self.button.menu_open = self.menu.is_open();
         Widget::draw(&mut self.button, ctx);
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -240,7 +240,7 @@ impl crate::widget::Decorator for MenuButton {
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         Widget::draw_overlay(
             &mut self.button,
-            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
         );
         if let Some(window) = env.viewport {
             self.window = Some(window);
@@ -250,7 +250,7 @@ impl crate::widget::Decorator for MenuButton {
         {
             self.menu.reanchor(Widget::get_rect(&self.button), window);
         }
-        self.menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+        self.menu.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -284,7 +284,7 @@ impl crate::widget::Decorator for MenuButton {
         self.menu.is_open().then_some(&self.menu as &dyn Widget)
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let mut node = Widget::accessibility(&self.button)?;
         node.state.expanded = Some(self.menu.is_open());
         if self.menu.is_open()
@@ -298,8 +298,8 @@ impl crate::widget::Decorator for MenuButton {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.menu
@@ -314,23 +314,23 @@ impl crate::widget::Decorator for MenuButton {
     /// The menu button answers for the button's own press and for every row its menu offers,
     /// open or closed: a row runs the action the view bound to it as the button runs its own,
     /// and the rows it publishes reach the host through the button that stands in the tree.
-    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
-        if request.wants::<dyn crate::widget::controls::ActionControls>() {
-            request.provide::<dyn crate::widget::controls::ActionControls>(self);
-        } else if request.wants::<dyn crate::widget::resources::PublishesResources>() {
-            request.provide::<dyn crate::widget::resources::PublishesResources>(self);
+    fn provide<'a>(&'a self, request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
+        if request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>() {
+            request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
+        } else if request.wants::<dyn tilo_ui_base::widget::resources::PublishesResources>() {
+            request.provide::<dyn tilo_ui_base::widget::resources::PublishesResources>(self);
         } else {
             Widget::provide(&self.button, request);
         }
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
-        if request.wants::<dyn crate::widget::controls::ActionControls>() {
-            request.provide::<dyn crate::widget::controls::ActionControls>(self);
-        } else if request.wants::<dyn crate::widget::resources::PublishesResources>() {
-            request.provide::<dyn crate::widget::resources::PublishesResources>(self);
-        } else if request.wants::<dyn crate::widget::ResourceOperations>() {
-            request.provide::<dyn crate::widget::ResourceOperations>(self);
+    fn provide_mut<'a>(&'a mut self, request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>) {
+        if request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>() {
+            request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
+        } else if request.wants::<dyn tilo_ui_base::widget::resources::PublishesResources>() {
+            request.provide::<dyn tilo_ui_base::widget::resources::PublishesResources>(self);
+        } else if request.wants::<dyn tilo_ui_base::widget::ResourceOperations>() {
+            request.provide::<dyn tilo_ui_base::widget::ResourceOperations>(self);
         } else {
             Widget::provide_mut(&mut self.button, request);
         }
@@ -340,34 +340,34 @@ impl crate::widget::Decorator for MenuButton {
 /// The menu is drawn over the button and stands against it, not in the button's subtree, so
 /// the rows it publishes are the button's to publish and its rows' operations the button's to
 /// start.
-impl crate::widget::resources::PublishesResources for MenuButton {
+impl tilo_ui_base::widget::resources::PublishesResources for MenuButton {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        let mut resources = crate::widget::resources::resources(&self.button, doc);
-        resources.extend(crate::widget::resources::resources(&self.menu, doc));
+        let mut resources = tilo_ui_base::widget::resources::resources(&self.button, doc);
+        resources.extend(tilo_ui_base::widget::resources::resources(&self.menu, doc));
         resources
     }
 }
 
-impl crate::widget::ResourceOperations for MenuButton {
+impl tilo_ui_base::widget::ResourceOperations for MenuButton {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         let mut handlers =
-            crate::widget::resource_operation::resource_operation_handlers(&self.button);
-        handlers.extend(crate::widget::resource_operation::resource_operation_handlers(&self.menu));
+            tilo_ui_base::widget::resource_operation::resource_operation_handlers(&self.button);
+        handlers.extend(tilo_ui_base::widget::resource_operation::resource_operation_handlers(&self.menu));
         handlers
     }
 
     fn start_operation(
         &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
+        op: &tilo_ui_base::widget::ResourceOperation<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
         if let Some(started) =
-            crate::widget::resource_operation::start_operation(&mut self.button, op, doc, path)?
+            tilo_ui_base::widget::resource_operation::start_operation(&mut self.button, op, doc, path)?
         {
             return Ok(Some(started));
         }
-        crate::widget::resource_operation::start_operation(&mut self.menu, op, doc, path)
+        tilo_ui_base::widget::resource_operation::start_operation(&mut self.menu, op, doc, path)
     }
 
     fn poll_resource_operation(
@@ -377,7 +377,7 @@ impl crate::widget::ResourceOperations for MenuButton {
         doc: &automerge::AutoCommit,
         path: &automerge::ObjId,
     ) -> Option<tilo_actions::InvocationUpdate> {
-        crate::widget::resource_operation::poll_resource_operation(
+        tilo_ui_base::widget::resource_operation::poll_resource_operation(
             &mut self.button,
             invocation,
             cancellation_requested,
@@ -385,7 +385,7 @@ impl crate::widget::ResourceOperations for MenuButton {
             path,
         )
         .or_else(|| {
-            crate::widget::resource_operation::poll_resource_operation(
+            tilo_ui_base::widget::resource_operation::poll_resource_operation(
                 &mut self.menu,
                 invocation,
                 cancellation_requested,
@@ -396,24 +396,24 @@ impl crate::widget::ResourceOperations for MenuButton {
     }
 }
 
-impl crate::widget::controls::ActionControls for MenuButton {
+impl tilo_ui_base::widget::controls::ActionControls for MenuButton {
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
-        crate::widget::controls::attach_controls(&mut self.button, domain, attachment);
-        crate::widget::controls::attach_controls(&mut self.menu, domain, attachment);
+        tilo_ui_base::widget::controls::attach_controls(&mut self.button, domain, attachment);
+        tilo_ui_base::widget::controls::attach_controls(&mut self.menu, domain, attachment);
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        crate::widget::controls::take_control_invocation(&mut self.button)
-            .or_else(|| crate::widget::controls::take_control_invocation(&mut self.menu))
+        tilo_ui_base::widget::controls::take_control_invocation(&mut self.button)
+            .or_else(|| tilo_ui_base::widget::controls::take_control_invocation(&mut self.menu))
     }
 
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        let mut bindings = crate::widget::controls::control_action_bindings(&self.button);
-        bindings.extend(crate::widget::controls::control_action_bindings(&self.menu));
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
+        let mut bindings = tilo_ui_base::widget::controls::control_action_bindings(&self.button);
+        bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(&self.menu));
         bindings
     }
 
@@ -421,7 +421,7 @@ impl crate::widget::controls::ActionControls for MenuButton {
         &mut self,
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
-        crate::widget::controls::refresh_control_action_availability(&mut self.button, allowed);
-        crate::widget::controls::refresh_control_action_availability(&mut self.menu, allowed);
+        tilo_ui_base::widget::controls::refresh_control_action_availability(&mut self.button, allowed);
+        tilo_ui_base::widget::controls::refresh_control_action_availability(&mut self.menu, allowed);
     }
 }

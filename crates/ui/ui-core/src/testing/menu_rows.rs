@@ -9,7 +9,7 @@ use std::rc::Rc;
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::widget::{DrawChild, ResourceOperation, ResourceOperationStart, Spacer, Widget};
+use tilo_ui_base::{widget::DrawChild, widget::ResourceOperation, widget::ResourceOperationStart, widget::Spacer, widget::Widget};
 
 /// The record the rows act on.
 pub(crate) const MENU_ROW_RESOURCE: &str = "test:menu";
@@ -41,15 +41,15 @@ impl MenuRows {
 }
 
 impl Widget for MenuRows {
-    crate::provides!(
-        dyn crate::widget::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn tilo_ui_base::widget::ResourceOperations
     );
 
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
-        theme: &crate::theme::Theme,
+        theme: &tilo_ui_base::theme::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         self.inner.build_layout(taffy, theme, node_map)
@@ -59,7 +59,7 @@ impl Widget for MenuRows {
         self.inner.apply_layout(taffy, node, origin);
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -70,7 +70,7 @@ impl Widget for MenuRows {
             .draw_child(scene, transform, text_renderer, theme, &env);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, _ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if matches!(
             event,
             WindowEvent::MouseInput {
@@ -96,7 +96,7 @@ impl Widget for MenuRows {
     }
 }
 
-impl crate::widget::resources::PublishesResources for MenuRows {
+impl tilo_ui_base::widget::resources::PublishesResources for MenuRows {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         let mut record = tilo_actions::ResourceSpec::new(MENU_ROW_RESOURCE, "test.menu", "Menu");
         for (index, label) in self.labels.iter().enumerate() {
@@ -115,7 +115,7 @@ impl crate::widget::resources::PublishesResources for MenuRows {
     }
 }
 
-impl crate::widget::ResourceOperations for MenuRows {
+impl tilo_ui_base::widget::ResourceOperations for MenuRows {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[MENU_ROW_TYPE]
     }
@@ -123,7 +123,7 @@ impl crate::widget::ResourceOperations for MenuRows {
     fn start_operation(
         &mut self,
         op: &ResourceOperation<'_>,
-        _: &mut crate::widget::Edits<'_>,
+        _: &mut tilo_ui_base::widget::Edits<'_>,
         _: &automerge::ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         let request = op.request();
@@ -144,7 +144,7 @@ impl crate::widget::ResourceOperations for MenuRows {
 
 /// A press bound to the published action `action` of `resource`, as a view binds a control or a
 /// menu row: what choosing it runs is that action, at its address.
-pub(crate) fn bound_press(resource: &str, action: &str) -> crate::widget::Press {
+pub(crate) fn bound_press(resource: &str, action: &str) -> tilo_ui_base::widget::Press {
     let spec = tilo_actions::ResourceSpec::new(resource, "test.bound", resource).with_action(
         tilo_actions::ActionSpec::operation(
             action,
@@ -157,5 +157,5 @@ pub(crate) fn bound_press(resource: &str, action: &str) -> crate::widget::Press 
     );
     let binding = tilo_actions::ActionBinding::unit_for(&spec, action)
         .expect("the resource publishes the action the press names");
-    crate::widget::Press::of(crate::component::Event::Action(binding))
+    tilo_ui_base::widget::Press::of(tilo_ui_base::component::Event::Action(binding))
 }

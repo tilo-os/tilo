@@ -10,7 +10,7 @@ fn counted_control_app(
 ) -> (App, std::rc::Rc<[Cell<usize>; 2]>, std::rc::Rc<Cell<bool>>) {
     let counts = std::rc::Rc::new([Cell::new(0), Cell::new(0)]);
     let visible = std::rc::Rc::new(Cell::new(true));
-    let resource = crate::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
+    let resource = tilo_ui_base::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
     let root = SemanticCountingPublisher {
         counts: counts.clone(),
         visible: visible.clone(),
@@ -53,8 +53,8 @@ fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
         let (mut app, counts, visible) = counted_control_app(false);
         app.refresh_control_action_availability();
         app.actions.permission_generation.set(u64::MAX);
-        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
-            &crate::permissions::MemberId::person("restricted"),
+        app.set_permission_ctx(tilo_ui_base::permissions::PermissionContext::stranger(
+            &tilo_ui_base::permissions::MemberId::person("restricted"),
         ));
         assert!(!app.root_widget.children()[0].is_enabled());
         app.set_permission_ctx(PermissionContext::permissive());
@@ -136,9 +136,9 @@ fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
 }
 
 impl Widget for SemanticCountingPublisher {
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::widget::resources::PublishesResources
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::controls::ActionControls,
+        dyn tilo_ui_base::widget::resources::PublishesResources
     );
 
     fn sync(&mut self, _s: &AppModel, _p: &ModelPath) {}
@@ -153,10 +153,10 @@ impl Widget for SemanticCountingPublisher {
     fn name(&self) -> &'static str {
         "counting-publisher"
     }
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.counts[1].set(self.counts[1].get() + 1);
         Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group)
                 .with_semantic_key("counted-catalogue"),
         )
     }
@@ -176,7 +176,7 @@ fn counted_resources(
 ) -> Vec<ResourceSpec> {
     counts[0].set(counts[0].get() + 1);
     let mut resources = if visible.get() {
-        crate::widget::resources::PublishesResources::resources(&Publisher, doc)
+        tilo_ui_base::widget::resources::PublishesResources::resources(&Publisher, doc)
     } else {
         Vec::new()
     };
@@ -186,14 +186,14 @@ fn counted_resources(
     resources
 }
 
-impl crate::widget::resources::PublishesResources for SemanticCountingPublisher {
+impl tilo_ui_base::widget::resources::PublishesResources for SemanticCountingPublisher {
     fn resources(&self, doc: &AutoCommit) -> Vec<ResourceSpec> {
         counted_resources(&self.counts, &self.visible, self.duplicate, doc)
     }
 }
 
-impl crate::widget::controls::ActionControls for SemanticCountingPublisher {
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+impl tilo_ui_base::widget::controls::ActionControls for SemanticCountingPublisher {
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         self.button.control_action_bindings()
     }
 }
@@ -207,7 +207,7 @@ struct InventoryOnlyPublisher {
 }
 
 fn inventory_only_publisher() -> (Box<dyn Widget>, std::rc::Rc<Cell<bool>>) {
-    let resource = crate::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
+    let resource = tilo_ui_base::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
     let enabled = std::rc::Rc::new(Cell::new(false));
     (
         Box::new(InventoryOnlyPublisher {
@@ -238,15 +238,15 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
                         .content(root),
                 ),
             };
-            assert!(crate::widget::controls::has_action_control_bindings(
+            assert!(tilo_ui_base::widget::controls::has_action_control_bindings(
                 root.as_ref()
             ));
             let mut app = App::new_with_controlled_inputs(State::new(), root);
             app.action_registry_mut().register::<Flip>(FLIP_TYPE);
             app.refresh_control_action_availability();
             assert!(enabled.get(), "wrapper {wrapper}");
-            app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
-                &crate::permissions::MemberId::person("restricted"),
+            app.set_permission_ctx(tilo_ui_base::permissions::PermissionContext::stranger(
+                &tilo_ui_base::permissions::MemberId::person("restricted"),
             ));
             assert!(
                 !enabled.get(),
@@ -286,7 +286,7 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
         for wrapper in 0..4 {
             let counts = std::rc::Rc::new([Cell::new(0), Cell::new(0)]);
             let resource =
-                crate::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
+                tilo_ui_base::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
             let root = FastInventoryPublisher {
                 counts: counts.clone(),
                 visible: std::rc::Rc::new(Cell::new(true)),
@@ -325,9 +325,9 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
 }
 
 impl Widget for InventoryOnlyPublisher {
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::widget::resources::PublishesResources
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::controls::ActionControls,
+        dyn tilo_ui_base::widget::resources::PublishesResources
     );
 
     fn build_layout(
@@ -341,23 +341,23 @@ impl Widget for InventoryOnlyPublisher {
     fn name(&self) -> &'static str {
         "counting-publisher"
     }
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.counts[1].set(self.counts[1].get() + 1);
         Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group)
                 .with_semantic_key("counted-catalogue"),
         )
     }
 }
 
-impl crate::widget::resources::PublishesResources for InventoryOnlyPublisher {
+impl tilo_ui_base::widget::resources::PublishesResources for InventoryOnlyPublisher {
     fn resources(&self, doc: &AutoCommit) -> Vec<ResourceSpec> {
         counted_resources(&self.counts, &self.visible, self.duplicate, doc)
     }
 }
 
-impl crate::widget::controls::ActionControls for InventoryOnlyPublisher {
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+impl tilo_ui_base::widget::controls::ActionControls for InventoryOnlyPublisher {
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         self.button.control_action_bindings()
     }
     fn refresh_control_action_availability(
@@ -378,9 +378,9 @@ struct FastInventoryPublisher {
 }
 
 impl Widget for FastInventoryPublisher {
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::widget::resources::PublishesResources
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::controls::ActionControls,
+        dyn tilo_ui_base::widget::resources::PublishesResources
     );
 
     fn build_layout(
@@ -394,23 +394,23 @@ impl Widget for FastInventoryPublisher {
     fn name(&self) -> &'static str {
         "counting-publisher"
     }
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.counts[1].set(self.counts[1].get() + 1);
         Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group)
                 .with_semantic_key("counted-catalogue"),
         )
     }
 }
 
-impl crate::widget::resources::PublishesResources for FastInventoryPublisher {
+impl tilo_ui_base::widget::resources::PublishesResources for FastInventoryPublisher {
     fn resources(&self, doc: &AutoCommit) -> Vec<ResourceSpec> {
         counted_resources(&self.counts, &self.visible, self.duplicate, doc)
     }
 }
 
-impl crate::widget::controls::ActionControls for FastInventoryPublisher {
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+impl tilo_ui_base::widget::controls::ActionControls for FastInventoryPublisher {
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         self.counts[1].set(self.counts[1].get() + 1);
         self.button.control_action_bindings()
     }
@@ -432,12 +432,12 @@ impl crate::widget::controls::ActionControls for FastInventoryPublisher {
 fn a_widget_answering_for_a_child_it_walks_publishes_that_childs_resources_once() {
     struct Displaying(Publisher);
 
-    impl crate::widget::Widget for Displaying {
-        fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+    impl tilo_ui_base::widget::Widget for Displaying {
+        fn provide<'a>(&'a self, request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
             self.0.provide(request);
         }
 
-        fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn crate::widget::Widget)) {
+        fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn tilo_ui_base::widget::Widget)) {
             visitor(&self.0);
         }
 
@@ -445,7 +445,7 @@ fn a_widget_answering_for_a_child_it_walks_publishes_that_childs_resources_once(
             &mut self,
             taffy: &mut TaffyTree<()>,
             _theme: &Theme,
-            node_map: &mut HashMap<NodeId, *mut dyn crate::widget::Widget>,
+            node_map: &mut HashMap<NodeId, *mut dyn tilo_ui_base::widget::Widget>,
         ) -> NodeId {
             taffy.widget_leaf(taffy::Style::default(), node_map, self)
         }

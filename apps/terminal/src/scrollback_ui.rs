@@ -5,11 +5,11 @@
 #[derive(Default)]
 struct ScrollbackView {
     sub: f64,
-    glide: ui::ScrollMomentum,
-    motion: ui::tokens::EffectiveMotion,
+    glide: tilo_ui_base::ScrollMomentum,
+    motion: tilo_ui_base::tokens::EffectiveMotion,
     /// What the frame being drawn shows of the scrollback, and what the
     /// frame on screen showed: a scroll copies the rows it only moved.
-    shown: ui::scroll_copy::PaintedFrames,
+    shown: tilo_ui_base::scroll_copy::PaintedFrames,
     overlay_drawn: bool,
     overlay_presented: bool,
 }
@@ -71,12 +71,12 @@ impl TerminalWidget {
         if !self.view.glide.is_active() {
             return;
         }
-        let step = self.view.glide.advance(ui::motion::frame_now());
+        let step = self.view.glide.advance(tilo_ui_base::motion::frame_now());
         if step != 0.0 {
             if self.scroll_by_px(step) == 0.0 {
                 self.view.glide.stop();
             } else {
-                ui::widget::note_view_only_pan();
+                tilo_ui_base::widget::note_view_only_pan();
             }
         }
     }
@@ -153,8 +153,8 @@ impl TerminalWidget {
             .glide
             .wheel(delta, phase, self.view.motion.reduced())
         {
-            ui::virtual_viewport::WheelStep::Scroll(step) => step,
-            ui::virtual_viewport::WheelStep::Fling | ui::virtual_viewport::WheelStep::Ignored => {
+            tilo_ui_base::virtual_viewport::WheelStep::Scroll(step) => step,
+            tilo_ui_base::virtual_viewport::WheelStep::Fling | tilo_ui_base::virtual_viewport::WheelStep::Ignored => {
                 return;
             }
         };
@@ -164,7 +164,7 @@ impl TerminalWidget {
         };
         let moved = self.scroll_by_px(step);
         if self.view.glide.wheel_applied(step, moved) {
-            ui::widget::note_view_only_pan();
+            tilo_ui_base::widget::note_view_only_pan();
         }
     }
 
@@ -175,7 +175,7 @@ impl TerminalWidget {
         let start_y = self.viewport_start_y;
         let rows = (visible_rows + usize::from(self.view.sub > 0.0))
             .min(self.grid.len().saturating_sub(start_y));
-        let give = self.view.glide.give(ui::motion::frame_now());
+        let give = self.view.glide.give(tilo_ui_base::motion::frame_now());
         let top = grid_rect.y0.floor();
         GridFrame {
             start_y,
@@ -194,16 +194,16 @@ impl TerminalWidget {
     }
 
     /// Paint the grid: each row in view with its share of the selection and the find matches, drawn at
-    /// its place in the scrollback so a scroll only moves it ([`ui::scroll_copy::PaintedFrames`]); then the
+    /// its place in the scrollback so a scroll only moves it ([`tilo_ui_base::scroll_copy::PaintedFrames`]); then the
     /// cursor, the bar, the bands above the grid (`outside`) and members' marks.
-    fn draw_grid(&mut self, ctx: &mut ui::DrawCtx<'_>, outside: Scene) {
+    fn draw_grid(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>, outside: Scene) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        use ui::scroll_copy::{Painted, Piece, piece_key};
+        use tilo_ui_base::{scroll_copy::Painted, scroll_copy::Piece, scroll_copy::piece_key};
         let frame = self.grid_frame();
         let scrolled = frame.scrolled(transform);
         let mut pieces = Vec::new();
@@ -258,14 +258,14 @@ impl TerminalWidget {
                 paint: Painted(peers),
             },
         ];
-        let look = ui::scroll_copy::Around {
+        let look = tilo_ui_base::scroll_copy::Around {
             bounds: self.rect,
             outside: Painted(outside),
         };
-        match ui::scroll_copy::Showing::painted(
+        match tilo_ui_base::scroll_copy::Showing::painted(
             vello::kurbo::Vec2::new(0.0, frame.scroll),
             frame.clip,
-            ui::scroll_copy::on_screen(transform),
+            tilo_ui_base::scroll_copy::on_screen(transform),
             look,
             pieces,
             fixed,
@@ -279,7 +279,7 @@ impl TerminalWidget {
         &self,
         ctx: &mut PaintCtx<'_>,
         frame: &GridFrame,
-        pieces: &mut Vec<ui::scroll_copy::Piece<ui::scroll_copy::Painted>>,
+        pieces: &mut Vec<tilo_ui_base::scroll_copy::Piece<tilo_ui_base::scroll_copy::Painted>>,
     ) {
         let PaintCtx {
             scene,
@@ -334,15 +334,15 @@ impl TerminalWidget {
                 self.rect.x1 + 2.0 * self.char_w,
                 py + 2.0 * row_h,
             ));
-            let key = ui::scene_parts::PartKey::new("terminal.row", row - frame.start_y);
+            let key = tilo_ui_base::scene_parts::PartKey::new("terminal.row", row - frame.start_y);
             let bounds = vec![transform.transform_rect_bbox(band.intersect(frame.clip))];
-            ui::scene_parts::part(scene, key, bounds, |scene| {
+            tilo_ui_base::scene_parts::part(scene, key, bounds, |scene| {
                 scene.append(&drawn, Some(scrolled));
             });
-            pieces.push(ui::scroll_copy::Piece {
-                key: ui::scroll_copy::piece_key(row),
+            pieces.push(tilo_ui_base::scroll_copy::Piece {
+                key: tilo_ui_base::scroll_copy::piece_key(row),
                 rect: band,
-                paint: ui::scroll_copy::Painted(drawn),
+                paint: tilo_ui_base::scroll_copy::Painted(drawn),
             });
         }
     }
@@ -351,7 +351,7 @@ impl TerminalWidget {
         &self,
         ctx: &mut PaintCtx<'_>,
         frame: &GridFrame,
-        pieces: &mut Vec<ui::scroll_copy::Piece<ui::scroll_copy::Painted>>,
+        pieces: &mut Vec<tilo_ui_base::scroll_copy::Piece<tilo_ui_base::scroll_copy::Painted>>,
     ) {
         let PaintCtx {
             scene,
@@ -375,15 +375,15 @@ impl TerminalWidget {
             })
             .unwrap_or_default();
         let scrolled = frame.scrolled(transform);
-        let key = ui::scene_parts::PartKey::new("terminal.cursor", ());
-        ui::scene_parts::part(scene, key, bounds, |scene| {
+        let key = tilo_ui_base::scene_parts::PartKey::new("terminal.cursor", ());
+        tilo_ui_base::scene_parts::part(scene, key, bounds, |scene| {
             scene.append(&cursor, Some(scrolled));
         });
         if let Some(rect) = cursor_at {
-            pieces.push(ui::scroll_copy::Piece {
-                key: ui::scroll_copy::piece_key("cursor"),
+            pieces.push(tilo_ui_base::scroll_copy::Piece {
+                key: tilo_ui_base::scroll_copy::piece_key("cursor"),
                 rect: frame.on_screen(rect),
-                paint: ui::scroll_copy::Painted(cursor),
+                paint: tilo_ui_base::scroll_copy::Painted(cursor),
             });
         }
     }

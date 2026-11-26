@@ -1,11 +1,11 @@
 //! [`Chip`] as a described component: a tag, a filter or a token in a pill.
 
-use crate::component::{Component, Described, Event, Person};
-use crate::icons::Icon;
+use tilo_ui_base::{component::Component, component::Described, component::Event, component::Person};
+use tilo_ui_base::icons::Icon;
 
 use super::ChipStyle;
 use super::{Chip, ChipLead};
-use crate::widget::{Press, Tone};
+use tilo_ui_base::{widget::Press, widget::Tone};
 
 /// A compact pill for a tag, a filter or a token: what a note is tagged with, a recipient, an applied
 /// filter.
@@ -32,7 +32,7 @@ pub struct ChipProps {
     pub description: Option<String>,
     /// What it says is news: a screen reader announces it when it appears or changes, without the
     /// person moving focus — `polite` waits for a pause, `assertive` speaks at once.
-    pub live: Option<crate::a11y::Politeness>,
+    pub live: Option<tilo_ui_base::a11y::Politeness>,
     /// It was pressed: open or apply what it names.
     #[component(event(press))]
     pub press: Event,
@@ -123,8 +123,8 @@ impl Described for Chip {
         }
         if let Some(who) = faces.into_iter().next() {
             self.face_hue = Some(who.hue);
-            self.lead = ChipLead::Face(crate::presence::presence_colour(
-                crate::presence::identity_rgb(who.hue),
+            self.lead = ChipLead::Face(tilo_ui_base::presence::presence_colour(
+                tilo_ui_base::presence::identity_rgb(who.hue),
             ));
             self.face = Some(who);
         } else if icon.is_some() || !matches!(self.lead, ChipLead::Face(_)) {

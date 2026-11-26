@@ -5,11 +5,11 @@ tilo_test_env::scenario! {
 
     phase palette_search_is_budgeted_grouped_and_reaches_exact_matches;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let materialized = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let mut palette =
-                ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
                     SearchField::with_language("en_US")
                 });
             palette.load_open_resources(&[]);
@@ -28,7 +28,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+            let mut p = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
                 SearchField::with_language("en_US")
             });
             p.load_open_resources(&[thing_resource()]);
@@ -54,7 +54,7 @@ tilo_test_env::scenario! {
 
     phase progressive_palette_reaches_exact_match_beyond_one_hundred_thousand_candidates;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let catalog = crate::search::SearchCatalog::new("Adversarial corpus");
         for id in 0..100_000usize {
             let resource_id = format!("item:{id:06}");
@@ -68,7 +68,7 @@ tilo_test_env::scenario! {
                             tilo_actions::ActionAddress::new(&resource_id, "open"),
                         ),
                     )
-                    .field("abc c d", crate::text_match::FieldWeight::UNRANKED),
+                    .field("abc c d", tilo_ui_base::text_match::FieldWeight::UNRANKED),
                 )
                 .expect("valid broad candidate");
         }
@@ -83,11 +83,11 @@ tilo_test_env::scenario! {
                         tilo_actions::ActionAddress::new(target_id, "open"),
                     ),
                 )
-                .field("abc d", crate::text_match::FieldWeight::UNRANKED),
+                .field("abc d", tilo_ui_base::text_match::FieldWeight::UNRANKED),
             )
             .expect("valid exact target");
 
-        let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+        let mut palette = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
             SearchField::with_language("en_US")
         });
         palette.set_providers(vec![Box::new(catalog)]);
@@ -137,9 +137,9 @@ tilo_test_env::scenario! {
 
     phase committed_text_goes_into_the_query_field_at_the_caret;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let key = [7u8; 32];
-        let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+        let mut palette = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
             SearchField::with_language("en_US")
         });
         assert!(
@@ -170,9 +170,9 @@ tilo_test_env::scenario! {
 
     phase committed_text_narrows_the_rows_a_host_fed;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let key = [7u8; 32];
-        let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+        let mut palette = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
             SearchField::with_language("en_US")
         });
         palette.set_entries(vec![
@@ -209,8 +209,8 @@ tilo_test_env::scenario! {
     // card where nothing has been typed yet.
     phase a_query_that_matches_nothing_is_named_in_the_empty_list;
     {
-        let _settled = crate::motion::testing::settled();
-        let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let mut palette = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
             SearchField::with_language("en_US")
         });
         palette.open();

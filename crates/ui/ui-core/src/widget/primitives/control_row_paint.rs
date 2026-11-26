@@ -5,9 +5,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 
-use crate::chrome::{ChromeRole, SelectionState, selection_floor_ramp};
-use crate::theme::Theme;
-use crate::widget::{Tone, paint_focus_ring};
+use tilo_ui_base::{chrome::ChromeRole, chrome::SelectionState, chrome::selection_floor_ramp};
+use tilo_ui_base::theme::Theme;
+use crate::widget::paint_focus_ring;
+use tilo_ui_base::widget::Tone;
 
 /// A Control's fill: the shared hover tier when hovered, otherwise a quiet floor on the same
 /// ramp, so a row reads as a surface rather than bare text on the panel.
@@ -39,7 +40,7 @@ pub fn paint_control_row(
         return;
     }
     let radius = control_radius(theme, rect);
-    crate::surface::card(scene, transform, rect, radius, control_fill(theme, hovered));
+    tilo_ui_base::surface::card(scene, transform, rect, radius, control_fill(theme, hovered));
     if focused {
         paint_focus_ring(scene, transform, rect, radius, theme);
     }
@@ -82,8 +83,8 @@ mod tests {
             let rest = control_fill(&theme, false);
             let hovered = control_fill(&theme, true);
             assert!(
-                crate::chrome::lightness_step(hovered, theme.tokens.colors.surfaces.base)
-                    > crate::chrome::lightness_step(rest, theme.tokens.colors.surfaces.base),
+                tilo_ui_base::chrome::lightness_step(hovered, theme.tokens.colors.surfaces.base)
+                    > tilo_ui_base::chrome::lightness_step(rest, theme.tokens.colors.surfaces.base),
                 "hover lifts above rest"
             );
         }
@@ -98,8 +99,8 @@ mod tests {
                 scene.encoding().draw_tags.len()
             };
             let plain = tags(false);
-            crate::focus_visible::note(&crate::synthetic_input::keyboard_input(
-                crate::synthetic_input::key_event(
+            tilo_ui_base::focus_visible::note(&tilo_ui_base::synthetic_input::keyboard_input(
+                tilo_ui_base::synthetic_input::key_event(
                     winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
                     None,
                     winit::event::ElementState::Pressed,

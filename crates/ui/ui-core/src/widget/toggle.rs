@@ -1,12 +1,12 @@
 use super::bool_control::{
     BoolControl, bool_control_api, bool_control_capabilities, bool_control_widget_methods,
 };
-use crate::i18n::widget_text;
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::theme::Theme;
 use crate::widget::Interaction;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 use taffy::{NodeId, Size, Style, TaffyTree};
 
 #[path = "toggle_component.rs"]
@@ -31,11 +31,11 @@ pub struct Toggle {
     /// Between a labelled switch's words and the switch, from the theme.
     label_gap: f32,
     drawn_track: Rect,
-    motion: Option<crate::tokens::EffectiveMotion>,
+    motion: Option<tilo_ui_base::tokens::EffectiveMotion>,
     slop: f64,
     painted: Option<Painted>,
     drawing: Option<Painted>,
-    hand_on: crate::motion::HandOn<KeptSwitch>,
+    hand_on: tilo_ui_base::motion::HandOn<KeptSwitch>,
 }
 
 struct KeptSwitch {
@@ -94,7 +94,7 @@ impl Toggle {
     pub fn bound(id: &str, document_key: &str) -> Self {
         Self::with_control(
             id,
-            BoolControl::document(document_key, Some(crate::widget::humanize_control_id(id))),
+            BoolControl::document(document_key, Some(tilo_ui_base::widget::humanize_control_id(id))),
         )
     }
 
@@ -103,7 +103,7 @@ impl Toggle {
     pub fn given(id: &str, on: bool) -> Self {
         Self::with_control(
             id,
-            BoolControl::given(on, Some(crate::widget::humanize_control_id(id))),
+            BoolControl::given(on, Some(tilo_ui_base::widget::humanize_control_id(id))),
         )
     }
 
@@ -115,15 +115,15 @@ impl Toggle {
             hold: None,
             pointer_x: 0.0,
             label: None,
-            label_style: crate::tokens::typography::stock().style(crate::tokens::TextRole::Body),
+            label_style: tilo_ui_base::tokens::typography::stock().style(tilo_ui_base::tokens::TextRole::Body),
             track_width: TRACK_WIDTH,
-            label_gap: crate::tokens::spacing::RhythmScale::BASE.sibling,
+            label_gap: tilo_ui_base::tokens::spacing::RhythmScale::BASE.sibling,
             drawn_track: Rect::ZERO,
             motion: None,
-            slop: f64::from(crate::tokens::Metrics::BASE.click_slop),
+            slop: f64::from(tilo_ui_base::tokens::Metrics::BASE.click_slop),
             painted: None,
             drawing: None,
-            hand_on: crate::motion::HandOn::default(),
+            hand_on: tilo_ui_base::motion::HandOn::default(),
         }
     }
 
@@ -142,7 +142,7 @@ impl Toggle {
     }
 
     fn painted_now(&self) -> Painted {
-        let (knob, tint) = self.switch.drawn(crate::motion::frame_now());
+        let (knob, tint) = self.switch.drawn(tilo_ui_base::motion::frame_now());
         (
             self.control.is_checked,
             self.control.is_hovered,
@@ -153,9 +153,9 @@ impl Toggle {
         )
     }
 
-    fn effective_motion(&self) -> crate::tokens::EffectiveMotion {
+    fn effective_motion(&self) -> tilo_ui_base::tokens::EffectiveMotion {
         self.motion.unwrap_or_else(|| {
-            crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), false)
+            tilo_ui_base::tokens::EffectiveMotion::new(tilo_ui_base::tokens::Motion::default(), false)
         })
     }
 
@@ -171,7 +171,7 @@ impl Toggle {
         // Where the pill is now: a scroll moves the switch without always
         // drawing it again.
         let track = self.drawn_track + self.control.rect.origin().to_vec2();
-        let knob = self.switch.knob(crate::motion::frame_now());
+        let knob = self.switch.knob(tilo_ui_base::motion::frame_now());
         let centre = Point::new(
             track.x0 + track.height() / 2.0 + knob * self.knob_travel(),
             track.center().y,
@@ -211,10 +211,10 @@ impl Toggle {
             return;
         }
         let motion = self.effective_motion();
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let velocity = hold.velocity(crate::time::now());
         let position = self.switch.knob(now);
-        let side = crate::motion::Snap::rest_for(position, velocity, motion) >= 0.5;
+        let side = tilo_ui_base::motion::Snap::rest_for(position, velocity, motion) >= 0.5;
         if side != self.control.is_checked {
             self.control.choose(side);
         }
@@ -226,7 +226,7 @@ impl Toggle {
     /// Pointer, keyboard, and accessibility activation update `state`;
     /// mutations through any clone of `state` update this switch on the next
     /// synchronization pass.
-    pub fn from_state(state: &crate::LocalState<bool>) -> Self {
+    pub fn from_state(state: &tilo_ui_base::LocalState<bool>) -> Self {
         Self::with_control("toggle", BoolControl::local(state, None))
     }
 
@@ -308,7 +308,7 @@ impl ToggleColors {
         if tint >= 1.0 {
             return on;
         }
-        let mix = |a, b| crate::tokens::colors::mix8(a, b, tint);
+        let mix = |a, b| tilo_ui_base::tokens::colors::mix8(a, b, tint);
         Self {
             track: mix(off.track, on.track),
             knob: mix(off.knob, on.knob),
@@ -340,8 +340,8 @@ impl SwitchPose {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SwitchMotion {
-    knob: crate::motion::Thumb,
-    tint: crate::motion::Mark,
+    knob: tilo_ui_base::motion::Thumb,
+    tint: tilo_ui_base::motion::Mark,
     shown: Option<bool>,
 }
 
@@ -350,8 +350,8 @@ impl SwitchMotion {
     pub fn follow(
         &mut self,
         on: bool,
-        motion: crate::tokens::EffectiveMotion,
-        source: crate::tokens::MotionSource,
+        motion: tilo_ui_base::tokens::EffectiveMotion,
+        source: tilo_ui_base::tokens::MotionSource,
         now: crate::time::Instant,
     ) {
         match self.shown {
@@ -369,11 +369,11 @@ impl SwitchMotion {
     pub fn follow_input(
         &mut self,
         on: bool,
-        motion: crate::tokens::EffectiveMotion,
+        motion: tilo_ui_base::tokens::EffectiveMotion,
         now: crate::time::Instant,
     ) {
         let source =
-            crate::motion::recent_input(now).unwrap_or(crate::tokens::MotionSource::Action);
+            tilo_ui_base::motion::recent_input(now).unwrap_or(tilo_ui_base::tokens::MotionSource::Action);
         self.follow(on, motion, source, now);
     }
 
@@ -392,13 +392,13 @@ impl SwitchMotion {
         &mut self,
         on: bool,
         velocity: f64,
-        motion: crate::tokens::EffectiveMotion,
+        motion: tilo_ui_base::tokens::EffectiveMotion,
         now: crate::time::Instant,
     ) {
         self.shown = Some(on);
         self.knob.release(knob_end(on), velocity, motion, now);
         self.tint
-            .set(on, motion, crate::tokens::MotionSource::Gesture, now);
+            .set(on, motion, tilo_ui_base::tokens::MotionSource::Gesture, now);
     }
 
     #[track_caller]
@@ -415,14 +415,14 @@ impl SwitchMotion {
     #[must_use]
     pub fn pose(
         &self,
-        motion: crate::tokens::EffectiveMotion,
+        motion: tilo_ui_base::tokens::EffectiveMotion,
         now: crate::time::Instant,
     ) -> SwitchPose {
         let knob = self.knob.get(now);
         let tint = if motion.reduced() {
             self.tint.level(now)
         } else {
-            crate::motion::unit_opacity(knob)
+            tilo_ui_base::motion::unit_opacity(knob)
         };
         SwitchPose { knob, tint }
     }
@@ -448,7 +448,7 @@ fn knob_end(on: bool) -> f64 {
 /// Focus is your colour round the track.
 pub fn toggle_face_colors(theme: &Theme, on: bool, interact: Interaction) -> ToggleColors {
     let colors = &theme.tokens.colors;
-    let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
+    let floor = tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST;
     // A lift of the window ground: lighter on a dark material, darker on a
     // light one, so a white knob always stands out from it.
     let off_track = colors.lift_on(colors.surfaces.content, 1.0);
@@ -471,7 +471,7 @@ pub fn toggle_face_colors(theme: &Theme, on: bool, interact: Interaction) -> Tog
         let knob = if interact.hovered {
             mark
         } else {
-            crate::tokens::colors::mix8(track, mark, 0.9)
+            tilo_ui_base::tokens::colors::mix8(track, mark, 0.9)
         };
         (ink_across(&[track], knob, floor), None)
     } else if light_material(colors) {
@@ -488,7 +488,7 @@ pub fn toggle_face_colors(theme: &Theme, on: bool, interact: Interaction) -> Tog
     let (edge, edge_width) = if interact.focused {
         (colors.intent.accent_ink, 2.0)
     } else {
-        (crate::surface::edge_on(track), 1.0)
+        (tilo_ui_base::surface::edge_on(track), 1.0)
     };
     ToggleColors {
         track,
@@ -499,14 +499,14 @@ pub fn toggle_face_colors(theme: &Theme, on: bool, interact: Interaction) -> Tog
     }
 }
 
-pub(crate) fn light_material(colors: &crate::tokens::colors::Colors) -> bool {
-    crate::a11y::relative_luminance(colors.surfaces.content) > 0.5
+pub(crate) fn light_material(colors: &tilo_ui_base::tokens::colors::Colors) -> bool {
+    tilo_ui_base::a11y::relative_luminance(colors.surfaces.content) > 0.5
 }
 
 pub(crate) fn worst_contrast(ink: vello::peniko::Color, grounds: &[vello::peniko::Color]) -> f64 {
     grounds
         .iter()
-        .map(|g| crate::a11y::contrast_ratio(ink, *g))
+        .map(|g| tilo_ui_base::a11y::contrast_ratio(ink, *g))
         .fold(f64::INFINITY, f64::min)
 }
 
@@ -518,7 +518,7 @@ pub(crate) fn worst_contrast(ink: vello::peniko::Color, grounds: &[vello::peniko
 ///
 /// That choice is made over the whole set on purpose. A pair can straddle
 /// the light/dark line — a white off-track under a mid-blue on-track on the
-/// light preset — and [`crate::tokens::colors::Colors::ink_on_any`] picks
+/// light preset — and [`tilo_ui_base::tokens::colors::Colors::ink_on_any`] picks
 /// its polarity from the hardest ground alone, which there is the blue, so
 /// it walks the knob toward white and straight into the other track. The
 /// extreme itself is theme-free: [`Colors::hairline_on`] at full alpha is
@@ -528,7 +528,7 @@ pub(crate) fn ink_across(
     tone: vello::peniko::Color,
     min_ratio: f64,
 ) -> vello::peniko::Color {
-    use crate::tokens::colors::{Colors, mix8};
+    use tilo_ui_base::{tokens::colors::Colors, tokens::colors::mix8};
     let Some(first) = grounds.first() else {
         return tone;
     };
@@ -618,8 +618,8 @@ pub fn toggle_accessibility(
     focused: bool,
     enabled: bool,
     accessible_name: Option<String>,
-) -> crate::a11y::AccessNode {
-    use crate::a11y::{AccessNode, AccessState, Role};
+) -> tilo_ui_base::a11y::AccessNode {
+    use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
     AccessNode::new(Role::Switch)
         .with_optional_name(accessible_name.filter(|name| !name.is_empty()))
         .with_state(
@@ -702,13 +702,13 @@ impl Toggle {
             transform,
             colors.edge,
             None,
-            &crate::surface::edge_outline(face.rect, radius),
+            &tilo_ui_base::surface::edge_outline(face.rect, radius),
         );
     }
 }
 
 impl Widget for Toggle {
-    crate::described!();
+    tilo_ui_base::described!();
 
     bool_control_widget_methods!("toggle");
 
@@ -726,7 +726,7 @@ impl Widget for Toggle {
         )]
         let (track_w, track_h) = (track_w as f32, track_h as f32);
         let target = self.control.interaction.minimum_target();
-        self.label_style = theme.tokens.typography.style(crate::tokens::TextRole::Body);
+        self.label_style = theme.tokens.typography.style(tilo_ui_base::tokens::TextRole::Body);
         self.track_width = track_w;
         self.label_gap = theme.tokens.spacing.rhythm.sibling;
         let size = if self.label.is_some() {
@@ -791,7 +791,7 @@ impl Widget for Toggle {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.control.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.control.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if let Some((kept, _)) = self.hand_on.place(self.control.rect) {
             self.take_up(kept);
         }
@@ -801,14 +801,14 @@ impl Widget for Toggle {
         clippy::cast_possible_truncation,
         reason = "widget rectangles are finite renderer coordinates already laid out as f32"
     )]
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let motion = theme.motion();
         self.motion = Some(motion);
         // A knob under a dragging hand stays there; otherwise the switch
@@ -856,9 +856,9 @@ impl Widget for Toggle {
                 &self.label_style,
             );
         }
-        crate::widget::draw_over(
+        tilo_ui_base::widget::draw_over(
             self,
-            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
         );
     }
 
@@ -875,10 +875,10 @@ impl Widget for Toggle {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.switch.is_moving(crate::motion::frame_now())
+        self.switch.is_moving(tilo_ui_base::motion::frame_now())
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if !self.control.effectively_enabled() {
             if self.hold.take().is_some_and(|hold| hold.dragged) {
                 self.switch.snap(self.control.is_checked);
@@ -911,7 +911,7 @@ impl Widget for Toggle {
                 *ctx.handled = true;
                 self.control.pressed_into_focus |= !self.control.is_focused;
                 *ctx.focus_target = Some(ctx.node_id);
-                let drawn = self.switch.knob(crate::motion::frame_now());
+                let drawn = self.switch.knob(tilo_ui_base::motion::frame_now());
                 let track = self.drawn_track + self.control.rect.origin().to_vec2();
                 let on_knob = self.label.is_none() || self.pointer_x >= track.x0 - self.slop;
                 self.hold = Some(KnobHold::new(self.pointer_x, drawn, on_knob));
@@ -928,11 +928,11 @@ impl Widget for Toggle {
         }
     }
 
-    fn touch_claim(&self, point: Point) -> crate::interaction::TouchClaim {
+    fn touch_claim(&self, point: Point) -> tilo_ui_base::interaction::TouchClaim {
         if self.control.effectively_enabled() && self.on_knob(point) {
-            crate::interaction::TouchClaim::DragAcross
+            tilo_ui_base::interaction::TouchClaim::DragAcross
         } else {
-            crate::interaction::TouchClaim::Pointer
+            tilo_ui_base::interaction::TouchClaim::Pointer
         }
     }
 
@@ -947,7 +947,7 @@ impl Widget for Toggle {
         self.painted = Some(self.drawing.take().unwrap_or_else(|| self.painted_now()));
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let mut node = toggle_accessibility(
             self.control.is_checked,
             self.is_focused(),
@@ -975,7 +975,7 @@ impl Drop for Toggle {
 mod tests {
     use super::*;
     use crate::testing::Dispatch;
-    use crate::widget::Widget;
+    use tilo_ui_base::widget::Widget;
     use automerge::{AutoCommit, ReadDoc, transaction::Transactable};
     use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -1004,7 +1004,7 @@ mod tests {
             }
 
             {
-                use crate::a11y::Role;
+                use tilo_ui_base::a11y::Role;
                 let mut t = Toggle::bound("any", "path");
                 let off = Widget::accessibility(&t).unwrap();
                 assert_eq!(off.role, Role::Switch);
@@ -1050,9 +1050,9 @@ mod tests {
     #[test]
     fn toggle_bindings_route_activation_unless_disabled() {
         {
-            use crate::a11y::Action;
+            use tilo_ui_base::a11y::Action;
 
-            let state = crate::LocalState::new(false);
+            let state = tilo_ui_base::LocalState::new(false);
             let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             let captured = std::rc::Rc::clone(&changes);
             let mut first = Toggle::from_state(&state)
@@ -1071,7 +1071,7 @@ mod tests {
                 &mut first,
                 &Action::Activate,
                 &[],
-                &mut crate::widget::Edits::lend(&mut document),
+                &mut tilo_ui_base::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             assert!(!state.get(), "user activation publishes typed state");
@@ -1157,14 +1157,14 @@ mod tests {
 
         {
             let mut toggle =
-                Toggle::bound("native", "on").on_action(crate::widget::test_bool_action_binding());
+                Toggle::bound("native", "on").on_action(tilo_ui_base::widget::test_bool_action_binding());
             let mut doc = AutoCommit::new();
-            crate::widget::controls::refresh_control_action_availability(
+            tilo_ui_base::widget::controls::refresh_control_action_availability(
                 &mut toggle,
                 &std::collections::HashSet::new(),
             );
             assert!(!Widget::is_enabled(&toggle));
-            crate::widget::controls::refresh_control_action_availability(
+            tilo_ui_base::widget::controls::refresh_control_action_availability(
                 &mut toggle,
                 &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                     "test:control",
@@ -1174,14 +1174,14 @@ mod tests {
             assert!(Widget::is_enabled(&toggle));
             assert!(Widget::perform_action(
                 &mut toggle,
-                &crate::a11y::Action::ToggleCheck,
+                &tilo_ui_base::a11y::Action::ToggleCheck,
                 &[],
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(doc.get(&automerge::ROOT, "on").unwrap().is_none());
             assert_eq!(
-                crate::widget::controls::take_control_invocation(&mut toggle)
+                tilo_ui_base::widget::controls::take_control_invocation(&mut toggle)
                     .unwrap()
                     .arguments["value"],
                 true
@@ -1204,8 +1204,8 @@ mod tests {
         );
 
         let mut action_switch =
-            Toggle::given("wifi", false).on_action(crate::widget::test_bool_action_binding());
-        crate::widget::controls::refresh_control_action_availability(
+            Toggle::given("wifi", false).on_action(tilo_ui_base::widget::test_bool_action_binding());
+        tilo_ui_base::widget::controls::refresh_control_action_availability(
             &mut action_switch,
             &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                 "test:control",
@@ -1214,9 +1214,9 @@ mod tests {
         );
         assert!(Widget::perform_action(
             &mut action_switch,
-            &crate::a11y::Action::Activate,
+            &tilo_ui_base::a11y::Action::Activate,
             &[],
-            &mut crate::widget::Edits::lend(&mut doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
         assert!(
@@ -1294,12 +1294,12 @@ mod tests {
     }
 
     fn present(t: &mut Toggle, theme: &Theme) {
-        t.draw(&mut crate::draw::DrawCtx::new(
+        t.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut TextRenderer::new(),
             theme,
-            crate::presence::PresenceCtx::empty().draw_env(),
+            tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
         ));
         t.mark_drawn();
     }
@@ -1310,12 +1310,12 @@ mod tests {
 
     #[test]
     fn a_click_slides_the_knob_and_a_second_click_reverses_it_mid_flight() {
-        use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
+        use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release};
         use crate::testing::dispatch;
         use crate::time::testing::with_monotonic_time;
-        use crate::tokens::MotionSource;
+        use tilo_ui_base::tokens::MotionSource;
         let theme = Theme::dark();
-        let state = crate::LocalState::new(false);
+        let state = tilo_ui_base::LocalState::new(false);
         let mut t = Toggle::from_state(&state);
         switch_at_origin(&mut t);
         let t0 = crate::time::now();
@@ -1323,7 +1323,7 @@ mod tests {
         assert!(!t.needs_animation_frame(), "the first paint rests");
         assert_eq!(t.switch.knob(t0), 0.0);
         with_monotonic_time(t0, || {
-            crate::motion::note_source(MotionSource::Pointer);
+            tilo_ui_base::motion::note_source(MotionSource::Pointer);
             dispatch(&mut t, &cursor_moved(30.0, 16.0));
             dispatch(&mut t, &mouse_press());
             dispatch(&mut t, &mouse_release());
@@ -1343,7 +1343,7 @@ mod tests {
             pose.knob
         });
         with_monotonic_time(ms(t0, 40), || {
-            crate::motion::note_source(MotionSource::Pointer);
+            tilo_ui_base::motion::note_source(MotionSource::Pointer);
             dispatch(&mut t, &mouse_press());
             dispatch(&mut t, &mouse_release());
             assert!(!state.get());
@@ -1362,9 +1362,9 @@ mod tests {
     #[test]
     fn a_key_an_assistive_action_or_a_sync_lands_the_switch_at_once() {
         use crate::time::testing::with_monotonic_time;
-        use crate::tokens::MotionSource;
+        use tilo_ui_base::tokens::MotionSource;
         let theme = Theme::dark();
-        let state = crate::LocalState::new(false);
+        let state = tilo_ui_base::LocalState::new(false);
         let mut t = Toggle::from_state(&state);
         switch_at_origin(&mut t);
         let t0 = crate::time::now();
@@ -1375,12 +1375,12 @@ mod tests {
             (MotionSource::Action, false),
         ] {
             with_monotonic_time(t0, || {
-                crate::motion::note_source(source);
+                tilo_ui_base::motion::note_source(source);
                 assert!(Widget::perform_action(
                     &mut t,
-                    &crate::a11y::Action::Activate,
+                    &tilo_ui_base::a11y::Action::Activate,
                     &[],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ));
                 present(&mut t, &theme);
@@ -1399,17 +1399,17 @@ mod tests {
 
     #[test]
     fn reduced_motion_lands_the_knob_and_cross_fades_the_tint() {
-        use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
+        use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release};
         use crate::testing::dispatch;
         use crate::time::testing::with_monotonic_time;
         let theme = Theme::dark().with_reduce_motion(true);
-        let state = crate::LocalState::new(false);
+        let state = tilo_ui_base::LocalState::new(false);
         let mut t = Toggle::from_state(&state);
         switch_at_origin(&mut t);
         let t0 = crate::time::now();
         with_monotonic_time(t0, || {
             present(&mut t, &theme);
-            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
             dispatch(&mut t, &cursor_moved(30.0, 16.0));
             dispatch(&mut t, &mouse_press());
             dispatch(&mut t, &mouse_release());
@@ -1424,7 +1424,7 @@ mod tests {
         assert!(!t.switch.is_moving(ms(t0, 400)));
     }
 
-    fn counted(state: &crate::LocalState<bool>) -> (Toggle, std::rc::Rc<std::cell::Cell<u32>>) {
+    fn counted(state: &tilo_ui_base::LocalState<bool>) -> (Toggle, std::rc::Rc<std::cell::Cell<u32>>) {
         let changes = std::rc::Rc::new(std::cell::Cell::new(0));
         let count = std::rc::Rc::clone(&changes);
         let mut t =
@@ -1435,16 +1435,16 @@ mod tests {
 
     #[test]
     fn a_dragged_knob_follows_the_hand_one_to_one_and_settles_on_the_nearer_side() {
-        use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
+        use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release};
         use crate::testing::dispatch;
         use crate::time::testing::with_monotonic_time;
         let theme = Theme::dark();
-        let state = crate::LocalState::new(false);
+        let state = tilo_ui_base::LocalState::new(false);
         let (mut t, changes) = counted(&state);
         let t0 = crate::time::now();
         with_monotonic_time(t0, || {
             present(&mut t, &theme);
-            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
             dispatch(&mut t, &cursor_moved(12.0, 16.0));
             dispatch(&mut t, &mouse_press());
         });
@@ -1480,7 +1480,7 @@ mod tests {
         let rest = t.switch.knob.settles_at().map_or(ms(t0, 60), |at| at);
         assert_eq!(t.switch.knob(rest), 0.0);
 
-        let state = crate::LocalState::new(false);
+        let state = tilo_ui_base::LocalState::new(false);
         let (mut t, changes) = counted(&state);
         with_monotonic_time(t0, || {
             present(&mut t, &theme);
@@ -1510,7 +1510,7 @@ mod tests {
         use crate::widget::{Column, Scrollable};
         use winit::event::TouchPhase::{Ended, Moved, Started};
         let theme = Theme::dark();
-        let states: Vec<_> = (0..30).map(|_| crate::LocalState::new(false)).collect();
+        let states: Vec<_> = (0..30).map(|_| tilo_ui_base::LocalState::new(false)).collect();
         let mut column = Column::new();
         for state in &states {
             column = column.push(Box::new(Toggle::from_state(state)));
@@ -1532,7 +1532,7 @@ mod tests {
         let at = knob(&frame, 1);
         assert_eq!(
             Widget::touch_claim(frame.root::<Scrollable>().children()[0].children()[1], at),
-            crate::interaction::TouchClaim::DragAcross
+            tilo_ui_base::interaction::TouchClaim::DragAcross
         );
 
         // A finger reports every 8 ms (120 Hz) however long the test takes

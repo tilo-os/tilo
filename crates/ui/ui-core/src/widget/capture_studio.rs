@@ -9,24 +9,13 @@
     reason = "immediate-mode capture geometry uses tiny fixed arrays and bounded screen coordinates"
 )]
 
-use crate::{
-    icons::Icon,
-    paint::PaintCtx,
-    presence::PresenceCtx,
-    text_render::TextRenderer,
-    theme::Theme,
-    widget::{
-        Button, ButtonFace, CaptureButtonFace, CaptureKind, ControlSize, IconButton, TaffyTreeExt,
-        Widget,
-        selection_handles::{Handle, SelectionHandles},
-        toggle_group::{Segment, SegmentedFace, SegmentedStyle},
-    },
-};
+use crate::{widget::Button, widget::ButtonFace, widget::CaptureButtonFace, widget::CaptureKind, widget::ControlSize, widget::IconButton, widget::selection_handles::Handle, widget::selection_handles::SelectionHandles, widget::toggle_group::Segment, widget::toggle_group::SegmentedFace, widget::toggle_group::SegmentedStyle};
+use tilo_ui_base::{icons::Icon, paint::PaintCtx, presence::PresenceCtx, text_render::TextRenderer, theme::Theme, widget::TaffyTreeExt, widget::Widget};
 use automerge::ObjId;
 use std::collections::HashMap;
 
 use crate::time::{Duration, Instant};
-use crate::tokens::TextRole;
+use tilo_ui_base::tokens::TextRole;
 use taffy::{Dimension, NodeId, Size as TaffySize, Style, TaffyTree};
 use vello::{
     Scene,
@@ -43,7 +32,7 @@ const RECORDING_RECEIPT_DURATION: Duration = Duration::from_millis(4_000);
 /// The delays a capture can wait, in seconds; `0` is none.
 const DELAY_CHOICES: [u8; 4] = [0, 3, 5, 10];
 /// The smallest selection a drag makes.
-const MIN_REGION: f64 = crate::tokens::Spacing::BASE.s3 as f64;
+const MIN_REGION: f64 = tilo_ui_base::tokens::Spacing::BASE.s3 as f64;
 /// How much of the theme's modal scrim dims what is not being captured: the
 /// rest of the screen stays readable, the chosen thing stands out.
 const SCRIM_SHARE: f32 = 0.5;
@@ -383,7 +372,7 @@ type OptionSection = (Option<String>, Vec<OptionRow>);
     clippy::struct_excessive_bools,
     reason = "independent capture, recording, replay and receipt states are retained together"
 )]
-#[crate::component::not_a_component(system, "screen capture is the system's")]
+#[tilo_ui_base::component::not_a_component(system, "screen capture is the system's")]
 pub struct CaptureStudio {
     rect: Rect,
     overlay_rect: Rect,
@@ -904,7 +893,7 @@ impl CaptureStudio {
         for device in &self.send_devices {
             menu.push(MenuItem::icon_action(
                 Icon::Send,
-                crate::i18n::widget_format(
+                tilo_ui_base::i18n::widget_format(
                     "widget-screenshot-send-device",
                     &[("device", device.label.as_str().into())],
                 ),
@@ -1205,7 +1194,7 @@ impl CaptureStudio {
     }
 
     fn handles_of(region: Rect) -> SelectionHandles {
-        SelectionHandles::new(region, &crate::tokens::Metrics::BASE)
+        SelectionHandles::new(region, &tilo_ui_base::tokens::Metrics::BASE)
             .with_edges()
             .without_rotation()
     }
@@ -1228,8 +1217,8 @@ impl CaptureStudio {
         if self.regions.len() < 2 {
             return Vec::new();
         }
-        let side = f64::from(crate::tokens::Metrics::BASE.bar_control_height);
-        let gap = f64::from(crate::tokens::Spacing::BASE.s1);
+        let side = f64::from(tilo_ui_base::tokens::Metrics::BASE.bar_control_height);
+        let gap = f64::from(tilo_ui_base::tokens::Spacing::BASE.s1);
         let bounds = self.selection_bounds();
         self.regions
             .iter()
@@ -1612,9 +1601,9 @@ impl CaptureStudio {
         if theme.reduce_motion {
             return 1.0;
         }
-        crate::motion::unit_opacity(self.opened_at.map_or(1.0, |at| {
+        tilo_ui_base::motion::unit_opacity(self.opened_at.map_or(1.0, |at| {
             studio_progress(
-                crate::motion::Appear::SPEC,
+                tilo_ui_base::motion::Appear::SPEC,
                 crate::time::now().saturating_duration_since(at),
             )
         }))
@@ -1761,7 +1750,7 @@ impl CaptureStudio {
         }
         if let Some(menu) = self.send_menu.as_mut() {
             menu.layout_within(tr, theme);
-            menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+            menu.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 tr,
@@ -1771,7 +1760,7 @@ impl CaptureStudio {
         }
     }
 
-    fn route_menu_event(&mut self, e: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
+    fn route_menu_event(&mut self, e: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) -> bool {
         let options = self.options_menu.is_some();
         let Some(menu) = self.options_menu.as_mut().or(self.send_menu.as_mut()) else {
             return false;
@@ -1956,12 +1945,12 @@ impl Widget for CaptureStudio {
         n
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
     fn is_layout_dirty(&self) -> bool {
         false
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1984,13 +1973,13 @@ impl Widget for CaptureStudio {
         self.paint_bar(&mut PaintCtx::new(s, t, tr, theme));
         if let Some(menu) = self.options_menu.as_mut() {
             menu.layout_within(tr, theme);
-            menu.draw_overlay(&mut crate::draw::DrawCtx::new(s, t, tr, theme, env));
+            menu.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(s, t, tr, theme, env));
         }
         s.pop_layer();
         self.paint_generation = self.paint_generation.wrapping_add(1);
     }
 
-    fn handle_event(&mut self, e: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, e: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         if !self.open {
             return;
@@ -2049,7 +2038,7 @@ impl Widget for CaptureStudio {
         *ctx.handled = consumed;
     }
 
-    crate::redraw_flag!();
+    tilo_ui_base::redraw_flag!();
 
     fn name(&self) -> &'static str {
         "CaptureStudio"
@@ -2059,7 +2048,7 @@ impl Widget for CaptureStudio {
         Some("shell.capture-studio")
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.studio_accessibility()
     }
 
@@ -2070,9 +2059,9 @@ impl Widget for CaptureStudio {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &crate::widget::ModelPath,
+        action: &tilo_ui_base::a11y::Action,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         self.perform_studio_control(target, action)
     }
@@ -2100,7 +2089,7 @@ impl Widget for CaptureStudio {
             || (self.open
                 && self.opened_at.is_some_and(|at| {
                     crate::time::now().saturating_duration_since(at)
-                        < studio_motion_time(crate::motion::Appear::SPEC)
+                        < studio_motion_time(tilo_ui_base::motion::Appear::SPEC)
                 }))
     }
 
@@ -2198,7 +2187,7 @@ impl Widget for CaptureStudio {
                             Handle::Left => "w",
                             Handle::Rotate => continue,
                         };
-                        let side = f64::from(crate::tokens::Metrics::BASE.min_pointer_target);
+                        let side = f64::from(tilo_ui_base::tokens::Metrics::BASE.min_pointer_target);
                         o.push((
                             format!("capture.selection.{index}.{name}"),
                             Rect::from_center_size(handles.position(handle, 1.0), (side, side)),
@@ -2234,7 +2223,7 @@ fn drive_menu(
     cursor: Point,
     e: &WindowEvent,
     (scale, modifiers): (f64, winit::event::Modifiers),
-    (state, path): (&mut crate::widget::Edits<'_>, &ObjId),
+    (state, path): (&mut tilo_ui_base::widget::Edits<'_>, &ObjId),
 ) -> MenuOutcome {
     let dismissed = MenuOutcome {
         handled: true,
@@ -2270,7 +2259,7 @@ fn drive_menu(
     let mut focus = None;
     menu.handle_event(
         e,
-        &mut crate::widget::EventCtx {
+        &mut tilo_ui_base::widget::EventCtx {
             scale_factor: scale,
             modifiers: &modifiers,
             state: state.reborrow(),

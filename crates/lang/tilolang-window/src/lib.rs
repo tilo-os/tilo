@@ -47,7 +47,7 @@ pub struct Opening<'a> {
     pub me: (&'a str, &'a str),
     /// The size it is laid out at, in logical pixels, and its theme.
     pub viewport: (u32, u32),
-    pub theme: ui::Theme,
+    pub theme: tilo_ui_base::Theme,
     /// Where the workspace's resources open on the web, when a page stands behind the window:
     /// what a resource's `share-link` mints under ([`tilolang_tilo::share`]).
     pub link_home: Option<tilolang_tilo::share::LinkHome>,
@@ -68,7 +68,7 @@ pub struct Opening<'a> {
 impl Opening<'_> {
     /// A window of the package's first root, opened as Ada, empty, at `viewport` in `theme`.
     #[must_use]
-    pub fn new(viewport: (u32, u32), theme: ui::Theme) -> Self {
+    pub fn new(viewport: (u32, u32), theme: tilo_ui_base::Theme) -> Self {
         Self {
             root: tilolang_tilo::host::RootView {
                 root: None,

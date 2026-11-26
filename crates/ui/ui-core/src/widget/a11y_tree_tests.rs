@@ -5,9 +5,9 @@ use std::collections::HashMap;
 use accesskit::{Action as AkAction, Node as AkNode, NodeId as AkNodeId, Role as AkRole, Toggled};
 use taffy::TaffyTree;
 
-use crate::accesskit_bridge::build_tree_update;
-use crate::theme::Theme;
-use crate::widget::Widget;
+use tilo_ui_base::accesskit_bridge::build_tree_update;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
 
 fn access_nodes(root: &mut dyn Widget) -> Vec<(AkNodeId, AkNode)> {
     let theme = Theme::dark();

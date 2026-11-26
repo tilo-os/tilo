@@ -4,7 +4,8 @@ use std::rc::Rc;
 use super::*;
 use crate::app::driver::Driver;
 use crate::state::State;
-use crate::widget::{Button, Column, Part, Spacer};
+use crate::{widget::Button, widget::Column, widget::Part};
+use tilo_ui_base::widget::Spacer;
 
 fn window_failure(retried: &Rc<Cell<u32>>) -> WindowFailure {
     let retry = Rc::clone(retried);
@@ -62,7 +63,7 @@ fn its_retry_answers_the_keyboard_the_pointer_and_assistive_technology() {
     let retry = h.targets()["failed.retry"];
     h.click_at(retry.center().x, retry.center().y);
     assert_eq!(retried.get(), 2, "a click presses it");
-    h.perform_named("failed.retry", &crate::a11y::Action::Activate)
+    h.perform_named("failed.retry", &tilo_ui_base::a11y::Action::Activate)
         .expect("the retry is addressable");
     assert_eq!(retried.get(), 3, "and so does an assistive activation");
     assert!(
@@ -77,7 +78,7 @@ fn it_stands_at_rest_from_its_first_frame_where_a_window_brings_it_in() {
     for in_window in [false, true] {
         let (part, handle) = Part::new(Box::new(Spacer::fixed(10.0)));
         let mut h = harness(Box::new(Column::new().push(Box::new(part))), (900, 700));
-        let _frame = crate::motion::pin_frame();
+        let _frame = tilo_ui_base::motion::pin_frame();
         let retried = Rc::new(Cell::new(0));
         let face: Box<dyn Widget> = if in_window {
             Box::new(window_failure(&retried))

@@ -754,7 +754,7 @@ fn holder_kind(grantee: &tilo_action_policy::Grantee) -> &'static str {
 /// One device-record choice, as an entry of the same list: a file or folder an app was given
 /// outside any workspace, which the person who chose it may take back.
 fn chosen_entry(key: &AppKey, token: &str, held: &tilo_dialogs::chosen::Chosen) -> Value {
-    let name = ui::local_identity::load()
+    let name = tilo_ui_base::local_identity::load()
         .map(|identity| identity.display_name.trim().to_owned())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| t("session-access-you"));
@@ -769,7 +769,7 @@ fn chosen_entry(key: &AppKey, token: &str, held: &tilo_dialogs::chosen::Chosen) 
         "section": tilo_session_core::desktop::workspace_settings::RecipientKind::App.section_label(),
         "holder": crate::app_names::claimant(key.app()),
         "allows": allows,
-        "expiry": ui::format::lifetime(tilo_action_policy::Lifetime::UntilRevoked),
+        "expiry": tilo_ui_base::format::lifetime(tilo_action_policy::Lifetime::UntilRevoked),
         "granted_by": name,
         "app": key.app(),
         "path": held.host.to_string_lossy(),

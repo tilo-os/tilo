@@ -129,7 +129,7 @@ impl StagedWindow {
     pub(crate) fn staged(
         scenario: &str,
         viewport: (u32, u32),
-        theme: ui::Theme,
+        theme: tilo_ui_base::Theme,
     ) -> Self {
         use tilolang_tilo::host::RootView;
         use tilolang_tilo::instance::{Config, Instance, Mode};

@@ -619,7 +619,7 @@ fn apps_reading(listed: &[Listed]) -> Value {
             json!({
                 "key": app.id,
                 "name": app.title,
-                "icon": ui_core::icons::app_glyph(&app.id, None).name(),
+                "icon": tilo_ui_base::icons::app_glyph(&app.id, None).name(),
                 "category": "",
             })
         })
@@ -664,7 +664,7 @@ fn windows_reading(reading: &LayoutReading, read: Option<&Value>) -> Value {
             "title": title,
             "origin_app": titles.get(place.key.as_str()).copied().unwrap_or_default(),
             "app_key": place.shows,
-            "icon": ui_core::icons::app_glyph(&place.shows, None).name(),
+            "icon": tilo_ui_base::icons::app_glyph(&place.shows, None).name(),
             "strip": row.map_or("", |row| row.name.as_str()),
             "strip_key": place.strip,
             "workspace": workspace.map_or("", |workspace| workspace.name.as_str()),

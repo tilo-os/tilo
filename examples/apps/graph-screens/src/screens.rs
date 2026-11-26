@@ -3,8 +3,9 @@
 // tilolang:screen=about
 // tilolang:screen=main
 
-use ui::widget::Widget;
-use ui::{RouteError, RouteHandle, Router, Theme, UiBuildContext, UiGraphError, UiGraphHandle};
+use tilo_ui_base::widget::Widget;
+use ui::{UiBuildContext, UiGraphError, UiGraphHandle};
+use tilo_ui_base::{RouteError, RouteHandle, Router, Theme};
 
 pub const NAMES: &[&str] = &["about", "main"];
 

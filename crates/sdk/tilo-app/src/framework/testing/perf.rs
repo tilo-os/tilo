@@ -279,7 +279,7 @@ pub fn start<A: ResourceApp>(launches: usize) -> Result<Report, LaunchError> {
 /// private directory the first, unmeasured launch makes, so each measured
 /// launch opens an existing record, as a second launch does; the process's
 /// environment points nowhere real (no display, bus or runtime), but for the
-/// catalog this process verified ([`ui_core::font_catalog::OVERRIDE_ENV`]): a
+/// catalog this process verified ([`tilo_ui_base::font_catalog::OVERRIDE_ENV`]): a
 /// program's own compiled-in path is the build directory it was made in, and a
 /// run of an existing build carries its units without the catalog published
 /// beside them. The scratch directory is in memory where the system has one,
@@ -299,7 +299,7 @@ pub fn start<A: ResourceApp>(launches: usize) -> Result<Report, LaunchError> {
 pub fn cold_start(label: &str, exe: &std::path::Path, launches: usize) -> ColdStart {
     let scratch = crate::framework::headless::profile_directory().expect("a scratch directory");
     let root = scratch.path();
-    let catalog = ui_core::font_catalog::fixture_catalog();
+    let catalog = tilo_ui_base::font_catalog::fixture_catalog();
     let launch = || {
         let output = std::process::Command::new(exe)
             .arg("--first-frame")
@@ -315,7 +315,7 @@ pub fn cold_start(label: &str, exe: &std::path::Path, launches: usize) -> ColdSt
             .env("XDG_RUNTIME_DIR", root.join("run"))
             .env("TILO_STARTUP_METRICS_PATH", root.join("metrics.json"))
             .env("LANG", "en_US.UTF-8")
-            .env(ui_core::font_catalog::OVERRIDE_ENV, catalog.root())
+            .env(tilo_ui_base::font_catalog::OVERRIDE_ENV, catalog.root())
             .output()
             .expect("the app binary runs");
         assert!(
@@ -550,7 +550,7 @@ pub fn targets<A: ResourceApp>(app: &mut HeadlessApp<A>, roles: &[Role]) -> Vec<
 /// every step that has workspace to.
 pub fn scroll<A: ResourceApp>(app: &mut HeadlessApp<A>, at: (f64, f64), steps: usize) -> Report {
     app.harness()
-        .send(&ui_core::synthetic_input::cursor_moved(at.0, at.1));
+        .send(&tilo_ui_base::synthetic_input::cursor_moved(at.0, at.1));
     app.settle();
     let half = steps / 2;
     measure(app, "scroll step", (4, steps), |app, index| {
@@ -563,7 +563,7 @@ pub fn scroll<A: ResourceApp>(app: &mut HeadlessApp<A>, at: (f64, f64), steps: u
 /// The frames a touchpad fling at `at` glides on: two fingers move the
 /// content and lift while moving, then each measured step is one frame the
 /// host runs because the glide asks for it
-/// ([`ui_core::widget::Widget::needs_animation_frame`]), as the live
+/// ([`tilo_ui_base::widget::Widget::needs_animation_frame`]), as the live
 /// window runs them at the display's rate. Flings until `frames` glide
 /// frames are measured or `flings` gestures stopped gliding.
 pub fn glide<A: ResourceApp>(app: &mut HeadlessApp<A>, at: (f64, f64), frames: usize) -> Report {
@@ -574,7 +574,7 @@ pub fn glide<A: ResourceApp>(app: &mut HeadlessApp<A>, at: (f64, f64), frames: u
         phase,
     };
     app.harness()
-        .send(&ui_core::synthetic_input::cursor_moved(at.0, at.1));
+        .send(&tilo_ui_base::synthetic_input::cursor_moved(at.0, at.1));
     app.settle();
     let mut report = Report {
         label: "glide frame".to_owned(),
@@ -928,7 +928,7 @@ fn sidebar_rows(app: &ui_core::App) -> Vec<(String, ui_core::vello::kurbo::Rect)
     let (width, height) = (f64::from(YOGA.0), f64::from(YOGA.1));
     app.semantic_tree()
         .iter()
-        .filter(|node| node.role == ui_core::a11y::Role::TreeItem)
+        .filter(|node| node.role == tilo_ui_base::a11y::Role::TreeItem)
         .filter_map(|node| {
             let bounds = node.bounds?;
             let inside = bounds.x0 >= 0.0
@@ -1012,7 +1012,7 @@ fn sweep_motion(
     let centre = to.1.center();
     app.surface_input(
         &SweepSurface,
-        ui_core::synthetic_input::cursor_moved(centre.x, centre.y),
+        tilo_ui_base::synthetic_input::cursor_moved(centre.x, centre.y),
         false,
     );
     let unsettled = app.unsettled();

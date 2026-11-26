@@ -267,7 +267,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         let Some(path) = path else {
             return;
         };
-        let opens = ui_core::dnd::mime_for_path(path).is_some_and(|media_type| {
+        let opens = tilo_ui_base::dnd::mime_for_path(path).is_some_and(|media_type| {
             self.env
                 .opens
                 .iter()
@@ -364,7 +364,7 @@ fn read_chosen(handle: ChosenHandle, limit: Option<usize>) -> Result<ChosenFile,
     Ok(ChosenFile {
         identity: Some(ui_core::resource::DocumentId::identify_file(&reference)),
         name,
-        media_type: ui_core::dnd::mime_for_path(&reference).map(str::to_owned),
+        media_type: tilo_ui_base::dnd::mime_for_path(&reference).map(str::to_owned),
         bytes,
     })
 }

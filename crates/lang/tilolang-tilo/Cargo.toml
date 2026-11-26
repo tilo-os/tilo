@@ -62,6 +62,7 @@ wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../../pla
 tilo-workspace-emoji = { version = "0.1.0", path = "../../core/tilo-workspace-emoji" }
 
 [dev-dependencies]
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # The system's mention notices, read from a workspace holding tilolang rich text.
 ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }

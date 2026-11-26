@@ -6,10 +6,11 @@
 
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 use ui::vello::kurbo::Rect;
-use ui::widget::{Embedded, Scrollable, Widget};
+use ui::{widget::Embedded, widget::Scrollable};
+use tilo_ui_base::widget::Widget;
 
 use crate::{RichTextSource, RichTextSurface};
 

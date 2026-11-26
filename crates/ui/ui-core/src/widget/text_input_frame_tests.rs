@@ -8,16 +8,16 @@ use super::drive;
 use super::mods;
 use super::suggesting_field;
 use super::x_for_byte;
-use crate::synthetic_input::{char_key, cursor_moved, mouse_press, named_key};
+use tilo_ui_base::{synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::named_key};
 use crate::testing::dispatch;
-use crate::text_edit::SUGGESTION_SETTLE;
+use tilo_ui_base::text_edit::SUGGESTION_SETTLE;
 
 tilo_test_env::scenario! {
     fn a_field_shapes_measures_and_lays_out_its_text;
 
     phase themed_input_typography_reflows_and_centers_actual_shaped_text;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut input = TextInput::local()
             .with_initial_value("Themed input baseline")
             .with_spellcheck(false)
@@ -117,7 +117,7 @@ tilo_test_env::scenario! {
 
     phase spelling_marks_follow_edits_like_a_full_check;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let text = "teh first paragraph\n\nsecond wrold here\nthird is fine\n\nlast lnie";
         let mut input = TextInput::local()
             .with_spell_language("en_US")
@@ -156,7 +156,7 @@ tilo_test_env::scenario! {
 
     phase a_replacement_lands_only_on_the_text_it_was_made_for_and_is_left_selected;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut ti = TextInput::local().with_initial_value("hello world");
         assert!(
             !ti.replace_range(0..5, "hullo", "HELLO"),
@@ -201,7 +201,7 @@ tilo_test_env::scenario! {
         ti.apply_layout_external(Rect::new(0.0, 0.0, 120.0, caret.y1 + 2.0));
         let start = crate::time::now() + crate::time::Duration::from_secs(3600);
         ti.refresh_suggestion_at(start);
-        let _frame = crate::motion::pin_frame_at(start + SUGGESTION_SETTLE);
+        let _frame = tilo_ui_base::motion::pin_frame_at(start + SUGGESTION_SETTLE);
         for (room, under) in [(400.0, true), (caret.y1 + 2.0, false)] {
             ti.chip_room = Some(Rect::new(0.0, 0.0, 120.0, room));
             draw_to_populate(&mut ti);
@@ -217,7 +217,7 @@ tilo_test_env::scenario! {
     // Backspace right after takes the correction back, and the word taken back
     // stays as typed when the space comes again.
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         for (typed, corrected) in [("so i", "so I "), ("im", "I'm ")] {
             let mut ti = suggesting_field(typed);
             let start = crate::time::now();
@@ -260,7 +260,7 @@ tilo_test_env::scenario! {
 
     phase read_only_text_selects_and_copies_but_never_changes;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut ti = TextInput::local()
             .with_initial_value("read me")
             .with_read_only(true);
@@ -280,7 +280,7 @@ tilo_test_env::scenario! {
         assert!(!drive(
             &mut ti,
             &mut doc,
-            &crate::synthetic_input::key_press(Key::Character("v".into()), None),
+            &tilo_ui_base::synthetic_input::key_press(Key::Character("v".into()), None),
             mods(true, false)
         ));
         assert_eq!(ti.value(), "read me");
@@ -299,7 +299,7 @@ tilo_test_env::scenario! {
 
     phase read_only_text_links_what_it_may_and_opens_only_the_web_and_mail;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let ti = TextInput::local()
             .with_initial_value("see https://example.com/a, or www.example.org and click here")
             .with_read_only(true);
@@ -325,7 +325,7 @@ tilo_test_env::scenario! {
         let editable = TextInput::local().with_initial_value("https://example.com");
         assert_eq!(editable.link_at(3), None, "an editable field links nothing");
 
-        use crate::text_detect::Detected;
+        use tilo_ui_base::text_detect::Detected;
         assert_eq!(
             link_target(Detected::Url, "javascript://x/%0aalert(1)"),
             None
@@ -341,11 +341,11 @@ tilo_test_env::scenario! {
 
 #[test]
 fn forced_color_idle_field_boundary_has_rendered_non_text_contrast() {
-    let _settled = crate::motion::testing::settled();
-    let mut renderer = crate::offscreen::OffscreenRenderer::new(160, 64);
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let mut renderer = tilo_ui_base::offscreen::OffscreenRenderer::new(160, 64);
     for theme in [
         Theme::high_contrast(),
-        Theme::preset(crate::theme::Preset::HighContrastLight),
+        Theme::preset(tilo_ui_base::theme::Preset::HighContrastLight),
     ] {
         assert!(theme.colors_are_forced());
         let mut scene = Scene::new();
@@ -369,12 +369,12 @@ fn forced_color_idle_field_boundary_has_rendered_non_text_contrast() {
         let ground = pixel(80, 24);
         for edge in [pixel(80, 12), pixel(12, 32)] {
             assert!(
-                crate::a11y::contrast_ratio(edge, ground)
-                    >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                tilo_ui_base::a11y::contrast_ratio(edge, ground)
+                    >= tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST,
                 "actual idle field edge must remain visible when forced surfaces coincide"
             );
         }
-        let enabled_contrast = crate::a11y::contrast_ratio(pixel(80, 12), ground);
+        let enabled_contrast = tilo_ui_base::a11y::contrast_ratio(pixel(80, 12), ground);
         let mut disabled_scene = Scene::new();
         paint_field_chrome(
             &mut disabled_scene,
@@ -396,7 +396,7 @@ fn forced_color_idle_field_boundary_has_rendered_non_text_contrast() {
                 disabled_pixels[offset + 2],
                 disabled_pixels[offset + 3],
             );
-            let contrast = crate::a11y::contrast_ratio(edge, ground);
+            let contrast = tilo_ui_base::a11y::contrast_ratio(edge, ground);
             assert!(
                 contrast > 1.5 && contrast < enabled_contrast,
                 "the actual disabled group must dim the forced outline while keeping it visible"
@@ -410,7 +410,7 @@ tilo_test_env::scenario! {
 
     phase a_secret_field_never_hands_its_text_to_a_text_action;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         for field in [
             TextInput::local().with_secret(true),
             TextInput::local().with_kind(TextInputKind::Password),
@@ -434,8 +434,8 @@ tilo_test_env::scenario! {
 
     phase every_kind_and_override_reaches_the_input_method_as_its_purpose_and_hints;
     {
-        use crate::ime::InputPurpose;
-        let _settled = crate::motion::testing::settled();
+        use tilo_ui_base::ime::InputPurpose;
+        let _settled = tilo_ui_base::motion::testing::settled();
         const NORMAL: u32 = 0;
         const DIGITS: u32 = 2;
         const NUMBER: u32 = 3;
@@ -495,7 +495,7 @@ tilo_test_env::scenario! {
             field.set_focus(true);
             field.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 120.0));
             draw_to_populate(&mut field);
-            let intent = crate::ime::ImeWindowState::from_widget(&field).expect(case);
+            let intent = tilo_ui_base::ime::ImeWindowState::from_widget(&field).expect(case);
             assert_eq!(intent.content.wayland(), want, "{case}");
             assert_eq!(
                 intent.content.winit_purpose() == winit::window::ImePurpose::Password,
@@ -511,16 +511,16 @@ tilo_test_env::scenario! {
             (InputPurpose::Time, TIME),
             (InputPurpose::Terminal, TERMINAL),
         ] {
-            assert_eq!(crate::ime::InputContent::of(purpose).wayland(), (0, want));
+            assert_eq!(tilo_ui_base::ime::InputContent::of(purpose).wayland(), (0, want));
         }
-        let mut sentences = crate::ime::InputContent::TEXT;
-        sentences.hints.capitalization = crate::ime::Capitalization::Sentences;
+        let mut sentences = tilo_ui_base::ime::InputContent::TEXT;
+        sentences.hints.capitalization = tilo_ui_base::ime::Capitalization::Sentences;
         assert_eq!(sentences.wayland(), (AUTO_CAPITALIZATION, NORMAL));
     }
 
     phase an_open_text_menu_owns_the_keyboard;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut ti = TextInput::local()
             .with_spellcheck(false)
             .with_text_action("translate", "Translate")
@@ -528,9 +528,9 @@ tilo_test_env::scenario! {
         ti.set_focus(true);
         ti.core.set_selection(0, 5);
         ti.open_context_menu([10.0, 10.0]);
-        let named = |key| crate::synthetic_input::named_key(key);
+        let named = |key| tilo_ui_base::synthetic_input::named_key(key);
         assert!(dispatch(&mut ti, &named(NamedKey::ArrowDown)));
-        assert!(dispatch(&mut ti, &crate::synthetic_input::char_key("x")));
+        assert!(dispatch(&mut ti, &tilo_ui_base::synthetic_input::char_key("x")));
         assert_eq!(ti.value(), "hello world", "typing does not reach the text");
         assert_eq!(ti.selection_range(), Some((0, 5)));
         assert!(dispatch(&mut ti, &named(NamedKey::Enter)));
@@ -555,7 +555,7 @@ tilo_test_env::scenario! {
     // that takes the selection back reports it collapsed rather than nothing to
     // say — otherwise the surface keeps painting a selection nobody holds.
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let mut ti = TextInput::local().with_initial_value("hello world");
             ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
@@ -617,7 +617,7 @@ tilo_test_env::scenario! {
         fn drawn(field: &mut TextInput, theme: &Theme) -> Scene {
             let mut renderer = TextRenderer::new();
             let mut scene = Scene::new();
-            Widget::draw(field, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, theme, crate::presence::PresenceCtx::empty().draw_env()));
+            Widget::draw(field, &mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, theme, tilo_ui_base::presence::PresenceCtx::empty().draw_env()));
             scene
         }
 
@@ -642,7 +642,7 @@ tilo_test_env::scenario! {
             field
         }
 
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let theme = Theme::dark();
         let mut shown = corrected_field();
         let mut hidden = corrected_field();

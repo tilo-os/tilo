@@ -239,7 +239,7 @@ fn sign_in_comforts(
 ) -> SignInComforts {
     let defaults = SignInComforts::default();
     let comforted = if theme {
-        let theme = ui::theme::Theme::configured_comforts();
+        let theme = tilo_ui_base::theme::Theme::configured_comforts();
         SignInComforts {
             language: settings_store::appearance::LANGUAGE.get(),
             text_scale: theme.text_scale.unwrap_or(defaults.text_scale),

@@ -8,7 +8,8 @@ use super::MountedRowState;
 use super::{ListKey, VirtualRows};
 use crate::time::Instant;
 use crate::widget::arriving_rows::RowReserve;
-use crate::widget::{Element, Showing};
+use crate::widget::Showing;
+use tilo_ui_base::widget::Element;
 
 impl VirtualRows {
     pub(super) fn observe_row(
@@ -58,7 +59,7 @@ impl VirtualRows {
             .next_wake_deadline(crate::time::now())
             .into_iter()
             .chain(super::super::defaults::next_wake_deadline(&|visit| {
-                crate::widget::Widget::for_each_child(self, visit);
+                tilo_ui_base::widget::Widget::for_each_child(self, visit);
             }))
             .min()
     }

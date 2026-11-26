@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak, mpsc};
 use tilo_files::ChangeKind;
 use tilo_files::native::{ChangeWatch, WatchEvent, Watcher};
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind, rank_fields};
-use ui::text_match::FieldWeight;
+use tilo_ui_base::text_match::FieldWeight;
 
 use crate::files_index::{FilesIndex, MAX_DEPTH, should_skip};
 use crate::model::{Hit, Source, Target};

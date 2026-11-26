@@ -4,11 +4,11 @@
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 
-use crate::motion::Appearing;
+use tilo_ui_base::motion::Appearing;
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::find_bar::{FindAbilities, FindMode, FindOptions};
 use crate::widget::floating_surface;
 use crate::widget::{
@@ -17,7 +17,7 @@ use crate::widget::{
 };
 
 use super::tr;
-use crate::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Choice {
@@ -125,7 +125,7 @@ impl OptionsPanel {
             rect: Rect::ZERO,
             choices: Vec::new(),
             replace_field: SearchField::new()
-                .with_icon(crate::icons::Icon::Pencil)
+                .with_icon(tilo_ui_base::icons::Icon::Pencil)
                 .with_placeholder(&tr("find-bar-replace-placeholder"))
                 .without_clear()
                 .with_id("window-search-replacement"),
@@ -284,14 +284,14 @@ impl OptionsPanel {
     /// its controls hold is not asked for and is made again when it opens.
     pub(super) fn needs_redraw(&self) -> bool {
         self.appearing.is_drawn()
-            && (self.is_moving() || self.faces.needs_redraw(crate::motion::frame_now()))
+            && (self.is_moving() || self.faces.needs_redraw(tilo_ui_base::motion::frame_now()))
     }
 
     pub(super) fn is_drawn(&self) -> bool {
         self.appearing.is_drawn()
     }
 
-    pub(super) fn paint(&mut self, ctx: &mut crate::draw::DrawCtx<'_>, shown: Shown) {
+    pub(super) fn paint(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>, shown: Shown) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -305,7 +305,7 @@ impl OptionsPanel {
         let pose = self.appearing.pose(self.rect, self.anchor.center());
         let bounds = floating_surface::painted_bounds(self.rect, theme);
         let rect = self.rect;
-        let on_panel = theme.on_ground(crate::chrome::panel_ground(theme));
+        let on_panel = theme.on_ground(tilo_ui_base::chrome::panel_ground(theme));
         let choices = ChoicesFace {
             choices: &self.choices,
             hover: self.hover,
@@ -404,7 +404,7 @@ fn paint_choices(
                 let label = choice.label();
                 let (_, lh) = text.measure_style(&label, None, &style);
                 let ty =
-                    crate::text_metrics::centered_text_top(rect.y0, rect.height(), f64::from(lh));
+                    tilo_ui_base::text_metrics::centered_text_top(rect.y0, rect.height(), f64::from(lh));
                 let tx = check.x1 + f64::from(theme.tokens.spacing.s2);
                 text.draw_style(
                     scene,

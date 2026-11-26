@@ -6,7 +6,8 @@
 
 use std::collections::HashSet;
 
-use crate::{ActivityDigest, HistoryEntryId};
+use crate::ActivityDigest;
+use tilo_ui_base::HistoryEntryId;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NarrativeRequest {

@@ -4,11 +4,11 @@ use crate::application::{
     RestoreInput,
 };
 use crate::widget::{AppKind, AppWidget, Column, IconDescriptor, TileHost};
-use crate::widget::{AppModel, ModelPath};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use std::cell::RefCell;
 use std::rc::Rc;
-thread_local! { static CAPTURES: RefCell<Vec<(&'static str, crate::LatestRequest<u32>)>> = const { RefCell::new(vec![]) }; }
+thread_local! { static CAPTURES: RefCell<Vec<(&'static str, tilo_ui_base::LatestRequest<u32>)>> = const { RefCell::new(vec![]) }; }
 thread_local! { static DISCOVERY_COUNT: Cell<usize> = const { Cell::new(0) }; }
 thread_local! { static CONTROL_AUTHORITY: RefCell<Vec<(bool, bool)>> = const { RefCell::new(vec![]) }; }
 thread_local! { static COMPOUND_MODE: Cell<u8> = const { Cell::new(0) }; }
@@ -66,7 +66,7 @@ impl PagedProbe {
                             tilo_actions::ActionAddress::new(&resource, "apply"),
                         ),
                     )
-                    .field("paged", crate::text_match::FieldWeight::UNRANKED),
+                    .field("paged", tilo_ui_base::text_match::FieldWeight::UNRANKED),
                 )
                 .unwrap();
         }
@@ -149,29 +149,29 @@ impl tilo_actions::Action for EmptyFollowUp {
 fn probe_read_schema() -> &'static serde_json::Value {
     static SCHEMA: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
     SCHEMA.get_or_init(|| {
-        crate::semantic_readers::result_schema(serde_json::json!({"type":"string"}), false)
+        tilo_ui_base::semantic_readers::result_schema(serde_json::json!({"type":"string"}), false)
     })
 }
 
 fn probe_read_validate(
     _: &tilo_actions::ResourceSpec,
     payload: &[u8],
-) -> Result<(), crate::semantic_readers::SemanticReadError> {
-    crate::semantic_readers::decode_request::<()>(payload)
+) -> Result<(), tilo_ui_base::semantic_readers::SemanticReadError> {
+    tilo_ui_base::semantic_readers::decode_request::<()>(payload)
 }
 
 fn probe_read_project(
     doc: &automerge::AutoCommit,
     heads: &[automerge::ChangeHash],
     _: &[u8],
-) -> Result<crate::semantic_readers::ReadPage, crate::semantic_readers::SemanticReadError> {
+) -> Result<tilo_ui_base::semantic_readers::ReadPage, tilo_ui_base::semantic_readers::SemanticReadError> {
     Probe::capture("bound-read");
     let marker = doc
         .get_at(ROOT, "marker", heads)
-        .map_err(|_| crate::semantic_readers::SemanticReadError::Malformed)?
+        .map_err(|_| tilo_ui_base::semantic_readers::SemanticReadError::Malformed)?
         .and_then(|(value, _)| value.into_string().ok())
-        .ok_or(crate::semantic_readers::SemanticReadError::Malformed)?;
-    Ok(crate::semantic_readers::ReadPage {
+        .ok_or(tilo_ui_base::semantic_readers::SemanticReadError::Malformed)?;
+    Ok(tilo_ui_base::semantic_readers::ReadPage {
         content: serde_json::json!(marker),
         next_cursor: None,
     })
@@ -179,7 +179,7 @@ fn probe_read_project(
 
 impl Probe {
     fn capture(label: &'static str) {
-        CAPTURES.with_borrow_mut(|v| v.push((label, crate::LatestRequest::new())));
+        CAPTURES.with_borrow_mut(|v| v.push((label, tilo_ui_base::LatestRequest::new())));
     }
 }
 
@@ -254,10 +254,10 @@ impl crate::search::SearchProvider for LazyProbe {
         })
     }
 }
-impl crate::semantic_readers::SemanticReaders for Probe {
-    fn semantic_readers(&self) -> &'static [crate::semantic_readers::RegisteredSemanticReader] {
-        static READERS: [crate::semantic_readers::RegisteredSemanticReader; 1] =
-            [crate::semantic_readers::RegisteredSemanticReader::new(
+impl tilo_ui_base::semantic_readers::SemanticReaders for Probe {
+    fn semantic_readers(&self) -> &'static [tilo_ui_base::semantic_readers::RegisteredSemanticReader] {
+        static READERS: [tilo_ui_base::semantic_readers::RegisteredSemanticReader; 1] =
+            [tilo_ui_base::semantic_readers::RegisteredSemanticReader::new(
                 "bound.read",
                 probe_read_schema,
                 probe_read_validate,
@@ -272,17 +272,17 @@ impl crate::semantic_readers::SemanticReaders for Probe {
 }
 
 impl Widget for Probe {
-    crate::provides!(
-        dyn crate::widget::undo_access::CommittedActions,
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::widget::resources::PublishesResources,
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::undo_access::CommittedActions,
+        dyn tilo_ui_base::widget::controls::ActionControls,
+        dyn tilo_ui_base::widget::resources::PublishesResources,
         dyn crate::search::capability::SearchSource,
-        dyn crate::semantic_readers::SemanticReaders,
-        dyn crate::widget::ResourceOperations
+        dyn tilo_ui_base::semantic_readers::SemanticReaders,
+        dyn tilo_ui_base::widget::ResourceOperations
     );
 
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
-        let (doc, _) = crate::doc::document_ref(doc, path);
+        let (doc, _) = tilo_ui_base::doc::document_ref(doc, path);
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some("child")
@@ -315,7 +315,7 @@ impl Widget for Probe {
     fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {
         Self::capture("apply");
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -324,7 +324,7 @@ impl Widget for Probe {
         let (_, _, _, _, mut env) = ctx.parts();
         Self::capture("draw");
     }
-    fn handle_event(&mut self, _: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, _: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         assert_eq!(
             ctx.state.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some("child")
@@ -341,13 +341,13 @@ impl Widget for Probe {
     fn set_focus(&mut self, _: bool) {
         Self::capture("focus");
     }
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         Self::capture("accessibility");
-        Some(crate::a11y::AccessNode::new(crate::a11y::Role::Button).with_name("Child"))
+        Some(tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button).with_name("Child"))
     }
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
         Self::capture("ime");
-        Some(crate::ime::InputContent::TEXT)
+        Some(tilo_ui_base::ime::InputContent::TEXT)
     }
     fn ime_cursor_rect(&self) -> Option<vello::kurbo::Rect> {
         Self::capture("ime-rect");
@@ -355,12 +355,12 @@ impl Widget for Probe {
     }
     fn perform_action(
         &mut self,
-        _: &crate::a11y::Action,
+        _: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        doc: &mut crate::widget::Edits<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let (doc, _) = crate::doc::document(doc, path);
+        let (doc, _) = tilo_ui_base::doc::document(doc, path);
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some("child")
@@ -371,7 +371,7 @@ impl Widget for Probe {
     }
 }
 
-impl crate::widget::ResourceOperations for Probe {
+impl tilo_ui_base::widget::ResourceOperations for Probe {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["bound.follow-up", "bound.view"]
     }
@@ -382,10 +382,10 @@ impl crate::widget::ResourceOperations for Probe {
     )]
     fn start_operation(
         &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
+        op: &tilo_ui_base::widget::ResourceOperation<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
         let crate::host_operation::OperationRequest { type_id, .. } = op.request();
         if type_id == "bound.view" {
             if COMPOUND_MODE.get() == 1 {
@@ -395,7 +395,7 @@ impl crate::widget::ResourceOperations for Probe {
                     .try_dispatch(doc.document_mut(), "bound.apply", &FollowUp);
             }
             Self::capture("bound-view");
-            return Ok(Some(crate::widget::ResourceOperationStart::Completed(
+            return Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             )));
         }
@@ -445,7 +445,7 @@ impl crate::widget::ResourceOperations for Probe {
             doc.document_mut().put(ROOT, "raw-after", true).unwrap();
         }
         Self::capture("mutable-operation");
-        Ok(Some(crate::widget::ResourceOperationStart::Accepted))
+        Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Accepted))
     }
 
     fn poll_resource_operation(
@@ -463,7 +463,7 @@ impl crate::widget::ResourceOperations for Probe {
             Some("child")
         );
         if !PUBLICATION_NORMAL_POLL.get() {
-            assert!(!crate::local_state::LocalState::new(0).writer().try_set(1));
+            assert!(!tilo_ui_base::local_state::LocalState::new(0).writer().try_set(1));
         }
         Self::capture("mutable-cancel");
         Some(tilo_actions::InvocationUpdate::Cancelled {
@@ -485,16 +485,16 @@ impl crate::search::capability::SearchSource for Probe {
     fn activate_search_result(
         &mut self,
         id: &str,
-        doc: &mut crate::widget::Edits<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) {
-        let (doc, _) = crate::doc::document(doc, path);
+        let (doc, _) = tilo_ui_base::doc::document(doc, path);
         assert_eq!(id, "opaque");
         doc.document_mut().put(ROOT, "navigation", true).unwrap();
     }
 }
 
-impl crate::widget::resources::PublishesResources for Probe {
+impl tilo_ui_base::widget::resources::PublishesResources for Probe {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         DISCOVERY_COUNT.set(DISCOVERY_COUNT.get().saturating_add(1));
         let mut action = tilo_actions::ActionSpec::operation(
@@ -567,8 +567,8 @@ impl crate::widget::resources::PublishesResources for Probe {
         doc: &automerge::AutoCommit,
         cursor: &[u8],
         max_results: usize,
-    ) -> Option<crate::widget::ActionDirectoryResourcePage> {
-        Some(crate::widget::ActionDirectoryResourcePage {
+    ) -> Option<tilo_ui_base::widget::ActionDirectoryResourcePage> {
+        Some(tilo_ui_base::widget::ActionDirectoryResourcePage {
             resources: if cursor.is_empty() && max_results > 0 {
                 self.resources(doc)
             } else {
@@ -597,7 +597,7 @@ impl crate::widget::resources::PublishesResources for Probe {
     }
 }
 
-impl crate::widget::controls::ActionControls for Probe {
+impl tilo_ui_base::widget::controls::ActionControls for Probe {
     fn refresh_control_action_availability(
         &mut self,
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
@@ -611,7 +611,7 @@ impl crate::widget::controls::ActionControls for Probe {
     }
 }
 
-impl crate::widget::undo_access::CommittedActions for Probe {
+impl tilo_ui_base::widget::undo_access::CommittedActions for Probe {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }
@@ -704,10 +704,10 @@ fn bound_components_keep_child_binding() {
                 views,
                 device_id: "D".into(),
                 instance_id: 1,
-                permissions: crate::permissions::SharedPermissions::new(
-                    crate::permissions::PermissionContext::permissive(),
+                permissions: tilo_ui_base::permissions::SharedPermissions::new(
+                    tilo_ui_base::permissions::PermissionContext::permissive(),
                 ),
-                author: crate::permissions::MemberId::person("probe-author"),
+                author: tilo_ui_base::permissions::MemberId::person("probe-author"),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &LaunchTarget::New,
@@ -752,7 +752,7 @@ fn bound_components_keep_child_binding() {
         let _ = app.ime_window_state();
         app.dispatch_a11y_action(
             accesskit::NodeId(u64::from(leaf).saturating_add(1)),
-            &crate::a11y::Action::Focus,
+            &tilo_ui_base::a11y::Action::Focus,
         );
         let layout_root = app.layout.root_node.unwrap();
         app.layout.layout_dirty = true;
@@ -775,7 +775,7 @@ fn bound_components_keep_child_binding() {
                 .invocation(Some(tilo_actions::InvocationId::new())),
             )
             .unwrap(),
-            crate::widget::ResourceOperationStart::Accepted
+            tilo_ui_base::widget::ResourceOperationStart::Accepted
         ));
         assert!(
             records
@@ -847,7 +847,7 @@ struct ActionFixture {
     app: App,
     records: crate::resource::ResourceStore,
     bindings: Vec<crate::bound_dispatch::CallbackBinding>,
-    permissions: crate::permissions::SharedPermissions,
+    permissions: tilo_ui_base::permissions::SharedPermissions,
 }
 
 impl ActionFixture {
@@ -900,11 +900,11 @@ impl ActionFixture {
             )
             .unwrap(),
         );
-        let permissions = crate::permissions::SharedPermissions::new(
-            crate::permissions::PermissionContext::granted(
-                &crate::permissions::MemberId::person("fixture-user"),
-                &crate::permissions::TreePath::root(),
-                crate::permissions::policy::KindSet::ALL,
+        let permissions = tilo_ui_base::permissions::SharedPermissions::new(
+            tilo_ui_base::permissions::PermissionContext::granted(
+                &tilo_ui_base::permissions::MemberId::person("fixture-user"),
+                &tilo_ui_base::permissions::TreePath::root(),
+                tilo_ui_base::permissions::policy::KindSet::ALL,
                 Some(110),
             )
             .at_unix_time(100),
@@ -944,11 +944,11 @@ impl ActionFixture {
                     device_id: "D".into(),
                     instance_id: instance,
                     permissions: if separate && instance == 12 {
-                        crate::permissions::SharedPermissions::new(permissions.borrow().clone())
+                        tilo_ui_base::permissions::SharedPermissions::new(permissions.borrow().clone())
                     } else {
                         permissions.clone()
                     },
-                    author: crate::permissions::MemberId::person("fixture-user"),
+                    author: tilo_ui_base::permissions::MemberId::person("fixture-user"),
                     action_context: tilo_actions::ActionContext::default(),
                 },
                 &target,
@@ -991,7 +991,7 @@ impl ActionFixture {
         fixture.app.collaboration.manager =
             super::semantic_tree_app_tests::admitted_delivery_manager();
         fixture.app.actions.bound_broker_route_for_test =
-            Some(crate::collaboration::AcceptedRoute {
+            Some(tilo_ui_base::collaboration::AcceptedRoute {
                 route: fixture.bindings[0].broker_route().unwrap(),
                 epoch: uuid::Uuid::new_v4(),
             });
@@ -1000,7 +1000,7 @@ impl ActionFixture {
     fn target(&self, index: usize, action: &str) -> crate::bound_dispatch::BoundActionTarget {
         let binding = self.bindings[index].clone();
         crate::bound_dispatch::BoundActionTarget {
-            input: crate::widget::input_provenance::Input::Discrete,
+            input: tilo_ui_base::widget::input_provenance::Input::Discrete,
             address: crate::bound_dispatch::BoundActionAddress {
                 instance_id: binding.instance_id,
                 address: tilo_actions::ActionAddress::new("bound:probe", action),
@@ -1040,7 +1040,7 @@ fn background_document_job_is_broker_admitted_before_its_canonical_edit() {
         .unwrap();
     assert!(matches!(
         started,
-        crate::widget::ResourceOperationStart::Accepted
+        tilo_ui_base::widget::ResourceOperationStart::Accepted
     ));
     assert_eq!(
         requests.len(),
@@ -1076,7 +1076,7 @@ fn background_document_job_is_broker_admitted_before_its_canonical_edit() {
         .unwrap();
     assert!(matches!(
         delivered,
-        crate::widget::ResourceOperationStart::Completed(_)
+        tilo_ui_base::widget::ResourceOperationStart::Completed(_)
     ));
     assert!(
         requests.is_empty(),
@@ -1165,7 +1165,7 @@ fn compound_bound_effects_preserve_typing_ownership_and_redo() {
             .unwrap();
             a.history_request(
                 &mut fixture.app.state.doc,
-                crate::widget::undo_access::UndoRequest::Undo,
+                tilo_ui_base::widget::undo_access::UndoRequest::Undo,
             )
             .unwrap()
             .unwrap();
@@ -1222,14 +1222,14 @@ fn compound_bound_effects_preserve_typing_ownership_and_redo() {
             .unwrap();
             b.history_request(
                 &mut fixture.app.state.doc,
-                crate::widget::undo_access::UndoRequest::Undo,
+                tilo_ui_base::widget::undo_access::UndoRequest::Undo,
             )
             .unwrap()
             .unwrap();
             if mode != 3 {
                 b.history_request(
                     &mut fixture.app.state.doc,
-                    crate::widget::undo_access::UndoRequest::Undo,
+                    tilo_ui_base::widget::undo_access::UndoRequest::Undo,
                 )
                 .unwrap()
                 .unwrap();
@@ -1237,7 +1237,7 @@ fn compound_bound_effects_preserve_typing_ownership_and_redo() {
             assert!(!b.undo_status(&mut fixture.app.state.doc).unwrap().can_undo);
             a.history_request(
                 &mut fixture.app.state.doc,
-                crate::widget::undo_access::UndoRequest::Undo,
+                tilo_ui_base::widget::undo_access::UndoRequest::Undo,
             )
             .unwrap()
             .unwrap();
@@ -1296,7 +1296,7 @@ fn compound_bound_effects_preserve_typing_ownership_and_redo() {
             if mode < 9 {
                 b.history_request(
                     &mut fixture.app.state.doc,
-                    crate::widget::undo_access::UndoRequest::Undo,
+                    tilo_ui_base::widget::undo_access::UndoRequest::Undo,
                 )
                 .unwrap()
                 .unwrap();
@@ -1313,7 +1313,7 @@ fn compound_bound_effects_preserve_typing_ownership_and_redo() {
             }
             a.history_request(
                 &mut fixture.app.state.doc,
-                crate::widget::undo_access::UndoRequest::Undo,
+                tilo_ui_base::widget::undo_access::UndoRequest::Undo,
             )
             .unwrap()
             .unwrap();
@@ -1340,7 +1340,7 @@ fn compound_bound_effects_preserve_typing_ownership_and_redo() {
         .unwrap();
         a.history_request(
             &mut fixture.app.state.doc,
-            crate::widget::undo_access::UndoRequest::Undo,
+            tilo_ui_base::widget::undo_access::UndoRequest::Undo,
         )
         .unwrap()
         .unwrap();
@@ -1365,13 +1365,13 @@ fn compound_bound_effects_preserve_typing_ownership_and_redo() {
         .unwrap();
         b.history_request(
             &mut fixture.app.state.doc,
-            crate::widget::undo_access::UndoRequest::Undo,
+            tilo_ui_base::widget::undo_access::UndoRequest::Undo,
         )
         .unwrap()
         .unwrap();
         a.history_request(
             &mut fixture.app.state.doc,
-            crate::widget::undo_access::UndoRequest::Redo,
+            tilo_ui_base::widget::undo_access::UndoRequest::Redo,
         )
         .unwrap()
         .unwrap();
@@ -1426,7 +1426,7 @@ fn compound_bound_effects_preserve_typing_ownership_and_redo() {
         let entry = binding
             .history_request(
                 &mut fixture.app.state.doc,
-                crate::widget::undo_access::UndoRequest::Undo,
+                tilo_ui_base::widget::undo_access::UndoRequest::Undo,
             )
             .unwrap()
             .unwrap();
@@ -1459,8 +1459,8 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
     {
         for initially_allowed in [false, true] {
             let mut fixture = ActionFixture::with_authority(false, true);
-            let denied = crate::permissions::PermissionContext::stranger(
-                &crate::permissions::MemberId::person("fixture-user"),
+            let denied = tilo_ui_base::permissions::PermissionContext::stranger(
+                &tilo_ui_base::permissions::MemberId::person("fixture-user"),
             )
             .at_unix_time(100);
             if !initially_allowed {
@@ -1617,7 +1617,7 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
             assert!(ticks < 5, "the first owner must participate in this pass");
         }
         fixture.permissions.set(
-            crate::permissions::PermissionContext::stranger(&crate::permissions::MemberId::person(
+            tilo_ui_base::permissions::PermissionContext::stranger(&tilo_ui_base::permissions::MemberId::person(
                 "fixture-user",
             ))
             .at_unix_time(100),
@@ -1927,7 +1927,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_observations() {
                 first
                     .history_request(
                         &mut fixture.app.state.doc,
-                        crate::widget::undo_access::UndoRequest::Undo,
+                        tilo_ui_base::widget::undo_access::UndoRequest::Undo,
                     )
                     .unwrap()
                     .unwrap();
@@ -2022,7 +2022,7 @@ fn assert_bound_broker_route_refused(
     target: &crate::bound_dispatch::BoundActionTarget,
     alias: &str,
     revision: &str,
-    observation: Option<crate::collaboration::AcceptedRoute>,
+    observation: Option<tilo_ui_base::collaboration::AcceptedRoute>,
 ) {
     fixture.app.actions.bound_broker_route_for_test = observation;
     let resources = fixture.app.publication_resources();
@@ -2113,7 +2113,7 @@ fn collaboration_walk_enters_bound_owner_and_refuses_closing_lifetime() {
     let (events, wake_handles) =
         COLLABORATION_OBSERVATIONS.with_borrow(|slot| slot.clone().unwrap());
 
-    crate::widget::handle_collab_event(
+    tilo_ui_base::widget::handle_collab_event(
         app.root_widget.as_mut(),
         &CollabEvent::FollowChanged { peer_id: None },
     );
@@ -2127,7 +2127,7 @@ fn collaboration_walk_enters_bound_owner_and_refuses_closing_lifetime() {
         "fixture retains its root"
     );
     binding.closing.set(true);
-    crate::widget::handle_collab_event(
+    tilo_ui_base::widget::handle_collab_event(
         app.root_widget.as_mut(),
         &CollabEvent::FollowChanged { peer_id: None },
     );
@@ -2290,10 +2290,10 @@ tilo_test_env::scenario! {
                 views,
                 device_id: "D".into(),
                 instance_id: 21,
-                permissions: crate::permissions::SharedPermissions::new(
-                    crate::permissions::PermissionContext::permissive(),
+                permissions: tilo_ui_base::permissions::SharedPermissions::new(
+                    tilo_ui_base::permissions::PermissionContext::permissive(),
                 ),
-                author: crate::permissions::MemberId::person("fixture-user"),
+                author: tilo_ui_base::permissions::MemberId::person("fixture-user"),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &LaunchTarget::New,
@@ -2578,13 +2578,13 @@ impl Widget for HearsElsewhereProbe {
         _: &Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        crate::widget::TaffyTreeExt::fill_leaf(taffy, nodes, self)
+        tilo_ui_base::widget::TaffyTreeExt::fill_leaf(taffy, nodes, self)
     }
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
     fn name(&self) -> &'static str {
         "HearsElsewhere"
     }
-    crate::provides!(dyn crate::component_lifecycle::HearsElsewhere);
+    tilo_ui_base::provides!(dyn crate::component_lifecycle::HearsElsewhere);
 }
 
 impl crate::component_lifecycle::HearsElsewhere for HearsElsewhereProbe {

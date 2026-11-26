@@ -3,18 +3,19 @@
 //! painted app that cannot host a `NavList` calls the same two functions with the same faces, so a
 //! sidebar drawn by hand is pixel-for-pixel the widget's.
 
-use crate::num::f32_of_f64;
-use crate::num::f64_of_usize;
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::num::f64_of_usize;
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 
-use crate::chrome::shell::{SelectionState, paint_row_selection};
-use crate::icons::Icon;
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::{AvatarFace, BadgeFace, ChipStyle, RowStatus, Tone};
+use tilo_ui_base::{chrome::shell::SelectionState, chrome::shell::paint_row_selection};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use crate::{widget::BadgeFace, widget::ChipStyle, widget::RowStatus};
+use tilo_ui_base::{widget::AvatarFace, widget::Tone};
 
 /// How many items a navigation row is, beside its label.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -350,12 +351,12 @@ pub struct NavRowLayout {
     pub actions: Vec<Rect>,
 }
 
-/// Height of one list row: [`crate::tokens::Metrics::nav_row_height`], grown with the body line at
+/// Height of one list row: [`tilo_ui_base::tokens::Metrics::nav_row_height`], grown with the body line at
 /// large text.
 #[must_use]
 pub fn nav_row_height(theme: &Theme) -> f64 {
-    crate::widget::text_control_height(
-        f64::from(crate::tokens::Metrics::BASE.nav_row_height),
+    tilo_ui_base::widget::text_control_height(
+        f64::from(tilo_ui_base::tokens::Metrics::BASE.nav_row_height),
         theme,
     )
 }
@@ -720,7 +721,7 @@ fn list_layout(
     } else {
         let (_, line_h) = text_renderer.measure_style("Ag", None, &label_style(theme, face));
         (
-            crate::text_metrics::centered_text_top(
+            tilo_ui_base::text_metrics::centered_text_top(
                 selection.y0,
                 selection.height(),
                 f64::from(line_h),
@@ -925,7 +926,7 @@ pub fn paint_nav_row(
     } else if face.state.hover {
         // The person's pointer brings the label out of its quiet ink as far as it has brought the
         // row's tint, so the row arrives in one motion rather than in two.
-        crate::tokens::colors::mix8(colors.text_dim, colors.text_primary, face.hover)
+        tilo_ui_base::tokens::colors::mix8(colors.text_dim, colors.text_primary, face.hover)
     } else {
         colors.text_dim
     };
@@ -944,7 +945,7 @@ pub fn paint_nav_row(
     if let Some(rect) = layout.icon {
         if let Some(avatar) = face.avatar {
             avatar.paint(
-                &mut crate::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                &mut tilo_ui_base::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
             );
         } else if let Some(color) = face.swatch {
@@ -1011,7 +1012,7 @@ pub fn paint_nav_row(
     }
     if let (Some(fraction), Some(track)) = (face.level, layout.level) {
         crate::widget::ProgressBarFace::new(fraction).paint(
-            &mut crate::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            &mut tilo_ui_base::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             track,
         );
     }
@@ -1027,12 +1028,12 @@ pub fn paint_nav_row(
     let lift = if face.lifted() {
         colors.lift_on(ground, 1.0)
     } else if face.state.hover {
-        colors.lift_on(ground, crate::chrome::shell::HOVER_LIFT_T)
+        colors.lift_on(ground, tilo_ui_base::chrome::shell::HOVER_LIFT_T)
     } else {
         ground
     };
     for (identity, rect) in face.presence.iter().zip(&layout.presence) {
-        let hue = crate::tokens::colors::PresenceHue::of_identity(identity);
+        let hue = tilo_ui_base::tokens::colors::PresenceHue::of_identity(identity);
         let circle = Circle::new(rect.center(), rect.width() / 2.0);
         scene.fill(
             Fill::NonZero,
@@ -1119,9 +1120,9 @@ fn paint_swatch(scene: &mut Scene, transform: Affine, theme: &Theme, slot: Rect,
     scene.stroke(
         &Stroke::new(f64::from(theme.tokens.metrics.chrome_rule_px)),
         transform,
-        crate::surface::edge_on(color),
+        tilo_ui_base::surface::edge_on(color),
         None,
-        &crate::surface::edge_outline(rect, radius),
+        &tilo_ui_base::surface::edge_outline(rect, radius),
     );
 }
 
@@ -1192,7 +1193,7 @@ fn paint_count(
 }
 
 fn paint_focus(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
-    if !crate::focus_visible::shown() {
+    if !tilo_ui_base::focus_visible::shown() {
         return;
     }
     let tokens = &theme.tokens;
@@ -1334,7 +1335,7 @@ pub fn paint_nav_section(
     let max_w = (layout.title_x1 - layout.title_x0).max(0.0);
     let title = text_renderer.elide_to_width_style(face.title, f32_of_f64(max_w), &style);
     let (_, line_h) = text_renderer.measure_style(&title, None, &style);
-    let y = crate::text_metrics::centered_text_top(
+    let y = tilo_ui_base::text_metrics::centered_text_top(
         layout.band.y0,
         layout.band.height(),
         f64::from(line_h),
@@ -1385,7 +1386,7 @@ pub fn paint_nav_section(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chrome::shell::{SELECTION_MIN_STEP, lightness_step};
+    use tilo_ui_base::{chrome::shell::SELECTION_MIN_STEP, chrome::shell::lightness_step};
 
     fn row(theme: &Theme) -> Rect {
         Rect::new(0.0, 0.0, 280.0, nav_row_height(theme))
@@ -1521,14 +1522,14 @@ mod tests {
         {
             for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
                 for region in [
-                    crate::surface::Region::Content,
-                    crate::surface::Region::Sidebar,
-                    crate::surface::Region::Inspector,
+                    tilo_ui_base::surface::Region::Content,
+                    tilo_ui_base::surface::Region::Sidebar,
+                    tilo_ui_base::surface::Region::Inspector,
                 ] {
                     let local = theme.in_region(region);
                     let ground = local.tokens.colors.surfaces.content;
                     let lift =
-                        crate::chrome::selection_tier_on(&local, SelectionState::active(true), ground)
+                        tilo_ui_base::chrome::selection_tier_on(&local, SelectionState::active(true), ground)
                             .fill;
                     assert!(
                         lightness_step(lift, ground) >= SELECTION_MIN_STEP,
@@ -1537,7 +1538,7 @@ mod tests {
                     );
                     let lift = crate::color::Oklch::from_color(lift);
                     let tint = if local.tokens.colors.accent_hue().is_some() {
-                        crate::tokens::palette::TINTED_LIFT_CHROMA
+                        tilo_ui_base::tokens::palette::TINTED_LIFT_CHROMA
                     } else {
                         0.0
                     };

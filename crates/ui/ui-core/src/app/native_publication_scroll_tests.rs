@@ -1,6 +1,6 @@
 // Connected native input/publication fixture; no GPU or physical scanout.
 struct PublicationProbeTransport;
-impl crate::collaboration::PeerTransport for PublicationProbeTransport {
+impl tilo_ui_base::collaboration::PeerTransport for PublicationProbeTransport {
     fn is_connected(&self) -> bool {
         true
     }
@@ -22,8 +22,8 @@ struct PublicationProbeRoot {
     declarations: Rc<Cell<usize>>,
     edit_on_wheel: bool,
 }
-impl crate::widget::Decorator for PublicationProbeRoot {
-    crate::provides!(dyn crate::widget::resources::PublishesResources, dyn crate::widget::ResourceOperations; inner = inner);
+impl tilo_ui_base::widget::Decorator for PublicationProbeRoot {
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::resources::PublishesResources, dyn tilo_ui_base::widget::ResourceOperations; inner = inner);
     type Inner = crate::widget::Scrollable;
     fn inner(&self) -> &Self::Inner {
         &self.inner
@@ -31,7 +31,7 @@ impl crate::widget::Decorator for PublicationProbeRoot {
     fn inner_mut(&mut self) -> &mut Self::Inner {
         &mut self.inner
     }
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.inner
             .accessibility()
             .map(|node| node.with_hashed_key("native.scroll-probe"))
@@ -39,11 +39,11 @@ impl crate::widget::Decorator for PublicationProbeRoot {
     fn view_only_scroll(&self, event: &WindowEvent) -> bool {
         self.view_only && matches!(event, WindowEvent::MouseWheel { .. })
     }
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
         self.syncs.set(self.syncs.get() + 1);
         self.inner.sync(state, path);
     }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if self.edit_on_wheel && matches!(event, WindowEvent::MouseWheel { .. }) {
             use automerge::transaction::Transactable;
             ctx.state
@@ -55,9 +55,9 @@ impl crate::widget::Decorator for PublicationProbeRoot {
     }
 }
 
-impl crate::widget::ResourceOperations for PublicationProbeRoot {
+impl tilo_ui_base::widget::ResourceOperations for PublicationProbeRoot {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        let mut handlers = crate::widget::resource_operation_handlers(&self.inner);
+        let mut handlers = tilo_ui_base::widget::resource_operation_handlers(&self.inner);
         handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
         handlers
     }
@@ -74,7 +74,7 @@ impl crate::widget::AppWidget for PublicationProbeRoot {
     }
 }
 
-impl crate::widget::resources::PublishesResources for PublicationProbeRoot {
+impl tilo_ui_base::widget::resources::PublishesResources for PublicationProbeRoot {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.declarations.set(self.declarations.get() + 1);
         vec![
@@ -98,7 +98,7 @@ impl crate::widget::resources::PublishesResources for PublicationProbeRoot {
 
 #[test]
 fn connected_native_long_document_wheel_publication_probe() {
-    crate::i18n::I18nManager::init("en-US");
+    tilo_ui_base::i18n::I18nManager::init("en-US");
     // Keep the ordinary regression bounded while ensuring its document
     // overflows. The recorded hardware-sized benchmark explicitly selects
     // 180 paragraphs and retains its original viewport and wheel step.
@@ -148,7 +148,7 @@ fn connected_native_long_document_wheel_publication_probe() {
     );
     app.surface_input(
         &region,
-        crate::synthetic_input::cursor_moved(400.0, f64::from(viewport.1) / 2.0),
+        tilo_ui_base::synthetic_input::cursor_moved(400.0, f64::from(viewport.1) / 2.0),
         false,
     );
     for sample in 0..10 {
@@ -156,7 +156,7 @@ fn connected_native_long_document_wheel_publication_probe() {
         let started = crate::time::now();
         assert!(app.surface_input(
             &region,
-            crate::synthetic_input::mouse_wheel(0.0, wheel_step),
+            tilo_ui_base::synthetic_input::mouse_wheel(0.0, wheel_step),
             false
         ));
         let input_ns = started.elapsed().as_nanos();
@@ -193,7 +193,7 @@ fn long_document(body: &str) -> crate::widget::Column {
 struct PublicationProbeEditor {
     inner: crate::widget::Column,
 }
-impl crate::widget::Decorator for PublicationProbeEditor {
+impl tilo_ui_base::widget::Decorator for PublicationProbeEditor {
     type Inner = crate::widget::Column;
     fn inner(&self) -> &Self::Inner {
         &self.inner
@@ -201,7 +201,7 @@ impl crate::widget::Decorator for PublicationProbeEditor {
     fn inner_mut(&mut self) -> &mut Self::Inner {
         &mut self.inner
     }
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.inner
             .accessibility()
             .map(|node| node.with_hashed_key("native.scroll-editor"))
@@ -322,7 +322,7 @@ impl ViewScrollFixture {
     }
 
     fn new_as(view_only: bool, edit_on_wheel: bool, bound: bool) -> Self {
-        crate::i18n::I18nManager::init("en-US");
+        tilo_ui_base::i18n::I18nManager::init("en-US");
         let scope = crate::wake::WakeScope::new();
         let _entry = scope.enter();
         let paragraphs = std::env::var("TILO_NATIVE_SCROLL_PROBE_PARAGRAPHS")
@@ -374,7 +374,7 @@ impl ViewScrollFixture {
         app.surface_frame(&region, &mut scene);
         app.surface_input(
             &region,
-            crate::synthetic_input::cursor_moved(400.0, f64::from(region.size.1) / 2.0),
+            tilo_ui_base::synthetic_input::cursor_moved(400.0, f64::from(region.size.1) / 2.0),
             false,
         );
         app.surface_frame(&region, &mut scene);
@@ -402,7 +402,7 @@ impl ViewScrollFixture {
         let started = crate::time::now();
         assert!(self.app.surface_input(
             &self.region,
-            crate::synthetic_input::mouse_wheel(
+            tilo_ui_base::synthetic_input::mouse_wheel(
                 0.0,
                 if self.paragraphs == 180 { -1.0 } else { -0.25 }
             ),
@@ -435,7 +435,7 @@ fn bound_view_only_native_scroll_carries_owner_without_hiding_record_edits() {
             .expect("real bound owner");
         let before = binding
             .read_document(&fixture.app.state.doc, |doc, _| {
-                crate::doc::settle_mark(doc)
+                tilo_ui_base::doc::settle_mark(doc)
             })
             .unwrap();
         assert_eq!(before.1, 0, "bound fixture is committed");
@@ -458,7 +458,7 @@ fn bound_view_only_native_scroll_carries_owner_without_hiding_record_edits() {
         );
         let after = binding
             .read_document(&fixture.app.state.doc, |doc, _| {
-                crate::doc::settle_mark(doc)
+                tilo_ui_base::doc::settle_mark(doc)
             })
             .unwrap();
         if edit {
@@ -490,7 +490,7 @@ tilo_test_env::scenario! {
     {
         for view_only in [false, true] {
             let mut fixture = ViewScrollFixture::new(view_only, false);
-            let before_doc = crate::doc::settle_mark(&fixture.app.state.doc);
+            let before_doc = tilo_ui_base::doc::settle_mark(&fixture.app.state.doc);
             fixture.app.refresh_semantic_tree();
             let before_geometry = fixture
                 .app
@@ -520,7 +520,7 @@ tilo_test_env::scenario! {
                 );
             }
             assert_eq!(
-                crate::doc::settle_mark(&fixture.app.state.doc),
+                tilo_ui_base::doc::settle_mark(&fixture.app.state.doc),
                 before_doc,
                 "view input leaves the canonical document unchanged"
             );

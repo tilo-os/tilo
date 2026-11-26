@@ -38,7 +38,7 @@ fn long_note() -> tilo_rich_edit::BlockEditor {
 /// scrolls to them, once per action.
 #[test]
 fn following_an_agents_edit_in_text_scrolls_to_the_range_it_wrote() {
-    let root = tilo_ui::widget::Scrollable::new(tilo_ui::widget::ScrollAxis::Vertical)
+    let root = tilo_ui::widget::Scrollable::new(tilo_ui_base::widget::ScrollAxis::Vertical)
         .with_child(Box::new(long_note()));
     let mut frame = Driver::new(State::new(), Box::new(root), (400, 240));
     frame.relayout();
@@ -48,7 +48,7 @@ fn following_an_agents_edit_in_text_scrolls_to_the_range_it_wrote() {
     frame.update_presence(|presence| {
         presence.set_caret(
             &block.clone(),
-            tilo_ui::permissions::MemberId::agent("scribe", "someone-else"),
+            tilo_ui_base::permissions::MemberId::agent("scribe", "someone-else"),
             written,
         );
         true
@@ -66,7 +66,7 @@ fn following_an_agents_edit_in_text_scrolls_to_the_range_it_wrote() {
         "the cursor is on the line, not the whole note: {edit:?}"
     );
     assert!(!frame.follow_view(
-        &tilo_ui::permissions::MemberId::person("someone-else"),
+        &tilo_ui_base::permissions::MemberId::person("someone-else"),
         &mut FollowedView::default()
     ));
     assert_eq!(
@@ -75,7 +75,7 @@ fn following_an_agents_edit_in_text_scrolls_to_the_range_it_wrote() {
         "not following moves nothing"
     );
     let mut followed = FollowedView::default();
-    let scribe = tilo_ui::permissions::MemberId::agent("scribe", "someone-else");
+    let scribe = tilo_ui_base::permissions::MemberId::agent("scribe", "someone-else");
     assert!(frame.follow_view(&scribe, &mut followed));
     let shown = frame
         .semantic_locus(&event)
@@ -94,7 +94,7 @@ fn following_an_agents_edit_in_text_scrolls_to_the_range_it_wrote() {
 /// the words once, and says nothing of the follower's own presence.
 #[test]
 fn following_an_agents_caret_in_text_settles() {
-    let root = tilo_ui::widget::Scrollable::new(tilo_ui::widget::ScrollAxis::Vertical)
+    let root = tilo_ui::widget::Scrollable::new(tilo_ui_base::widget::ScrollAxis::Vertical)
         .with_child(Box::new(long_note()));
     let mut frame = Driver::new(State::new(), Box::new(root), (400, 240));
     frame.relayout();
@@ -103,17 +103,17 @@ fn following_an_agents_caret_in_text_settles() {
         let block = tilo_rich_edit::block_editor::block_presence_key("p-33");
         presence.set_caret(
             &block,
-            tilo_ui::permissions::MemberId::agent("scribe", "someone-else"),
+            tilo_ui_base::permissions::MemberId::agent("scribe", "someone-else"),
             13,
         );
         true
     });
-    let said = tilo_ui::presence::capability::subtree_presence(frame.root_widget());
+    let said = tilo_ui_base::presence::capability::subtree_presence(frame.root_widget());
     let mut followed = FollowedView::default();
     let mut moved = 0;
     for _ in 0..60 {
         moved += usize::from(frame.follow_view(
-            &tilo_ui::permissions::MemberId::agent("scribe", "someone-else"),
+            &tilo_ui_base::permissions::MemberId::agent("scribe", "someone-else"),
             &mut followed,
         ));
         frame.relayout();
@@ -122,7 +122,7 @@ fn following_an_agents_caret_in_text_settles() {
     assert!(frame.semantic_locus(&event).is_some());
     assert_eq!(frame.focus_presence(), None, "the follower says nothing");
     assert_eq!(
-        tilo_ui::presence::capability::subtree_presence(frame.root_widget()),
+        tilo_ui_base::presence::capability::subtree_presence(frame.root_widget()),
         said,
         "showing someone's caret says nothing of the follower's own"
     );

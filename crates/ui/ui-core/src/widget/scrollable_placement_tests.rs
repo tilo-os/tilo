@@ -18,8 +18,9 @@ use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::theme::Theme;
-use crate::widget::{Column, Scrollable, TaffyTreeExt as _, Widget};
+use tilo_ui_base::theme::Theme;
+use crate::{widget::Column, widget::Scrollable};
+use tilo_ui_base::{widget::TaffyTreeExt as _, widget::Widget};
 
 const ROW: f32 = 20.0;
 const VIEW: f32 = 400.0;
@@ -48,7 +49,7 @@ impl Widget for Glow {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.relayout.set(false);
     }
 
@@ -66,7 +67,7 @@ impl Widget for Glow {
         self.relayout.get()
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { .. } = event {
             self.pointed.set(self.pointed.get() + 1);
         }
@@ -138,8 +139,8 @@ impl Rows {
     /// layout, as a host's frame of a scroll does.
     fn scroll_to(&mut self, offset: f32) {
         self.scroll.set_offset_y(offset);
-        let tree = crate::widget::layout::TreeId::of(&self.taffy);
-        crate::widget::layout::placing_again_in(tree, || {
+        let tree = tilo_ui_base::widget::layout::TreeId::of(&self.taffy);
+        tilo_ui_base::widget::layout::placing_again_in(tree, || {
             self.scroll
                 .apply_layout(&self.taffy, self.node, Point::ZERO);
         });
@@ -193,7 +194,7 @@ tilo_test_env::scenario! {
         assert_eq!(rows.row(500).y0, 10_000.0);
         crate::testing::dispatch(
             &mut rows.scroll,
-            &crate::synthetic_input::cursor_moved(10.0, 10.0),
+            &tilo_ui_base::synthetic_input::cursor_moved(10.0, 10.0),
         );
         assert_eq!(
             rows.pointed[500].get(),
@@ -246,7 +247,7 @@ tilo_test_env::scenario! {
             "the content sits where the scroll put it"
         );
         {
-            let _grid = crate::widget::enter_device_scale(2.0);
+            let _grid = tilo_ui_base::widget::enter_device_scale(2.0);
             rows.scroll_to(part);
         }
         assert_eq!(origin(&rows), -40.0, "it lands on the display's pixel");

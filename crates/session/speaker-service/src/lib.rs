@@ -14,5 +14,5 @@ pub mod remote_audio;
 pub mod settings;
 
 mod i18n {
-    ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
+    tilo_ui_base::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
 }

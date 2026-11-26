@@ -1,7 +1,7 @@
 //! One event sent to a widget under test. [`dispatch`] covers the common case: a scratch
 //! document, a default-styled leaf for layout, no modifiers held, scale factor 1.
 
-use crate::widget::{Edits, EventCtx, TaffyTreeExt, Widget};
+use tilo_ui_base::{widget::Edits, widget::EventCtx, widget::TaffyTreeExt, widget::Widget};
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
 use winit::event::{Modifiers, WindowEvent};

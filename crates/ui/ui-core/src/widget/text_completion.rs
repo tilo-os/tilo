@@ -4,8 +4,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::keyboard::Key;
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 #[cfg(test)]
 use crate::widget::autocomplete::Suggestion;
 use crate::widget::autocomplete::SuggestionList;
@@ -162,7 +162,7 @@ pub fn emoji_query_at_caret(text: &str, caret: usize) -> Option<EmojiQuery> {
 }
 
 fn emoji_source(query: &str) -> CompletionSource {
-    let candidates = crate::emoji_catalogue::shortcode_matches(query, MAX_ROWS)
+    let candidates = tilo_ui_base::emoji_catalogue::shortcode_matches(query, MAX_ROWS)
         .into_iter()
         .map(|shortcode| {
             let name = if shortcode.emoji.starts_with(':') {
@@ -440,7 +440,7 @@ impl CompletionList {
     }
 
     pub(crate) fn is_animating(&self) -> bool {
-        self.is_open() && self.list.is_animating(crate::motion::frame_now())
+        self.is_open() && self.list.is_animating(tilo_ui_base::motion::frame_now())
     }
 
     /// Paint the drawer at the caret: above it when the field sits in the
@@ -461,8 +461,8 @@ impl CompletionList {
             return;
         }
         let breakpoint = viewport
-            .map(|viewport| crate::tokens::Breakpoint::of(viewport.width(), &theme.tokens.metrics));
-        let docked = breakpoint.is_some_and(crate::tokens::Breakpoint::is_compact);
+            .map(|viewport| tilo_ui_base::tokens::Breakpoint::of(viewport.width(), &theme.tokens.metrics));
+        let docked = breakpoint.is_some_and(tilo_ui_base::tokens::Breakpoint::is_compact);
         self.list.set_docked(docked);
         self.list.set_anchor(if docked { field } else { caret });
         let lower = viewport.is_some_and(|viewport| caret.center().y > viewport.center().y);
@@ -477,7 +477,7 @@ impl CompletionList {
             self.list.set_viewport(viewport);
         }
         self.list.paint(scene, transform, text, theme);
-        if breakpoint.is_some_and(crate::tokens::Breakpoint::is_wide)
+        if breakpoint.is_some_and(tilo_ui_base::tokens::Breakpoint::is_wide)
             && let (Some(panel), Some(viewport), Some(Entry::Item { candidate, .. })) =
                 (self.list.rect(), viewport, self.selected())
             && (candidate.handle.is_some()
@@ -489,8 +489,8 @@ impl CompletionList {
         }
     }
 
-    pub(crate) fn access(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Politeness, Role};
+    pub(crate) fn access(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Politeness, a11y::Role};
         let panel = self.rect()?;
         let count = self
             .entries
@@ -499,7 +499,7 @@ impl CompletionList {
             .count();
         let mut args = fluent::FluentArgs::new();
         args.set("count", count);
-        let name = crate::i18n::I18nManager::lookup("completion-results", Some(&args));
+        let name = tilo_ui_base::i18n::I18nManager::lookup("completion-results", Some(&args));
         let mut node = AccessNode::new(Role::ListBox)
             .with_name(&name)
             .with_bounds(panel)
@@ -663,7 +663,7 @@ mod tests {
         vec![MentionCandidate::new(
             tilo_action_policy::MemberId::person("u_ada"),
             "Ada Lovelace",
-            crate::tokens::PresenceHue::of_identity("u_ada"),
+            tilo_ui_base::tokens::PresenceHue::of_identity("u_ada"),
         )]
     }
 }

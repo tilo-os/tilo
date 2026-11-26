@@ -21,17 +21,15 @@ use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-use tilo_ui::Widget;
-use tilo_ui::i18n::I18nManager;
-use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::presence::PresenceCtx;
-use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::Theme;
+use tilo_ui_base::Widget;
+use tilo_ui_base::i18n::I18nManager;
+use tilo_ui_base::offscreen::OffscreenRenderer;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 use tilo_ui::widget::toggle_group::Segment;
-use tilo_ui::widget::{
-    Avatar, AvatarSize, Badge, Button, Column, ProgressBar, Row, ScrollAxis, Scrollable, Spinner,
-    Text, ToggleGroup,
-};
+use tilo_ui::{widget::Avatar, widget::Badge, widget::Button, widget::Column, widget::ProgressBar, widget::Row, widget::Scrollable, widget::Spinner, widget::Text, widget::ToggleGroup};
+use tilo_ui_base::{widget::AvatarSize, widget::ScrollAxis};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
@@ -44,7 +42,7 @@ fn leak(s: &str) -> &'static str {
 
 fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
     let mut col = Column::new().with_intrinsic_height().push(Box::new(
-        Text::new(title_key).with_role(tilo_ui::TextRole::Heading),
+        Text::new(title_key).with_role(tilo_ui_base::TextRole::Heading),
     ));
     for i in 0..ROWS_PER_PANEL {
         let row_idx = idx.saturating_mul(ROWS_PER_PANEL).saturating_add(i);
@@ -90,7 +88,7 @@ fn build_dashboard_root() -> Box<Scrollable> {
     // honest.
     let header = Row::new()
         .push(Box::new(
-            Text::new("dash_title").with_role(tilo_ui::TextRole::LargeTitle),
+            Text::new("dash_title").with_role(tilo_ui_base::TextRole::LargeTitle),
         ))
         .push(Box::new(ToggleGroup::new(
             vec![
@@ -329,7 +327,7 @@ impl Harness {
         let vp = vello::kurbo::Rect::new(0.0, 0.0, self.logical_w, self.logical_h);
         let prev = self.presence.push_viewport(vp);
         let root: &mut dyn Widget = self.root.as_mut();
-        root.draw(&mut tilo_ui::draw::DrawCtx::new(
+        root.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut self.scene,
             self.transform,
             &mut self.text_renderer,
@@ -486,7 +484,7 @@ fn scrolled_scrollable_renders_widgets_that_were_offscreen_at_initial_layout() {
         scene.reset();
         let prev = presence.push_viewport(vp);
         let r: &mut dyn Widget = root;
-        r.draw(&mut tilo_ui::draw::DrawCtx::new(
+        r.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text_renderer,

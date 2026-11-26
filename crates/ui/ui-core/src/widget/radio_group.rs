@@ -8,15 +8,16 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::a11y::{AccessNode, AccessState, Role};
-use crate::i18n::widget_text;
-use crate::num::{f32_of_f64, f64_of_usize};
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::{num::f32_of_f64, num::f64_of_usize};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::checkbox::{BOX_EDGE, LABEL_GAP};
 use crate::widget::{CheckGlyph, CheckMotion, CheckPose, CheckboxFace};
-use crate::widget::{Checkbox, Interaction, ModelPath, TaffyTreeExt, Widget};
+use crate::{widget::Checkbox, widget::Interaction};
+use tilo_ui_base::{widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
 
 #[path = "radio_group_component.rs"]
 mod component;
@@ -104,7 +105,7 @@ pub struct RadioGroup {
     target: f64,
     label_style: TextStyle,
     detail_style: TextStyle,
-    interaction: crate::interaction::InteractionEnvironment,
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
     dirty: bool,
 }
 
@@ -112,7 +113,7 @@ impl RadioGroup {
     /// A group of `options`, `selected` chosen (`None`: none yet).
     pub fn new(options: Vec<RadioOption>, selected: Option<usize>) -> Self {
         let selected = selected.filter(|index| *index < options.len());
-        let typography = crate::tokens::typography::stock();
+        let typography = tilo_ui_base::tokens::typography::stock();
         Self {
             id: None,
             cursor: selected.unwrap_or_default(),
@@ -130,13 +131,13 @@ impl RadioGroup {
             on_change: None,
             rect: Rect::ZERO,
             rows: Vec::new(),
-            gap: f64::from(crate::tokens::Spacing::BASE.s1),
+            gap: f64::from(tilo_ui_base::tokens::Spacing::BASE.s1),
             target: f64::from(
-                crate::interaction::InteractionEnvironment::default().minimum_target(),
+                tilo_ui_base::interaction::InteractionEnvironment::default().minimum_target(),
             ),
             label_style: typography.style(TextRole::Body),
             detail_style: typography.style(TextRole::Caption),
-            interaction: crate::interaction::InteractionEnvironment::default(),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
             dirty: true,
         }
     }
@@ -312,7 +313,7 @@ impl RadioGroup {
             focused: self.focused
                 && self.cursor == index
                 && !self.pressed_into_focus
-                && crate::focus_visible::shown(),
+                && tilo_ui_base::focus_visible::shown(),
             disabled: !enabled,
         })
     }
@@ -355,11 +356,11 @@ impl Widget for RadioGroup {
         false
     }
 
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         if environment != self.interaction {
             self.interaction = environment;
@@ -411,7 +412,7 @@ impl Widget for RadioGroup {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.rect = rect;
             self.dirty = true;
@@ -422,9 +423,9 @@ impl Widget for RadioGroup {
         self.rect
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         let (scene, transform, text, theme, _) = ctx.parts();
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let motion = theme.motion();
         self.motions
             .resize_with(self.options.len(), CheckMotion::default);
@@ -471,10 +472,10 @@ impl Widget for RadioGroup {
                 (
                     colors
                         .text_primary
-                        .multiply_alpha(crate::widget::DISABLED_ALPHA),
+                        .multiply_alpha(tilo_ui_base::widget::DISABLED_ALPHA),
                     colors
                         .text_dim
-                        .multiply_alpha(crate::widget::DISABLED_ALPHA),
+                        .multiply_alpha(tilo_ui_base::widget::DISABLED_ALPHA),
                 )
             } else {
                 (colors.text_primary, colors.text_dim)
@@ -501,7 +502,7 @@ impl Widget for RadioGroup {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = ctx.logical(position);
@@ -557,7 +558,7 @@ impl Widget for RadioGroup {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.motions.iter().any(|kept| kept.is_moving(now))
     }
 
@@ -676,8 +677,8 @@ impl Widget for RadioGroup {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         let prefix = format!("{}.", self.id.as_deref().unwrap_or("radio"));
@@ -689,13 +690,13 @@ impl Widget for RadioGroup {
             return false;
         };
         match action {
-            crate::a11y::Action::Focus => {
+            tilo_ui_base::a11y::Action::Focus => {
                 self.focused = true;
                 self.cursor = index;
                 self.dirty = true;
                 true
             }
-            crate::a11y::Action::Activate | crate::a11y::Action::ToggleCheck
+            tilo_ui_base::a11y::Action::Activate | tilo_ui_base::a11y::Action::ToggleCheck
                 if self.can_choose(index) =>
             {
                 self.request(index);

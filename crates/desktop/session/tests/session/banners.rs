@@ -84,7 +84,7 @@ fn pixels(rect: ui::kurbo::Rect) -> (i32, i32, i32, i32) {
     reason = "one test follows one notification from raised to gone"
 )]
 fn a_raised_notification_shows_a_banner_that_expires() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = held_clock();
     let bus = PrivateBus::start();
     let wake = tilo_service::LoopWake::default();
@@ -201,7 +201,7 @@ fn a_raised_notification_shows_a_banner_that_expires() {
 /// the other display shows none of it.
 #[test]
 fn a_banner_is_the_corner_card_of_the_display_in_use() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = two_displays();
     session.notices().post(notice());
     crate::common::until(&mut session, "the banner's words", |session| {
@@ -240,7 +240,7 @@ fn a_banner_is_the_corner_card_of_the_display_in_use() {
 /// where the person reads it again, as the Rust shell's banners did.
 #[test]
 fn a_banners_dismiss_takes_the_card_away_and_keeps_the_notice() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = crate::common::headless(Options {
         collab: false,
         ..Options::default()

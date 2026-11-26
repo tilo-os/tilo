@@ -9,7 +9,7 @@ use super::ml_input;
 use super::mods;
 use super::test_node;
 use super::x_for_byte;
-use crate::synthetic_input::{char_key, cursor_moved, mouse_press, mouse_release, named_key};
+use tilo_ui_base::{synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release, synthetic_input::named_key};
 use automerge::ObjType;
 use automerge::transaction::Transactable as _;
 
@@ -20,7 +20,7 @@ fn answered() -> std::collections::HashSet<tilo_actions::ActionAddress> {
 
 #[test]
 fn action_bindings_own_edits_and_accessibility_set_value() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     {
         let mut doc = AutoCommit::new();
         let text = doc
@@ -53,26 +53,26 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
         let captured = std::rc::Rc::clone(&changes);
         let mut input = TextInput::local()
             .on_change(move |value| captured.borrow_mut().push(value.to_owned()))
-            .on_action(crate::widget::test_string_action_binding());
+            .on_action(tilo_ui_base::widget::test_string_action_binding());
         input.bind_text(object.clone());
-        crate::widget::controls::refresh_control_action_availability(
+        tilo_ui_base::widget::controls::refresh_control_action_availability(
             &mut input,
             &std::collections::HashSet::new(),
         );
         assert!(input.is_disabled());
         let allowed = answered();
-        crate::widget::controls::refresh_control_action_availability(&mut input, &allowed);
+        tilo_ui_base::widget::controls::refresh_control_action_availability(&mut input, &allowed);
         assert!(!input.is_disabled());
         assert!(Widget::perform_action(
             &mut input,
-            &crate::a11y::Action::SetValue("Project Atlas".into()),
+            &tilo_ui_base::a11y::Action::SetValue("Project Atlas".into()),
             &[],
-            &mut crate::widget::Edits::lend(&mut doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
         assert_eq!(doc.text(&object).unwrap(), "");
         assert_eq!(
-            crate::widget::controls::take_control_invocation(&mut input)
+            tilo_ui_base::widget::controls::take_control_invocation(&mut input)
                 .unwrap()
                 .arguments["value"],
             "Project Atlas"
@@ -93,19 +93,19 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
         let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
         let captured = std::rc::Rc::clone(&changes);
         let mut input = TextInput::local()
-            .on_action(crate::widget::test_string_action_binding())
+            .on_action(tilo_ui_base::widget::test_string_action_binding())
             .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
         let allowed = answered();
-        crate::widget::controls::refresh_control_action_availability(&mut input, &allowed);
+        tilo_ui_base::widget::controls::refresh_control_action_availability(&mut input, &allowed);
         assert!(Widget::perform_action(
             &mut input,
-            &crate::a11y::Action::SetValue("Atlas".into()),
+            &tilo_ui_base::a11y::Action::SetValue("Atlas".into()),
             &[],
-            &mut crate::widget::Edits::lend(&mut doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
         assert_eq!(
-            crate::widget::controls::take_control_invocation(&mut input)
+            tilo_ui_base::widget::controls::take_control_invocation(&mut input)
                 .unwrap()
                 .arguments["value"],
             "Atlas"
@@ -119,7 +119,7 @@ tilo_test_env::scenario! {
 
     phase arrow_keys_move_and_extend_by_char_and_word;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let mut ti = TextInput::local().with_initial_value("abcdef");
             ti.set_focus(true);
@@ -258,7 +258,7 @@ tilo_test_env::scenario! {
 
     phase home_end_and_select_all_shortcuts_move_extend_and_cut;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let mut ti = TextInput::local().with_initial_value("hello world");
             ti.set_focus(true);
@@ -374,7 +374,7 @@ tilo_test_env::scenario! {
 
     phase pointer_clicks_and_drags_select_word_range_and_all;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let mut ti = TextInput::local().with_initial_value("hello world");
             ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
@@ -457,7 +457,7 @@ tilo_test_env::scenario! {
 
     phase primary_selection_publishes_pointer_selections_and_middle_click_pastes;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let mut ti = TextInput::local().with_initial_value("hello world");
             ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));

@@ -21,12 +21,12 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect, Vec2};
 use vello::peniko::Fill;
 
-use crate::i18n::widget_text;
+use tilo_ui_base::i18n::widget_text;
 
-use crate::theme::Theme;
+use tilo_ui_base::theme::Theme;
 use crate::time::{Instant, now};
 use crate::wake::WakeHandle;
-use crate::widget::{TaffyTreeExt, Widget};
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[path = "level_meter_component.rs"]
 mod component;
@@ -206,7 +206,7 @@ pub struct LevelMeter {
     dirty: bool,
     /// What the meter says it measures and what it reads now, above the bar: their style, the
     /// gap under the words and the track's height, from the theme the meter was laid out in.
-    caption_style: Option<crate::text_render::TextStyle>,
+    caption_style: Option<tilo_ui_base::text_render::TextStyle>,
     caption_gap: f64,
     track_h: f64,
 }
@@ -421,7 +421,7 @@ impl Drop for LevelMeter {
 }
 
 impl Widget for LevelMeter {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -429,7 +429,7 @@ impl Widget for LevelMeter {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.caption_style = Some(theme.text(crate::tokens::TextRole::Label));
+        self.caption_style = Some(theme.text(tilo_ui_base::tokens::TextRole::Label));
         self.caption_gap = f64::from(theme.tokens.spacing.rhythm.tight);
         self.track_h = f64::from(theme.tokens.spacing.s2) * 2.0;
         // A named meter says its name and its reading above the bar; a bare
@@ -440,11 +440,11 @@ impl Widget for LevelMeter {
                 .caption_style
                 .as_ref()
                 .map_or(0.0, |style| f64::from(style.line_height_px()));
-            Dimension::length(crate::num::f32_of_f64(
+            Dimension::length(tilo_ui_base::num::f32_of_f64(
                 (line + self.caption_gap + self.track_h).ceil(),
             ))
         } else {
-            Dimension::length(crate::num::f32_of_f64(self.track_h))
+            Dimension::length(tilo_ui_base::num::f32_of_f64(self.track_h))
         };
         let style = Style {
             size: Size {
@@ -458,9 +458,9 @@ impl Widget for LevelMeter {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -479,7 +479,7 @@ impl Widget for LevelMeter {
         let style = self
             .caption_style
             .clone()
-            .unwrap_or_else(|| theme.text(crate::tokens::TextRole::Label));
+            .unwrap_or_else(|| theme.text(tilo_ui_base::tokens::TextRole::Label));
         let row = Rect::new(
             self.rect.x0,
             self.rect.y0,
@@ -503,7 +503,7 @@ impl Widget for LevelMeter {
         let gap = f64::from(theme.tokens.spacing.s1);
         let room = (value_x - row.x0 - gap).max(0.0);
         let name = self.name_text();
-        let words = text_renderer.elide_to_width_style(&name, crate::num::f32_of_f64(room), &style);
+        let words = text_renderer.elide_to_width_style(&name, tilo_ui_base::num::f32_of_f64(room), &style);
         text_renderer.draw_style(
             scene,
             &words,
@@ -514,7 +514,7 @@ impl Widget for LevelMeter {
         );
     }
 
-    crate::redraw_flag!();
+    tilo_ui_base::redraw_flag!();
 
     fn name(&self) -> &'static str {
         "LevelMeter"
@@ -537,8 +537,8 @@ impl Widget for LevelMeter {
         }
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         Some(
             AccessNode::new(Role::ProgressBar)
                 .with_name(self.name_text())
@@ -655,15 +655,15 @@ mod tests {
         meter.caption_gap = 4.0;
         let theme = Theme::dark();
         let mut scene = Scene::new();
-        let mut text = crate::text_render::TextRenderer::new();
+        let mut text = tilo_ui_base::text_render::TextRenderer::new();
         Widget::draw(
             &mut meter,
-            &mut crate::draw::DrawCtx::new(
+            &mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut text,
                 &theme,
-                crate::presence::PresenceCtx::default().draw_env(),
+                tilo_ui_base::presence::PresenceCtx::default().draw_env(),
             ),
         );
         assert!(

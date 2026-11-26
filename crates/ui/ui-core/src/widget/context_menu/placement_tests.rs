@@ -3,7 +3,7 @@
 //! which pixels of the display its edges fall on.
 
 use super::*;
-use crate::presence::PresenceCtx;
+use tilo_ui_base::presence::PresenceCtx;
 
 const WINDOW: Rect = Rect::new(0.0, 0.0, 800.0, 600.0);
 
@@ -31,7 +31,7 @@ tilo_test_env::scenario! {
     // with the control's trailing edge, and near the bottom it opens above.
     phase a_menu_opened_from_the_keyboard_stands_under_its_row;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut m = menu();
         let anchor = row(100.0);
         m.open_anchored(anchor, WINDOW);
@@ -78,7 +78,7 @@ tilo_test_env::scenario! {
 
     phase a_menu_opened_at_the_pointer_stands_at_the_pointer_and_stays_in_the_window;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut m = menu();
         m.open_at_clamped([300.0, 200.0], WINDOW);
         let rect = m.get_rect();
@@ -108,7 +108,7 @@ tilo_test_env::scenario! {
         let presence = PresenceCtx::default();
         presence.viewport.set(Some(Rect::new(0.0, 0.0, 1280.0, 800.0)));
         let mut scene = Scene::new();
-        m.draw_overlay(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), presence.draw_env()));
+        m.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), presence.draw_env()));
         let rect = m.get_rect();
         assert!(
             rect.x0 >= 0.0 && rect.x1 <= 1280.0 && rect.y0 >= 0.0 && rect.y1 <= 800.0,
@@ -120,7 +120,7 @@ tilo_test_env::scenario! {
     // whole: a row cut to a sliver at its edge is a target a person sees but cannot aim at.
     phase a_menu_that_scrolls_cuts_no_row_in_half;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut m = ContextMenu::with_items(
             (0..12)
                 .map(|i| MenuItem::action(format!("Row {i}"), || {}))
@@ -147,7 +147,7 @@ tilo_test_env::scenario! {
     // whole in the window over the control, so its last row is pressed where it is drawn.
     phase a_menu_with_room_in_the_window_shows_every_row;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut m = ContextMenu::with_items(
             (0..12)
                 .map(|i| MenuItem::action(format!("Row {i}"), || {}))
@@ -173,7 +173,7 @@ tilo_test_env::scenario! {
     // opens it places it again wherever the row is now.
     phase a_reanchored_menu_follows_its_row_to_its_new_box;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut m = menu();
         m.open_anchored(row(100.0), WINDOW);
         let first = m.get_rect();
@@ -189,11 +189,11 @@ tilo_test_env::scenario! {
     // toolkit's minimum and the panel with it.
     phase a_menu_row_meets_the_minimum_target_on_a_touch_screen;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut m = menu();
         m.open_anchored(row(100.0), WINDOW);
         let fine = m.row_height();
-        let touch = crate::interaction::InteractionEnvironment::TOUCH;
+        let touch = tilo_ui_base::interaction::InteractionEnvironment::TOUCH;
         m.set_interaction_environment(touch);
         let target = f64::from(touch.minimum_target());
         assert!(m.row_height() >= target, "{} < {target}", m.row_height());
@@ -207,8 +207,8 @@ tilo_test_env::scenario! {
     phase menu_edges_land_on_device_pixels;
     {
         for scale in [1.5_f64, 2.0, 3.0] {
-            let _grid = crate::widget::layout::enter_device_scale(scale);
-            let _settled = crate::motion::testing::settled();
+            let _grid = tilo_ui_base::widget::layout::enter_device_scale(scale);
+            let _settled = tilo_ui_base::motion::testing::settled();
             let mut m = ContextMenu::with_items(vec![
                 MenuItem::action("Rename this task", || {}),
                 MenuItem::action("Duplicate", || {}),

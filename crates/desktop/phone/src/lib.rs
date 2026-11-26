@@ -39,7 +39,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use ui::framework::{ResourceApp, ViewCx};
-use ui::widget::Element;
+use tilo_ui_base::widget::Element;
 
 use tilolang_process::window::resource::Workspace;
 
@@ -111,7 +111,7 @@ fn hand_window_connection(worker: &worker::Worker) {
         Ok(None) => return,
         Ok(Some((connection, workspace))) => uuid::Uuid::parse_str(&workspace)
             .map_err(|_| format!("{workspace} does not name a workspace"))
-            .map(|workspace| ui::collaboration::HandedConnection {
+            .map(|workspace| tilo_ui_base::collaboration::HandedConnection {
                 collaboration: connection.collaboration,
                 identity: connection.identity,
                 app: TILO_PHONE.to_owned(),
@@ -154,7 +154,7 @@ fn declare_carried_runtimes() {
 /// app runs from a developer's build, or the manifest does not verify.
 #[cfg(target_os = "android")]
 fn signed_manifest() -> Option<tilo_app_package::Manifest> {
-    let bytes = ui::platform::android::read_asset("tilo/manifest.toml")
+    let bytes = tilo_ui_base::platform::android::read_asset("tilo/manifest.toml")
         .inspect_err(|error| tracing::warn!(%error, "this app carries no signed manifest"))
         .ok()?;
     let text = String::from_utf8(bytes)

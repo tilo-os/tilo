@@ -8,12 +8,10 @@ use std::rc::Rc;
 use winit::event::{ElementState, KeyEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::icons::Icon;
-use crate::tokens::{Rhythm, TextRole};
-use crate::widget::{
-    Button, Column, ControlSize, Decorator, Element, EmptyState, ListRow, Row, Scrollable, Section,
-    SectionHeader, Text, Widget,
-};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{tokens::Rhythm, tokens::TextRole};
+use crate::{widget::Button, widget::Column, widget::ControlSize, widget::EmptyState, widget::ListRow, widget::Row, widget::Scrollable, widget::Section, widget::SectionHeader, widget::Text};
+use tilo_ui_base::{widget::Decorator, widget::Element, widget::Widget};
 
 use super::record::{Item, ItemId, deferred, items, revision};
 
@@ -157,16 +155,16 @@ pub fn pane(presses: &Presses) -> Column {
         .into_iter()
         .map(|(urgency, rows)| {
             Box::new(Section::new(rows).with_header(SectionHeader::group(
-                crate::i18n::widget_format(urgency.key(), &[]),
+                tilo_ui_base::i18n::widget_format(urgency.key(), &[]),
             ))) as Element
         })
         .collect();
     let held = deferred();
     if held > 0 {
         parts.push(Box::new(
-            Text::new(&crate::i18n::widget_format(
+            Text::new(&tilo_ui_base::i18n::widget_format(
                 "attention-deferred",
-                &[("count", crate::i18n::ArgValue::from(held as f64))],
+                &[("count", tilo_ui_base::i18n::ArgValue::from(held as f64))],
             ))
             .with_role(TextRole::Caption)
             .dimmed(),
@@ -185,7 +183,7 @@ pub fn pane(presses: &Presses) -> Column {
 
 fn empty() -> Element {
     Box::new(
-        EmptyState::new(crate::i18n::widget_format("attention-none", &[]))
+        EmptyState::new(tilo_ui_base::i18n::widget_format("attention-none", &[]))
             .with_icon(Icon::Check)
             .with_id("attention-empty"),
     )
@@ -213,7 +211,7 @@ fn row(item: &Item, presses: &Presses) -> Element {
     let defer = Button::icon_only(
         &format!("attention-defer-{}", id.number()),
         Icon::ChevronDown,
-        &crate::i18n::widget_format("attention-defer", &[]),
+        &tilo_ui_base::i18n::widget_format("attention-defer", &[]),
     )
     .control_size(ControlSize::Small)
     .on_open(move || actions.borrow_mut().push(Press::Defer(id)));
@@ -232,7 +230,7 @@ fn ago(at_ms: u64) -> String {
         reason = "a moment in the past is far inside i64 seconds"
     )]
     let secs = secs as i64;
-    crate::format::relative(secs)
+    tilo_ui_base::format::relative(secs)
 }
 
 /// The count a window's bar shows: nothing while nothing waits, else how many nobody has looked at.
@@ -242,9 +240,9 @@ pub fn pill() -> Option<String> {
     if unseen == 0 {
         return None;
     }
-    Some(crate::i18n::widget_format(
+    Some(tilo_ui_base::i18n::widget_format(
         "attention-pill",
-        &[("count", crate::i18n::ArgValue::from(unseen as f64))],
+        &[("count", tilo_ui_base::i18n::ArgValue::from(unseen as f64))],
     ))
 }
 
@@ -262,7 +260,7 @@ pub fn apply(press: Press) -> Option<super::Acted> {
 
 /// The waiting stack as a widget: it keeps its rows, rebuilds them when the stack moves, and reports
 /// what was pressed through its [`Presses`].
-#[crate::component::not_a_component(system, "the attention log's pane (HIG 11)")]
+#[tilo_ui_base::component::not_a_component(system, "the attention log's pane (HIG 11)")]
 pub struct Stack {
     inner: Column,
     presses: Presses,
@@ -322,7 +320,7 @@ impl Decorator for Stack {
         &mut self.inner
     }
 
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
         let inner = Widget::update(&mut self.inner, state, path);
         if self.presses.changed() {
             self.restack();

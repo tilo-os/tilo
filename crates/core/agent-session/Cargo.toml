@@ -17,6 +17,7 @@ test-support = []
 [dependencies]
 tilo-peer-state = { path = "../tilo-peer-state" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # Each record is a framework member of its app's resource kind; the
 # published tree is the action API.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", default-features = false }

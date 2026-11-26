@@ -13,7 +13,8 @@ use std::rc::Rc;
 
 use tilo_render_protocol::patch::{self as wire, ToApp};
 use ui::widget::modal_dialog::DialogAction;
-use ui::widget::{ModalDialog, Widget};
+use ui::widget::ModalDialog;
+use tilo_ui_base::widget::Widget;
 
 use crate::pane::Pane;
 use crate::reconcile::{Reconciler, UiEvent};
@@ -336,7 +337,7 @@ mod tests {
         dialog
             .children
             .iter()
-            .filter(|child| child.role == ui::a11y::Role::Button)
+            .filter(|child| child.role == tilo_ui_base::a11y::Role::Button)
             .filter_map(|child| child.name.clone())
             .collect()
     }

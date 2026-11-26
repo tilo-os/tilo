@@ -6,7 +6,7 @@
 
 use tilo_app_test_host::TestApp;
 use tilolang_process::window::app::TlApp;
-use ui::a11y::{Action, Role};
+use tilo_ui_base::{a11y::Action, a11y::Role};
 use ui::composition::page::Page;
 use ui::composition::{Composed, Composition};
 use ui::headless::Driver;
@@ -48,10 +48,10 @@ const SIZES: [(u32, u32); 2] = [(1280, 800), (390, 844)];
 /// the target its press goes to.
 fn offered(composition: &Composition, role: Role, name: &str) -> Option<(String, Option<String>)> {
     fn find<'a>(
-        access: &'a ui::a11y::AccessNode,
+        access: &'a tilo_ui_base::a11y::AccessNode,
         role: Role,
         name: &str,
-    ) -> Option<&'a ui::a11y::AccessNode> {
+    ) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
         if access.role == role && access.name.as_deref() == Some(name) && !access.state.hidden {
             return Some(access);
         }
@@ -133,7 +133,7 @@ fn report_group(composition: &Composition) -> Option<&Composed> {
 
 /// The radios a radio group offers, as assistive technology reads them: one widget draws them
 /// all, so they are its semantics' children, not widgets of their own.
-fn radios_of(group: &Composed) -> Vec<&ui::a11y::AccessNode> {
+fn radios_of(group: &Composed) -> Vec<&tilo_ui_base::a11y::AccessNode> {
     group
         .semantics
         .iter()

@@ -40,22 +40,19 @@ use taffy::{NodeId, Size, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use vello::peniko::ImageData;
 
-use crate::component::Event;
-use crate::icons::Icon;
-use crate::paint::PaintCtx;
+use tilo_ui_base::component::Event;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::media_card::MediaSize;
 use crate::widget::now_playing::{Song, SongFace};
 use tilo_actions::ActionBinding;
 
-use crate::widget::{
-    Button, ButtonFace, ControlSize, Element, Manual, ManualContext, PanelAlign, PopoverSide,
-    Slider, SliderFace, TaffyTreeExt, TransportControl, TransportFace, When, Widget,
-    WidgetLayoutError,
-};
+use crate::{widget::Button, widget::ButtonFace, widget::ControlSize, widget::PanelAlign, widget::PopoverSide, widget::Slider, widget::SliderFace, widget::TransportControl, widget::TransportFace, widget::When};
+use tilo_ui_base::{widget::Element, widget::Manual, widget::ManualContext, widget::TaffyTreeExt, widget::Widget, widget::WidgetLayoutError};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -78,7 +75,7 @@ pub enum TransportRepeat {
     One,
 }
 
-crate::choice!(TransportRepeat, "TransportRepeat", {
+tilo_ui_base::choice!(TransportRepeat, "TransportRepeat", {
     Off => "off",
     All => "all",
     One => "one",
@@ -244,7 +241,7 @@ impl Shared {
     /// Asked while a frame lays out, so it reads at the frame's instant, as every motion that sizes
     /// or places what it moves does.
     fn song_moving(&self) -> bool {
-        self.song.borrow().is_moving(crate::motion::frame_now())
+        self.song.borrow().is_moving(tilo_ui_base::motion::frame_now())
     }
 
     fn follow_art(&self) -> bool {
@@ -386,7 +383,7 @@ impl<W: Widget + 'static> Follow<W> {
     }
 }
 
-impl<W: Widget + 'static> crate::widget::Decorator for Follow<W> {
+impl<W: Widget + 'static> tilo_ui_base::widget::Decorator for Follow<W> {
     type Inner = W;
 
     fn inner(&self) -> &W {
@@ -397,12 +394,12 @@ impl<W: Widget + 'static> crate::widget::Decorator for Follow<W> {
         &mut self.widget
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
         self.follow();
         self.widget.sync(state, path);
     }
 
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
         let followed = self.follow();
         self.widget.update(state, path) | followed
     }
@@ -459,12 +456,12 @@ impl Widget for Art {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.dirty |= rect != self.rect;
         self.rect = rect;
     }
 
-    fn update(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) -> bool {
+    fn update(&mut self, _: &tilo_ui_base::widget::AppModel, _: &tilo_ui_base::widget::ModelPath) -> bool {
         let followed = self.shared.follow_art();
         let revision = self.shared.revision.get();
         if self.seen == Some(revision) {
@@ -475,7 +472,7 @@ impl Widget for Art {
         true
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -485,7 +482,7 @@ impl Widget for Art {
         if self.rect.width() <= 0.0 {
             return;
         }
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.shared.follow_song(theme, now);
         if self.shared.art_lent.get() {
             return;
@@ -504,7 +501,7 @@ impl Widget for Art {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -523,7 +520,7 @@ impl Widget for Art {
         Some("transport.art")
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if self.opens().is_none() {
             self.pressed = false;
             return;
@@ -588,20 +585,20 @@ impl Widget for Art {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _root: &crate::widget::ModelPath,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _root: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
-        if *action == crate::a11y::Action::Activate && self.opens().is_some() {
+        if *action == tilo_ui_base::a11y::Action::Activate && self.opens().is_some() {
             self.open();
             return true;
         }
         false
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let name = self.opens()?;
         Some(
             AccessNode::new(Role::Button)
@@ -634,12 +631,12 @@ impl Widget for SongLines {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.dirty |= rect != self.rect;
         self.rect = rect;
     }
 
-    fn update(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) -> bool {
+    fn update(&mut self, _: &tilo_ui_base::widget::AppModel, _: &tilo_ui_base::widget::ModelPath) -> bool {
         let revision = self.shared.revision.get();
         if self.seen == Some(revision) {
             return false;
@@ -653,7 +650,7 @@ impl Widget for SongLines {
         self.dirty || self.shared.song_moving()
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -663,7 +660,7 @@ impl Widget for SongLines {
         if self.rect.width() <= 0.0 {
             return;
         }
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.shared.follow_song(theme, now);
         let ctx = &mut PaintCtx::new(scene, transform, text, theme);
         self.shared
@@ -674,7 +671,7 @@ impl Widget for SongLines {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -693,8 +690,8 @@ impl Widget for SongLines {
         Some("transport.song")
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         let state = self.shared.state.borrow();
         let song = song_of(&state);
         let spoken = crate::widget::TextStackFace::new(&song.title)
@@ -725,7 +722,7 @@ fn triggered_children(
             event_button(
                 "transport.like",
                 Icon::Heart,
-                &crate::i18n::widget_format("media-like", &[]),
+                &tilo_ui_base::i18n::widget_format("media-like", &[]),
                 Some(event),
             ),
             shared,
@@ -737,7 +734,7 @@ fn triggered_children(
             event_button(
                 "transport.lyrics",
                 Icon::Captions,
-                &crate::i18n::widget_format("media-lyrics", &[]),
+                &tilo_ui_base::i18n::widget_format("media-lyrics", &[]),
                 Some(event),
             ),
             shared,
@@ -749,7 +746,7 @@ fn triggered_children(
             event_button(
                 "transport.shuffle",
                 Icon::Shuffle,
-                &crate::i18n::widget_format("media-shuffle", &[]),
+                &tilo_ui_base::i18n::widget_format("media-shuffle", &[]),
                 Some(event),
             ),
             shared,
@@ -802,7 +799,7 @@ fn triggered_children(
             event_button(
                 "transport.repeat",
                 Icon::Repeat,
-                &crate::i18n::widget_format("media-repeat", &[]),
+                &tilo_ui_base::i18n::widget_format("media-repeat", &[]),
                 Some(event),
             ),
             shared,
@@ -813,7 +810,7 @@ fn triggered_children(
                     TransportRepeat::All => (Icon::Repeat, "media-repeat-all"),
                     TransportRepeat::Off => (Icon::Repeat, "media-repeat"),
                 };
-                let name = crate::i18n::widget_format(key, &[]);
+                let name = tilo_ui_base::i18n::widget_format(key, &[]);
                 b.set_icon(icon);
                 b.set_accessible_name(&name);
                 b.set_tooltip(Some(name));
@@ -825,9 +822,9 @@ fn triggered_children(
     parts[SCRUBBER] = Box::new(Scrubber {
         slider: Follow::new(
             event_slider(
-                Slider::from_state(&crate::LocalState::new(0.0))
+                Slider::from_state(&tilo_ui_base::LocalState::new(0.0))
                     .with_id("transport.position")
-                    .with_accessible_name(&crate::i18n::widget_format("media-position", &[]))
+                    .with_accessible_name(&tilo_ui_base::i18n::widget_format("media-position", &[]))
                     .value_text({
                         let shared = shared.clone();
                         move |fraction| time(fraction * shared.state.borrow().duration_ms)
@@ -857,7 +854,7 @@ fn triggered_children(
             event_button(
                 "transport.queue",
                 Icon::ListMusic,
-                &crate::i18n::widget_format("media-queue", &[]),
+                &tilo_ui_base::i18n::widget_format("media-queue", &[]),
                 Some(event),
             ),
             shared,
@@ -869,14 +866,14 @@ fn triggered_children(
             event_button(
                 "transport.mute",
                 Icon::Volume2,
-                &crate::i18n::widget_format("media-mute", &[]),
+                &tilo_ui_base::i18n::widget_format("media-mute", &[]),
                 Some(event),
             ),
             shared,
             |b, state| {
                 let muted = state.volume <= 0.0;
                 b.set_icon(speaker(state.volume));
-                let name = crate::i18n::widget_format(
+                let name = tilo_ui_base::i18n::widget_format(
                     if muted { "media-unmute" } else { "media-mute" },
                     &[],
                 );
@@ -889,9 +886,9 @@ fn triggered_children(
     let volume = triggers.volume.clone();
     parts[VOLUME] = Box::new(Follow::new(
         event_slider(
-            Slider::from_state(&crate::LocalState::new(1.0))
+            Slider::from_state(&tilo_ui_base::LocalState::new(1.0))
                 .with_id("transport.volume")
-                .with_accessible_name(&crate::i18n::widget_format("media-volume", &[])),
+                .with_accessible_name(&tilo_ui_base::i18n::widget_format("media-volume", &[])),
             volume.as_ref(),
         ),
         shared,
@@ -901,14 +898,14 @@ fn triggered_children(
         Button::icon_only(
             "transport.volume-menu",
             Icon::Volume2,
-            &crate::i18n::widget_format("media-volume", &[]),
+            &tilo_ui_base::i18n::widget_format("media-volume", &[]),
         )
         .control_size(ControlSize::Regular)
         .with_popover(VolumePanel {
             slider: event_slider(
-                Slider::from_state(&crate::LocalState::new(1.0))
+                Slider::from_state(&tilo_ui_base::LocalState::new(1.0))
                     .with_id("transport.volume-menu.slider")
-                    .with_accessible_name(&crate::i18n::widget_format("media-volume", &[])),
+                    .with_accessible_name(&tilo_ui_base::i18n::widget_format("media-volume", &[])),
                 volume.as_ref(),
             ),
         })
@@ -941,7 +938,7 @@ fn triggered_children(
 fn event_report(event: Event) -> Rc<dyn Fn()> {
     let run: std::cell::RefCell<Box<dyn FnMut()>> = std::cell::RefCell::new(match event {
         Event::Action(binding) => {
-            let mut emitter = crate::widget::ActionEmitter::new(binding);
+            let mut emitter = tilo_ui_base::widget::ActionEmitter::new(binding);
             Box::new(move || {
                 if let Err(error) = emitter.emit(()) {
                     tracing::warn!(%error, "a transport control's action refused its arguments");
@@ -984,14 +981,14 @@ impl Widget for TimeLabel {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.drawn = None;
         }
         self.rect = rect;
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1031,8 +1028,8 @@ impl Widget for TimeLabel {
         "TransportTime"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         let label = self.shared.caption(self.side);
         (!label.is_empty()).then(|| AccessNode::new(Role::StaticText).with_name(label))
     }
@@ -1042,7 +1039,7 @@ struct Scrubber {
     slider: Follow<Slider>,
 }
 
-impl crate::widget::Decorator for Scrubber {
+impl tilo_ui_base::widget::Decorator for Scrubber {
     type Inner = Follow<Slider>;
 
     fn inner(&self) -> &Follow<Slider> {
@@ -1053,7 +1050,7 @@ impl crate::widget::Decorator for Scrubber {
         &mut self.slider
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         Widget::handle_event(&mut self.slider, event, ctx);
         let slider = &self.slider.widget;
         self.slider
@@ -1125,7 +1122,7 @@ fn time(ms: f64) -> String {
         reason = "a song's position in whole seconds, clamped at zero"
     )]
     let seconds = (ms.max(0.0) / 1000.0) as u64;
-    crate::format::timecode(seconds)
+    tilo_ui_base::format::timecode(seconds)
 }
 
 fn bound(button: Button, action: Option<&ActionBinding<()>>) -> Button {
@@ -1181,7 +1178,7 @@ fn event_slider(slider: Slider, event: Option<&Event>) -> Slider {
         Some(event) => {
             let event = event.clone();
             slider.on_change(move |value| {
-                event.fire(Some(crate::component::Value::Float(value)));
+                event.fire(Some(tilo_ui_base::component::Value::Float(value)));
             })
         }
         None => slider,
@@ -1200,7 +1197,7 @@ fn bound_slider(slider: Slider, action: Option<&ActionBinding<f64>>) -> Slider {
 /// ground behind it: a filled heart is a liked song, an outline one is not.
 fn like_face(button: &mut Button, state: &TransportState) -> bool {
     let liked = state.liked == Some(true) && !state.idle;
-    let name = crate::i18n::widget_format(if liked { "media-unlike" } else { "media-like" }, &[]);
+    let name = tilo_ui_base::i18n::widget_format(if liked { "media-unlike" } else { "media-like" }, &[]);
     button.set_accessible_name(&name);
     button.set_icon(if liked {
         Icon::HeartFilled
@@ -1222,7 +1219,7 @@ struct VolumePanel {
     slider: Slider,
 }
 
-impl crate::widget::Decorator for VolumePanel {
+impl tilo_ui_base::widget::Decorator for VolumePanel {
     type Inner = Slider;
 
     fn inner(&self) -> &Slider {
@@ -1243,7 +1240,7 @@ impl crate::widget::Decorator for VolumePanel {
         if let Ok(style) = taffy.style(node) {
             let mut style = style.clone();
             style.size.width =
-                taffy::Dimension::length(crate::num::f32_of_f64(MediaSize::Large.extent(theme)));
+                taffy::Dimension::length(tilo_ui_base::num::f32_of_f64(MediaSize::Large.extent(theme)));
             let _ = taffy.set_style(node, style);
         }
         node
@@ -1307,7 +1304,7 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
             button(
                 "transport.like",
                 Icon::Heart,
-                &crate::i18n::widget_format("media-like", &[]),
+                &tilo_ui_base::i18n::widget_format("media-like", &[]),
                 actions.like.as_ref(),
             ),
             shared,
@@ -1317,7 +1314,7 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
             view_button(
                 "transport.lyrics",
                 Icon::Captions,
-                &crate::i18n::widget_format("media-lyrics", &[]),
+                &tilo_ui_base::i18n::widget_format("media-lyrics", &[]),
                 shared,
                 TransportEvent::Lyrics,
             ),
@@ -1328,7 +1325,7 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
             button(
                 "transport.shuffle",
                 Icon::Shuffle,
-                &crate::i18n::widget_format("media-shuffle", &[]),
+                &tilo_ui_base::i18n::widget_format("media-shuffle", &[]),
                 actions.shuffle.as_ref(),
             ),
             shared,
@@ -1377,7 +1374,7 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
             button(
                 "transport.repeat",
                 Icon::Repeat,
-                &crate::i18n::widget_format("media-repeat", &[]),
+                &tilo_ui_base::i18n::widget_format("media-repeat", &[]),
                 actions.repeat.as_ref(),
             ),
             shared,
@@ -1388,7 +1385,7 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
                     TransportRepeat::All => (Icon::Repeat, "media-repeat-all"),
                     TransportRepeat::Off => (Icon::Repeat, "media-repeat"),
                 };
-                let name = crate::i18n::widget_format(key, &[]);
+                let name = tilo_ui_base::i18n::widget_format(key, &[]);
                 b.set_icon(icon);
                 b.set_accessible_name(&name);
                 b.set_tooltip(Some(name));
@@ -1404,9 +1401,9 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
         Box::new(Scrubber {
             slider: Follow::new(
                 bound_slider(
-                    Slider::from_state(&crate::LocalState::new(0.0))
+                    Slider::from_state(&tilo_ui_base::LocalState::new(0.0))
                         .with_id("transport.position")
-                        .with_accessible_name(&crate::i18n::widget_format("media-position", &[]))
+                        .with_accessible_name(&tilo_ui_base::i18n::widget_format("media-position", &[]))
                         .value_text({
                             let shared = shared.clone();
                             move |fraction| time(fraction * shared.state.borrow().duration_ms)
@@ -1460,7 +1457,7 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
             |b, state| {
                 let muted = state.volume <= 0.0;
                 b.set_icon(speaker(state.volume));
-                let name = crate::i18n::widget_format(
+                let name = tilo_ui_base::i18n::widget_format(
                     if muted { "media-unmute" } else { "media-mute" },
                     &[],
                 );
@@ -1471,9 +1468,9 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
         )),
         Box::new(Follow::new(
             bound_slider(
-                Slider::from_state(&crate::LocalState::new(1.0))
+                Slider::from_state(&tilo_ui_base::LocalState::new(1.0))
                     .with_id("transport.volume")
-                    .with_accessible_name(&crate::i18n::widget_format("media-volume", &[])),
+                    .with_accessible_name(&tilo_ui_base::i18n::widget_format("media-volume", &[])),
                 actions.volume.as_ref(),
             ),
             shared,
@@ -1484,7 +1481,7 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
             Button::icon_only(
                 "transport.more",
                 Icon::MoreHorizontal,
-                &crate::i18n::widget_format("media-more-controls", &[]),
+                &tilo_ui_base::i18n::widget_format("media-more-controls", &[]),
             )
             .control_size(ControlSize::Regular)
             .on_open(move || {
@@ -1496,14 +1493,14 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
             Button::icon_only(
                 "transport.volume-menu",
                 Icon::Volume2,
-                &crate::i18n::widget_format("media-volume", &[]),
+                &tilo_ui_base::i18n::widget_format("media-volume", &[]),
             )
             .control_size(ControlSize::Regular)
             .with_popover(VolumePanel {
                 slider: bound_slider(
-                    Slider::from_state(&crate::LocalState::new(1.0))
+                    Slider::from_state(&tilo_ui_base::LocalState::new(1.0))
                         .with_id("transport.volume-menu.slider")
-                        .with_accessible_name(&crate::i18n::widget_format("media-volume", &[])),
+                        .with_accessible_name(&tilo_ui_base::i18n::widget_format("media-volume", &[])),
                     actions.volume.as_ref(),
                 ),
             })
@@ -1700,12 +1697,12 @@ fn policy(shared: &Shared, ctx: &mut ManualContext<'_>) -> Result<Size<f32>, Wid
         ctx.place(index, rect)?;
     }
     Ok(Size {
-        width: crate::num::f32_of_f64(width),
-        height: crate::num::f32_of_f64(height),
+        width: tilo_ui_base::num::f32_of_f64(width),
+        height: tilo_ui_base::num::f32_of_f64(height),
     })
 }
 
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "the band `ui.MediaTransport` is built from, its controls reporting the view's events"
 )]
@@ -1811,7 +1808,7 @@ impl MediaTransport {
     }
 }
 
-impl crate::widget::identity::concrete::Decorator for MediaTransport {
+impl tilo_ui_base::widget::identity::concrete::Decorator for MediaTransport {
     type Inner = Manual;
 
     fn inner(&self) -> &Manual {
@@ -1882,7 +1879,7 @@ impl crate::widget::identity::concrete::Decorator for MediaTransport {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => self.cursor = ctx.logical(position),
             WindowEvent::MouseInput {
@@ -1903,9 +1900,9 @@ impl crate::widget::identity::concrete::Decorator for MediaTransport {
         Widget::handle_event(&mut self.content, event, ctx);
     }
 
-    fn touch_claim(&self, point: Point) -> crate::interaction::TouchClaim {
+    fn touch_claim(&self, point: Point) -> tilo_ui_base::interaction::TouchClaim {
         if self.swipes_from(point) {
-            crate::interaction::TouchClaim::Drag
+            tilo_ui_base::interaction::TouchClaim::Drag
         } else {
             Widget::touch_claim(&self.content, point)
         }

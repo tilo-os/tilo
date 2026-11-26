@@ -2,12 +2,12 @@
 
 use super::super::tests::{holder, lay_out_at_width};
 use super::super::{TabBar, TabDescriptor, TabHolder};
-use crate::text_render::TextRenderer;
+use tilo_ui_base::text_render::TextRenderer;
 use vello::kurbo::Rect;
 
 #[test]
 fn the_chip_naming_who_opened_a_tab_stands_alone_below_it() {
-    let theme = crate::theme::Theme::dark();
+    let theme = tilo_ui_base::theme::Theme::dark();
     let mut tr = TextRenderer::new();
     let mut b = TabBar::new(
         "g1",

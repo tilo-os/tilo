@@ -543,7 +543,7 @@ fn a_reminder_the_assistant_set_up_itself_starts_its_turn_with_its_person_closed
         let at_ms = tilo_clock::unix_now_ms_i64() + 2_000;
         let when = format!(
             "once at {}",
-            ui::format::Timestamp::from_millisecond(at_ms).expect("a moment")
+            tilo_ui_base::format::Timestamp::from_millisecond(at_ms).expect("a moment")
         );
 
         // Her one turn sets the reminder up with the host's own action, through the tools every

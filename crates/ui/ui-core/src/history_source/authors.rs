@@ -6,13 +6,13 @@
 //! Three shapes occur in documents: a raw 32-byte public key (the
 //! only cryptographically meaningful one, joining to a person); a
 //! self-declared handle
-//! (`ActorId::from(app_id.as_bytes())`, the same key `tilo_ui::presence::user_color`
+//! (`ActorId::from(app_id.as_bytes())`, the same key `tilo_ui_base::presence::user_color`
 //! and the per-character `author` marks already use, but **unverified**); and
 //! a random id (`ActorId::random()`, which resolves to nobody).
 //!
 //! For an unknown actor, use [`UNKNOWN_AUTHOR_NAME`] as the name, the first
 //! eight hex characters as the label, and the same
-//! [`crate::presence::user_color`] / [`crate::presence::PEER_PALETTE`] slot
+//! [`tilo_ui_base::presence::user_color`] / [`tilo_ui_base::presence::PEER_PALETTE`] slot
 //! presence uses for that identity, so history and presence cannot disagree.
 
 use std::collections::HashMap;
@@ -39,8 +39,8 @@ use collab_types::history::authors::{SHORT_LEN, rgb_to_hue};
 pub struct AuthorDirectory {
     by_actor: HashMap<String, HistoryAuthor>,
     /// A person's own colour (`Member::cursor_color`, local
-    /// `avatar_color`). Wins over [`crate::presence::user_color`] for
-    /// that identity, matching [`crate::presence::PresenceCtx::color_for`].
+    /// `avatar_color`). Wins over [`tilo_ui_base::presence::user_color`] for
+    /// that identity, matching [`tilo_ui_base::presence::PresenceCtx::color_for`].
     color_overrides: HashMap<String, (u8, u8, u8)>,
     /// Who reads the history: their own changes read as theirs.
     reader: Option<tilo_actions::MemberId>,
@@ -101,8 +101,8 @@ impl AuthorDirectory {
     /// that vouched for it — resolves through this, so a row reads "Ada" and
     /// "Claude Code" on a page as it does on a computer.
     #[must_use]
-    pub fn from_presence(presence: &crate::presence::PresenceCtx) -> Self {
-        use crate::permissions::MemberId;
+    pub fn from_presence(presence: &tilo_ui_base::presence::PresenceCtx) -> Self {
+        use tilo_ui_base::permissions::MemberId;
         let mut directory = Self::new();
         // Everyone presence names: a person by the root key their writes
         // carry — what a file version's actor names — and software by the
@@ -112,7 +112,7 @@ impl AuthorDirectory {
             // A person the roster holds unnamed is named as the window names someone unnamed,
             // never left to read as their key; software nobody named keeps its own name.
             let shown = if name.is_empty() && id.is_person() {
-                crate::presence::unnamed_person_label()
+                tilo_ui_base::presence::unnamed_person_label()
             } else {
                 name.to_owned()
             };
@@ -125,7 +125,7 @@ impl AuthorDirectory {
                     directory.register_device(key, shown);
                 }
                 MemberId::Agent { .. } | MemberId::Bot(_) => {
-                    let (red, green, blue) = crate::presence::member_color(id);
+                    let (red, green, blue) = tilo_ui_base::presence::member_color(id);
                     let person = presence
                         .acting_for(id)
                         .and_then(MemberId::person_id)
@@ -188,13 +188,13 @@ impl AuthorDirectory {
                 if !member.is_person() {
                     continue;
                 }
-                crate::presence::unnamed_person_label()
+                tilo_ui_base::presence::unnamed_person_label()
             } else {
                 name.to_owned()
             };
             let rgb = match member.person_id() {
                 Some(person) => self.colour_for(person),
-                None => crate::presence::member_color(member),
+                None => tilo_ui_base::presence::member_color(member),
             };
             let author = author_coloured(name.clone(), short_id(member.id()), rgb);
             if let Some(person) = member.person_id() {
@@ -340,8 +340,8 @@ impl AuthorDirectory {
             // Registered under a name that is none to show (blank, or the hex of a key, which is
             // what a person who has not named themselves goes by): someone without a name yet,
             // never the key.
-            if crate::presence::shown_name(&presented.name).is_none() {
-                presented.name = crate::presence::unnamed_person_label();
+            if tilo_ui_base::presence::shown_name(&presented.name).is_none() {
+                presented.name = tilo_ui_base::presence::unnamed_person_label();
             }
             let override_key = actor_handle(key).unwrap_or_else(|| key.to_owned());
             if let Some(rgb) = self.color_overrides.get(&override_key) {
@@ -449,8 +449,8 @@ impl AuthorDirectory {
             // Software is painted as presence paints it: by the one rule, from its identity.
             let author = if software {
                 author.with_rgb(match invoker.acting.member_id() {
-                    Some(member) => crate::presence::member_color(member),
-                    None => crate::presence::user_color(actor.id()),
+                    Some(member) => tilo_ui_base::presence::member_color(member),
+                    None => tilo_ui_base::presence::user_color(actor.id()),
                 })
             } else {
                 author
@@ -537,7 +537,7 @@ impl AuthorDirectory {
         let rgb = if known {
             named.rgb()
         } else {
-            crate::presence::member_color(member)
+            tilo_ui_base::presence::member_color(member)
         };
         let mut author = self.agent_author(
             &actor,
@@ -560,7 +560,7 @@ impl AuthorDirectory {
     }
 
     /// Seed or replace `member`'s colour so history agrees with
-    /// [`crate::presence::PresenceCtx::color_for`].
+    /// [`tilo_ui_base::presence::PresenceCtx::color_for`].
     pub fn set_color_override(&mut self, member: &tilo_actions::MemberId, rgb: (u8, u8, u8)) {
         let identity = String::from_utf8_lossy(&member.actor_bytes()).into_owned();
         self.color_overrides.insert(identity, rgb);
@@ -572,7 +572,7 @@ impl AuthorDirectory {
         self.color_overrides
             .get(identity)
             .copied()
-            .unwrap_or_else(|| crate::presence::identity_color(identity))
+            .unwrap_or_else(|| tilo_ui_base::presence::identity_color(identity))
     }
 
     fn author_from_identity(
@@ -620,10 +620,10 @@ pub fn read_as(member: &tilo_actions::MemberId) {
 
 /// What a person goes by whom nobody named: their id where it is a name to show (a fixture's
 /// `ada`), else the words every surface of the desktop uses for a person without a name yet
-/// ([`crate::presence::unnamed_person_label`]), never their key.
+/// ([`tilo_ui_base::presence::unnamed_person_label`]), never their key.
 fn person_label(person: &str) -> String {
-    crate::presence::shown_name(person)
-        .map_or_else(crate::presence::unnamed_person_label, str::to_owned)
+    tilo_ui_base::presence::shown_name(person)
+        .map_or_else(tilo_ui_base::presence::unnamed_person_label, str::to_owned)
 }
 
 /// What `actor` is called in history and audit: an agent, a bot or an automation by its name, an
@@ -637,19 +637,19 @@ pub fn actor_label(actor: &tilo_actions::Actor) -> String {
         Actor::Automation(id) => name_words(id.as_str()),
         Actor::App(app) => app_name(
             app.as_str(),
-            crate::i18n::I18nManager::window_locale().as_str(),
+            tilo_ui_base::i18n::I18nManager::window_locale().as_str(),
         ),
         // Someone with no identity in the workspace has no name in it.
-        Actor::Visitor(_) => crate::i18n::I18nManager::lookup_plain("history-author-visitor"),
+        Actor::Visitor(_) => tilo_ui_base::i18n::I18nManager::lookup_plain("history-author-visitor"),
     }
 }
 
 /// Build a [`HistoryAuthor`] from the local identity
-/// ([`crate::local_identity`]), if there is one.
+/// ([`tilo_ui_base::local_identity`]), if there is one.
 /// Public because the shell wants the same answer for its own chrome without
 /// having to own an [`AuthorDirectory`].
 pub fn local_identity_author() -> Option<HistoryAuthor> {
-    let id = crate::local_identity::load()?;
+    let id = tilo_ui_base::local_identity::load()?;
     let key_hex = hex::encode(id.group_public_key);
     let name = if id.display_name.is_empty() {
         // First boot writes an empty display name and the user names
@@ -672,7 +672,7 @@ pub fn author_for_identity(name: impl Into<String>, identity: &str) -> HistoryAu
     author_coloured(
         name,
         short_id(identity),
-        crate::presence::identity_color(identity),
+        tilo_ui_base::presence::identity_color(identity),
     )
 }
 
@@ -704,14 +704,14 @@ mod tests {
             assert_eq!(second.rgb(), first.rgb(), "one agent, one colour");
             assert_eq!(
                 first.rgb(),
-                crate::presence::member_color(&tilo_actions::MemberId::agent("claude-code", "ada"))
+                tilo_ui_base::presence::member_color(&tilo_actions::MemberId::agent("claude-code", "ada"))
             );
         }
 
         phase history_and_presence_pick_the_same_colour_for_the_same_identity;
         {
-            use crate::permissions::MemberId;
-            use crate::presence::{PresenceCtx, user_color};
+            use tilo_ui_base::permissions::MemberId;
+            use tilo_ui_base::{presence::PresenceCtx, presence::user_color};
 
             for id in ["alice", "bob", "carol", "unknown-person-xyz"] {
                 let hex = automerge::ActorId::from(id.as_bytes()).to_hex_string();
@@ -741,7 +741,7 @@ mod tests {
                 PresenceCtx::default().color_for(&member),
                 "an agent's change and its face show one colour"
             );
-            assert_eq!(history.rgb(), crate::presence::member_color(&member));
+            assert_eq!(history.rgb(), tilo_ui_base::presence::member_color(&member));
             assert_ne!(
                 history.rgb(),
                 user_color(agent),
@@ -824,14 +824,14 @@ mod tests {
         {
             let key = hex::encode([5_u8; 32]);
             let person = tilo_actions::Actor::Member(tilo_actions::MemberId::person(&key));
-            assert_eq!(actor_label(&person), crate::presence::unnamed_person_label());
+            assert_eq!(actor_label(&person), tilo_ui_base::presence::unnamed_person_label());
             let ada = tilo_actions::Actor::Member(tilo_actions::MemberId::person("ada"));
             assert_eq!(actor_label(&ada), "ada");
 
             let invoker = tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::person(&key));
             let entry = tilo_actions::ActionContext::default().with_invoker(invoker);
             let author = AuthorDirectory::new().resolve_entry(&hex::encode([9_u8; 32]), Some(&entry));
-            assert_eq!(author.name, crate::presence::unnamed_person_label());
+            assert_eq!(author.name, tilo_ui_base::presence::unnamed_person_label());
             assert!(!author.name.contains(&key[..8]), "{}", author.name);
 
             // A page whose own person has no name yet registers them by their key.
@@ -839,12 +839,12 @@ mod tests {
             let mut directory = AuthorDirectory::new();
             directory.register_member(&member, author_for_identity(key.clone(), &key));
             let own = hex::encode(member.actor_bytes());
-            assert_eq!(directory.resolve(&own).name, crate::presence::unnamed_person_label());
+            assert_eq!(directory.resolve(&own).name, tilo_ui_base::presence::unnamed_person_label());
             let invoker = tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::person(&key));
             let entry = tilo_actions::ActionContext::default().with_invoker(invoker);
             assert_eq!(
                 directory.resolve_entry(&own, Some(&entry)).name,
-                crate::presence::unnamed_person_label()
+                tilo_ui_base::presence::unnamed_person_label()
             );
         }
 
@@ -922,7 +922,7 @@ mod tests {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.remove("TILO_SVC_IDENTITY_FD");
             let _env = env;
-            crate::local_identity::install_source(None);
+            tilo_ui_base::local_identity::install_source(None);
             assert!(local_identity_author().is_none());
         }
     }

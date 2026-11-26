@@ -1891,7 +1891,7 @@ mod tests {
     #[test]
     fn a_change_of_the_layout_is_one_step_of_the_persons_in_its_history() {
         use tilo_desktop_model::shared_resource;
-        use ui::permissions::MemberId;
+        use tilo_ui_base::permissions::MemberId;
         use ui::state::UndoLog;
 
         let mut doc = ui::automerge::AutoCommit::new();

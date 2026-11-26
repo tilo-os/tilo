@@ -6,7 +6,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::{ListKey, VirtualRows};
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 pub(super) type RenameCallback<K> = Box<dyn FnMut(K, String)>;
 
@@ -33,7 +33,7 @@ impl<K> RenameField<K> {
 }
 
 pub trait RowRenameField {
-    fn rename_field(&self) -> Option<(Rect, crate::tokens::TextRole)>;
+    fn rename_field(&self) -> Option<(Rect, tilo_ui_base::tokens::TextRole)>;
 }
 
 impl VirtualRows {
@@ -74,7 +74,7 @@ impl VirtualRows {
             return false;
         };
         let placed = self.rename_rect(index, key);
-        let role = placed.map_or(crate::tokens::TextRole::Body, |(_, role)| role);
+        let role = placed.map_or(tilo_ui_base::tokens::TextRole::Body, |(_, role)| role);
         let mut input = crate::widget::TextInput::local()
             .with_plain_chrome()
             .with_text_role(role)
@@ -118,13 +118,13 @@ impl VirtualRows {
         self.rename = None;
     }
 
-    fn rename_rect(&self, index: usize, key: &ListKey) -> Option<(Rect, crate::tokens::TextRole)> {
+    fn rename_rect(&self, index: usize, key: &ListKey) -> Option<(Rect, tilo_ui_base::tokens::TextRole)> {
         if let Some(placed) = self
             .mounted
             .iter()
             .find(|row| row.key == *key)
             .and_then(|row| {
-                crate::widget::capability::capability::<dyn RowRenameField>(&*row.widget)
+                tilo_ui_base::widget::capability::capability::<dyn RowRenameField>(&*row.widget)
             })
             .and_then(RowRenameField::rename_field)
         {
@@ -140,7 +140,7 @@ impl VirtualRows {
                 (self.lift_rect(0.0, 0.0).x1 - self.bleed).max(x0 + 1.0),
                 row.y1,
             ),
-            crate::tokens::TextRole::Body,
+            tilo_ui_base::tokens::TextRole::Body,
         ))
     }
 
@@ -165,7 +165,7 @@ impl VirtualRows {
     pub(super) fn route_rename(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         if self.rename.is_none() {
             return false;

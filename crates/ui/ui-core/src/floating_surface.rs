@@ -7,8 +7,8 @@
 use vello::kurbo::Affine;
 use vello::kurbo::{Point, Rect, Size, Vec2};
 
-use crate::draw::DrawCtx;
-use crate::widget::{Edits, EventCtx, Widget, capability};
+use tilo_ui_base::draw::DrawCtx;
+use tilo_ui_base::{widget::Edits, widget::EventCtx, widget::Widget, widget::capability};
 
 #[cfg(unix)]
 use std::collections::VecDeque;
@@ -20,19 +20,19 @@ use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 
 fn settle_progress(elapsed: crate::time::Duration) -> f64 {
-    crate::motion::Snap::SPEC.progress_after(
-        crate::motion::Direction::Enter,
-        crate::tokens::EffectiveMotion::default(),
-        crate::tokens::MotionSource::Gesture,
+    tilo_ui_base::motion::Snap::SPEC.progress_after(
+        tilo_ui_base::motion::Direction::Enter,
+        tilo_ui_base::tokens::EffectiveMotion::default(),
+        tilo_ui_base::tokens::MotionSource::Gesture,
         elapsed,
     )
 }
 
 fn settle_time() -> crate::time::Duration {
-    crate::motion::Snap::SPEC.settle_time(
-        crate::motion::Direction::Enter,
-        crate::tokens::EffectiveMotion::default(),
-        crate::tokens::MotionSource::Gesture,
+    tilo_ui_base::motion::Snap::SPEC.settle_time(
+        tilo_ui_base::motion::Direction::Enter,
+        tilo_ui_base::tokens::EffectiveMotion::default(),
+        tilo_ui_base::tokens::MotionSource::Gesture,
     )
 }
 
@@ -972,7 +972,7 @@ impl FloatingPlacement {
             return transform;
         }
         let progress = self.handoff_progress_override.unwrap_or_else(|| {
-            settle_progress(crate::motion::frame_now().saturating_duration_since(motion.started))
+            settle_progress(tilo_ui_base::motion::frame_now().saturating_duration_since(motion.started))
         });
         let amount = (1.0 - progress).powi(2) * motion.strength;
         if amount <= f64::EPSILON {
@@ -1007,7 +1007,7 @@ impl FloatingPlacement {
                 return motion.from;
             };
             let eased =
-                settle_progress(crate::motion::frame_now().saturating_duration_since(started));
+                settle_progress(tilo_ui_base::motion::frame_now().saturating_duration_since(started));
             Rect::new(
                 motion.from.x0 + (motion.to.x0 - motion.from.x0) * eased,
                 motion.from.y0 + (motion.to.y0 - motion.from.y0) * eased,
@@ -1229,7 +1229,7 @@ pub trait FloatingSurfaceProvider {
         false
     }
 
-    fn floating_surface_accessibility(&self, _id: &str) -> Option<crate::a11y::AccessNode> {
+    fn floating_surface_accessibility(&self, _id: &str) -> Option<tilo_ui_base::a11y::AccessNode> {
         None
     }
 
@@ -1237,7 +1237,7 @@ pub trait FloatingSurfaceProvider {
         &mut self,
         _id: &str,
         _target: &str,
-        _action: &crate::a11y::Action,
+        _action: &tilo_ui_base::a11y::Action,
         _state: &mut Edits<'_>,
         _path: &automerge::ObjId,
     ) -> bool {
@@ -1247,7 +1247,7 @@ pub trait FloatingSurfaceProvider {
     fn floating_surface_ime(
         &self,
         _id: &str,
-    ) -> Option<(crate::ime::InputContent, vello::kurbo::Rect)> {
+    ) -> Option<(tilo_ui_base::ime::InputContent, vello::kurbo::Rect)> {
         None
     }
 
@@ -1309,19 +1309,19 @@ pub trait FloatingSurfaceWidgetExt {
         event: &crate::winit::event::WindowEvent,
         ctx: &mut EventCtx<'_>,
     ) -> bool;
-    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode>;
+    fn floating_surface_accessibility(&self, id: &str) -> Option<tilo_ui_base::a11y::AccessNode>;
     fn perform_floating_surface_accessibility_action(
         &mut self,
         id: &str,
         target: &str,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         state: &mut Edits<'_>,
         path: &automerge::ObjId,
     ) -> bool;
     fn floating_surface_ime(
         &self,
         id: &str,
-    ) -> Option<(crate::ime::InputContent, vello::kurbo::Rect)>;
+    ) -> Option<(tilo_ui_base::ime::InputContent, vello::kurbo::Rect)>;
     fn take_floating_surface_request(&mut self) -> Option<FloatingSurfaceRequest>;
     /// Whether the person asked to pick an area of the screen to float. Consumed.
     fn take_pip_area_request(&mut self) -> bool;
@@ -1364,7 +1364,7 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
             .is_some_and(|provider| provider.floating_surface_event(id, event, ctx))
     }
 
-    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
+    fn floating_surface_accessibility(&self, id: &str) -> Option<tilo_ui_base::a11y::AccessNode> {
         capability::capability::<dyn FloatingSurfaceProvider>(self)?
             .floating_surface_accessibility(id)
     }
@@ -1373,7 +1373,7 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
         &mut self,
         id: &str,
         target: &str,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         state: &mut Edits<'_>,
         path: &automerge::ObjId,
     ) -> bool {
@@ -1385,7 +1385,7 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
     fn floating_surface_ime(
         &self,
         id: &str,
-    ) -> Option<(crate::ime::InputContent, vello::kurbo::Rect)> {
+    ) -> Option<(tilo_ui_base::ime::InputContent, vello::kurbo::Rect)> {
         capability::capability::<dyn FloatingSurfaceProvider>(self)?.floating_surface_ime(id)
     }
 
@@ -1658,8 +1658,8 @@ mod tests {
 
         phase a_window_appearance_round_trips_and_unknown_values_are_unsaid;
         {
-            use crate::theme::WindowAppearance;
-            use crate::tokens::PresenceHue;
+            use tilo_ui_base::theme::WindowAppearance;
+            use tilo_ui_base::tokens::PresenceHue;
 
             let told = WindowAppearance {
                 workspace_hue: Some(40.0),
@@ -2317,7 +2317,7 @@ mod tests {
             .unwrap();
             let send = |shell_side: &mut UnixStream| {
                 let mut bytes = serde_json::to_vec(&FloatingSurfaceHostMessage::appearance(
-                    &crate::theme::WindowAppearance {
+                    &tilo_ui_base::theme::WindowAppearance {
                         workspace_hue: Some(40.0),
                         your_colour: None,
                         corner_radius: None,
@@ -2399,8 +2399,8 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_window_loads_the_staged_theme_bundle_the_host_names() {
-        use crate::theme::PresetDesign as _;
-        use crate::tokens::SurfaceRole;
+        use tilo_ui_base::theme::PresetDesign as _;
+        use tilo_ui_base::tokens::SurfaceRole;
 
         const SET: &str = "test.staged-in-a-process";
 
@@ -2410,7 +2410,7 @@ mod tests {
 
             let params = tilo_theme_sdk::wire::params_answer(&[]);
             let answer = tilo_theme_sdk::wire::paint_answer(Some(
-                &crate::part_paint::PaintedPart::new(crate::part_paint::PartScene::new()),
+                &tilo_ui_base::part_paint::PaintedPart::new(tilo_ui_base::part_paint::PartScene::new()),
             ));
             let data = |bytes: &[u8]| {
                 let mut text = String::new();
@@ -2443,10 +2443,10 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_COMPILED_MODULES", compiled.path());
         let mut document =
-            serde_json::to_value(crate::theme::Preset::Dark.document()).expect("the theme writes");
+            serde_json::to_value(tilo_ui_base::theme::Preset::Dark.document()).expect("the theme writes");
         document["material"]["window"] = serde_json::json!({ "painter": SET });
         std::fs::write(
-            bundle.path().join(crate::theme_bundle::DOCUMENT),
+            bundle.path().join(tilo_ui_base::theme_bundle::DOCUMENT),
             serde_json::to_string(&document).expect("the document writes"),
         )
         .expect("the document");

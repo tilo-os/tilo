@@ -17,8 +17,8 @@ mod runner {
     #[must_use]
     pub fn fixture_runner_inputs() -> ComponentRunnerInputs {
         ComponentRunnerInputs {
-            theme: crate::theme::Theme::dark(),
-            text_renderer: crate::font_catalog::fixture_renderer(),
+            theme: tilo_ui_base::theme::Theme::dark(),
+            text_renderer: tilo_ui_base::font_catalog::fixture_renderer(),
         }
     }
 

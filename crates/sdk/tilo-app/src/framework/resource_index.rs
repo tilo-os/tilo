@@ -132,7 +132,7 @@ fn ask<A: ResourceApp>() -> Result<(), String> {
     if let Some(catalog) = A::catalog() {
         catalog.ensure();
     } else {
-        ui_core::i18n::I18nManager::register_widget_messages();
+        tilo_ui_base::i18n::I18nManager::register_widget_messages();
     }
     answer(&kinds_of::<A>(), A::ID)
 }

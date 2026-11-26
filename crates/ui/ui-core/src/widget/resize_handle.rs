@@ -7,9 +7,9 @@ use vello::kurbo::{Rect, RoundedRect};
 
 use crate::color_compat::ColorCompat;
 
-use crate::theme::Theme;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 
 pub const HANDLE_VISIBLE_PX: f64 = 2.0;
 /// This is the strip's inter-group gap: the row declares no gap of its own
@@ -24,7 +24,7 @@ pub const HANDLE_HIT_HALF_PX: f64 = HANDLE_SLOT_PX / 2.0 + crate::widget::RESIZE
 /// The `GroupRow` constructs one per inter-group gap (N-1 handles for N
 /// groups) and refreshes the handle's `(left, right)` rect snapshot each
 /// layout pass.
-#[crate::component::not_a_component(shell, "resizing windows in the strip")]
+#[tilo_ui_base::component::not_a_component(shell, "resizing windows in the strip")]
 pub struct ResizeHandle {
     /// Rebuilt every layout pass — never trust this outside the current
     /// paint/event cycle.
@@ -79,9 +79,9 @@ impl Default for ResizeHandle {
 }
 
 impl Widget for ResizeHandle {
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         (!self.rect.is_zero_area()).then(|| {
-            crate::a11y::AccessNode::new(crate::a11y::Role::Separator).with_bounds(self.rect)
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Separator).with_bounds(self.rect)
         })
     }
     fn build_layout(
@@ -116,7 +116,7 @@ impl Widget for ResizeHandle {
         false
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,

@@ -1,11 +1,10 @@
 use crate::support::{MemoryRelay, document_mutation, headless_app, pump};
 use std::time::SystemTime;
-use tilo_ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
-use tilo_ui::permissions::{
-    ActionKind, AppKind, MemberId, PermissionContext, PermissionScope, Role,
-};
-use tilo_ui::presence::{PathSegment, PresenceKey};
-use tilo_ui::widget::{TextInput, Widget};
+use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest, collaboration::PresencePayload};
+use tilo_ui_base::{permissions::ActionKind, permissions::AppKind, permissions::MemberId, permissions::PermissionContext, permissions::PermissionScope, permissions::Role};
+use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
+use tilo_ui::widget::TextInput;
+use tilo_ui_base::widget::Widget;
 
 #[allow(
     clippy::too_many_lines,
@@ -58,7 +57,7 @@ fn relay_fans_out_presence_and_status_to_remote_peers() {
                     member,
                     payload: PresencePayload::Caret { pos: 42 },
                     ..
-                } if *member == tilo_ui::permissions::MemberId::person("alice")
+                } if *member == tilo_ui_base::permissions::MemberId::person("alice")
             )),
             "bob must receive alice's caret presence attributed to alice, got {events:?}"
         );
@@ -325,10 +324,10 @@ fn peer_carets_pointers_and_tabs_render_on_the_remote_app() {
 
         let mut input = TextInput::new(vec![PathSegment::Field("doc".into())]);
         let mut scene = vello::Scene::new();
-        let theme = tilo_ui::theme::Theme::dark();
-        let mut tr = tilo_ui::text_render::TextRenderer::new();
+        let theme = tilo_ui_base::theme::Theme::dark();
+        let mut tr = tilo_ui_base::text_render::TextRenderer::new();
 
-        input.draw(&mut tilo_ui::draw::DrawCtx::new(
+        input.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             vello::kurbo::Affine::IDENTITY,
             &mut tr,
@@ -386,7 +385,7 @@ fn peer_carets_pointers_and_tabs_render_on_the_remote_app() {
 /// reads the terminal surface and an Editor writes it — no individual
 /// capabilities needed.
 fn member_ctx(user: &str, role: Role) -> PermissionContext {
-    PermissionContext::member(&tilo_ui::permissions::MemberId::person(user), role)
+    PermissionContext::member(&tilo_ui_base::permissions::MemberId::person(user), role)
 }
 
 fn terminal_write() -> PermissionScope {

@@ -83,7 +83,7 @@ fn long_fixture() -> Element {
                                 &format!("primary-{index}"),
                                 "Refresh all remote connections",
                             )
-                            .with_icon(crate::icons::Icon::Search)
+                            .with_icon(tilo_ui_base::icons::Icon::Search)
                             .role(ButtonRole::Primary),
                         )
                         .secondary(Button::new(&format!("secondary-{index}"), "View details")),
@@ -100,17 +100,17 @@ fn lay_out_grid(mut g: CardGrid, w: f64, h: f64) -> CardGrid {
     let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let mut tr = TextRenderer::new();
     let node = g.build_layout(&mut taffy, &theme, &mut map);
-    let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
+    let mut bindings = tilo_ui_base::widget::bound_nodes::BoundNodeMap::new();
     unsafe {
         bindings.rebuild(&g, &taffy, node, &map);
     }
     unsafe {
-        crate::widget::compute_widget_layout(
+        tilo_ui_base::widget::compute_widget_layout(
             &mut taffy,
             node,
             Size {
-                width: taffy::AvailableSpace::Definite(crate::num::f32_of_f64(w)),
-                height: taffy::AvailableSpace::Definite(crate::num::f32_of_f64(h)),
+                width: taffy::AvailableSpace::Definite(tilo_ui_base::num::f32_of_f64(w)),
+                height: taffy::AvailableSpace::Definite(tilo_ui_base::num::f32_of_f64(h)),
             },
             &map,
             &bindings,
@@ -155,7 +155,7 @@ fn a_selected_card_replaces_its_edge_with_one_accent_outline() {
         let ground = theme.tokens.colors.surfaces.content.to_rgba8();
         let ground = [ground.r, ground.g, ground.b];
         let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 12);
-        let width = crate::surface::selected_edge_width(&theme);
+        let width = tilo_ui_base::surface::selected_edge_width(&theme);
         let (chosen, other) = (rect(cards[0]), rect(cards[1]));
         let mid = chosen.center().y;
         assert!(
@@ -449,7 +449,7 @@ fn a_pressable_card_activates_but_its_own_actions_do_not_open_it() {
     harness.click_at(share.center().x, share.center().y);
     assert_eq!(opened.get(), 1, "the footer's action is its own");
     harness
-        .perform_named("open-report", &crate::a11y::Action::Activate)
+        .perform_named("open-report", &tilo_ui_base::a11y::Action::Activate)
         .unwrap();
     assert_eq!(opened.get(), 2);
 }

@@ -114,7 +114,7 @@ fn cpu_frame(
         damage_regions: &[],
         scroll_copies: &[],
         full_redraw: true,
-        backdrop: &ui::part_paint::backdrop::BackdropFrame::default(),
+        backdrop: &tilo_ui_base::part_paint::backdrop::BackdropFrame::default(),
     };
     raster
         .rasterize_to_cpu(frame)
@@ -189,7 +189,7 @@ fn words(composition: &ui::composition::Composition) -> Vec<String> {
 /// render of the same scene within anti-aliasing.
 #[test]
 fn the_shells_screen_is_the_frame_the_cpu_replay_draws() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (notebook, titles) = notes(&crate::common::TITLES[..1]);
     let mut session = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -280,7 +280,7 @@ fn the_shells_screen_is_the_frame_the_cpu_replay_draws() {
 /// and the page's markup shows them as elements.
 #[test]
 fn the_shells_page_carries_its_bar_and_its_windows() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (notebook, titles) = notes(&crate::common::TITLES[..1]);
     let mut session = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],

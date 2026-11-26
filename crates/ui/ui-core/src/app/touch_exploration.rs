@@ -1,5 +1,5 @@
 // Explore by touch, and the order the built-in screen reader walks
-// (`crate::screen_reader_touch`, docs/security/sign-in.md §3.4).
+// (`tilo_ui_base::screen_reader_touch`, docs/security/sign-in.md §3.4).
 
 impl App {
     /// Run `read` with the screen reader and the order it walks: the
@@ -10,8 +10,8 @@ impl App {
     fn with_screen_reader_order<R>(
         &mut self,
         read: impl FnOnce(
-            &mut crate::screen_reader::ScreenReader,
-            &[crate::screen_reader::ReadingItem],
+            &mut tilo_ui_base::screen_reader::ScreenReader,
+            &[tilo_ui_base::screen_reader::ReadingItem],
         ) -> R,
     ) -> Option<R> {
         self.accessibility.screen_reader.as_ref()?;
@@ -36,7 +36,7 @@ impl App {
     }
 
     /// A finger on the screen while the built-in screen reader is on: it
-    /// explores rather than presses ([`crate::screen_reader_touch`]), and
+    /// explores rather than presses ([`tilo_ui_base::screen_reader_touch`]), and
     /// no widget sees it. `false`, touching nothing, while the reader is
     /// off: the touch then goes to the widgets as it always does.
     /// `scale` turns the contact's physical position into logical pixels.
@@ -70,8 +70,8 @@ impl App {
         any
     }
 
-    fn apply_explore_gesture(&mut self, gesture: crate::screen_reader_touch::ExploreGesture) {
-        use crate::screen_reader_touch::ExploreGesture;
+    fn apply_explore_gesture(&mut self, gesture: tilo_ui_base::screen_reader_touch::ExploreGesture) {
+        use tilo_ui_base::screen_reader_touch::ExploreGesture;
         match gesture {
             ExploreGesture::Explore(at) => {
                 self.with_screen_reader_order(|reader, order| {
@@ -126,7 +126,7 @@ impl App {
 /// resource nodes, which stand nowhere, are left out.
 fn screen_reader_order(
     tree: &crate::a11y_tree::SemanticTree,
-) -> Vec<crate::screen_reader::ReadingItem> {
+) -> Vec<tilo_ui_base::screen_reader::ReadingItem> {
     let mut order = Vec::new();
     // Depth-first, children in reading order; the flag says whether an
     // ancestor stands on the screen.
@@ -140,15 +140,15 @@ fn screen_reader_order(
         }
         let placed = placed_above || node.bounds.is_some();
         if placed && id != *tree.root() {
-            let mut access = crate::a11y::AccessNode::new(node.role).with_state(node.state);
+            let mut access = tilo_ui_base::a11y::AccessNode::new(node.role).with_state(node.state);
             access.name.clone_from(&node.name);
             access.value.clone_from(&node.value);
             access.bounds = node.bounds.map(Into::into);
             access.pos_in_set = node.place.pos_in_set;
             access.set_size = node.place.set_size;
             access.level = node.place.level;
-            if !crate::screen_reader::describe(&access).is_empty() {
-                order.push(crate::screen_reader::ReadingItem {
+            if !tilo_ui_base::screen_reader::describe(&access).is_empty() {
+                order.push(tilo_ui_base::screen_reader::ReadingItem {
                     id: Some(id.clone()),
                     node: access,
                 });

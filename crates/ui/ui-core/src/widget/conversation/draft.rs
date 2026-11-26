@@ -24,7 +24,7 @@ pub fn line(body: &str) -> Option<String> {
 fn elide(text: &str, chars: usize) -> String {
     let mut count = 0;
     let mut cut = None;
-    for (index, _) in crate::text_break::grapheme_indices(text) {
+    for (index, _) in tilo_ui_base::text_break::grapheme_indices(text) {
         if count == chars {
             cut = Some(index);
             break;

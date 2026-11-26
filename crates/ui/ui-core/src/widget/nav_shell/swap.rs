@@ -39,7 +39,7 @@ impl NavShell {
     /// Put the staged bodies in place of those they replace, each body's node in its predecessor's
     /// place under the shell's node, with the style the shell lays it out from
     /// ([`Widget::manual_layout_policy`]).
-    pub(super) fn swap_bodies(&mut self, remount: &mut crate::widget::Remount<'_>) -> bool {
+    pub(super) fn swap_bodies(&mut self, remount: &mut tilo_ui_base::widget::Remount<'_>) -> bool {
         self.bodies_swapped = false;
         let Some(node) = self
             .baseline

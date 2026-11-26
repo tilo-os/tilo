@@ -253,7 +253,7 @@ fn not_started(commands: &Rc<RefCell<Vec<SessionCommand>>>) -> ui::widget::Conta
 
 /// A tree covering every output and taking the keyboard: what stands in front of the session withholds
 /// it.
-fn covering(root: Box<dyn ui::Widget>, placement: Placement) -> WidgetSurface {
+fn covering(root: Box<dyn tilo_ui_base::Widget>, placement: Placement) -> WidgetSurface {
     WidgetSurface::new(root, placement, false)
         .named("Setup")
         .covering_outputs()
@@ -315,7 +315,7 @@ impl Published for Setup {
         Published::a11y_name(self.widgets())
     }
 
-    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
+    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &tilo_ui_base::a11y::Action) -> bool {
         self.up() && Published::a11y_action(self.widgets_mut(), target, action)
     }
 

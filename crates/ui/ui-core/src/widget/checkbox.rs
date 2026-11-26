@@ -1,13 +1,13 @@
 use super::bool_control::{
     BoolControl, bool_control_api, bool_control_capabilities, bool_control_widget_methods,
 };
-use crate::i18n::widget_text;
-use crate::text_render::TextRenderer;
-use crate::text_render::TextStyle;
-use crate::theme::Theme;
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::text_render::TextStyle;
+use tilo_ui_base::theme::Theme;
 use crate::widget::Interaction;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 
 #[path = "checkbox_component.rs"]
@@ -92,16 +92,16 @@ impl CheckPose {
 /// for no frames.
 #[derive(Clone, Debug)]
 pub struct CheckMotion {
-    mark: crate::motion::Mark,
-    glyph: crate::motion::CrossFade<CheckGlyph>,
+    mark: tilo_ui_base::motion::Mark,
+    glyph: tilo_ui_base::motion::CrossFade<CheckGlyph>,
     shown: Option<(bool, CheckGlyph)>,
 }
 
 impl Default for CheckMotion {
     fn default() -> Self {
         Self {
-            mark: crate::motion::Mark::default(),
-            glyph: crate::motion::CrossFade::new(CheckGlyph::Check),
+            mark: tilo_ui_base::motion::Mark::default(),
+            glyph: tilo_ui_base::motion::CrossFade::new(CheckGlyph::Check),
             shown: None,
         }
     }
@@ -113,8 +113,8 @@ impl CheckMotion {
         &mut self,
         marked: bool,
         glyph: CheckGlyph,
-        motion: crate::tokens::EffectiveMotion,
-        source: crate::tokens::MotionSource,
+        motion: tilo_ui_base::tokens::EffectiveMotion,
+        source: tilo_ui_base::tokens::MotionSource,
         now: crate::time::Instant,
     ) {
         let Some((was_marked, had)) = self.shown else {
@@ -127,13 +127,13 @@ impl CheckMotion {
         }
         self.shown = Some((marked, glyph));
         match (was_marked, marked) {
-            (false, true) => self.glyph = crate::motion::CrossFade::new(glyph),
+            (false, true) => self.glyph = tilo_ui_base::motion::CrossFade::new(glyph),
             (true, true) => self.glyph.show(glyph, motion, source, now),
             _ => {}
         }
         self.mark.set(marked, motion, source, now);
         if let Some(until) = self.glyph.settles_at() {
-            crate::motion::want_frames_until(until);
+            tilo_ui_base::motion::want_frames_until(until);
         }
     }
 
@@ -142,11 +142,11 @@ impl CheckMotion {
         &mut self,
         marked: bool,
         glyph: CheckGlyph,
-        motion: crate::tokens::EffectiveMotion,
+        motion: tilo_ui_base::tokens::EffectiveMotion,
         now: crate::time::Instant,
     ) {
         let source =
-            crate::motion::recent_input(now).unwrap_or(crate::tokens::MotionSource::Action);
+            tilo_ui_base::motion::recent_input(now).unwrap_or(tilo_ui_base::tokens::MotionSource::Action);
         self.follow(marked, glyph, motion, source, now);
     }
 
@@ -154,7 +154,7 @@ impl CheckMotion {
     pub fn snap(&mut self, marked: bool, glyph: CheckGlyph) {
         self.shown = Some((marked, glyph));
         self.mark.snap(marked);
-        self.glyph = crate::motion::CrossFade::new(glyph);
+        self.glyph = tilo_ui_base::motion::CrossFade::new(glyph);
     }
 
     #[track_caller]
@@ -260,10 +260,10 @@ pub struct Checkbox {
     /// A radio of a set rather than a checkbox.
     radio: bool,
     motion: CheckMotion,
-    feel: crate::motion::Feel,
+    feel: tilo_ui_base::motion::Feel,
     /// A view that builds the box anew on each change: the one built in its
     /// place goes on from its mark (`motion::keep`).
-    hand_on: crate::motion::HandOn<KeptCheck>,
+    hand_on: tilo_ui_base::motion::HandOn<KeptCheck>,
 }
 
 /// What a box leaves for the one a rebuild puts in its place: its mark,
@@ -284,7 +284,7 @@ impl Checkbox {
     /// Box this widget in the SDK so thin apps reuse its shared implementation.
     /// This keeps the widget's vtable instantiation out of the app.
     #[must_use]
-    pub fn into_widget(self) -> Box<dyn crate::widget::Widget> {
+    pub fn into_widget(self) -> Box<dyn tilo_ui_base::widget::Widget> {
         Box::new(self)
     }
 
@@ -306,7 +306,7 @@ impl Checkbox {
     /// Pointer, keyboard, and accessibility activation update `state`;
     /// mutations through any clone of `state` update this checkbox on the
     /// next synchronization pass.
-    pub fn from_state(state: &crate::LocalState<bool>) -> Self {
+    pub fn from_state(state: &tilo_ui_base::LocalState<bool>) -> Self {
         Self::with_control(BoolControl::local(state, None))
     }
 
@@ -315,15 +315,15 @@ impl Checkbox {
             control,
             label: None,
             indeterminate: false,
-            label_style: crate::tokens::typography::stock().style(crate::tokens::TextRole::Body),
+            label_style: tilo_ui_base::tokens::typography::stock().style(tilo_ui_base::tokens::TextRole::Body),
             label_layout_revision: None,
             intrinsic: false,
             painted: None,
             drawing: None,
             radio: false,
             motion: CheckMotion::default(),
-            feel: crate::motion::Feel::Standard,
-            hand_on: crate::motion::HandOn::default(),
+            feel: tilo_ui_base::motion::Feel::Standard,
+            hand_on: tilo_ui_base::motion::HandOn::default(),
         }
     }
 
@@ -345,10 +345,10 @@ impl Checkbox {
     /// rest. The same box shown another value since moves from there, as
     /// the input that made it asks; another box's that it merely stands
     /// where, showing something else, rests.
-    fn take_up(&mut self, kept: KeptCheck, found: crate::motion::Found) {
+    fn take_up(&mut self, kept: KeptCheck, found: tilo_ui_base::motion::Found) {
         self.motion = kept.motion;
         let shown = self.shown();
-        if kept.shown != shown && found == crate::motion::Found::Where {
+        if kept.shown != shown && found == tilo_ui_base::motion::Found::Where {
             self.motion.snap(shown.0, shown.1);
         }
     }
@@ -360,14 +360,14 @@ impl Checkbox {
     }
 
     fn painted_now(&self) -> Painted {
-        let pose = self.motion.pose(crate::motion::frame_now());
+        let pose = self.motion.pose(tilo_ui_base::motion::frame_now());
         (
             self.control.is_checked,
             self.indeterminate,
             self.control.is_hovered,
             self.control.is_focused,
             self.control.effectively_enabled(),
-            crate::i18n::I18nManager::revision(),
+            tilo_ui_base::i18n::I18nManager::revision(),
             [
                 pose.level.to_bits(),
                 pose.incoming.to_bits(),
@@ -389,12 +389,12 @@ impl Checkbox {
 
     /// Play its mark at `feel` rather than the theme's pace.
     #[must_use]
-    pub fn with_feel(mut self, feel: crate::motion::Feel) -> Self {
+    pub fn with_feel(mut self, feel: tilo_ui_base::motion::Feel) -> Self {
         self.feel = feel;
         self
     }
 
-    pub fn set_feel(&mut self, feel: crate::motion::Feel) {
+    pub fn set_feel(&mut self, feel: tilo_ui_base::motion::Feel) {
         if self.feel != feel {
             self.feel = feel;
             self.painted = None;
@@ -484,7 +484,7 @@ impl Checkbox {
         let box_color = match level {
             l if l >= 1.0 => on_box,
             l if l <= 0.0 => off_box,
-            l => crate::tokens::colors::mix8(off_box, on_box, l),
+            l => tilo_ui_base::tokens::colors::mix8(off_box, on_box, l),
         };
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -500,7 +500,7 @@ impl Checkbox {
         let mark = colors.ink_on_any(
             &[on_box],
             on_mark,
-            crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+            tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST,
         );
         if level > 0.0 {
             let mark_transform = if level >= 1.0 || theme.motion().reduced() {
@@ -562,7 +562,7 @@ impl Checkbox {
                 transform,
                 color,
                 None,
-                &crate::surface::edge_outline(rect, radius),
+                &tilo_ui_base::surface::edge_outline(rect, radius),
             );
         }
     }
@@ -628,13 +628,13 @@ fn unchecked_edge(theme: &Theme, face: vello::peniko::Color) -> vello::peniko::C
     let colors = &theme.tokens.colors;
     colors.ink_on_any(
         &[colors.surfaces.content],
-        crate::tokens::colors::composite(crate::surface::edge_on(face), face),
-        crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+        tilo_ui_base::tokens::colors::composite(tilo_ui_base::surface::edge_on(face), face),
+        tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST,
     )
 }
 
 impl Widget for Checkbox {
-    crate::described!();
+    tilo_ui_base::described!();
 
     bool_control_widget_methods!("checkbox");
 
@@ -644,9 +644,9 @@ impl Widget for Checkbox {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.label_style = theme.tokens.typography.style(crate::tokens::TextRole::Body);
+        self.label_style = theme.tokens.typography.style(tilo_ui_base::tokens::TextRole::Body);
         self.label_layout_revision = Some((
-            crate::i18n::I18nManager::revision(),
+            tilo_ui_base::i18n::I18nManager::revision(),
             self.control.interaction.minimum_target(),
         ));
         let labelled = self.label.is_some();
@@ -685,7 +685,7 @@ impl Widget for Checkbox {
         text_renderer: &mut TextRenderer,
     ) -> Size<f32> {
         let target = self.control.interaction.minimum_target();
-        self.label_layout_revision = Some((crate::i18n::I18nManager::revision(), target));
+        self.label_layout_revision = Some((tilo_ui_base::i18n::I18nManager::revision(), target));
         let Some(label) = self.label.as_ref() else {
             return Size {
                 width: known_dimensions.width.unwrap_or(target),
@@ -727,7 +727,7 @@ impl Widget for Checkbox {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.control.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.control.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if let Some((kept, found)) = self.hand_on.place(self.control.rect) {
             self.take_up(kept, found);
         }
@@ -737,14 +737,14 @@ impl Widget for Checkbox {
         clippy::cast_possible_truncation,
         reason = "widget rectangles are finite renderer coordinates already laid out as f32"
     )]
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let (marked, glyph) = self.shown();
         self.motion
             .follow_input(marked, glyph, self.feel.over(theme.motion()), now);
@@ -786,9 +786,9 @@ impl Widget for Checkbox {
                 &style,
             );
         }
-        crate::widget::draw_over(
+        tilo_ui_base::widget::draw_over(
             self,
-            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
         );
     }
 
@@ -802,13 +802,13 @@ impl Widget for Checkbox {
 
     /// Frames only while the fill or the mark is on its way.
     fn needs_animation_frame(&self) -> bool {
-        self.motion.is_moving(crate::motion::frame_now())
+        self.motion.is_moving(tilo_ui_base::motion::frame_now())
     }
 
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         self.control.handle_event(event, ctx);
     }
@@ -817,7 +817,7 @@ impl Widget for Checkbox {
         self.label.is_some()
             && self.label_layout_revision
                 != Some((
-                    crate::i18n::I18nManager::revision(),
+                    tilo_ui_base::i18n::I18nManager::revision(),
                     self.control.interaction.minimum_target(),
                 ))
     }
@@ -834,8 +834,8 @@ impl Widget for Checkbox {
         false
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         // A visible inline label names itself; an explicit accessible name
         // covers label-less uses so the control is never announced as an
         // anonymous checkbox. The checked state is the load-bearing semantic.
@@ -882,7 +882,7 @@ impl Drop for Checkbox {
 mod tests {
     use super::*;
     use crate::testing::Dispatch;
-    use crate::widget::Widget;
+    use tilo_ui_base::widget::Widget;
     use automerge::{AutoCommit, ReadDoc, transaction::Transactable};
     use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -961,7 +961,7 @@ mod tests {
     /// ground in every preset: it is the only thing that shows the box.
     #[test]
     fn an_unchecked_edge_reads_on_every_ground() {
-        use crate::tokens::colors::{NON_TEXT_MIN_CONTRAST, composite};
+        use tilo_ui_base::{tokens::colors::NON_TEXT_MIN_CONTRAST, tokens::colors::composite};
         for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
             let s = &theme.tokens.colors.surfaces;
             for ground in [s.content, s.sidebar, s.inspector, s.raised, s.overlay] {
@@ -969,7 +969,7 @@ mod tests {
                 region.tokens.colors.surfaces.content = ground;
                 let face = region.tokens.colors.surfaces.raised;
                 let edge = composite(unchecked_edge(&region, face), face);
-                let ratio = crate::a11y::contrast_ratio(edge, ground);
+                let ratio = tilo_ui_base::a11y::contrast_ratio(edge, ground);
                 assert!(
                     ratio >= NON_TEXT_MIN_CONTRAST - 0.01,
                     "{}: the unchecked edge reaches only {ratio:.2}:1 on {ground:?}",
@@ -984,7 +984,7 @@ mod tests {
     /// vanish.
     #[test]
     fn a_disabled_box_keeps_its_edge_at_full_strength() {
-        use crate::offscreen::OffscreenRenderer;
+        use tilo_ui_base::offscreen::OffscreenRenderer;
         let theme = Theme::light();
         let rect = Rect::new(8.0, 8.0, 32.0, 32.0);
         let render = |disabled: bool| {
@@ -1025,7 +1025,7 @@ mod tests {
         }
 
         fn accessibility_unchecked_default() {
-            use crate::a11y::Role;
+            use tilo_ui_base::a11y::Role;
             let c = Checkbox::bound("any", "path");
             let node = Widget::accessibility(&c).unwrap();
             assert_eq!(node.role, Role::Checkbox);
@@ -1048,7 +1048,7 @@ mod tests {
         }
 
         fn accessibility_disabled_checked_reports_checked_and_disabled() {
-            use crate::a11y::Role;
+            use tilo_ui_base::a11y::Role;
             let mut c = Checkbox::bound("any", "path").with_enabled(false);
             c.control.is_checked = true; // same module → can set the synced state directly
             let node = Widget::accessibility(&c).unwrap();
@@ -1058,7 +1058,7 @@ mod tests {
         }
 
         fn perform_action_toggle_check_flips_state() {
-            use crate::a11y::Action;
+            use tilo_ui_base::a11y::Action;
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             let mut c = Checkbox::bound("any", "checked");
@@ -1067,7 +1067,7 @@ mod tests {
                 &mut c,
                 &Action::ToggleCheck,
                 &[],
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!(c.control.is_checked, "ToggleCheck flips to checked");
@@ -1075,14 +1075,14 @@ mod tests {
                 &mut c,
                 &Action::Activate,
                 &[],
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!(!c.control.is_checked, "Activate flips back");
         }
 
         fn disabled_checkbox_rejects_perform_action() {
-            use crate::a11y::Action;
+            use tilo_ui_base::a11y::Action;
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             let mut c = Checkbox::bound("any", "checked").with_enabled(false);
@@ -1090,7 +1090,7 @@ mod tests {
                 &mut c,
                 &Action::ToggleCheck,
                 &[],
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!(!c.control.is_checked, "a disabled checkbox must not toggle");
@@ -1145,21 +1145,21 @@ mod tests {
 
         fn action_binding_owns_accessibility_activation() {
             let mut checkbox = Checkbox::bound("native", "checked")
-                .on_action(crate::widget::test_bool_action_binding());
+                .on_action(tilo_ui_base::widget::test_bool_action_binding());
             let mut doc = AutoCommit::new();
-            crate::widget::controls::refresh_control_action_availability(
+            tilo_ui_base::widget::controls::refresh_control_action_availability(
                 &mut checkbox,
                 &std::collections::HashSet::new(),
             );
             assert!(!Widget::is_enabled(&checkbox));
             assert!(!Widget::perform_action(
                 &mut checkbox,
-                &crate::a11y::Action::Activate,
+                &tilo_ui_base::a11y::Action::Activate,
                 &[],
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
-            crate::widget::controls::refresh_control_action_availability(
+            tilo_ui_base::widget::controls::refresh_control_action_availability(
                 &mut checkbox,
                 &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                     "test:control",
@@ -1169,17 +1169,17 @@ mod tests {
             assert!(Widget::is_enabled(&checkbox));
             assert!(Widget::perform_action(
                 &mut checkbox,
-                &crate::a11y::Action::Activate,
+                &tilo_ui_base::a11y::Action::Activate,
                 &[],
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(doc.get(&automerge::ROOT, "checked").unwrap().is_none());
-            let intent = crate::widget::controls::take_control_invocation(&mut checkbox).unwrap();
+            let intent = tilo_ui_base::widget::controls::take_control_invocation(&mut checkbox).unwrap();
             assert_eq!(intent.arguments["value"], true);
             assert!(matches!(
-                crate::widget::controls::control_action_bindings(&checkbox)[0].kind,
-                crate::widget::ControlBindingKind::Action(_)
+                tilo_ui_base::widget::controls::control_action_bindings(&checkbox)[0].kind,
+                tilo_ui_base::widget::ControlBindingKind::Action(_)
             ));
             doc.put(&automerge::ROOT, "checked", false).unwrap();
             Widget::sync(&mut checkbox, &doc, &automerge::ROOT);
@@ -1219,9 +1219,9 @@ mod tests {
         }
 
         fn local_state_binding_is_two_way_across_checkboxes() {
-            use crate::a11y::Action;
+            use tilo_ui_base::a11y::Action;
 
-            let state = crate::LocalState::new(false);
+            let state = tilo_ui_base::LocalState::new(false);
             let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             let captured = std::rc::Rc::clone(&changes);
             let mut first = Checkbox::from_state(&state).on_choose("checkbox", move |checked| {
@@ -1241,7 +1241,7 @@ mod tests {
                 &mut first,
                 &Action::ToggleCheck,
                 &[],
-                &mut crate::widget::Edits::lend(&mut document),
+                &mut tilo_ui_base::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             assert!(!state.get(), "user activation publishes typed state");
@@ -1269,7 +1269,7 @@ mod tests {
         for theme in [Theme::dark(), Theme::light()] {
             let face = theme.tokens.colors.surfaces.raised;
             let edge = unchecked_edge(&theme, face);
-            let ratio = crate::a11y::contrast_ratio(edge, theme.tokens.colors.surfaces.content);
+            let ratio = tilo_ui_base::a11y::contrast_ratio(edge, theme.tokens.colors.surfaces.content);
             assert!(ratio >= 3.0 - 1e-6, "edge contrast {ratio}");
         }
         let row = crate::widget::Row::new().push(Box::new(
@@ -1299,32 +1299,32 @@ mod tests {
     }
 
     fn present(checkbox: &mut Checkbox, theme: &Theme) {
-        checkbox.draw(&mut crate::draw::DrawCtx::new(
+        checkbox.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut TextRenderer::new(),
             theme,
-            crate::presence::PresenceCtx::empty().draw_env(),
+            tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
         ));
         checkbox.mark_drawn();
     }
 
     #[test]
     fn a_click_fades_the_box_in_unchecking_goes_quicker_and_a_key_lands() {
-        use crate::synthetic_input::{cursor_moved, mouse_press};
+        use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_press};
         use crate::testing::dispatch;
         use crate::time::testing::with_monotonic_time;
-        use crate::tokens::MotionSource;
+        use tilo_ui_base::tokens::MotionSource;
         let ms = |t0: crate::time::Instant, ms: u64| t0 + crate::time::Duration::from_millis(ms);
         let theme = Theme::dark();
-        let state = crate::LocalState::new(false);
+        let state = tilo_ui_base::LocalState::new(false);
         let mut checkbox = Checkbox::from_state(&state);
         box_at_origin(&mut checkbox);
         let t0 = crate::time::now();
         with_monotonic_time(t0, || present(&mut checkbox, &theme));
         assert!(!checkbox.needs_animation_frame(), "the first paint rests");
         with_monotonic_time(t0, || {
-            crate::motion::note_source(MotionSource::Pointer);
+            tilo_ui_base::motion::note_source(MotionSource::Pointer);
             dispatch(&mut checkbox, &cursor_moved(16.0, 16.0));
             dispatch(&mut checkbox, &mouse_press());
             assert!(state.get(), "checked on the press, at once");
@@ -1341,7 +1341,7 @@ mod tests {
             assert!(!checkbox.needs_animation_frame(), "settled: no frames");
             present(&mut checkbox, &theme);
             assert!(!checkbox.needs_redraw(), "settled: no repaint");
-            crate::motion::note_source(MotionSource::Pointer);
+            tilo_ui_base::motion::note_source(MotionSource::Pointer);
             dispatch(&mut checkbox, &mouse_press());
             assert!(!state.get());
             present(&mut checkbox, &theme);
@@ -1350,12 +1350,12 @@ mod tests {
         assert!(went < came, "out {went:?} vs in {came:?}");
         let mut doc = AutoCommit::new();
         with_monotonic_time(ms(t0, 2_000), || {
-            crate::motion::note_source(MotionSource::Keyboard);
+            tilo_ui_base::motion::note_source(MotionSource::Keyboard);
             assert!(Widget::perform_action(
                 &mut checkbox,
-                &crate::a11y::Action::ToggleCheck,
+                &tilo_ui_base::a11y::Action::ToggleCheck,
                 &[],
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             present(&mut checkbox, &theme);
@@ -1370,7 +1370,7 @@ mod tests {
 
     #[test]
     fn mixed_and_checked_cross_fade_their_glyphs_and_reduced_motion_still_fades() {
-        use crate::tokens::MotionSource;
+        use tilo_ui_base::tokens::MotionSource;
         let now = crate::time::now();
         let later = now + crate::time::Duration::from_millis(40);
         let motion = Theme::dark().motion();
@@ -1419,7 +1419,7 @@ mod tests {
         assert!(level > 0.0 && level < 1.0, "fades: {level}");
         // A painted box part-way differs from both ends; at rest it is the
         // box it always was.
-        use crate::offscreen::OffscreenRenderer;
+        use tilo_ui_base::offscreen::OffscreenRenderer;
         let theme = Theme::dark();
         let rect = Rect::new(8.0, 8.0, 32.0, 32.0);
         let render = |face: CheckboxFace| {

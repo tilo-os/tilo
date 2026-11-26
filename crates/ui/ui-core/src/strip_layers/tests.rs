@@ -44,13 +44,13 @@ fn cache(drawn: Color, strips: Vec<StripBlit>) -> FrameCache {
     }
 }
 
-fn grouped(near: Color, far: Color) -> (Scene, Option<crate::scene_parts::SectionParts>) {
+fn grouped(near: Color, far: Color) -> (Scene, Option<tilo_ui_base::scene_parts::SectionParts>) {
     let mut drawn = Scene::new();
-    let ((), parts) = crate::scene_parts::record(&mut drawn, |drawn| {
+    let ((), parts) = tilo_ui_base::scene_parts::record(&mut drawn, |drawn| {
         for (index, (x, color)) in [(130.0, near), (2400.0, far)].into_iter().enumerate() {
             let bounds = Rect::new(x, 60.0, x + 300.0, 300.0);
-            let key = crate::scene_parts::PartKey::new("test.group", index);
-            crate::scene_parts::part(drawn, key, vec![bounds], |drawn| {
+            let key = tilo_ui_base::scene_parts::PartKey::new("test.group", index);
+            tilo_ui_base::scene_parts::part(drawn, key, vec![bounds], |drawn| {
                 drawn.fill(Fill::NonZero, Affine::IDENTITY, color, None, &bounds);
             });
         }
@@ -191,7 +191,7 @@ tilo_test_env::scenario! {
         };
         assert_eq!(
             copies[0].device_copy(),
-            crate::scroll_copy::DeviceCopy {
+            tilo_ui_base::scroll_copy::DeviceCopy {
                 x: 112,
                 y: 50,
                 width: 788,
@@ -234,11 +234,11 @@ tilo_test_env::scenario! {
         // of at most a strip's width leaves.
         let edge = |near: Color, far: Color| {
             let mut drawn = Scene::new();
-            let ((), parts) = crate::scene_parts::record(&mut drawn, |drawn| {
+            let ((), parts) = tilo_ui_base::scene_parts::record(&mut drawn, |drawn| {
                 for (index, (x, color)) in [(10.0, near), (2400.0, far)].into_iter().enumerate() {
                     let bounds = Rect::new(x, 60.0, x + 300.0, 300.0);
-                    let key = crate::scene_parts::PartKey::new("test.group", index);
-                    crate::scene_parts::part(drawn, key, vec![bounds], |drawn| {
+                    let key = tilo_ui_base::scene_parts::PartKey::new("test.group", index);
+                    tilo_ui_base::scene_parts::part(drawn, key, vec![bounds], |drawn| {
                         drawn.fill(Fill::NonZero, Affine::IDENTITY, color, None, &bounds);
                     });
                 }

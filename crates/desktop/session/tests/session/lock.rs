@@ -322,7 +322,7 @@ pub(super) fn until_back(
 #[test]
 fn a_password_typed_into_the_lock_screen_unlocks_the_session() {
     const DISPLAY: &str = "HEADLESS-1";
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = private_home();
     let held = std::sync::Arc::new(Held::new());
     let mut session = lockable_session(
@@ -436,7 +436,7 @@ fn a_password_typed_into_the_lock_screen_unlocks_the_session() {
 #[test]
 fn the_lock_shows_its_prompt_from_the_first_frame_after_it_locks() {
     const DISPLAY: &str = "HEADLESS-1";
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = private_home();
     let mut session = lockable_session(
         &home.path().join("collab.sock"),
@@ -514,7 +514,7 @@ fn control_picture(
 #[test]
 fn a_check_reads_the_lock_screen_the_displays_show_and_unlocking_puts_the_shell_back() {
     const DISPLAY: &str = "HEADLESS-1";
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = private_home();
     let control = home.path().join("test-control.sock");
     let mut session = Session::headless(
@@ -601,7 +601,7 @@ fn a_check_reads_the_lock_screen_the_displays_show_and_unlocking_puts_the_shell_
 #[test]
 fn a_session_with_no_lock_screen_locks_and_its_own_view_unlocks_it() {
     const DISPLAY: &str = "HEADLESS-1";
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = private_home();
     let mut session = crate::common::headless_on(
         &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
@@ -674,7 +674,7 @@ fn a_session_with_no_lock_screen_locks_and_its_own_view_unlocks_it() {
 #[test]
 fn every_display_shows_the_lock_screen_while_the_session_is_locked() {
     const DISPLAYS: [&str; 2] = ["HEADLESS-1", "HEADLESS-2"];
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // What the shell shows before the lock and after it is the same shell: the bar's own minute
     // turning over in between is not a difference.
     let _clock = tilo_test_env::held_wall_clock();
@@ -741,7 +741,7 @@ fn every_display_shows_the_lock_screen_while_the_session_is_locked() {
 /// session's own action does.
 #[test]
 fn the_power_menus_lock_starts_the_lock_screen() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = private_home();
     let mut session = lockable_session(
         &home.path().join("collab.sock"),
@@ -787,7 +787,7 @@ fn the_power_menus_lock_starts_the_lock_screen() {
 /// as the unlocked one's.
 #[test]
 fn the_lock_screens_transport_steers_whatever_plays() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = private_home();
     let asked = Rc::new(RefCell::new(Vec::new()));
     let published = Publishing::default();
@@ -1203,13 +1203,13 @@ impl Locked {
 /// it drew, and the card goes when nothing plays.
 #[test]
 fn the_lock_screen_app_draws_what_plays_and_its_transport_steers_the_player() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // The session publishes the time it is to the minute and the screen draws it: held at the
     // minute the test runs in, the screen changes for what plays and for nothing else.
     let at = ui::time::wall()
         .checked_sub(Duration::from_secs(
             u64::try_from(
-                ui::clock::local_now()
+                tilo_ui_base::clock::local_now()
                     .timestamp()
                     .as_second()
                     .rem_euclid(60),
@@ -1403,7 +1403,7 @@ pub(super) fn changed(
 #[test]
 fn a_level_key_pressed_on_the_lock_screen_answers_over_it() {
     const DISPLAY: &str = "HEADLESS-1";
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // The screen's clock is the machine's, and it turns over when it does: held, the pictures
     // either side of the key show the same minute, and what changed between them is what the key
     // drew.
@@ -1510,7 +1510,7 @@ pub(super) fn left_alone(session: &mut Session, span: Duration) {
 #[test]
 fn a_lock_that_came_up_while_the_person_typed_takes_their_password_after_it_went_quiet() {
     const DISPLAY: &str = "HEADLESS-1";
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = private_home();
     let mut session = lockable_session(
         &home.path().join("collab.sock"),
@@ -1558,7 +1558,7 @@ const LEFT: u32 = 0x110;
 #[test]
 fn a_window_that_opens_behind_the_lock_leaves_the_keyboard_to_it() {
     const DISPLAY: &str = "HEADLESS-1";
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = private_home();
     let mut session = lockable_session(
         &home.path().join("collab.sock"),
@@ -1588,7 +1588,7 @@ fn a_window_that_opens_behind_the_lock_leaves_the_keyboard_to_it() {
 #[test]
 fn a_lock_that_came_up_under_a_moving_pointer_and_a_drag_still_unlocks() {
     const DISPLAY: &str = "HEADLESS-1";
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = private_home();
     let mut session = lockable_session(
         &home.path().join("collab.sock"),
@@ -1655,7 +1655,7 @@ fn a_lock_that_came_up_under_a_moving_pointer_and_a_drag_still_unlocks() {
 #[test]
 fn a_finger_reaches_the_sessions_own_view_of_the_lock() {
     const DISPLAY: &str = "HEADLESS-1";
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = tilo_test_env::held_wall_clock();
     let home = private_home();
     let mut session = crate::common::headless_on(

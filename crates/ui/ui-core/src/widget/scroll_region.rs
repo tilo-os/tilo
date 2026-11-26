@@ -10,11 +10,11 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use super::ScrollAxis;
+use tilo_ui_base::widget::ScrollAxis;
 use super::scrollbar::{BarFade, PressOutcome, Scrollbar};
-use super::{PAGE_FRACTION, ScrollMetrics};
+use tilo_ui_base::{widget::PAGE_FRACTION, widget::ScrollMetrics};
 use crate::color_compat::ColorCompat;
-use crate::theme::Theme;
+use tilo_ui_base::theme::Theme;
 
 /// The offset along one axis that moves the least from `offset` to show `band` (content
 /// coordinates) in a viewport `view` long, kept in `0..=max`.
@@ -59,20 +59,20 @@ pub struct ScrollRegion {
     persisted: Option<Rc<Cell<(f32, f32)>>>,
     /// What the frame being drawn shows of the content, and what the last
     /// frame the host presented showed ([`Self::offer_copy`]).
-    shown: crate::scroll_copy::ShownFrames<RegionShown>,
+    shown: tilo_ui_base::scroll_copy::ShownFrames<RegionShown>,
     /// The rounded corners of the window the region sits in, learned where
     /// it last drew: its bars keep out of them.
     corners: Cell<crate::widget::scrollbar::SurfaceCorners>,
     /// Wheel and touchpad motion along the region's main axis: a detented
     /// wheel's notches and a touchpad flick glide on as every scroller's do
-    /// ([`crate::virtual_viewport::glide_step`]), in the frames the host
+    /// ([`tilo_ui_base::virtual_viewport::glide_step`]), in the frames the host
     /// asks for and steps through [`Self::advance`].
-    glide: crate::virtual_viewport::ScrollMomentum,
+    glide: tilo_ui_base::virtual_viewport::ScrollMomentum,
     /// The motion toward what the host asked to show ([`Self::glide_to`]).
-    scroll_to: crate::motion::ScrollTo,
+    scroll_to: tilo_ui_base::motion::ScrollTo,
     /// The theme's motion, at the last [`Self::set_viewport`], and device
     /// pixels per logical pixel where the region last handled input.
-    motion: crate::tokens::EffectiveMotion,
+    motion: tilo_ui_base::tokens::EffectiveMotion,
     device_scale: f64,
     /// The content's opacity in the frame being drawn and in the frame on
     /// screen: below 1 while it fades in after a long jump, when no copy of
@@ -95,7 +95,7 @@ struct RegionShown {
     thumbs: Vec<(Rect, vello::peniko::Color)>,
 }
 
-impl crate::scroll_copy::Shown for RegionShown {
+impl tilo_ui_base::scroll_copy::Shown for RegionShown {
     fn scroll(&self) -> Vec2 {
         self.offset
     }
@@ -138,11 +138,11 @@ impl ScrollRegion {
             bars: true,
             line_step: None,
             persisted: None,
-            shown: crate::scroll_copy::ShownFrames::default(),
+            shown: tilo_ui_base::scroll_copy::ShownFrames::default(),
             corners: Cell::new(crate::widget::scrollbar::SurfaceCorners::default()),
-            glide: crate::virtual_viewport::ScrollMomentum::new(),
-            scroll_to: crate::motion::ScrollTo::new(),
-            motion: crate::tokens::EffectiveMotion::default(),
+            glide: tilo_ui_base::virtual_viewport::ScrollMomentum::new(),
+            scroll_to: tilo_ui_base::motion::ScrollTo::new(),
+            motion: tilo_ui_base::tokens::EffectiveMotion::default(),
             device_scale: 1.0,
             fade_drawn: Cell::new(1.0),
             fade_shown: 1.0,
@@ -299,8 +299,8 @@ impl ScrollRegion {
         );
         if let Some(cell) = &self.persisted {
             cell.set((
-                crate::num::f32_of_f64(self.offset.x),
-                crate::num::f32_of_f64(self.offset.y),
+                tilo_ui_base::num::f32_of_f64(self.offset.x),
+                tilo_ui_base::num::f32_of_f64(self.offset.y),
             ));
         }
     }
@@ -320,7 +320,7 @@ impl ScrollRegion {
     /// Scroll to `offset` (clamped), at once.
     pub fn set_offset(&mut self, offset: Vec2) {
         self.glide.stop();
-        self.scroll_to.take_over(crate::motion::frame_now());
+        self.scroll_to.take_over(tilo_ui_base::motion::frame_now());
         self.offset = offset;
         self.clamp();
     }
@@ -328,9 +328,9 @@ impl ScrollRegion {
     /// Move to `offset` (clamped) the way a view moves to what it was asked to show (a find's
     /// next match, a search hit opened): a short jump the person just asked for glides there
     /// and a long one fades in at the target; one nobody asked for, or under reduced motion,
-    /// lands ([`crate::motion::ScrollTo`]).
+    /// lands ([`tilo_ui_base::motion::ScrollTo`]).
     pub fn glide_to(&mut self, offset: Vec2) {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let max = self.max_offset();
         let target = Vec2::new(offset.x.clamp(0.0, max.x), offset.y.clamp(0.0, max.y));
         let shown = self.content_rect();
@@ -342,7 +342,7 @@ impl ScrollRegion {
             self.motion,
             now,
         );
-        if jump == crate::motion::ScrollJump::Glide {
+        if jump == tilo_ui_base::motion::ScrollJump::Glide {
             self.follow_scroll_to(now);
         } else {
             self.scroll_by(target - self.offset);
@@ -415,9 +415,9 @@ impl ScrollRegion {
 
     /// The offset the content is drawn at: where it is scrolled, and past
     /// an end by the give fingers pull it there with
-    /// ([`crate::motion::RubberBand`]).
+    /// ([`tilo_ui_base::motion::RubberBand`]).
     fn drawn_offset(&self) -> Vec2 {
-        let give = self.glide.give(crate::motion::frame_now());
+        let give = self.glide.give(tilo_ui_base::motion::frame_now());
         if self.glides_vertically() {
             self.offset + Vec2::new(0.0, give)
         } else {
@@ -501,7 +501,7 @@ impl ScrollRegion {
     /// scrolls as copies ([`Self::offer_copy`]); [`Self::paint`] notes it.
     pub fn note_shown(&self, transform: Affine, theme: &Theme) {
         self.fade_drawn
-            .set(self.scroll_to.opacity(crate::motion::frame_now()));
+            .set(self.scroll_to.opacity(tilo_ui_base::motion::frame_now()));
         self.corners
             .set(crate::widget::scrollbar::SurfaceCorners::seen(
                 theme, transform,
@@ -513,7 +513,7 @@ impl ScrollRegion {
             .collect();
         let mut overlays = Vec::new();
         if self.edge_fade {
-            let reach = crate::surface::CONTENT_FADE_PX;
+            let reach = tilo_ui_base::surface::CONTENT_FADE_PX;
             if self.has_vertical() {
                 overlays.push(Rect::new(clip.x0, clip.y0, clip.x1, clip.y0 + reach));
                 overlays.push(Rect::new(clip.x0, clip.y1 - reach, clip.x1, clip.y1));
@@ -526,7 +526,7 @@ impl ScrollRegion {
         self.shown.note(RegionShown {
             offset: self.drawn_offset(),
             clip,
-            transform: crate::scroll_copy::on_screen(transform),
+            transform: tilo_ui_base::scroll_copy::on_screen(transform),
             overlays,
             tracks,
             thumbs: Vec::new(),
@@ -552,13 +552,13 @@ impl ScrollRegion {
 
     /// From the host's `collect_damage`, when nothing it paints in the region changed since the
     /// frame on screen but the offset: offer the scroll to a host that copies what stays on
-    /// screen ([`crate::scroll_copy::offer`]), and add the bars' tracks, where the thumbs
+    /// screen ([`tilo_ui_base::scroll_copy::offer`]), and add the bars' tracks, where the thumbs
     /// moved, to `regions`.
     pub fn offer_copy<T: ?Sized>(&self, owner: &T, regions: &mut Vec<Rect>) -> bool {
         if self.fade_drawn.get() < 1.0 || self.fade_shown < 1.0 {
             return false;
         }
-        if self.shown.compare(owner, regions) != crate::scroll_copy::Since::Copied {
+        if self.shown.compare(owner, regions) != tilo_ui_base::scroll_copy::Since::Copied {
             return false;
         }
         if let Some((drawing, presented)) = self.shown.frames() {
@@ -598,14 +598,14 @@ impl ScrollRegion {
         if self.edge_fade {
             let ground = theme.tokens.colors.surfaces.content;
             for edge in self.faded_edges() {
-                crate::surface::content_edge_fade(scene, transform, shown, edge, ground);
+                tilo_ui_base::surface::content_edge_fade(scene, transform, shown, edge, ground);
             }
         }
         self.paint_bars(scene, transform, theme);
     }
 
-    fn faded_edges(&self) -> Vec<crate::surface::ContentEdge> {
-        use crate::surface::ContentEdge;
+    fn faded_edges(&self) -> Vec<tilo_ui_base::surface::ContentEdge> {
+        use tilo_ui_base::surface::ContentEdge;
         let max = self.max_offset();
         let mut edges = Vec::new();
         if self.has_vertical() {
@@ -634,7 +634,7 @@ impl ScrollRegion {
             ));
         let opacity = self
             .fade
-            .opacity_at(crate::motion::frame_now(), self.held(theme));
+            .opacity_at(tilo_ui_base::motion::frame_now(), self.held(theme));
         if opacity <= 0.003 {
             return;
         }
@@ -667,7 +667,7 @@ impl ScrollRegion {
     /// forwards this steps the glide from its `update` ([`Self::advance`]).
     #[must_use]
     pub fn needs_animation_frame(&self, theme: &Theme) -> bool {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.glide.is_active()
             || self.glide.give_needs_frame(now)
             || self.scroll_to.target().is_some()
@@ -681,7 +681,7 @@ impl ScrollRegion {
     /// the offset moved, which the host treats as the scroll an event would have made (a copy,
     /// not a repaint).
     pub fn advance(&mut self) -> bool {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let fading = self.scroll_to.opacity(now) < 1.0 || self.fade_shown < 1.0;
         if self.scroll_to.target().is_some() {
             return self.follow_scroll_to(now) | fading;
@@ -690,7 +690,7 @@ impl ScrollRegion {
         if !self.glide.is_active() {
             return fading | giving;
         }
-        let delta = self.glide.advance(crate::motion::frame_now());
+        let delta = self.glide.advance(tilo_ui_base::motion::frame_now());
         let step = if self.glides_vertically() {
             Vec2::new(0.0, delta)
         } else {
@@ -716,7 +716,7 @@ impl ScrollRegion {
     #[must_use]
     pub fn next_wake_deadline(&self, theme: &Theme) -> Option<crate::time::Instant> {
         self.fade
-            .fade_deadline_at(crate::motion::frame_now(), self.held(theme))
+            .fade_deadline_at(tilo_ui_base::motion::frame_now(), self.held(theme))
     }
 
     /// Follow the host's keyboard focus: a focused region scrolls with the
@@ -730,7 +730,7 @@ impl ScrollRegion {
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
         theme: &Theme,
     ) -> bool {
         self.handle_window_event(
@@ -806,11 +806,11 @@ impl ScrollRegion {
             WindowEvent::MouseWheel { delta, phase, .. }
                 if self.viewport.contains(self.cursor)
                     && !crate::content_zoom::is_zoom_modifier(
-                        crate::platform::PlatformConventions::default(),
+                        tilo_ui_base::platform::PlatformConventions::default(),
                         modifiers,
                     ) =>
             {
-                self.scroll_to.take_over(crate::motion::frame_now());
+                self.scroll_to.take_over(tilo_ui_base::motion::frame_now());
                 if let Some(moved) =
                     self.wheel_glide(delta, *phase, scale_factor, modifiers, theme, handled)
                 {
@@ -862,13 +862,13 @@ impl ScrollRegion {
                         };
                         match bar.press(track, metrics, self.cursor) {
                             PressOutcome::Thumb => {
-                                self.scroll_to.take_over(crate::motion::frame_now());
+                                self.scroll_to.take_over(tilo_ui_base::motion::frame_now());
                                 self.fade.wake(crate::time::now());
                                 *handled = true;
                                 return true;
                             }
                             PressOutcome::Page(target) => {
-                                self.scroll_to.take_over(crate::motion::frame_now());
+                                self.scroll_to.take_over(tilo_ui_base::motion::frame_now());
                                 let delta = if vertical {
                                     Vec2::new(0.0, target - self.offset.y)
                                 } else {
@@ -916,7 +916,7 @@ impl ScrollRegion {
                     _ => return false,
                 };
                 self.glide.stop();
-                self.scroll_to.take_over(crate::motion::frame_now());
+                self.scroll_to.take_over(tilo_ui_base::motion::frame_now());
                 let moved = self.scroll_by(delta);
                 if moved {
                     *handled = true;
@@ -971,12 +971,12 @@ impl ScrollRegion {
         };
         self.glide.set_view(extent, spare > 0.0, theme.motion());
         let step = match self.glide.wheel(&delta, phase, theme.reduce_motion) {
-            crate::virtual_viewport::WheelStep::Scroll(step) => step,
-            crate::virtual_viewport::WheelStep::Fling => {
+            tilo_ui_base::virtual_viewport::WheelStep::Scroll(step) => step,
+            tilo_ui_base::virtual_viewport::WheelStep::Fling => {
                 *handled = true;
                 return Some(false);
             }
-            crate::virtual_viewport::WheelStep::Ignored => return Some(false),
+            tilo_ui_base::virtual_viewport::WheelStep::Ignored => return Some(false),
         };
         let step = match delta {
             MouseScrollDelta::LineDelta(_, y) => -f64::from(y) * self.line(),
@@ -1003,8 +1003,8 @@ impl ScrollRegion {
     /// The region as the host's primary vertical scroll, for assistive
     /// technology and agents: forward `Widget::primary_vertical_scroll`.
     #[must_use]
-    pub fn primary_vertical_scroll(&self) -> Option<super::PrimaryScrollRegion> {
-        self.has_vertical().then(|| super::PrimaryScrollRegion {
+    pub fn primary_vertical_scroll(&self) -> Option<tilo_ui_base::widget::PrimaryScrollRegion> {
+        self.has_vertical().then(|| tilo_ui_base::widget::PrimaryScrollRegion {
             key: "primary",
             owner_generation: None,
             metrics: self.v_metrics(),
@@ -1013,8 +1013,8 @@ impl ScrollRegion {
 
     pub fn apply_primary_vertical_scroll(
         &mut self,
-        action: super::PrimaryScrollAction,
-    ) -> super::PrimaryScrollResult {
+        action: tilo_ui_base::widget::PrimaryScrollAction,
+    ) -> tilo_ui_base::widget::PrimaryScrollResult {
         action.apply_to(self, Self::primary_vertical_scroll, |region, _, next| {
             region.scroll_by(Vec2::new(0.0, next - region.offset.y));
         })
@@ -1042,17 +1042,17 @@ mod tests {
 
     fn send(region: &mut ScrollRegion, event: &WindowEvent) -> bool {
         let mut tree = taffy::TaffyTree::<()>::new();
-        let node = crate::widget::TaffyTreeExt::leaf_node(&mut tree, taffy::Style::default());
+        let node = tilo_ui_base::widget::TaffyTreeExt::leaf_node(&mut tree, taffy::Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         region.handle_event(
             event,
-            &mut crate::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
+                state: tilo_ui_base::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1107,17 +1107,17 @@ mod tests {
             let mut region = region(1000.0);
             send(
                 &mut region,
-                &crate::synthetic_input::cursor_moved(100.0, 100.0),
+                &tilo_ui_base::synthetic_input::cursor_moved(100.0, 100.0),
             );
             assert!(send(
                 &mut region,
-                &crate::synthetic_input::mouse_wheel(0.0, -1.0),
+                &tilo_ui_base::synthetic_input::mouse_wheel(0.0, -1.0),
             ));
             let line = f64::from(Theme::dark().tokens.metrics.wheel_line);
             assert!((region.offset().y - line).abs() < 1e-9);
             region.set_focused(true);
             let end =
-                crate::synthetic_input::key_input(&Key::Named(NamedKey::End), ElementState::Pressed);
+                tilo_ui_base::synthetic_input::key_input(&Key::Named(NamedKey::End), ElementState::Pressed);
             assert!(send(&mut region, &end));
             assert!(
                 (region.offset().y - 800.0).abs() < 1e-9,
@@ -1187,7 +1187,7 @@ mod tests {
             with_monotonic_time(start + frame(tick + 1), || {
                 send(
                     &mut region,
-                    &crate::synthetic_input::key_input(
+                    &tilo_ui_base::synthetic_input::key_input(
                         &Key::Named(NamedKey::ArrowDown),
                         ElementState::Pressed,
                     ),
@@ -1199,7 +1199,7 @@ mod tests {
             theme.reduce_motion = true;
             let mut calm = self::region(100_000.0);
             calm.handle_window_event(
-                &crate::synthetic_input::cursor_moved(100.0, 100.0),
+                &tilo_ui_base::synthetic_input::cursor_moved(100.0, 100.0),
                 1.0,
                 winit::keyboard::ModifiersState::empty(),
                 &mut false,
@@ -1266,7 +1266,7 @@ mod tests {
     fn flick(region: &mut ScrollRegion, start: crate::time::Instant, steps: u64) -> u64 {
         use crate::time::testing::with_monotonic_time;
         use winit::event::TouchPhase;
-        send(region, &crate::synthetic_input::cursor_moved(100.0, 100.0));
+        send(region, &tilo_ui_base::synthetic_input::cursor_moved(100.0, 100.0));
         for tick in 0..steps {
             with_monotonic_time(start + frame(tick), || {
                 send(region, &swipe(-20.0, TouchPhase::Moved));
@@ -1285,13 +1285,13 @@ mod tests {
     #[test]
     fn a_jump_asked_for_glides_or_fades_in_and_one_nobody_asked_for_lands() {
         use crate::time::testing::with_monotonic_time;
-        use crate::tokens::MotionSource;
+        use tilo_ui_base::tokens::MotionSource;
         let start = crate::time::now();
         let at = |ms: u64| start + std::time::Duration::from_millis(ms);
         let theme = Theme::dark();
         let mut region = region(100_000.0);
         with_monotonic_time(start, || {
-            crate::motion::note_source(MotionSource::Keyboard);
+            tilo_ui_base::motion::note_source(MotionSource::Keyboard);
             region.glide_to(Vec2::new(0.0, 300.0));
         });
         assert_eq!(region.offset().y, 0.0, "it starts where it is");
@@ -1305,7 +1305,7 @@ mod tests {
         with_monotonic_time(at(40), || {
             send(
                 &mut region,
-                &crate::synthetic_input::cursor_moved(100.0, 100.0),
+                &tilo_ui_base::synthetic_input::cursor_moved(100.0, 100.0),
             );
             send(&mut region, &swipe(0.0, winit::event::TouchPhase::Moved));
         });
@@ -1319,7 +1319,7 @@ mod tests {
         assert_eq!(region.offset().y, drawn);
 
         with_monotonic_time(at(1000), || {
-            crate::motion::note_source(MotionSource::Keyboard);
+            tilo_ui_base::motion::note_source(MotionSource::Keyboard);
             region.glide_to(Vec2::new(0.0, 500.0));
         });
         with_monotonic_time(at(1500), || {
@@ -1328,7 +1328,7 @@ mod tests {
         assert_eq!(region.offset().y, 500.0);
 
         with_monotonic_time(at(2000), || {
-            crate::motion::note_source(MotionSource::Keyboard);
+            tilo_ui_base::motion::note_source(MotionSource::Keyboard);
             region.glide_to(Vec2::new(0.0, 50_000.0));
             assert_eq!(region.offset().y, 50_000.0, "no scrolling through");
             let mut scene = Scene::new();

@@ -10,7 +10,7 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
         let mut fixture = ActionFixture::new();
         let binding = fixture.bindings[0].clone();
         fixture.app.actions.bound_broker_route_for_test =
-            Some(crate::collaboration::AcceptedRoute {
+            Some(tilo_ui_base::collaboration::AcceptedRoute {
                 route: binding.broker_route().unwrap(),
                 epoch: uuid::Uuid::new_v4(),
             });
@@ -59,7 +59,7 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
             binding
                 .history_request(
                     &mut fixture.app.state.doc,
-                    crate::widget::undo_access::UndoRequest::Undo
+                    tilo_ui_base::widget::undo_access::UndoRequest::Undo
                 )
                 .unwrap()
                 .is_some()
@@ -148,7 +148,7 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
             binding
                 .history_request(
                     &mut fixture.app.state.doc,
-                    crate::widget::undo_access::UndoRequest::Undo
+                    tilo_ui_base::widget::undo_access::UndoRequest::Undo
                 )
                 .unwrap()
                 .is_some()

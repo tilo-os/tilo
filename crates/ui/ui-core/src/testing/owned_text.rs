@@ -3,7 +3,8 @@
 
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ReadDoc, Value};
 
-use crate::widget::{AppModel, EventCtx, ModelPath, TextInput, Widget as _};
+use crate::widget::TextInput;
+use tilo_ui_base::{widget::AppModel, widget::EventCtx, widget::ModelPath, widget::Widget as _};
 
 /// A [`TextInput`] whose edits its owner writes to the string under `key`.
 pub(crate) struct OwnedText {
@@ -22,11 +23,11 @@ impl OwnedText {
         }
     }
 
-    fn publish(&mut self, doc: &mut crate::widget::Edits<'_>, root: &ObjId) {
+    fn publish(&mut self, doc: &mut tilo_ui_base::widget::Edits<'_>, root: &ObjId) {
         let Some(text) = self.input.take_dirty() else {
             return;
         };
-        if crate::doc::read_str_or_text(doc.doc(), root, self.key).as_deref() == Some(text.as_str())
+        if tilo_ui_base::doc::read_str_or_text(doc.doc(), root, self.key).as_deref() == Some(text.as_str())
         {
             return;
         }
@@ -38,7 +39,7 @@ impl OwnedText {
         }
         impl tilo_actions::Action for WriteText {
             fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
-                crate::doc::put_text_diffed(doc, &self.root, &self.key, &self.text);
+                tilo_ui_base::doc::put_text_diffed(doc, &self.root, &self.key, &self.text);
                 Ok(())
             }
         }
@@ -76,10 +77,10 @@ impl OwnedText {
     }
 }
 
-impl crate::widget::Decorator for OwnedText {
+impl tilo_ui_base::widget::Decorator for OwnedText {
     type Inner = TextInput;
 
-    crate::provides!(dyn crate::widget::undo_access::CommittedActions; inner = input);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::undo_access::CommittedActions; inner = input);
 
     fn inner(&self) -> &TextInput {
         &self.input
@@ -91,7 +92,7 @@ impl crate::widget::Decorator for OwnedText {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         {
-            let (doc, root) = crate::doc::document_ref(state, path);
+            let (doc, root) = tilo_ui_base::doc::document_ref(state, path);
             self.show(doc, root);
         }
         self.input.sync(state, path);
@@ -104,19 +105,19 @@ impl crate::widget::Decorator for OwnedText {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let performed = self.input.perform_action(action, key_path, state, path);
-        let (doc, root) = crate::doc::document(state, path);
+        let (doc, root) = tilo_ui_base::doc::document(state, path);
         self.publish(doc, root);
         performed
     }
 }
 
-impl crate::widget::undo_access::CommittedActions for OwnedText {
+impl tilo_ui_base::widget::undo_access::CommittedActions for OwnedText {
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
         self.committed.take()
     }

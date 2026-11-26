@@ -4,7 +4,7 @@
 use vello::kurbo::{Point, Rect, Size};
 
 use crate::live_activity::{Art, Summary};
-use crate::tokens::Metrics;
+use tilo_ui_base::tokens::Metrics;
 
 /// How far a card rests from the work area's edges.
 pub const EDGE_INSET: f64 = 16.0;

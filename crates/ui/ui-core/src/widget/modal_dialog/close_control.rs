@@ -2,7 +2,7 @@
 //! host's ownership of its emitter when it dismisses through an action.
 
 use super::ModalDialog;
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 impl<C: Widget + 'static> ModalDialog<C> {
     /// Fires on Escape, on a scrim click and on the close control.
@@ -31,14 +31,14 @@ impl<C: Widget + 'static> ModalDialog<C> {
 impl ModalDialog<dyn Widget> {
     fn install_dismissal_ownership(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         if let Some(dismiss) = self.dismiss.as_mut() {
             dismiss.attach(domain, attachment);
         }
         for child in self.children_mut() {
-            crate::widget::controls::attach_controls(child, domain, attachment);
+            tilo_ui_base::widget::controls::attach_controls(child, domain, attachment);
         }
     }
 
@@ -49,12 +49,12 @@ impl ModalDialog<dyn Widget> {
             .or_else(|| {
                 self.children_mut()
                     .into_iter()
-                    .find_map(crate::widget::controls::take_control_invocation)
+                    .find_map(tilo_ui_base::widget::controls::take_control_invocation)
             })
     }
 
-    fn dismissal_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        let mut bindings = crate::widget::controls::default_bindings(self);
+    fn dismissal_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
+        let mut bindings = tilo_ui_base::widget::controls::default_bindings(self);
         if self.up()
             && self.closable()
             && let Some(dismiss) = &self.dismiss
@@ -72,16 +72,16 @@ impl ModalDialog<dyn Widget> {
             dismiss.refresh_availability(allowed);
         }
         for child in self.children_mut() {
-            crate::widget::controls::refresh_control_action_availability(child, allowed);
+            tilo_ui_base::widget::controls::refresh_control_action_availability(child, allowed);
         }
     }
 }
 
-impl<C: Widget + 'static> crate::widget::controls::ActionControls for ModalDialog<C> {
+impl<C: Widget + 'static> tilo_ui_base::widget::controls::ActionControls for ModalDialog<C> {
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         self.as_dyn_mut()
             .install_dismissal_ownership(domain, attachment);
@@ -91,7 +91,7 @@ impl<C: Widget + 'static> crate::widget::controls::ActionControls for ModalDialo
         self.as_dyn_mut().take_dismissal_invocation()
     }
 
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         self.as_dyn().dismissal_bindings()
     }
 

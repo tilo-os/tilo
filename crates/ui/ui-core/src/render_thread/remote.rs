@@ -54,7 +54,7 @@ pub fn requested() -> bool {
             && (std::env::var_os(tilo_render_protocol::broker::FD_ENV).is_some()
                 || std::env::var_os(tilo_render_protocol::broker::SOCKET_ENV).is_some());
         if wanted {
-            crate::text_render::font_origins::mark_active();
+            tilo_ui_base::text_render::font_origins::mark_active();
         }
         wanted
     })
@@ -152,9 +152,9 @@ impl Session {
             return Err("the render service did not welcome this app".to_owned());
         };
         tilo_startup_metrics::mark("remote-render-connect-done");
-        crate::diag!(
+        tilo_ui_base::diag!(
             "{} window adapter {:?} type={} backend={} driver={:?} via=render-service",
-            crate::gpu::ADAPTER_LINE_PREFIX,
+            tilo_ui_base::gpu::ADAPTER_LINE_PREFIX,
             renderer.name,
             renderer.device_type,
             renderer.backend,
@@ -229,10 +229,10 @@ impl ResourceIds for Session {
         }
         let id = FontId(self.next_font);
         self.next_font = self.next_font.wrapping_add(1);
-        let file = crate::text_render::font_origins::font_file(font);
+        let file = tilo_ui_base::text_render::font_origins::font_file(font);
         let catalog = file
             .as_deref()
-            .and_then(crate::font_catalog::catalog_digest)
+            .and_then(tilo_ui_base::font_catalog::catalog_digest)
             .filter(|digest| self.catalog.contains(*digest));
         if let Some(sha256) = catalog {
             self.send(
@@ -444,7 +444,7 @@ pub(crate) fn spawn(
         full_repaint,
         // The render service opens its device as this process would.
         texture_limit: Arc::new(std::sync::atomic::AtomicU32::new(
-            crate::gpu::requested_texture_limit(),
+            tilo_ui_base::gpu::requested_texture_limit(),
         )),
         join: Some(join),
         interrupt: Some(Box::new(move || sink.stop())),
@@ -457,9 +457,9 @@ struct FrameJob<'a> {
     height: u32,
     base_color: [f32; 4],
     damage: &'a [Rect],
-    copies: &'a [crate::scroll_copy::DeviceCopy],
+    copies: &'a [tilo_ui_base::scroll_copy::DeviceCopy],
     full: bool,
-    backdrop: &'a crate::part_paint::backdrop::BackdropFrame,
+    backdrop: &'a tilo_ui_base::part_paint::backdrop::BackdropFrame,
 }
 
 enum Lost {
@@ -772,7 +772,7 @@ impl Worker {
             tilo_startup_metrics::mark("first-frame-presented");
             tilo_startup_metrics::dump();
             if let Some(line) = tilo_startup_metrics::summary_line(&super::startup_app_name()) {
-                crate::diag!("{line}");
+                tilo_ui_base::diag!("{line}");
             }
             tilo_startup_metrics::close_startup();
         }
@@ -879,7 +879,7 @@ fn encode(session: &mut Session, job: &FrameJob<'_>, sequence: u64) -> Result<Ve
             image: session.image(&region.image)?,
             rect: wire_rect(region.rect),
             blur_px: region.blur_px as f32,
-            sampling: u8::from(region.sampling == crate::part_paint::Sampling::Blocky),
+            sampling: u8::from(region.sampling == tilo_ui_base::part_paint::Sampling::Blocky),
             cell_px: region.cell_px as f32,
             refraction: {
                 let lens = region.refraction;

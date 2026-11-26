@@ -14,11 +14,12 @@ use std::rc::Rc;
 
 use vello::kurbo::Rect;
 
-use crate::gesture::NavDirection;
+use tilo_ui_base::gesture::NavDirection;
 use crate::headless::Driver;
-use crate::permissions::MemberId;
+use tilo_ui_base::permissions::MemberId;
 use crate::state::State;
-use crate::widget::{Button, Column, Scrollable, Spacer, TextInput, Widget, resource_actions};
+use crate::{widget::Button, widget::Column, widget::Scrollable, widget::TextInput, widget::resource_actions};
+use tilo_ui_base::{widget::Spacer, widget::Widget};
 
 const VIEW: (u32, u32) = (400, 240);
 
@@ -104,8 +105,8 @@ fn searching_the_window_lists_the_apps_actions_and_escape_puts_it_away() {
 #[test]
 fn a_focused_field_tells_peers_where_its_caret_is_and_an_unfocused_one_says_nothing() {
     let field =
-        TextInput::new(vec![crate::presence::PathSegment::Field("title".into())]).with_id("title");
-    let key = crate::presence::capability::presence_key(&field).expect("the field has a key");
+        TextInput::new(vec![tilo_ui_base::presence::PathSegment::Field("title".into())]).with_id("title");
+    let key = tilo_ui_base::presence::capability::presence_key(&field).expect("the field has a key");
     let mut driver = Driver::new(
         State::new(),
         Box::new(Column::new().push(Box::new(field))),
@@ -117,7 +118,7 @@ fn a_focused_field_tells_peers_where_its_caret_is_and_an_unfocused_one_says_noth
     driver.type_text("Hi");
     assert_eq!(
         driver.focus_presence(),
-        Some((key, crate::collaboration::PresencePayload::Caret { pos: 2 })),
+        Some((key, tilo_ui_base::collaboration::PresencePayload::Caret { pos: 2 })),
         "the caret after what the person typed"
     );
 }
@@ -154,8 +155,8 @@ fn following_an_agent_scrolls_to_the_control_it_acts_on_once_per_action() {
 
 #[test]
 fn following_an_agent_writing_far_down_a_field_scrolls_to_its_caret() {
-    let field = TextInput::new(vec![crate::presence::PathSegment::Field("body".into())]);
-    let key = crate::presence::capability::presence_key(&field).expect("the field has a key");
+    let field = TextInput::new(vec![tilo_ui_base::presence::PathSegment::Field("body".into())]);
+    let key = tilo_ui_base::presence::capability::presence_key(&field).expect("the field has a key");
     let root = Scrollable::new_vertical().with_child(Box::new(
         Column::new()
             .push(Box::new(Spacer::fixed(1500.0)))
@@ -237,8 +238,8 @@ fn file(index: usize) -> tilo_actions::ResourceSpec {
     )
 }
 
-impl crate::widget::Decorator for Folders {
-    crate::provides!(dyn crate::widget::resources::PublishesResources, dyn crate::widget::AppWidget; inner = content);
+impl tilo_ui_base::widget::Decorator for Folders {
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::resources::PublishesResources, dyn crate::widget::AppWidget; inner = content);
     type Inner = Column;
 
     fn inner(&self) -> &Column {
@@ -252,8 +253,8 @@ impl crate::widget::Decorator for Folders {
     fn on_nav_gesture(
         &mut self,
         dir: NavDirection,
-        _state: &crate::widget::AppModel,
-        _path: &crate::widget::ModelPath,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         if dir != NavDirection::Back || self.depth == 0 {
             return false;
@@ -263,7 +264,7 @@ impl crate::widget::Decorator for Folders {
     }
 }
 
-impl crate::widget::resources::PublishesResources for Folders {
+impl tilo_ui_base::widget::resources::PublishesResources for Folders {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         let mut folder =
             tilo_actions::ResourceSpec::new("folders.folder:root", "folders.folder", "Home");
@@ -314,7 +315,7 @@ fn folders(depth: usize, items: usize) -> Driver {
         items,
         shell_asked: false,
     };
-    let mut driver = Driver::for_root(State::new(), root, VIEW, crate::theme::Theme::dark());
+    let mut driver = Driver::for_root(State::new(), root, VIEW, tilo_ui_base::theme::Theme::dark());
     driver.relayout();
     driver
 }
@@ -526,7 +527,7 @@ fn semantic_locus_refuses_a_frame_local_projected_resource_identity() {
             .durable_identity,
         "fixture sits below an unkeyed parent"
     );
-    let encoded = crate::uri::encode_component(target.as_str());
+    let encoded = tilo_ui_base::uri::encode_component(target.as_str());
     let mut event = locus_interaction(&format!("ui:{encoded}"));
     event.action.id = "activate".into();
     assert_eq!(driver.semantic_locus(&event), None);
@@ -545,8 +546,8 @@ fn a_confirmation_asked_in_a_window_waits_for_the_person_and_runs_once() {
         State::new(),
         root,
         VIEW,
-        crate::Theme::dark(),
-        crate::font_catalog::fixture_renderer(),
+        tilo_ui_base::Theme::dark(),
+        tilo_ui_base::font_catalog::fixture_renderer(),
         MemberId::person("fixture"),
     )
     .unwrap();
@@ -555,7 +556,7 @@ fn a_confirmation_asked_in_a_window_waits_for_the_person_and_runs_once() {
     assert_eq!(driver.asking(), None, "nothing is asked before the press");
 
     driver
-        .perform_named("ordinary-emitter", &crate::a11y::Action::Activate)
+        .perform_named("ordinary-emitter", &tilo_ui_base::a11y::Action::Activate)
         .unwrap();
     let (address, name) = driver
         .asking()
@@ -568,7 +569,7 @@ fn a_confirmation_asked_in_a_window_waits_for_the_person_and_runs_once() {
     assert!(log.borrow().is_empty(), "a declined call runs nothing");
 
     driver
-        .perform_named("ordinary-emitter", &crate::a11y::Action::Activate)
+        .perform_named("ordinary-emitter", &tilo_ui_base::a11y::Action::Activate)
         .unwrap();
     assert!(driver.asking().is_some(), "the press asks again");
     assert_eq!(

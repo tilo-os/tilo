@@ -437,7 +437,7 @@ pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
 pub use text::{EditsText, TextControl};
 pub use tilo_resource::{Effect, NoEffect};
 pub use ui_core::resource::{chain_of_resource_id, chain_resource_id};
-pub use ui_core::settings_device::{read_settings_on, settings_device};
+pub use tilo_ui_base::{settings_device::read_settings_on, settings_device::settings_device};
 pub use upkeep::Upkeep;
 pub use view::{Bindable, EffectsHandle, Mounts, ViewCx};
 pub use window_bar::{Binding, Choice, WindowBar};

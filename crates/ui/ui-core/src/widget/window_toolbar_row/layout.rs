@@ -182,7 +182,7 @@ pub(super) fn location_chrome(
     chrome += match lead {
         LocationLead::None => return chrome,
         LocationLead::Icon => LOCATION_ICON_PX,
-        LocationLead::Avatar => crate::widget::AvatarSize::Small.side(theme),
+        LocationLead::Avatar => tilo_ui_base::widget::AvatarSize::Small.side(theme),
     } + f64::from(theme.tokens.spacing.s2);
     chrome
 }

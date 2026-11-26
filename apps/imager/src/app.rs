@@ -5,26 +5,24 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
-use ui::widget::TaffyTreeExt;
-use ui::widget::{AppModel, ModelPath};
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use automerge::ObjId;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use ui::i18n::ArgValue;
-use ui::icons::Icon;
-use ui::local_state::LocalState;
+use tilo_ui_base::i18n::ArgValue;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::local_state::LocalState;
 use ui::portal::{FileFilter, PickRequest};
 
-use ui::text_render::ParagraphAlign;
-use ui::theme::Theme;
-use ui::tokens::TextRole;
-use ui::widget::{
-    Banner, Button, ButtonRole, Column, ControlSize, DropZone, EmptyState, ListRow, ProgressRing,
-    ProgressRingSize, Property, PropertyList, Row, Section, Spacer, Text, Tone, Widget,
-};
+use tilo_ui_base::text_render::ParagraphAlign;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use ui::{widget::Banner, widget::Button, widget::ButtonRole, widget::Column, widget::ControlSize, widget::DropZone, widget::EmptyState, widget::ListRow, widget::ProgressRing, widget::ProgressRingSize, widget::Property, widget::PropertyList, widget::Row, widget::Section, widget::Text};
+use tilo_ui_base::{widget::Spacer, widget::Tone, widget::Widget};
 
 use crate::export_dialog::ExportDialog;
 use crate::hosting::{EffectAnswer, EffectCx, Effected, JobProgress, Opened, Port, Reply, Store};
@@ -37,7 +35,7 @@ use crate::resource::CATALOG;
 use crate::resource::{ImageWrite, Imager, ImagerEffect, InstallerDownload};
 use crate::write::{JobControl, WriteRequest, spawn_job};
 use tilo_resource::{EffectStatus, LiveRow};
-use ui::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Command {
@@ -461,7 +459,7 @@ fn target_name(release: &TiloRelease) -> String {
         TargetName::Media => CATALOG.t("imager-release-target-media"),
         TargetName::Profile(profile) => CATALOG.t_args(
             "imager-release-target-profile",
-            &[("profile", ui::i18n::ArgValue::Text(profile))],
+            &[("profile", tilo_ui_base::i18n::ArgValue::Text(profile))],
         ),
     }
 }
@@ -807,10 +805,10 @@ impl ImagerApp {
                 Some((done, total)) if total > 0 => CATALOG.t_args(
                     "imager-release-progress",
                     &[
-                        ("stage", ui::i18n::ArgValue::Text(stage)),
+                        ("stage", tilo_ui_base::i18n::ArgValue::Text(stage)),
                         (
                             "percent",
-                            ui::i18n::ArgValue::Number((done * 100 / total) as f64),
+                            tilo_ui_base::i18n::ArgValue::Number((done * 100 / total) as f64),
                         ),
                     ],
                 ),
@@ -820,16 +818,16 @@ impl ImagerApp {
             CATALOG.t_args(
                 "imager-release-channel-downloads-first",
                 &[
-                    ("target", ui::i18n::ArgValue::Text(target_name(release))),
-                    ("channel", ui::i18n::ArgValue::Text(release.channel.clone())),
+                    ("target", tilo_ui_base::i18n::ArgValue::Text(target_name(release))),
+                    ("channel", tilo_ui_base::i18n::ArgValue::Text(release.channel.clone())),
                 ],
             )
         } else {
             CATALOG.t_args(
                 "imager-release-channel",
                 &[
-                    ("target", ui::i18n::ArgValue::Text(target_name(release))),
-                    ("channel", ui::i18n::ArgValue::Text(release.channel.clone())),
+                    ("target", tilo_ui_base::i18n::ArgValue::Text(target_name(release))),
+                    ("channel", tilo_ui_base::i18n::ArgValue::Text(release.channel.clone())),
                 ],
             )
         };
@@ -898,7 +896,7 @@ impl ImagerApp {
                             ("required", fmt_size(required).into()),
                         ],
                     ),
-                    None => ui::format::list(&[drive.dev_path(), contents]),
+                    None => tilo_ui_base::format::list(&[drive.dev_path(), contents]),
                 };
                 let row = ListRow::new(format!("imager.drive.{}", drive.name), &drive.model)
                     .with_enabled(fits)
@@ -980,18 +978,18 @@ impl ImagerApp {
                 &[
                     (
                         "user",
-                        ui::i18n::ArgValue::from(self.profile.user.username.clone()),
+                        tilo_ui_base::i18n::ArgValue::from(self.profile.user.username.clone()),
                     ),
                     (
                         "hostname",
-                        ui::i18n::ArgValue::from(self.profile.hostname.clone()),
+                        tilo_ui_base::i18n::ArgValue::from(self.profile.hostname.clone()),
                     ),
                 ],
             )
         } else if let Some(hostname) = crate::handoff::chosen_hostname(&self.profile) {
             t_args(
                 "imager-review-setup-hostname",
-                &[("hostname", ui::i18n::ArgValue::from(hostname))],
+                &[("hostname", tilo_ui_base::i18n::ArgValue::from(hostname))],
             )
         } else {
             t("imager-review-unchanged")
@@ -1118,7 +1116,7 @@ impl ImagerApp {
         {
             meta.push(crate::setup::strings::t_args(
                 "imager-writing-eta",
-                &[("time", ui::i18n::ArgValue::Text(fmt_eta(eta)))],
+                &[("time", tilo_ui_base::i18n::ArgValue::Text(fmt_eta(eta)))],
             ));
         }
         let next = CATALOG.t(if self.progress.phase == JobPhase::Verifying {
@@ -1134,7 +1132,7 @@ impl ImagerApp {
         }
         lines = lines.push(Box::new(Self::centred(&next, TextRole::Body).dimmed()));
         let mut body = page::stack()
-            .with_rhythm(ui::tokens::Rhythm::Group)
+            .with_rhythm(tilo_ui_base::tokens::Rhythm::Group)
             .push(Box::new(Self::ring_row(ring)))
             .push(Box::new(lines));
         if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
@@ -1143,8 +1141,8 @@ impl ImagerApp {
                     &CATALOG.t_args(
                         "imager-writing-from-to",
                         &[
-                            ("source", ui::i18n::ArgValue::Text(src.name.clone())),
-                            ("target", ui::i18n::ArgValue::Text(tgt.model.clone())),
+                            ("source", tilo_ui_base::i18n::ArgValue::Text(src.name.clone())),
+                            ("target", tilo_ui_base::i18n::ArgValue::Text(tgt.model.clone())),
                         ],
                     ),
                     TextRole::Caption,
@@ -1178,8 +1176,8 @@ impl ImagerApp {
             t_args(
                 written,
                 &[
-                    ("image", ui::i18n::ArgValue::Text(image)),
-                    ("drive", ui::i18n::ArgValue::Text(drive)),
+                    ("image", tilo_ui_base::i18n::ArgValue::Text(image)),
+                    ("drive", tilo_ui_base::i18n::ArgValue::Text(drive)),
                 ],
             ),
         )
@@ -1218,7 +1216,7 @@ impl ImagerApp {
             )
         };
         page::stack()
-            .with_rhythm(ui::tokens::Rhythm::Group)
+            .with_rhythm(tilo_ui_base::tokens::Rhythm::Group)
             .push(Box::new(Self::ring_row(ring)))
             .push(Box::new(
                 page::related()
@@ -1230,9 +1228,9 @@ impl ImagerApp {
                             .dimmed()
                             .with_id("imager.result")
                             .with_live(if ok {
-                                ui::a11y::Politeness::Polite
+                                tilo_ui_base::a11y::Politeness::Polite
                             } else {
-                                ui::a11y::Politeness::Assertive
+                                tilo_ui_base::a11y::Politeness::Assertive
                             }),
                     )),
             ))
@@ -1268,10 +1266,10 @@ impl ImagerApp {
         self.set_status(&crate::setup::strings::t_args(
             "imager-status-selected",
             &[
-                ("name", ui::i18n::ArgValue::from(src.name.clone())),
+                ("name", tilo_ui_base::i18n::ArgValue::from(src.name.clone())),
                 (
                     "kind",
-                    ui::i18n::ArgValue::Text(crate::setup::strings::t(
+                    tilo_ui_base::i18n::ArgValue::Text(crate::setup::strings::t(
                         if self.source_is_official(src) {
                             "imager-status-official"
                         } else {
@@ -1322,7 +1320,7 @@ impl ImagerApp {
         }
         self.set_status(&crate::setup::strings::t_args(
             "imager-status-downloading",
-            &[("name", ui::i18n::ArgValue::from(release.display_name()))],
+            &[("name", tilo_ui_base::i18n::ArgValue::from(release.display_name()))],
         ));
         let control = crate::release::DownloadControl::default();
         let worker = control.clone();
@@ -1370,7 +1368,7 @@ impl ImagerApp {
                     .unwrap_or(0);
                 crate::setup::strings::t_args(
                     "imager-status-download-progress",
-                    &[("percent", ui::i18n::ArgValue::from(percent))],
+                    &[("percent", tilo_ui_base::i18n::ArgValue::from(percent))],
                 )
             }
             "verifying" => crate::setup::strings::t("imager-status-download-verifying"),
@@ -1634,14 +1632,14 @@ impl ImagerApp {
                     &[
                         (
                             "name",
-                            ui::i18n::ArgValue::from(
+                            tilo_ui_base::i18n::ArgValue::from(
                                 self.source
                                     .as_ref()
                                     .map(|s| s.name.clone())
                                     .unwrap_or_default(),
                             ),
                         ),
-                        ("drive", ui::i18n::ArgValue::from(tgt.dev_path())),
+                        ("drive", tilo_ui_base::i18n::ArgValue::from(tgt.dev_path())),
                     ],
                 ));
                 self.goto(Step::Write);
@@ -1955,8 +1953,8 @@ impl ImagerApp {
             self.set_status(&crate::setup::strings::t_args(
                 "imager-rescan-summary",
                 &[
-                    ("removable", ui::i18n::ArgValue::from(removable)),
-                    ("total", ui::i18n::ArgValue::from(n)),
+                    ("removable", tilo_ui_base::i18n::ArgValue::from(removable)),
+                    ("total", tilo_ui_base::i18n::ArgValue::from(n)),
                 ],
             ));
         } else {
@@ -2164,7 +2162,7 @@ impl ImagerApp {
                 "imager-status-write-phase",
                 &[(
                     "phase",
-                    ui::i18n::ArgValue::Text(Self::phase_text(self.progress.phase)),
+                    tilo_ui_base::i18n::ArgValue::Text(Self::phase_text(self.progress.phase)),
                 )],
             ),
         ));
@@ -2183,7 +2181,7 @@ impl ImagerApp {
                     "imager.download",
                     crate::setup::strings::t_args(
                         "imager-row-download",
-                        &[("name", ui::i18n::ArgValue::Text(name))],
+                        &[("name", tilo_ui_base::i18n::ArgValue::Text(name))],
                     ),
                 )
                 .presentation(tilo_actions::ResourcePresentation {
@@ -2343,9 +2341,9 @@ impl ImagerApp {
     }
 }
 impl ui::component_lifecycle::ComponentLifecycle for ImagerApp {
-    fn on_window_close_requested(&mut self) -> ui::widget::WindowCloseAdmission {
+    fn on_window_close_requested(&mut self) -> tilo_ui_base::widget::WindowCloseAdmission {
         if !self.close_work_active() {
-            return ui::widget::WindowCloseAdmission::Allow;
+            return tilo_ui_base::widget::WindowCloseAdmission::Allow;
         }
         self.close_requested = true;
         self.close_intent = false;
@@ -2354,7 +2352,7 @@ impl ui::component_lifecycle::ComponentLifecycle for ImagerApp {
         }
         self.set_status(&crate::setup::strings::t("imager-write-stopping"));
         self.dirty = true;
-        ui::widget::WindowCloseAdmission::Defer
+        tilo_ui_base::widget::WindowCloseAdmission::Defer
     }
     fn take_window_close_intent(&mut self) -> bool {
         let intent = std::mem::take(&mut self.close_intent);
@@ -2394,7 +2392,7 @@ impl ui::component_lifecycle::ComponentLifecycle for ImagerApp {
     }
 }
 impl Widget for ImagerApp {
-    ui::provides!(dyn ui::component_lifecycle::ComponentLifecycle);
+    tilo_ui_base::provides!(dyn ui::component_lifecycle::ComponentLifecycle);
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.dirty = true;
@@ -2497,7 +2495,7 @@ impl Widget for ImagerApp {
         self.composed.apply_layout(taffy, node, origin);
     }
 
-    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2513,7 +2511,7 @@ impl Widget for ImagerApp {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         if self.export_dialog.handle_detached(
             event,
@@ -2554,7 +2552,7 @@ impl Widget for ImagerApp {
         }
     }
 
-    fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2562,7 +2560,7 @@ impl Widget for ImagerApp {
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.export_dialog.is_open() {
-            self.export_dialog.draw_detached(&mut ui::DrawCtx::new(
+            self.export_dialog.draw_detached(&mut tilo_ui_base::DrawCtx::new(
                 scene,
                 transform,
                 text,
@@ -2571,7 +2569,7 @@ impl Widget for ImagerApp {
             ));
         }
     }
-    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
+    fn settle(&mut self, edits: &mut tilo_ui_base::widget::Edits<'_>, path: &ObjId) {
         if let Some(view) = self.composed.element_mut() {
             view.settle(edits, path);
         }
@@ -2596,11 +2594,11 @@ impl Widget for ImagerApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        ui::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        ui::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

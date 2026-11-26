@@ -1,5 +1,5 @@
 //! Where each joined workspace stands with its host, as apps in it are told
-//! ([`ui::workspace_sync`]): an app shows "Connecting to Lounge…" rather
+//! ([`tilo_ui_base::workspace_sync`]): an app shows "Connecting to Lounge…" rather
 //! than an empty workspace until the workspace's first sync with its host
 //! completed, and that the host (or this device) has to update when they
 //! speak different peer protocol versions, or that the host cannot be
@@ -17,7 +17,7 @@ use std::sync::{LazyLock, Mutex};
 
 use crate::WorkspaceId;
 use tilo_lock::MutexRecover as _;
-use ui::workspace_sync::WorkspaceSyncState;
+use tilo_ui_base::workspace_sync::WorkspaceSyncState;
 
 static STATES: LazyLock<Mutex<HashMap<super::WorkspaceId, WorkspaceSyncState>>> =
     LazyLock::new(Mutex::default);
@@ -81,7 +81,7 @@ pub fn unreachable(ws: WorkspaceId) {
 /// This device dials none of the holders of the workspace on topic `ws`, for
 /// `cause`: what it holds cannot arrive until that changes. One that synced
 /// before keeps what it holds.
-pub fn unavailable(ws: WorkspaceId, cause: ui::workspace_sync::WorkspaceUnavailable) {
+pub fn unavailable(ws: WorkspaceId, cause: tilo_ui_base::workspace_sync::WorkspaceUnavailable) {
     let mut states = STATES.lock_recover();
     let current = states
         .entry(ws)
@@ -173,13 +173,13 @@ pub fn told(
     ws: WorkspaceId,
     name: &str,
     writable: Option<bool>,
-) -> Option<ui::workspace_sync::WorkspaceSync> {
+) -> Option<tilo_ui_base::workspace_sync::WorkspaceSync> {
     let state = match (state(ws), writable) {
         (Some(state), _) => state,
         (None, Some(_)) => WorkspaceSyncState::Synced,
         (None, None) => return None,
     };
-    Some(ui::workspace_sync::WorkspaceSync {
+    Some(tilo_ui_base::workspace_sync::WorkspaceSync {
         state,
         workspace: name.to_owned(),
         writable,
@@ -224,11 +224,11 @@ mod tests {
             "who has to update stays said"
         );
         connecting(WS);
-        unavailable(WS, ui::workspace_sync::WorkspaceUnavailable::NoHolders);
+        unavailable(WS, tilo_ui_base::workspace_sync::WorkspaceUnavailable::NoHolders);
         assert_eq!(
             state(WS),
             Some(WorkspaceSyncState::Unavailable(
-                ui::workspace_sync::WorkspaceUnavailable::NoHolders
+                tilo_ui_base::workspace_sync::WorkspaceUnavailable::NoHolders
             )),
             "a workspace none of whose holders is dialled says why"
         );
@@ -241,7 +241,7 @@ mod tests {
         synced(WS);
         assert_eq!(
             told(WS, "Lounge", Some(false)),
-            Some(ui::workspace_sync::WorkspaceSync {
+            Some(tilo_ui_base::workspace_sync::WorkspaceSync {
                 state: WorkspaceSyncState::Synced,
                 workspace: "Lounge".into(),
                 writable: Some(false),
@@ -268,7 +268,7 @@ mod tests {
         connecting(WS);
         other_version(WS, 0);
         unreachable(WS);
-        unavailable(WS, ui::workspace_sync::WorkspaceUnavailable::NotRenewed);
+        unavailable(WS, tilo_ui_base::workspace_sync::WorkspaceUnavailable::NotRenewed);
         retrying(WS);
         assert_eq!(state(WS), Some(WorkspaceSyncState::Synced));
         forget(WS);

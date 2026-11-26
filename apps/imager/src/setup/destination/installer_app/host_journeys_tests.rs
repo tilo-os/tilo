@@ -189,7 +189,7 @@ fn step(app: &mut App) -> String {
 
 /// Every name and value the window shows to a screen reader.
 fn texts(app: &mut App) -> String {
-    ui::a11y::texts(app.harness().root_widget()).join("\n")
+    tilo_ui_base::a11y::texts(app.harness().root_widget()).join("\n")
 }
 
 /// Drive frames until the window shows `needle`, as the person would see the
@@ -198,7 +198,7 @@ fn wait_for_text(app: &mut App, needle: &str) {
     let seen = app
         .harness()
         .wait_until(tilo_test_env::hang_bound(), |harness| {
-            ui::a11y::texts(harness.root_widget())
+            tilo_ui_base::a11y::texts(harness.root_widget())
                 .iter()
                 .any(|text| text.contains(needle))
         });
@@ -215,7 +215,7 @@ fn wait_until_gone(app: &mut App, needle: &str) {
     let gone = app
         .harness()
         .wait_until(tilo_test_env::hang_bound(), |harness| {
-            !ui::a11y::texts(harness.root_widget())
+            !tilo_ui_base::a11y::texts(harness.root_widget())
                 .iter()
                 .any(|text| text.contains(needle))
         });
@@ -514,7 +514,7 @@ fn an_offline_erase_install_ends_on_its_recovery_key_and_power() {
     );
     assert!(backend.power.lock().unwrap().is_empty());
     app.effect(&DestinationEffect::CopyRecoveryKey).unwrap();
-    assert_eq!(ui::clipboard_paste().as_deref(), Some(KEY));
+    assert_eq!(tilo_ui_base::clipboard_paste().as_deref(), Some(KEY));
     assert_eq!(
         recorder.secret_copies(),
         [KEY],

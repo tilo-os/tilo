@@ -133,7 +133,7 @@ impl Chains {
         &self,
         me: Option<&tilo_resource::MemberId>,
         payload: &[u8],
-        live: &mut ui_core::widget::Edits<'_>,
+        live: &mut tilo_ui_base::widget::Edits<'_>,
     ) -> Result<tilo_actions::ActionOutput, Refusal> {
         let request: super::super::resources::ResourceAction =
             tilo_actions::decode_json(payload).map_err(|error| Refusal::new(error.to_string()))?;

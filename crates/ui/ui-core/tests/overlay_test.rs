@@ -12,18 +12,19 @@
 
 use crate::support::render::write_png;
 use std::collections::HashMap;
-use tilo_ui::widget::TaffyTreeExt;
+use tilo_ui_base::widget::TaffyTreeExt;
 
 use taffy::{AvailableSpace, Style};
 use taffy::{NodeId, Size, TaffyTree};
-use tilo_ui::TextRole;
-use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::overlay::FocusTrap;
-use tilo_ui::presence::PresenceCtx;
-use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::Theme;
+use tilo_ui_base::TextRole;
+use tilo_ui_base::offscreen::OffscreenRenderer;
+use tilo_ui_base::overlay::FocusTrap;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 use tilo_ui::widget::permission_prompt::{PROMPT_HEIGHT, PermissionPrompt};
-use tilo_ui::widget::{ModalDialog, Popover, PopoverSide, Text, Widget};
+use tilo_ui::{widget::ModalDialog, widget::Popover, widget::PopoverSide, widget::Text};
+use tilo_ui_base::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::Color;
@@ -31,7 +32,7 @@ use vello::peniko::Color;
 #[test]
 fn focus_trap_cycles_only_within_members() {
     // Motion reads at its end: this test checks the resting frame.
-    let _settled = tilo_ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let trap = FocusTrap::new(vec![1, 2, 3]);
     assert_eq!(trap.next_from(1), Some(2));
     assert_eq!(trap.next_from(3), Some(1));
@@ -53,7 +54,7 @@ const CANVAS_W: u32 = 960;
 const CANVAS_H: u32 = 720;
 
 fn luminance_of(px: (u8, u8, u8, u8)) -> f64 {
-    tilo_ui::a11y::relative_luminance(Color::from_rgba8(px.0, px.1, px.2, px.3))
+    tilo_ui_base::a11y::relative_luminance(Color::from_rgba8(px.0, px.1, px.2, px.3))
 }
 
 /// The edge pixel one step inside `panel`'s left side, mid-height, against
@@ -69,10 +70,10 @@ fn assert_edge_registers(rgba: &[u8], panel: Rect, name: &str, surface: &str) {
     let delta = (luminance_of(edge) - luminance_of(inside)).abs();
     eprintln!("{surface}/{name}: edge {edge:?} vs fill {inside:?} → Δlum={delta:.4}");
     assert!(
-        delta >= tilo_ui::tokens::colors::FLOATING_EDGE_MIN_DELTA,
+        delta >= tilo_ui_base::tokens::colors::FLOATING_EDGE_MIN_DELTA,
         "{surface}/{name}: edge {edge:?} does not register against fill {inside:?} \
          (Δlum={delta:.4} < {})",
-        tilo_ui::tokens::colors::FLOATING_EDGE_MIN_DELTA
+        tilo_ui_base::tokens::colors::FLOATING_EDGE_MIN_DELTA
     );
 }
 
@@ -135,7 +136,7 @@ impl Widget for FixedContent {
         );
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -175,7 +176,7 @@ fn lay_out(widget: &mut dyn Widget, theme: &Theme) {
 #[test]
 fn overlay_panels_register_their_edge_in_both_themes() {
     // Motion reads at its end: this test checks the resting frame.
-    let _settled = tilo_ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     {
         let viewport = Rect::new(0.0, 0.0, f64::from(CANVAS_W), f64::from(CANVAS_H));
         for (name, theme) in themes() {
@@ -189,7 +190,7 @@ fn overlay_panels_register_their_edge_in_both_themes() {
             let mut scene = Scene::new();
             let presence = PresenceCtx::default();
             let previous = presence.push_viewport(viewport);
-            dialog.draw_overlay(&mut tilo_ui::draw::DrawCtx::new(
+            dialog.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut tr,
@@ -220,7 +221,7 @@ fn overlay_panels_register_their_edge_in_both_themes() {
             let mut renderer = OffscreenRenderer::new(CANVAS_W, CANVAS_H);
             let mut scene = Scene::new();
             let presence = PresenceCtx::default();
-            popover.draw_overlay(&mut tilo_ui::draw::DrawCtx::new(
+            popover.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut tr,
@@ -254,7 +255,7 @@ fn overlay_panels_register_their_edge_in_both_themes() {
             let mut renderer = OffscreenRenderer::new(CANVAS_W, CANVAS_H);
             let mut scene = Scene::new();
             let presence = PresenceCtx::default();
-            prompt.draw(&mut tilo_ui::draw::DrawCtx::new(
+            prompt.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut tr,

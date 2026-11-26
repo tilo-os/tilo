@@ -69,7 +69,7 @@ impl Source for AskAgent {
             subtitle: None,
             facts: Vec::new(),
             score: 1,
-            icon: Some(ui::icons::Icon::Bot),
+            icon: Some(tilo_ui_base::icons::Icon::Bot),
             target: Target::Invoke(Box::new(
                 InvokeTarget::action(
                     DESKTOP_APP,

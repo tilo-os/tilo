@@ -88,7 +88,7 @@ tilo_test_env::scenario! {
     phase overlay_badges_paint_legible_ink_in_every_theme;
     {
         use crate::color::contrast_ratio;
-        use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
+        use tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST;
 
         let mut text = TextRenderer::new();
         let art = Rect::new(0.0, 0.0, 320.0, 180.0);
@@ -103,7 +103,7 @@ tilo_test_env::scenario! {
                         .tokens
                         .colors
                         .ink_on(live_fill, theme.text_primary, ON_FILL_MIN_CONTRAST);
-                let duration_fill = crate::chrome::panel_ground(&theme);
+                let duration_fill = tilo_ui_base::chrome::panel_ground(&theme);
                 for (badge, fill, ink) in [
                     (MediaBadge::Live, live_fill, live_ink),
                     (
@@ -300,8 +300,8 @@ fn equal_column_rows_use_the_remainder_of_odd_viewport_widths() {
 fn creator_avatar_loads_through_the_shared_store_and_scales_with_metadata() {
     use std::sync::Arc;
     let bytes = crate::png::encode_rgba8(2, 2, &[180; 16]).unwrap();
-    let fetch: crate::image_store::Fetcher = Arc::new(move |_| Some(bytes.clone()));
-    let store = crate::ImageStore::new(&fetch);
+    let fetch: tilo_ui_base::image_store::Fetcher = Arc::new(move |_| Some(bytes.clone()));
+    let store = tilo_ui_base::ImageStore::new(&fetch);
     assert!(store.get("https://example.test/creator.png").is_none());
     store.block_until_idle(tilo_test_env::hang_bound());
     assert!(store.get("https://example.test/creator.png").is_some());
@@ -335,7 +335,7 @@ fn creator_avatar_loads_through_the_shared_store_and_scales_with_metadata() {
         let bounds = image
             .bounds()
             .expect("the attribution has measured geometry");
-        let side = crate::widget::AvatarSize::Small.side(&theme);
+        let side = tilo_ui_base::widget::AvatarSize::Small.side(&theme);
         assert!((bounds.width() - side).abs() < 0.1);
         assert!((bounds.height() - side).abs() < 0.1);
         assert!(
@@ -363,7 +363,7 @@ fn creator_avatar_loads_through_the_shared_store_and_scales_with_metadata() {
 #[test]
 fn a_shelf_of_grids_lays_out_at_every_width() {
     use crate::widget::{Column, Scrollable, Section};
-    let shelf = || -> Box<dyn crate::widget::Widget> {
+    let shelf = || -> Box<dyn tilo_ui_base::widget::Widget> {
         let artists = MediaGrid::new(
             ["Miles Davis", "Nina Simone", "Thelonious Monk"]
                 .into_iter()
@@ -397,7 +397,7 @@ fn a_shelf_of_grids_lays_out_at_every_width() {
                 vec![Box::new(MediaGrid::arriving(
                     3,
                     MediaAspect::Wide,
-                    &crate::arriving::Source::Remote,
+                    &tilo_ui_base::arriving::Source::Remote,
                     crate::time::now() - crate::time::Duration::from_secs(1),
                 ))],
             )));

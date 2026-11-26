@@ -103,7 +103,7 @@ impl HistoryHost {
                         heads: snapshot.heads().to_vec(),
                     };
                     *expected = Some(key.clone());
-                    canvas.set_status(Some(crate::i18n::I18nManager::lookup_plain(
+                    canvas.set_status(Some(tilo_ui_base::i18n::I18nManager::lookup_plain(
                         "history-mode-loading-media",
                     )));
                     provider.request(

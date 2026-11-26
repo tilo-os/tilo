@@ -2,10 +2,10 @@
 
 use tilo_ui_graph::component::{CaseDescription, EnumDescription, FieldDescription};
 
-use crate::component::{Component, Described, Event, PropType, Type, Value};
+use tilo_ui_base::{component::Component, component::Described, component::Event, component::PropType, component::Type, component::Value};
 
 use super::{Anchor, Drawing, Ink, Meaning, Shape, Weight};
-use crate::tokens::TextRole;
+use tilo_ui_base::tokens::TextRole;
 
 /// Shapes drawn with the design system over a box of their own.
 #[derive(Component)]
@@ -27,7 +27,7 @@ pub struct DrawingProps {
     pub height: Option<f64>,
     /// How its shapes move to a new reading: at the theme's pace unless said, never for someone
     /// who asked for reduced motion.
-    pub motion: crate::motion::Feel,
+    pub motion: tilo_ui_base::motion::Feel,
     /// The theme its shapes are drawn in, by a shipped theme's id or name (`light`,
     /// `paper-dark`, `Tilo light`), so a preview draws a theme other than the running one.
     /// Nothing, or a name no shipped theme has, draws them in the running theme.
@@ -86,7 +86,7 @@ impl Default for DrawingProps {
             value: None,
             width: None,
             height: None,
-            motion: crate::motion::Feel::default(),
+            motion: tilo_ui_base::motion::Feel::default(),
             theme: None,
             press: Event::None,
             hover: Event::None,
@@ -126,7 +126,7 @@ impl Described for Drawing {
             self.layout_dirty = true;
         }
         self.feel = props.motion;
-        self.theme = props.theme.as_deref().and_then(crate::theme::Theme::named);
+        self.theme = props.theme.as_deref().and_then(tilo_ui_base::theme::Theme::named);
         self.set_shapes(props.shapes);
         self.meaning = props.meaning;
         self.label = props.label;
@@ -497,7 +497,7 @@ impl PropType for Shape {
 
     fn from_value(value: &Value) -> Result<Self, String> {
         let Value::Case { case, fields } = value else {
-            return Err(crate::component::wrong(&Self::ty(), value));
+            return Err(tilo_ui_base::component::wrong(&Self::ty(), value));
         };
         let field = |name: &str| fields.iter().find(|(n, _)| n == name).map(|(_, v)| v);
         let float = |name: &str| match field(name) {

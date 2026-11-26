@@ -1,10 +1,7 @@
 //! Exact installed document routing. No transport, signing or action log lives here.
 use super::HistoryOwner;
-use crate::collaboration::Incoming;
-use crate::{
-    collaboration::{AcceptedRoute, RouteSpec},
-    widget::Widget,
-};
+use tilo_ui_base::collaboration::Incoming;
+use tilo_ui_base::{collaboration::AcceptedRoute, collaboration::RouteSpec, widget::Widget};
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
 use collab_types::DocumentMutation;
 use std::collections::{HashSet, VecDeque};
@@ -86,7 +83,7 @@ fn ready(doc: &AutoCommit) -> Result<(), RemoteApplyError> {
         Ok(())
     } else {
         Err(RemoteApplyError::Unavailable(
-            crate::i18n::I18nManager::lookup_plain("history-sync-finish-edit"),
+            tilo_ui_base::i18n::I18nManager::lookup_plain("history-sync-finish-edit"),
         ))
     }
 }
@@ -141,7 +138,7 @@ impl PendingRemote {
             // may clear this new loss obligation when the queue drains.
             self.invalid_mutation_pending = false;
             self.recovery_snapshot_pending = false;
-            self.failure = Some(crate::i18n::I18nManager::lookup_plain(
+            self.failure = Some(tilo_ui_base::i18n::I18nManager::lookup_plain(
                 "history-sync-queue-full",
             ));
             return false;
@@ -251,11 +248,11 @@ pub(crate) struct OwnerDocumentRoutes {
     /// keeps its route while its store has it open.
     tree: Vec<TreeRecord>,
     #[cfg(test)]
-    pub(crate) sent: Vec<(RouteSpec, crate::collaboration::CollabRequest)>,
+    pub(crate) sent: Vec<(RouteSpec, tilo_ui_base::collaboration::CollabRequest)>,
     /// Transport outcome the recording test transport reports for owned routes; `None` accepts every
     /// change.
     #[cfg(test)]
-    pub(crate) refuse_for_test: Option<crate::collaboration::CollabSendError>,
+    pub(crate) refuse_for_test: Option<tilo_ui_base::collaboration::CollabSendError>,
 }
 impl OwnerDocumentRoutes {
     /// Give every record of a live owner's tree its own owner: a chat's message parts, a container's
@@ -366,7 +363,7 @@ impl OwnerDocumentRoutes {
         if self.observation != observation || self.primary_generation != generation {
             if !self.primary.is_empty() || self.owners.iter().any(|route| !route.pending.is_empty())
             {
-                self.status = Some(crate::i18n::I18nManager::lookup_plain(
+                self.status = Some(tilo_ui_base::i18n::I18nManager::lookup_plain(
                     "history-sync-owner-changed",
                 ));
             }
@@ -394,7 +391,7 @@ impl OwnerDocumentRoutes {
             });
             if entry.owners.is_empty() {
                 self.retired.insert(entry.route.clone());
-                self.status = Some(crate::i18n::I18nManager::lookup_plain(
+                self.status = Some(tilo_ui_base::i18n::I18nManager::lookup_plain(
                     "history-sync-owner-closed",
                 ));
             }

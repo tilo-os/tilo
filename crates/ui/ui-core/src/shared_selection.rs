@@ -9,15 +9,15 @@ use serde::Deserialize;
 use tilo_actions::{ActionResource, SelectionAnchor, SelectionPlace};
 
 #[cfg(feature = "model")]
-use crate::collaboration::PresencePayload;
+use tilo_ui_base::collaboration::PresencePayload;
 use crate::floating_surface::Recipient;
 #[cfg(feature = "model")]
-use crate::presence::PresenceKey;
+use tilo_ui_base::presence::PresenceKey;
 #[cfg(feature = "model")]
-use crate::presence::capability::PublishesPresence;
-pub use crate::shared_subject::SharedSelection;
-use crate::widget::Widget;
-use crate::widget::capability::capability;
+use tilo_ui_base::presence::capability::PublishesPresence;
+pub use tilo_ui_base::shared_subject::SharedSelection;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::widget::capability::capability;
 
 /// The selection `widget` holds, if it is focused and holds one.
 #[cfg(feature = "model")]
@@ -185,7 +185,7 @@ pub(crate) fn menu_subject(about: Option<SharedSelection>) -> Option<SharedSelec
 /// deepest part that shows an item of its app's collection, else the deepest row, list item,
 /// paragraph or heading — named as the window reads it, drawn where it stands.
 pub(crate) fn item_at(chain: &[crate::pick::PickTarget]) -> Option<SharedSelection> {
-    use crate::a11y::Role;
+    use tilo_ui_base::a11y::Role;
     let words = |role: Role| matches!(role, Role::Paragraph | Role::Heading { .. });
     let row = |role| matches!(role, Role::ListItem | Role::Row | Role::TreeItem) || words(role);
     let deepest =
@@ -237,7 +237,7 @@ pub fn deliver_send(
     #[cfg(test)]
     DELIVERED.with(|delivered| delivered.borrow_mut().push(arguments.clone()));
     let spawned = crate::background::Background::current().spawn("send", move || {
-        if let Err(error) = crate::collaboration::SessionResource::invoke_without_watching(
+        if let Err(error) = tilo_ui_base::collaboration::SessionResource::invoke_without_watching(
             SEND_TO_RESOURCE,
             SEND,
             &arguments,
@@ -336,7 +336,7 @@ struct SendToReading {
 /// The session's list of whom a message can go to, as this process last read it.
 struct Known {
     #[cfg(feature = "model")]
-    followed: Option<crate::collaboration::SessionResource>,
+    followed: Option<tilo_ui_base::collaboration::SessionResource>,
     #[cfg(feature = "model")]
     asked: bool,
     /// `None` until the first reading arrives.
@@ -374,7 +374,7 @@ fn known() -> std::sync::MutexGuard<'static, Known> {
     if !std::mem::replace(&mut lock().asked, true) {
         let wake = crate::WakeHandle::new();
         let spawned = crate::background::Background::current().spawn("recipients", move || {
-            match crate::collaboration::SessionResource::follow(SEND_TO_RESOURCE, wake) {
+            match tilo_ui_base::collaboration::SessionResource::follow(SEND_TO_RESOURCE, wake) {
                 Ok(followed) => lock().followed = Some(followed),
                 Err(error) => tracing::debug!(%error, "no session lists whom a message can go to"),
             }
@@ -694,16 +694,16 @@ mod tests {
         protected: bool,
     }
 
-    impl crate::widget::Widget for Editor {
-        crate::provides!(dyn PublishesPresence);
+    impl tilo_ui_base::widget::Widget for Editor {
+        tilo_ui_base::provides!(dyn PublishesPresence);
         crate::testing::inert_widget_methods!(leaf_layout);
         fn name(&self) -> &'static str {
             "editor"
         }
-        fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-            let mut node = crate::a11y::AccessNode::new(crate::a11y::Role::TextInput);
+        fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+            let mut node = tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::TextInput);
             node.value = Some(self.text.into());
-            node.text_selection = Some(crate::a11y::AccessibleTextSelection {
+            node.text_selection = Some(tilo_ui_base::a11y::AccessibleTextSelection {
                 anchor: self.selected.1,
                 focus: self.selected.0,
             });
@@ -729,22 +729,22 @@ mod tests {
     }
 
     fn right_press() -> winit::event::WindowEvent {
-        crate::synthetic_input::mouse_input(
+        tilo_ui_base::synthetic_input::mouse_input(
             winit::event::ElementState::Pressed,
             winit::event::MouseButton::Right,
         )
     }
 
     fn left_press() -> winit::event::WindowEvent {
-        crate::synthetic_input::mouse_input(
+        tilo_ui_base::synthetic_input::mouse_input(
             winit::event::ElementState::Pressed,
             winit::event::MouseButton::Left,
         )
     }
 
-    fn type_into(menu: &mut dyn crate::widget::Widget, text: &str) {
+    fn type_into(menu: &mut dyn tilo_ui_base::widget::Widget, text: &str) {
         for ch in text.chars() {
-            crate::testing::dispatch(menu, &crate::synthetic_input::char_key(&ch.to_string()));
+            crate::testing::dispatch(menu, &tilo_ui_base::synthetic_input::char_key(&ch.to_string()));
         }
     }
 
@@ -820,7 +820,7 @@ mod tests {
         );
         crate::testing::dispatch(
             &mut area,
-            &crate::synthetic_input::named_key(winit::keyboard::NamedKey::Enter),
+            &tilo_ui_base::synthetic_input::named_key(winit::keyboard::NamedKey::Enter),
         );
         let box_ = area.menu().send_to();
         assert!(box_.is_open(), "the box carries the sentence");

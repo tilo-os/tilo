@@ -43,7 +43,7 @@ impl TextInput {
                 return;
             }
             if let Some(action) = &mut self.action {
-                let _ = crate::widget::input_provenance::with_physical_text(physical_text, || {
+                let _ = tilo_ui_base::widget::input_provenance::with_physical_text(physical_text, || {
                     action.press(Edited {
                         before: before.clone(),
                         after,
@@ -59,15 +59,15 @@ impl TextInput {
         if before.is_empty() && !self.text.is_empty() {
             let held = self.text.clone();
             self.begin_event
-                .fire(Some(crate::component::Value::Text(held)));
+                .fire(Some(tilo_ui_base::component::Value::Text(held)));
         }
         // Every change, for what reads the words as they are typed (a window's search).
         let held = self.text.clone();
         self.changed_event
-            .fire(Some(crate::component::Value::Text(held)));
+            .fire(Some(tilo_ui_base::component::Value::Text(held)));
         if let Some(action) = &mut self.action {
             let after = self.text.clone();
-            let _ = crate::widget::input_provenance::with_physical_text(physical_text, || {
+            let _ = tilo_ui_base::widget::input_provenance::with_physical_text(physical_text, || {
                 action.emit(Edited { before, after })
             });
         }

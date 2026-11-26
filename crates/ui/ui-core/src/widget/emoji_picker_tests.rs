@@ -1,4 +1,4 @@
-use crate::text_render::TextRenderer;
+use tilo_ui_base::text_render::TextRenderer;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -8,9 +8,9 @@ use vello::kurbo::Affine;
 use winit::keyboard::ModifiersState;
 
 use super::*;
-use crate::emoji_catalogue::{EmojiCatalogue, EmojiInfo};
-use crate::synthetic_input::{char_key, cursor_moved, mouse_press, mouse_release, named_key};
-use crate::workspace_emoji::{Adding, CustomEmoji, EmojiSource, WorkspaceEmoji};
+use tilo_ui_base::{emoji_catalogue::EmojiCatalogue, emoji_catalogue::EmojiInfo};
+use tilo_ui_base::{synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release, synthetic_input::named_key};
+use tilo_ui_base::{workspace_emoji::Adding, workspace_emoji::CustomEmoji, workspace_emoji::EmojiSource, workspace_emoji::WorkspaceEmoji};
 
 struct Fake;
 
@@ -148,7 +148,7 @@ fn window(manage: bool) -> Window {
             })
             .collect(),
     );
-    crate::workspace_emoji::register(
+    tilo_ui_base::workspace_emoji::register(
         &scope.handle(),
         Rc::new(Source {
             emoji: Rc::new(emoji),
@@ -172,12 +172,12 @@ fn opened(theme: &Theme) -> EmojiPicker {
         theme,
     );
     let mut scene = Scene::new();
-    picker.draw(&mut crate::draw::DrawCtx::new(
+    picker.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut TextRenderer::new(),
         theme,
-        crate::presence::PresenceCtx::default().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::default().draw_env(),
     ));
     picker
 }
@@ -233,12 +233,12 @@ fn the_workspace_comes_first_then_the_most_used_then_the_group() {
 }
 
 fn redraw(picker: &mut EmojiPicker) {
-    picker.draw(&mut crate::draw::DrawCtx::new(
+    picker.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut Scene::new(),
         Affine::IDENTITY,
         &mut TextRenderer::new(),
         &Theme::dark(),
-        crate::presence::PresenceCtx::default().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::default().draw_env(),
     ));
 }
 
@@ -452,12 +452,12 @@ fn the_picker_is_a_dialog_with_its_field_tabs_and_named_emoji() {
 }
 
 fn paint(picker: &mut EmojiPicker, theme: &Theme) {
-    picker.draw(&mut crate::draw::DrawCtx::new(
+    picker.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut Scene::new(),
         Affine::IDENTITY,
         &mut TextRenderer::new(),
         theme,
-        crate::presence::PresenceCtx::default().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::default().draw_env(),
     ));
 }
 

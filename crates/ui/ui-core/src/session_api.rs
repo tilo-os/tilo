@@ -7,10 +7,10 @@ use tilo_actions::remote::{ActionCallError, ApplicationLaunch, InvokeRequest};
 use tilo_actions::{ActionOutput, ApiError, InvocationId, InvocationUpdate};
 
 #[cfg(feature = "model")]
-use crate::arriving::Arrival;
+use tilo_ui_base::arriving::Arrival;
 #[cfg(feature = "model")]
-use crate::remote_actions::{InvocationCall, RemoteActions};
-use crate::widget::ResourceOperationStart;
+use tilo_ui_base::{remote_actions::InvocationCall, remote_actions::RemoteActions};
+use tilo_ui_base::widget::ResourceOperationStart;
 
 /// Where a host sends what an action asks of the session beyond its app.
 pub trait SessionApi {
@@ -51,7 +51,7 @@ pub(crate) fn decode_application_launch(payload: &[u8]) -> Result<ApplicationLau
 #[cfg(feature = "model")]
 pub(crate) fn start_application_launch(
     api: Option<&mut dyn SessionApi>,
-    route: Option<&crate::collaboration::RouteSpec>,
+    route: Option<&tilo_ui_base::collaboration::RouteSpec>,
     payload: &[u8],
     operation: InvocationId,
     admitted: bool,

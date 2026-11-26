@@ -15,15 +15,15 @@ use vello::kurbo::{Point, Rect, Vec2};
 use super::Side;
 use super::motion::{DrawnPart, PartMotions, draw_posed};
 use super::units::{At, Fit};
-use crate::interaction::InteractionEnvironment;
-use crate::motion::Feel;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::Rhythm;
-use crate::widget::DrawChild;
-use crate::widget::layout::Styles;
-use crate::widget::{AppModel, Element, ModelPath, StructureChange, TaffyTreeExt, Widget};
-use crate::widget::{Length, WidthClass};
+use tilo_ui_base::interaction::InteractionEnvironment;
+use tilo_ui_base::motion::Feel;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::Rhythm;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::layout::Styles;
+use tilo_ui_base::{widget::AppModel, widget::Element, widget::ModelPath, widget::StructureChange, widget::TaffyTreeExt, widget::Widget};
+use tilo_ui_base::{widget::Length, widget::WidthClass};
 
 /// What a layout reads of the theme: the `rem`, the rhythm gaps and a control's least side,
 /// in logical pixels.
@@ -91,7 +91,7 @@ impl Resolved {
 }
 
 /// A child with how it is sized and placed.
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "a child's place in the language's `stack`, `row` and `grid`"
 )]
@@ -263,7 +263,7 @@ pub trait Layout {
 /// A container arranged by `L`. The primitives are this type with a layout:
 /// [`Stack`](super::Stack), [`Row`](super::Row), [`Grid`](super::Grid), [`Split`](super::Split),
 /// [`Page`](super::Page) and [`Layers`](super::Layers).
-#[crate::component::not_a_component(layout, "the language's `stack`, `row` and `grid`")]
+#[tilo_ui_base::component::not_a_component(layout, "the language's `stack`, `row` and `grid`")]
 pub struct Arranged<L: Layout> {
     pub(super) layout: L,
     pub(super) parts: Vec<Part>,
@@ -850,7 +850,7 @@ impl<L: Layout> crate::widget::RowContentBox for Arranged<L> {
 }
 
 impl<L: Layout + 'static> Widget for Arranged<L> {
-    crate::provides!(dyn crate::widget::RowContentBox);
+    tilo_ui_base::provides!(dyn crate::widget::RowContentBox);
 
     fn build_layout(
         &mut self,
@@ -938,7 +938,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
     }
 
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(tree, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(tree, node, origin);
         // What this container draws, hit-tests and tells its host is the layout of the
         // tree it is placed from, whichever tree was settled last.
         if self.layout.settles()
@@ -972,7 +972,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -980,7 +980,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.motions.set_motion(theme.motion());
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.motions.settle(now);
         self.motions.begin_frame();
         let moving = !self.motions.at_rest();
@@ -1031,14 +1031,14 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
     }
 
     /// A finger on a child is the child's to claim.
-    fn touch_claim(&self, point: vello::kurbo::Point) -> crate::interaction::TouchClaim {
+    fn touch_claim(&self, point: vello::kurbo::Point) -> tilo_ui_base::interaction::TouchClaim {
         self.parts
             .iter()
             .enumerate()
             .rev()
             .filter(|(index, _)| !self.layout.hidden(*index))
             .find(|(_, part)| part.element.get_rect().contains(point))
-            .map_or(crate::interaction::TouchClaim::Pointer, |(_, part)| {
+            .map_or(tilo_ui_base::interaction::TouchClaim::Pointer, |(_, part)| {
                 part.element.touch_claim(point)
             })
     }
@@ -1046,12 +1046,12 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         // A child holding the pointer (a drag it latched, a menu open in it) owns the input:
         // what stands over its menu, drawn later and so asked first, never takes a press on it.
         let owner = self.parts.iter().enumerate().position(|(index, part)| {
-            !self.layout.hidden(index) && crate::widget::holds_pointer(part.element.as_ref())
+            !self.layout.hidden(index) && tilo_ui_base::widget::holds_pointer(part.element.as_ref())
         });
         for (index, part) in self.parts.iter_mut().enumerate().rev() {
             if self.layout.hidden(index) || owner.is_some_and(|owner| owner != index) {
@@ -1090,7 +1090,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         // Parts on their way: where the last frames drew them, and where this one does.
         if !self.motions.at_rest() {
             regions.extend(self.motions.last_painted().copied());
-            let now = crate::motion::frame_now();
+            let now = tilo_ui_base::motion::frame_now();
             let boxes = self
                 .parts
                 .iter()
@@ -1145,7 +1145,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
     /// control answers to the least target the window offers.
     fn set_interaction_environment(&mut self, environment: InteractionEnvironment) {
         self.interaction = environment;
-        crate::widget::defaults::set_interaction_environment(self.children_mut(), environment);
+        tilo_ui_base::widget::defaults::set_interaction_environment(self.children_mut(), environment);
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -1162,7 +1162,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.motions.is_moving(crate::motion::frame_now())
+        self.motions.is_moving(tilo_ui_base::motion::frame_now())
             || self
                 .parts
                 .iter()
@@ -1200,7 +1200,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
 
     /// Lay every part out again under this container's node, after the part operations changed
     /// them; otherwise carry out what the parts report.
-    fn remount_children(&mut self, remount: &mut crate::widget::Remount<'_>) -> bool {
+    fn remount_children(&mut self, remount: &mut tilo_ui_base::widget::Remount<'_>) -> bool {
         if !self.relaid {
             return self
                 .parts
@@ -1237,7 +1237,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
     /// it was asked.
     fn needs_redraw(&self) -> bool {
         self.relaid_from.is_some()
-            || self.motions.needs_redraw(crate::motion::frame_now())
+            || self.motions.needs_redraw(tilo_ui_base::motion::frame_now())
             || self.parts.iter().enumerate().any(|(index, part)| {
                 !self.layout.hidden(index)
                     && (part.element.needs_redraw() || part.element.needs_animation_frame())
@@ -1246,7 +1246,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
 
     fn mark_drawn(&mut self) {
         self.relaid_from = None;
-        crate::widget::defaults::mark_drawn(self.children_mut());
+        tilo_ui_base::widget::defaults::mark_drawn(self.children_mut());
     }
 
     fn name(&self) -> &str {
@@ -1274,7 +1274,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
     }
 }
 
-impl<L: Layout + 'static> crate::component::PartViews for Arranged<L> {
+impl<L: Layout + 'static> tilo_ui_base::component::PartViews for Arranged<L> {
     fn len(&self) -> usize {
         Self::len(self)
     }

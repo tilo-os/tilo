@@ -1,13 +1,13 @@
 //! [`ProgressRing`] and [`BarGauge`] as described components.
 
-use crate::component::{Component, Described};
-use crate::widget::Tone;
+use tilo_ui_base::{component::Component, component::Described};
+use tilo_ui_base::widget::Tone;
 
 use super::{
     BarGauge, Fillcolor, GaugeStyle, GaugeThresholds, ProgressRing, ProgressRingSize, RingFill,
 };
 
-crate::choice!(ProgressRingSize, "ProgressRingSize", {
+tilo_ui_base::choice!(ProgressRingSize, "ProgressRingSize", {
     Small => "small",
     Regular => "regular",
     Large => "large",

@@ -10,7 +10,7 @@
 //! detail view shows, so a conversation says "… is typing" without reading a draft. What the
 //! instance says of its own person is where they are (the resource the detail view shows) and
 //! whether they hold a draft there: where, once each time it changes; a draft, again while they
-//! type in it ([`ui_core::presence::DraftSaid`]).
+//! type in it ([`tilo_ui_base::presence::DraftSaid`]).
 
 use std::collections::HashMap;
 
@@ -20,8 +20,8 @@ use tilo_render_protocol::patch::ToUi;
 use tilolang_tilo::instance::Instance;
 use tilolang_tilo::runtime::value::ResourceRef;
 use ui_core::component_lifecycle::Heard;
-use ui_core::permissions::MemberId;
-use ui_core::presence::{DraftSaid, PresenceCtx, PresenceKey};
+use tilo_ui_base::permissions::MemberId;
+use tilo_ui_base::{presence::DraftSaid, presence::PresenceCtx, presence::PresenceKey};
 
 /// What an instance heard of the document's members, and what it last said of its own.
 pub struct Presence {
@@ -339,7 +339,7 @@ mod tests {
             "typing for 20 s reads as typing throughout"
         );
         let linger =
-            u64::try_from(ui_core::presence::COMPOSING_LINGER.as_millis()).expect("seconds");
+            u64::try_from(tilo_ui_base::presence::COMPOSING_LINGER.as_millis()).expect("seconds");
         assert!(
             kept.iter()
                 .all(|(at, typing)| !*typing || at.saturating_sub(typed) < linger),

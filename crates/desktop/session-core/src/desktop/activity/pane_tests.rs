@@ -2229,7 +2229,7 @@ mod tests {
         let ada = MemberId::person("ada");
         presence.names.insert(ada.clone(), "Ada".into());
         presence.set_pointer(
-            &ui::presence::PresenceKey::shell_pointer("design-workspace"),
+            &tilo_ui_base::presence::PresenceKey::shell_pointer("design-workspace"),
             ada,
             (420.0, 260.0),
         );
@@ -2651,14 +2651,14 @@ mod tests {
             };
             let appended = tree.doc.get_changes(&synced).len();
             let read = pane.history_log.changes_read();
-            let catalogue = ui::I18nManager::revision();
+            let catalogue = tilo_ui_base::I18nManager::revision();
             pane.refresh(&mut tree);
             assert_eq!(
                 pane.history_log.changes_read() - read,
                 appended,
                 "step {step} ({kind}): the refresh reads only the appended changes \
                  (i18n revision {catalogue} -> {})",
-                ui::I18nManager::revision()
+                tilo_ui_base::I18nManager::revision()
             );
 
             let mut fresh = native_pane();

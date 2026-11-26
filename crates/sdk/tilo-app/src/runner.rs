@@ -84,7 +84,7 @@ const PICTURE_UNAVAILABLE: &str = "picture_unavailable";
 #[derive(Default)]
 pub(crate) struct Presentation {
     /// The theme the window draws in, which a line's look and the answer name.
-    theme: Option<ui_core::Theme>,
+    theme: Option<tilo_ui_base::Theme>,
 }
 
 #[cfg(target_family = "wasm")]
@@ -97,7 +97,7 @@ impl Presentation {
     pub(crate) fn new<R: tilo_resource::Resource>(_: &crate::framework::ViewCx<R>) -> Self {
         Self::default()
     }
-    pub(crate) fn track_theme(&mut self, theme: &ui_core::Theme) {
+    pub(crate) fn track_theme(&mut self, theme: &tilo_ui_base::Theme) {
         self.theme = Some(theme.clone());
     }
     pub(crate) fn needs_redraw(&self) -> bool {
@@ -114,14 +114,14 @@ impl Presentation {
         &mut self,
         op: &ui_core::host_operation::ResourceOperation<'_>,
         doc: &ui_core::automerge::AutoCommit,
-        content: &mut dyn ui_core::widget::Widget,
+        content: &mut dyn tilo_ui_base::widget::Widget,
     ) -> Result<Option<tilo_actions::ActionOutput>, String> {
         let request = op.request();
         if request.type_id != OUTLINE_TYPE {
             return Ok(None);
         }
         let (picture, _) = outline::asked(request.payload)?;
-        let theme = self.theme.clone().unwrap_or_else(ui_core::Theme::dark);
+        let theme = self.theme.clone().unwrap_or_else(tilo_ui_base::Theme::dark);
         let mut output = outline::answer(&*content, doc, &theme);
         if picture
             && let Some(fields) = output

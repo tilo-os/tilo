@@ -37,7 +37,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # The toolkit's sources, and the code below it that reads host inputs as the
 # toolkit does: each root with the files of it that are checked (all, or one
 # module and its children).
-SRC = Path("crates/ui/ui-core/src")
+SRCS = (Path("crates/ui/ui-base/src"), Path("crates/ui/ui-core/src"))
 BELOW_TOOLKIT = (
     (Path("crates/sdk/tilo-process-services/src"), None),
     (Path("crates/core/collaboration/src"), None),
@@ -113,43 +113,46 @@ def audit(root: Path = ROOT, staged: bool = False) -> list[str]:
     files = judged(root, staged)
     violations: list[str] = host_audit(files)
     readers: set[str] = set()
-    scope = SRC
 
     def hits(within: str, text: str) -> list:
         if is_exempt(within):
             return []
         return list(ENV_READ.finditer(production_source(text)))
 
-    for relative, text in files.sources(scope):
-        within = relative.relative_to(scope).as_posix()
-        if is_exempt(within):
-            continue
-        code = production_source(text)
-        reads = list(ENV_READ.finditer(code))
-        if not reads:
-            continue
-        readers.add(within)
-        if within in PENDING:
-            continue
-        for hit in reads:
-            line = code.count("\n", 0, hit.start()) + 1
-            violations.append(
-                f"{scope.as_posix()}/{within}:{line}: reads the process environment; "
-                "take the value from ui::process::ProcessEnvironment or the runner inputs"
-            )
+    def scope_of(within: str) -> Path:
+        return next((scope for scope in SRCS if (root / scope / within).is_file()), SRCS[-1])
+
+    for scope in SRCS:
+        for relative, text in files.sources(scope):
+            within = relative.relative_to(scope).as_posix()
+            if is_exempt(within):
+                continue
+            code = production_source(text)
+            reads = list(ENV_READ.finditer(code))
+            if not reads:
+                continue
+            readers.add(within)
+            if within in PENDING:
+                continue
+            for hit in reads:
+                line = code.count("\n", 0, hit.start()) + 1
+                violations.append(
+                    f"{scope.as_posix()}/{within}:{line}: reads the process environment; "
+                    "take the value from ui::process::ProcessEnvironment or the runner inputs"
+                )
     # `PENDING` may only shrink, which a file the commit stages says nothing
     # about: each entry is read whether or not the commit touched it.
     for within in sorted(PENDING - readers):
-        path = scope / within
+        path = scope_of(within) / within
         if not (root / path).is_file() or hits(within, files.read(path)):
             violations.append(
-                f"{scope.as_posix()}/{within}: no longer reads the process environment; "
+                f"{path.as_posix()}: no longer reads the process environment; "
                 "remove it from PENDING in tools/policy/check_app_window_inputs_contract.py"
             )
     for within in sorted(NATIVE_RUNNER_FILES):
-        if not (root / SRC / within).is_file():
+        if not any((root / scope / within).is_file() for scope in SRCS):
             violations.append(
-                f"{scope.as_posix()}/{within}: listed as a native runner file but missing"
+                f"{SRCS[-1].as_posix()}/{within}: listed as a native runner file but missing"
             )
     return violations
 

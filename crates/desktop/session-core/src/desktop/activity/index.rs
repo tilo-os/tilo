@@ -15,7 +15,8 @@ use collab_types::ArtifactKind;
 use ui::history_source::{AuthorDirectory, HistoryLog, HistorySource};
 use ui::resource::ResourceType;
 use ui::time::SystemTime;
-use ui::widget::{HistoryEntry, HistoryEntryId};
+use ui::widget::HistoryEntry;
+use tilo_ui_base::widget::HistoryEntryId;
 
 use super::ActivityTree;
 use tilo_desktop_model::WorkspaceId;
@@ -214,14 +215,14 @@ impl WorkspaceSeenFrontier {
             .entry(id.origin.key())
             .or_default()
             .exceptions
-            .insert(ui::HistoryEntryId::hex(&id.change));
+            .insert(tilo_ui_base::HistoryEntryId::hex(&id.change));
     }
 
     pub fn acknowledged(&self, id: &WorkspaceHistoryId) -> bool {
         self.documents.get(&id.origin.key()).is_some_and(|state| {
             state
                 .exceptions
-                .contains(&ui::HistoryEntryId::hex(&id.change))
+                .contains(&tilo_ui_base::HistoryEntryId::hex(&id.change))
         })
     }
 }
@@ -625,7 +626,7 @@ impl WorkspaceHistoryIndex {
                 let key = row.id.origin.key();
                 !frontier.documents.get(&key).is_some_and(|s| {
                     s.exceptions
-                        .contains(&ui::HistoryEntryId::hex(&row.id.change))
+                        .contains(&tilo_ui_base::HistoryEntryId::hex(&row.id.change))
                 }) && after
                     .get(&key)
                     .is_none_or(|changes| changes.contains(&row.id.change))

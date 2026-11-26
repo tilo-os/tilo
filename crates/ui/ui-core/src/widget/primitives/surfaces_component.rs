@@ -2,18 +2,16 @@
 
 use vello::kurbo::{Point, Rect};
 
-use crate::component::{Component, Described, Event};
-use crate::widget::DrawChild;
+use tilo_ui_base::{component::Component, component::Described, component::Event};
+use tilo_ui_base::widget::DrawChild;
 use crate::widget::modal_dialog::DialogAction;
-use crate::widget::{
-    Button, Container, Element, FloatingPanel, ModalDialog, PanelAlign, Popover, PopoverSide,
-    Widget,
-};
+use crate::{widget::Button, widget::Container, widget::FloatingPanel, widget::ModalDialog, widget::PanelAlign, widget::Popover, widget::PopoverSide};
+use tilo_ui_base::{widget::Element, widget::Widget};
 
 fn column(views: Vec<Element>) -> Container {
     let mut stack = crate::widget::arrange::Stack::stack()
         .fill_width()
-        .gap(crate::tokens::Rhythm::Related);
+        .gap(tilo_ui_base::tokens::Rhythm::Related);
     for view in views {
         stack = stack.push(view);
     }
@@ -32,7 +30,7 @@ pub struct ModalProps {
     #[component(required)]
     pub title: String,
     /// A glyph before the title naming what asks.
-    pub icon: Option<crate::icons::Icon>,
+    pub icon: Option<tilo_ui_base::icons::Icon>,
     /// What assistive technology says after the title.
     pub description: Option<String>,
     /// Whether it is open; a closed dialog paints nothing and takes no input.
@@ -120,18 +118,18 @@ impl Widget for DeclaredModal {
         Some(self)
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
         self.dialog.sync(state, path);
     }
 
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
         self.dialog.update(state, path)
     }
 
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
-        theme: &crate::theme::Theme,
+        theme: &tilo_ui_base::theme::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         self.dialog.build_layout(taffy, theme, node_map)
@@ -141,14 +139,14 @@ impl Widget for DeclaredModal {
         self.dialog.apply_layout(taffy, node, origin);
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.dialog.draw_overlay(&mut crate::draw::DrawCtx::new(
+        self.dialog.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -157,7 +155,7 @@ impl Widget for DeclaredModal {
         ));
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -170,7 +168,7 @@ impl Widget for DeclaredModal {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         self.dialog.handle_event(event, ctx);
     }
@@ -182,7 +180,7 @@ impl Widget for DeclaredModal {
     /// The dialog's content is laid out in the top layer even while the wrapper's children
     /// hide it: the walk follows the dialog's own.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
-        crate::widget::Widget::for_each_layout_child(&self.dialog, visitor)
+        tilo_ui_base::widget::Widget::for_each_layout_child(&self.dialog, visitor)
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -210,7 +208,7 @@ impl Widget for DeclaredModal {
         "ModalDialog"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.dialog.accessibility()
     }
 }
@@ -265,7 +263,7 @@ impl Described for DeclaredModal {
         true
     }
 
-    fn part_views(&mut self, part: &str) -> Option<&mut dyn crate::component::PartViews> {
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn tilo_ui_base::component::PartViews> {
         if part != "body" {
             return None;
         }
@@ -363,7 +361,7 @@ impl DeclaredPanel {
             panel = panel.footer(footer);
         }
         if let Some(width) = props.width {
-            panel = panel.width(crate::num::f32_of_f64(width));
+            panel = panel.width(tilo_ui_base::num::f32_of_f64(width));
         }
         if props.fill_height {
             panel = panel.fill_height();
@@ -383,8 +381,8 @@ impl DeclaredPanel {
                     clippy::cast_possible_truncation,
                     reason = "a rounded place on a display, far inside i64"
                 )]
-                let edge = |at: f64| crate::component::Value::Int(at.round() as i64);
-                moved.fire(Some(crate::component::Value::List(vec![
+                let edge = |at: f64| tilo_ui_base::component::Value::Int(at.round() as i64);
+                moved.fire(Some(tilo_ui_base::component::Value::List(vec![
                     edge(at.x),
                     edge(at.y),
                 ])));
@@ -393,7 +391,7 @@ impl DeclaredPanel {
         if !props.resized.is_none() {
             let resized = props.resized.clone();
             panel = panel.resizable(move |width| {
-                resized.fire(Some(crate::component::Value::Float(width)));
+                resized.fire(Some(tilo_ui_base::component::Value::Float(width)));
             });
         }
         Self {
@@ -434,29 +432,29 @@ impl Widget for DeclaredPanel {
         Some(self)
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
         self.panel.sync(state, path);
     }
 
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
         self.panel.update(state, path)
     }
 
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
-        theme: &crate::theme::Theme,
+        theme: &tilo_ui_base::theme::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         self.panel.build_layout(taffy, theme, node_map)
     }
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.panel.apply_layout(taffy, node, origin);
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -469,7 +467,7 @@ impl Widget for DeclaredPanel {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = ctx.logical(position);
@@ -499,7 +497,7 @@ impl Widget for DeclaredPanel {
     }
 
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
-        crate::widget::Widget::for_each_layout_child(&self.panel, visitor)
+        tilo_ui_base::widget::Widget::for_each_layout_child(&self.panel, visitor)
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -514,7 +512,7 @@ impl Widget for DeclaredPanel {
         "FloatingPanel"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.panel.accessibility()
     }
 }
@@ -554,7 +552,7 @@ impl Described for DeclaredPanel {
             return false;
         }
         let panel = &mut self.panel;
-        panel.set_width(width.map(crate::num::f32_of_f64));
+        panel.set_width(width.map(tilo_ui_base::num::f32_of_f64));
         panel.set_fill_width(fill);
         panel.set_named(label, description);
         panel.set_modal(modal);
@@ -566,7 +564,7 @@ impl Described for DeclaredPanel {
 
     /// Each part's views change by key in place, so a change of what the body or footer
     /// shows keeps the header's field, and with it focus and what is being typed.
-    fn part_views(&mut self, part: &str) -> Option<&mut dyn crate::component::PartViews> {
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn tilo_ui_base::component::PartViews> {
         match part {
             "body" => {
                 let column = self
@@ -594,7 +592,7 @@ impl Described for DeclaredPanel {
     }
 }
 
-impl crate::component::PartViews for DeclaredPanel {
+impl tilo_ui_base::component::PartViews for DeclaredPanel {
     fn len(&self) -> usize {
         let part = match self.editing {
             PanelPart::Header => self.panel.has_header(),
@@ -699,25 +697,25 @@ impl Widget for DeclaredPopover {
         Some(self)
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
         self.popover.sync(state, path);
     }
 
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
         self.popover.update(state, path)
     }
 
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
-        theme: &crate::theme::Theme,
+        theme: &tilo_ui_base::theme::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         self.popover.build_layout(taffy, theme, node_map)
     }
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         // Declared at a point of where it stands: that point in the window.
         let aim = self.at.map(|at| self.rect.origin() + at.to_vec2());
         self.popover.set_aim(aim);
@@ -728,14 +726,14 @@ impl Widget for DeclaredPopover {
         self.popover.is_layout_dirty()
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.popover.draw_overlay(&mut crate::draw::DrawCtx::new(
+        self.popover.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -744,7 +742,7 @@ impl Widget for DeclaredPopover {
         ));
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -757,7 +755,7 @@ impl Widget for DeclaredPopover {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         self.popover.handle_event(event, ctx);
     }
@@ -769,7 +767,7 @@ impl Widget for DeclaredPopover {
     /// A popover's content is laid out open or closed (so reopening finds its nodes): the
     /// walk follows the popover's own.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
-        crate::widget::Widget::for_each_layout_child(&self.popover, visitor)
+        tilo_ui_base::widget::Widget::for_each_layout_child(&self.popover, visitor)
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -784,7 +782,7 @@ impl Widget for DeclaredPopover {
         "Popover"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.popover.accessibility()
     }
 }
@@ -819,7 +817,7 @@ impl Described for DeclaredPopover {
         true
     }
 
-    fn part_views(&mut self, part: &str) -> Option<&mut dyn crate::component::PartViews> {
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn tilo_ui_base::component::PartViews> {
         if part != "content" {
             return None;
         }
@@ -843,7 +841,7 @@ pub struct PopoverButtonProps {
     #[component(required, positional)]
     pub label: String,
     /// A glyph before the label, or instead of it when `icon_only`.
-    pub icon: Option<crate::icons::Icon>,
+    pub icon: Option<tilo_ui_base::icons::Icon>,
     /// The glyph alone, with the label as its tooltip and accessible name.
     pub icon_only: bool,
     /// The side of the button it opens on: `below` unless said.
@@ -856,7 +854,7 @@ pub struct PopoverButtonProps {
 }
 
 /// The button a popover opens from: its label after its glyph, or the glyph alone.
-fn face(key: &str, label: &str, icon: Option<crate::icons::Icon>, icon_only: bool) -> Button {
+fn face(key: &str, label: &str, icon: Option<tilo_ui_base::icons::Icon>, icon_only: bool) -> Button {
     match icon {
         Some(icon) if icon_only => Button::icon_only(key, icon, label),
         Some(icon) => Button::new(key, label).with_icon(icon),
@@ -897,18 +895,18 @@ impl Widget for DeclaredPopoverButton {
         Some(self)
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
         self.pair.sync(state, path);
     }
 
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
         self.pair.update(state, path)
     }
 
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
-        theme: &crate::theme::Theme,
+        theme: &tilo_ui_base::theme::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         self.pair.build_layout(taffy, theme, node_map)
@@ -918,7 +916,7 @@ impl Widget for DeclaredPopoverButton {
         self.pair.apply_layout(taffy, node, origin);
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -928,14 +926,14 @@ impl Widget for DeclaredPopoverButton {
         self.pair.draw_child(scene, transform, text, theme, &env);
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.pair.draw_overlay(&mut crate::draw::DrawCtx::new(
+        self.pair.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -947,7 +945,7 @@ impl Widget for DeclaredPopoverButton {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         self.pair.handle_event(event, ctx);
     }
@@ -963,7 +961,7 @@ impl Widget for DeclaredPopoverButton {
     /// The button and its popover, and the popover's content, are laid out by the pair: the
     /// walk follows the pair's own.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
-        crate::widget::Widget::for_each_layout_child(&self.pair, visitor)
+        tilo_ui_base::widget::Widget::for_each_layout_child(&self.pair, visitor)
     }
 
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
@@ -978,7 +976,7 @@ impl Widget for DeclaredPopoverButton {
         "PopoverButton"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.pair.accessibility()
     }
 }
@@ -1015,7 +1013,7 @@ impl Described for DeclaredPopoverButton {
         true
     }
 
-    fn part_views(&mut self, part: &str) -> Option<&mut dyn crate::component::PartViews> {
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn tilo_ui_base::component::PartViews> {
         if part != "content" {
             return None;
         }
@@ -1039,12 +1037,12 @@ mod tests {
     /// empty ground, is none.
     #[test]
     fn a_press_off_a_panel_with_a_dismiss_reports_it_and_one_on_it_does_not() {
-        use crate::component::Component;
-        use crate::component::testing::{Node, fired};
+        use tilo_ui_base::component::Component;
+        use tilo_ui_base::{component::testing::Node, component::testing::fired};
         use crate::testing::harness;
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut node = Node::new("FloatingPanel", "panel", &queue)
-            .prop("width", crate::component::Value::Float(200.0))
+            .prop("width", tilo_ui_base::component::Value::Float(200.0))
             .on("dismiss");
         let props = FloatingPanelProps::from_source(&mut node).expect("the panel reads");
         let mut host = harness(DeclaredPanel::from_props("panel", props));

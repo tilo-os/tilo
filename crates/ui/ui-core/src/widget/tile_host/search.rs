@@ -2,7 +2,7 @@
 //! in the session's persistent index, and activating one of its hits.
 
 use super::{TileContent, TileHost};
-use crate::widget::ModelPath;
+use tilo_ui_base::widget::ModelPath;
 
 impl crate::search::capability::SearchSource for TileHost {
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
@@ -36,7 +36,7 @@ impl crate::search::capability::SearchSource for TileHost {
     fn activate_search_result(
         &mut self,
         action_id: &str,
-        doc: &mut crate::widget::Edits<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) {
         if let TileContent::App(app) = &mut self.content {

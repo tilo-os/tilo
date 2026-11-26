@@ -7,8 +7,8 @@ use taffy::{Dimension, LengthPercentageAuto, Position, Size, Style};
 use vello::kurbo::{Point, Rect, Vec2};
 
 use super::GroupRow;
-use crate::num::f32_of_f64;
-use crate::widget::Widget as _;
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::widget::Widget as _;
 
 pub const CANVAS_ZOOM_MIN: f64 = 0.2;
 pub const CANVAS_ZOOM_MAX: f64 = 2.0;
@@ -90,7 +90,7 @@ impl GroupRow {
             group.set_carriable(carriable);
         }
         if only_panned {
-            crate::widget::note_layout_moved();
+            tilo_ui_base::widget::note_layout_moved();
         } else {
             self.structure_dirty = true;
         }

@@ -1,12 +1,12 @@
 //! [`StatTile`] and [`StatGroup`] as described components.
 
-use crate::component::{Component, Described, Event};
-use crate::widget::Tone;
+use tilo_ui_base::{component::Component, component::Described, component::Event};
+use tilo_ui_base::widget::Tone;
 use crate::widget::activation::Activation;
 
 use super::{StatGroup, StatTile, Trend};
 
-crate::choice!(Trend, "Trend", {
+tilo_ui_base::choice!(Trend, "Trend", {
     Up => "up",
     Down => "down",
     Flat => "flat",
@@ -133,7 +133,7 @@ pub struct StatGroupProps {
     pub tiles: Vec<StatTileProps>,
 }
 
-crate::component::part_type!(StatTileProps);
+tilo_ui_base::component::part_type!(StatTileProps);
 
 impl Described for StatGroup {
     type Props = StatGroupProps;
@@ -144,7 +144,7 @@ impl Described for StatGroup {
             .into_iter()
             .map(|tile| {
                 let key = tile.key.clone();
-                Box::new(StatTile::from_props(&key, tile)) as crate::widget::Element
+                Box::new(StatTile::from_props(&key, tile)) as tilo_ui_base::widget::Element
             })
             .collect();
         Self::new(tiles)

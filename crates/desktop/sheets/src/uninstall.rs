@@ -19,7 +19,8 @@ use std::rc::Rc;
 
 use ui::framework::{Dispatcher, Effected, ResourceApp, ViewCx};
 use ui::prelude::*;
-use ui::widget::{Column, Element, ListRow, ModalDialog, Text, Toggle};
+use ui::{widget::Column, widget::ListRow, widget::ModalDialog, widget::Text, widget::Toggle};
+use tilo_ui_base::widget::Element;
 
 use crate::presentation::{Presentation, SheetState, presented};
 use crate::t;
@@ -205,7 +206,7 @@ impl ResourceApp for UninstallApp {
     // Nothing is kept: there is no past to look back on.
     const DOCUMENT_HISTORY: bool = false;
 
-    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+    fn catalog() -> Option<&'static tilo_ui_base::i18n::EmbeddedCatalog> {
         Some(&crate::CATALOG)
     }
 
@@ -293,7 +294,7 @@ fn card(
     dispatch: &Dispatcher<Uninstall>,
     presentation: Option<&Presentation>,
 ) -> Element {
-    let name = [("name", ui::i18n::ArgValue::Text(app.name.clone()))];
+    let name = [("name", tilo_ui_base::i18n::ArgValue::Text(app.name.clone()))];
     let (title, action) = match app.removal {
         Removal::Uninstall => (
             crate::t_args("uninstall-title", &name),
@@ -309,7 +310,7 @@ fn card(
         Going::Files { copies, home } => {
             body = body.push(Box::new(Text::new(&crate::t_args(
                 "uninstall-files",
-                &[("count", ui::i18n::ArgValue::Number(count_of(copies.len())))],
+                &[("count", tilo_ui_base::i18n::ArgValue::Number(count_of(copies.len())))],
             ))));
             for (index, copy) in copies.iter().enumerate() {
                 let (file, folder) = copy_label(copy, home.as_deref());
@@ -348,7 +349,7 @@ fn card(
         presentation,
         ModalDialog::new(title, body)
             .with_test_id(SHEET)
-            .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
+            .with_max_width(f64::from(tilo_ui_base::tokens::Metrics::BASE.panel_width_sheet))
             .with_destructive(app.removal != Removal::FromApps)
             .primary_action(action, move || {
                 confirming.effect(&UninstallEffect::Confirm {

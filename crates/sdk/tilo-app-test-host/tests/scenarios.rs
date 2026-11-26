@@ -9,7 +9,7 @@ use tilo_app::advanced::{NodeId, TaffyTree, WindowEvent};
 use tilo_app::headless::Driver;
 use tilo_app::prelude::*;
 use tilo_app::winit::event::ElementState;
-use ui_core::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Playlist {
@@ -202,7 +202,7 @@ impl Widget for Staged {
         self.inner.apply_layout(taffy, node, origin);
     }
 
-    fn sync(&mut self, state: &tilo_app::widget::AppModel, path: &tilo_app::widget::ModelPath) {
+    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
         if self.decoding > 0 {
             self.decoding = self.decoding.saturating_sub(1);
             if self.decoding == 0 {
@@ -217,7 +217,7 @@ impl Widget for Staged {
         self.decoding > 0
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, _ctx: &mut tilo_app::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, _ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             ..
@@ -227,7 +227,7 @@ impl Widget for Staged {
         }
     }
 
-    fn draw(&mut self, ctx: &mut ui_core::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -444,7 +444,7 @@ tilo_test_env::scenario! {
 
         let (key, _) =
             ResourceSelection::Item("second-take".into()).presence::<Playlist>(PlaylistApp::ID);
-        let miles = tilo_app::permissions::MemberId::person("miles");
+        let miles = tilo_ui_base::permissions::MemberId::person("miles");
         let presence = app.harness().presence();
         assert!(presence.selection_for(&key, &miles).is_some());
         assert_eq!(presence.display_name(&miles), "miles");

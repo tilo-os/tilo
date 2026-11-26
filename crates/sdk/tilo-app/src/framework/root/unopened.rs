@@ -3,7 +3,8 @@
 
 use tilo_actions::ResourceSpec;
 use ui_core::automerge::AutoCommit;
-use ui_core::widget::{AppKind, AppWidget, Decorator, IconDescriptor};
+use ui_core::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
+use tilo_ui_base::widget::Decorator;
 
 use super::unreadable_state;
 
@@ -56,7 +57,7 @@ impl Unopened {
 }
 
 impl Decorator for Unopened {
-    ui_core::provides!(dyn ui_core::widget::resources::PublishesResources);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::resources::PublishesResources);
 
     type Inner = ui_core::widget::EmptyState;
 
@@ -69,7 +70,7 @@ impl Decorator for Unopened {
     }
 }
 
-impl ui_core::widget::resources::PublishesResources for Unopened {
+impl tilo_ui_base::widget::resources::PublishesResources for Unopened {
     fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         vec![self.resource.clone()]
     }

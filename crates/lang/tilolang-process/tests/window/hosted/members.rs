@@ -5,7 +5,7 @@ use super::*;
 use crate::interaction::{composer, send_button};
 use tilolang_process::testing::Bus;
 use ui::headless::Driver;
-use ui::permissions::policy::{self, Grantee, Role};
+use tilo_ui_base::{permissions::policy, permissions::policy::Grantee, permissions::policy::Role};
 use ui::tilo_actions::MemberId;
 
 const INTERACTION: &str = "so.tilo.lang.interaction";
@@ -35,8 +35,8 @@ fn in_a_conversation(
 
 /// The open completion drawer's rows, as assistive technology reads them.
 fn drawer_rows(window: &Driver) -> Vec<String> {
-    fn find(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
-        if node.role == ui::a11y::Role::ListBox {
+    fn find(node: &tilo_ui_base::a11y::AccessNode, out: &mut Vec<String>) {
+        if node.role == tilo_ui_base::a11y::Role::ListBox {
             out.extend(node.children.iter().filter_map(|row| row.name.clone()));
             return;
         }
@@ -57,7 +57,7 @@ fn drawer_rows(window: &Driver) -> Vec<String> {
 }
 
 /// Everything `access` and what is under it say, in order.
-fn texts(access: &ui::a11y::AccessNode, out: &mut String) {
+fn texts(access: &tilo_ui_base::a11y::AccessNode, out: &mut String) {
     for part in [&access.name, &access.value].into_iter().flatten() {
         out.push_str(part);
         out.push(' ');
@@ -108,7 +108,7 @@ fn type_in_composer(session: &mut Session, text: &str) {
 #[test]
 fn the_composers_drawer_offers_the_members_of_the_conversation_by_the_names_the_member_list_gives()
 {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // Ada owns the workspace, Mia edits, Leo views, and the agent `planner` was admitted. Zoe is
     // on the member list the broker hands out, but the policy holds no role of hers.
     let mut session = in_a_conversation(
@@ -177,7 +177,7 @@ fn the_composers_drawer_offers_the_members_of_the_conversation_by_the_names_the_
 
 #[test]
 fn the_composers_drawer_offers_the_workspaces_people_and_writes_a_mention_that_is_sent() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = in_a_conversation(
         &[
             (MemberId::person("u_mia"), "Mia"),

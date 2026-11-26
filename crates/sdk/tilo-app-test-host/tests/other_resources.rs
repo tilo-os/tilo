@@ -8,7 +8,7 @@
 //! sections and changes them through the same setters.
 
 use serde::{Deserialize, Serialize};
-use tilo_app::Role;
+use tilo_ui_base::Role;
 use tilo_app::prelude::*;
 use tilo_app_test_host::TestApp;
 

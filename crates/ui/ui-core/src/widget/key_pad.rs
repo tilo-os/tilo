@@ -35,23 +35,24 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, TouchPhase, WindowEvent};
 
-use crate::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Role};
-use crate::text_render::{TextRenderer, TextStyle, TextWeight};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::{Interaction, TaffyTreeExt, Widget};
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Action as AccessibilityAction, a11y::Role};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use crate::widget::Interaction;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[path = "key_pad/key_pad_component.rs"]
 mod component;
 pub use component::{KeyPadProps, key_pad_description};
 
-crate::choice!(PadSize, "PadSize", {
+tilo_ui_base::choice!(PadSize, "PadSize", {
     Compact => "compact",
     Standard => "standard",
     Large => "large",
 });
 
-crate::choice!(PadTone, "PadTone", {
+tilo_ui_base::choice!(PadTone, "PadTone", {
     Plain => "plain",
     Modifier => "modifier",
     Active => "active",
@@ -1101,14 +1102,14 @@ fn draw_label(
 
 fn draw_float_panel(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) -> f64 {
     let radius = f64::from(theme.tokens.radii.panel);
-    crate::surface::shadow(
+    tilo_ui_base::surface::shadow(
         scene,
         transform,
         rect,
         radius,
         &theme.tokens.elevation.floating,
     );
-    crate::surface::panel(scene, transform, rect, radius, theme);
+    tilo_ui_base::surface::panel(scene, transform, rect, radius, theme);
     radius
 }
 
@@ -1150,7 +1151,7 @@ fn draw_swipe_trail(
 }
 
 impl Widget for KeyPad {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn name(&self) -> &'static str {
         "KeyPad"
@@ -1185,7 +1186,7 @@ impl Widget for KeyPad {
     }
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.rect = rect;
             self.dirty = true;
@@ -1193,18 +1194,18 @@ impl Widget for KeyPad {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(unused_variables, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text_renderer, theme, _env) = ctx.parts();
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 || self.keys.is_empty() {
             return;
         }
         self.place(theme);
-        crate::surface::region(
+        tilo_ui_base::surface::region(
             scene,
             transform,
             self.rect,
-            crate::surface::Region::Content,
+            tilo_ui_base::surface::Region::Content,
             theme,
         );
         let capslock = self.caps;
@@ -1229,7 +1230,7 @@ impl Widget for KeyPad {
             let pressed = self.pressed == Some(at) || fingers.contains(&at);
             let cell = rect.inset(-key_pad(rect));
             let radius = f64::from(theme.tokens.radii.control);
-            crate::surface::card(
+            tilo_ui_base::surface::card(
                 scene,
                 transform,
                 cell,
@@ -1241,20 +1242,20 @@ impl Widget for KeyPad {
                 _ if cursor_active && is_letter(key) => colors.text_dim,
                 _ => colors.text_primary,
             };
-            if let Some(icon) = crate::icons::Icon::from_name(&key.icon) {
+            if let Some(icon) = tilo_ui_base::icons::Icon::from_name(&key.icon) {
                 let side = f64::from(theme.tokens.metrics.icon_md);
                 let icon_rect = Rect::from_center_size(cell.center(), (side, side));
                 let filled = key.tone == PadTone::Active && capslock;
                 if filled {
                     icon.draw_filled(scene, transform, icon_rect, ink);
                 } else {
-                    crate::icons::draw_icon(
+                    tilo_ui_base::icons::draw_icon(
                         scene,
                         transform,
                         icon_rect,
                         icon,
                         ink,
-                        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                        tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
                     );
                 }
             } else {
@@ -1340,7 +1341,7 @@ impl Widget for KeyPad {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.cancel_stale();
         if !self.enabled {
             return;
@@ -1442,8 +1443,8 @@ impl Widget for KeyPad {
         &mut self,
         target: &str,
         action: &AccessibilityAction,
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &crate::widget::ModelPath,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         if !matches!(action, AccessibilityAction::Activate) {
             return false;

@@ -4,10 +4,11 @@
 //! painted, and painted nothing while the view is not presented.
 
 use tilo_ui::State;
-use tilo_ui::component::Described;
+use tilo_ui_base::component::Described;
 use tilo_ui::headless::Driver;
-use tilo_ui::theme::Theme;
-use tilo_ui::widget::{Fullscreen, FullscreenProps, Spacer, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui::{widget::Fullscreen, widget::FullscreenProps};
+use tilo_ui_base::{widget::Spacer, widget::Widget};
 
 /// A `Fullscreen` over a plain body, laid out at the window's size.
 fn presented(showing: bool) -> Box<dyn Widget> {

@@ -10,9 +10,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
-use crate::text_render::{TextRenderer, TextWeight};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextWeight};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
@@ -218,7 +218,7 @@ impl TreemapMarks {
         if whole && !item.label.is_empty() {
             let (w, h) = tr.measure_style(
                 &item.label,
-                Some(crate::num::f32_of_f64(inner.width())),
+                Some(tilo_ui_base::num::f32_of_f64(inner.width())),
                 &label_style,
             );
             let (w, h) = (f64::from(w), f64::from(h));
@@ -246,7 +246,7 @@ impl TreemapMarks {
             if f64::from(line) <= inner.height() {
                 let shown = tr.elide_to_width_style(
                     &item.label,
-                    crate::num::f32_of_f64(inner.width()),
+                    tilo_ui_base::num::f32_of_f64(inner.width()),
                     &label_style,
                 );
                 if !shown.is_empty() && shown != "…" {
@@ -403,7 +403,7 @@ impl PlotMarks for TreemapMarks {
                     label,
                     ink,
                     transform * Affine::translate((label_rect.x0, label_rect.y0)),
-                    Some(crate::num::f32_of_f64(label_rect.width().max(1.0))),
+                    Some(tilo_ui_base::num::f32_of_f64(label_rect.width().max(1.0))),
                     &theme
                         .text(TextRole::Label)
                         .with_weight(TextWeight::Semibold),

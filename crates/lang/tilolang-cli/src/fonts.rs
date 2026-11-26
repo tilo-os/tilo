@@ -20,7 +20,7 @@ pub fn ensure() -> Result<PathBuf> {
         return Ok(root.clone());
     }
     let cache = artifact_cache();
-    let root = if let Some(root) = ui::font_catalog::catalog_root() {
+    let root = if let Some(root) = tilo_ui_base::font_catalog::catalog_root() {
         root
     } else {
         let cache = cache.as_deref().ok_or_else(|| {
@@ -32,7 +32,7 @@ pub fn ensure() -> Result<PathBuf> {
         prepare::prepared(cache, Selection::Product, prepare::offline(), |fetching| {
             eprintln!(
                 "Fetching Tilo's fonts ({}) once…",
-                ui::format::size(fetching.bytes)
+                tilo_ui_base::format::size(fetching.bytes)
             );
         })
         .map_err(|error| anyhow!("{}: {}", error.path.display(), error.problem))

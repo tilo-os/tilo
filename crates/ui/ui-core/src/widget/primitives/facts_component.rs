@@ -1,7 +1,7 @@
 //! [`Facts`] and its facts as described components.
 
-use crate::component::{Component, Described};
-use crate::icons::Icon;
+use tilo_ui_base::{component::Component, component::Described};
+use tilo_ui_base::icons::Icon;
 
 use super::{Fact, FactMark, Facts};
 
@@ -33,7 +33,7 @@ pub struct FactProps {
     pub priority: i64,
 }
 
-crate::component::part_type!(FactProps);
+tilo_ui_base::component::part_type!(FactProps);
 
 impl From<FactProps> for Fact {
     fn from(props: FactProps) -> Self {

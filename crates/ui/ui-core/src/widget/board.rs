@@ -9,13 +9,14 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::color_compat::ColorCompat as _;
-use crate::dnd::DRAG_START_THRESHOLD_PX;
+use tilo_ui_base::dnd::DRAG_START_THRESHOLD_PX;
 
-use crate::theme::Theme;
-use crate::tokens::Rhythm;
-use crate::widget::DrawChild;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::Rhythm;
+use tilo_ui_base::widget::DrawChild;
 use crate::widget::virtual_list::ListModel as _;
-use crate::widget::{CardWidth, Column, Container, Element, EventCtx, Row, Scrollable, Widget};
+use crate::{widget::CardWidth, widget::Column, widget::Container, widget::Row, widget::Scrollable};
+use tilo_ui_base::{widget::Element, widget::EventCtx, widget::Widget};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BoardDrop {
@@ -40,7 +41,7 @@ type ListedCards = super::VirtualList<super::VecListModel<String, String>>;
 
 /// How tall a card is taken to be until it is laid out: a title row and a row of details.
 fn card_estimate() -> f32 {
-    crate::tokens::Metrics::BASE.panel_row_height * 2.0
+    tilo_ui_base::tokens::Metrics::BASE.panel_row_height * 2.0
 }
 
 struct Drag {
@@ -65,7 +66,7 @@ pub struct Board {
     dirty: bool,
     on_drop: Option<Box<dyn FnMut(BoardDrop)>>,
     /// What each drop asks the host for, where the app bound one.
-    drops: Option<crate::widget::ActionEmitter<BoardDrop>>,
+    drops: Option<tilo_ui_base::widget::ActionEmitter<BoardDrop>>,
     pub(crate) name: Option<String>,
     id: String,
     /// The theme the lists were last sized in: a list's width follows the pane the board is
@@ -154,8 +155,8 @@ impl Board {
                     .with_intrinsic_height()
                     .with_rhythm(Rhythm::Sibling)
                     .push(build(key))
-                    .push(Box::new(super::Spacer::token(
-                        crate::tokens::SpacingStep::S0,
+                    .push(Box::new(tilo_ui_base::widget::Spacer::token(
+                        tilo_ui_base::tokens::SpacingStep::S0,
                     ))),
             ) as Element
         })
@@ -264,7 +265,7 @@ impl Board {
     /// move is confirmed, undone and permitted like every other.
     #[must_use]
     pub fn on_drop_binding(mut self, binding: tilo_actions::ActionBinding<BoardDrop>) -> Self {
-        self.drops = Some(crate::widget::ActionEmitter::new(binding));
+        self.drops = Some(tilo_ui_base::widget::ActionEmitter::new(binding));
         self
     }
 
@@ -476,17 +477,17 @@ impl Board {
     }
 }
 
-impl crate::widget::controls::ActionControls for Board {
+impl tilo_ui_base::widget::controls::ActionControls for Board {
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         if let Some(drops) = &mut self.drops {
             let _ = drops.attach(domain, attachment);
         }
         for child in Widget::children_mut(self) {
-            crate::widget::controls::attach_controls(child, domain, attachment);
+            tilo_ui_base::widget::controls::attach_controls(child, domain, attachment);
         }
     }
 
@@ -494,23 +495,23 @@ impl crate::widget::controls::ActionControls for Board {
         if let Some(invocation) = self
             .drops
             .as_mut()
-            .and_then(crate::widget::ActionEmitter::take)
+            .and_then(tilo_ui_base::widget::ActionEmitter::take)
         {
             return Some(invocation);
         }
         Widget::children_mut(self)
             .into_iter()
-            .find_map(crate::widget::controls::take_control_invocation)
+            .find_map(tilo_ui_base::widget::controls::take_control_invocation)
     }
 
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         let mut bindings = Vec::new();
         if let Some(drops) = &self.drops {
             let control = Widget::test_id(self).unwrap_or("board").to_owned();
             bindings.push(drops.metadata(control));
         }
         for child in Widget::children(self) {
-            bindings.extend(crate::widget::controls::control_action_bindings(child));
+            bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(child));
         }
         bindings
     }
@@ -523,12 +524,12 @@ impl crate::widget::controls::ActionControls for Board {
             drops.refresh_availability(allowed);
         }
         for child in Widget::children_mut(self) {
-            crate::widget::controls::refresh_control_action_availability(child, allowed);
+            tilo_ui_base::widget::controls::refresh_control_action_availability(child, allowed);
         }
     }
 }
 
-impl crate::widget::Decorator for Board {
+impl tilo_ui_base::widget::Decorator for Board {
     type Inner = Row;
 
     fn inner(&self) -> &Row {
@@ -539,17 +540,17 @@ impl crate::widget::Decorator for Board {
         &mut self.row
     }
 
-    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
-        if self.drops.is_some() && request.wants::<dyn crate::widget::controls::ActionControls>() {
-            request.provide::<dyn crate::widget::controls::ActionControls>(self);
+    fn provide<'a>(&'a self, request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
+        if self.drops.is_some() && request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>() {
+            request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
             return;
         }
         self.row.provide(request);
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
-        if self.drops.is_some() && request.wants::<dyn crate::widget::controls::ActionControls>() {
-            request.provide::<dyn crate::widget::controls::ActionControls>(self);
+    fn provide_mut<'a>(&'a mut self, request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>) {
+        if self.drops.is_some() && request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>() {
+            request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
             return;
         }
         self.row.provide_mut(request);
@@ -559,16 +560,16 @@ impl crate::widget::Decorator for Board {
         self.dirty || Widget::needs_redraw(&self.row)
     }
 
-    fn touch_claim(&self, point: Point) -> crate::interaction::TouchClaim {
+    fn touch_claim(&self, point: Point) -> tilo_ui_base::interaction::TouchClaim {
         if self.card_at(point).is_some() {
-            crate::interaction::TouchClaim::HoldDrag
+            tilo_ui_base::interaction::TouchClaim::HoldDrag
         } else {
             Widget::touch_claim(&self.row, point)
         }
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         self.name
             .as_ref()
             .map(|name| AccessNode::new(Role::Group).with_optional_name(Some(name.clone())))
@@ -578,8 +579,8 @@ impl crate::widget::Decorator for Board {
     /// board offers each list's leading edge, less the air it keeps before the first, so the
     /// view showing it settles a list at a time. A pane wide enough for its lists shows them
     /// side by side and offers none: it scrolls freely.
-    fn snap_points(&self, axis: crate::widget::ScrollAxis, out: &mut Vec<f32>) {
-        if !matches!(axis, crate::widget::ScrollAxis::Horizontal) {
+    fn snap_points(&self, axis: tilo_ui_base::widget::ScrollAxis, out: &mut Vec<f32>) {
+        if !matches!(axis, tilo_ui_base::widget::ScrollAxis::Horizontal) {
             return;
         }
         let (Some(theme), Some(pane), Some(list)) = (&self.theme, self.pane, self.sized) else {
@@ -593,7 +594,7 @@ impl crate::widget::Decorator for Board {
         out.extend(
             Widget::children(&self.row)
                 .iter()
-                .map(|list| crate::num::f32_of_f64(Widget::get_rect(*list).x0 - leading - gutter)),
+                .map(|list| tilo_ui_base::num::f32_of_f64(Widget::get_rect(*list).x0 - leading - gutter)),
         );
     }
 
@@ -618,7 +619,7 @@ impl crate::widget::Decorator for Board {
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
-        _text: &mut crate::text_render::TextRenderer,
+        _text: &mut tilo_ui_base::text_render::TextRenderer,
     ) {
         if let Ok(current) = taffy.style(node)
             && current.size.width != taffy::Dimension::percent(1.0)
@@ -634,7 +635,7 @@ impl crate::widget::Decorator for Board {
         &mut self,
         styles: &mut taffy::Restyle<'_>,
         width: taffy::AvailableSpace,
-        _text: &mut crate::text_render::TextRenderer,
+        _text: &mut tilo_ui_base::text_render::TextRenderer,
     ) {
         let Some(list) = self.list_width_at(width) else {
             return;
@@ -748,7 +749,7 @@ impl crate::widget::Decorator for Board {
         Widget::handle_event(&mut self.row, event, ctx);
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -815,7 +816,8 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
-    use crate::widget::{Spacer, Text};
+    use crate::widget::Text;
+    use tilo_ui_base::widget::Spacer;
 
     fn card() -> Element {
         Box::new(
@@ -955,7 +957,7 @@ mod tests {
         let mut host = harness(listed(10_000, &built));
         // Before its first layout a list holds the cards of a tall screen; then the nine or so
         // 60 tall cards its 600 tall pane shows, with a margin either side. However long it is.
-        let tall_screen = (crate::virtual_viewport::UNPLACED_VIEWPORT / f64::from(card_estimate()))
+        let tall_screen = (tilo_ui_base::virtual_viewport::UNPLACED_VIEWPORT / f64::from(card_estimate()))
             .ceil() as usize;
         let opened = built.get();
         assert!(
@@ -969,7 +971,7 @@ mod tests {
             shown.len()
         );
         let list = host.root::<Board>().list_rects()[0];
-        host.send(&crate::synthetic_input::cursor_moved(
+        host.send(&tilo_ui_base::synthetic_input::cursor_moved(
             list.center().x,
             list.center().y,
         ));

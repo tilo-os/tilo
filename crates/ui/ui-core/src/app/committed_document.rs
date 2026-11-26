@@ -4,8 +4,8 @@ use crate::state::StateHistory as _;
 impl App {
     pub(super) fn queue_committed_document(
         &mut self,
-        route: crate::collaboration::RouteSpec,
-        read: crate::collaboration::CommittedDocument,
+        route: tilo_ui_base::collaboration::RouteSpec,
+        read: tilo_ui_base::collaboration::CommittedDocument,
     ) {
         if self.committed_documents.len() >= 64 {
             return;
@@ -163,7 +163,7 @@ impl App {
     /// The workspace's copy of a record could not be read here: the window
     /// says so, and goes on with the record it holds on this device.
     fn report_unreadable_history(&mut self) {
-        self.document_routes.status = Some(crate::i18n::I18nManager::lookup_plain(
+        self.document_routes.status = Some(tilo_ui_base::i18n::I18nManager::lookup_plain(
             "history-sync-unreadable",
         ));
     }
@@ -171,7 +171,7 @@ impl App {
     /// A whole capture of a record did arrive: what said it could not be read
     /// here is no longer true.
     fn clear_unreadable_history(&mut self) {
-        let unreadable = crate::i18n::I18nManager::lookup_plain("history-sync-unreadable");
+        let unreadable = tilo_ui_base::i18n::I18nManager::lookup_plain("history-sync-unreadable");
         if self.document_routes.status.as_deref() == Some(unreadable.as_str()) {
             self.document_routes.status = None;
         }

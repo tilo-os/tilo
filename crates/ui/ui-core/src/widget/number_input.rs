@@ -1,19 +1,19 @@
 //! `NumberInput` — a compact, click-to-type numeric field with steppers: a number you can nudge
 //! with `−`/`+` or click and type directly, parsed, validated and clamped to a range.
 
-use crate::i18n::widget_text;
-use crate::num::f32_of_f64;
-use crate::paint::PaintCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::DrawChild;
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
 #[path = "number_input_component.rs"]
 mod component;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
-use crate::widget::binding::{BoxedBinding, Pulled};
-use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
-use crate::widget::{AppModel, ModelPath};
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled};
+use tilo_ui_base::{widget::ActionEmitter, widget::ControlBindingKind, widget::ControlBindingMetadata};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use crate::widget::{TextInput, TextInputKind};
 pub use component::NumberInputProps;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -265,8 +265,8 @@ impl<'a> NumberStepperFace<'a> {
 
     fn button(&self, rect: Rect, part: StepperPart) -> crate::widget::ButtonFace<'a> {
         let (icon, name) = match part {
-            StepperPart::Decrease => (crate::icons::Icon::Minus, self.names.0),
-            StepperPart::Increase => (crate::icons::Icon::Plus, self.names.1),
+            StepperPart::Decrease => (tilo_ui_base::icons::Icon::Minus, self.names.0),
+            StepperPart::Increase => (tilo_ui_base::icons::Icon::Plus, self.names.1),
         };
         let role = if self.framed {
             crate::widget::ButtonRole::Secondary
@@ -377,7 +377,7 @@ pub struct NumberInput {
     changed: Option<f64>,
     binding: Option<BoxedBinding<f64>>,
     action: Option<ActionEmitter<f64>>,
-    edits: Option<crate::component::Bound<f64>>,
+    edits: Option<tilo_ui_base::component::Bound<f64>>,
     enabled: bool,
     control_size: crate::widget::ControlSize,
     /// An inline stepper (`− value +`) with bare steppers and no field frame, for toolbars
@@ -386,8 +386,8 @@ pub struct NumberInput {
     /// The footprint and type seen in `build_layout`, for the measured width.
     minimum: Size<f32>,
     field_padding: f32,
-    value_style: crate::text_render::TextStyle,
-    interaction: crate::interaction::InteractionEnvironment,
+    value_style: tilo_ui_base::text_render::TextStyle,
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
     /// The values its width was last fitted to, as shown: while they stand, it asks for no
     /// layout.
     fitted: Option<[String; 3]>,
@@ -436,10 +436,10 @@ impl NumberInput {
             compact: false,
             minimum: Size::ZERO,
             field_padding: 0.0,
-            value_style: crate::tokens::typography::stock()
+            value_style: tilo_ui_base::tokens::typography::stock()
                 .style(crate::widget::ControlSize::Regular.text_role())
                 .numeric(),
-            interaction: crate::interaction::InteractionEnvironment::default(),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
             fitted: None,
         };
         s.value = s.value.clamp(s.min, s.max);
@@ -448,8 +448,8 @@ impl NumberInput {
     }
 
     /// Create a true two-way binding to typed process-local numeric state.
-    pub fn from_state(state: &crate::LocalState<f64>) -> Self {
-        let (value, binding) = super::binding::local(state);
+    pub fn from_state(state: &tilo_ui_base::LocalState<f64>) -> Self {
+        let (value, binding) = tilo_ui_base::widget::binding::local(state);
         Self {
             dirty: true,
             binding: Some(binding),
@@ -632,7 +632,7 @@ impl NumberInput {
         if self.suffix.is_empty() {
             n
         } else {
-            let locale = crate::i18n::I18nManager::current_locale();
+            let locale = tilo_ui_base::i18n::I18nManager::current_locale();
             format!("{n}{}{}", unit_joiner(&locale, &self.suffix), self.suffix)
         }
     }
@@ -644,7 +644,7 @@ impl NumberInput {
         minimum: Size<f32>,
         field_padding: f32,
         display: &str,
-        style: &crate::text_render::TextStyle,
+        style: &tilo_ui_base::text_render::TextStyle,
         text: &mut TextRenderer,
     ) -> f32 {
         let (value_width, _) = text.measure_style(display, None, style);
@@ -716,7 +716,7 @@ impl NumberInput {
     /// Move the value by `delta` (one stepper press / arrow), clamping. Records a change +
     /// pending write when it actually moves.
     fn step_by(&mut self, delta: f64) {
-        let next = crate::num::snap_decimal(self.value + delta, &[self.value, delta])
+        let next = tilo_ui_base::num::snap_decimal(self.value + delta, &[self.value, delta])
             .clamp(self.min, self.max);
         if !next.is_nan() && next.total_cmp(&self.value).is_ne() {
             let held = std::mem::replace(&mut self.value, next);
@@ -738,11 +738,11 @@ impl NumberInput {
         self.field.apply_layout_external(self.field_rect);
     }
 
-    fn value_style_in(&self, theme: &Theme) -> crate::text_render::TextStyle {
+    fn value_style_in(&self, theme: &Theme) -> tilo_ui_base::text_render::TextStyle {
         if self.compact {
             self.control_size.label_style(theme).numeric()
         } else {
-            theme.text(crate::tokens::TextRole::Body)
+            theme.text(tilo_ui_base::tokens::TextRole::Body)
         }
     }
 
@@ -771,27 +771,27 @@ impl NumberInput {
             self.publish_local_state();
         }
         if let Some(edits) = &self.edits {
-            edits.edited(crate::component::Value::Float(value));
+            edits.edited(tilo_ui_base::component::Value::Float(value));
         }
     }
 
     /// Report each committed value to the component binding `edits`, as a described component's
     /// value control does: a person's typing and steppers, never a value the view gave.
     #[must_use]
-    pub fn on_edit(mut self, edits: crate::component::Bound<f64>) -> Self {
+    pub fn on_edit(mut self, edits: tilo_ui_base::component::Bound<f64>) -> Self {
         self.edits = Some(edits);
         self
     }
 }
 
 impl Widget for NumberInput {
-    crate::described!();
+    tilo_ui_base::described!();
 
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls);
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         self.interaction = environment;
         self.field.set_interaction_environment(environment);
@@ -873,10 +873,10 @@ impl Widget for NumberInput {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
+        self.apply_layout_external(tilo_ui_base::widget::layout_rect(taffy, node, origin));
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -917,7 +917,7 @@ impl Widget for NumberInput {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         // One whose action the person may not run still takes their steps and typing: what they
         // set is sent to be refused with why ([`Self::record_user_value`]).
@@ -1024,11 +1024,11 @@ impl Widget for NumberInput {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -1097,18 +1097,18 @@ impl Widget for NumberInput {
         self.field.ime_edit_fingerprint(key)
     }
 
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
         // Winit has no numeric purpose yet. Normal still activates the
         // standard text-input-v3 lifecycle; the field continues to validate
         // and clamp committed text itself.
-        Some(crate::ime::InputContent::TEXT)
+        Some(tilo_ui_base::ime::InputContent::TEXT)
     }
 
     /// Reports `Role::SpinButton` with the formatted value; an assistive
     /// technology can nudge it with Increment / Decrement or jump it with
     /// `SetValue`, all through the same commit path as pointer/keyboard input.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let mut node = AccessNode::new(Role::SpinButton)
             .with_semantic_key(self.test_id().unwrap_or("number_input"))
             .with_optional_name(self.accessible_name.as_ref().map(|name| widget_text(name)))
@@ -1127,12 +1127,12 @@ impl Widget for NumberInput {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         if !self.effectively_enabled() {
             return false;
         }
@@ -1162,8 +1162,8 @@ impl Widget for NumberInput {
     }
 }
 
-impl crate::widget::controls::ActionControls for NumberInput {
-    crate::widget::controls::optional_emitter_controls!();
+impl tilo_ui_base::widget::controls::ActionControls for NumberInput {
+    tilo_ui_base::widget::controls::optional_emitter_controls!();
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let control_id = self.test_id().unwrap_or("number_input");
         if let Some(action) = &self.action {
@@ -1188,7 +1188,7 @@ mod tests {
 
         phase small_numeric_edits_and_steps_are_not_discarded;
         {
-            let state = crate::LocalState::new(0.0);
+            let state = tilo_ui_base::LocalState::new(0.0);
             let mut number = NumberInput::from_state(&state)
                 .with_precision(18)
                 .with_step(1e-18);
@@ -1427,9 +1427,9 @@ mod tests {
             }
 
             {
-                use crate::a11y::Action;
+                use tilo_ui_base::a11y::Action;
 
-                let state = crate::LocalState::new(16.0);
+                let state = tilo_ui_base::LocalState::new(16.0);
                 let mut first = NumberInput::from_state(&state)
                     .with_range(8.0, 72.0)
                     .with_step(1.0);
@@ -1447,7 +1447,7 @@ mod tests {
                     &mut first,
                     &Action::Increment,
                     &[],
-                    &mut crate::widget::Edits::lend(&mut document),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut document),
                     &automerge::ROOT,
                 ));
                 assert_eq!(state.get(), 25.0);
@@ -1466,7 +1466,7 @@ mod tests {
         phase accessibility_reports_spinbutton_and_routes_value_actions;
         {
             {
-                use crate::a11y::Role;
+                use tilo_ui_base::a11y::Role;
                 let n = NumberInput::new(16.0).with_suffix("px");
                 let node = Widget::accessibility(&n).unwrap();
                 assert_eq!(node.role, Role::SpinButton);
@@ -1475,7 +1475,7 @@ mod tests {
             }
 
             {
-                use crate::a11y::Action;
+                use tilo_ui_base::a11y::Action;
                 let mut doc = AutoCommit::new();
                 let root = automerge::ROOT;
                 let mut n = NumberInput::new(16.0).with_range(8.0, 72.0).with_step(4.0);
@@ -1483,7 +1483,7 @@ mod tests {
                     &mut n,
                     &Action::Increment,
                     &[],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &root
                 ));
                 assert_eq!(n.value(), 20.0);
@@ -1491,7 +1491,7 @@ mod tests {
                     &mut n,
                     &Action::SetValue("100".into()),
                     &[],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &root
                 ));
                 assert_eq!(n.value(), 72.0, "SetValue clamps");
@@ -1499,14 +1499,14 @@ mod tests {
 
             {
                 let mut number =
-                    NumberInput::new(10.0).on_action(crate::widget::test_number_action_binding());
+                    NumberInput::new(10.0).on_action(tilo_ui_base::widget::test_number_action_binding());
                 let mut doc = AutoCommit::new();
-                crate::widget::controls::refresh_control_action_availability(
+                tilo_ui_base::widget::controls::refresh_control_action_availability(
                     &mut number,
                     &std::collections::HashSet::new(),
                 );
                 assert!(!Widget::is_enabled(&number));
-                crate::widget::controls::refresh_control_action_availability(
+                tilo_ui_base::widget::controls::refresh_control_action_availability(
                     &mut number,
                     &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                         "test:control",
@@ -1516,15 +1516,15 @@ mod tests {
                 assert!(Widget::is_enabled(&number));
                 assert!(Widget::perform_action(
                     &mut number,
-                    &crate::a11y::Action::SetValue("42".into()),
+                    &tilo_ui_base::a11y::Action::SetValue("42".into()),
                     &[],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT
                 ));
                 assert!(doc.get_heads().is_empty(), "the field writes nothing");
                 assert_eq!(number.take_changed(), None);
                 assert_eq!(
-                    crate::widget::controls::take_control_invocation(&mut number)
+                    tilo_ui_base::widget::controls::take_control_invocation(&mut number)
                         .unwrap()
                         .arguments["value"],
                     42.0
@@ -1578,8 +1578,8 @@ mod tests {
         n.apply_layout_external(Rect::new(x0, y0, x0 + DEFAULT_WIDTH, y0 + height));
     }
 
-    use crate::synthetic_input::cursor_moved;
-    use crate::synthetic_input::mouse_press;
-    use crate::synthetic_input::mouse_release;
-    use crate::synthetic_input::named_key;
+    use tilo_ui_base::synthetic_input::cursor_moved;
+    use tilo_ui_base::synthetic_input::mouse_press;
+    use tilo_ui_base::synthetic_input::mouse_release;
+    use tilo_ui_base::synthetic_input::named_key;
 }

@@ -32,7 +32,7 @@ use runtime_collab::file_clipboard::{
 use tilo_actions::ActionKind;
 use tilo_app_host::services::{FileClipboardContext, FileClipboardServices};
 use tilo_lock::MutexRecover as _;
-use ui::dnd::CopiedFiles;
+use tilo_ui_base::dnd::CopiedFiles;
 
 use crate::clipboard::paste::{self, Conflict};
 

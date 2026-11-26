@@ -1,4 +1,4 @@
-//! `ArrivingView`: what shows of a read ([`crate::arriving`]) while its answer is on the way, and the
+//! `ArrivingView`: what shows of a read ([`tilo_ui_base::arriving`]) while its answer is on the way, and the
 //! answer once it is there.
 
 use std::cell::Cell;
@@ -8,19 +8,17 @@ use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::Rect;
 
-use crate::arriving::{Arrival, ArrivalClock, Arriving, Progress, Source, Step};
-use crate::motion::CrossFade;
-use crate::paint::PaintCtx;
+use tilo_ui_base::{arriving::Arrival, arriving::ArrivalClock, arriving::Arriving, arriving::Progress, arriving::Source, arriving::Step};
+use tilo_ui_base::motion::CrossFade;
+use tilo_ui_base::paint::PaintCtx;
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 use crate::time::Instant;
-use crate::tokens::TextRole;
-use crate::widget::DrawChild;
-use crate::widget::{
-    AppModel, Button, Element, ModelPath, ModelView, SkeletonFace, SkeletonShape, TaffyTreeExt,
-    Widget,
-};
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::DrawChild;
+use crate::{widget::Button, widget::ModelView, widget::SkeletonFace};
+use tilo_ui_base::{widget::AppModel, widget::Element, widget::ModelPath, widget::SkeletonShape, widget::TaffyTreeExt, widget::Widget};
 
 /// The box a widget fills when it is the answer of a read: what an [`ArrivingView`] showing it must
 /// have reserved.
@@ -111,22 +109,22 @@ impl ArrivalFace {
         }
         let progress = self.progress?;
         let mut args = fluent::FluentArgs::new();
-        args.set("received", crate::format::size(progress.received));
+        args.set("received", tilo_ui_base::format::size(progress.received));
         let key = match progress.total.filter(|total| *total > 0) {
             Some(total) => {
-                args.set("total", crate::format::size(total));
+                args.set("total", tilo_ui_base::format::size(total));
                 "arriving-received-of"
             }
             None => "arriving-received",
         };
-        Some(crate::i18n::I18nManager::lookup(key, Some(&args)))
+        Some(tilo_ui_base::i18n::I18nManager::lookup(key, Some(&args)))
     }
 
     /// What it says, for a screen reader: how much of the data has come, or that it is loading.
     #[must_use]
     pub fn description(&self) -> String {
         self.amount()
-            .unwrap_or_else(|| crate::i18n::I18nManager::lookup_plain("arriving-loading"))
+            .unwrap_or_else(|| tilo_ui_base::i18n::I18nManager::lookup_plain("arriving-loading"))
     }
 
     /// Paint the step in `rect`: nothing on the ground; the skeleton, and under it how much has come,
@@ -301,7 +299,7 @@ impl Widget for Reserve {
             flex_shrink: 0.0,
             ..Default::default()
         };
-        let style = crate::widget::layout::filling(style, if fills { 1.0 } else { 0.0 });
+        let style = tilo_ui_base::widget::layout::filling(style, if fills { 1.0 } else { 0.0 });
         taffy.widget_leaf(style, node_map, self)
     }
 
@@ -321,12 +319,12 @@ impl Widget for Reserve {
         let height = SkeletonFace::new(self.shape).height(text_renderer, theme, f64::from(width));
         taffy::Size {
             width,
-            height: crate::num::f32_of_f64(height),
+            height: tilo_ui_base::num::f32_of_f64(height),
         }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.laid_out = true;
     }
 
@@ -334,7 +332,7 @@ impl Widget for Reserve {
         self.rect
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -433,7 +431,7 @@ impl<T, E: std::fmt::Display> ArrivalRead for Arriving<T, E> {
 }
 
 /// A read's view. See the module docs; build one with [`Arriving::view`].
-#[crate::component::not_a_component(framework, "how a window's content arrives")]
+#[tilo_ui_base::component::not_a_component(framework, "how a window's content arrives")]
 pub struct ArrivingView {
     arriving: Rc<dyn ArrivalRead>,
     shape: Rc<Cell<SkeletonShape>>,
@@ -536,7 +534,7 @@ fn failure(read: &Rc<dyn ArrivalRead>, message: String, shape: SkeletonShape) ->
     let notice = read.failure_notice();
     let failed = notice
         .clone()
-        .unwrap_or_else(|| crate::i18n::I18nManager::lookup_plain("arriving-failed"));
+        .unwrap_or_else(|| tilo_ui_base::i18n::I18nManager::lookup_plain("arriving-failed"));
     let retry = read.can_retry().then(|| {
         let again = Rc::clone(read);
         Button::new("arriving.retry", "arriving-retry").on_open(move || again.retry())
@@ -811,7 +809,7 @@ impl ArrivingView {
         if self.showing() != Showing::Answer {
             return;
         }
-        if let Some(own) = super::capability::capability::<dyn ReservedShape>(self.inner.child()) {
+        if let Some(own) = tilo_ui_base::widget::capability::capability::<dyn ReservedShape>(self.inner.child()) {
             let reserved = self.shape.get();
             debug_assert!(
                 own.reserved_shape() == reserved,
@@ -829,10 +827,10 @@ impl AwaitsContent for ArrivingView {
 }
 
 impl Widget for ArrivingView {
-    crate::provides!(dyn AwaitsContent);
+    tilo_ui_base::provides!(dyn AwaitsContent);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.reconcile(crate::motion::frame_now());
+        self.reconcile(tilo_ui_base::motion::frame_now());
         self.respeak();
         self.respoken = false;
         self.inner.sync(state, path);
@@ -841,7 +839,7 @@ impl Widget for ArrivingView {
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.reconcile(crate::motion::frame_now());
+        self.reconcile(tilo_ui_base::motion::frame_now());
         self.respeak();
         self.respoken = false;
         let changed = self.inner.update(state, path);
@@ -892,12 +890,12 @@ impl Widget for ArrivingView {
             flex_shrink: 0.0,
             ..Default::default()
         };
-        let style = crate::widget::layout::filling(style, if shape.fills() { 1.0 } else { 0.0 });
+        let style = tilo_ui_base::widget::layout::filling(style, if shape.fills() { 1.0 } else { 0.0 });
         taffy.widget_node(style, &[reserve, content], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.region.rect.set(self.rect);
         // A view built after its read failed learns where it stands only
         // now: the next frame builds the failure in the box that shows it.
@@ -915,14 +913,14 @@ impl Widget for ArrivingView {
         self.rect
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let step = self.step(now);
         self.drawn_step = Some(step);
         if env.should_cull(self.rect) {
@@ -938,7 +936,7 @@ impl Widget for ArrivingView {
         if let Some((_, opacity)) = self.fade.outgoing(now) {
             let replaced = self.replaced;
             let rect = self.rect;
-            crate::widget::in_opacity_layer(scene, transform, rect, opacity, |scene| {
+            tilo_ui_base::widget::in_opacity_layer(scene, transform, rect, opacity, |scene| {
                 self.paint_step(
                     &mut PaintCtx::new(scene, transform, text_renderer, theme),
                     replaced,
@@ -951,7 +949,7 @@ impl Widget for ArrivingView {
         let incoming = self.fade.incoming(now);
         let rect = self.rect;
         let inner = &mut self.inner;
-        crate::widget::in_opacity_layer(scene, transform, rect, incoming, |scene| {
+        tilo_ui_base::widget::in_opacity_layer(scene, transform, rect, incoming, |scene| {
             inner.draw_child(scene, transform, text_renderer, theme, &env);
         });
     }
@@ -959,7 +957,7 @@ impl Widget for ArrivingView {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         if self.failure_moved_away() {
             return;
@@ -1019,7 +1017,7 @@ impl Widget for ArrivingView {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.respoken
             || self.fade.is_moving(now)
             || self.drawn_step.is_some_and(|drawn| drawn != self.step(now))
@@ -1027,7 +1025,7 @@ impl Widget for ArrivingView {
     }
 
     fn needs_redraw(&self) -> bool {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.respoken
             || self.unobserved()
             || self.drawn_step != Some(self.step(now))
@@ -1078,12 +1076,12 @@ impl Widget for ArrivingView {
 
     fn has_pending_visual_work(&self) -> bool {
         (self.answerable && self.showing() == Showing::Placeholder)
-            || self.fade.is_moving(crate::motion::frame_now())
+            || self.fade.is_moving(tilo_ui_base::motion::frame_now())
             || self.inner.has_pending_visual_work()
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         if self.showing() != Showing::Placeholder {
             return None;
         }

@@ -10,10 +10,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ui_core::paint::PaintCtx;
-use ui_core::presence::PresenceCtx;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::presence::PresenceCtx;
 use ui_core::vello::kurbo::Rect;
-use ui_core::widget::{Column, Element, Embedded, Widget};
+use ui_core::{widget::Column, widget::Embedded};
+use tilo_ui_base::{widget::Element, widget::Widget};
 use ui_core::winit::event::WindowEvent;
 
 /// Where a part's widgets leave the actions they ask for.
@@ -79,7 +80,7 @@ impl<W: Widget + 'static> Placed<W> {
     pub fn draw(&mut self, ctx: &mut PaintCtx<'_>, clip: Rect) {
         let presence = PresenceCtx::default();
         let outer = presence.push_viewport(clip);
-        self.host.draw(&mut ui_core::DrawCtx::new(
+        self.host.draw(&mut tilo_ui_base::DrawCtx::new(
             ctx.scene,
             ctx.transform,
             ctx.text,
@@ -107,7 +108,7 @@ impl<W: Widget + 'static> Placed<W> {
     }
 
     /// Route one window event to the widget; one out of view takes none.
-    pub fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui_core::widget::EventCtx<'_>) {
+    pub fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if !self.placed {
             return;
         }
@@ -201,6 +202,6 @@ impl<A> PagePart<A> {
 
     /// Where the widget whose test id is `id` stands.
     pub fn find(&self, id: &str) -> Option<Rect> {
-        ui_core::widget::find_test_id(self.host.widget(), id).map(ui_core::widget::Widget::get_rect)
+        tilo_ui_base::widget::find_test_id(self.host.widget(), id).map(tilo_ui_base::widget::Widget::get_rect)
     }
 }

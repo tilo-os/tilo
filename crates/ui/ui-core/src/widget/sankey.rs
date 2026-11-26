@@ -13,9 +13,9 @@ use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Shape as _, Stroke
 use vello::peniko::{Color, Fill};
 
 use crate::color_compat::ColorCompat;
-use crate::text_render::{TextRenderer, TextWeight};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextWeight};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::chart_data::{ChartLink, ChartNode, graph_items};
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
@@ -408,7 +408,7 @@ impl SankeyMarks {
         placed
     }
 
-    fn label_style(theme: &Theme) -> crate::text_render::TextStyle {
+    fn label_style(theme: &Theme) -> tilo_ui_base::text_render::TextStyle {
         theme
             .text(TextRole::Caption)
             .with_weight(TextWeight::Medium)
@@ -430,7 +430,7 @@ impl SankeyMarks {
             self.style.link_alpha
         };
         let wash = Color::from_rgb8(base.r(), base.g(), base.b());
-        Some(crate::tokens::colors::over(
+        Some(tilo_ui_base::tokens::colors::over(
             theme.tokens.colors.surfaces.base,
             wash,
             f32::from(alpha) / 255.0,
@@ -461,7 +461,7 @@ impl SankeyMarks {
         theme.tokens.colors.ink_on_any(
             &grounds,
             tone,
-            crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+            tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
         )
     }
 

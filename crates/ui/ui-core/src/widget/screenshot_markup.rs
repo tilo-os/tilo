@@ -27,15 +27,9 @@ use winit::{
     keyboard::{Key, NamedKey},
 };
 
-use crate::tokens::TextRole;
-use crate::{
-    ColorCompat,
-    icons::{self, Icon},
-    surface,
-    text_render::TextWeight,
-    theme::Theme,
-    widget::{Image, ImageFit, TaffyTreeExt, Widget},
-};
+use tilo_ui_base::tokens::TextRole;
+use crate::{ColorCompat, widget::Image, widget::ImageFit};
+use tilo_ui_base::{icons, icons::Icon, surface, text_render::TextWeight, theme::Theme, widget::TaffyTreeExt, widget::Widget};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MarkupTool {
@@ -72,7 +66,7 @@ pub enum ScreenshotMarkupCommand {
 
 /// A modal editor, intentionally implemented in `ui` rather than shell so an
 /// image app can host the identical canvas and controls.
-#[crate::component::not_a_component(system, "screen capture is the system's")]
+#[tilo_ui_base::component::not_a_component(system, "screen capture is the system's")]
 pub struct ScreenshotMarkup {
     image: Image,
     original: Arc<[u8]>,
@@ -113,19 +107,19 @@ pub struct ScreenshotMarkup {
 /// The editor opening out of the captured shot: one thing becoming another
 /// in place (`motion::Zoom`).
 fn markup_entrance(elapsed: Duration) -> f64 {
-    crate::motion::Zoom::SPEC.progress_after(
-        crate::motion::Direction::Enter,
-        crate::tokens::EffectiveMotion::default(),
-        crate::tokens::MotionSource::Pointer,
+    tilo_ui_base::motion::Zoom::SPEC.progress_after(
+        tilo_ui_base::motion::Direction::Enter,
+        tilo_ui_base::tokens::EffectiveMotion::default(),
+        tilo_ui_base::tokens::MotionSource::Pointer,
         elapsed,
     )
 }
 
 fn markup_entrance_time() -> Duration {
-    crate::motion::Zoom::SPEC.settle_time(
-        crate::motion::Direction::Enter,
-        crate::tokens::EffectiveMotion::default(),
-        crate::tokens::MotionSource::Pointer,
+    tilo_ui_base::motion::Zoom::SPEC.settle_time(
+        tilo_ui_base::motion::Direction::Enter,
+        tilo_ui_base::tokens::EffectiveMotion::default(),
+        tilo_ui_base::tokens::MotionSource::Pointer,
     )
 }
 /// Gutter between the surface edge and the canvas, and the header's left
@@ -763,7 +757,7 @@ impl Widget for ScreenshotMarkup {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.layout_parts();
     }
 
@@ -773,7 +767,7 @@ impl Widget for ScreenshotMarkup {
         self.rect == Rect::ZERO
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -881,7 +875,7 @@ impl Widget for ScreenshotMarkup {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            crate::tokens::colors::Colors::hairline_on(c.surfaces.base, 26),
+            tilo_ui_base::tokens::colors::Colors::hairline_on(c.surfaces.base, 26),
             None,
             &RoundedRect::from_rect(canvas_frame.inflate(-0.5, -0.5), 7.5),
         );
@@ -910,7 +904,7 @@ impl Widget for ScreenshotMarkup {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            crate::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            tilo_ui_base::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
             None,
             &RoundedRect::from_rect(self.toolbar.inflate(-0.5, -0.5), 25.5),
         );
@@ -933,7 +927,7 @@ impl Widget for ScreenshotMarkup {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                crate::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+                tilo_ui_base::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
                 None,
                 &RoundedRect::from_rect(palette.inflate(-0.5, -0.5), 21.5),
             );
@@ -956,7 +950,7 @@ impl Widget for ScreenshotMarkup {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                crate::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+                tilo_ui_base::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
                 None,
                 &RoundedRect::from_rect(palette.inflate(-0.5, -0.5), 21.5),
             );
@@ -1180,7 +1174,7 @@ impl Widget for ScreenshotMarkup {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                crate::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+                tilo_ui_base::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
                 None,
                 &RoundedRect::from_rect(tooltip.inflate(-0.5, -0.5), 12.5),
             );
@@ -1204,7 +1198,7 @@ impl Widget for ScreenshotMarkup {
         self.toolbar = settled_toolbar;
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -1339,12 +1333,12 @@ impl Widget for ScreenshotMarkup {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
         self.paint_generation = self.paint_generation.wrapping_add(1);
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -1394,8 +1388,8 @@ impl Widget for ScreenshotMarkup {
     fn wants_tab_input(&self) -> bool {
         true
     }
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let keyboard = self.keyboard_control();
         // The screenshot as it is marked up, under the controls that stand over it.
         let picture = AccessNode::new(Role::Image)
@@ -1465,11 +1459,11 @@ impl Widget for ScreenshotMarkup {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &crate::widget::ModelPath,
+        action: &tilo_ui_base::a11y::Action,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         let Some(id) = self
             .controls()
             .into_iter()
@@ -1508,7 +1502,7 @@ impl Widget for ScreenshotMarkup {
 }
 
 fn markup_text(key: &str) -> String {
-    crate::i18n::widget_format(key, &[])
+    tilo_ui_base::i18n::widget_format(key, &[])
 }
 
 fn choice_tool(id: &str) -> Option<MarkupTool> {
@@ -1950,7 +1944,7 @@ mod tests {
 
             // Case `layout_constants_equal_the_spacing_tokens`.
             {
-                let spacing = crate::tokens::Spacing::default();
+                let spacing = tilo_ui_base::tokens::Spacing::default();
                 assert!(
                     (CANVAS_INSET - f64::from(spacing.s6)).abs() < 1e-9,
                     "CANVAS_INSET is s6"

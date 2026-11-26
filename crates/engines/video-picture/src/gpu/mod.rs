@@ -135,10 +135,10 @@ where
     }
 }
 
-/// Uses [`ui::offscreen::shared_gpu`] rather than an `Instance` of its own:
+/// Uses [`tilo_ui_base::offscreen::shared_gpu`] rather than an `Instance` of its own:
 /// parallel `wgpu::Instance` creation races inside Mesa.
 pub struct HeadlessCompositor {
-    gpu: ui::offscreen::SharedGpu,
+    gpu: tilo_ui_base::offscreen::SharedGpu,
     compositor: VideoCompositor,
 }
 
@@ -146,7 +146,7 @@ impl HeadlessCompositor {
     /// Fails rather than panicking on a box with no usable adapter, so callers
     /// can report it honestly.
     pub fn new() -> Result<Self, String> {
-        let gpu = ui::offscreen::shared_gpu().map_err(|e| e.to_string())?;
+        let gpu = tilo_ui_base::offscreen::shared_gpu().map_err(|e| e.to_string())?;
         Ok(Self {
             gpu,
             compositor: VideoCompositor::new(),

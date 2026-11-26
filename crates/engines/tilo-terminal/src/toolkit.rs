@@ -9,7 +9,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use ui::key_input::{Button, Held, Key, Keys, Named};
+use tilo_ui_base::{key_input::Button, key_input::Held, key_input::Key, key_input::Keys, key_input::Named};
 use ui::terminal::{
     CellColor, GridPos, Line, Modes, Placement, Screen, Session, SessionEvent, SessionHandle, Style,
 };

@@ -22,7 +22,7 @@ use host_fs::transfer::{
 use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
 use tilo_session_client::device_records::{DeviceRecord, DeviceRecords};
-use ui::dnd::CopiedFiles;
+use tilo_ui_base::dnd::CopiedFiles;
 
 /// The most files one paste carries.
 const MAX_ITEMS: usize = 4096;

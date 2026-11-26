@@ -96,7 +96,7 @@ mod tests {
         assert!(entries(&commands, MenuKind::View).is_empty());
         let titles: Vec<_> = MenuKind::ALL
             .iter()
-            .map(|kind| crate::i18n::I18nManager::lookup_plain(kind.title_key()))
+            .map(|kind| tilo_ui_base::i18n::I18nManager::lookup_plain(kind.title_key()))
             .collect();
         assert_eq!(titles, ["Edit", "View", "History"]);
     }

@@ -75,8 +75,8 @@ impl EmojiNotice {
 
 /// Why a chosen picture could not be made one an emoji keeps, as the person reads it.
 #[must_use]
-pub fn small_refusal(small: &ui::workspace_emoji::Small) -> Option<String> {
-    use ui::workspace_emoji::Small;
+pub fn small_refusal(small: &tilo_ui_base::workspace_emoji::Small) -> Option<String> {
+    use tilo_ui_base::workspace_emoji::Small;
     match small {
         Small::Ready(_) => None,
         Small::NotAPicture => Some(t("workspace-settings-emoji-not-a-picture")),

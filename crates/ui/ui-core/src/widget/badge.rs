@@ -1,11 +1,11 @@
 //! Badge widget — the non-interactive member of the chip family: a small pill typically anchored over
 //! another element (avatar, icon, row).
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 use crate::widget::chip::{ChipStyle, PillPaint, paint_pill};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -77,7 +77,7 @@ pub(crate) struct BadgeMetrics {
     height: f64,
     pad_x: f64,
     dot: f64,
-    caption: crate::text_render::TextStyle,
+    caption: tilo_ui_base::text_render::TextStyle,
 }
 
 impl BadgeMetrics {
@@ -217,13 +217,13 @@ pub struct Badge {
     content: BadgeContent,
     style: ChipStyle,
     rect: Rect,
-    face: crate::widget::CachedPaint,
+    face: tilo_ui_base::widget::CachedPaint,
     dirty: bool,
     metrics: Option<BadgeMetrics>,
     cache_theme: Option<ThemeKey>,
-    label: crate::motion::CrossFade<Option<String>>,
+    label: tilo_ui_base::motion::CrossFade<Option<String>>,
     leaving: Option<BadgeContent>,
-    presence: crate::motion::Presence,
+    presence: tilo_ui_base::motion::Presence,
     /// A frame with the badge in it has been presented: only a badge on
     /// screen moves when its count changes.
     on_screen: bool,
@@ -235,19 +235,19 @@ pub struct Badge {
     laid_out: bool,
     /// The layout keeps the badge's width until it has gone.
     laid_out_leaving: bool,
-    motion: Option<crate::tokens::EffectiveMotion>,
-    feel: crate::motion::Feel,
+    motion: Option<tilo_ui_base::tokens::EffectiveMotion>,
+    feel: tilo_ui_base::motion::Feel,
     /// A view that builds the badge anew on each change: the one built in
     /// its place goes on from it (`motion::keep`), as if its count had
     /// been set.
-    hand_on: crate::motion::HandOn<KeptBadge>,
+    hand_on: tilo_ui_base::motion::HandOn<KeptBadge>,
 }
 
 struct KeptBadge {
     content: BadgeContent,
-    label: crate::motion::CrossFade<Option<String>>,
+    label: tilo_ui_base::motion::CrossFade<Option<String>>,
     leaving: Option<BadgeContent>,
-    presence: crate::motion::Presence,
+    presence: tilo_ui_base::motion::Presence,
     on_screen: bool,
 }
 
@@ -255,19 +255,19 @@ impl Badge {
     fn with_content(content: BadgeContent, style: ChipStyle) -> Self {
         let shows = shows(&content);
         Self {
-            label: crate::motion::CrossFade::new(label_of(&content)),
+            label: tilo_ui_base::motion::CrossFade::new(label_of(&content)),
             content,
             style,
             rect: Rect::ZERO,
-            face: crate::widget::CachedPaint::default(),
+            face: tilo_ui_base::widget::CachedPaint::default(),
             dirty: true,
             metrics: None,
             cache_theme: None,
             leaving: None,
             presence: if shows {
-                crate::motion::Presence::opened()
+                tilo_ui_base::motion::Presence::opened()
             } else {
-                crate::motion::Presence::closed()
+                tilo_ui_base::motion::Presence::closed()
             },
             on_screen: false,
             drawing: false,
@@ -276,8 +276,8 @@ impl Badge {
             laid_out: false,
             laid_out_leaving: false,
             motion: None,
-            feel: crate::motion::Feel::Standard,
-            hand_on: crate::motion::HandOn::default(),
+            feel: tilo_ui_base::motion::Feel::Standard,
+            hand_on: tilo_ui_base::motion::HandOn::default(),
         }
     }
 
@@ -315,29 +315,29 @@ impl Badge {
             self.content = content;
             return;
         }
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let motion = self.motion.unwrap_or_else(|| {
-            crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), false)
+            tilo_ui_base::tokens::EffectiveMotion::new(tilo_ui_base::tokens::Motion::default(), false)
         });
         // A change moves only on screen, and lands after a key or an action;
         // a count ticking while the person looks at it cross-fades.
         let source = if self.on_screen {
-            crate::motion::recent_input(now).unwrap_or(crate::tokens::MotionSource::Pointer)
+            tilo_ui_base::motion::recent_input(now).unwrap_or(tilo_ui_base::tokens::MotionSource::Pointer)
         } else {
-            crate::tokens::MotionSource::Action
+            tilo_ui_base::tokens::MotionSource::Action
         };
         match (was, will) {
             (true, true) => self.label.show(label, motion, source, now),
             (false, true) => {
                 self.leaving = None;
-                self.label = crate::motion::CrossFade::new(label);
+                self.label = tilo_ui_base::motion::CrossFade::new(label);
                 self.presence
-                    .show(true, crate::motion::Appear::SPEC, motion, source, now);
+                    .show(true, tilo_ui_base::motion::Appear::SPEC, motion, source, now);
             }
             (true, false) => {
                 self.leaving = Some(std::mem::replace(&mut self.content, content.clone()));
                 self.presence
-                    .show(false, crate::motion::Appear::SPEC, motion, source, now);
+                    .show(false, tilo_ui_base::motion::Appear::SPEC, motion, source, now);
             }
             (false, false) => {}
         }
@@ -348,7 +348,7 @@ impl Badge {
             .chain(self.label.settles_at())
             .max()
         {
-            crate::motion::want_frames_until(until);
+            tilo_ui_base::motion::want_frames_until(until);
         }
         if !self.presence.is_visible(now) {
             self.leaving = None;
@@ -379,9 +379,9 @@ impl Badge {
     ) {
         let content = self.drawn_content();
         let motion = self.feel.over(theme.motion());
-        let pose = crate::motion::Appear::pose(
+        let pose = tilo_ui_base::motion::Appear::pose(
             self.presence.progress(now),
-            crate::motion::Direction::of(self.presence.is_open()),
+            tilo_ui_base::motion::Direction::of(self.presence.is_open()),
             self.rect,
             self.rect.center(),
             motion,
@@ -449,12 +449,12 @@ impl Badge {
 
     /// Play its count changing at `feel` rather than the theme's pace.
     #[must_use]
-    pub fn with_feel(mut self, feel: crate::motion::Feel) -> Self {
+    pub fn with_feel(mut self, feel: tilo_ui_base::motion::Feel) -> Self {
         self.feel = feel;
         self
     }
 
-    pub fn set_feel(&mut self, feel: crate::motion::Feel) {
+    pub fn set_feel(&mut self, feel: tilo_ui_base::motion::Feel) {
         self.feel = feel;
     }
 
@@ -488,13 +488,13 @@ impl CountBadge {
         (metrics.height * ON_ICON_SHARE).round()
     }
 
-    fn label_style(metrics: &BadgeMetrics) -> crate::text_render::TextStyle {
+    fn label_style(metrics: &BadgeMetrics) -> tilo_ui_base::text_render::TextStyle {
         let height = Self::height(metrics);
         let mut style = metrics
             .caption
             .clone()
-            .with_weight(crate::text_render::TextWeight::Semibold);
-        style.size = crate::num::f32_of_f64((height * 0.8).round());
+            .with_weight(tilo_ui_base::text_render::TextWeight::Semibold);
+        style.size = tilo_ui_base::num::f32_of_f64((height * 0.8).round());
         style.line_height = 1.0;
         style.letter_spacing = 0.0;
         style
@@ -525,7 +525,7 @@ impl CountBadge {
         let tone = crate::color::Oklch::from_color(tone);
         let fill = crate::color::oklch(ON_ICON_FILL_LIGHTNESS, tone.c, tone.h);
         let ink = colors
-            .on_surface_at(fill, crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+            .on_surface_at(fill, tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST)
             .ink;
         (fill, ink)
     }
@@ -583,7 +583,7 @@ pub(crate) fn shows(content: &BadgeContent) -> bool {
 }
 
 impl Widget for Badge {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -673,7 +673,7 @@ impl Widget for Badge {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.laid_out = true;
         let at = self.rect;
         let left = self.hand_on.place_by(at, |was| {
@@ -691,14 +691,14 @@ impl Widget for Badge {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (out_scene, out_transform, text_renderer, theme, mut env) = ctx.parts();
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.motion = Some(self.feel.over(theme.motion()));
         if self.leaving.is_some() && !self.presence.is_visible(now) {
             self.leaving = None;
@@ -746,7 +746,7 @@ impl Widget for Badge {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.moved_drawn || self.is_moving(crate::motion::frame_now())
+        self.dirty || self.moved_drawn || self.is_moving(tilo_ui_base::motion::frame_now())
     }
 
     fn mark_drawn(&mut self) {
@@ -756,7 +756,7 @@ impl Widget for Badge {
 
     /// Frames only while the count cross-fades or the badge comes or goes.
     fn needs_animation_frame(&self) -> bool {
-        self.is_moving(crate::motion::frame_now())
+        self.is_moving(tilo_ui_base::motion::frame_now())
     }
 
     /// Placed once, a badge needs a layout again only for what changes its
@@ -766,7 +766,7 @@ impl Widget for Badge {
     fn is_layout_dirty(&self) -> bool {
         !self.laid_out
             || self.layout_dirty
-            || self.laid_out_leaving && !self.presence.is_visible(crate::motion::frame_now())
+            || self.laid_out_leaving && !self.presence.is_visible(tilo_ui_base::motion::frame_now())
     }
 
     /// The width a badge asked for is measured even when no frame draws it: a
@@ -783,8 +783,8 @@ impl Widget for Badge {
         self.rect
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         // The dot variant and zero-count case have no text and so no value;
         // a modified mark says so.
         let value = match self.content {
@@ -809,7 +809,7 @@ impl Drop for Badge {
     fn drop(&mut self) {
         let kept = KeptBadge {
             content: std::mem::replace(&mut self.content, BadgeContent::Count(0)),
-            label: std::mem::replace(&mut self.label, crate::motion::CrossFade::new(None)),
+            label: std::mem::replace(&mut self.label, tilo_ui_base::motion::CrossFade::new(None)),
             leaving: self.leaving.take(),
             presence: self.presence,
             on_screen: self.on_screen,
@@ -821,8 +821,8 @@ impl Drop for Badge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::presence::PresenceCtx;
-    use crate::widget::Tone;
+    use tilo_ui_base::presence::PresenceCtx;
+    use tilo_ui_base::widget::Tone;
     use vello_encoding::DrawTag;
 
     /// COLOR is Vello's tag for a solid-colour fill — circles, rounded
@@ -834,7 +834,7 @@ mod tests {
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
         badge.rect = Rect::new(0.0, 0.0, 24.0, 16.0);
-        badge.draw(&mut crate::draw::DrawCtx::new(
+        badge.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
@@ -935,7 +935,7 @@ mod tests {
             );
             for (fill, ink) in [(light_fill, light_ink), (dark_fill, dark_ink)] {
                 assert!(
-                    crate::a11y::contrast_ratio(ink, fill) >= crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+                    tilo_ui_base::a11y::contrast_ratio(ink, fill) >= tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST,
                     "its digit reads: {ink:?} on {fill:?}"
                 );
             }
@@ -943,7 +943,7 @@ mod tests {
 
         phase accessibility_reports_static_text_role_and_value;
         {
-            use crate::a11y::Role;
+            use tilo_ui_base::a11y::Role;
             let b = Badge::count(3);
             let node = Widget::accessibility(&b).expect("badge is not presentational");
             assert_eq!(node.role, Role::StaticText);
@@ -1002,7 +1002,7 @@ mod tests {
 
     fn present(badge: &mut Badge, theme: &Theme) {
         badge.rect = Rect::new(0.0, 0.0, 24.0, 16.0);
-        badge.draw(&mut crate::draw::DrawCtx::new(
+        badge.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut TextRenderer::new(),
@@ -1058,7 +1058,7 @@ mod tests {
             assert!(badge.needs_redraw(), "the resting look is painted once");
             present(&mut badge, &theme);
             assert!(!badge.needs_redraw(), "and then nothing");
-            crate::motion::note_source(crate::tokens::MotionSource::Keyboard);
+            tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Keyboard);
             badge.set_count(5);
             assert!(!badge.needs_animation_frame(), "after a key it lands");
         });
@@ -1077,9 +1077,9 @@ mod tests {
         });
         let progress = badge.presence.progress(ms(t0, 40));
         assert!(progress > 0.0 && progress < 1.0, "appearing: {progress}");
-        let pose = crate::motion::Appear::pose(
+        let pose = tilo_ui_base::motion::Appear::pose(
             progress,
-            crate::motion::Direction::Enter,
+            tilo_ui_base::motion::Direction::Enter,
             badge.rect,
             badge.rect.center(),
             theme.motion(),
@@ -1103,9 +1103,9 @@ mod tests {
         assert!(badge.leaving.is_none(), "gone");
         assert!(badge.is_layout_dirty(), "its area is given back");
         // Reduced motion: only the fade.
-        let calm = crate::motion::Appear::pose(
+        let calm = tilo_ui_base::motion::Appear::pose(
             0.5,
-            crate::motion::Direction::Enter,
+            tilo_ui_base::motion::Direction::Enter,
             badge.rect,
             badge.rect.center(),
             Theme::dark().with_reduce_motion(true).motion(),

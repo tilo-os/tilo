@@ -151,7 +151,7 @@ tilo_test_env::scenario! {
             Invoke::edit(&p.level.set(0.5)).unwrap(),
         ]);
         dispatcher
-            .submit_now(&mut tilo_app::widget::Edits::lend(doc), group)
+            .submit_now(&mut tilo_ui_base::widget::Edits::lend(doc), group)
             .unwrap();
         assert_eq!(doc.get_changes(&[]).len(), before + 1, "one change");
         let captured = capture.drain();
@@ -311,7 +311,7 @@ struct Rewriter {
     input: TextInput,
 }
 
-impl tilo_app::widget::Decorator for Rewriter {
+impl tilo_ui_base::widget::Decorator for Rewriter {
     type Inner = TextInput;
     fn inner(&self) -> &TextInput {
         &self.input
@@ -344,7 +344,7 @@ impl ResourceApp for RewriterApp {
 /// Select the whole field and run its text action from the context menu,
 /// as the person does; the request the surface takes.
 fn request_shout(app: &mut TestApp<RewriterApp>) -> tilo_app::widget::TextActionRequest {
-    use tilo_app::synthetic_input::{cursor_moved, mouse_input};
+    use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_input};
     use tilo_app::winit::event::{ElementState, MouseButton};
     let harness = app.harness();
     harness.set_modifiers(&["ctrl".into()]);

@@ -58,10 +58,10 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
         let mut definition = definition(probe_factory);
         definition.required.push(denied_scope());
         let authority = permissions();
-        authority.set(tilo_ui::permissions::PermissionContext::granted(
-            &tilo_ui::permissions::MemberId::person("probe-author"),
-            &tilo_ui::permissions::TreePath::root(),
-            tilo_ui::permissions::policy::KindSet::ALL,
+        authority.set(tilo_ui_base::permissions::PermissionContext::granted(
+            &tilo_ui_base::permissions::MemberId::person("probe-author"),
+            &tilo_ui_base::permissions::TreePath::root(),
+            tilo_ui_base::permissions::policy::KindSet::ALL,
             None,
         ));
         let context = ProcessContext::prepare(
@@ -871,10 +871,10 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         let authority = permissions();
         if case == "revoked" {
             definition.required.push(denied_scope());
-            authority.set(tilo_ui::permissions::PermissionContext::granted(
-                &tilo_ui::permissions::MemberId::person("probe-author"),
-                &tilo_ui::permissions::TreePath::root(),
-                tilo_ui::permissions::policy::KindSet::ALL,
+            authority.set(tilo_ui_base::permissions::PermissionContext::granted(
+                &tilo_ui_base::permissions::MemberId::person("probe-author"),
+                &tilo_ui_base::permissions::TreePath::root(),
+                tilo_ui_base::permissions::policy::KindSet::ALL,
                 None,
             ));
         }
@@ -942,10 +942,10 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         assert!(records.durability_error(&record.id).is_some());
         assert_eq!(calls(), 1);
         definition.app_id = APP.into();
-        authority.set(tilo_ui::permissions::PermissionContext::granted(
-            &tilo_ui::permissions::MemberId::person("probe-author"),
-            &tilo_ui::permissions::TreePath::root(),
-            tilo_ui::permissions::policy::KindSet::ALL,
+        authority.set(tilo_ui_base::permissions::PermissionContext::granted(
+            &tilo_ui_base::permissions::MemberId::person("probe-author"),
+            &tilo_ui_base::permissions::TreePath::root(),
+            tilo_ui_base::permissions::policy::KindSet::ALL,
             None,
         ));
         let target = existing(&record);
@@ -1136,11 +1136,8 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
 mod save_status_fixture {
     use super::*;
     use std::cell::RefCell;
-    use tilo_ui::{
-        Widget,
-        resource::{DocumentCheckout, ResourceSaveStatus, ResourceStore},
-        widget::{AppKind, AppWidget, IconDescriptor, TileHost},
-    };
+    use tilo_ui::{resource::DocumentCheckout, resource::ResourceSaveStatus, resource::ResourceStore, widget::AppKind, widget::AppWidget, widget::IconDescriptor, widget::TileHost};
+    use tilo_ui_base::Widget;
     thread_local! {
         static STORE: RefCell<Option<ResourceStore>> = const { RefCell::new(None) };
         static DELIVERED: RefCell<Vec<ResourceSaveStatus>> = const { RefCell::new(Vec::new()) };
@@ -1153,7 +1150,7 @@ mod save_status_fixture {
         fn build_layout(
             &mut self,
             tree: &mut taffy::TaffyTree<()>,
-            _: &tilo_ui::Theme,
+            _: &tilo_ui_base::Theme,
             _: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
             tree.new_leaf(taffy::Style::default()).unwrap()
@@ -1161,7 +1158,7 @@ mod save_status_fixture {
         fn name(&self) -> &'static str {
             "Status"
         }
-        fn settle(&mut self, _: &mut tilo_ui::widget::Edits<'_>, _: &automerge::ObjId) {
+        fn settle(&mut self, _: &mut tilo_ui_base::widget::Edits<'_>, _: &automerge::ObjId) {
             // A status read is immutable: it shares the loan settlement holds, and never takes a
             // writer's place.
             let _ = self.records.save_status(&self.checkout.id);
@@ -1249,7 +1246,7 @@ mod save_status_fixture {
             host.records.tick();
             let mut tile = TileHost::from_component(component);
             let mut outer = automerge::AutoCommit::new();
-            tile.settle(&mut tilo_ui::widget::Edits::lend(&mut outer), &ROOT);
+            tile.settle(&mut tilo_ui_base::widget::Edits::lend(&mut outer), &ROOT);
             tile.update(&outer, &ROOT);
             tile.sync(&outer, &ROOT);
             assert_eq!(
@@ -1267,7 +1264,7 @@ mod save_status_fixture {
         }
         fn pump(&mut self) {
             self.tile
-                .settle(&mut tilo_ui::widget::Edits::lend(&mut self.outer), &ROOT);
+                .settle(&mut tilo_ui_base::widget::Edits::lend(&mut self.outer), &ROOT);
             self.tile.update(&self.outer, &ROOT);
             self.tile.sync(&self.outer, &ROOT);
         }
@@ -1399,7 +1396,8 @@ mod paired_local {
     use tilo_ui::application::{AppComponent, ApplicationDefinition};
     use tilo_ui::application_view::{ApplicationFocusRestore, ApplicationLocalView};
     use tilo_ui::view::ViewContribution;
-    use tilo_ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
+    use tilo_ui::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
+    use tilo_ui_base::widget::Widget;
 
     #[derive(Default)]
     #[allow(
@@ -1418,15 +1416,15 @@ mod paired_local {
     thread_local! { static STATE: RefCell<Rc<RefCell<Presentation>>> = RefCell::default(); }
     struct LocalRoot(Rc<RefCell<Presentation>>);
     impl Widget for LocalRoot {
-        tilo_ui::provides!(
+        tilo_ui_base::provides!(
             dyn tilo_ui::view::capability::ViewState,
-            dyn tilo_ui::widget::undo_points::UndoPoints
+            dyn tilo_ui_base::widget::undo_points::UndoPoints
         );
 
         fn build_layout(
             &mut self,
             tree: &mut taffy::TaffyTree<()>,
-            _: &tilo_ui::Theme,
+            _: &tilo_ui_base::Theme,
             _: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
             tree.new_leaf(taffy::Style::default()).unwrap()
@@ -1445,7 +1443,7 @@ mod paired_local {
         }
     }
 
-    impl tilo_ui::widget::undo_points::UndoPoints for LocalRoot {
+    impl tilo_ui_base::widget::undo_points::UndoPoints for LocalRoot {
         fn get_state(&self) -> Option<String> {
             Some("current caret".into())
         }

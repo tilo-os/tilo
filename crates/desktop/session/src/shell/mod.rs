@@ -73,7 +73,7 @@ fn band() -> u32 {
         reason = "a bar's height, a few dozen pixels"
     )]
     let band = f64::from(tilo_session_core::desktop::overlays::topbar_height(
-        &ui::Theme::dark(),
+        &tilo_ui_base::Theme::dark(),
     ))
     .ceil() as u32;
     band
@@ -145,7 +145,7 @@ pub(crate) struct Shell {
     dispatch_refusals: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     /// The theme the person's appearance settings make: every part draws in it, and a part made for
     /// a display plugged in later starts in it.
-    theme: ui::Theme,
+    theme: tilo_ui_base::Theme,
 }
 
 /// Reconcile the desktop's display partition with the outputs the compositor holds: a display
@@ -207,7 +207,7 @@ impl Shell {
         surfaces: &mut Surfaces,
         lists: DeviceLists,
         wells: Option<ui::widget::Wells>,
-        theme: ui::Theme,
+        theme: tilo_ui_base::Theme,
         daemon: bool,
     ) -> Result<Self, String> {
         // What the person waits for before the shell can draw: its package compiled, its record
@@ -1060,7 +1060,7 @@ impl Shell {
     }
 
     /// Draw every part in `theme` : the person changed their appearance.
-    pub(crate) fn set_theme(&mut self, theme: &ui::Theme) {
+    pub(crate) fn set_theme(&mut self, theme: &tilo_ui_base::Theme) {
         self.theme = theme.clone();
         for (_, part) in &self.parts {
             part.borrow_mut().set_theme(theme.clone());
@@ -2352,7 +2352,7 @@ mod tests {
         use ui::window_targets::{TargetAction, WindowTarget};
 
         // The windows' arrival settles at once rather than over frames that now take no time.
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut desktop = crate::platform::surfaces::desktop(7);
         let mut policy = desktop.well_policy();
         let output = LayoutRect::new(LayoutPoint::from((0, 0)), (1280, 800).into());

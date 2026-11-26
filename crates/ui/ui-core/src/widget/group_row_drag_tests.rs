@@ -123,7 +123,7 @@ tilo_test_env::scenario! {
         lifted(&mut row, &taffy, root, to);
         let flight = crate::widget::drag_bus::current().expect("the drag carries the window");
         assert_eq!(flight.source, "window:100", "the flight is the window's own");
-        let crate::dnd::DragPayload::Custom { kind, blob } = flight.payload else {
+        let tilo_ui_base::dnd::DragPayload::Custom { kind, blob } = flight.payload else {
             panic!("a window's bar carries a resource");
         };
         assert_eq!(kind, crate::widget::drag_source::RESOURCE_PAYLOAD);
@@ -169,7 +169,7 @@ tilo_test_env::scenario! {
     reason = "pixel tallies inside the rendered frame"
 )]
 fn painted_bounds(scene: &Scene, width: u32, height: u32) -> Rect {
-    let mut renderer = crate::offscreen::OffscreenRenderer::new(width, height);
+    let mut renderer = tilo_ui_base::offscreen::OffscreenRenderer::new(width, height);
     let rgba = renderer.render(scene, vello::peniko::Color::TRANSPARENT);
     let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0_u32, 0_u32);
     for y in 0..height {
@@ -210,14 +210,14 @@ fn a_dragged_window_is_painted_where_the_pointer_lifted_it() {
             row.group_drag_active(),
             "{name}: fixture: the window is being moved"
         );
-        let mut text = crate::font_catalog::fixture_renderer();
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
         let mut scene = Scene::new();
-        row.draw_group_drag_preview(&mut crate::draw::DrawCtx::new(
+        row.draw_group_drag_preview(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
             &theme,
-            crate::presence::PresenceCtx::empty().draw_env(),
+            tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
         ));
         crate::testing::capture_regression(
             "drag-lift",

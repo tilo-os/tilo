@@ -159,7 +159,7 @@ mod tests {
         {
             use crate::retained_raster::{Repaint, RetainedFrames, TargetKey, Unknown};
             let scene = vello::Scene::new();
-            let parts = crate::scene_parts::SectionParts::default();
+            let parts = tilo_ui_base::scene_parts::SectionParts::default();
             let key = TargetKey {
                 width: 800,
                 height: 600,

@@ -15,7 +15,7 @@ fn own_settings() -> settings_store::SourceScope {
 
 #[test]
 fn host_appearance_rethemes_through_the_appearance_intent() {
-    use crate::host_appearance::{HostAppearance, Scheme};
+    use tilo_ui_base::{host_appearance::HostAppearance, host_appearance::Scheme};
     // A process the shell supplies no settings to: the host's appearance
     // is the one it follows.
     let _settings = settings_store::scoped_source(None);
@@ -46,7 +46,7 @@ fn host_appearance_rethemes_through_the_appearance_intent() {
     assert_eq!(
         a.theme.tokens.colors.intent.you,
         Theme::light().tokens.colors.presence.hue(
-            crate::tokens::nearest_presence_hue(vello::peniko::Color::from_rgb8(0xE0, 0x40, 0x80))
+            tilo_ui_base::tokens::nearest_presence_hue(vello::peniko::Color::from_rgb8(0xE0, 0x40, 0x80))
                 .expect("a pink has a hue")
         ),
         "the host accent is the person's own colour"
@@ -67,8 +67,8 @@ tilo_test_env::scenario! {
 
     phase the_shell_s_window_appearance_dresses_the_theme_and_survives_rebuilds;
     {
-        use crate::theme::WindowAppearance;
-        use crate::tokens::PresenceHue;
+        use tilo_ui_base::theme::WindowAppearance;
+        use tilo_ui_base::tokens::PresenceHue;
         let _settings = own_settings();
 
         let mut a = app();
@@ -131,7 +131,7 @@ tilo_test_env::scenario! {
         let mut app = app();
         app.set_theme(Theme::dark());
         app.set_text_scale(1.5);
-        let appearance = crate::theme::WindowAppearance::default();
+        let appearance = tilo_ui_base::theme::WindowAppearance::default();
         for theme in [Theme::light(), Theme::high_contrast(), Theme::dark()] {
             let message = FloatingSurfaceHostMessage::appearance_with_theme(&appearance, &theme, None);
             let wire = serde_json::to_vec(&message).unwrap();
@@ -234,7 +234,7 @@ fn a_theme_message_or_a_rebuild_between_frames_repaints_the_whole_surface() {
         let _ = frame(&mut app);
         let _ = frame(&mut app);
 
-        let appearance = crate::theme::WindowAppearance::default();
+        let appearance = tilo_ui_base::theme::WindowAppearance::default();
         let message =
             FloatingSurfaceHostMessage::appearance_with_theme(&appearance, &Theme::dark(), None);
         assert!(app.apply_floating_host_messages(vec![message]));

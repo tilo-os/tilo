@@ -1,6 +1,6 @@
 //! Fluent catalogue for setup's semantic resource and action surface.
 
-use ui::i18n::ArgValue;
+use tilo_ui_base::i18n::ArgValue;
 
 pub fn t(key: &str) -> String {
     crate::resource::CATALOG.t(key)
@@ -13,7 +13,7 @@ pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::i18n::I18nManager;
+    use tilo_ui_base::i18n::I18nManager;
 
     #[test]
     fn setup_catalog_resolves_and_ships_the_languages_beside_its_source() {

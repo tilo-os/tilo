@@ -40,10 +40,10 @@ impl AppSurface for Region {
 
 // How many frames an embedded app may run in one host frame to settle a
 // sync or layout its previous frame left.
-use crate::widget::SETTLE_FRAMES;
+use tilo_ui_base::widget::SETTLE_FRAMES;
 
 /// An app a host shows in a region of its own scene.
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     framework,
     "an app shown in a region of its host; the language embeds with `embed`"
 )]
@@ -76,8 +76,8 @@ pub struct EmbeddedApp {
     /// Painted into the host's scene at the region's origin, and painted
     /// again as it is until the app has something new to show.
     painted: RefCell<Scene>,
-    /// The damage parts ([`crate::scene_parts`]) recorded with `painted`.
-    painted_parts: RefCell<Option<crate::scene_parts::SectionParts>>,
+    /// The damage parts ([`tilo_ui_base::scene_parts`]) recorded with `painted`.
+    painted_parts: RefCell<Option<tilo_ui_base::scene_parts::SectionParts>>,
     /// Background work not yet serviced by a model pump or frame.
     woken: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The app's next wake deadline as it stood after it last ran
@@ -110,24 +110,24 @@ struct PaintedDamage {
     /// What moved instead, in the host's device pixels at `copy_scale` per
     /// unit of the app's own coordinates: where a scroll's content took its
     /// pixels from and how far it moved them.
-    copies: Vec<crate::scroll_copy::DeviceCopy>,
+    copies: Vec<tilo_ui_base::scroll_copy::DeviceCopy>,
     copy_scale: f64,
 }
 
 /// How many pixels of the target of the host drawing now
-/// ([`crate::scroll_copy::host_device_scale`]) one unit of an app placed
+/// ([`tilo_ui_base::scroll_copy::host_device_scale`]) one unit of an app placed
 /// with `placement` is; 1 when the placement scales the axes apart, rotates
 /// or skews (the host then makes no copy of it anyway).
 fn copy_scale(placement: Affine) -> f64 {
-    let [a, b, c, d, _, _] = crate::scroll_copy::on_screen(placement).as_coeffs();
+    let [a, b, c, d, _, _] = tilo_ui_base::scroll_copy::on_screen(placement).as_coeffs();
     if b == 0.0 && c == 0.0 && a > 0.0 && a.to_bits() == d.to_bits() {
-        crate::scroll_copy::host_device_scale() * a
+        tilo_ui_base::scroll_copy::host_device_scale() * a
     } else {
         1.0
     }
 }
 
-/// Hands out each embedded app's [`crate::scene_parts::DamageHint::source`].
+/// Hands out each embedded app's [`tilo_ui_base::scene_parts::DamageHint::source`].
 static NEXT_SOURCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl EmbeddedApp {
@@ -154,7 +154,7 @@ impl EmbeddedApp {
             // As in a window of its own: a change of an outside authority
             // the app's permissions follow wakes it to show it.
             let _entry = app.enter_wake_scope();
-            crate::permissions::wake_loop_on_outside_change(crate::wake::WakeHandle::new());
+            tilo_ui_base::permissions::wake_loop_on_outside_change(crate::wake::WakeHandle::new());
         }
         Ok(Self {
             app: Box::new(app),
@@ -197,7 +197,7 @@ impl EmbeddedApp {
 
     /// Whether the host keeps the pixels it presented and can move them
     /// within its target before it repaints the damage: a scroll in the app
-    /// then hands it what moved ([`crate::scene_parts::DamageHint::copies`])
+    /// then hands it what moved ([`tilo_ui_base::scene_parts::DamageHint::copies`])
     /// instead of damaging the viewport. The app then stands on an opaque
     /// ground of the theme's content colour, as a window of its own stands on
     /// its target's, so what is under its content is uniform; a theme whose
@@ -450,9 +450,9 @@ impl crate::widget::SearchableWindow for EmbeddedApp {
 }
 
 impl Widget for EmbeddedApp {
-    crate::provides!(
+    tilo_ui_base::provides!(
         dyn crate::component_lifecycle::ComponentLifecycle,
-        dyn crate::widget::CompleteContentProvider,
+        dyn tilo_ui_base::widget::CompleteContentProvider,
         dyn crate::widget::WindowHistory,
         dyn crate::widget::SearchableWindow
     );
@@ -485,7 +485,7 @@ impl Widget for EmbeddedApp {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.runs();
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if rect.size() != self.rect.size() {
             self.app.layout.layout_dirty = true;
             self.wants_frame.set(true);
@@ -504,7 +504,7 @@ impl Widget for EmbeddedApp {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -520,7 +520,7 @@ impl Widget for EmbeddedApp {
         let woken = self.woken.swap(false, std::sync::atomic::Ordering::AcqRel);
         // Drawn for a host that copies, the app hands out copies from now
         // on (a capture drawing it later repaints where they land).
-        if crate::scroll_copy::host_copies() {
+        if tilo_ui_base::scroll_copy::host_copies() {
             self.accepts_copies = true;
         }
         // Starting or stopping copies changes the ground under the app and
@@ -555,7 +555,7 @@ impl Widget for EmbeddedApp {
                     f64::from(self.region.size.width),
                     f64::from(self.region.size.height),
                 );
-                let (settling, parts) = crate::scene_parts::record(&mut painted, |painted| {
+                let (settling, parts) = tilo_ui_base::scene_parts::record(&mut painted, |painted| {
                     painted.reset();
                     if let Some(ground) = ground {
                         painted.fill(
@@ -614,7 +614,7 @@ impl Widget for EmbeddedApp {
             let mut copies = Vec::with_capacity(self.painted_damage.copies.len());
             for copy in &self.painted_damage.copies {
                 let moved =
-                    crate::scroll_copy::MovedRegion::of(copy, self.painted_damage.copy_scale);
+                    tilo_ui_base::scroll_copy::MovedRegion::of(copy, self.painted_damage.copy_scale);
                 match moved.transformed(placement) {
                     Some(moved) => copies.push(moved),
                     None => rects.push(
@@ -624,7 +624,7 @@ impl Widget for EmbeddedApp {
                     ),
                 }
             }
-            crate::scene_parts::DamageHint {
+            tilo_ui_base::scene_parts::DamageHint {
                 source: self.source,
                 from: self.painted_damage.from,
                 to: self.painted_damage.to,
@@ -634,9 +634,9 @@ impl Widget for EmbeddedApp {
                 earlier: Vec::new(),
             }
         });
-        let key = crate::scene_parts::PartKey::new("ui.embedded-app", ());
-        crate::scene_parts::hinted(scene, key, hint, |scene| {
-            crate::scene_parts::append(scene, &painted, painted_parts.as_ref(), Some(placement));
+        let key = tilo_ui_base::scene_parts::PartKey::new("ui.embedded-app", ());
+        tilo_ui_base::scene_parts::hinted(scene, key, hint, |scene| {
+            tilo_ui_base::scene_parts::append(scene, &painted, painted_parts.as_ref(), Some(placement));
         });
     }
 
@@ -649,8 +649,8 @@ impl Widget for EmbeddedApp {
     /// at once on every park.
     fn update(
         &mut self,
-        _state: &crate::widget::AppModel,
-        _path: &crate::widget::ModelPath,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         let due = self
             .wake_deadline()
@@ -681,14 +681,14 @@ impl Widget for EmbeddedApp {
                     || self.app.root_widget.needs_animation_frame()
                     || self.app.permissions_moved()))
             || self.app.permissions_walk_due(crate::time::now())
-            || crate::motion::frames_wanted(crate::time::now());
+            || tilo_ui_base::motion::frames_wanted(crate::time::now());
         if visible {
             self.wants_frame.set(true);
         }
         visible
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.runs();
         self.build_tree(false);
         self.entering_backwards = ctx.modifiers.state().shift_key();
@@ -806,7 +806,7 @@ impl Widget for EmbeddedApp {
             .map(|rect| rect + vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0))
     }
 
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
         self.app.ime_window_state().map(|field| field.content)
     }
 
@@ -897,14 +897,14 @@ impl Widget for EmbeddedApp {
         self.app.set_reduce_motion(reduced);
     }
 
-    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+    fn set_platform_conventions(&mut self, conventions: tilo_ui_base::platform::PlatformConventions) {
         self.runs();
         self.app.set_platform_conventions(conventions);
     }
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         self.runs();
         self.app.set_interaction_environment(environment);
@@ -915,10 +915,10 @@ impl Widget for EmbeddedApp {
     /// the name the app reaches it by (the target its widget publishes, or
     /// its test id) as its action target, so the host, its agents and its
     /// tests name a control in the app as they name one of their own.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let tree = self.app.semantic_tree();
         let root = tree.node(tree.root())?;
-        let mut node = crate::a11y::AccessNode::new(crate::a11y::Role::Group);
+        let mut node = tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group);
         node.name = AppWidget::app_title(self).to_owned().into();
         node.children = root
             .children
@@ -931,10 +931,10 @@ impl Widget for EmbeddedApp {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &crate::widget::ModelPath,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         self.runs();
         let Some(id) = self.hosted_node_at(key_path) else {
@@ -949,9 +949,9 @@ impl Widget for EmbeddedApp {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &crate::widget::ModelPath,
+        action: &tilo_ui_base::a11y::Action,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         self.runs();
         let id = match key_route(target) {
@@ -995,16 +995,16 @@ impl crate::component_lifecycle::ComponentLifecycle for EmbeddedApp {
     }
 }
 
-impl crate::widget::CompleteContentProvider for EmbeddedApp {
+impl tilo_ui_base::widget::CompleteContentProvider for EmbeddedApp {
     fn complete_content_size(&self) -> Option<vello::kurbo::Size> {
-        use crate::widget::CompleteContentWidgetExt as _;
+        use tilo_ui_base::widget::CompleteContentWidgetExt as _;
         self.app.root_widget.complete_content_size()
     }
 
     fn draw_complete_content(
         &mut self,
         bounds: KurboRect,
-        ctx: &mut crate::draw::DrawCtx<'_>,
+        ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
     ) -> bool {
         #[allow(
             unused_variables,
@@ -1013,13 +1013,13 @@ impl crate::widget::CompleteContentProvider for EmbeddedApp {
         )]
         let (scene, transform, _text_renderer, _theme, mut env) = ctx.parts();
         self.runs();
-        use crate::widget::CompleteContentWidgetExt as _;
+        use tilo_ui_base::widget::CompleteContentWidgetExt as _;
         let app = &mut self.app;
         let local = bounds - vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0);
         let mut painted = Scene::new();
         let drawn = app.root_widget.draw_complete_content(
             local,
-            &mut crate::draw::DrawCtx::new(
+            &mut tilo_ui_base::draw::DrawCtx::new(
                 &mut painted,
                 Affine::IDENTITY,
                 &mut app.text_renderer,
@@ -1073,7 +1073,7 @@ impl AppWidget for EmbeddedApp {
         &mut self,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.runs();
         if !self.device_local {
             return Err(tilo_actions::ApiError::Unknown(address.clone()));
@@ -1087,7 +1087,7 @@ impl AppWidget for EmbeddedApp {
         actor: Option<&tilo_actions::Actor>,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let Some(actor) = actor else {
             return self.invoke_device_local_action(address, arguments);
         };
@@ -1151,7 +1151,7 @@ impl AppWidget for EmbeddedApp {
 }
 
 /// Whether `node` or a node under it is marked focused.
-fn holds_focus(node: &crate::a11y::AccessNode) -> bool {
+fn holds_focus(node: &tilo_ui_base::a11y::AccessNode) -> bool {
     node.state.focused || node.children.iter().any(holds_focus)
 }
 
@@ -1215,9 +1215,9 @@ impl EmbeddedApp {
         ordinal: usize,
     ) -> u64 {
         match name {
-            Some(name) => crate::a11y::hash_key(&("target", name)),
-            None if node.durable_identity => crate::a11y::hash_key(&node.id.as_str()),
-            None => crate::a11y::hash_key(&("ordinal", ordinal)),
+            Some(name) => tilo_ui_base::a11y::hash_key(&("target", name)),
+            None if node.durable_identity => tilo_ui_base::a11y::hash_key(&node.id.as_str()),
+            None => tilo_ui_base::a11y::hash_key(&("ordinal", ordinal)),
         }
     }
 
@@ -1227,10 +1227,10 @@ impl EmbeddedApp {
     /// below them (published resources) are left out.
     fn access_subtree(
         &self,
-        id: &crate::a11y::SemanticId,
+        id: &tilo_ui_base::a11y::SemanticId,
         ordinal: usize,
         parent: &[u64],
-    ) -> Option<crate::a11y::AccessNode> {
+    ) -> Option<tilo_ui_base::a11y::AccessNode> {
         let tree = self.app.semantic_tree();
         let node = tree.node(id)?;
         let name = self.hosted_name(node);
@@ -1247,7 +1247,7 @@ impl EmbeddedApp {
         if node.bounds.is_none() && children.is_empty() {
             return None;
         }
-        let mut access = crate::a11y::AccessNode::new(node.role);
+        let mut access = tilo_ui_base::a11y::AccessNode::new(node.role);
         access.name.clone_from(&node.name);
         access.value.clone_from(&node.value);
         access.description.clone_from(&node.description);
@@ -1263,7 +1263,7 @@ impl EmbeddedApp {
         };
         access.bounds = node.bounds.map(|bounds| {
             let placed = bounds + vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0);
-            crate::a11y::AccessBounds {
+            tilo_ui_base::a11y::AccessBounds {
                 x0: placed.x0,
                 y0: placed.y0,
                 x1: placed.x1,
@@ -1283,7 +1283,7 @@ impl EmbeddedApp {
 
     /// The app's semantic node a key path from [`Self::access_subtree`]
     /// names.
-    fn hosted_node_at(&self, key_path: &[u64]) -> Option<crate::a11y::SemanticId> {
+    fn hosted_node_at(&self, key_path: &[u64]) -> Option<tilo_ui_base::a11y::SemanticId> {
         let tree = self.app.semantic_tree();
         let mut current = tree.root().clone();
         for key in key_path {
@@ -1305,7 +1305,7 @@ impl EmbeddedApp {
 
     /// The app's semantic node on screen whose name is `name`, first in
     /// reading order.
-    fn hosted_node_named(&self, name: &str) -> Option<crate::a11y::SemanticId> {
+    fn hosted_node_named(&self, name: &str) -> Option<tilo_ui_base::a11y::SemanticId> {
         let tree = self.app.semantic_tree();
         let mut pending = vec![tree.root().clone()];
         while let Some(id) = pending.pop() {
@@ -1327,10 +1327,10 @@ impl EmbeddedApp {
     /// none, a read-only one no value.
     fn perform_hosted(
         &mut self,
-        id: &crate::a11y::SemanticId,
-        action: &crate::a11y::Action,
+        id: &tilo_ui_base::a11y::SemanticId,
+        action: &tilo_ui_base::a11y::Action,
     ) -> bool {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         let Some(node) = self.app.semantic_tree().node(id) else {
             return false;
         };
@@ -1378,8 +1378,8 @@ impl EmbeddedApp {
 #[cfg(test)]
 mod theme_repaint_tests {
     use super::*;
-    use crate::presence::PresenceCtx;
-    use crate::text_render::TextRenderer;
+    use tilo_ui_base::presence::PresenceCtx;
+    use tilo_ui_base::text_render::TextRenderer;
 
     pub(super) fn layout(tile: &mut EmbeddedApp, theme: &Theme) {
         let mut taffy = TaffyTree::new();
@@ -1398,7 +1398,7 @@ mod theme_repaint_tests {
 
     pub(super) fn paint(tile: &mut EmbeddedApp, theme: &Theme) -> Vec<u32> {
         let mut scene = Scene::new();
-        tile.draw(&mut crate::draw::DrawCtx::new(
+        tile.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),
@@ -1413,11 +1413,11 @@ mod theme_repaint_tests {
     fn paint_tracked(
         tile: &mut EmbeddedApp,
         theme: &Theme,
-    ) -> (Box<Scene>, crate::scene_parts::SectionParts) {
-        let recording = crate::scene_parts::Recording::begin();
+    ) -> (Box<Scene>, tilo_ui_base::scene_parts::SectionParts) {
+        let recording = tilo_ui_base::scene_parts::Recording::begin();
         let mut scene = Box::new(Scene::new());
-        crate::scene_parts::track(&scene);
-        tile.draw(&mut crate::draw::DrawCtx::new(
+        tilo_ui_base::scene_parts::track(&scene);
+        tile.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::translate((40.0, 20.0)),
             &mut TextRenderer::new(),
@@ -1462,7 +1462,7 @@ mod theme_repaint_tests {
         phase a_tooltip_in_an_embedded_app_damages_its_chip_not_the_app;
         {
             // Motion reads at its end: this test checks the resting frame.
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let app = App::new_with_controlled_inputs(
                 crate::state::State::new(),
                 Box::new(crate::widget::Button::new("probe", "Probe").tooltip("Probe the tile")),
@@ -1476,7 +1476,7 @@ mod theme_repaint_tests {
             let region = KurboRect::new(40.0, 20.0, 340.0, 120.0);
             let button = tile.app.root_widget.get_rect();
             let at = button.center();
-            let moved = crate::synthetic_input::cursor_moved(at.x, at.y);
+            let moved = tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y);
             tile.app.surface_input(&tile.region, moved, false);
             tile.wants_frame.set(true);
             let hovered = paint_tracked(&mut tile, &theme);
@@ -1495,7 +1495,7 @@ mod theme_repaint_tests {
                 tile.app.input.tooltips.visible().is_some(),
                 "the tooltip shows"
             );
-            let damage = crate::scene_parts::damage(&hovered.0, &hovered.1, &shown.0, &shown.1)
+            let damage = tilo_ui_base::scene_parts::damage(&hovered.0, &hovered.1, &shown.0, &shown.1)
                 .expect("the tooltip is proven");
             let chip = tile.damage_report_for_test();
             assert!(!damage.is_empty(), "the tooltip is repainted");
@@ -1511,7 +1511,7 @@ mod theme_repaint_tests {
         // is using: it goes when the pointer leaves, and when the window loses
         // focus.
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             for ending in [
                 WindowEvent::CursorLeft {
                     device_id: winit::event::DeviceId::dummy(),
@@ -1527,7 +1527,7 @@ mod theme_repaint_tests {
                 layout(&mut tile, &theme);
                 let _ = paint_tracked(&mut tile, &theme);
                 let at = tile.app.root_widget.get_rect().center();
-                let moved = crate::synthetic_input::cursor_moved(at.x, at.y);
+                let moved = tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y);
                 tile.app.surface_input(&tile.region, moved, false);
                 let rested = crate::time::now()
                     + crate::widget::tooltip::HOVER_DWELL
@@ -1575,7 +1575,7 @@ mod theme_repaint_tests {
             let idle = paint_tracked(&mut tile, &theme);
             assert_eq!(tile.painted_damage.rects, Some(Vec::new()));
             assert_eq!(
-                crate::scene_parts::damage(&previous.0, &previous.1, &idle.0, &idle.1),
+                tilo_ui_base::scene_parts::damage(&previous.0, &previous.1, &idle.0, &idle.1),
                 Ok(Vec::new())
             );
             // A changed label is the widget's damage, not more than the region.
@@ -1583,7 +1583,7 @@ mod theme_repaint_tests {
             tile.app.needs_sync = true;
             tile.wants_frame.set(true);
             let changed = paint_tracked(&mut tile, &theme);
-            let damage = crate::scene_parts::damage(&idle.0, &idle.1, &changed.0, &changed.1)
+            let damage = tilo_ui_base::scene_parts::damage(&idle.0, &idle.1, &changed.0, &changed.1)
                 .expect("the change is proven");
             assert!(!damage.is_empty(), "the new label is repainted");
             assert!(
@@ -1840,7 +1840,7 @@ mod search_tests;
 mod wake_deadline_tests {
     use super::theme_repaint_tests::{layout, paint};
     use super::*;
-    use crate::widget::TaffyTreeExt as _;
+    use tilo_ui_base::widget::TaffyTreeExt as _;
     use std::rc::Rc;
 
     /// A leaf counting how often its deadline is asked for.
@@ -1859,8 +1859,8 @@ mod wake_deadline_tests {
         ) -> NodeId {
             taffy.widget_leaf(taffy::Style::default(), node_map, self)
         }
-        crate::rect_geometry!();
-        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        tilo_ui_base::rect_geometry!();
+        fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
             #[allow(
                 unused_variables,
                 unused_mut,
@@ -1893,8 +1893,8 @@ mod wake_deadline_tests {
         ) -> NodeId {
             taffy.widget_leaf(taffy::Style::default(), node_map, self)
         }
-        crate::rect_geometry!();
-        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        tilo_ui_base::rect_geometry!();
+        fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
             #[allow(
                 unused_variables,
                 unused_mut,
@@ -2003,9 +2003,9 @@ mod semantic_target_tests {
 
     /// The node under `node` whose action target is `name`.
     fn named<'a>(
-        node: &'a crate::a11y::AccessNode,
+        node: &'a tilo_ui_base::a11y::AccessNode,
         name: &str,
-    ) -> Option<&'a crate::a11y::AccessNode> {
+    ) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
         if node.action_target.as_deref() == Some(name) {
             return Some(node);
         }
@@ -2022,13 +2022,13 @@ mod semantic_target_tests {
         }
     }
 
-    fn act(tile: &mut EmbeddedApp, target: &str, action: &crate::a11y::Action) -> bool {
+    fn act(tile: &mut EmbeddedApp, target: &str, action: &tilo_ui_base::a11y::Action) -> bool {
         let mut doc = automerge::AutoCommit::new();
         Widget::perform_semantic_action(
             tile,
             target,
             action,
-            &mut crate::widget::Edits::lend(&mut doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         )
     }
@@ -2069,14 +2069,14 @@ mod semantic_target_tests {
         let access = tile.accessibility().unwrap();
         assert_eq!(named(&access, "probe").and_then(|node| node.key), key);
 
-        assert!(act(&mut tile, "probe", &crate::a11y::Action::Activate));
+        assert!(act(&mut tile, "probe", &tilo_ui_base::a11y::Action::Activate));
         assert_eq!(pressed.get(), 1, "activating the name presses the button");
-        assert!(!act(&mut tile, "missing", &crate::a11y::Action::Activate));
+        assert!(!act(&mut tile, "missing", &tilo_ui_base::a11y::Action::Activate));
         assert_eq!(pressed.get(), 1);
 
         // Focus moved to a control by name is where the keyboard lands once
         // the host gives the app focus.
-        assert!(act(&mut tile, "first", &crate::a11y::Action::Focus));
+        assert!(act(&mut tile, "first", &tilo_ui_base::a11y::Action::Focus));
         tile.set_focus(true);
         let focused = tile.app.focused_control().expect("a control has focus");
         assert_eq!(

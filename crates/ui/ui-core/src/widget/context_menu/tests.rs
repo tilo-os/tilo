@@ -1,8 +1,8 @@
 use super::*;
-use crate::presence::PresenceCtx;
-use crate::synthetic_input::mouse_press;
-use crate::synthetic_input::mouse_release;
-use crate::synthetic_input::named_key;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::synthetic_input::mouse_press;
+use tilo_ui_base::synthetic_input::mouse_release;
+use tilo_ui_base::synthetic_input::named_key;
 use crate::testing::dispatch;
 use automerge::AutoCommit;
 use std::sync::Arc;
@@ -20,7 +20,7 @@ tilo_test_env::scenario! {
     phase an_open_menu_paints_only_in_the_top_layer;
     {
         // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut menu = ContextMenu::new();
         menu.push(MenuItem::action("Open", || {}));
         menu.push(MenuItem::action("Rename", || {}));
@@ -29,13 +29,13 @@ tilo_test_env::scenario! {
         let mut text = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut in_flow = Scene::new();
-        menu.draw(&mut crate::draw::DrawCtx::new(&mut in_flow, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
+        menu.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut in_flow, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
         assert!(
             in_flow.encoding().is_empty(),
             "the in-flow pass paints nothing"
         );
         let mut top = Scene::new();
-        menu.draw_overlay(&mut crate::draw::DrawCtx::new(&mut top, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
+        menu.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(&mut top, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
         assert!(!top.encoding().is_empty(), "the top layer paints the menu");
     }
 
@@ -50,7 +50,7 @@ tilo_test_env::scenario! {
     phase a_menu_is_as_wide_as_its_longest_label_and_longest_trailing_text_together;
     {
         // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
@@ -81,7 +81,7 @@ tilo_test_env::scenario! {
     phase the_field_that_takes_typing_shows_its_hint_whole;
     {
         // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
         let mut menu = ContextMenu::new();
@@ -91,7 +91,7 @@ tilo_test_env::scenario! {
         assert!(menu.can_ask(), "fixture: the menu can send what is typed");
         assert!(menu.query.is_some(), "fixture: the menu takes typing");
         menu.layout_within(&mut text, &theme);
-        let hint = crate::i18n::I18nManager::lookup_plain("menu-query-placeholder");
+        let hint = tilo_ui_base::i18n::I18nManager::lookup_plain("menu-query-placeholder");
         let (hint_width, _) = text.measure_style(&hint, None, &theme.text(TextRole::Body));
         let field = menu
             .query_rect()
@@ -108,7 +108,7 @@ tilo_test_env::scenario! {
     // a pressable row's each.
     phase a_menu_opened_again_keeps_its_rows_heights;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let theme = Theme::light();
         let presence = PresenceCtx::default();
         let mut text = TextRenderer::new();
@@ -118,9 +118,9 @@ tilo_test_env::scenario! {
                 MenuItem::separator(),
                 MenuItem::selection("Join a workspace"),
                 MenuItem::separator(),
-                MenuItem::selection("Rename workspace").with_icon(crate::icons::Icon::Pencil),
+                MenuItem::selection("Rename workspace").with_icon(tilo_ui_base::icons::Icon::Pencil),
                 MenuItem::selection("Overview"),
-                MenuItem::selection("New strip").with_icon(crate::icons::Icon::Plus),
+                MenuItem::selection("New strip").with_icon(tilo_ui_base::icons::Icon::Plus),
             ]
         };
         let mut menu = ContextMenu::new();
@@ -132,23 +132,23 @@ tilo_test_env::scenario! {
             );
             menu.layout_within(text, &theme);
             let mut top = Scene::new();
-            menu.draw_overlay(&mut crate::draw::DrawCtx::new(&mut top, Affine::IDENTITY, text, &theme, presence.draw_env()));
+            menu.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(&mut top, Affine::IDENTITY, text, &theme, presence.draw_env()));
             (0..menu.items().len())
                 .filter_map(|index| menu.item_rect(index).map(|rect| (rect.y0, rect.height())))
                 .collect::<Vec<_>>()
         };
         let first = open(&mut menu, &mut text);
         menu.close();
-        Widget::set_interaction_environment(&mut menu, crate::InteractionEnvironment::POINTER);
+        Widget::set_interaction_environment(&mut menu, tilo_ui_base::InteractionEnvironment::POINTER);
         Widget::set_interaction_environment(
             &mut menu,
-            crate::InteractionEnvironment {
-                modality: crate::interaction::InputModality::Keyboard,
-                ..crate::InteractionEnvironment::POINTER
+            tilo_ui_base::InteractionEnvironment {
+                modality: tilo_ui_base::interaction::InputModality::Keyboard,
+                ..tilo_ui_base::InteractionEnvironment::POINTER
             },
         );
         let mut top = Scene::new();
-        menu.draw_overlay(&mut crate::draw::DrawCtx::new(&mut top, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
+        menu.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(&mut top, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
         let second = open(&mut menu, &mut text);
         assert_eq!(
             first, second,
@@ -177,7 +177,7 @@ fn a_clicked_menu_comes_from_the_pointer_and_fades_when_it_closes() {
     ));
     let paint = |menu: &mut ContextMenu, text: &mut TextRenderer| {
         let mut top = Scene::new();
-        menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+        menu.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut top,
             Affine::IDENTITY,
             text,
@@ -187,7 +187,7 @@ fn a_clicked_menu_comes_from_the_pointer_and_fades_when_it_closes() {
         top
     };
     with_monotonic_time(t0, || {
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
         menu.open_at([40.0, 40.0]);
         let _ = paint(&mut menu, &mut text);
         assert!(menu.needs_animation_frame(), "it arrives");
@@ -196,7 +196,7 @@ fn a_clicked_menu_comes_from_the_pointer_and_fades_when_it_closes() {
         let corner = Point::new(40.0, 40.0);
         let drawn = menu.drawn.to_drawn(corner);
         assert!(
-            ((drawn - corner).hypot() - crate::motion::Appear::REACH).abs() < 1e-6,
+            ((drawn - corner).hypot() - tilo_ui_base::motion::Appear::REACH).abs() < 1e-6,
             "the corner comes toward the pointer by its reach: {drawn:?}"
         );
         assert!(drawn.x < corner.x && drawn.y < corner.y, "{drawn:?}");
@@ -241,7 +241,7 @@ tilo_test_env::scenario! {
     phase separators_only_stand_between_actions;
     {
         // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut menu = ContextMenu::new();
         for item in [
             MenuItem::separator(),
@@ -277,7 +277,7 @@ tilo_test_env::scenario! {
     phase a_state_row_carries_its_checked_state_and_an_anchor_row_clears_on_close;
     {
         // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let item = MenuItem::action("Copy on select", || {}).with_checked(true);
         assert_eq!(item.checked(), Some(true));
         let mut menu = ContextMenu::new();
@@ -292,7 +292,7 @@ tilo_test_env::scenario! {
     phase pointer_activation_fires_actions_and_dismisses;
     {
         // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         // A press on a row lights it and the menu stays up until the button
         // comes up on it: a click is a press and the release that ends it.
         let (mut m, fired) = open_menu();
@@ -377,7 +377,7 @@ tilo_test_env::scenario! {
     phase a_still_pointer_replayed_where_the_menu_opened_keeps_the_keyboard_row;
     {
         // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let (mut m, fired) = open_menu();
         dispatch(&mut m, &named_key(NamedKey::ArrowDown));
         dispatch(&mut m, &named_key(NamedKey::ArrowDown));
@@ -403,7 +403,7 @@ tilo_test_env::scenario! {
     phase disabled_and_destructive_rows_are_not_implicit_targets;
     {
         // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         // The keyboard walks the actions a person may run: down from the first
         // action skips the separator, and Enter runs the row it landed on.
         let (mut m, fired) = open_menu();
@@ -448,8 +448,8 @@ tilo_test_env::scenario! {
         assert!(Widget::perform_semantic_action(
             &mut menu,
             "context-menu:item:2",
-            &crate::a11y::Action::Activate,
-            &mut crate::widget::Edits::lend(&mut doc),
+            &tilo_ui_base::a11y::Action::Activate,
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(fired.load(Ordering::SeqCst), 100);
@@ -461,8 +461,8 @@ tilo_test_env::scenario! {
         assert!(!Widget::perform_semantic_action(
             &mut menu,
             "context-menu:item:2",
-            &crate::a11y::Action::Activate,
-            &mut crate::widget::Edits::lend(&mut doc),
+            &tilo_ui_base::a11y::Action::Activate,
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(fired.load(Ordering::SeqCst), 0);
@@ -510,7 +510,7 @@ fn lay_out(m: &mut ContextMenu) {
 }
 
 fn cursor_at(p: Point) -> WindowEvent {
-    crate::synthetic_input::cursor_moved(p.x, p.y)
+    tilo_ui_base::synthetic_input::cursor_moved(p.x, p.y)
 }
 fn touch(phase: TouchPhase, id: u64, point: Point) -> WindowEvent {
     WindowEvent::Touch(winit::event::Touch {
@@ -528,7 +528,7 @@ fn touch(phase: TouchPhase, id: u64, point: Point) -> WindowEvent {
 #[test]
 fn a_menu_near_the_trailing_edge_opens_its_send_to_box_in_the_window() {
     // Motion reads at its end: this test checks the resting frame.
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     crate::shared_selection::set_send_host_available(true);
     let window = Rect::new(0.0, 0.0, 604.0, 708.0);
     let theme = Theme::dark();
@@ -538,14 +538,14 @@ fn a_menu_near_the_trailing_edge_opens_its_send_to_box_in_the_window() {
         MenuItem::action("Complete", || {}),
     ]);
     menu.set_about(Some(
-        crate::shared_subject::SharedSelection::of_items([(
+        tilo_ui_base::shared_subject::SharedSelection::of_items([(
             "tasks.tracker/issues/one",
             "Ship the launch notes",
         )])
         .in_kind("tasks.tracker"),
     ));
     // Right-click on a row whose right end is well inside the window.
-    note_input(&crate::synthetic_input::mouse_input(
+    note_input(&tilo_ui_base::synthetic_input::mouse_input(
         ElementState::Pressed,
         MouseButton::Right,
     ));
@@ -565,7 +565,7 @@ fn a_menu_near_the_trailing_edge_opens_its_send_to_box_in_the_window() {
     let presence = PresenceCtx::default();
     presence.viewport.set(Some(window));
     let mut scene = Scene::new();
-    menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+    menu.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut text,
@@ -588,10 +588,10 @@ fn a_menu_near_the_trailing_edge_opens_its_send_to_box_in_the_window() {
     let dialog = node
         .children
         .iter()
-        .find(|child| child.role == crate::a11y::Role::Dialog)
+        .find(|child| child.role == tilo_ui_base::a11y::Role::Dialog)
         .expect("the box is read");
     assert_eq!(
-        dialog.bounds.map(crate::a11y::AccessBounds::to_rect),
+        dialog.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect),
         Some(box_rect),
         "the box is read where it stands"
     );
@@ -607,7 +607,7 @@ fn a_menu_near_the_trailing_edge_opens_its_send_to_box_in_the_window() {
             .unwrap_or_else(|| panic!("{target} is read"));
         let bounds = part
             .bounds
-            .map(crate::a11y::AccessBounds::to_rect)
+            .map(tilo_ui_base::a11y::AccessBounds::to_rect)
             .unwrap_or_else(|| panic!("{target} is read where it is drawn"));
         assert!(
             bounds.x0 >= box_rect.x0
@@ -627,7 +627,7 @@ fn a_menu_near_the_trailing_edge_opens_its_send_to_box_in_the_window() {
 /// where several stay a group of faces.
 #[test]
 fn one_persons_menu_is_their_whole_avatar() {
-    use crate::component::{Described, Person};
+    use tilo_ui_base::{component::Described, component::Person};
     let own = MenuButton::from_props(
         "me",
         MenuButtonProps {

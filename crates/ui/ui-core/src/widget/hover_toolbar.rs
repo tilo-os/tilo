@@ -7,14 +7,14 @@ use std::rc::Rc;
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::motion::{Presence, Transient};
+use tilo_ui_base::{motion::Presence, motion::Transient};
 
-use crate::theme::Theme;
-use crate::tokens::{MotionSource, Rhythm};
-use crate::widget::DrawChild;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{tokens::MotionSource, tokens::Rhythm};
+use tilo_ui_base::widget::DrawChild;
 use crate::widget::arrange::{Align, At, Layers, Row, Stack};
 use crate::widget::context_menu_area::focus_within;
-use crate::widget::{Decorator, Element, EventCtx, Widget};
+use tilo_ui_base::{widget::Decorator, widget::Element, widget::EventCtx, widget::Widget};
 
 /// Where a row's controls stand.
 #[derive(Clone, Copy)]
@@ -34,7 +34,7 @@ struct Shown {
 
 /// A row with controls shown over its trailing top corner while it is hovered or holds
 /// focus.
-#[crate::component::not_a_component(part, "shown by the `ui.HoverToolbar` attachment")]
+#[tilo_ui_base::component::not_a_component(part, "shown by the `ui.HoverToolbar` attachment")]
 pub struct HoverToolbar {
     layers: Layers,
     shown: Rc<Shown>,
@@ -142,7 +142,7 @@ impl HoverToolbar {
                     clippy::cast_possible_truncation,
                     reason = "a band a few dozen pixels tall"
                 )]
-                let tall = crate::widget::Length::Dp(height as f32);
+                let tall = tilo_ui_base::widget::Length::Dp(height as f32);
                 let mut band = crate::widget::arrange::Part::new(Box::new(bar));
                 let sizing = crate::widget::arrange::Sizing::hug().min(tall);
                 band.fit = crate::widget::arrange::Fit::fill(1.0).height(if captioned {
@@ -204,9 +204,9 @@ impl HoverToolbar {
 
     fn follow(&mut self, theme: Option<&Theme>) {
         let want = self.hovered || self.focused;
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         if want != self.presence.is_open() {
-            let motion = theme.map_or_else(crate::tokens::EffectiveMotion::default, Theme::motion);
+            let motion = theme.map_or_else(tilo_ui_base::tokens::EffectiveMotion::default, Theme::motion);
             let source = if self.hovered {
                 MotionSource::Pointer
             } else {
@@ -256,7 +256,7 @@ impl Decorator for HoverToolbar {
         self.follow(None);
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -269,14 +269,14 @@ impl Decorator for HoverToolbar {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.presence.is_moving(crate::motion::frame_now()) || self.layers.needs_animation_frame()
+        self.presence.is_moving(tilo_ui_base::motion::frame_now()) || self.layers.needs_animation_frame()
     }
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
-        self.touch = environment.modality == crate::interaction::InputModality::Touch;
+        self.touch = environment.modality == tilo_ui_base::interaction::InputModality::Touch;
         if self.touch {
             self.hovered = false;
         }
@@ -326,7 +326,7 @@ impl Decorator for ToolbarFace {
         self.bar.handle_event(event, ctx);
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,

@@ -271,7 +271,7 @@ impl ResourceApp for ViewServerApp {
 
 thread_local! {
     /// Where the [`WakingServerApp`]'s server delivers what it found.
-    static ANSWER: RefCell<Option<ui_core::local_state::LocalStateWriter<Option<Vec<SearchEntry>>>>> =
+    static ANSWER: RefCell<Option<tilo_ui_base::local_state::LocalStateWriter<Option<Vec<SearchEntry>>>>> =
         const { RefCell::new(None) };
 }
 
@@ -330,7 +330,7 @@ fn a_hit_opens_the_app_at_its_anchor_and_scopes_narrow_the_search() {
     assert_eq!(scoped, ["Invoice from Ada", "Invoice reminder"]);
     let reminder = reminder.expect("the flat-id entry is found");
     assert_eq!(reminder.anchor(), "folder:inbox");
-    assert_eq!(reminder.icon, Some(ui_core::icons::Icon::Mail));
+    assert_eq!(reminder.icon, Some(tilo_ui_base::icons::Icon::Mail));
     assert!(matches!(
         reminder.row,
         Some(ui_core::search::SearchRow::Message { unread: true, .. })
@@ -343,7 +343,7 @@ fn a_hit_opens_the_app_at_its_anchor_and_scopes_narrow_the_search() {
             RootSearch::activate_search_result(
                 root,
                 "folder:inbox/msg:1",
-                &mut ui_core::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &ui_core::automerge::ROOT,
             );
         })
@@ -700,7 +700,7 @@ tilo_test_env::scenario! {
                 RootSearch::activate_search_result(
                     root,
                     &hit.action_id,
-                    &mut ui_core::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &ui_core::automerge::ROOT,
                 );
             })

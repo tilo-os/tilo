@@ -9,11 +9,11 @@ use ui::widget::{TabDescriptor, TileContent, TileHost};
 /// whenever it runs, and bound to the host's `controls` when the host already bound the surface.
 pub fn build_tile(
     tiles: &mut dyn TileSource,
-    controls: Option<&ui::ControlDomain>,
+    controls: Option<&tilo_ui_base::ControlDomain>,
     workspace: &Workspace,
     tab: &Tab,
 ) -> TileHost {
-    let _running = ui::widget::panic_scope::enter(Some(tab.id));
+    let _running = tilo_ui_base::widget::panic_scope::enter(Some(tab.id));
     let mut host = tiles.tile(workspace, tab);
     host.set_panic_scope(tab.id);
     // Its app's bar is drawn here: what it declares goes on its window.
@@ -21,10 +21,10 @@ pub fn build_tile(
     window.set_workspace(tiles.workspace_id());
     host.set_hosted_window(window);
     if let Some(domain) = controls {
-        ui::widget::controls::attach_controls(
+        tilo_ui_base::widget::controls::attach_controls(
             &mut host,
             domain,
-            ui::control_domain::DomainAttachment::Dynamic,
+            tilo_ui_base::control_domain::DomainAttachment::Dynamic,
         );
     }
     host
@@ -105,7 +105,7 @@ pub fn tile_app_kind(tile: &tilo_desktop_model::TileContent) -> ui::widget::AppK
         tilo_desktop_model::TileContent::Foreign { app_id, .. }
         | tilo_desktop_model::TileContent::LocalApp { app_id, .. }
         | tilo_desktop_model::TileContent::HostedWindow { app_id, .. } => {
-            Kind::App(ui::icons::app_glyph(app_id, None))
+            Kind::App(tilo_ui_base::icons::app_glyph(app_id, None))
         }
     }
 }

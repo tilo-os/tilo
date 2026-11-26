@@ -18,7 +18,7 @@ mod support;
 
 use support::{accessible, open, open_pane, said, set_reading, settle, settle_motion, shows};
 use tilolang_window::Window;
-use ui::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 /// Every pane the sidebar opens, by the app's own name for it.
 const PANES: &[&str] = &[
@@ -121,7 +121,7 @@ fn past_the_edge(window: &Window, (width, height): (u32, u32)) -> Vec<String> {
 #[test]
 fn every_pane_fits_the_window_it_is_shown_in() {
     for (size, text_scale) in WINDOWS {
-        let mut window = open(size, ui::Theme::light().with_text_scale(text_scale));
+        let mut window = open(size, tilo_ui_base::Theme::light().with_text_scale(text_scale));
         for pane in PANES {
             open_pane(&mut window, pane);
             assert!(
@@ -142,7 +142,7 @@ fn every_pane_fits_the_window_it_is_shown_in() {
 #[test]
 fn a_phone_folds_the_sidebar_into_a_drawer() {
     const PHONE: (u32, u32) = (390, 844);
-    let mut window = open(PHONE, ui::Theme::light());
+    let mut window = open(PHONE, tilo_ui_base::Theme::light());
 
     assert!(
         !places_in_front(&window, PHONE).is_empty(),
@@ -182,7 +182,7 @@ fn a_phone_folds_the_sidebar_into_a_drawer() {
 fn places_in_front(window: &Window, (width, height): (u32, u32)) -> Vec<String> {
     accessible(window)
         .into_iter()
-        .filter(|node| node.role == ui::a11y::Role::TreeItem)
+        .filter(|node| node.role == tilo_ui_base::a11y::Role::TreeItem)
         .filter(|node| {
             node.bounds.is_some_and(|b| {
                 b.x0 >= -0.5
@@ -232,7 +232,7 @@ fn press_place(window: &mut Window, label: &str) {
     let bounds = accessible(window)
         .into_iter()
         .find(|node| {
-            node.role == ui::a11y::Role::TreeItem
+            node.role == tilo_ui_base::a11y::Role::TreeItem
                 && node.name.as_deref() == Some(label)
                 && node.bounds.is_some()
         })
@@ -249,7 +249,7 @@ fn press_place(window: &mut Window, label: &str) {
 #[test]
 fn a_long_name_stays_inside_a_narrow_window() {
     const PHONE: (u32, u32) = (320, 568);
-    let mut window = open(PHONE, ui::Theme::light());
+    let mut window = open(PHONE, tilo_ui_base::Theme::light());
     let long = "Wilhelmina Alexandrina Featherstonehaugh-McAllister the Third of \
                 the Northern Quarter's Household";
     let people = format!(
@@ -277,7 +277,7 @@ fn a_long_name_stays_inside_a_narrow_window() {
 #[test]
 fn a_tall_pane_scrolls_in_a_short_window() {
     const SHORT: (u32, u32) = (1100, 360);
-    let mut window = open(SHORT, ui::Theme::light());
+    let mut window = open(SHORT, tilo_ui_base::Theme::light());
     open_pane(&mut window, "power");
 
     let before = content_scroll(&window);
@@ -289,13 +289,13 @@ fn a_tall_pane_scrolls_in_a_short_window() {
     );
     // The pointer rests over the pane: a wheel is the pointer's, sent where it stands.
     window.harness.dispatch_to_root_with(
-        &ui::synthetic_input::cursor_moved(f64::from(SHORT.0) / 2.0, f64::from(SHORT.1) / 2.0),
+        &tilo_ui_base::synthetic_input::cursor_moved(f64::from(SHORT.0) / 2.0, f64::from(SHORT.1) / 2.0),
         &ui::winit::event::Modifiers::default(),
     );
     window.harness.relayout();
     for _ in 0..3 {
         window.harness.dispatch_to_root_with(
-            &ui::synthetic_input::mouse_wheel(0.0, -3.0),
+            &tilo_ui_base::synthetic_input::mouse_wheel(0.0, -3.0),
             &ui::winit::event::Modifiers::default(),
         );
         window.harness.relayout();

@@ -4,7 +4,8 @@ use std::collections::HashSet;
 
 use tilo_actions::ActionFacet;
 
-use crate::widget::{HistoryEntry, HistoryEntryId};
+use crate::widget::HistoryEntry;
+use tilo_ui_base::widget::HistoryEntryId;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryResourceTarget {
@@ -64,7 +65,7 @@ pub fn place_record(context: &tilo_actions::ActionContext) -> Option<String> {
     (!generic).then(|| label.to_owned())
 }
 
-pub use crate::presence::{contains_opaque_id, human_label};
+pub use tilo_ui_base::{presence::contains_opaque_id, presence::human_label};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HistorySelectionDetail {
@@ -226,5 +227,5 @@ mod tests {
 /// What a screen reader says for the agent `name`: the name with what it is, since the agent
 /// mark beside it on screen is nothing a reader can hear. Never shown as a name.
 pub fn agent_spoken_label(name: &str) -> String {
-    crate::i18n::widget_format("member-agent-spoken", &[("name", name.into())])
+    tilo_ui_base::i18n::widget_format("member-agent-spoken", &[("name", name.into())])
 }

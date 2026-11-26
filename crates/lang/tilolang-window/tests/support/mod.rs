@@ -40,13 +40,13 @@ pub fn packages() -> Rc<Packages> {
 }
 
 /// The window at `size` in `theme`, laid out and at rest.
-pub fn open(size: (u32, u32), theme: ui::Theme) -> Window {
+pub fn open(size: (u32, u32), theme: tilo_ui_base::Theme) -> Window {
     open_with(&packages(), size, theme)
 }
 
 /// [`open`] over packages compiled already: what a test that times opening a window builds first,
 /// so the step is the launch and not the app's compilation.
-pub fn open_with(packages: &Rc<Packages>, size: (u32, u32), theme: ui::Theme) -> Window {
+pub fn open_with(packages: &Rc<Packages>, size: (u32, u32), theme: tilo_ui_base::Theme) -> Window {
     tilo_app_window::i18n::ensure();
     let mut window =
         Window::open(APP, packages, Opening::new(size, theme)).expect("the window opens");
@@ -76,7 +76,7 @@ pub fn settle_motion(window: &mut Window, bound: ui::time::Duration) {
 
 /// Every word the window shows, as a screen reader reads them.
 pub fn said(window: &Window) -> Vec<String> {
-    ui::a11y::texts(window.harness.root_widget())
+    tilo_ui_base::a11y::texts(window.harness.root_widget())
 }
 
 /// Whether any word the window shows holds `words`.
@@ -85,11 +85,11 @@ pub fn shows(window: &Window, words: &str) -> bool {
 }
 
 /// Every accessible node of the window, as a screen reader reads it.
-pub fn accessible(window: &Window) -> Vec<ui::a11y::AccessNode> {
+pub fn accessible(window: &Window) -> Vec<tilo_ui_base::a11y::AccessNode> {
     let snapshot = window.harness.inspection();
     (snapshot.root.nodes().into_iter())
         .filter_map(|node| node.semantics.as_ref())
-        .flat_map(ui::a11y::AccessNode::nodes)
+        .flat_map(tilo_ui_base::a11y::AccessNode::nodes)
         .cloned()
         .collect()
 }

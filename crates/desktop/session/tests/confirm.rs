@@ -204,7 +204,7 @@ fn until_called(
 #[test]
 fn forgetting_a_saved_network_asks_first_and_declining_runs_nothing() {
     let _home = tilo_test_env::TestHome::new().expect("a home of the test's own");
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let calls = Rc::new(RefCell::new(Vec::new()));
     let mut session = session(&calls);
     open_quick_settings(&mut session);
@@ -247,7 +247,7 @@ fn forgetting_a_saved_network_asks_first_and_declining_runs_nothing() {
 #[test]
 fn forgetting_a_bluetooth_accessory_asks_first_and_declining_runs_nothing() {
     let _home = tilo_test_env::TestHome::new().expect("a home of the test's own");
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let calls = Rc::new(RefCell::new(Vec::new()));
     let mut session = session(&calls);
     open_quick_settings(&mut session);

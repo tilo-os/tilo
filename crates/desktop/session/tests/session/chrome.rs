@@ -48,7 +48,7 @@ pub(super) async fn notify(
 /// shows: a banner and a centre entry named after that app, and the bar's bell counting it.
 #[test]
 fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let bus = PrivateBus::start();
     let wake = tilo_service::LoopWake::default();
     let (side, link) = tilo_session::portal_link::channel(wake.handle());
@@ -145,7 +145,7 @@ fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
 /// timer coming due is announced once.
 #[test]
 fn a_running_timer_is_the_bars_clock() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     let before = session.accessible_labels();
@@ -154,7 +154,7 @@ fn a_running_timer_is_the_bars_clock() {
             ui::live_activity::Summary::new(
                 ui::live_activity::Kind::Timer,
                 "Tea",
-                ui::format::timecode(90),
+                tilo_ui_base::format::timecode(90),
             )
             .with_id("timer-1")
             .with_countdown(90),

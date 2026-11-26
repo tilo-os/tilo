@@ -1,5 +1,5 @@
 use super::*;
-use crate::theme::Theme;
+use tilo_ui_base::theme::Theme;
 use taffy::TaffyTree;
 
 struct Leaf {
@@ -154,7 +154,7 @@ fn semantic_identity_actual_admission_preserves_names_and_rejects_replaced_point
     let mut nodes = HashMap::new();
     let parent = root.build_layout(&mut layout, &Theme::dark(), &mut nodes);
     let child = layout.children(parent).unwrap()[0];
-    let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
+    let mut bindings = tilo_ui_base::widget::bound_nodes::BoundNodeMap::new();
     // SAFETY: the fixture owns this complete live tree and its exact layout.
     unsafe { bindings.rebuild(&root, &layout, parent, &nodes) };
     let exported = bindings.exported_nodes(&nodes);

@@ -317,7 +317,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn a_float_covers_the_windows_under_it_once_it_has_arrived() {
-    use crate::motion::pin_frame_at;
+    use tilo_ui_base::motion::pin_frame_at;
 
     let (row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
     let at = Rect::new(120.0, 60.0, 760.0, 540.0);
@@ -330,11 +330,11 @@ fn a_float_covers_the_windows_under_it_once_it_has_arrived() {
     let (mut row, _taffy, _root) = relayout_row_owned(row, FIXTURE_USABLE_PX);
     let theme = Theme::dark();
     let text = &mut TextRenderer::new();
-    let presence = crate::presence::PresenceCtx::empty();
+    let presence = tilo_ui_base::presence::PresenceCtx::empty();
     let mut draw = |row: &mut GroupRow, at: crate::time::Instant| {
         let _frame = pin_frame_at(at);
         let mut scene = Scene::new();
-        row.draw(&mut crate::draw::DrawCtx::new(
+        row.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             text,

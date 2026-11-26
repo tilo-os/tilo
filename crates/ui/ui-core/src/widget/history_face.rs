@@ -8,8 +8,8 @@ use std::rc::Rc;
 
 use vello::kurbo::Rect;
 
-use crate::paint::PaintCtx;
-use crate::theme::Theme;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::theme::Theme;
 use crate::widget::history::HistoryEntry;
 
 /// An app's presentation of the changes in its History. Asked once per

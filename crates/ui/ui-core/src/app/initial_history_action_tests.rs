@@ -2,33 +2,33 @@
 use automerge::ReadDoc as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
 struct InitialHistoryProbe(Rc<Cell<usize>>, Rc<Cell<bool>>);
-impl crate::widget::Widget for InitialHistoryProbe {
-    crate::provides!(
-        dyn crate::widget::resources::PublishesResources,
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::widget::ResourceOperations
+impl tilo_ui_base::widget::Widget for InitialHistoryProbe {
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn tilo_ui_base::widget::controls::ActionControls,
+        dyn tilo_ui_base::widget::ResourceOperations
     );
     crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "initial-history-probe");
 }
 
-impl crate::widget::ResourceOperations for InitialHistoryProbe {
+impl tilo_ui_base::widget::ResourceOperations for InitialHistoryProbe {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["initial-history.probe"]
     }
 
     fn start_operation(
         &mut self,
-        _: &crate::widget::ResourceOperation<'_>,
-        _: &mut crate::widget::Edits<'_>,
+        _: &tilo_ui_base::widget::ResourceOperation<'_>,
+        _: &mut tilo_ui_base::widget::Edits<'_>,
         _: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
         self.0.set(self.0.get().saturating_add(1));
-        Ok(Some(crate::widget::ResourceOperationStart::Completed(
+        Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))
     }
 }
-impl crate::widget::controls::ActionControls for InitialHistoryProbe {
+impl tilo_ui_base::widget::controls::ActionControls for InitialHistoryProbe {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.1
             .replace(false)
@@ -38,7 +38,7 @@ impl crate::widget::controls::ActionControls for InitialHistoryProbe {
             })
     }
 }
-impl crate::widget::resources::PublishesResources for InitialHistoryProbe {
+impl tilo_ui_base::widget::resources::PublishesResources for InitialHistoryProbe {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         vec![
             tilo_actions::ResourceSpec::new("initial-probe", "probe", "Probe").with_action(
@@ -88,24 +88,24 @@ fn initial_history_app() -> (App, Rc<Cell<usize>>) {
             Rc::new(Cell::new(false)),
         )),
     );
-    app.local_author = crate::permissions::MemberId::person("fixture-user");
+    app.local_author = tilo_ui_base::permissions::MemberId::person("fixture-user");
     app.collaboration.manager = manager;
     (app, calls)
 }
 
 struct NoCommittedReadPeer {
-    requests: Rc<RefCell<Vec<crate::collaboration::CollabRequest>>>,
+    requests: Rc<RefCell<Vec<tilo_ui_base::collaboration::CollabRequest>>>,
     directories: Rc<Cell<usize>>,
 }
-impl crate::collaboration::PeerTransport for NoCommittedReadPeer {
+impl tilo_ui_base::collaboration::PeerTransport for NoCommittedReadPeer {
     fn is_connected(&self) -> bool {
         true
     }
-    fn send(&mut self, request: crate::collaboration::CollabRequest) -> Result<(), String> {
+    fn send(&mut self, request: tilo_ui_base::collaboration::CollabRequest) -> Result<(), String> {
         self.requests.borrow_mut().push(request);
         Ok(())
     }
-    fn poll(&mut self) -> Vec<crate::collaboration::CollabEvent> {
+    fn poll(&mut self) -> Vec<tilo_ui_base::collaboration::CollabEvent> {
         vec![]
     }
     fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
@@ -167,7 +167,7 @@ fn a_shown_windows_published_surface_carries_its_zoom_and_the_broker_runs_it() {
     assert!(app.content_zoom() > 1.0, "the delivered Zoom in zoomed in");
     assert_eq!(calls.get(), 0, "no other handler ran");
     assert!(requests.borrow().iter().any(|request| matches!(request,
-        crate::collaboration::CollabRequest::UpdateInvocation {
+        tilo_ui_base::collaboration::CollabRequest::UpdateInvocation {
             update: tilo_actions::InvocationUpdate::Succeeded { invocation: actual, .. }, ..
         } if *actual == invocation)));
 }
@@ -284,7 +284,7 @@ tilo_test_env::scenario! {
             .unwrap()
             .route
             .clone();
-        let unrelated = crate::collaboration::RouteSpec::document(
+        let unrelated = tilo_ui_base::collaboration::RouteSpec::document(
             &route.app_id,
             route.cluster_id,
             "unrelated-record",
@@ -347,7 +347,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(calls.get(), 1);
         assert!(requests.borrow().iter().any(|request| matches!(request,
-            crate::collaboration::CollabRequest::UpdateInvocation {
+            tilo_ui_base::collaboration::CollabRequest::UpdateInvocation {
                 update: tilo_actions::InvocationUpdate::Succeeded { invocation: actual, .. }, ..
             } if *actual == invocation)));
     }
@@ -514,7 +514,7 @@ tilo_test_env::scenario! {
             State::new(),
             Box::new(InitialHistoryProbe(calls.clone(), queued.clone())),
         );
-        app.local_author = crate::permissions::MemberId::person("fixture-user");
+        app.local_author = tilo_ui_base::permissions::MemberId::person("fixture-user");
         app.collaboration.manager = manager;
         let deadline = tilo_test_env::hang_deadline();
         while app
@@ -580,7 +580,7 @@ tilo_test_env::scenario! {
                     Rc::new(Cell::new(false)),
                 )),
             );
-            app.local_author = crate::permissions::MemberId::person("fixture-user");
+            app.local_author = tilo_ui_base::permissions::MemberId::person("fixture-user");
             app.collaboration.manager = fixture.manager;
             let deadline = tilo_test_env::hang_deadline();
             while !app.published_action_history_ready() {
@@ -769,7 +769,7 @@ fn accepted_delivery_is_refused_after_its_document_is_replaced() {
             Rc::new(Cell::new(false)),
         )),
     );
-    app.local_author = crate::permissions::MemberId::person("fixture-user");
+    app.local_author = tilo_ui_base::permissions::MemberId::person("fixture-user");
     app.collaboration.manager = fixture.manager;
     let deadline = tilo_test_env::hang_deadline();
     while !app.published_action_history_ready() {
@@ -785,7 +785,7 @@ fn accepted_delivery_is_refused_after_its_document_is_replaced() {
         if let Some(event) = events.into_iter().find(|event| {
             matches!(
                 event,
-                crate::collaboration::CollabEvent::Invocation { id: 21, .. }
+                tilo_ui_base::collaboration::CollabEvent::Invocation { id: 21, .. }
             )
         }) {
             break event;
@@ -824,7 +824,7 @@ fn accepted_delivery_is_refused_after_its_document_is_replaced() {
     assert_eq!(error.code, "action_document_replaced");
     assert_eq!(
         error.message,
-        crate::i18n::I18nManager::lookup_plain("action-document-replaced")
+        tilo_ui_base::i18n::I18nManager::lookup_plain("action-document-replaced")
     );
     assert_ne!(error.message, "action-document-replaced");
     assert!(app.collaboration.manager.is_connected());
@@ -853,7 +853,7 @@ fn an_invocation_waits_for_its_document_to_become_current() {
             Rc::new(Cell::new(false)),
         )),
     );
-    app.local_author = crate::permissions::MemberId::person("fixture-user");
+    app.local_author = tilo_ui_base::permissions::MemberId::person("fixture-user");
     app.collaboration.manager = fixture.manager;
     let deadline = tilo_test_env::hang_deadline();
     while !app.published_action_history_ready() {
@@ -916,11 +916,11 @@ fn an_invocation_waits_for_its_document_to_become_current() {
 /// A probe publishing `late-probe` only once it has read it, and saying it
 /// may until then.
 struct LateRowProbe(Rc<Cell<Option<bool>>>);
-impl crate::widget::Widget for LateRowProbe {
-    crate::provides!(dyn crate::widget::resources::PublishesResources);
+impl tilo_ui_base::widget::Widget for LateRowProbe {
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::resources::PublishesResources);
     crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "late-row-probe");
 }
-impl crate::widget::resources::PublishesResources for LateRowProbe {
+impl tilo_ui_base::widget::resources::PublishesResources for LateRowProbe {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         let inspect = |id: &str| {
             tilo_actions::ResourceSpec::new(id, "probe", "Probe").with_action(
@@ -976,7 +976,7 @@ fn a_resolution_of_a_resource_still_being_read_is_answered_once_it_is_read() {
         );
         let mut app =
             App::new_with_controlled_inputs(State::new(), Box::new(LateRowProbe(Rc::clone(&read))));
-        app.local_author = crate::permissions::MemberId::person("fixture-user");
+        app.local_author = tilo_ui_base::permissions::MemberId::person("fixture-user");
         app.collaboration.manager = manager;
         let deadline = tilo_test_env::hang_deadline();
         while !app.published_action_history_ready() {

@@ -1,8 +1,8 @@
 //! A root widget that chooses which record its document is, and owns work
 //! scoped to that record.
 
-use crate::widget::Widget;
-use crate::widget::capability::{capability, capability_mut};
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{widget::capability::capability, widget::capability::capability_mut};
 
 /// A root that picks and releases its record.
 pub trait ResourceScoped: Widget {

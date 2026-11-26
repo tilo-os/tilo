@@ -29,7 +29,7 @@ use std::thread::JoinHandle;
 #[path = "render_timing.rs"]
 pub(crate) mod timing;
 
-use crate::gpu::RenderContext;
+use tilo_ui_base::gpu::RenderContext;
 #[cfg(test)]
 use crate::retained_raster::{DamageCache, rasterize_damage};
 pub use crate::retained_raster::{FrameContent, RetainedRaster, RetainedTarget};
@@ -62,16 +62,16 @@ pub enum RenderRequest {
         /// presenting.
         damage_regions: Vec<Rect>,
         /// Copies within the retained target, in order, before the damage is repainted: what a scroll
-        /// keeps on screen (`crate::scroll_copy`).
-        scroll_copies: Vec<crate::scroll_copy::DeviceCopy>,
+        /// keeps on screen (`tilo_ui_base::scroll_copy`).
+        scroll_copies: Vec<tilo_ui_base::scroll_copy::DeviceCopy>,
         full_redraw: bool,
-        /// The scene holds only what its damage needs (`crate::draw_cull`): it must not be repainted
+        /// The scene holds only what its damage needs (`tilo_ui_base::draw_cull`): it must not be repainted
         /// beyond the damage, and a frame that must be is not presented, but asks main for one drawn
         /// whole.
         partial: bool,
-        /// The backdrops the scene's floating surfaces were recorded over (`crate::backdrop`), in
+        /// The backdrops the scene's floating surfaces were recorded over (`tilo_ui_base::backdrop`), in
         /// physical pixels.
-        backdrop: crate::part_paint::backdrop::BackdropFrame,
+        backdrop: tilo_ui_base::part_paint::backdrop::BackdropFrame,
         /// The frame drawn as layers (`crate::strip_layers::LayerRecording`), whose `scene` is their
         /// composition: a worker keeping their textures pans the strip by copying instead of
         /// rasterising it.
@@ -156,7 +156,7 @@ pub struct RenderThreadHandle {
     /// main submits must repaint everything.
     full_repaint: Arc<AtomicBool>,
     /// The largest texture edge the frames' device accepts: main fits each frame under it
-    /// (`crate::scale::fit_to_texture_limit`). The limit every device is opened with until the worker
+    /// (`tilo_ui_base::scale::fit_to_texture_limit`). The limit every device is opened with until the worker
     /// reads its own device's.
     texture_limit: Arc<AtomicU32>,
     join: Option<JoinHandle<Option<PreparedRenderer>>>,
@@ -278,8 +278,8 @@ impl RenderThreadHandle {
         &self,
         physical: winit::dpi::PhysicalSize<u32>,
         scale: f64,
-    ) -> crate::scale::RenderExtent {
-        crate::scale::fit_to_texture_limit(
+    ) -> tilo_ui_base::scale::RenderExtent {
+        tilo_ui_base::scale::fit_to_texture_limit(
             (physical.width, physical.height),
             scale,
             self.texture_limit(),
@@ -351,7 +351,7 @@ pub(crate) fn spawn_render_thread_deferred(
     let waiting = Arc::new(AtomicBool::new(false));
     let full_repaint = Arc::new(AtomicBool::new(false));
     let worker_full_repaint = full_repaint.clone();
-    let texture_limit = Arc::new(AtomicU32::new(crate::gpu::requested_texture_limit()));
+    let texture_limit = Arc::new(AtomicU32::new(tilo_ui_base::gpu::requested_texture_limit()));
     let worker_texture_limit = texture_limit.clone();
     let buffers = BufferPool::new(pool_rx, waiting.clone());
     let _ = pool_tx.send((Scene::new(), Vec::with_capacity(8)));
@@ -397,7 +397,7 @@ pub(crate) fn spawn_render_thread_deferred(
             }
             let mut first_present_recorded = false;
             let mut present_hooks: Vec<PresentHook> = Vec::new();
-            let mut raster = RetainedRaster::new(crate::gpu::rasterizes_on_cpu(
+            let mut raster = RetainedRaster::new(tilo_ui_base::gpu::rasterizes_on_cpu(
                 &render_cx.devices[surface.dev_id].adapter.get_info(),
             ));
             if raster.on_cpu() {
@@ -712,7 +712,7 @@ pub(crate) fn spawn_render_thread_deferred(
                     }
                     tilo_startup_metrics::dump();
                     if let Some(line) = tilo_startup_metrics::summary_line(&startup_app_name()) {
-                        crate::diag!("{line}");
+                        tilo_ui_base::diag!("{line}");
                     }
                     tilo_startup_metrics::close_startup();
                 }
@@ -972,7 +972,7 @@ struct FramePresentation<'a> {
 struct FrameRasterizers<'a> {
     renderer: &'a mut Renderer,
     raster: &'a mut RetainedRaster,
-    /// The scene holds only what its damage needs (`crate::draw_cull`).
+    /// The scene holds only what its damage needs (`tilo_ui_base::draw_cull`).
     damage_only: bool,
     /// The frame is composited from its layers instead.
     layers: Option<FrameLayersPresent<'a>>,
@@ -1231,12 +1231,12 @@ fn render_one_frame(
                     frame
                         .scroll_copies
                         .iter()
-                        .map(crate::scroll_copy::DeviceCopy::destination_rect),
+                        .map(tilo_ui_base::scroll_copy::DeviceCopy::destination_rect),
                 )
                 .collect(),
         )
     };
-    let damage = crate::damage::bounded_present_damage(width, height, &presented)
+    let damage = tilo_ui_base::damage::bounded_present_damage(width, height, &presented)
         .filter(|_| !frame.full_redraw && frame.backdrop.is_empty());
     tilo_presentation::set_next_present_damage(
         &surface.surface,
@@ -1314,16 +1314,16 @@ fn render_one_frame(
 
 /// Whether the render worker repaints a frame of `width` × `height` with `damage` (physical pixels)
 /// from its scene region by region, never whole: what a frame drawn for its damage only needs
-/// (`crate::draw_cull`).
+/// (`tilo_ui_base::draw_cull`).
 pub(crate) fn renders_damage_alone(width: u32, height: u32, damage: &[Rect]) -> bool {
-    crate::damage::bounded_present_damage(width, height, damage).is_some()
+    tilo_ui_base::damage::bounded_present_damage(width, height, damage).is_some()
         && crate::retained_raster::repaints_alone(width, height, damage)
 }
 
 #[cfg(test)]
 mod present_damage_tests {
     use super::Rect;
-    use crate::damage::bounded_present_damage;
+    use tilo_ui_base::damage::bounded_present_damage;
 
     tilo_test_env::scenario! {
         fn present_damage_covers_what_changed_or_the_whole_surface;
@@ -1394,7 +1394,7 @@ mod admission_tests {
     #[test]
     fn occlusion_admission_keeps_payloads_probes_and_sibling_projections() {
         {
-            use crate::widget::Widget;
+            use tilo_ui_base::widget::Widget;
             use automerge::transaction::Transactable;
             // The primary is the sole owner of this retained root's update/sync;
             // auxiliary painting observes its Text projection rather than syncing.
@@ -1405,18 +1405,18 @@ mod admission_tests {
             impl Widget for Root {
                 fn update(
                     &mut self,
-                    _: &crate::widget::AppModel,
-                    _: &crate::widget::ModelPath,
+                    _: &tilo_ui_base::widget::AppModel,
+                    _: &tilo_ui_base::widget::ModelPath,
                 ) -> bool {
                     self.pending.take().is_some()
                 }
-                fn sync(&mut self, doc: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+                fn sync(&mut self, doc: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
                     self.text.sync(doc, path);
                 }
                 fn build_layout(
                     &mut self,
                     tree: &mut taffy::TaffyTree<()>,
-                    theme: &crate::Theme,
+                    theme: &tilo_ui_base::Theme,
                     map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
                 ) -> taffy::NodeId {
                     self.text.build_layout(tree, theme, map)
@@ -1429,14 +1429,14 @@ mod admission_tests {
                 ) {
                     self.text.apply_layout(tree, node, offset);
                 }
-                fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+                fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
                     #[allow(
                         unused_variables,
                         unused_mut,
                         reason = "a draw binds only the parts it uses"
                     )]
                     let (scene, transform, renderer, theme, mut env) = ctx.parts();
-                    self.text.draw(&mut crate::draw::DrawCtx::new(
+                    self.text.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                         scene,
                         transform,
                         renderer,
@@ -1447,7 +1447,7 @@ mod admission_tests {
                 fn handle_event(
                     &mut self,
                     event: &winit::event::WindowEvent,
-                    ctx: &mut crate::widget::EventCtx<'_>,
+                    ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
                 ) {
                     self.text.handle_event(event, ctx);
                 }
@@ -1457,7 +1457,7 @@ mod admission_tests {
                 fn name(&self) -> &'static str {
                     "shared-projection"
                 }
-                fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+                fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
                     self.text.accessibility()
                 }
             }
@@ -1826,7 +1826,7 @@ mod retained_damage_tests {
         scene
     }
 
-    static EMPTY_BACKDROP: std::sync::OnceLock<crate::part_paint::backdrop::BackdropFrame> =
+    static EMPTY_BACKDROP: std::sync::OnceLock<tilo_ui_base::part_paint::backdrop::BackdropFrame> =
         std::sync::OnceLock::new();
 
     fn content<'a>(
@@ -1837,7 +1837,7 @@ mod retained_damage_tests {
     ) -> FrameContent<'a> {
         FrameContent {
             backdrop: EMPTY_BACKDROP
-                .get_or_init(crate::part_paint::backdrop::BackdropFrame::default),
+                .get_or_init(tilo_ui_base::part_paint::backdrop::BackdropFrame::default),
             scene,
             width: WIDTH,
             height: HEIGHT,
@@ -1850,7 +1850,7 @@ mod retained_damage_tests {
 
     #[test]
     fn cpu_raster_damage_upload_matches_full_target_without_vello_fine_raster() {
-        let gpu = crate::offscreen::shared_gpu().expect("GPU context for CPU upload oracle");
+        let gpu = tilo_ui_base::offscreen::shared_gpu().expect("GPU context for CPU upload oracle");
         let (retained, _) = target(&gpu.device);
         let (oracle, _) = target(&gpu.device);
         let mut canvas = crate::cpu_raster::CpuCanvas::new();
@@ -1923,12 +1923,12 @@ mod retained_damage_tests {
     /// path and on the CPU path a software adapter takes.
     #[test]
     fn a_scroll_copy_then_its_damage_matches_a_full_render() {
-        let gpu = crate::offscreen::shared_gpu().expect("shared GPU context for the copy oracle");
+        let gpu = tilo_ui_base::offscreen::shared_gpu().expect("shared GPU context for the copy oracle");
         let (device, queue) = (&gpu.device, &gpu.queue);
         let base_color = Color::from_rgb8(24, 26, 32);
         let before = scrolled_rows(0.0);
         let after = scrolled_rows(14.0);
-        let copies = [crate::scroll_copy::DeviceCopy {
+        let copies = [tilo_ui_base::scroll_copy::DeviceCopy {
             x: 0,
             y: 14,
             width: WIDTH,
@@ -1995,7 +1995,7 @@ mod retained_damage_tests {
         .unwrap();
         let expected = read(device, queue, &oracle_texture);
         assert_eq!(
-            crate::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(
+            tilo_ui_base::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(
                 &read(device, queue, &retained_texture),
                 &expected,
             ),
@@ -2019,7 +2019,7 @@ mod retained_damage_tests {
             .expect("full CPU oracle");
         full.upload(queue, &cpu_oracle);
         assert_eq!(
-            crate::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(
+            tilo_ui_base::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(
                 &read(device, queue, &cpu_texture),
                 &read(device, queue, &cpu_oracle),
             ),
@@ -2032,7 +2032,7 @@ mod retained_damage_tests {
     /// worker must notice from the counters alone and repaint the whole surface.
     #[test]
     fn an_overflowed_frame_is_repainted_whole() {
-        let gpu = crate::offscreen::shared_gpu().expect("shared GPU context for the damage oracle");
+        let gpu = tilo_ui_base::offscreen::shared_gpu().expect("shared GPU context for the damage oracle");
         let device = &gpu.device;
         let queue = &gpu.queue;
         let options = || vello::RendererOptions {
@@ -2105,7 +2105,7 @@ mod retained_damage_tests {
         )
         .unwrap();
 
-        let garbled = crate::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(
+        let garbled = tilo_ui_base::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(
             &read(device, queue, &retained_texture),
             &expected,
         );
@@ -2146,7 +2146,7 @@ mod retained_damage_tests {
         );
         let presented = read(device, queue, &retained_texture);
         let differing =
-            crate::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(&presented, &expected);
+            tilo_ui_base::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(&presented, &expected);
         assert_eq!(
             differing, 0,
             "after {repaints} repaint(s) the presented frame still lacks {differing} pixels"
@@ -2158,7 +2158,7 @@ mod retained_damage_tests {
     /// and be presented with geometry missing, which the overflow repaint then never fixed.
     #[test]
     fn a_frame_reported_complete_is_complete() {
-        let gpu = crate::offscreen::shared_gpu().expect("shared GPU context for the damage oracle");
+        let gpu = tilo_ui_base::offscreen::shared_gpu().expect("shared GPU context for the damage oracle");
         let device = &gpu.device;
         let queue = &gpu.queue;
         let base_color = Color::from_rgb8(10, 10, 12);
@@ -2204,7 +2204,7 @@ mod retained_damage_tests {
             "a converged reservation keeps fitting"
         );
         let again = read(device, queue, &texture);
-        let differing = crate::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(
+        let differing = tilo_ui_base::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(
             &reported_complete,
             &again,
         );
@@ -2216,7 +2216,7 @@ mod retained_damage_tests {
 
     #[test]
     fn every_presented_frame_equals_a_full_render() {
-        let gpu = crate::offscreen::shared_gpu().expect("shared GPU context for the damage oracle");
+        let gpu = tilo_ui_base::offscreen::shared_gpu().expect("shared GPU context for the damage oracle");
         let device = &gpu.device;
         let queue = &gpu.queue;
         let options = || vello::RendererOptions {
@@ -2279,7 +2279,7 @@ mod retained_damage_tests {
             }
             let scene = scene_of(&items);
             let content = FrameContent {
-                backdrop: &crate::part_paint::backdrop::BackdropFrame::default(),
+                backdrop: &tilo_ui_base::part_paint::backdrop::BackdropFrame::default(),
                 scene: &scene,
                 width: WIDTH,
                 height: HEIGHT,
@@ -2308,7 +2308,7 @@ mod retained_damage_tests {
                 &mut oracle,
                 &mut oracle_cache,
                 &FrameContent {
-                    backdrop: &crate::part_paint::backdrop::BackdropFrame::default(),
+                    backdrop: &tilo_ui_base::part_paint::backdrop::BackdropFrame::default(),
                     full_redraw: true,
                     ..content
                 },
@@ -2316,7 +2316,7 @@ mod retained_damage_tests {
             .unwrap();
             let presented = read(device, queue, &retained_texture);
             let expected = read(device, queue, &oracle_texture);
-            let differing = crate::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(
+            let differing = tilo_ui_base::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(
                 &presented, &expected,
             );
             assert_eq!(

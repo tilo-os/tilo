@@ -6,7 +6,7 @@ use taffy::{Size, Style};
 use super::Side;
 use super::arranged::{Arranged, Layout, Part, Resolved, wrapper_style};
 use super::units::{Align, Axis, Direction, Distribute};
-use crate::tokens::Rhythm;
+use tilo_ui_base::tokens::Rhythm;
 
 pub struct FlexLayout {
     axis: Axis,

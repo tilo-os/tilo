@@ -8,15 +8,16 @@ use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::tokens::MotionSource;
-use crate::widget::DrawChild;
+use tilo_ui_base::tokens::MotionSource;
+use tilo_ui_base::widget::DrawChild;
 use crate::widget::search_request::SearchRequest;
 use crate::widget::tabs::TOOLBAR_ROW_HEIGHT;
 use crate::widget::window_controls::{
     CONTROL_GAP, CONTROL_PX, ControlsState, WindowControl, WindowControls,
 };
 use crate::widget::window_toolbar_row::ToolbarRow;
-use crate::widget::{HistoryControl, InPlace, Widget, WindowSearch, WindowSearchRequest};
+use crate::{widget::HistoryControl, widget::InPlace, widget::WindowSearch, widget::WindowSearchRequest};
+use tilo_ui_base::widget::Widget;
 use crate::window_toolbar::{SearchOpening, ToolbarAction, ToolbarEvent, WindowToolbar};
 
 /// What a press on the window's own part of the bar asked of the window.
@@ -52,7 +53,7 @@ pub(crate) fn with_history(
             ToolbarAction::new(
                 HISTORY,
                 "history",
-                crate::i18n::I18nManager::lookup_plain(name),
+                tilo_ui_base::i18n::I18nManager::lookup_plain(name),
             )
             .on(control.is_open())
             .in_menu(),
@@ -101,7 +102,7 @@ pub(crate) struct RowPlace<'a> {
 pub(crate) struct RowInput<'a> {
     pub(crate) scale: f64,
     pub(crate) modifiers: &'a winit::event::Modifiers,
-    pub(crate) platform: crate::platform::PlatformConventions,
+    pub(crate) platform: tilo_ui_base::platform::PlatformConventions,
 }
 
 /// The toolbar and the search are boxed: each is tens of kilobytes, and a row held by value put
@@ -117,7 +118,7 @@ pub(crate) struct PartRow {
     search: Box<WindowSearch>,
     controls: WindowControls,
     controls_state: ControlsState,
-    control_lifts: [crate::motion::Feedback; 3],
+    control_lifts: [tilo_ui_base::motion::Feedback; 3],
     window_controls: bool,
     window_actions: Vec<WindowAction>,
     last_ground_press: Option<crate::time::Instant>,
@@ -143,9 +144,9 @@ impl PartRow {
             controls: WindowControls::default(),
             controls_state: ControlsState::default(),
             control_lifts: [
-                crate::motion::Feedback::default(),
-                crate::motion::Feedback::default(),
-                crate::motion::Feedback::default(),
+                tilo_ui_base::motion::Feedback::default(),
+                tilo_ui_base::motion::Feedback::default(),
+                tilo_ui_base::motion::Feedback::default(),
             ],
             window_controls: false,
             window_actions: Vec::new(),
@@ -203,14 +204,14 @@ impl PartRow {
     /// notice and the window's `history` control.
     pub(crate) fn refresh(
         &mut self,
-        theme: &crate::theme::Theme,
+        theme: &tilo_ui_base::theme::Theme,
         place: Option<RowPlace<'_>>,
         history: Option<HistoryControl>,
     ) -> f64 {
         let Some(place) = place else {
             if self.shown.take().is_some() {
                 self.row
-                    .show(WINDOW, None, theme.motion(), crate::motion::frame_now());
+                    .show(WINDOW, None, theme.motion(), tilo_ui_base::motion::frame_now());
                 self.search.close(MotionSource::Pointer);
                 self.search.place(Rect::ZERO, 0.0);
                 self.repaint = true;
@@ -233,7 +234,7 @@ impl PartRow {
                 WINDOW,
                 Some(&toolbar),
                 theme.motion(),
-                crate::motion::frame_now(),
+                tilo_ui_base::motion::frame_now(),
             );
             self.row
                 .set_popup_area(Rect::new(0.0, 0.0, width, window_height));
@@ -328,10 +329,10 @@ impl PartRow {
                 WindowSearchRequest::Open => {
                     self.open_search(host, MotionSource::Pointer, SearchOpening::Find);
                 }
-                WindowSearchRequest::Close => self.search.close(crate::motion::input_source()),
+                WindowSearchRequest::Close => self.search.close(tilo_ui_base::motion::input_source()),
                 WindowSearchRequest::Widen(_) => {
                     let query = self.search.query().to_owned();
-                    self.search.close(crate::motion::input_source());
+                    self.search.close(tilo_ui_base::motion::input_source());
                     host.open_app_search(SearchRequest::this_app().with_query(query));
                 }
             }
@@ -381,7 +382,7 @@ impl PartRow {
 
     /// Whether the row needs another frame: a menu arriving, the field's caret.
     pub(crate) fn needs_frame(&self) -> bool {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.shown.is_some()
             && (self.row.needs_animation_frame()
                 || self.search.needs_animation_frame()
@@ -390,7 +391,7 @@ impl PartRow {
 
     /// The band the row paints, from the host's frame at `left` to the window's end
     /// (zero: hidden).
-    pub(crate) fn band(&self, left: f64, theme: &crate::theme::Theme) -> Rect {
+    pub(crate) fn band(&self, left: f64, theme: &tilo_ui_base::theme::Theme) -> Rect {
         let Some((_, rect)) = self.shown.as_ref() else {
             return Rect::ZERO;
         };
@@ -404,7 +405,7 @@ impl PartRow {
 
     /// Paint the row from the host's frame at `left`: its band, its parts and the search,
     /// then their menus and the search's options over the app.
-    pub(crate) fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>, left: f64) {
+    pub(crate) fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>, left: f64) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -435,12 +436,12 @@ impl PartRow {
             scene.stroke(
                 &vello::kurbo::Stroke::new(f64::from(theme.tokens.metrics.chrome_rule_px)),
                 transform,
-                crate::surface::edge_on(theme.tokens.colors.surfaces.raised),
+                tilo_ui_base::surface::edge_on(theme.tokens.colors.surfaces.raised),
                 None,
                 &card,
             );
         }
-        self.row.paint(&mut crate::draw::DrawCtx::new(
+        self.row.paint(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -449,7 +450,7 @@ impl PartRow {
         ));
         self.search.set_ground(theme.tokens.colors.surfaces.content);
         self.search.draw_child(scene, transform, text, theme, &env);
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let motion = theme.motion();
         for (control, _) in self.controls.iter() {
             let on = self.controls_state.hovered == Some(control)
@@ -466,14 +467,14 @@ impl PartRow {
             ..self.controls_state
         };
         controls.paint(scene, transform, theme, state);
-        self.row.paint_popups(&mut crate::draw::DrawCtx::new(
+        self.row.paint_popups(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
             theme,
             env.clone(),
         ));
-        self.search.draw_overlay(&mut crate::draw::DrawCtx::new(
+        self.search.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -514,10 +515,10 @@ impl PartRow {
         }
         let root = automerge::ROOT;
         let searched = {
-            let mut ctx = crate::widget::EventCtx {
+            let mut ctx = tilo_ui_base::widget::EventCtx {
                 scale_factor: input.scale,
                 modifiers: input.modifiers,
-                state: crate::widget::Edits::lend(&mut self.scratch),
+                state: tilo_ui_base::widget::Edits::lend(&mut self.scratch),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -543,10 +544,10 @@ impl PartRow {
             }
             return (took, redraw);
         }
-        let mut ctx = crate::widget::EventCtx {
+        let mut ctx = tilo_ui_base::widget::EventCtx {
             scale_factor: input.scale,
             modifiers: input.modifiers,
-            state: crate::widget::Edits::lend(&mut self.scratch),
+            state: tilo_ui_base::widget::Edits::lend(&mut self.scratch),
             path: &root,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -706,7 +707,7 @@ impl PartRow {
     /// The row as assistive technology and automation reach it: the app's parts, the
     /// window's History in the row's menu, the search, and the window's own controls in
     /// their pill.
-    pub(crate) fn accessibility(&self) -> Vec<crate::a11y::AccessNode> {
+    pub(crate) fn accessibility(&self) -> Vec<tilo_ui_base::a11y::AccessNode> {
         if self.shown.is_none() {
             return Vec::new();
         }
@@ -714,13 +715,13 @@ impl PartRow {
         nodes.extend(self.search.accessibility());
         for (control, rect) in self.controls.iter() {
             nodes.push(
-                crate::a11y::AccessNode::new(crate::a11y::Role::Button)
-                    .with_name(crate::i18n::I18nManager::lookup_plain(
+                tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button)
+                    .with_name(tilo_ui_base::i18n::I18nManager::lookup_plain(
                         control.name_key(self.controls_state.resize),
                     ))
                     .with_action_target(control.target())
                     .with_bounds(rect)
-                    .with_state(crate::a11y::AccessState {
+                    .with_state(tilo_ui_base::a11y::AccessState {
                         focusable: true,
                         ..Default::default()
                     }),
@@ -731,7 +732,7 @@ impl PartRow {
 
     /// The card a notice stands on over the app while one is up: the strip, padded at its
     /// sides.
-    pub(crate) fn strip_card(&self, theme: &crate::theme::Theme) -> Option<Rect> {
+    pub(crate) fn strip_card(&self, theme: &tilo_ui_base::theme::Theme) -> Option<Rect> {
         let pad = f64::from(theme.tokens.spacing.s3);
         self.row.strip_band().map(|strip| strip.inflate(pad, 0.0))
     }
@@ -744,13 +745,13 @@ impl PartRow {
         &mut self,
         host: &mut dyn PartRowHost,
         target: &str,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
     ) -> bool {
         if self.shown.is_none() {
             return false;
         }
         if let Some(control) = WindowControl::of_target(target) {
-            if !matches!(action, crate::a11y::Action::Activate) {
+            if !matches!(action, tilo_ui_base::a11y::Action::Activate) {
                 return false;
             }
             self.window_actions.push(match control {
@@ -766,7 +767,7 @@ impl PartRow {
             let handled = self.search.perform_semantic_action(
                 target,
                 action,
-                &mut crate::widget::Edits::lend(&mut self.scratch),
+                &mut tilo_ui_base::widget::Edits::lend(&mut self.scratch),
                 &root,
             );
             let served = self.serve_search(host);
@@ -776,7 +777,7 @@ impl PartRow {
             }
             return handled;
         }
-        if !matches!(action, crate::a11y::Action::Activate) || !self.row.perform(target) {
+        if !matches!(action, tilo_ui_base::a11y::Action::Activate) || !self.row.perform(target) {
             return false;
         }
         self.deliver_row_events(host);
@@ -811,12 +812,12 @@ impl PartRow {
         let root = automerge::ROOT;
         for character in text.chars() {
             let key = winit::keyboard::Key::Character(character.to_string().into());
-            let event = crate::synthetic_input::key_input(&key, ElementState::Pressed);
+            let event = tilo_ui_base::synthetic_input::key_input(&key, ElementState::Pressed);
             let (mut handled, mut focus) = (false, None);
-            let mut ctx = crate::widget::EventCtx {
+            let mut ctx = tilo_ui_base::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: crate::widget::Edits::lend(&mut self.scratch),
+                state: tilo_ui_base::widget::Edits::lend(&mut self.scratch),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -843,8 +844,8 @@ fn search_area(rect: Rect, limit: f64) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::{Platform, PlatformConventions};
-    use crate::theme::Theme;
+    use tilo_ui_base::{platform::Platform, platform::PlatformConventions};
+    use tilo_ui_base::theme::Theme;
     use crate::widget::Column;
 
     struct NoApp {
@@ -906,11 +907,11 @@ mod tests {
         };
         row.route(
             host,
-            &crate::synthetic_input::cursor_moved(point.x, point.y),
+            &tilo_ui_base::synthetic_input::cursor_moved(point.x, point.y),
             &input,
         );
-        row.route(host, &crate::synthetic_input::mouse_press(), &input);
-        row.route(host, &crate::synthetic_input::mouse_release(), &input);
+        row.route(host, &tilo_ui_base::synthetic_input::mouse_press(), &input);
+        row.route(host, &tilo_ui_base::synthetic_input::mouse_release(), &input);
     }
 
     #[test]

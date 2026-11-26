@@ -114,7 +114,7 @@ impl AppProcess {
     /// [`ShellSurface::prepare_frame`].
     pub fn new(app: App, placement: Placement) -> Self {
         // Drags the app starts come to the compositor through this host.
-        ui::dnd::host_drags_in_process();
+        tilo_ui_base::dnd::host_drags_in_process();
         let (width, height) = placement.physical_size();
         Self {
             app,
@@ -172,7 +172,7 @@ impl AppProcess {
     }
 
     /// Repaint this surface when the person's theme changes, even while its app is idle.
-    pub fn set_theme(&mut self, theme: ui::Theme) {
+    pub fn set_theme(&mut self, theme: tilo_ui_base::Theme) {
         self.app.set_theme(theme);
         self.wants = true;
         self.full = true;
@@ -224,11 +224,11 @@ impl AppProcess {
     /// Perform `action` on the app's node `target`. A node the app does not
     /// handle itself is pressed where it is drawn, as the app's own window
     /// does for its assistive technology.
-    fn act(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) {
+    fn act(&mut self, target: ui::accesskit::NodeId, action: &tilo_ui_base::a11y::Action) {
         if let Some((x, y)) = self.app.dispatch_a11y_action(target, action) {
-            self.input(ui::synthetic_input::cursor_moved(x, y));
-            self.input(ui::synthetic_input::mouse_press());
-            self.input(ui::synthetic_input::mouse_release());
+            self.input(tilo_ui_base::synthetic_input::cursor_moved(x, y));
+            self.input(tilo_ui_base::synthetic_input::mouse_press());
+            self.input(tilo_ui_base::synthetic_input::mouse_release());
         }
         self.wants = true;
     }
@@ -282,7 +282,7 @@ impl Published for AppProcess {
         self.name.clone()
     }
 
-    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
+    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &tilo_ui_base::a11y::Action) -> bool {
         self.act(target, action);
         true
     }
@@ -358,8 +358,8 @@ impl Published for AppProcess {
         action: ui::window_targets::TargetAction,
     ) -> Result<(), String> {
         let verb = match action {
-            ui::window_targets::TargetAction::Activate => ui::a11y::Action::Activate,
-            ui::window_targets::TargetAction::ShowContextMenu => ui::a11y::Action::ShowContextMenu,
+            ui::window_targets::TargetAction::Activate => tilo_ui_base::a11y::Action::Activate,
+            ui::window_targets::TargetAction::ShowContextMenu => tilo_ui_base::a11y::Action::ShowContextMenu,
         };
         let node = self
             .app
@@ -538,7 +538,7 @@ impl ShellSurface for AppProcess {
     }
 
     fn take_drag(&mut self) -> Option<SurfaceDrag> {
-        ui::dnd::take_hosted_drag().map(|offer| SurfaceDrag { offer, icon: None })
+        tilo_ui_base::dnd::take_hosted_drag().map(|offer| SurfaceDrag { offer, icon: None })
     }
 
     /// The pointer may have moved anywhere while it carried the drag; the
@@ -572,15 +572,15 @@ impl ShellSurface for AppProcess {
         // blurs that and hands it back (`set_backdrops`).
         // The images are this app's: every host on the thread provides its
         // own before it draws.
-        ui::part_paint::backdrop::provide_backdrops(
+        tilo_ui_base::part_paint::backdrop::provide_backdrops(
             self.provided
                 .iter()
                 .enumerate()
                 .filter_map(|(slot, image)| Some((slot, image.clone()?)))
                 .collect(),
         );
-        let recording = ui::part_paint::backdrop::BackdropRecording::begin();
-        ui::part_paint::backdrop::layer_scene(&self.scene, 0);
+        let recording = tilo_ui_base::part_paint::backdrop::BackdropRecording::begin();
+        tilo_ui_base::part_paint::backdrop::layer_scene(&self.scene, 0);
         self.wants =
             self.app
                 .surface_frame_with_damage(&self.surface, &mut self.scene, &mut self.damage);
@@ -662,13 +662,13 @@ pub(crate) fn key_event(key: &SurfaceKey) -> WindowEvent {
         .flatten()
         .map(SmolStr::new);
     let under_chord = key.modifiers.ctrl || key.modifiers.alt || key.modifiers.logo;
-    let (logical_key, location) = ui::keys::chord(
+    let (logical_key, location) = tilo_ui_base::keys::chord(
         key.keysym,
         key.text.as_deref(),
         key.latin_keysym,
         under_chord,
     );
-    let (key_without_modifiers, _) = ui::keys::from_keysym(key.unmodified_keysym, None);
+    let (key_without_modifiers, _) = tilo_ui_base::keys::from_keysym(key.unmodified_keysym, None);
     let state = if key.pressed {
         ElementState::Pressed
     } else {

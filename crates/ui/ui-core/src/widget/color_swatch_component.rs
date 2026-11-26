@@ -1,6 +1,6 @@
 //! [`ColorSwatchPicker`] as a described component.
 
-use crate::component::{Component, Described, Event, Value};
+use tilo_ui_base::{component::Component, component::Described, component::Event, component::Value};
 use crate::widget::ColorSwatch;
 
 use super::ColorSwatchPicker;

@@ -637,7 +637,7 @@ impl ActorState {
     /// while that is still opening: only a service that failed to open is a
     /// failure.
     pub(super) fn native_cannot_dial(&self, ws: WorkspaceId, cause: CannotDial) {
-        use ui::workspace_sync::WorkspaceUnavailable;
+        use tilo_ui_base::workspace_sync::WorkspaceUnavailable;
         if !self.native_routes.contains(ws) {
             return;
         }

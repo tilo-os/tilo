@@ -1,7 +1,7 @@
 //! A record that holds reactions shows them in its window's bar, and a
 //! press there reacts through the window's dispatcher, as the person.
 
-use tilo_app::permissions::MemberId;
+use tilo_ui_base::permissions::MemberId;
 use tilo_app::prelude::*;
 use tilo_app::tilo_resource::Reactions;
 use tilo_app::window_toolbar::{
@@ -109,7 +109,7 @@ fn reactions_follow_the_grant_and_a_viewer_sees_them_without_reacting() {
     joined_by_bob(&mut app);
     press(&mut app, "👍");
 
-    app.set_role(tilo_app::Role::Viewer);
+    app.set_role(tilo_ui_base::Role::Viewer);
     app.settle();
     let shown = reactions().expect("a viewer sees the reactions there are");
     assert!(!shown.can_react, "a viewer may not react");
@@ -121,7 +121,7 @@ fn reactions_follow_the_grant_and_a_viewer_sees_them_without_reacting() {
         "a viewer's press reacts with nothing"
     );
 
-    app.set_role(tilo_app::Role::Commenter);
+    app.set_role(tilo_ui_base::Role::Commenter);
     app.settle();
     assert!(
         reactions().is_some_and(|shown| shown.can_react),
@@ -139,7 +139,7 @@ fn reactions_follow_the_grant_and_a_viewer_sees_them_without_reacting() {
 
 #[test]
 fn a_record_in_a_workspace_with_other_members_offers_reactions_while_they_are_away() {
-    use tilo_app::permissions::{LOCAL_WORKSPACE, MemberAccess, PermissionContext, Role, policy};
+    use tilo_ui_base::{permissions::LOCAL_WORKSPACE, permissions::MemberAccess, permissions::PermissionContext, permissions::Role, permissions::policy};
     let mut app = TestApp::<PosterApp>::new().unwrap();
     app.settle();
     assert_eq!(

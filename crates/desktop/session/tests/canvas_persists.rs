@@ -116,7 +116,7 @@ fn placed(session: &Session, record: &str) -> Option<(i64, i64, i64, i64)> {
 // one starts on this device, kept in the workspace's own layout.
 #[test]
 fn the_canvas_survives_the_session_ending() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // This device's own state, holding its workspaces: the identity is minted in its home, so its
     // engine opens and the canvas is the workspace's layout.
     let state = crate::common::device_state();

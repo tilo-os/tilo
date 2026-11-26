@@ -25,22 +25,22 @@ pub use installer_app::{InstallState, InstallerApp, Step};
 
 #[cfg(test)]
 pub(crate) fn press(
-    control: &mut dyn ui::widget::Widget,
-    action: &ui::a11y::Action,
+    control: &mut dyn tilo_ui_base::widget::Widget,
+    action: &tilo_ui_base::a11y::Action,
     doc: &mut automerge::AutoCommit,
 ) {
     assert!(
         control.perform_action(
             action,
             &[],
-            &mut ui::widget::Edits::lend(doc),
+            &mut tilo_ui_base::widget::Edits::lend(doc),
             &automerge::ROOT
         ),
         "the control refused {action:?}"
     );
-    ui::widget::controls::start_pending_control_invocations(
+    tilo_ui_base::widget::controls::start_pending_control_invocations(
         control,
-        &mut ui::widget::Edits::lend(doc),
+        &mut tilo_ui_base::widget::Edits::lend(doc),
         &automerge::ROOT,
     );
 }
@@ -91,7 +91,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
 pub(crate) fn window(
     wake: &ui::WakeHandle,
     opened: crate::hosting::Opened<'_>,
-) -> ui::widget::Element {
+) -> tilo_ui_base::widget::Element {
     #[cfg(test)]
     {
         if let Some(app) = installer_app::host_journeys_tests::armed_window() {

@@ -299,7 +299,7 @@ mod tests {
     use super::*;
     use automerge::AutoCommit;
     use std::path::PathBuf;
-    use ui::widget::Widget as _;
+    use tilo_ui_base::widget::Widget as _;
 
     tilo_test_env::scenario! {
         fn a_recovery_key_is_checked_as_typed_and_as_written_down;

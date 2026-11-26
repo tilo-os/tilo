@@ -1,5 +1,5 @@
 use super::*;
-use crate::collaboration::{CollabEvent, CollabRequest, PeerTransport, RouteSpec};
+use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest, collaboration::PeerTransport, collaboration::RouteSpec};
 use std::cell::RefCell;
 use std::rc::Rc;
 

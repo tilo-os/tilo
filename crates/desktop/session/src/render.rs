@@ -372,11 +372,11 @@ impl Inner {
             .arg(MODE)
             .env(
                 RENDER_NODE_ENV,
-                // Once the compositor gave its GPU up (`ui::gpu::recover`), a service started after
+                // Once the compositor gave its GPU up (`tilo_ui_base::gpu::recover`), a service started after
                 // draws on the CPU too, instead of opening the dead GPU again.
                 self.node
                     .clone()
-                    .filter(|_| ui::gpu::software_fallback().is_none())
+                    .filter(|_| tilo_ui_base::gpu::software_fallback().is_none())
                     .map(PathBuf::into_os_string)
                     .unwrap_or_default(),
             )

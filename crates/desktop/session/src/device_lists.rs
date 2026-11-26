@@ -56,9 +56,9 @@ pub(crate) use tilo_device_surfaces::lists::{
 /// inviting someone and catching up.
 fn card_icon(card: tilo_session_core::desktop::launchpad::LaunchpadAction) -> String {
     match card.app_target() {
-        Some((app, _)) => ui::icons::app_glyph(app, None).name().to_owned(),
-        None if card.slug() == "invite" => ui::icons::Icon::UserPlus.name().to_owned(),
-        None => ui::icons::Icon::History.name().to_owned(),
+        Some((app, _)) => tilo_ui_base::icons::app_glyph(app, None).name().to_owned(),
+        None if card.slug() == "invite" => tilo_ui_base::icons::Icon::UserPlus.name().to_owned(),
+        None => tilo_ui_base::icons::Icon::History.name().to_owned(),
     }
 }
 

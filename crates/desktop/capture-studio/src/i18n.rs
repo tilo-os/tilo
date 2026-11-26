@@ -7,7 +7,7 @@ use std::path::Path;
 
 use crate::link::{Failure, Refusal, Sent, WriteCause};
 
-ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
+tilo_ui_base::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
 
 /// What the studio says while a screenshot is on its way to `device`.
 pub(crate) fn sending(device: &str) -> String {
@@ -110,8 +110,8 @@ fn refusal(refusal: &Refusal) -> String {
         Refusal::TooLarge { bytes, limit } => t_args(
             "screenshot-send-too-large",
             &[
-                ("limit", ui::format::size(*limit).into()),
-                ("size", ui::format::size(*bytes).into()),
+                ("limit", tilo_ui_base::format::size(*limit).into()),
+                ("size", tilo_ui_base::format::size(*bytes).into()),
             ],
         ),
         Refusal::NoWorkspace => t("screenshot-send-no-workspace"),

@@ -7,7 +7,7 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
     // it can't know it's being framed) must not square off the window's
     // rounded corners or paint over its border — both are the frame's.
     {
-        use crate::offscreen::OffscreenRenderer;
+        use tilo_ui_base::offscreen::OffscreenRenderer;
 
         let (w, h) = (200u32, 200u32);
         let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
@@ -17,12 +17,12 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
         let theme = Theme::default();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
-        host.draw(&mut crate::draw::DrawCtx::new(
+        host.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
             &theme,
-            crate::presence::PresenceCtx::empty().draw_env(),
+            tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
         ));
 
         let mut r = OffscreenRenderer::new(w, h);
@@ -33,8 +33,8 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
         // silhouette: one pixel in from the box corner, well inside the
         // corner arc's cut.
         let (cx, cy) = (
-            crate::num::u32_of_f64(rect.x0) + 2,
-            crate::num::u32_of_f64(rect.y0) + 2,
+            tilo_ui_base::num::u32_of_f64(rect.x0) + 2,
+            tilo_ui_base::num::u32_of_f64(rect.y0) + 2,
         );
         assert!(
             radius > 8.0,
@@ -59,7 +59,7 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
         // One pixel out from the boundary is the frame's edge: it must be
         // neither the app (flood escaped its clip) nor bare shell (no
         // edge there at all).
-        let edge_x = crate::num::u32_of_f64(rect.x0) - 1;
+        let edge_x = tilo_ui_base::num::u32_of_f64(rect.x0) - 1;
         let (er, eg, eb, _) = OffscreenRenderer::sample(&rgba, w, edge_x, 100);
         assert!(
             (er, eg, eb) != (0xFF, 0x00, 0x00),
@@ -74,7 +74,7 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
 
         // ...and the first pixel *inside* the boundary is the app's, whole.
         // The frame stops at the silhouette.
-        let inside_x = crate::num::u32_of_f64(rect.x0);
+        let inside_x = tilo_ui_base::num::u32_of_f64(rect.x0);
         let (nr, ng, nb, _) = OffscreenRenderer::sample(&rgba, w, inside_x, 100);
         assert_eq!(
             (nr, ng, nb),
@@ -89,7 +89,7 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
     // stroking a constant over unknown app content reads right on one
     // ground and wrong on the rest of the ramp.
     {
-        use crate::offscreen::OffscreenRenderer;
+        use tilo_ui_base::offscreen::OffscreenRenderer;
 
         let grounds: [(u8, u8, u8); 4] = [
             (0x10, 0x10, 0x12),
@@ -108,22 +108,22 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
             host.rect = rect;
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
-            host.draw(&mut crate::draw::DrawCtx::new(
+            host.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut tr,
                 &theme,
-                crate::presence::PresenceCtx::empty().draw_env(),
+                tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
             ));
             let rgba = renderer.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 0xFF));
 
             // Both vertical edges at mid-height, and the horizontal edges at
             // mid-width: the first pixel inside the silhouette on every side.
             let probes = [
-                ("left", crate::num::u32_of_f64(rect.x0), 100u32),
-                ("right", crate::num::u32_of_f64(rect.x1) - 1, 100u32),
-                ("top", 100u32, crate::num::u32_of_f64(rect.y0)),
-                ("bottom", 100u32, crate::num::u32_of_f64(rect.y1) - 1),
+                ("left", tilo_ui_base::num::u32_of_f64(rect.x0), 100u32),
+                ("right", tilo_ui_base::num::u32_of_f64(rect.x1) - 1, 100u32),
+                ("top", 100u32, tilo_ui_base::num::u32_of_f64(rect.y0)),
+                ("bottom", 100u32, tilo_ui_base::num::u32_of_f64(rect.y1) - 1),
             ];
             for (side, px, py) in probes {
                 let (sr, sg, sb, _) = OffscreenRenderer::sample(&rgba, w, px, py);
@@ -141,7 +141,7 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
     }
 
     {
-        use crate::offscreen::OffscreenRenderer;
+        use tilo_ui_base::offscreen::OffscreenRenderer;
 
         let (width, height) = (200u32, 200u32);
         let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
@@ -149,7 +149,7 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
         // "still shell" cannot be confused with "some theme token".
         let ground = vello::peniko::Color::from_rgb8(0x00, 0xFF, 0x00);
 
-        for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+        for theme in tilo_ui_base::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
             let name = theme.name.clone();
             let focus = theme.tokens.colors.window_edge_focused();
             assert_eq!(
@@ -176,12 +176,12 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
                 host.set_focused(focused);
                 let mut tr = TextRenderer::new();
                 let mut scene = Scene::new();
-                host.draw(&mut crate::draw::DrawCtx::new(
+                host.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                     &mut scene,
                     Affine::IDENTITY,
                     &mut tr,
                     &theme,
-                    crate::presence::PresenceCtx::empty().draw_env(),
+                    tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
                 ));
                 let mut renderer = OffscreenRenderer::new(width, height);
                 renderer.render(&scene, ground)
@@ -190,7 +190,7 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
             let lit = shot(true);
             let dark = shot(false);
 
-            let (sample_x, sample_y) = (100u32, crate::num::u32_of_f64(rect.y0) - 1);
+            let (sample_x, sample_y) = (100u32, tilo_ui_base::num::u32_of_f64(rect.y0) - 1);
             let (lr, lg, lb, _) = OffscreenRenderer::sample(&lit, width, sample_x, sample_y);
             assert_eq!(
                 (lr, lg, lb),
@@ -209,8 +209,8 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
             // pixel, so the claim is only that focus colour isn't there,
             // not that it's untouched.
             let (corner_x, corner_y) = (
-                crate::num::u32_of_f64(rect.x0) - 2,
-                crate::num::u32_of_f64(rect.y0) - 2,
+                tilo_ui_base::num::u32_of_f64(rect.x0) - 2,
+                tilo_ui_base::num::u32_of_f64(rect.y0) - 2,
             );
             for (label, buf) in [("focused", &lit), ("unfocused", &dark)] {
                 let (sr, sg, sb, _) = OffscreenRenderer::sample(buf, width, corner_x, corner_y);
@@ -241,12 +241,12 @@ fn a_full_bleed_tile_draws_its_content_last_and_unclipped() {
         host.rect = rect;
         host.set_full_bleed(full_bleed);
         let mut scene = Scene::new();
-        host.draw(&mut crate::draw::DrawCtx::new(
+        host.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),
             &Theme::default(),
-            crate::presence::PresenceCtx::empty().draw_env(),
+            tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
         ));
         scene
     };
@@ -295,21 +295,21 @@ fn an_unresolved_tile_only_refuses_events_meant_for_it() {
             .send(host, event)
             .handled
     };
-    let key = crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+    let key = tilo_ui_base::synthetic_input::keyboard_input(tilo_ui_base::synthetic_input::key_event(
         Key::Character("a".into()),
         None,
         ElementState::Pressed,
     ));
     assert!(!send(
         &mut host,
-        &crate::synthetic_input::cursor_moved(250.0, 50.0)
+        &tilo_ui_base::synthetic_input::cursor_moved(250.0, 50.0)
     ));
-    assert!(!send(&mut host, &crate::synthetic_input::mouse_press()));
+    assert!(!send(&mut host, &tilo_ui_base::synthetic_input::mouse_press()));
     assert!(send(
         &mut host,
-        &crate::synthetic_input::cursor_moved(50.0, 50.0)
+        &tilo_ui_base::synthetic_input::cursor_moved(50.0, 50.0)
     ));
-    assert!(send(&mut host, &crate::synthetic_input::mouse_press()));
+    assert!(send(&mut host, &tilo_ui_base::synthetic_input::mouse_press()));
     assert!(!send(&mut host, &key));
     host.set_focused(true);
     assert!(send(&mut host, &key));
@@ -318,7 +318,7 @@ fn an_unresolved_tile_only_refuses_events_meant_for_it() {
 struct OwnHistoryProbe(std::rc::Rc<std::cell::Cell<Option<bool>>>);
 
 impl Widget for OwnHistoryProbe {
-    crate::provides!(dyn crate::widget::WindowHistory);
+    tilo_ui_base::provides!(dyn crate::widget::WindowHistory);
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -444,7 +444,7 @@ impl Widget for FloodFill {
     ) -> NodeId {
         taffy.widget_leaf(Style::default(), node_map, self)
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -493,7 +493,7 @@ impl Widget for Flood {
     ) -> NodeId {
         taffy.widget_leaf(Style::default(), node_map, self)
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -546,7 +546,7 @@ impl Widget for Starting {
     ) -> NodeId {
         taffy.leaf_node(Style::default())
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -599,7 +599,7 @@ impl Widget for TransformProbe {
     ) -> NodeId {
         taffy.leaf_node(Style::default())
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -675,12 +675,12 @@ pub(super) fn starting_host(presented: bool) -> (TileHost, std::rc::Rc<std::cell
 pub(super) fn paint(host: &mut TileHost, theme: &Theme) -> Scene {
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
-    host.draw(&mut crate::draw::DrawCtx::new(
+    host.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut tr,
         theme,
-        crate::presence::PresenceCtx::empty().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
     ));
     scene
 }
@@ -811,7 +811,7 @@ fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
     }
 
     {
-        use crate::offscreen::OffscreenRenderer;
+        use tilo_ui_base::offscreen::OffscreenRenderer;
         let theme = Theme::default();
         let (mut host, _) = starting_host(false);
         let scene = paint(&mut host, &theme);
@@ -839,7 +839,7 @@ fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
 /// focus change repaints them and nothing the edge drew outside them.
 #[test]
 fn edge_bands_hold_every_pixel_the_edge_paints() {
-    use crate::offscreen::OffscreenRenderer;
+    use tilo_ui_base::offscreen::OffscreenRenderer;
     let theme = Theme::default();
     let ground = vello::peniko::Color::from_rgb8(0, 255, 0);
     let size = 320_u32;
@@ -894,7 +894,7 @@ fn edge_bands_hold_every_pixel_the_edge_paints() {
 
 #[test]
 fn flush_focus_edge_leaves_rounded_corner_cutouts_clear() {
-    use crate::offscreen::OffscreenRenderer;
+    use tilo_ui_base::offscreen::OffscreenRenderer;
     let theme = Theme::default();
     let ground = vello::peniko::Color::from_rgb8(0, 255, 0);
     let mut renderer = OffscreenRenderer::new(256, 256);
@@ -912,9 +912,9 @@ fn flush_focus_edge_leaves_rounded_corner_cutouts_clear() {
             let mut scene = Scene::new();
             host.draw_edge(&mut scene, Affine::scale(2.0), &theme, radius);
             let rgba = renderer.render(&scene, ground);
-            for y in 0..crate::num::u32_of_f64((top + radius) * 2.0) {
-                for x in crate::num::u32_of_f64((right - radius) * 2.0)
-                    ..crate::num::u32_of_f64(right * 2.0)
+            for y in 0..tilo_ui_base::num::u32_of_f64((top + radius) * 2.0) {
+                for x in tilo_ui_base::num::u32_of_f64((right - radius) * 2.0)
+                    ..tilo_ui_base::num::u32_of_f64(right * 2.0)
                 {
                     let dx = (f64::from(x) + 0.5) / 2.0 - (right - radius);
                     let dy = (f64::from(y) + 0.5) / 2.0 - (top + radius);
@@ -939,12 +939,12 @@ fn flush_focus_edge_leaves_rounded_corner_cutouts_clear() {
 /// pointer is on never looks lifted — its card stands where it did.
 #[test]
 fn focus_reaches_a_pixel_further_out_and_leaves_the_card_where_it_was() {
-    use crate::offscreen::OffscreenRenderer;
+    use tilo_ui_base::offscreen::OffscreenRenderer;
     let theme = Theme::default();
     let ground = vello::peniko::Color::from_rgb8(0, 255, 0);
     let rect = Rect::new(20.0, 20.0, 100.0, 100.0);
     for scale in [1.0, 2.0] {
-        let size = crate::num::u32_of_f64(120.0 * scale);
+        let size = tilo_ui_base::num::u32_of_f64(120.0 * scale);
         let mut renderer = OffscreenRenderer::new(size, size);
         let mut shot = |focused: bool| {
             let mut host = TileHost::new(TileContent::Stub {
@@ -954,17 +954,17 @@ fn focus_reaches_a_pixel_further_out_and_leaves_the_card_where_it_was() {
             host.rect = rect;
             host.set_focused(focused);
             let mut scene = Scene::new();
-            host.draw(&mut crate::draw::DrawCtx::new(
+            host.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 Affine::scale(scale),
                 &mut TextRenderer::new(),
                 &theme,
-                crate::presence::PresenceCtx::empty().draw_env(),
+                tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
             ));
             renderer.render(&scene, ground)
         };
         let (lit, plain) = (shot(true), shot(false));
-        let middle = crate::num::u32_of_f64(60.0 * scale);
+        let middle = tilo_ui_base::num::u32_of_f64(60.0 * scale);
         let reach = |rgba: &[u8]| {
             let painted = |x: u32, y: u32| {
                 let (r, g, b, _) = OffscreenRenderer::sample(rgba, size, x, y);
@@ -975,7 +975,7 @@ fn focus_reaches_a_pixel_further_out_and_leaves_the_card_where_it_was() {
             (top, left)
         };
         let (top, left) = reach(&plain);
-        let ring = crate::num::u32_of_f64(scale);
+        let ring = tilo_ui_base::num::u32_of_f64(scale);
         assert_eq!(
             reach(&lit),
             (
@@ -989,7 +989,7 @@ fn focus_reaches_a_pixel_further_out_and_leaves_the_card_where_it_was() {
         // The card the app draws starts where it always did: the extra ring
         // is shell outside it, and the app's own pixel is the same focused
         // or not.
-        let card = crate::num::u32_of_f64(rect.y0 * scale);
+        let card = tilo_ui_base::num::u32_of_f64(rect.y0 * scale);
         let card_pixel = |rgba: &[u8]| {
             let (r, g, b, _) = OffscreenRenderer::sample(rgba, size, middle, card);
             (r, g, b)
@@ -1008,13 +1008,13 @@ fn harness(root: Box<dyn Widget>) -> crate::app::driver::Driver {
         root,
         (900, 600),
         Theme::dark(),
-        crate::font_catalog::fixture_renderer(),
+        tilo_ui_base::font_catalog::fixture_renderer(),
         tilo_action_policy::MemberId::person("reader"),
     )
 }
 
 fn window_history_control(driver: &crate::app::driver::Driver) -> Option<bool> {
-    fn find(node: &crate::a11y::AccessNode, target: &str) -> Option<bool> {
+    fn find(node: &tilo_ui_base::a11y::AccessNode, target: &str) -> Option<bool> {
         if node.action_target.as_deref() == Some(target) {
             return Some(node.state.checked == Some(true));
         }
@@ -1079,7 +1079,7 @@ fn a_shell_window_presents_history_on_its_tab_not_in_a_band() {
         .perform_semantic_named(
             "tabs",
             Some(crate::widget::tabs::WINDOW_HISTORY_TARGET),
-            &crate::a11y::Action::Activate,
+            &tilo_ui_base::a11y::Action::Activate,
         )
         .unwrap();
     driver.relayout();
@@ -1095,7 +1095,7 @@ fn a_shell_window_presents_history_on_its_tab_not_in_a_band() {
             .perform_semantic_named(
                 "tabs",
                 Some(crate::widget::tabs::WINDOW_HISTORY_TARGET),
-                &crate::a11y::Action::Activate,
+                &tilo_ui_base::a11y::Action::Activate,
             )
             .unwrap();
         driver.relayout();
@@ -1107,7 +1107,7 @@ fn a_shell_window_presents_history_on_its_tab_not_in_a_band() {
     press_tab(&mut driver);
     assert!(driver.targets().contains_key("activity_timeline"));
     driver.click_named("activity_timeline").unwrap();
-    driver.send(&crate::synthetic_input::named_key(
+    driver.send(&tilo_ui_base::synthetic_input::named_key(
         winit::keyboard::NamedKey::Escape,
     ));
     driver.relayout();
@@ -1126,7 +1126,7 @@ impl Widget for Restless {
     ) -> NodeId {
         taffy.widget_leaf(Style::default(), node_map, self)
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1140,8 +1140,8 @@ impl Widget for Restless {
     fn get_rect(&self) -> Rect {
         Rect::ZERO
     }
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
-        crate::widget::StructureChange::Children
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
+        tilo_ui_base::widget::StructureChange::Children
     }
 }
 
@@ -1177,7 +1177,7 @@ fn a_tile_whose_history_shows_a_version_leaves_the_hidden_apps_change_with_it() 
     for turn in 0..3 {
         assert_eq!(
             tile.take_structure_change(),
-            crate::widget::StructureChange::None,
+            tilo_ui_base::widget::StructureChange::None,
             "the History lays a version out in the app's place, so nothing builds the \
              app (turn {turn}): a change taken from it asks for a composition the host \
              never builds the app into, pass after pass"
@@ -1193,7 +1193,7 @@ fn a_tile_whose_history_shows_a_version_leaves_the_hidden_apps_change_with_it() 
     reason = "pixel tallies inside the rendered frame"
 )]
 fn flood_bounds(scene: &Scene, width: u32, height: u32) -> Rect {
-    let mut renderer = crate::offscreen::OffscreenRenderer::new(width, height);
+    let mut renderer = tilo_ui_base::offscreen::OffscreenRenderer::new(width, height);
     let rgba = renderer.render(scene, vello::peniko::Color::TRANSPARENT);
     let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0_u32, 0_u32);
     for y in 0..height {
@@ -1235,12 +1235,12 @@ fn a_window_that_is_arriving_is_painted_at_its_opening_pose() {
         );
         let mut text = TextRenderer::new();
         let mut scene = Scene::new();
-        host.draw(&mut crate::draw::DrawCtx::new(
+        host.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
             &theme,
-            crate::presence::PresenceCtx::empty().draw_env(),
+            tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
         ));
         crate::testing::capture_regression(
             "window-pose",

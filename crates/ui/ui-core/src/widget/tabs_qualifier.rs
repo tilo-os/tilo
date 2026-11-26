@@ -6,8 +6,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
 use super::{TabBar, compose, tab_title_style};
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 
 /// The space between a tab's title and the app's name after it ([`TabBar::qualifier`]): the gap
 /// the theme keeps between a label and the thing that qualifies it.
@@ -26,7 +26,7 @@ impl TabBar {
             .as_deref()
             .map(str::trim)
             .filter(|app| !app.is_empty())?;
-        let reads = |text: &str| crate::text_match::fold_search_text(text.trim());
+        let reads = |text: &str| tilo_ui_base::text_match::fold_search_text(text.trim());
         let title = reads(&tab.title);
         if title.is_empty() || title == reads(app) {
             return None;
@@ -76,8 +76,9 @@ impl TabBar {
 mod tests {
     use super::super::tests::lay_out_at_width;
     use super::*;
-    use crate::text_render::TextWeight;
-    use crate::widget::{TabDescriptor, Widget};
+    use tilo_ui_base::text_render::TextWeight;
+    use crate::widget::TabDescriptor;
+    use tilo_ui_base::widget::Widget;
 
     /// Tabs of different apps on pages of one name say whose each is; two windows of one app on
     /// the same page, and a tab already named by its app, need nothing after the title.
@@ -103,7 +104,7 @@ mod tests {
             .expect("tab bar is not presentational")
             .children
             .into_iter()
-            .filter(|child| child.role == crate::a11y::Role::Tab)
+            .filter(|child| child.role == tilo_ui_base::a11y::Role::Tab)
             .filter_map(|child| child.name)
             .collect();
         assert_eq!(names, ["Today Tasks", "Today Tasks", "Today", "Inbox"]);

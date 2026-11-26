@@ -426,7 +426,7 @@ impl Sources {
         for (app, summary, floats) in self.activities.summaries() {
             let (progress, elapsed, remaining) = match (summary.progress, summary.length) {
                 (Some(progress), Some(length)) => {
-                    let length = ui::num::f64_of_u64(length);
+                    let length = tilo_ui_base::num::f64_of_u64(length);
                     along(f64::from(progress) * length, length)
                 }
                 (Some(progress), None) => (Some(f64::from(progress)), String::new(), String::new()),
@@ -646,7 +646,7 @@ fn along(at: f64, length: f64) -> (Option<f64>, String, String) {
 )]
 fn clock(seconds: f64) -> String {
     let whole = seconds.max(0.0).floor() as u64;
-    ui::format::timecode(whole)
+    tilo_ui_base::format::timecode(whole)
 }
 
 /// The name a kind of activity goes by in the reading.

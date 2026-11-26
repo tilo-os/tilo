@@ -1144,7 +1144,7 @@ impl Session {
         }
         // The controller the person last used: the guide leads with its
         // buttons, and a key of their own leads with the keyboard again.
-        let controller: Rc<Cell<Option<ui::ControllerFamily>>> = Rc::new(Cell::new(None));
+        let controller: Rc<Cell<Option<tilo_ui_base::ControllerFamily>>> = Rc::new(Cell::new(None));
         let controller_keys: Rc<Cell<bool>> = Rc::new(Cell::new(false));
         // The guide's state while it is up: the key surface holds back what
         // would act behind the guide and hands it the chord it waits for.
@@ -1872,7 +1872,7 @@ impl Session {
             activities,
             live,
             wallpapers,
-            wallpaper: ui::part_paint::wallpaper::Source::new(),
+            wallpaper: tilo_ui_base::part_paint::wallpaper::Source::new(),
             lock_layouts: options.config.keyboard_layouts.clone(),
             lock_layout: Cell::new(0),
             session_actions: options.session_actions,
@@ -2771,7 +2771,7 @@ impl Session {
         let exports = self.shared.windows.borrow();
         for (instance, window) in exports.iter() {
             let mut tree = window.tree.clone();
-            ui::accesskit_bridge::name_window(&mut tree, &window.name);
+            tilo_ui_base::accesskit_bridge::name_window(&mut tree, &window.name);
             windows.push((
                 crate::a11y::Place::App(instance).exported(),
                 window.name.clone(),
@@ -2790,7 +2790,7 @@ impl Session {
         &mut self,
         place: usize,
         target: ui::accesskit::NodeId,
-        action: &ui::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
     ) -> bool {
         match crate::a11y::Place::from_exported(place) {
             crate::a11y::Place::Surface(place) => {
@@ -2799,7 +2799,7 @@ impl Session {
             crate::a11y::Place::App(instance) => {
                 // The window runs it on its own loop, exactly as its own assistive client would:
                 // the request is written to its shell-ui connection on this pass.
-                let (action, data) = ui::accesskit_bridge::ours_action_to_accesskit(action, target);
+                let (action, data) = tilo_ui_base::accesskit_bridge::ours_action_to_accesskit(action, target);
                 self.shared.windows.borrow_mut().push_action(
                     instance,
                     ui::accesskit::ActionRequest {

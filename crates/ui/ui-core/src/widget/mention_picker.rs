@@ -3,12 +3,12 @@
 //! picking one puts a mention of them in the text — one marked run naming their member
 //! id ([`Mark::Mention`](super::Mark::Mention)), not prose that happens to start with `@`.
 
-use crate::i18n::widget_text;
+use tilo_ui_base::i18n::widget_text;
 use tilo_sort::CompactSort as _;
 
-use crate::presence::PresenceCtx;
-use crate::text_match::FieldWeight;
-use crate::tokens::PresenceHue;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_match::FieldWeight;
+use tilo_ui_base::tokens::PresenceHue;
 use crate::widget::autocomplete::Suggestion;
 use tilo_action_policy::MemberId;
 
@@ -111,12 +111,12 @@ pub fn query_at_caret(text: &str, caret: usize) -> Option<MentionQuery> {
 }
 
 /// The candidates worth offering for `query`, best first, ranked as every list search ranks
-/// ([`crate::text_match::ranked_rows`]): a prefix of the whole name, then of a later word
+/// ([`tilo_ui_base::text_match::ranked_rows`]): a prefix of the whole name, then of a later word
 /// ("lov" finds "Ada Lovelace"), then the member id.
 #[must_use]
 pub fn rank<'a>(candidates: &'a [MentionCandidate], query: &str) -> Vec<&'a MentionCandidate> {
-    let index = crate::text_match::ListIndex::default();
-    crate::text_match::ranked_rows(
+    let index = tilo_ui_base::text_match::ListIndex::default();
+    tilo_ui_base::text_match::ranked_rows(
         &index,
         query.trim(),
         candidates.iter().map(|candidate| {
@@ -193,7 +193,7 @@ fn suggestion_with_value(candidate: &MentionCandidate, value: String) -> Suggest
         MemberId::Bot(_) => Some(widget_text("widget-mention-bot")),
     };
     let row =
-        Suggestion::labelled(value, candidate.name.clone()).with_person(crate::component::Person {
+        Suggestion::labelled(value, candidate.name.clone()).with_person(tilo_ui_base::component::Person {
             identity: candidate.id.clone().into(),
             name: candidate.name.clone(),
             hue: candidate.hue,
@@ -255,7 +255,7 @@ mod tests {
 
         phase an_at_opening_a_word_starts_a_query_and_one_inside_a_word_does_not;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             assert_eq!(
                 query_at_caret("hi @ad", 6),
                 Some(MentionQuery {
@@ -269,7 +269,7 @@ mod tests {
 
         phase ranking_prefers_a_whole_name_prefix_then_a_word_prefix;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let workspace = workspace();
             let names: Vec<_> = rank(&workspace, "t")
                 .into_iter()
@@ -289,7 +289,7 @@ mod roster_tests {
 
     #[test]
     fn the_workspace_and_an_owners_candidates_merge_once_by_id_sorted_by_name() {
-        let mut presence = crate::presence::PresenceCtx::empty();
+        let mut presence = tilo_ui_base::presence::PresenceCtx::empty();
         presence
             .names
             .insert(MemberId::person("u_ada"), "Ada Lovelace".into());

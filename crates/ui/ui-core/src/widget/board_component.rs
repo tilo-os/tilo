@@ -3,12 +3,10 @@
 
 use std::collections::HashMap;
 
-use crate::component::{Component, Described, Event, PartType, ResourceId, Source, Value};
-use crate::icons::Icon;
-use crate::widget::{
-    Card, CardBody, CardProps, ContextMenuArea, Element, MenuEntry, MenuItemProps, Press,
-    SectionHeader, Widget, capability::capability_mut,
-};
+use tilo_ui_base::{component::Component, component::Described, component::Event, component::PartType, component::ResourceId, component::Source, component::Value};
+use tilo_ui_base::icons::Icon;
+use crate::{widget::Card, widget::CardBody, widget::CardProps, widget::ContextMenuArea, widget::MenuEntry, widget::MenuItemProps, widget::SectionHeader};
+use tilo_ui_base::{widget::Element, widget::Press, widget::Widget, widget::capability::capability_mut};
 
 use super::{Board, BoardDrop};
 
@@ -83,7 +81,7 @@ pub struct BoardCardProps {
 fn read_all<T>(
     source: &mut dyn Source,
     part: &str,
-    read: fn(&mut dyn Source) -> Result<T, crate::component::Error>,
+    read: fn(&mut dyn Source) -> Result<T, tilo_ui_base::component::Error>,
 ) -> Result<Vec<T>, String> {
     let mut out = Vec::new();
     source.components(part, &mut |child| {
@@ -97,8 +95,8 @@ fn read_all<T>(
 impl PartType for Vec<BoardListProps> {
     const MANY: bool = true;
 
-    fn accepts() -> crate::component::Accepts {
-        crate::component::Accepts::Component(BoardListProps::NAME.into())
+    fn accepts() -> tilo_ui_base::component::Accepts {
+        tilo_ui_base::component::Accepts::Component(BoardListProps::NAME.into())
     }
 
     fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
@@ -111,8 +109,8 @@ impl PartType for Vec<BoardListProps> {
 impl PartType for Vec<BoardCardProps> {
     const MANY: bool = true;
 
-    fn accepts() -> crate::component::Accepts {
-        crate::component::Accepts::Component(BoardCardProps::NAME.into())
+    fn accepts() -> tilo_ui_base::component::Accepts {
+        tilo_ui_base::component::Accepts::Component(BoardCardProps::NAME.into())
     }
 
     fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
@@ -405,10 +403,10 @@ mod tests {
     )]
 
     use super::*;
-    use crate::Intents;
-    use crate::component::{Fired, Intent};
-    use crate::theme::Theme;
-    use crate::tokens::Rhythm;
+    use tilo_ui_base::Intents;
+    use tilo_ui_base::{component::Fired, component::Intent};
+    use tilo_ui_base::theme::Theme;
+    use tilo_ui_base::tokens::Rhythm;
     use crate::widget::Text;
 
     fn card_props(queue: &Intents<Fired>, key: &str) -> BoardCardProps {
@@ -489,20 +487,20 @@ mod tests {
                 Event::Action(bound),
             );
             let mut doc = automerge::AutoCommit::new();
-            let mut state = crate::widget::Edits::lend(&mut doc);
+            let mut state = tilo_ui_base::widget::Edits::lend(&mut doc);
             let path = automerge::ROOT;
             assert!(
-                card.perform_action(&crate::a11y::Action::Activate, &[], &mut state, &path),
+                card.perform_action(&tilo_ui_base::a11y::Action::Activate, &[], &mut state, &path),
                 "the card takes the press"
             );
-            let taken = crate::widget::controls::take_control_invocation(&mut *card);
+            let taken = tilo_ui_base::widget::controls::take_control_invocation(&mut *card);
             assert_eq!(
                 taken.as_ref().map(|taken| taken.address.clone()),
                 Some(address),
                 "one press runs the card's action once"
             );
             assert!(
-                crate::widget::controls::take_control_invocation(&mut *card).is_none(),
+                tilo_ui_base::widget::controls::take_control_invocation(&mut *card).is_none(),
                 "the press is taken once"
             );
         }
@@ -528,13 +526,13 @@ mod tests {
                     }],
                 },
             );
-            let bindings = crate::widget::controls::control_action_bindings(&board);
+            let bindings = tilo_ui_base::widget::controls::control_action_bindings(&board);
             let card = bindings
                 .iter()
                 .find(|binding| {
                     matches!(
                         &binding.kind,
-                        crate::widget::ControlBindingKind::Action(found) if *found == address
+                        tilo_ui_base::widget::ControlBindingKind::Action(found) if *found == address
                     )
                 })
                 .expect("the card's press is a control of the board");
@@ -730,12 +728,12 @@ mod tests {
                 Theme::dark(),
             );
             let mut window = host.root_mut::<crate::widget::Container>();
-            let mut window_children = crate::widget::Widget::children_mut(&mut *window);
+            let mut window_children = tilo_ui_base::widget::Widget::children_mut(&mut *window);
             let scroll = window_children[0]
                 .as_any_mut()
                 .and_then(|any| any.downcast_mut::<crate::widget::Scrollable>())
                 .expect("the window shows the pane");
-            let mut pane_children = crate::widget::Widget::children_mut(scroll);
+            let mut pane_children = tilo_ui_base::widget::Widget::children_mut(scroll);
             let board = pane_children[0]
                 .as_any_mut()
                 .and_then(|any| any.downcast_mut::<Board>())

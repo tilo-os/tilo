@@ -18,15 +18,13 @@ use vello::kurbo::{Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::WindowEvent;
 
-use crate::component::{Component, Described};
+use tilo_ui_base::{component::Component, component::Described};
 
-use crate::tokens::{Rhythm, SpacingStep, TextRole};
+use tilo_ui_base::{tokens::Rhythm, tokens::SpacingStep, tokens::TextRole};
 use crate::widget::arrange::{Align, Fit, Part, Stack};
 use crate::widget::primitives::{SurfaceLevel, paint_surface};
-use crate::widget::{
-    ContextMenuArea, Decorator, DragSource, DrawChild, Element, HoverToolbar, MenuItemProps,
-    Spacer, Text, Widget,
-};
+use crate::{widget::ContextMenuArea, widget::DragSource, widget::HoverToolbar, widget::MenuItemProps, widget::Text};
+use tilo_ui_base::{widget::Decorator, widget::DrawChild, widget::Element, widget::Spacer, widget::Widget};
 
 /// A resource's view on a canvas: the view on the window surface, with a handle shown
 /// over its corner on hover and focus that names it, holds its controls and moves it.
@@ -50,7 +48,7 @@ pub struct PlaceProps {
     /// there filters them as every context menu does (`canvas.md` §1, "Right-click keeps its
     /// menu"). A right-click on content with a menu of its own (a field, a row) is that
     /// content's.
-    pub target: Option<crate::component::ResourceId>,
+    pub target: Option<tilo_ui_base::component::ResourceId>,
     /// The place's menu: the commands the host filled from its target.
     #[component(part)]
     pub items: Vec<MenuItemProps>,
@@ -59,7 +57,7 @@ pub struct PlaceProps {
 /// How tall the band a place keeps over its view for its handle stands, in logical pixels: a
 /// control's row in a floating surface, a tight step above the view. The canvas stands a place's
 /// pin this much over the point it was put at, so the view's own top is at the point.
-pub const PLACE_BAND: f64 = crate::tokens::Metrics::BASE.panel_row_height as f64;
+pub const PLACE_BAND: f64 = tilo_ui_base::tokens::Metrics::BASE.panel_row_height as f64;
 
 /// What a place's handle is keyed by, after the place's own key: a resource dragged from a key
 /// ending so is a place being moved by its handle.
@@ -111,7 +109,7 @@ impl Described for CanvasPlace {
         let caption = Text::new(&title)
             .with_role(TextRole::Caption)
             .dimmed()
-            .with_wrap_mode(crate::text_render::TextWrapMode::WordOrGlyph);
+            .with_wrap_mode(tilo_ui_base::text_render::TextWrapMode::WordOrGlyph);
         let caption: Element = match carries {
             Some(resource) if !resource.is_empty() => Box::new(DragSource::new(
                 format!("{key}{HANDLE_KEY}"),
@@ -204,7 +202,7 @@ impl Decorator for CanvasPlace {
 
     /// Resting on the band is where a place is taken to move it, as a window's bar is: the
     /// shell's control hints hear it ([`crate::control_hints`]).
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let on = match event {
             WindowEvent::CursorMoved { position, .. } => {
                 Some(self.band.contains(ctx.logical(position)))
@@ -229,7 +227,7 @@ impl Decorator for CanvasPlace {
         clippy::disallowed_methods,
         reason = "a decorator is the widget it wraps: that widget draws under the decorator's key"
     )]
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         let transform = ctx.parts().1;
         Widget::draw(&mut self.menu, ctx);
         let rect = Widget::get_rect(&self.menu);
@@ -271,9 +269,9 @@ impl Decorator for PlaceGround {
         "PlaceGround"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group)
                 .with_optional_name(self.name.clone()),
         )
     }
@@ -283,7 +281,7 @@ impl Decorator for PlaceGround {
         (rect.width() > 0.0).then_some(rect)
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,

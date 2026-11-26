@@ -321,7 +321,7 @@ fn row(member: &collab_types::presence::Shown) -> Json {
     if let Some(row) = row.as_object_mut() {
         row.insert(
             "label".into(),
-            Json::String(ui::presence::person_label(&member.label)),
+            Json::String(tilo_ui_base::presence::person_label(&member.label)),
         );
     }
     row
@@ -469,7 +469,7 @@ mod naming_tests {
         };
         assert_eq!(
             row(&unnamed)["label"],
-            serde_json::json!(ui::presence::unnamed_person_label())
+            serde_json::json!(tilo_ui_base::presence::unnamed_person_label())
         );
         let keyed = collab_types::presence::Shown {
             label: "3f".repeat(32),
@@ -477,7 +477,7 @@ mod naming_tests {
         };
         assert_eq!(
             row(&keyed)["label"],
-            serde_json::json!(ui::presence::unnamed_person_label()),
+            serde_json::json!(tilo_ui_base::presence::unnamed_person_label()),
             "a key is never read as the person's name"
         );
         let named = collab_types::presence::Shown {

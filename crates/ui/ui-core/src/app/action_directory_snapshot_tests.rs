@@ -102,21 +102,21 @@ struct DeclaredDirectory {
     domain_provider: Option<DirectoryDomainProvider>,
 }
 impl Widget for DeclaredDirectory {
-    crate::provides!(
-        dyn crate::widget::resources::PublishesResources,
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::resources::PublishesResources,
         dyn crate::search::capability::SearchSource,
-        dyn crate::widget::ResourceOperations
+        dyn tilo_ui_base::widget::ResourceOperations
     );
 
     fn sync(&mut self, _: &AppModel, _: &ModelPath) {}
     crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "declared-directory");
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.semantic_calls.set(self.semantic_calls.get() + 1);
-        Some(crate::a11y::AccessNode::new(crate::a11y::Role::Group))
+        Some(tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group))
     }
 }
 
-impl crate::widget::ResourceOperations for DeclaredDirectory {
+impl tilo_ui_base::widget::ResourceOperations for DeclaredDirectory {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE]
     }
@@ -131,7 +131,7 @@ impl crate::search::capability::SearchSource for DeclaredDirectory {
     }
 }
 
-impl crate::widget::resources::PublishesResources for DeclaredDirectory {
+impl tilo_ui_base::widget::resources::PublishesResources for DeclaredDirectory {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         self.calls.set(self.calls.get() + 1);
         let effect = doc.get(ROOT, "effect").unwrap().is_some();
@@ -248,14 +248,14 @@ impl crate::widget::resources::PublishesResources for DeclaredDirectory {
     fn action_directory_invocation_domain(
         &self,
         doc: &automerge::AutoCommit,
-    ) -> crate::widget::ActionDirectoryInvocationDomain {
+    ) -> tilo_ui_base::widget::ActionDirectoryInvocationDomain {
         // This fixture has no lazy provider or hidden handler state: every
         // target is the fixed CounterAction encoded in resources() below.
         if doc.get(ROOT, "unknown-domain").unwrap().is_some() {
-            return crate::widget::ActionDirectoryInvocationDomain::Unsupported;
+            return tilo_ui_base::widget::ActionDirectoryInvocationDomain::Unsupported;
         }
         if doc.get(ROOT, "changed-domain").unwrap().is_some() {
-            return crate::widget::ActionDirectoryInvocationDomain::versioned(
+            return tilo_ui_base::widget::ActionDirectoryInvocationDomain::versioned(
                 &tilo_actions::ContinuationEvidence::Draft {
                     resolution_domain: tilo_actions::ContinuationKey::new(
                         "root",
@@ -265,7 +265,7 @@ impl crate::widget::resources::PublishesResources for DeclaredDirectory {
                 },
             );
         }
-        crate::widget::ActionDirectoryInvocationDomain::MaterializedOnly
+        tilo_ui_base::widget::ActionDirectoryInvocationDomain::MaterializedOnly
     }
 }
 fn declared_directory(count: usize) -> (App, std::rc::Rc<Cell<usize>>) {
@@ -475,21 +475,21 @@ impl ExtendedDirectory {
     }
 }
 impl Widget for ExtendedDirectory {
-    crate::provides!(
-        dyn crate::widget::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn tilo_ui_base::widget::ResourceOperations
     );
 
     crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "extended-directory");
 }
 
-impl crate::widget::ResourceOperations for ExtendedDirectory {
+impl tilo_ui_base::widget::ResourceOperations for ExtendedDirectory {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE]
     }
 }
 
-impl crate::widget::resources::PublishesResources for ExtendedDirectory {
+impl tilo_ui_base::widget::resources::PublishesResources for ExtendedDirectory {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         vec![Self::resource_tree(false)]
     }
@@ -568,7 +568,7 @@ struct DescribedSearch {
     generation: std::rc::Rc<Cell<u64>>,
 }
 impl Widget for DescribedSearch {
-    crate::provides!(dyn crate::search::capability::SearchSource);
+    tilo_ui_base::provides!(dyn crate::search::capability::SearchSource);
 
     crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "described-search");
 }
@@ -583,7 +583,7 @@ impl crate::search::capability::SearchSource for DescribedSearch {
         vec![crate::search::capability::SearchProviderDescriptor::new(
             "described",
             Some(self.generation.get()),
-            crate::widget::ActionDirectoryInvocationDomain::Unsupported,
+            tilo_ui_base::widget::ActionDirectoryInvocationDomain::Unsupported,
         )]
     }
 }

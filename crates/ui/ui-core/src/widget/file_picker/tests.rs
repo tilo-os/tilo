@@ -5,10 +5,10 @@ use std::fs;
 use winit::event::ElementState;
 
 fn cursor_at(p: Point) -> WindowEvent {
-    crate::synthetic_input::cursor_moved(p.x, p.y)
+    tilo_ui_base::synthetic_input::cursor_moved(p.x, p.y)
 }
 
-use crate::synthetic_input::mouse_press;
+use tilo_ui_base::synthetic_input::mouse_press;
 
 fn temp_tree() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -25,7 +25,7 @@ tilo_test_env::scenario! {
 
     phase picker_opens_as_modal_and_resolves_open_or_cancel;
     {
-            use crate::a11y::Role;
+            use tilo_ui_base::a11y::Role;
             let (_g, root) = temp_tree();
             let picker = FilePicker::new("Open file", &root, vec![root.clone()]).settled();
             let node = Widget::accessibility(&picker).expect("file picker is a dialog");
@@ -298,7 +298,7 @@ tilo_test_env::scenario! {
             fs::create_dir_all(&deep).unwrap();
             let mut picker = FilePicker::new("Open", &deep, vec![root.clone()]).settled();
             picker.set_rect(Rect::new(0.0, 0.0, 560.0, 420.0));
-            picker.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), crate::presence::PresenceCtx::default().draw_env()));
+            picker.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), tilo_ui_base::presence::PresenceCtx::default().draw_env()));
             let bar = picker.path_rect();
             let painted = picker.crumbs.segment_rects();
             let (last, _) = *painted.last().expect("crumbs");
@@ -665,7 +665,7 @@ tilo_test_env::scenario! {
             settle(&mut keyboard_single);
             assert_eq!(keyboard_single.selected_indices(), vec![1]);
 
-            use crate::a11y::Role;
+            use tilo_ui_base::a11y::Role;
 
             let (_guard, root) = temp_tree();
             let mut picker = FilePicker::new("Choose", &root, vec![root.clone()])
@@ -902,18 +902,18 @@ tilo_test_env::scenario! {
                 Some(FilePickerOutcome::Selected(vec![root.join("new.txt")]))
             );
 
-            use crate::a11y::Role;
+            use tilo_ui_base::a11y::Role;
             let (_g, root) = temp_tree();
             let mut picker = FilePicker::new("Save", &root, vec![root.clone()])
                 .with_mode(FilePickerMode::Save)
                 .settled();
             picker.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
             Widget::set_focus(&mut picker, true);
-            assert!(crate::ime::ImeWindowState::from_widget(&picker).is_some());
+            assert!(tilo_ui_base::ime::ImeWindowState::from_widget(&picker).is_some());
             let original = picker.ime_edit_fingerprint(&[7; 32]).unwrap();
             feed(&mut picker, &key_named(winit::keyboard::NamedKey::Tab));
             assert_eq!(picker.focus, Some(PickerFocus::Cancel));
-            assert!(crate::ime::ImeWindowState::from_widget(&picker).is_none());
+            assert!(tilo_ui_base::ime::ImeWindowState::from_widget(&picker).is_none());
             Dispatch::new()
                 .modifiers(shift())
                 .send(&mut picker, &key_named(winit::keyboard::NamedKey::Tab));
@@ -922,7 +922,7 @@ tilo_test_env::scenario! {
             feed(&mut picker, &key_char("x"));
             assert_eq!(picker.filename(), "x");
             assert_ne!(picker.ime_edit_fingerprint(&[7; 32]).unwrap(), original);
-            assert!(crate::ime::ImeWindowState::from_widget(&picker).is_some());
+            assert!(tilo_ui_base::ime::ImeWindowState::from_widget(&picker).is_some());
             let node = Widget::accessibility(&picker).expect("dialog semantics");
             let filename = node
                 .children
@@ -1007,7 +1007,7 @@ tilo_test_env::scenario! {
                 .iter()
                 .find(|child| child.key == Some(PickerFocus::Filename.id()))
                 .expect("Filename field");
-            assert_eq!(field.role, crate::a11y::Role::TextInput);
+            assert_eq!(field.role, tilo_ui_base::a11y::Role::TextInput);
             assert!(field.state.invalid);
             Widget::set_focus(&mut picker, true);
             feed(&mut picker, &key_char("x"));
@@ -1038,7 +1038,7 @@ tilo_test_env::scenario! {
 
     phase saving_over_an_existing_file_asks_first;
     {
-        use crate::a11y::{Action, Role};
+        use tilo_ui_base::{a11y::Action, a11y::Role};
         use winit::keyboard::NamedKey;
 
         fn save_picker(root: &Path, name: &str) -> FilePicker {
@@ -1051,7 +1051,7 @@ tilo_test_env::scenario! {
             picker
         }
 
-        fn prompt_node(picker: &FilePicker) -> crate::a11y::AccessNode {
+        fn prompt_node(picker: &FilePicker) -> tilo_ui_base::a11y::AccessNode {
             let dialog = Widget::accessibility(picker).expect("picker semantics");
             assert_eq!(dialog.children.len(), 1, "only the prompt is reachable");
             let prompt = dialog.children[0].clone();
@@ -1158,7 +1158,7 @@ tilo_test_env::scenario! {
                 &mut picker,
                 &Action::Activate,
                 &[PickerFocus::Confirm.id()],
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &path,
             ));
             settle(&mut picker);
@@ -1168,7 +1168,7 @@ tilo_test_env::scenario! {
                     &mut picker,
                     &Action::Activate,
                     &[PickerFocus::Confirm.id()],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &path,
                 ),
                 "the picker behind the prompt cannot be operated"
@@ -1180,7 +1180,7 @@ tilo_test_env::scenario! {
                 &mut picker,
                 &Action::Activate,
                 &[prompt.key.expect("prompt key"), replace],
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &path,
             ));
             settle(&mut picker);
@@ -1280,7 +1280,7 @@ tilo_test_env::scenario! {
     }
 }
 
-use crate::synthetic_input::mouse_release;
+use tilo_ui_base::synthetic_input::mouse_release;
 
 fn ctrl() -> winit::event::Modifiers {
     let mut s = winit::keyboard::ModifiersState::empty();
@@ -1289,11 +1289,11 @@ fn ctrl() -> winit::event::Modifiers {
 }
 
 fn key_named(named: winit::keyboard::NamedKey) -> WindowEvent {
-    crate::synthetic_input::key_input(&winit::keyboard::Key::Named(named), ElementState::Pressed)
+    tilo_ui_base::synthetic_input::key_input(&winit::keyboard::Key::Named(named), ElementState::Pressed)
 }
 
 fn key_char(s: &str) -> WindowEvent {
-    crate::synthetic_input::key_input(
+    tilo_ui_base::synthetic_input::key_input(
         &winit::keyboard::Key::Character(s.into()),
         ElementState::Pressed,
     )
@@ -1354,12 +1354,12 @@ fn listing_filters_and_scroll_window_rows() {
 }
 
 fn paint(picker: &mut FilePicker) {
-    picker.draw(&mut crate::draw::DrawCtx::new(
+    picker.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut Scene::new(),
         Affine::IDENTITY,
         &mut TextRenderer::new(),
         &Theme::dark(),
-        crate::presence::PresenceCtx::default().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::default().draw_env(),
     ));
 }
 

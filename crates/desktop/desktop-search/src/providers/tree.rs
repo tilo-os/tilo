@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, PoisonError, RwLock};
 
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
-use ui::text_match::FieldWeight;
+use tilo_ui_base::text_match::FieldWeight;
 
 use crate::model::{Hit, Source, Target};
 
@@ -176,7 +176,7 @@ impl Source for TreeFiles {
             .iter()
             .map(|file| vec![(file.name.clone(), FieldWeight::TITLE)])
             .collect();
-        let ranks = crate::rank::rank_rows(&ui::text_match::ListIndex::default(), needle, &names);
+        let ranks = crate::rank::rank_rows(&tilo_ui_base::text_match::ListIndex::default(), needle, &names);
         let mut hits: Vec<Hit> = files
             .iter()
             .zip(ranks)
@@ -186,7 +186,7 @@ impl Source for TreeFiles {
         hits.truncate(MAX_ROWS);
         // What the words of a file say, for the files not already named: a
         // note's body, a report's page, found as its app finds it.
-        let folded = ui::text_match::fold_search_text(needle);
+        let folded = tilo_ui_base::text_match::fold_search_text(needle);
         let needle = folded.trim();
         if needle.is_empty() {
             return hits;
@@ -201,7 +201,7 @@ impl Source for TreeFiles {
             let Some(text) = texts.get(hash) else {
                 continue;
             };
-            if !ui::text_match::fold_search_text(text).contains(needle) {
+            if !tilo_ui_base::text_match::fold_search_text(text).contains(needle) {
                 continue;
             }
             if hits.iter().any(|hit| hit.id == file.id) {

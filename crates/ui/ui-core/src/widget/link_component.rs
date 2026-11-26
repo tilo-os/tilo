@@ -1,7 +1,7 @@
 //! [`Link`] as a described component.
 
-use crate::component::{Component, Described, Event, ResourceId};
-use crate::tokens::TextRole;
+use tilo_ui_base::{component::Component, component::Described, component::Event, component::ResourceId};
+use tilo_ui_base::tokens::TextRole;
 
 use super::Link;
 

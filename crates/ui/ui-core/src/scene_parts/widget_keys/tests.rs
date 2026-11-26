@@ -3,7 +3,7 @@ use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
 use vello_encoding::MarkKind;
 
-use super::*;
+use tilo_ui_base::scene_parts::widget_keys::*;
 
 fn begins(scene: &Scene) -> Vec<(u64, [f32; 2])> {
     scene
@@ -90,10 +90,11 @@ fn reset_clears_the_marks() {
 /// body.
 #[test]
 fn a_container_that_draws_its_children_itself_keys_each_of_them() {
-    use crate::presence::PresenceCtx;
-    use crate::text_render::TextRenderer;
-    use crate::theme::Theme;
-    use crate::widget::{Button, Card, CardGrid, DrawChild, Element, Widget};
+    use tilo_ui_base::presence::PresenceCtx;
+    use tilo_ui_base::text_render::TextRenderer;
+    use tilo_ui_base::theme::Theme;
+    use crate::{widget::Button, widget::Card, widget::CardGrid};
+    use tilo_ui_base::{widget::DrawChild, widget::Element, widget::Widget};
 
     let cards: Vec<Element> = (0..3)
         .map(|i| {
@@ -106,7 +107,7 @@ fn a_container_that_draws_its_children_itself_keys_each_of_them() {
     let mut grid: Element = Box::new(CardGrid::new(cards));
     let theme = Theme::default();
     let mut text = TextRenderer::new();
-    crate::widget::layout::lay_out_detached(
+    tilo_ui_base::widget::layout::lay_out_detached(
         grid.as_mut(),
         Rect::new(0.0, 0.0, 800.0, 600.0),
         &theme,
@@ -145,10 +146,11 @@ fn a_container_that_draws_its_children_itself_keys_each_of_them() {
 
 #[test]
 fn a_root_drawn_into_another_scene_renumbers_no_root_of_the_frame() {
-    use crate::presence::PresenceCtx;
-    use crate::text_render::TextRenderer;
-    use crate::theme::Theme;
-    use crate::widget::{Button, DrawChild as _, Element};
+    use tilo_ui_base::presence::PresenceCtx;
+    use tilo_ui_base::text_render::TextRenderer;
+    use tilo_ui_base::theme::Theme;
+    use crate::widget::Button;
+    use tilo_ui_base::{widget::DrawChild as _, widget::Element};
 
     let theme = Theme::default();
     let mut text = TextRenderer::new();

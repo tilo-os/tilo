@@ -77,7 +77,7 @@ mod tests {
             "the step keeps its title"
         );
         // The window's tree carries its bar first; Rescan may stand only there.
-        fn named(nodes: &[ui::a11y::AccessNode], name: &str) -> usize {
+        fn named(nodes: &[tilo_ui_base::a11y::AccessNode], name: &str) -> usize {
             nodes
                 .iter()
                 .map(|node| {

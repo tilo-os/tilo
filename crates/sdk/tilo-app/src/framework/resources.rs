@@ -32,7 +32,7 @@ use super::reactive::{Change, Updaters};
 use super::settings::ViewStorage;
 use super::surface::SurfaceCx;
 use super::view::{Bindings, ViewCx};
-use ui_core::widget::Element;
+use tilo_ui_base::widget::Element;
 
 /// The operation type a record's published actions are carried out under:
 /// the host applies the action to the record it names.
@@ -237,7 +237,7 @@ impl<P: Resource> Held<P> {
         (
             self.live.revision(),
             self.live.loads(),
-            ui_core::i18n::I18nManager::revision(),
+            tilo_ui_base::i18n::I18nManager::revision(),
             self.live.unreadable().map(|why| why.reason),
         )
     }
@@ -386,8 +386,8 @@ pub(crate) trait ResourceApi {
     }
     /// [`Self::publish`] as a shared tree, which a record whose items change a few at a time
     /// (a chain of parts) builds again only where they changed.
-    fn publish_shared(&self) -> ui_core::published::SharedResource {
-        ui_core::published::SharedResource::from_resource(self.publish())
+    fn publish_shared(&self) -> tilo_ui_base::published::SharedResource {
+        tilo_ui_base::published::SharedResource::from_resource(self.publish())
     }
     /// What search finds in the record beside the app's own: none unless the
     /// record holds what the window's search lists (a chain's items).
@@ -451,7 +451,7 @@ pub(crate) trait ResourceApi {
         &self,
         action: &EncodedAction,
         invoker: &ActionInvoker,
-        live: &mut ui_core::widget::Edits<'_>,
+        live: &mut tilo_ui_base::widget::Edits<'_>,
     ) -> Result<tilo_actions::ActionOutput, tilo_resource::Refusal> {
         let _ = live;
         self.apply_answering_refused(action, invoker)

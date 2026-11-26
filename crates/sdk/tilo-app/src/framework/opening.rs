@@ -16,7 +16,8 @@ use std::cell::RefCell;
 use ui_core::application::ComponentReplacement;
 use ui_core::launch::LaunchError;
 use ui_core::resource::{ResourceOpenError, ResourceOpening};
-use ui_core::widget::{AppKind, AppWidget, IconDescriptor, Widget};
+use ui_core::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
+use tilo_ui_base::widget::Widget;
 
 use super::app::OpeningView;
 
@@ -70,7 +71,7 @@ impl OpeningRoot {
     }
 }
 
-impl ui_core::widget::Decorator for OpeningRoot {
+impl tilo_ui_base::widget::Decorator for OpeningRoot {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -83,11 +84,11 @@ impl ui_core::widget::Decorator for OpeningRoot {
 
     // What is shown keeps its controls, undo and presence to itself until the record's view
     // takes it over: its edits wait for the API that view hands them to.
-    fn provide<'a>(&'a self, _request: &mut ui_core::widget::capability::Request<'a, '_>) {}
+    fn provide<'a>(&'a self, _request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {}
 
     fn provide_mut<'a>(
         &'a mut self,
-        _request: &mut ui_core::widget::capability::RequestMut<'a, '_>,
+        _request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
     ) {
     }
 }
@@ -118,10 +119,10 @@ impl AppWidget for OpeningRoot {
                 tracing::warn!(%refusal, "the workspace's record did not arrive");
                 self.build = None;
                 self.shown = Box::new(
-                    ui_core::widget::EmptyState::new(ui_core::i18n::widget_text(
+                    ui_core::widget::EmptyState::new(tilo_ui_base::i18n::widget_text(
                         "framework-unreadable",
                     ))
-                    .with_icon(ui_core::icons::Icon::CircleAlert)
+                    .with_icon(tilo_ui_base::icons::Icon::CircleAlert)
                     .with_message(&refusal),
                 );
                 return None;

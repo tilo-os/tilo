@@ -80,13 +80,13 @@ pub fn is_apps_own_name(app_id: &str, said: &str) -> bool {
 pub fn is_name_of(app_id: &str, app: &str, said: &str) -> bool {
     let id = package_id(app_id);
     let last = id.rsplit('.').next().unwrap_or(id);
-    let said = ui::text_match::fold_search_text(said.trim());
+    let said = tilo_ui_base::text_match::fold_search_text(said.trim());
     !said.is_empty()
-        && (said == ui::text_match::fold_search_text(app.trim())
-            || said == ui::text_match::fold_search_text(&app_name(app_id))
-            || said == ui::text_match::fold_search_text(&humanized(app_id))
-            || said == ui::text_match::fold_search_text(last)
-            || said == ui::text_match::fold_search_text(id))
+        && (said == tilo_ui_base::text_match::fold_search_text(app.trim())
+            || said == tilo_ui_base::text_match::fold_search_text(&app_name(app_id))
+            || said == tilo_ui_base::text_match::fold_search_text(&humanized(app_id))
+            || said == tilo_ui_base::text_match::fold_search_text(last)
+            || said == tilo_ui_base::text_match::fold_search_text(id))
 }
 
 /// The program an id names, where the id is the path of one: a process with

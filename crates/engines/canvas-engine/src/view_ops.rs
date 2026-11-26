@@ -7,8 +7,8 @@
 )]
 
 use serde_json::{Value, json};
-use tilo_ui::TextRenderer;
-use tilo_ui::num::f64_of_usize;
+use tilo_ui_base::TextRenderer;
+use tilo_ui_base::num::f64_of_usize;
 use tilo_ui::vello::Scene;
 use tilo_ui::vello::kurbo::{Affine, Point, Rect};
 use tilo_ui::vello::peniko::Color;
@@ -18,7 +18,7 @@ use crate::model::{Artwork, Layer, Shape};
 use crate::model::{Mark, path_data};
 use crate::render::{Options, Renderer};
 use crate::resource::{Compare, Export, Inspect, Look};
-use tilo_ui::offscreen::pixels::{PixelsAnswer, PixelsError, PixelsRequest};
+use tilo_ui_base::{offscreen::pixels::PixelsAnswer, offscreen::pixels::PixelsError, offscreen::pixels::PixelsRequest};
 
 /// The default longest side of a look, in pixels: enough to judge a
 /// composition; a region look shows detail. A model pays for every pixel.
@@ -213,7 +213,7 @@ impl Drawing {
     /// the GPU; in a browser page they come a few frames later.
     #[must_use]
     pub fn request(self) -> PixelsRequest {
-        tilo_ui::offscreen::pixels::request(self.scene, self.width, self.height, self.background)
+        tilo_ui_base::offscreen::pixels::request(self.scene, self.width, self.height, self.background)
     }
 
     /// Its pixels now, for a caller that cannot wait for them.
@@ -1645,7 +1645,7 @@ fn beside_versions(
 
 #[cfg(test)]
 mod tests {
-    use tilo_ui::offscreen::pixels::{Pixels, PixelsError};
+    use tilo_ui_base::{offscreen::pixels::Pixels, offscreen::pixels::PixelsError};
 
     /// A picture that cannot be had says why in plain words, never an
     /// error's name.

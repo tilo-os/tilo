@@ -10,13 +10,14 @@ use ui_core::application::{
     AppComponent, ApplicationDefinition, ComponentBehaviour, ComponentFactory, LaunchTarget,
     ProcessContext, RestoreInput,
 };
-use ui_core::i18n::EmbeddedCatalog;
+use tilo_ui_base::i18n::EmbeddedCatalog;
 use ui_core::launch::LaunchError;
-use ui_core::permissions::MemberId;
-use ui_core::permissions::{ActionKind, LivePermissions, PermissionScope};
+use tilo_ui_base::permissions::MemberId;
+use tilo_ui_base::{permissions::ActionKind, permissions::LivePermissions, permissions::PermissionScope};
 use ui_core::resource::{DocumentId, ResourceType};
 use ui_core::storage::AppStorage;
-use ui_core::widget::{Element, IconDescriptor};
+use ui_core::widget::IconDescriptor;
+use tilo_ui_base::widget::Element;
 
 // Launching (live windows, captures, headless drives, test hosts) discovers
 // native presentation and profiles; a browser host prepares components itself.
@@ -27,7 +28,7 @@ use {
     },
     ui_core::headless::Driver,
     ui_core::launch::{LaunchArgs, LaunchSpec},
-    ui_core::permissions::{PermissionContext, Role},
+    tilo_ui_base::permissions::{PermissionContext, Role},
     ui_core::resource::DocumentCheckout,
 };
 
@@ -473,12 +474,12 @@ impl OpeningCx<'_> {
 
 /// What a window shows before its record ([`ResourceApp::opening`]): a widget that the view
 /// takes over as the service it was lent.
-pub trait OpeningView: ui_core::widget::Widget {
+pub trait OpeningView: tilo_ui_base::widget::Widget {
     /// This, as the service lent to the view.
     fn into_lent(self: Box<Self>) -> Box<dyn std::any::Any>;
 }
 
-impl<W: ui_core::widget::Widget + 'static> OpeningView for W {
+impl<W: tilo_ui_base::widget::Widget + 'static> OpeningView for W {
     fn into_lent(self: Box<Self>) -> Box<dyn std::any::Any> {
         self
     }
@@ -799,7 +800,7 @@ fn write_scope(app: &AppHooks, run: &Run) -> PermissionScope {
         .map(ui_core::resource::DocumentId::route)
     {
         Some(record) if own_kind => PermissionScope::Action {
-            node: ui_core::permissions::TreePath::root()
+            node: tilo_ui_base::permissions::TreePath::root()
                 .app(app.id())
                 .kind(app.kind)
                 .resource(record),
@@ -1042,10 +1043,10 @@ fn finish_root(
 
 /// The workspace's holdings, as a window waits for them.
 type WorkspaceArrival =
-    ui_core::arriving::Arriving<(), ui_core::workspace_sync::WorkspaceUnreachable>;
+    tilo_ui_base::arriving::Arriving<(), tilo_ui_base::workspace_sync::WorkspaceUnreachable>;
 
 /// The documents a window's app declared, as the window waits for them.
-type DeclaredArrival = ui_core::arriving::Arriving<(), ui_core::workspace_sync::RecordNotHere>;
+type DeclaredArrival = tilo_ui_base::arriving::Arriving<(), tilo_ui_base::workspace_sync::RecordNotHere>;
 
 /// The window's view, once what it waits for arrived: the workspace's holdings and the
 /// documents the app's declarations opened.
@@ -1068,7 +1069,7 @@ fn arrived_content<A: ResourceApp>(
 
 /// Whether the workspace's holdings are still on their way.
 fn workspace_pending(
-    holdings: &ui_core::arriving::Arriving<(), ui_core::workspace_sync::WorkspaceUnreachable>,
+    holdings: &tilo_ui_base::arriving::Arriving<(), tilo_ui_base::workspace_sync::WorkspaceUnreachable>,
 ) -> bool {
     holdings.with(|workspace| workspace.ready().is_none())
 }
@@ -1399,7 +1400,7 @@ fn create_component(
         // A window with no catalogue of its own — a sheet of the frames, a system menu — still
         // speaks the person's language: the toolkit's own labels are part of every window, and on
         // a thread with no catalogue yet they install it in the desktop's language.
-        ui_core::i18n::I18nManager::register_widget_messages();
+        tilo_ui_base::i18n::I18nManager::register_widget_messages();
     }
     // The window's record is being read off the frame: the window shows what the app shows
     // before it, and opens as below once the record is had.
@@ -1418,7 +1419,7 @@ fn create_component(
         // builds over it.
         if !record.take_in(true).map_err(LaunchError::Record)? {
             let arriving = Box::new(ui_core::widget::Skeleton::new(
-                ui_core::widget::SkeletonShape::Page,
+                tilo_ui_base::widget::SkeletonShape::Page,
             ));
             return Ok(opening_component(app, context, arriving, record, restore));
         }
@@ -1494,7 +1495,7 @@ fn start_resource(
             .in_private(context.is_private())
             .in_embedded(context.is_embedded())
             .awaiting_workspace(
-                matches!(target, LaunchTarget::PrimaryNew).then(ui_core::workspace_sync::holdings),
+                matches!(target, LaunchTarget::PrimaryNew).then(tilo_ui_base::workspace_sync::holdings),
             ),
     };
     if let Some(file) = &file {
@@ -1635,16 +1636,16 @@ fn document_content(context: &mut ProcessContext) -> Result<(), LaunchError> {
         return Ok(());
     };
     let route = resource_route(context)?;
-    let link = ui_core::collaboration::document_content::ContentLink::of_window();
+    let link = tilo_ui_base::collaboration::document_content::ContentLink::of_window();
     // The window keeps its content link: another window of the app on this thread
     // reads its own, never this one's queue of wants.
-    ui_core::collaboration::document_content::keep_link(&context.wake_handle(), Arc::clone(&link));
+    tilo_ui_base::collaboration::document_content::keep_link(&context.wake_handle(), Arc::clone(&link));
     // Whatever carries the record's content for the process (a browser
     // page's replication) asks for and hands over this window's too, and
     // what it stores is sealed for the members of the record's workspace.
-    ui_core::collaboration::document_content::ContentLink::show_on_route(&route, &link);
+    tilo_ui_base::collaboration::document_content::ContentLink::show_on_route(&route, &link);
     context.provide_content(
-        ui_core::collaboration::document_content::DocumentContent::store(local, link),
+        tilo_ui_base::collaboration::document_content::DocumentContent::store(local, link),
     );
     Ok(())
 }
@@ -1659,7 +1660,7 @@ fn document_content(context: &mut ProcessContext) -> Result<(), LaunchError> {
 /// As [`route_in`].
 pub(super) fn resource_route(
     context: &ProcessContext,
-) -> Result<ui_core::collaboration::RouteSpec, LaunchError> {
+) -> Result<tilo_ui_base::collaboration::RouteSpec, LaunchError> {
     route_in(context.records(), context.app_id(), &context.record().id)
 }
 
@@ -1672,7 +1673,7 @@ fn route_in(
     records: &ui_core::resource::ResourceStore,
     app: &str,
     record: &DocumentId,
-) -> Result<ui_core::collaboration::RouteSpec, LaunchError> {
+) -> Result<tilo_ui_base::collaboration::RouteSpec, LaunchError> {
     records.wire_route(record).map_err(|error| {
         LaunchError::Operation(format!(
             "{app} has no workspace on this device to keep its records in ({error})"
@@ -1730,10 +1731,10 @@ pub(crate) fn role_permissions(
     workspace: &str,
     author: &str,
     role: Role,
-) -> ui_core::permissions::SharedPermissions {
-    ui_core::permissions::SharedPermissions::new(PermissionContext::member_of(
+) -> tilo_ui_base::permissions::SharedPermissions {
+    tilo_ui_base::permissions::SharedPermissions::new(PermissionContext::member_of(
         workspace,
-        &ui_core::permissions::MemberId::person(author),
+        &tilo_ui_base::permissions::MemberId::person(author),
         role,
     ))
 }
@@ -1847,7 +1848,7 @@ fn names_recording(arguments: &[String]) -> bool {
     arguments
         .first()
         .filter(|argument| !argument.contains("://"))
-        .and_then(|path| ui_core::dnd::mime_for_path(std::path::Path::new(path)))
+        .and_then(|path| tilo_ui_base::dnd::mime_for_path(std::path::Path::new(path)))
         == Some(tilo_content::RECORDING.mime)
 }
 
@@ -1971,7 +1972,7 @@ fn launched_file(
     path: &std::path::Path,
 ) -> Result<Option<ui_core::application::OpenFile>, LaunchError> {
     // A regular file whose name says nothing of its type is plain bytes.
-    let Some(media_type) = ui_core::dnd::mime_for_path(path)
+    let Some(media_type) = tilo_ui_base::dnd::mime_for_path(path)
         .or_else(|| path.is_file().then_some("application/octet-stream"))
         .filter(|media_type| definition.opens_media_type(media_type))
     else {
@@ -2126,7 +2127,7 @@ fn prepare_named(
         .map(std::path::Path::new)
         .or(kept_here)
     {
-        let author = ui_core::collaboration::local_user_id();
+        let author = tilo_ui_base::collaboration::local_user_id();
         let mut host = super::headless::data_dir_host(
             directory,
             definition.app_id(),

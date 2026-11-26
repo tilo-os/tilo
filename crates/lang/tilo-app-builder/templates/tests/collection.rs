@@ -1,5 +1,5 @@
 use generated_app::{App, Items};
-use ui::a11y::Action;
+use tilo_ui_base::a11y::Action;
 use ui::headless::SemanticExpectation;
 use ui::prelude::{Edit, HeadlessApp, Id, Invoke, Replica};
 

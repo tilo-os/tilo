@@ -6,7 +6,7 @@ use tilo_sheets::SheetState as _;
 use tilo_sheets::delete_workspace::{
     Asked, DeleteWorkspaceApp, DeleteWorkspaceEffect, DeleteWorkspaceState,
 };
-use ui::a11y::Action as A11yAction;
+use tilo_ui_base::a11y::Action as A11yAction;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
 

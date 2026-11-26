@@ -6,7 +6,7 @@ use std::rc::Rc;
 use ui::framework::People;
 use ui::prelude::*;
 use ui::time::{Duration, Instant};
-use ui::tokens::Rhythm;
+use tilo_ui_base::tokens::Rhythm;
 use ui::widget::{ButtonRole, Container, Surface, SurfaceLevel, TextStack};
 
 use crate::card::{CardSize, CardView, Showing};
@@ -18,7 +18,7 @@ const TOP: [usize; 3] = [0, 1, 2];
 const BOTTOM: [usize; 3] = [5, 4, 3];
 const SEAT_CARDS: u8 = 4;
 
-fn fmt(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
+fn fmt(key: &str, args: &[(&str, tilo_ui_base::i18n::ArgValue)]) -> String {
     crate::locales::CATALOG.t_args(key, args)
 }
 
@@ -83,7 +83,7 @@ impl TableWindow {
     }
 }
 
-impl ui::widget::Decorator for TableWindow {
+impl tilo_ui_base::widget::Decorator for TableWindow {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -94,12 +94,12 @@ impl ui::widget::Decorator for TableWindow {
         self.content.as_mut()
     }
 
-    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
+    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
         self.declare();
         self.content.sync(state, path);
     }
 
-    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
         self.declare();
         self.content.update(state, path)
     }
@@ -174,10 +174,10 @@ fn seat_view(
     {
         stack = stack.tertiary(state);
     }
-    let avatar = ui::widget::Avatar::of(ui::component::Person {
+    let avatar = ui::widget::Avatar::of(tilo_ui_base::component::Person {
         name,
         hue: player_hue(people, player),
-        ..ui::component::Person::named(player)
+        ..tilo_ui_base::component::Person::named(player)
     });
     let mut body = ui::column![
         ui::row![avatar, stack]
@@ -246,7 +246,7 @@ fn hole_cards(table: &Table, p: &InHand, you: bool, seat: usize, people: &People
         } else if p.folded && table.hand.street.in_play() {
             continue;
         } else {
-            Showing::Back(ui::presence::identity_rgb(player_hue(
+            Showing::Back(tilo_ui_base::presence::identity_rgb(player_hue(
                 people,
                 p.player.as_str(),
             )))
@@ -355,7 +355,7 @@ fn status(table: &Table, people: &People, me: Option<&str>) -> Element {
         column = column.push(Box::new(
             Text::new(line)
                 .with_id(format!("status-{}", at.saturating_add(1)))
-                .with_live(ui::a11y::Politeness::Polite),
+                .with_live(tilo_ui_base::a11y::Politeness::Polite),
         ));
     }
     Box::new(column)
@@ -589,7 +589,7 @@ impl Grace {
     }
 }
 
-impl ui::widget::Decorator for Grace {
+impl tilo_ui_base::widget::Decorator for Grace {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -600,12 +600,12 @@ impl ui::widget::Decorator for Grace {
         self.content.as_mut()
     }
 
-    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
+    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
         self.look();
         self.content.sync(state, path);
     }
 
-    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
         let looked = self.look();
         self.content.update(state, path) || looked
     }
@@ -652,9 +652,9 @@ fn player_name(people: &People, player: &str) -> String {
 }
 
 /// A player's colour, by the same key as [`player_name`].
-fn player_hue(people: &People, player: &str) -> ui::tokens::PresenceHue {
+fn player_hue(people: &People, player: &str) -> tilo_ui_base::tokens::PresenceHue {
     MemberId::parsed_person(player).map_or_else(
-        || ui::tokens::PresenceHue::of_identity(player),
+        || tilo_ui_base::tokens::PresenceHue::of_identity(player),
         |member| people.hue(&member),
     )
 }

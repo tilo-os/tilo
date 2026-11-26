@@ -4,7 +4,7 @@ use crate::application_view::{
     validate_identity,
 };
 use crate::launch::LaunchError;
-use crate::permissions::{MemberId, PermissionContext, PermissionScope, SharedPermissions};
+use tilo_ui_base::{permissions::MemberId, permissions::PermissionContext, permissions::PermissionScope, permissions::SharedPermissions};
 use crate::resource::{
     DocumentCheckout, DocumentId, ResourceOpenError, ResourceReservation, ResourceStore,
     ResourceType,
@@ -123,7 +123,7 @@ pub struct ProcessContext {
     queued_controls: Rc<RefCell<std::collections::VecDeque<tilo_actions::ControlInvocation>>>,
     search_requests:
         Rc<RefCell<std::collections::VecDeque<crate::widget::search_request::SearchRequest>>>,
-    control_domain: crate::ControlDomain,
+    control_domain: tilo_ui_base::ControlDomain,
     closing: Rc<Cell<bool>>,
     services: crate::process::ProcessServices,
     models: crate::models::Models,
@@ -222,9 +222,9 @@ pub struct ComponentRunnerInputs {
     /// Effective snapshot, with scale metadata describing its baked values, as when
     /// each scale builder is applied once to a fresh theme. Runners preserve its
     /// palette, custom tokens, UI scale, and motion while replacing its text factor.
-    pub theme: crate::Theme,
+    pub theme: tilo_ui_base::Theme,
     /// The single owned renderer supplies the requested text factor and font locale.
-    pub text_renderer: crate::TextRenderer,
+    pub text_renderer: tilo_ui_base::TextRenderer,
 }
 
 impl ComponentRunnerInputs {
@@ -430,7 +430,7 @@ impl Reopener {
         context.files.clone_from(&self.files);
         context.private = self.private;
         context.embedded = self.embedded;
-        crate::image_store::ImageStore::serve_successor(&self.window, &context.wake_handle());
+        tilo_ui_base::image_store::ImageStore::serve_successor(&self.window, &context.wake_handle());
         Ok((context, target))
     }
 
@@ -627,7 +627,7 @@ impl ProcessContext {
             lifetime_id: uuid::Uuid::new_v4(),
             queued_controls: Rc::default(),
             search_requests: Rc::default(),
-            control_domain: crate::control_domain::ControlDomain::new(),
+            control_domain: tilo_ui_base::control_domain::ControlDomain::new(),
             closing: Rc::new(Cell::new(false)),
             services: crate::process::current(),
             models: crate::models::Models::default(),
@@ -757,9 +757,9 @@ impl ProcessContext {
         self.embedded
     }
     /// Explicit owner-bound producer capability, available before factory work.
-    pub fn control_domain(&self) -> crate::ControlDomain {
+    pub fn control_domain(&self) -> tilo_ui_base::ControlDomain {
         self.control_domain
-            .set_owner(crate::control_domain::ControlOwner::Component(
+            .set_owner(tilo_ui_base::control_domain::ControlOwner::Component(
                 std::rc::Rc::new(self.callback_binding()),
             ));
         self.control_domain.clone()
@@ -793,10 +793,10 @@ impl ProcessContext {
     /// share).
     pub fn restrict_to_reading(&mut self) {
         let reading = self.permissions.borrow().read_only();
-        self.permissions = crate::permissions::SharedPermissions::new(reading);
+        self.permissions = tilo_ui_base::permissions::SharedPermissions::new(reading);
     }
-    pub fn live_permissions(&self) -> crate::permissions::LivePermissions {
-        crate::permissions::LivePermissions::shared(self.permissions.clone())
+    pub fn live_permissions(&self) -> tilo_ui_base::permissions::LivePermissions {
+        tilo_ui_base::permissions::LivePermissions::shared(self.permissions.clone())
     }
     pub fn action_context(&self) -> &tilo_actions::ActionContext {
         &self.action_context
@@ -927,7 +927,7 @@ impl ProcessContext {
         &mut self,
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<(), ResourceOpenError> {
-        let by = crate::permissions::Acting::member(self.author.clone());
+        let by = tilo_ui_base::permissions::Acting::member(self.author.clone());
         let reservation = self.reservation.as_mut().ok_or(ResourceOpenError::Busy)?;
         reservation.initialize_by(initialize, &by)?;
         self.reservation = None;
@@ -939,7 +939,7 @@ impl ProcessContext {
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
         seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<(), ResourceOpenError> {
-        let by = crate::permissions::Acting::member(self.author.clone());
+        let by = tilo_ui_base::permissions::Acting::member(self.author.clone());
         let reservation = self.reservation.as_mut().ok_or(ResourceOpenError::Busy)?;
         reservation.initialize_seeded_by(initialize, seed, &by)?;
         self.reservation = None;
@@ -1155,7 +1155,7 @@ impl ApplicationDefinition {
                 component.application_view = application;
             }
             component.prepared = true;
-            crate::image_store::window_built(&component.context.wake_handle(), component.content());
+            tilo_ui_base::image_store::window_built(&component.context.wake_handle(), component.content());
             Ok(component)
         });
         drop(entry);
@@ -1169,7 +1169,7 @@ pub struct ComponentBehaviour {
     /// After a structural rebuild, focus the first focusable field again so a filter that rebuilds the
     /// tree keeps its caret.
     pub autofocus_on_structure_change: bool,
-    /// Apply the tree's [`crate::widget::Widget::appearance_intent`] live: scale, theme, contrast and
+    /// Apply the tree's [`tilo_ui_base::widget::Widget::appearance_intent`] live: scale, theme, contrast and
     /// motion follow it each tick.
     pub appearance_reconcile: bool,
     /// Withhold the window from screenshots, recordings, screen sharing and remote viewers, as
@@ -1326,7 +1326,7 @@ impl AppComponent {
     /// History is registered.
     pub fn open_history_at(
         &mut self,
-        entry: crate::HistoryEntryId,
+        entry: tilo_ui_base::HistoryEntryId,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
         self.history
             .as_mut()
@@ -1522,10 +1522,10 @@ impl AppComponent {
             crate::semantic_document_read::retirement::MountConstructionRetirement::new(
                 context.retirement.as_ref(),
             );
-        crate::widget::controls::attach_controls(
+        tilo_ui_base::widget::controls::attach_controls(
             root.as_mut(),
             &context.control_domain(),
-            crate::control_domain::DomainAttachment::Initial,
+            tilo_ui_base::control_domain::DomainAttachment::Initial,
         );
         context.control_domain().finish_initial_installation();
         if let Some(content) = context.content() {
@@ -1637,10 +1637,10 @@ impl AppComponent {
             return Err(LaunchError::BindingMismatch);
         }
         if let Some(root) = &mut self.root {
-            crate::widget::controls::attach_controls(
+            tilo_ui_base::widget::controls::attach_controls(
                 root.as_mut(),
                 &self.context.control_domain(),
-                crate::control_domain::DomainAttachment::Dynamic,
+                tilo_ui_base::control_domain::DomainAttachment::Dynamic,
             );
         }
         self.context
@@ -2003,7 +2003,7 @@ impl AppComponent {
                     .records
                     .with_checked(&self.context.record.id, |doc| {
                         for invocation in &owned.2 {
-                            crate::widget::poll_resource_operation(
+                            tilo_ui_base::widget::poll_resource_operation(
                                 &mut *root,
                                 *invocation,
                                 true,
@@ -2014,7 +2014,7 @@ impl AppComponent {
                     })
                     .map_err(|error| error.to_string())
             };
-            crate::widget::unmount_native_views(root);
+            tilo_ui_base::widget::unmount_native_views(root);
             result
         } else {
             Ok(())
@@ -2065,7 +2065,7 @@ impl crate::search::SearchProvider for ComponentProvider {
             .flatten()
     }
 
-    fn action_directory_invocation_domain(&self) -> crate::widget::ActionDirectoryInvocationDomain {
+    fn action_directory_invocation_domain(&self) -> tilo_ui_base::widget::ActionDirectoryInvocationDomain {
         self.invoke(|provider| provider.action_directory_invocation_domain())
             .unwrap_or_default()
     }
@@ -2302,18 +2302,19 @@ mod cleanup_tests {
 #[cfg(test)]
 mod bound_lifetime_tests {
     use super::*;
-    use crate::widget::{AppKind, Column, Widget};
+    use crate::{widget::AppKind, widget::Column};
+    use tilo_ui_base::widget::Widget;
 
     use taffy::{NodeId, TaffyTree};
     struct Root(Column);
     impl Widget for Root {
-        fn sync(&mut self, doc: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        fn sync(&mut self, doc: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
             self.0.sync(doc, path);
         }
         fn build_layout(
             &mut self,
             tree: &mut TaffyTree<()>,
-            theme: &crate::Theme,
+            theme: &tilo_ui_base::Theme,
             nodes: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             self.0.build_layout(tree, theme, nodes)
@@ -2326,14 +2327,14 @@ mod bound_lifetime_tests {
         ) {
             self.0.apply_layout(tree, node, origin);
         }
-        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
             #[allow(
                 unused_variables,
                 unused_mut,
                 reason = "a draw binds only the parts it uses"
             )]
             let (scene, transform, text, theme, mut env) = ctx.parts();
-            self.0.draw(&mut crate::draw::DrawCtx::new(
+            self.0.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text,
@@ -2344,7 +2345,7 @@ mod bound_lifetime_tests {
         fn handle_event(
             &mut self,
             event: &winit::event::WindowEvent,
-            ctx: &mut crate::widget::EventCtx<'_>,
+            ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
         ) {
             self.0.handle_event(event, ctx);
         }
@@ -2417,7 +2418,7 @@ mod bound_lifetime_tests {
                         views: views.clone(),
                         device_id: "D".into(),
                         instance_id: 7,
-                        permissions: crate::permissions::SharedPermissions::new(
+                        permissions: tilo_ui_base::permissions::SharedPermissions::new(
                             PermissionContext::permissive(),
                         ),
                         author: MemberId::person(&person),
@@ -2466,7 +2467,7 @@ mod bound_lifetime_tests {
                         views: views.clone(),
                         device_id: "D".into(),
                         instance_id: 7,
-                        permissions: crate::permissions::SharedPermissions::new(
+                        permissions: tilo_ui_base::permissions::SharedPermissions::new(
                             PermissionContext::permissive(),
                         ),
                         author: MemberId::person("probe-author"),

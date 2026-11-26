@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use ui::text_render::{TextRenderer, TextStyle};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
@@ -21,7 +21,7 @@ use video_edit::model::{TextAlign, TextSource};
 #[derive(Default)]
 pub struct TitleRaster {
     cache: HashMap<String, std::sync::Arc<Vec<u8>>>,
-    renderer: Option<ui::offscreen::OffscreenRenderer>,
+    renderer: Option<tilo_ui_base::offscreen::OffscreenRenderer>,
     size: (u32, u32),
     text: Option<TextRenderer>,
     /// Set once a raster attempt has failed, so a box that cannot render one does
@@ -58,7 +58,7 @@ impl TitleRaster {
 
     fn draw(&mut self, text: &TextSource, width: u32, height: u32) -> Option<Vec<u8>> {
         if self.renderer.is_none() || self.size != (width, height) {
-            match ui::offscreen::OffscreenRenderer::try_new(width, height) {
+            match tilo_ui_base::offscreen::OffscreenRenderer::try_new(width, height) {
                 Ok(r) => {
                     self.renderer = Some(r);
                     self.size = (width, height);
@@ -92,16 +92,16 @@ impl TitleRaster {
             text.color[3].clamp(0.0, 1.0) as f32,
         ]);
         let weight = if text.bold {
-            ui::text_render::TextWeight::Bold
+            tilo_ui_base::text_render::TextWeight::Bold
         } else {
-            ui::text_render::TextWeight::Regular
+            tilo_ui_base::text_render::TextWeight::Regular
         };
         // An empty family name means "whatever this machine calls sans", the only
         // honest default on a box whose fonts we do not know.
         let family = if text.font.trim().is_empty() {
-            ui::text_render::FontChoice::SansSerif
+            tilo_ui_base::text_render::FontChoice::SansSerif
         } else {
-            ui::text_render::FontChoice::Named(text.font.clone())
+            tilo_ui_base::text_render::FontChoice::Named(text.font.clone())
         };
 
         // Lines are laid out from the block's centre, so a multi-line title stays
@@ -165,22 +165,22 @@ impl TitleRaster {
 /// Measured through the same `measure_font` the drawing uses, so the wrap and the
 /// paint agree about what fits. Called only when a raster is rebuilt.
 fn wrap_to(
-    tr: &mut ui::text_render::TextRenderer,
+    tr: &mut tilo_ui_base::text_render::TextRenderer,
     line: &str,
     size: f32,
-    weight: ui::text_render::TextWeight,
+    weight: tilo_ui_base::text_render::TextWeight,
     italic: bool,
-    family: &ui::text_render::FontChoice,
+    family: &tilo_ui_base::text_render::FontChoice,
     max_w: f64,
     frame_w: f64,
 ) -> Vec<String> {
-    let fits = |tr: &mut ui::text_render::TextRenderer, s: &str| -> bool {
+    let fits = |tr: &mut tilo_ui_base::text_render::TextRenderer, s: &str| -> bool {
         f64::from(tr.measure_font(s, size, None, weight, italic, family).0) <= max_w
     };
     // Mid-letter breaking is measured against the **frame**, not the title-safe box:
     // safe-area is a placement margin, and "HELLO" chopped to "HELL" / "O" is worse
     // than a title sitting slightly wider than broadcast-safe.
-    let fits_frame = |tr: &mut ui::text_render::TextRenderer, s: &str| -> bool {
+    let fits_frame = |tr: &mut tilo_ui_base::text_render::TextRenderer, s: &str| -> bool {
         f64::from(tr.measure_font(s, size, None, weight, italic, family).0) <= frame_w
     };
 
@@ -241,7 +241,7 @@ mod tests {
         // texel's colour over what is beneath, which is only correct for **straight**
         // alpha: premultiplied bytes would darken every antialiased edge.
         {
-            let Ok(mut r) = ui::offscreen::OffscreenRenderer::try_new(8, 8) else {
+            let Ok(mut r) = tilo_ui_base::offscreen::OffscreenRenderer::try_new(8, 8) else {
                 panic!("the title raster tests need a wgpu adapter (llvmpipe is enough)");
             };
             let mut scene = Scene::new();
@@ -263,9 +263,9 @@ mod tests {
         // A single word wider than the title-safe box is left whole: safe-area is a
         // margin, not a limit.
         {
-            let mut tr = ui::text_render::TextRenderer::new();
-            let family = ui::text_render::FontChoice::default();
-            let weight = ui::text_render::TextWeight::Bold;
+            let mut tr = tilo_ui_base::text_render::TextRenderer::new();
+            let family = tilo_ui_base::text_render::FontChoice::default();
+            let weight = tilo_ui_base::text_render::TextWeight::Bold;
             let size = 0.52 * 720.0;
             let safe = 1280.0 * 0.84;
             let frame = 1280.0;

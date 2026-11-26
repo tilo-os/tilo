@@ -663,7 +663,7 @@ fn top_title(session: &mut Session) -> String {
 fn top_shown(session: &mut Session) -> String {
     accessible(session)
         .into_iter()
-        .filter(|node| node.role == ui::a11y::Role::ListItem)
+        .filter(|node| node.role == tilo_ui_base::a11y::Role::ListItem)
         .find(|node| node.bounds.is_some_and(|bounds| bounds.y0 >= 0.0))
         .and_then(|node| node.shown_name().map(str::to_owned))
         .expect("the window shows a row")
@@ -681,7 +681,7 @@ fn first_check(session: &mut Session) -> (String, f64, f64) {
     let node = accessible(session)
         .into_iter()
         .find(|node| {
-            node.role == ui::a11y::Role::ListItem
+            node.role == tilo_ui_base::a11y::Role::ListItem
                 && node.state.checked != Some(true)
                 && node.bounds.is_some()
         })
@@ -697,7 +697,7 @@ fn first_check(session: &mut Session) -> (String, f64, f64) {
 /// Whether the list shows `title` checked off.
 fn checked_off(session: &mut Session, title: &str) -> bool {
     accessible(session).into_iter().any(|node| {
-        node.role == ui::a11y::Role::ListItem
+        node.role == tilo_ui_base::a11y::Role::ListItem
             && node.answers_to(title)
             && node.state.checked == Some(true)
     })
@@ -706,7 +706,7 @@ fn checked_off(session: &mut Session, title: &str) -> bool {
 /// Whether the sidebar shows `place` chosen.
 fn chosen(session: &mut Session, place: &str) -> bool {
     accessible(session).into_iter().any(|node| {
-        node.role == ui::a11y::Role::TreeItem && node.answers_to(place) && node.state.selected
+        node.role == tilo_ui_base::a11y::Role::TreeItem && node.answers_to(place) && node.state.selected
     })
 }
 
@@ -717,7 +717,7 @@ fn chosen(session: &mut Session, place: &str) -> bool {
 fn what_the_interactions_a_person_feels_cost() {
     // The `settled` guard keeps the window's motion out of the measurement: what is measured is
     // the work that shows the result, not the frames that finish its animation.
-    let _motion = ui::motion::testing::settled();
+    let _motion = tilo_ui_base::motion::testing::settled();
     let mut costs = Costs::default();
 
     // The workspace is seeded before the window opens: what opening it costs is the window's
@@ -842,7 +842,7 @@ fn opening_a_window_does_the_work_the_window_shows(
     seeded: &Rc<tilolang_process::testing::Bus>,
     large: &Rc<tilolang_process::testing::Bus>,
 ) {
-    let _motion = ui::motion::testing::settled();
+    let _motion = tilo_ui_base::motion::testing::settled();
     let mut opened = Vec::new();
     for (n, bus) in [(1_000, seeded), (SEEDED, large)] {
         let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
@@ -1007,7 +1007,7 @@ fn turns_until_rest(session: &mut Session) -> u32 {
 fn scrolling_asks_the_app_for_rows_ahead_not_once_a_row(
     seeded: &Rc<tilolang_process::testing::Bus>,
 ) {
-    let _motion = ui::motion::testing::settled();
+    let _motion = tilo_ui_base::motion::testing::settled();
     let bus = Rc::clone(seeded);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = opened_at_rest_in(&bus, &route);
@@ -1083,7 +1083,7 @@ fn scroll_the_list(session: &mut Session, costs: &mut Costs) {
 fn a_change_indexes_nothing(seeded: &Rc<tilolang_process::testing::Bus>) {
     use ui::winit::keyboard::NamedKey;
 
-    let _motion = ui::motion::testing::settled();
+    let _motion = tilo_ui_base::motion::testing::settled();
     let bus = Rc::clone(seeded);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = opened_at_rest_in(&bus, &route);
@@ -1130,7 +1130,7 @@ fn renders(session: &Session) -> u64 {
 /// nothing else, so what runs again is the boundary that read it — the entry and the chips it
 /// shows — and the list around it, every row of it, stands as it is.
 fn typing_in_the_entry_renders_the_entry(seeded: &Rc<tilolang_process::testing::Bus>) {
-    let _motion = ui::motion::testing::settled();
+    let _motion = tilo_ui_base::motion::testing::settled();
     let bus = Rc::clone(seeded);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = opened_at_rest_in(&bus, &route);
@@ -1160,7 +1160,7 @@ fn typing_in_the_entry_renders_the_entry(seeded: &Rc<tilolang_process::testing::
 fn a_row_opens_where_it_stands_after_tasks_are_checked(
     seeded: &Rc<tilolang_process::testing::Bus>,
 ) {
-    let _motion = ui::motion::testing::settled();
+    let _motion = tilo_ui_base::motion::testing::settled();
     let bus = Rc::clone(seeded);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = opened_at_rest_in(&bus, &route);
@@ -1200,7 +1200,7 @@ fn a_row_opens_where_it_stands_after_tasks_are_checked(
 fn a_task_opened_from_search_shows_its_page(seeded: &Rc<tilolang_process::testing::Bus>) {
     use ui::winit::keyboard::NamedKey;
 
-    let _motion = ui::motion::testing::settled();
+    let _motion = tilo_ui_base::motion::testing::settled();
     for typed in [false, true] {
         let bus = Rc::clone(seeded);
         let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
@@ -1326,7 +1326,7 @@ fn checking_a_task_reads_its_column_from_the_index(seeded: &Rc<tilolang_process:
     /// listing.
     const SLACK: u64 = 64;
 
-    let _motion = ui::motion::testing::settled();
+    let _motion = tilo_ui_base::motion::testing::settled();
     let mut built = Vec::new();
     for n in [100, SEEDED] {
         let bus = if n == SEEDED {
@@ -1373,7 +1373,7 @@ fn checking_a_task_reads_its_column_from_the_index(seeded: &Rc<tilolang_process:
 /// that shows it — the row grown into it where it stands — and the row behind it run again, and
 /// the rest of the window stands.
 fn typing_a_tasks_title_reruns_the_views_that_read_it(seeded: &Rc<tilolang_process::testing::Bus>) {
-    let _motion = ui::motion::testing::settled();
+    let _motion = tilo_ui_base::motion::testing::settled();
     let bus = Rc::clone(seeded);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = opened_at_rest_in(&bus, &route);
@@ -1413,7 +1413,7 @@ const COLD_FIRST_FRAME: Held = Held {
 /// the window shows, never what the workspace holds.
 #[test]
 fn a_cold_window_over_ten_thousand_tasks_draws_its_first_frame_within_a_second() {
-    let _motion = ui::motion::testing::settled();
+    let _motion = tilo_ui_base::motion::testing::settled();
     let bus = seeded_tasks(SEEDED);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let started = ui::time::Instant::now();
@@ -1439,7 +1439,7 @@ fn a_cold_window_over_ten_thousand_tasks_draws_its_first_frame_within_a_second()
 /// boundaries rather than every row the window shows.
 #[test]
 fn checking_tasks_one_after_another_keeps_the_list_rendering() {
-    let _motion = ui::motion::testing::settled();
+    let _motion = tilo_ui_base::motion::testing::settled();
     let bus = seeded_tasks(100);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = opened_at_rest_in(&bus, &route);
@@ -1470,7 +1470,7 @@ fn checking_tasks_one_after_another_keeps_the_list_rendering() {
 /// tree once. The row then reads its title and its box checked off, in a workspace of a hundred
 /// tasks and of ten thousand.
 fn a_step_reaches_the_window_in_one_frame(seeded: &Rc<tilolang_process::testing::Bus>) {
-    let _motion = ui::motion::testing::settled();
+    let _motion = tilo_ui_base::motion::testing::settled();
     for n in [100, SEEDED] {
         // The ten thousand are the test's, seeded once; the hundred are seeded here.
         let bus = if n == SEEDED {
@@ -1562,7 +1562,7 @@ fn a_step_lays_out_what_it_changes(seeded: &Rc<tilolang_process::testing::Bus>) 
     /// for what it changed.
     const STEPS_INPUT_FRAMES: u64 = 2;
 
-    let _motion = ui::motion::testing::settled();
+    let _motion = tilo_ui_base::motion::testing::settled();
     let doc = Rc::clone(seeded);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = on_the_frame_clock(opened_at_rest_in(&doc, &route));
@@ -1663,7 +1663,7 @@ fn a_step_lays_out_what_it_changes(seeded: &Rc<tilolang_process::testing::Bus>) 
 /// nothing is due, and what the last frame drew is what it shows.
 #[test]
 fn a_window_at_rest_asks_its_host_for_no_frame() {
-    let _motion = ui::motion::testing::settled();
+    let _motion = tilo_ui_base::motion::testing::settled();
     let bus = seeded_tasks(20);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = opened_at_rest_in(&bus, &route);
@@ -1686,7 +1686,7 @@ fn a_window_at_rest_asks_its_host_for_no_frame() {
 fn opening_a_rows_page_mounts_the_document_where_the_row_stands(
     seeded: &Rc<tilolang_process::testing::Bus>,
 ) {
-    let _motion = ui::motion::testing::settled();
+    let _motion = tilo_ui_base::motion::testing::settled();
     let bus = Rc::clone(seeded);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = on_the_frame_clock(opened_at_rest_in(&bus, &route));
@@ -1771,7 +1771,7 @@ const EDITOR_SUBTREE: usize = 12;
 /// turned to. Notes are read one after another all day, and the window around them stands.
 #[test]
 fn choosing_another_note_in_the_tree_keeps_the_windows_composition() {
-    let _motion = ui::motion::testing::settled();
+    let _motion = tilo_ui_base::motion::testing::settled();
     let mut session = Session::rich();
     for round in 0..2 {
         press_new_note(&mut session);
@@ -1830,7 +1830,7 @@ fn choosing_another_note_in_the_tree_keeps_the_windows_composition() {
 fn choosing_another_task_keeps_the_windows_composition(
     seeded: &Rc<tilolang_process::testing::Bus>,
 ) {
-    let _motion = ui::motion::testing::settled();
+    let _motion = tilo_ui_base::motion::testing::settled();
     let bus = Rc::clone(seeded);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = on_the_frame_clock(opened_at_rest_in(&bus, &route));

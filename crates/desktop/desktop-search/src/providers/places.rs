@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
-use ui::text_match::FieldWeight;
+use tilo_ui_base::text_match::FieldWeight;
 
 use crate::model::{Hit, LaunchPlace, Source, Target};
 
@@ -153,9 +153,9 @@ impl Continue {
     /// puts its own name in the window bar, and listing that again would
     /// list "Notes" instead of the notes.
     fn names_a_place(&self, place: &Place) -> bool {
-        let label = ui::text_match::fold_search_text(place.label.trim());
+        let label = tilo_ui_base::text_match::fold_search_text(place.label.trim());
         !label.is_empty()
-            && label != ui::text_match::fold_search_text(&(self.app_name)(&place.app))
+            && label != tilo_ui_base::text_match::fold_search_text(&(self.app_name)(&place.app))
             && !crate::names::is_apps_own_name(&place.app, &place.label)
     }
 
@@ -178,7 +178,7 @@ impl Continue {
             && self.now > place.at
             && let Ok(ago) = i64::try_from(self.now.saturating_sub(place.at))
         {
-            facts.push(ui::format::relative(ago));
+            facts.push(tilo_ui_base::format::relative(ago));
         }
         facts.push((self.app_name)(&place.app));
         if place.workspace != self.home {
@@ -215,7 +215,7 @@ impl Continue {
             subtitle: None,
             facts,
             score,
-            icon: Some(ui::icons::app_glyph(
+            icon: Some(tilo_ui_base::icons::app_glyph(
                 &place.app,
                 crate::availability::category_for(&place.app),
             )),

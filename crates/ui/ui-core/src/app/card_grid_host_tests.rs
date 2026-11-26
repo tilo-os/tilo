@@ -1,6 +1,7 @@
 use super::*;
-use crate::widget::{AppModel, ModelPath};
-use crate::widget::{Button, Card, CardGrid, Column, Container, Element};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
+use crate::{widget::Button, widget::Card, widget::CardGrid, widget::Column, widget::Container};
+use tilo_ui_base::widget::Element;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -95,7 +96,7 @@ tilo_test_env::scenario! {
             assert_eq!(app.focused_node, Some(app.focusable_order[4]));
             let order = app.focusable_order.clone();
             let mut scene = Scene::new();
-            app.root_widget.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut app.text_renderer, &app.theme, PresenceCtx::default().draw_env()));
+            app.root_widget.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut app.text_renderer, &app.theme, PresenceCtx::default().draw_env()));
             assert_eq!(
                 button_rects(&app),
                 before,
@@ -111,8 +112,8 @@ tilo_test_env::scenario! {
                 root,
                 (200, 600),
                 Theme::dark(),
-                crate::font_catalog::fixture_renderer(),
-                crate::permissions::MemberId::person("grid-test"),
+                tilo_ui_base::font_catalog::fixture_renderer(),
+                tilo_ui_base::permissions::MemberId::person("grid-test"),
             );
             let snapshot = driver.inspection();
             let grid = &snapshot.root.children[0];
@@ -194,7 +195,7 @@ tilo_test_env::scenario! {
             assert!(app.dispatch_semantic_click(target.x, target.y));
             assert_eq!(*clicks.borrow(), vec![1]);
             let mut scene = Scene::new();
-            app.root_widget.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut app.text_renderer, &app.theme, PresenceCtx::default().draw_env()));
+            app.root_widget.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut app.text_renderer, &app.theme, PresenceCtx::default().draw_env()));
             for (&node, before) in app.focusable_order.iter().zip(rects) {
                 assert_eq!(
                     app.inspect_node(node, |widget| widget.get_rect()).unwrap(),
@@ -250,7 +251,7 @@ tilo_test_env::scenario! {
                 };
                 let card_h = cards[0].get_rect().height();
                 let rows = 6_usize.div_ceil(columns);
-                assert!((height - (crate::num::f64_of_usize(rows) * (card_h + gap) - gap)).abs() < 0.5);
+                assert!((height - (tilo_ui_base::num::f64_of_usize(rows) * (card_h + gap) - gap)).abs() < 0.5);
                 assert!((cards[columns].get_rect().y0 - (card_h + gap)).abs() < 0.5);
                 for card in cards {
                     assert_eq!(card.get_rect().height(), card_h);
@@ -293,7 +294,7 @@ tilo_test_env::scenario! {
             let node = app.focusable_order[0];
             app.set_focused_node(Some(node));
             let state = app
-                .inspect_node(node, |widget| crate::widget::undo_points::get_state(widget))
+                .inspect_node(node, |widget| tilo_ui_base::widget::undo_points::get_state(widget))
                 .unwrap();
             assert!(state.is_some());
             for width in [200, 600, 900] {
@@ -301,7 +302,7 @@ tilo_test_env::scenario! {
                 assert_eq!(app.focusable_order, vec![node]);
                 assert_eq!(app.focused_node, Some(node));
                 assert_eq!(
-                    app.inspect_node(node, |widget| crate::widget::undo_points::get_state(widget))
+                    app.inspect_node(node, |widget| tilo_ui_base::widget::undo_points::get_state(widget))
                         .unwrap(),
                     state
                 );
@@ -443,14 +444,14 @@ impl Widget for GrowingBody {
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.column.apply_layout(tree, node, origin);
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.column.draw(&mut crate::draw::DrawCtx::new(
+        self.column.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -458,7 +459,7 @@ impl Widget for GrowingBody {
             env.clone(),
         ));
     }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.column.handle_event(event, ctx);
     }
     fn children(&self) -> Vec<&dyn Widget> {

@@ -17,7 +17,7 @@ use serde_json::{Map, json};
 use tilo_app_window::{UiNode, Value};
 use tilolang_process::testing::Bus;
 use tilolang_tilo::runtime::{Invoked, ResourceRef, Value as RtValue};
-use ui::permissions::policy::{self, MemberAccess};
+use tilo_ui_base::{permissions::policy, permissions::policy::MemberAccess};
 use ui::tilo_actions::MemberId;
 
 use super::{CHAT, Session, Window, find, spec_of};
@@ -345,7 +345,7 @@ fn send_with_the_control(session: &mut Session, said: &str) {
 /// with the Send control: the message is in the conversation, by them.
 #[test]
 fn a_person_writes_a_message_in_a_conversation_with_their_agent_and_sends_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, _workspace) = chat_with_an_agent();
     open_the_agents_conversation(&mut session);
     send_with_the_control(&mut session, "Plan the release with me");
@@ -374,7 +374,7 @@ fn a_person_writes_a_message_in_a_conversation_with_their_agent_and_sends_it() {
 /// it, the model it asked and the step it took.
 #[test]
 fn an_agents_answer_stands_with_its_turn_and_author() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, workspace) = chat_with_an_agent();
     open_the_agents_conversation(&mut session);
     send_with_the_control(&mut session, "Plan the release with me");
@@ -434,7 +434,7 @@ fn an_agents_answer_stands_with_its_turn_and_author() {
 /// in words.
 #[test]
 fn an_agents_written_view_is_drawn_inside_its_message() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, _workspace) = chat_with_an_agent();
     open_the_agents_conversation(&mut session);
     send_with_the_control(&mut session, "How many of each?");
@@ -472,7 +472,7 @@ fn an_agents_written_view_is_drawn_inside_its_message() {
 /// after it stands in the conversation.
 #[test]
 fn an_agents_ask_shows_and_the_persons_answer_goes_to_the_dispatch() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, workspace) = chat_with_an_agent();
     open_the_agents_conversation(&mut session);
     send_with_the_control(&mut session, "Send the plan to the team");
@@ -522,8 +522,8 @@ fn an_agents_ask_shows_and_the_persons_answer_goes_to_the_dispatch() {
         .nodes()
         .into_iter()
         .filter_map(|node| node.semantics.as_ref())
-        .flat_map(ui::a11y::AccessNode::nodes)
-        .find(|node| node.role == ui::a11y::Role::Button && node.answers_to("Allow"))
+        .flat_map(tilo_ui_base::a11y::AccessNode::nodes)
+        .find(|node| node.role == tilo_ui_base::a11y::Role::Button && node.answers_to("Allow"))
         .and_then(|node| node.bounds)
         .expect("Allow stands where the step waits");
     session.window.click_at(
@@ -641,7 +641,7 @@ fn glide(session: &mut Session) {
 #[test]
 fn a_running_turn_is_stopped_from_its_message() {
     use ui::tilo_actions::remote::{InvokeArgument, RemoteActionMessage};
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, workspace) = chat_with_an_agent();
     open_the_agents_conversation(&mut session);
     send_with_the_control(&mut session, "Plan the release with me");
@@ -706,7 +706,7 @@ fn a_running_turn_is_stopped_from_its_message() {
 /// first one, so a person reads a conversation of any length from its start.
 #[test]
 fn a_long_conversation_is_read_back_to_its_first_message() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, _workspace) = chat_with_an_agent();
     open_the_agents_conversation(&mut session);
     let direct = conversation(&session, AGENT_NAME);
@@ -755,7 +755,7 @@ fn a_long_conversation_is_read_back_to_its_first_message() {
 /// then sent quotes it above its own words, in the conversation and in what Chat keeps.
 #[test]
 fn a_person_replies_to_a_message_and_the_window_quotes_what_it_answers() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, _workspace) = chat_with_an_agent();
     open_the_agents_conversation(&mut session);
     send_with_the_control(&mut session, "Plan the release with me");
@@ -1037,7 +1037,7 @@ fn opened() -> runtime_portal::tools::ToolReply {
 /// in the app that opens its kind, through the system's open action.
 #[test]
 fn a_person_adds_two_files_to_a_message_and_opens_one() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let picks = Picks::several(vec![
         ("Launch plan.pdf", b"%PDF-1.4 the launch plan"),
         ("notes.md", b"# Notes\n"),

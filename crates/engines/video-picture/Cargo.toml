@@ -20,6 +20,7 @@ video-edit = { package = "tilo-video-edit", path = "../video-edit", default-feat
 media = { package = "tilo-media", path = "../tilo-media", default-features = false }
 # A still is written as the PNG the window shows.
 thumbnail = { package = "tilo-thumbnail", path = "../thumbnail" }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # The frame's GPU pipeline and the host clock a source waits by.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", default-features = false }
 tilo-files = { path = "../../platform/tilo-files" }

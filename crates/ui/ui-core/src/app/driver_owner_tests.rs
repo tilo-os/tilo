@@ -21,7 +21,8 @@ use crate::bound_dispatch::{BoundDispatchError, ComponentRequest};
 use crate::headless::Driver;
 use crate::owner_wake::OwnerWakeQueue;
 use crate::state::State;
-use crate::widget::{AppKind, AppWidget, BoundAppWidget, IconDescriptor, Widget};
+use crate::{widget::AppKind, widget::AppWidget, widget::BoundAppWidget, widget::IconDescriptor};
+use tilo_ui_base::widget::Widget;
 
 #[derive(Clone, Default)]
 struct Seen {
@@ -51,12 +52,12 @@ impl tilo_actions::Action for BackgroundWrite {
 }
 
 impl Widget for OwnerProbe {
-    crate::provides!(
-        dyn crate::widget::undo_points::UndoPoints,
-        dyn crate::widget::undo_access::CommittedActions
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::undo_points::UndoPoints,
+        dyn tilo_ui_base::widget::undo_access::CommittedActions
     );
 
-    fn update(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) -> bool {
+    fn update(&mut self, _: &tilo_ui_base::widget::AppModel, _: &tilo_ui_base::widget::ModelPath) -> bool {
         self.seen.updates.set(self.seen.updates.get() + 1);
         false
     }
@@ -73,8 +74,8 @@ impl Widget for OwnerProbe {
         false
     }
 
-    fn sync(&mut self, model: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
-        let (doc, root) = crate::doc::document_ref(model, path);
+    fn sync(&mut self, model: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+        let (doc, root) = tilo_ui_base::doc::document_ref(model, path);
         // The owner syncs over its own record, which holds only its content: who the record is
         // the workspace's store keeps.
         assert!(
@@ -90,7 +91,7 @@ impl Widget for OwnerProbe {
         );
     }
 
-    fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, _: &automerge::ObjId) {
+    fn settle(&mut self, edits: &mut tilo_ui_base::widget::Edits<'_>, _: &automerge::ObjId) {
         if self.seen.write_next.replace(false) {
             self.actions
                 .apply(
@@ -104,13 +105,13 @@ impl Widget for OwnerProbe {
     }
 }
 
-impl crate::widget::undo_access::CommittedActions for OwnerProbe {
+impl tilo_ui_base::widget::undo_access::CommittedActions for OwnerProbe {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }
 }
 
-impl crate::widget::undo_points::UndoPoints for OwnerProbe {
+impl tilo_ui_base::widget::undo_points::UndoPoints for OwnerProbe {
     fn get_state(&self) -> Option<String> {
         None
     }
@@ -205,10 +206,10 @@ struct HiddenOwners {
 }
 
 impl Widget for HiddenOwners {
-    crate::provides!(dyn crate::bound_dispatch::BoundTraversal);
+    tilo_ui_base::provides!(dyn crate::bound_dispatch::BoundTraversal);
     crate::testing::inert_widget_methods!(leaf_layout, name = "hidden-owner-host");
 
-    fn sync(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) {}
+    fn sync(&mut self, _: &tilo_ui_base::widget::AppModel, _: &tilo_ui_base::widget::ModelPath) {}
 
     fn children(&self) -> Vec<&dyn Widget> {
         self.owners.iter().map(|o| o as &dyn Widget).collect()
@@ -372,7 +373,7 @@ fn a_save_status_change_is_no_structure_change() {
     );
     assert_eq!(
         owner.take_structure_change(),
-        crate::widget::StructureChange::None,
+        tilo_ui_base::widget::StructureChange::None,
         "a save status change rebuilds no layout tree"
     );
     assert!(owner.needs_redraw(), "what shows the status is drawn again");

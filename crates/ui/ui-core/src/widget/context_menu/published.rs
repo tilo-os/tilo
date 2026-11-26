@@ -24,8 +24,8 @@ impl ContextMenu {
     }
 
     /// Every press the menu's rows hold, nested rows under their parent.
-    fn presses(&self) -> Vec<crate::widget::Press> {
-        fn collect(items: &[MenuItem], into: &mut Vec<crate::widget::Press>) {
+    fn presses(&self) -> Vec<tilo_ui_base::widget::Press> {
+        fn collect(items: &[MenuItem], into: &mut Vec<tilo_ui_base::widget::Press>) {
             for item in items {
                 if let Some(press) = item.press() {
                     into.push(press.clone());
@@ -45,11 +45,11 @@ impl ContextMenu {
     }
 }
 
-impl crate::widget::controls::ActionControls for ContextMenu {
+impl tilo_ui_base::widget::controls::ActionControls for ContextMenu {
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         for press in self.presses() {
             press.attach(domain, attachment);
@@ -76,12 +76,12 @@ impl crate::widget::controls::ActionControls for ContextMenu {
 
     /// Each row that runs an action is bound to it, under the target its accessibility node
     /// names.
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        let mut bindings = crate::widget::controls::default_bindings(self);
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
+        let mut bindings = tilo_ui_base::widget::controls::default_bindings(self);
         for (index, address) in self.action_rows() {
-            bindings.push(crate::widget::ControlBindingMetadata {
+            bindings.push(tilo_ui_base::widget::ControlBindingMetadata {
                 control_id: format!("context-menu:item:{index}"),
-                kind: crate::widget::ControlBindingKind::Action(address),
+                kind: tilo_ui_base::widget::ControlBindingKind::Action(address),
             });
         }
         bindings
@@ -102,10 +102,10 @@ mod tests {
             MenuItem::selection("Rename"),
         ]);
         menu.open_at([0.0, 0.0]);
-        let bindings = crate::widget::controls::control_action_bindings(&menu)
+        let bindings = tilo_ui_base::widget::controls::control_action_bindings(&menu)
             .into_iter()
             .filter_map(|binding| match binding.kind {
-                crate::widget::ControlBindingKind::Action(address) => {
+                tilo_ui_base::widget::ControlBindingKind::Action(address) => {
                     Some((binding.control_id, address))
                 }
                 _ => None,

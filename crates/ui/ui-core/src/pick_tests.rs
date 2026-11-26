@@ -1,5 +1,5 @@
 use super::*;
-use crate::a11y::{AccessBounds, AccessNode, AccessState, Role};
+use tilo_ui_base::{a11y::AccessBounds, a11y::AccessNode, a11y::AccessState, a11y::Role};
 
 struct Node {
     name: &'static str,
@@ -183,8 +183,8 @@ tilo_test_env::scenario! {
 
 #[test]
 fn text_from_the_catalogue_is_interface_copy_and_literal_or_bound_text_is_content() {
-    crate::i18n::I18nManager::init("en-US");
-    crate::i18n::I18nManager::add_resource("en-US", "pick-test-heading = Settings\n".into());
+    tilo_ui_base::i18n::I18nManager::init("en-US");
+    tilo_ui_base::i18n::I18nManager::add_resource("en-US", "pick-test-heading = Settings\n".into());
     let heading = crate::widget::Text::new("pick-test-heading");
     let node = Widget::accessibility(&heading).unwrap();
     assert_eq!(node.name.as_deref(), Some("Settings"));

@@ -38,13 +38,13 @@ mod tests {
 
         phase semantic_set_value_continuation_covers_actual_generated_effective_snapshot;
         {
-            use crate::widget::Widget;
+            use tilo_ui_base::widget::Widget;
             let mut field =
                 crate::widget::EditableLabel::new("Original").with_accessible_name("Page title");
             field.set_semantic_target(Some("notes:page-title:page-a".into()));
             let mut taffy = taffy::TaffyTree::<()>::new();
             let mut map = std::collections::HashMap::new();
-            let root = field.build_layout(&mut taffy, &crate::theme::Theme::dark(), &mut map);
+            let root = field.build_layout(&mut taffy, &tilo_ui_base::theme::Theme::dark(), &mut map);
             taffy
                 .compute_layout(
                     root,

@@ -480,7 +480,7 @@ impl Bus {
         route: &RouteSpec,
         from: &Inbox,
         person: &str,
-        key: &ui_core::presence::PresenceKey,
+        key: &tilo_ui_base::presence::PresenceKey,
         payload: &collaboration::PresencePayload,
     ) {
         for (joined, _, inbox) in self.joined.borrow().iter() {
@@ -488,7 +488,7 @@ impl Bus {
                 inbox
                     .borrow_mut()
                     .push_back(CollabEvent::RemotePresenceUpdate {
-                        member: ui_core::permissions::MemberId::person(person),
+                        member: tilo_ui_base::permissions::MemberId::person(person),
                         key: key.clone(),
                         payload: payload.clone(),
                     });

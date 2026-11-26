@@ -14,7 +14,7 @@ use tilo_workspace_emoji::{EmojiImage, WorkspaceEmoji as Record, workspace_emoji
 use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value, ViewInstance};
 use ui::kurbo::{Point, Rect};
-use ui::workspace_emoji::{CustomEmoji, EmojiSource, Small, WorkspaceEmoji, make_small};
+use tilo_ui_base::{workspace_emoji::CustomEmoji, workspace_emoji::EmojiSource, workspace_emoji::Small, workspace_emoji::WorkspaceEmoji, workspace_emoji::make_small};
 
 use crate::fixtures::{Replica as Device, Workspace, target};
 
@@ -174,14 +174,14 @@ fn pill_widths(emoji: &[&str]) -> Vec<f64> {
             first_at: 0,
         })
         .collect();
-    let theme = ui::Theme::dark();
+    let theme = tilo_ui_base::Theme::dark();
     ui::widget::reaction_strip::layout(
         &groups,
         &[],
         None,
         true,
         (Point::ZERO, 800.0),
-        &mut ui::text_render::TextRenderer::new(),
+        &mut tilo_ui_base::text_render::TextRenderer::new(),
         &ui::widget::reaction_strip::StripMetrics::of(&theme),
     )
     .pills()
@@ -201,7 +201,7 @@ fn frequent_row_leads_with_the_most_used() {
     picker.open_at(
         Some(Rect::new(100.0, 40.0, 130.0, 70.0)),
         Rect::new(0.0, 0.0, 1280.0, 800.0),
-        &ui::Theme::dark(),
+        &tilo_ui_base::Theme::dark(),
     );
     let items = picker.items();
     assert_eq!(
@@ -257,7 +257,7 @@ fn a_workspace_emoji_is_added_reacted_with_drawn_offered_and_kept_from_others() 
     // Ada's window draws the workspace's emoji from the record.
     let scope = ui::WakeScope::new();
     let _in = scope.enter();
-    ui::workspace_emoji::register(&scope.handle(), Rc::clone(&held) as Rc<dyn EmojiSource>);
+    tilo_ui_base::workspace_emoji::register(&scope.handle(), Rc::clone(&held) as Rc<dyn EmojiSource>);
 
     // She reacts to a message with it from the message's picker.
     let (ada, _) = Device::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);

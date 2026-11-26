@@ -28,8 +28,8 @@ use media::playback_cast::transport::ProjectorTransport;
 use media::playback_sink::SystemSinkFactory;
 use tilo_app_window::AppWindow;
 use tilolang_tilo::bundle::Bundle;
-use ui::widget::DrawChild;
-use ui::widget::{AppModel, ModelPath, Widget};
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::Widget};
 
 /// The variable the launcher sets for a window whose instance a tilolang host runs.
 pub const HOSTED_ENV: &str = "TILO_TILOLANG_HOSTED";
@@ -462,14 +462,14 @@ struct InProcess {
     /// The person's access in the workspace as the window's host keeps it, read each turn,
     /// and what the instance was last told of it: it offers and invokes by that.
     access: Option<AccessSource>,
-    told_access: Option<ui::permissions::MemberAccess>,
+    told_access: Option<tilo_ui_base::permissions::MemberAccess>,
     /// The identity connection the instance signs on, when it joined its workspace: it outlives
     /// the host, which is dropped first.
     _identity: Option<runtime_portal::process_link::Descriptor>,
 }
 
 /// Where a window running its instance in this process reads the person's access from.
-type AccessSource = Box<dyn Fn() -> Option<ui::permissions::MemberAccess>>;
+type AccessSource = Box<dyn Fn() -> Option<tilo_ui_base::permissions::MemberAccess>>;
 
 impl InProcess {
     /// The host's turns until it has nothing more to take in now. Whether anything changed.
@@ -630,7 +630,7 @@ pub struct HostedWindow {
     /// The instance asked for the window to come forward ("Show this window").
     activation: std::cell::Cell<bool>,
     /// Shown until the patch connection arrives: the platform's loading state.
-    waiting: ui::widget::Element,
+    waiting: tilo_ui_base::widget::Element,
     /// The host running the window's instance in this process, without a session.
     in_process: Option<InProcess>,
 }
@@ -805,7 +805,7 @@ impl HostedWindow {
     /// window on its launch and whenever the workspace's policy changes.
     pub fn follow_access(
         &mut self,
-        source: impl Fn() -> Option<ui::permissions::MemberAccess> + 'static,
+        source: impl Fn() -> Option<tilo_ui_base::permissions::MemberAccess> + 'static,
     ) {
         if let Some(running) = &mut self.in_process {
             running.access = Some(Box::new(source));
@@ -1140,13 +1140,13 @@ impl ui::widget::AwaitsContent for HostedWindow {
 
 /// The window stands for what it shows (the app window's window, or the loading state before it)
 /// in the layout and in every walk of the widgets: it adds no node of its own.
-impl ui::widget::Decorator for HostedWindow {
+impl tilo_ui_base::widget::Decorator for HostedWindow {
     type Inner = dyn Widget;
 
     // What the window itself answers, and everything else the widget it shows: the app window's
     // window publishes the app's actions for the command palette and does the one the person
     // chooses ([`tilo_app_window::catalogue`]), so a request for either reaches it through here.
-    ui::provides!(
+    tilo_ui_base::provides!(
         dyn ui::component_lifecycle::WindowActivation,
         dyn ui::component_lifecycle::WindowTitle,
         dyn ui::component_lifecycle::HostIntents,
@@ -1212,7 +1212,7 @@ impl ui::widget::Decorator for HostedWindow {
     fn handle_event(
         &mut self,
         event: &ui::winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         self.content_mut().handle_event(event, ctx);
         // What the person did goes to the instance at once, not on the next frame.
@@ -1221,7 +1221,7 @@ impl ui::widget::Decorator for HostedWindow {
         }
     }
 
-    fn draw(&mut self, ctx: &mut ui_core::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1278,7 +1278,7 @@ impl ui::widget::Decorator for HostedWindow {
         }
     }
 
-    fn take_structure_change(&mut self) -> ui::widget::StructureChange {
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
         match &mut self.connected {
             Some(connected) => Widget::take_structure_change(&mut connected.view),
             None => self.waiting.take_structure_change(),

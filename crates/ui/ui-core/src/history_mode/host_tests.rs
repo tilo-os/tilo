@@ -1,10 +1,7 @@
 use super::*;
-use crate::{
-    State,
-    headless::Driver,
-    widget::{Button, Column, Widget},
-};
-use crate::{text_render::TextRenderer, theme::Theme};
+use crate::{State, headless::Driver, widget::Button, widget::Column};
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{text_render::TextRenderer, theme::Theme};
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use std::{cell::Cell, rc::Rc};
 use vello::{
@@ -121,7 +118,7 @@ fn history_status_and_recovery_keep_the_existing_bar_geometry() {
         let mut history = host::HistoryHost::new(registration(), &state.doc).unwrap();
         history.set_width(width);
         let theme = Theme::dark();
-        let mut renderer = crate::font_catalog::fixture_renderer();
+        let mut renderer = tilo_ui_base::font_catalog::fixture_renderer();
         let mut baseline = None;
         for key in [
             None,
@@ -133,7 +130,7 @@ fn history_status_and_recovery_keep_the_existing_bar_geometry() {
             None,
         ] {
             let status = key
-                .map(crate::i18n::I18nManager::lookup_plain)
+                .map(tilo_ui_base::i18n::I18nManager::lookup_plain)
                 .map(crate::widget::WindowStatus::says);
             history.set_sync_status(status.clone());
             let mut tree = taffy::TaffyTree::new();
@@ -142,18 +139,18 @@ fn history_status_and_recovery_keep_the_existing_bar_geometry() {
             tree.compute_layout(
                 root,
                 taffy::Size {
-                    width: taffy::AvailableSpace::Definite(crate::num::f32_of_f64(width)),
+                    width: taffy::AvailableSpace::Definite(tilo_ui_base::num::f32_of_f64(width)),
                     height: taffy::AvailableSpace::Definite(650.0),
                 },
             )
             .unwrap();
             history.apply_composition(&mut live, &tree, root, vello::kurbo::Point::ZERO);
-            history.draw(&mut crate::draw::DrawCtx::new(
+            history.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut renderer,
                 &theme,
-                crate::presence::PresenceCtx::default().draw_env(),
+                tilo_ui_base::presence::PresenceCtx::default().draw_env(),
             ));
             let geometry = (live.get_rect(), tree.total_node_count());
             assert_eq!(
@@ -345,7 +342,7 @@ tilo_test_env::scenario! {
             .perform_semantic_named(
                 "activity_timeline",
                 Some(&target),
-                &crate::a11y::Action::Activate,
+                &tilo_ui_base::a11y::Action::Activate,
             )
             .unwrap();
         assert!(driver.targets().contains_key("history-preview"));
@@ -382,7 +379,7 @@ tilo_test_env::scenario! {
     {
         let (mut driver, target, _) = versioned_driver((900, 650));
         driver
-            .perform_named("history-open", &crate::a11y::Action::Focus)
+            .perform_named("history-open", &tilo_ui_base::a11y::Action::Focus)
             .unwrap();
         driver
             .state_mut()
@@ -399,7 +396,7 @@ tilo_test_env::scenario! {
             .perform_semantic_named(
                 "activity_timeline",
                 Some(&target),
-                &crate::a11y::Action::Focus,
+                &tilo_ui_base::a11y::Action::Focus,
             )
             .unwrap();
         driver.key("Enter");
@@ -410,7 +407,7 @@ tilo_test_env::scenario! {
                 .contains("Notebook: first")
         );
         driver
-            .perform_named("history-back-live", &crate::a11y::Action::Focus)
+            .perform_named("history-back-live", &tilo_ui_base::a11y::Action::Focus)
             .unwrap();
         driver.key("Enter");
         assert!(driver.targets().contains_key("live-effect"));
@@ -428,7 +425,7 @@ tilo_test_env::scenario! {
         let pending = driver.state_mut().doc.pending_ops();
         let open = driver.a11y_node_named("History").unwrap();
         driver
-            .perform_a11y_action(open, &crate::a11y::Action::Activate)
+            .perform_a11y_action(open, &tilo_ui_base::a11y::Action::Activate)
             .unwrap();
         assert_eq!(
             driver.state_mut().doc.base_heads(),
@@ -455,7 +452,7 @@ tilo_test_env::scenario! {
             .unwrap()
             .0;
         driver
-            .perform_a11y_action(row, &crate::a11y::Action::Activate)
+            .perform_a11y_action(row, &tilo_ui_base::a11y::Action::Activate)
             .unwrap();
         assert!(
             driver.targets().contains_key("history-preview"),
@@ -464,7 +461,7 @@ tilo_test_env::scenario! {
         );
         let back = driver.a11y_node_named("Back to live").unwrap();
         driver
-            .perform_a11y_action(back, &crate::a11y::Action::Activate)
+            .perform_a11y_action(back, &tilo_ui_base::a11y::Action::Activate)
             .unwrap();
         assert_eq!(
             driver.state_mut().doc.base_heads(),
@@ -496,7 +493,7 @@ fn versioned_driver(viewport: (u32, u32)) -> (Driver, String, Vec<automerge::Cha
     .unwrap();
     (
         driver,
-        format!("timeline-entry:{}", crate::HistoryEntryId::hex(&id)),
+        format!("timeline-entry:{}", tilo_ui_base::HistoryEntryId::hex(&id)),
         before,
     )
 }
@@ -517,7 +514,7 @@ fn assert_history_frame_idle(driver: &mut Driver, context: &str) {
 fn managed_history_visible_branches_drain_and_retained_modes_return_current() {
     // Each branch is read at rest: History's panel slides in as it opens,
     // and a settled clock shows where it lands.
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut wide, target, _) = versioned_driver((900, 650));
     assert_history_frame_idle(&mut wide, "toolbar");
 
@@ -530,7 +527,7 @@ fn managed_history_visible_branches_drain_and_retained_modes_return_current() {
     wide.perform_semantic_named(
         "activity_timeline",
         Some(&target),
-        &crate::a11y::Action::Activate,
+        &tilo_ui_base::a11y::Action::Activate,
     )
     .unwrap();
     assert!(wide.inspection_json().unwrap().contains("Notebook: first"));
@@ -549,7 +546,7 @@ fn managed_history_visible_branches_drain_and_retained_modes_return_current() {
         .perform_semantic_named(
             "activity_timeline",
             Some(&target),
-            &crate::a11y::Action::Activate,
+            &tilo_ui_base::a11y::Action::Activate,
         )
         .unwrap();
     assert_history_frame_idle(&mut narrow, "narrow preview");
@@ -594,11 +591,11 @@ fn managed_history_visible_branches_drain_and_retained_modes_return_current() {
 fn find_access<'a>(
     node: &'a crate::headless::InspectionNode,
     target: &str,
-) -> Option<&'a crate::a11y::AccessNode> {
+) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
     fn in_access<'a>(
-        node: &'a crate::a11y::AccessNode,
+        node: &'a tilo_ui_base::a11y::AccessNode,
         target: &str,
-    ) -> Option<&'a crate::a11y::AccessNode> {
+    ) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
         if node.action_target.as_deref() == Some(target) {
             return Some(node);
         }
@@ -631,7 +628,7 @@ struct FolderCompositionRoot {
 }
 
 impl Widget for FolderCompositionRoot {
-    crate::provides!(dyn crate::history_mode::capability::DocumentHistory);
+    tilo_ui_base::provides!(dyn crate::history_mode::capability::DocumentHistory);
 
     crate::testing::delegate_widget_methods!(
         inner: sync,
@@ -714,12 +711,12 @@ fn folder_activity_keeps_the_wide_live_surface() {
     );
 }
 
-const TOOLKIT_EN: &str = include_str!("../../locales/en-US.ftl");
-const TOOLKIT_DE: &str = include_str!("../../locales/de-DE.ftl");
+const TOOLKIT_EN: &str = include_str!("../../../ui-base/locales/en-US.ftl");
+const TOOLKIT_DE: &str = include_str!("../../../ui-base/locales/de-DE.ftl");
 
 #[test]
 fn history_chrome_follows_the_shell_language() {
-    crate::i18n::I18nManager::install(
+    tilo_ui_base::i18n::I18nManager::install(
         "en-US",
         "de-DE",
         &[("en-US", TOOLKIT_EN), ("de-DE", TOOLKIT_DE)],
@@ -728,7 +725,7 @@ fn history_chrome_follows_the_shell_language() {
     let (mut driver, _, _) = versioned_driver((900, 650));
     let open = driver.a11y_node_named("Verlauf").unwrap();
     driver
-        .perform_a11y_action(open, &crate::a11y::Action::Activate)
+        .perform_a11y_action(open, &tilo_ui_base::a11y::Action::Activate)
         .unwrap();
     let row = driver
         .a11y_nodes()
@@ -737,7 +734,7 @@ fn history_chrome_follows_the_shell_language() {
         .unwrap()
         .0;
     driver
-        .perform_a11y_action(row, &crate::a11y::Action::Activate)
+        .perform_a11y_action(row, &tilo_ui_base::a11y::Action::Activate)
         .unwrap();
     assert!(driver.targets().contains_key("history-preview"));
     for german in [
@@ -759,7 +756,7 @@ fn history_chrome_follows_the_shell_language() {
         .a11y_node_named("Zurück zur aktuellen Version")
         .unwrap();
     driver
-        .perform_a11y_action(back, &crate::a11y::Action::Activate)
+        .perform_a11y_action(back, &tilo_ui_base::a11y::Action::Activate)
         .unwrap();
     assert!(driver.targets().contains_key("live-effect"));
 }
@@ -783,7 +780,7 @@ fn history_host_messages_exist_in_every_shipped_language() {
         })
         .collect();
     assert!(keys.len() > 40, "{keys:?}");
-    let args: &[(&str, crate::i18n::ArgValue)] = &[
+    let args: &[(&str, tilo_ui_base::i18n::ArgValue)] = &[
         ("id", 7.into()),
         ("owner", "owner".into()),
         ("action", "app/action".into()),
@@ -798,13 +795,13 @@ fn history_host_messages_exist_in_every_shipped_language() {
         ("reason", "refused".into()),
     ];
     for (locale, catalog) in [("en-US", TOOLKIT_EN), ("de-DE", TOOLKIT_DE)] {
-        crate::i18n::I18nManager::install(locale, locale, &[(locale, catalog)]).unwrap();
+        tilo_ui_base::i18n::I18nManager::install(locale, locale, &[(locale, catalog)]).unwrap();
         for key in &keys {
             assert!(
-                crate::i18n::I18nManager::has_message(key),
+                tilo_ui_base::i18n::I18nManager::has_message(key),
                 "{locale} lacks {key}"
             );
-            let value = crate::i18n::I18nManager::format(key, args);
+            let value = tilo_ui_base::i18n::I18nManager::format(key, args);
             assert!(
                 !value.contains('{'),
                 "{locale} {key} left a placeable unresolved: {value}"
@@ -903,8 +900,8 @@ fn header_history_control_opens_the_registered_history() {
 /// another.
 #[test]
 fn opening_history_lays_the_shell_out_at_its_narrower_width() {
-    use crate::icons::Icon;
-    use crate::widget::Decorator;
+    use tilo_ui_base::icons::Icon;
+    use tilo_ui_base::widget::Decorator;
     struct Probe(Button, Rc<Cell<Rect>>);
     impl Decorator for Probe {
         type Inner = Button;
@@ -1018,7 +1015,7 @@ fn history_is_a_side_panel_whose_change_previews_in_place_and_restores_on_its_ow
 
     let target = format!(
         "timeline-entry:{}",
-        crate::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
+        tilo_ui_base::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
             &body_change.to_string()
         ))
     );
@@ -1026,7 +1023,7 @@ fn history_is_a_side_panel_whose_change_previews_in_place_and_restores_on_its_ow
         .perform_semantic_named(
             "activity_timeline",
             Some(&target),
-            &crate::a11y::Action::Activate,
+            &tilo_ui_base::a11y::Action::Activate,
         )
         .unwrap();
     let targets = driver.targets();
@@ -1064,7 +1061,7 @@ fn the_side_panel_names_the_selected_changes_and_bands_them_under_the_name() {
         .perform_semantic_named(
             "activity_timeline",
             Some(&target),
-            &crate::a11y::Action::Activate,
+            &tilo_ui_base::a11y::Action::Activate,
         )
         .unwrap();
     let changes = driver.state_mut().doc.get_changes(&[]).len();
@@ -1083,7 +1080,7 @@ fn the_side_panel_names_the_selected_changes_and_bands_them_under_the_name() {
     assert_eq!(
         format!(
             "timeline-entry:{}",
-            crate::HistoryEntryId::hex(&named.start)
+            tilo_ui_base::HistoryEntryId::hex(&named.start)
         ),
         target
     );
@@ -1099,8 +1096,8 @@ fn the_side_panel_names_the_selected_changes_and_bands_them_under_the_name() {
         "naming moves no content"
     );
     driver.relayout();
-    fn band(node: &crate::a11y::AccessNode, name: &str) -> bool {
-        (node.role == crate::a11y::Role::TreeItem && node.name.as_deref() == Some(name))
+    fn band(node: &tilo_ui_base::a11y::AccessNode, name: &str) -> bool {
+        (node.role == tilo_ui_base::a11y::Role::TreeItem && node.name.as_deref() == Some(name))
             || node.children.iter().any(|child| band(child, name))
     }
     fn banded(node: &crate::headless::InspectionNode, name: &str) -> bool {

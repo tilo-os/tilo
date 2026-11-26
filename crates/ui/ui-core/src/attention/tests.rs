@@ -4,7 +4,7 @@ use super::{
     Action, Item, Notice, Owner, Published, State, Target, Urgency, act, clear, defer, deferred,
     dismiss, items, publish, raise, seen, take, unseen, waiting,
 };
-use crate::icons::Icon;
+use tilo_ui_base::icons::Icon;
 
 fn owner(app: &str) -> Owner {
     Owner::new(app, "Store").with_icon(Icon::Download)

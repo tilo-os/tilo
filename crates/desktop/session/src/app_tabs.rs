@@ -28,14 +28,14 @@ use tilo_compositor::{Compositor, ReadableWatch};
 
 use tilo_desktop_model::apps::app_ids_match;
 use tilo_session_core::desktop::launchpad::LaunchpadAction;
-use ui::Theme;
-use ui::WindowAppearance;
+use tilo_ui_base::Theme;
+use tilo_ui_base::WindowAppearance;
 use ui::floating_surface::{
     FLOATING_SURFACE_PROTOCOL_VERSION, FloatingSurfaceClientMessage, FloatingSurfaceHostMessage,
     FloatingSurfaceProtocolRole, HostNetworkStatus, Recipient, protocol_rect,
 };
-use ui::theme::ThemeDocument;
-use ui::workspace_sync::WorkspaceSync;
+use tilo_ui_base::theme::ThemeDocument;
+use tilo_ui_base::workspace_sync::WorkspaceSync;
 
 use crate::Launches;
 use crate::apps::Apps;

@@ -6,7 +6,7 @@ pub use ::collaboration::invocation_scope::{
     InvokerScope, current_invoker, current_presence, delivered_approval, delivered_invocation,
 };
 
-pub use crate::widget::resource_operation::ExternalModerationFuture;
+pub use tilo_ui_base::widget::resource_operation::ExternalModerationFuture;
 
 thread_local! {
     static VIEWERS: std::cell::RefCell<Vec<tilo_actions::PresenceId>> =
@@ -184,7 +184,7 @@ pub(crate) fn check_shown_here(
     Ok(())
 }
 
-use crate::collaboration::RouteSpec;
+use tilo_ui_base::collaboration::RouteSpec;
 use crate::resource::{DocumentCheckout, ResourceStore, resource_loan_matches};
 use automerge::AutoCommit;
 use std::cell::RefCell;

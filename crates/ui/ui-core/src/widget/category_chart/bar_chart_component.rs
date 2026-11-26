@@ -3,9 +3,7 @@
 
 use tilo_ui_graph::component::{CaseDescription, EnumDescription};
 
-use crate::component::{
-    Component, Described, PropType, Type, Value, case_field, case_field_description,
-};
+use tilo_ui_base::{component::Component, component::Described, component::PropType, component::Type, component::Value, component::case_field, component::case_field_description};
 
 use super::{Category, CategoryChart, CategoryLayout, CategorySeries, CategoryValue};
 
@@ -26,7 +24,7 @@ impl PropType for BarSeries {
 
     fn from_value(value: &Value) -> Result<Self, String> {
         let Value::Case { case, fields } = value else {
-            return Err(crate::component::wrong(&Self::ty(), value));
+            return Err(tilo_ui_base::component::wrong(&Self::ty(), value));
         };
         if case != "bars" {
             return Err(format!("a bar chart's readings are `bars`, not `{case}`"));
@@ -67,7 +65,7 @@ pub fn bars_description() -> EnumDescription {
     }
 }
 
-crate::choice!(CategoryLayout, "BarLayout", {
+tilo_ui_base::choice!(CategoryLayout, "BarLayout", {
     Grouped => "grouped", Stacked => "stacked", Percent => "share", Waterfall => "waterfall",
 });
 
@@ -170,8 +168,8 @@ mod tests {
     )]
 
     use super::*;
-    use crate::chart_palette::ChartPalette;
-    use crate::theme::Theme;
+    use tilo_ui_base::chart_palette::ChartPalette;
+    use tilo_ui_base::theme::Theme;
 
     fn bars(label: &str, values: &[f64]) -> Value {
         Value::Case {

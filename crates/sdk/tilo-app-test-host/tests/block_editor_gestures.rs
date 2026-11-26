@@ -26,7 +26,7 @@ use ui::widget::Widget;
 use ui::winit;
 use ui::winit::event::{Modifiers, WindowEvent};
 use ui::winit::keyboard::NamedKey;
-use ui_core::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 
 /// A text renderer over the checkout's fixture fonts, so geometry does not
 /// depend on the machine's.

@@ -183,7 +183,7 @@ impl ExportSettings {
             let megabytes = self.estimated_mb(project.export_duration(), with_audio);
             return format!(
                 "≈ {}",
-                ui::format::size((megabytes.max(0.0) * 1_000_000.0).round() as u64)
+                tilo_ui_base::format::size((megabytes.max(0.0) * 1_000_000.0).round() as u64)
             );
         }
         let audio = if with_audio {

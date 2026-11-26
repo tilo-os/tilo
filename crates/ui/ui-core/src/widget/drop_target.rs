@@ -13,12 +13,12 @@ use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect, RoundedRect, Stroke};
 use winit::event::WindowEvent;
 
-use crate::component::Event;
+use tilo_ui_base::component::Event;
 
-use crate::theme::Theme;
-use crate::tokens::Rhythm;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::Rhythm;
 use crate::widget::arrange::{Part, Stack};
-use crate::widget::{Decorator, DrawChild, Element, Widget};
+use tilo_ui_base::{widget::Decorator, widget::DrawChild, widget::Element, widget::Widget};
 
 /// What a drop carries a target's view: a resource, or device files a source of this window stood
 /// for.
@@ -31,8 +31,8 @@ enum Dropped {
 /// [resource](super::drag_source::RESOURCE_PAYLOAD) drag's id, a run item's
 /// ([`ITEM_PAYLOAD`](super::drag_run::ITEM_PAYLOAD): its key is the resource it stands for's id),
 /// or the paths of a [files](super::drag_source::FILES_PAYLOAD) drag.
-fn dropped_of(payload: &crate::dnd::DragPayload) -> Option<Dropped> {
-    let crate::dnd::DragPayload::Custom { kind, blob } = payload else {
+fn dropped_of(payload: &tilo_ui_base::dnd::DragPayload) -> Option<Dropped> {
+    let tilo_ui_base::dnd::DragPayload::Custom { kind, blob } = payload else {
         return None;
     };
     if kind == super::drag_source::FILES_PAYLOAD {
@@ -149,29 +149,29 @@ impl Decorator for DropTarget {
         &mut self.column
     }
 
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
         let mut changed = self.column.update(state, path);
         // A drop let go inside this target since the last pass is the event it fires; a drag
         // that came or went changes the line it draws.
         if let Some((dropped, at)) = self.take() {
-            let at = crate::component::Value::List(vec![
-                crate::component::Value::Int(at.x.round() as i64),
-                crate::component::Value::Int(at.y.round() as i64),
+            let at = tilo_ui_base::component::Value::List(vec![
+                tilo_ui_base::component::Value::Int(at.x.round() as i64),
+                tilo_ui_base::component::Value::Int(at.y.round() as i64),
             ]);
             match dropped {
                 Dropped::Resource(resource) => {
-                    self.drop.fire(Some(crate::component::Value::List(vec![
-                        crate::component::Value::Resource(resource),
+                    self.drop.fire(Some(tilo_ui_base::component::Value::List(vec![
+                        tilo_ui_base::component::Value::Resource(resource),
                         at,
                     ])));
                 }
                 Dropped::Files(files) => {
                     self.drop_files
-                        .fire(Some(crate::component::Value::List(vec![
-                            crate::component::Value::List(
+                        .fire(Some(tilo_ui_base::component::Value::List(vec![
+                            tilo_ui_base::component::Value::List(
                                 files
                                     .into_iter()
-                                    .map(crate::component::Value::Text)
+                                    .map(tilo_ui_base::component::Value::Text)
                                     .collect(),
                             ),
                             at,
@@ -190,11 +190,11 @@ impl Decorator for DropTarget {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.column.apply_layout(taffy, node, origin);
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -222,7 +222,7 @@ impl Decorator for DropTarget {
         self.dirty || self.column.needs_redraw()
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = ctx.logical(position);
@@ -284,7 +284,7 @@ impl Decorator for DropTarget {
     }
 }
 
-impl crate::component::PartViews for DropTarget {
+impl tilo_ui_base::component::PartViews for DropTarget {
     fn len(&self) -> usize {
         1
     }

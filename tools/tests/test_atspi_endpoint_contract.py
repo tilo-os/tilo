@@ -80,7 +80,7 @@ class AtspiEndpointContractTests(unittest.TestCase):
                     "self.a11y_adapter = None;",
                     update,
                 ]),
-                "crates/ui/ui-core/src/accesskit_bridge.rs": "\n".join([
+                "crates/ui/ui-base/src/accesskit_bridge.rs": "\n".join([
                     "ak.set_live(match politeness",
                     "ak.set_live_atomic()",
                     "if !access.state.protected",

@@ -7,17 +7,18 @@
 //! offscreen tests. Set `TILO_UI_SCREENSHOT_DIR=<path>` to dump the PNGs
 //! (`tooltip_over_icon_button_dark.png` / `_light.png`) for visual review.
 
-use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui_base::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
 
-use tilo_ui::icons::Icon;
-use tilo_ui::presence::PresenceCtx;
-use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::Theme;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 use tilo_ui::widget::tooltip;
-use tilo_ui::widget::{Button, Widget};
+use tilo_ui::widget::Button;
+use tilo_ui_base::widget::Widget;
 
 fn render_case(theme: &Theme, bg: Color, name: &str) {
     let (canvas_w, canvas_h) = (360u32, 150u32);
@@ -52,7 +53,7 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
     ];
     for (b, r) in buttons.iter_mut().zip(rects.iter()) {
         b.apply_layout_external(*r);
-        b.draw(&mut tilo_ui::draw::DrawCtx::new(
+        b.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
@@ -107,7 +108,7 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
 #[test]
 fn tooltip_renders_over_icon_button_in_both_themes() {
     // Motion reads at its end: this test checks the resting frame.
-    let _settled = tilo_ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     {
         render_case(&Theme::dark(), Color::from_rgb8(0x0f, 0x17, 0x2a), "dark");
     }

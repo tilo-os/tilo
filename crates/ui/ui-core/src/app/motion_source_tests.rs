@@ -4,8 +4,8 @@
 //! the same entry as one in a window of its own.
 
 use super::*;
-use crate::motion::{input_source, note_source};
-use crate::tokens::MotionSource;
+use tilo_ui_base::{motion::input_source, motion::note_source};
+use tilo_ui_base::tokens::MotionSource;
 use winit::keyboard::{Key, NamedKey};
 
 struct Window;
@@ -35,7 +35,7 @@ tilo_test_env::scenario! {
     {
         note_source(MotionSource::Action);
         let mut app = app();
-        app.surface_input(&Window, crate::synthetic_input::mouse_press(), false);
+        app.surface_input(&Window, tilo_ui_base::synthetic_input::mouse_press(), false);
         assert_eq!(
             input_source(),
             MotionSource::Pointer,
@@ -48,7 +48,7 @@ tilo_test_env::scenario! {
     {
         note_source(MotionSource::Pointer);
         let mut app = app();
-        let event = crate::synthetic_input::key_press(Key::Named(NamedKey::Enter), None);
+        let event = tilo_ui_base::synthetic_input::key_press(Key::Named(NamedKey::Enter), None);
         app.surface_input(&Window, event, false);
         assert_eq!(
             input_source(),
@@ -62,7 +62,7 @@ tilo_test_env::scenario! {
     {
         note_source(MotionSource::Action);
         let mut app = app();
-        let event = crate::synthetic_input::mouse_wheel(0.0, 40.0);
+        let event = tilo_ui_base::synthetic_input::mouse_wheel(0.0, 40.0);
         app.surface_input(&Window, event, false);
         assert_eq!(input_source(), MotionSource::Pointer, "the wheel turned");
     }

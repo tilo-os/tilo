@@ -1,4 +1,4 @@
-//! A frame drawn only where its damage needs it ([`crate::draw_cull`])
+//! A frame drawn only where its damage needs it ([`tilo_ui_base::draw_cull`])
 //! presents what a frame drawn in full presents: the same copies and the
 //! same damage, and inside that damage the same pixels. Outside it the host
 //! shows the last frame moved by the copies, which the dense comparisons of
@@ -9,7 +9,7 @@
 //! device-pixel scales prove the damage.
 
 use super::*;
-use crate::offscreen::OffscreenRenderer;
+use tilo_ui_base::offscreen::OffscreenRenderer;
 
 /// A window of `.0` device pixels per logical pixel, 640 × 400 logical.
 struct Scaled(f64);
@@ -90,7 +90,7 @@ fn twins(
                 for app in [&mut culled, &mut full] {
                     app.surface_input(
                         &window,
-                        crate::synthetic_input::cursor_moved(320.0 * scale, 200.0 * scale),
+                        tilo_ui_base::synthetic_input::cursor_moved(320.0 * scale, 200.0 * scale),
                         false,
                     );
                 }
@@ -228,7 +228,7 @@ impl Widget for WholeWindow {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        use crate::widget::TaffyTreeExt as _;
+        use tilo_ui_base::widget::TaffyTreeExt as _;
         let style = taffy::Style {
             size: taffy::Size {
                 width: taffy::Dimension::length(640.0_f32),
@@ -239,9 +239,9 @@ impl Widget for WholeWindow {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -251,7 +251,7 @@ impl Widget for WholeWindow {
         self.seen.borrow_mut().push(("content", env.viewport));
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,

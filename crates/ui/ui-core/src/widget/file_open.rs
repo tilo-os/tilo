@@ -5,14 +5,14 @@
 //! file chooser, which reports a file it cannot read. The surface reads nothing and grants
 //! no access.
 
-use crate::i18n::widget_text;
+use tilo_ui_base::i18n::widget_text;
 use std::path::PathBuf;
 
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::interaction::InteractionEnvironment;
-use crate::paint::PaintCtx;
+use tilo_ui_base::interaction::InteractionEnvironment;
+use tilo_ui_base::paint::PaintCtx;
 use crate::widget::{DropZoneFace, EmptyState, EmptyStateContent};
 
 /// A file event the surface took.
@@ -86,7 +86,7 @@ impl FileOpenSurface {
         if self.hovering {
             let release = widget_text("file-open-release");
             DropZoneFace::new(&release)
-                .icon(content.icon.unwrap_or(crate::icons::Icon::Download))
+                .icon(content.icon.unwrap_or(tilo_ui_base::icons::Icon::Download))
                 .drag_over(true)
                 .paint(ctx, bounds, 0.0);
             return crate::widget::PaintedStack::default();
@@ -108,8 +108,8 @@ impl FileOpenSurface {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text_render::TextRenderer;
-    use crate::theme::Theme;
+    use tilo_ui_base::text_render::TextRenderer;
+    use tilo_ui_base::theme::Theme;
     use vello::Scene;
     use vello::kurbo::Affine;
 

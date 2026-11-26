@@ -4,9 +4,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
 
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 
 /// The labels already placed in one chart, and the bounds every label must
 /// stay inside.
@@ -374,8 +374,8 @@ pub(crate) fn ink_on_fill(theme: &Theme, fill: Color) -> Color {
     }
     // Neither of the theme's inks reaches the floor in either direction: the end of the
     // scale that reads best does, since black or white clears any fill by 4.58:1 at worst.
-    let black = crate::a11y::contrast_ratio(Color::BLACK, fill);
-    let white = crate::a11y::contrast_ratio(Color::WHITE, fill);
+    let black = tilo_ui_base::a11y::contrast_ratio(Color::BLACK, fill);
+    let white = tilo_ui_base::a11y::contrast_ratio(Color::WHITE, fill);
     if black >= white {
         Color::BLACK
     } else {
@@ -387,8 +387,8 @@ pub(crate) fn ink_on_fill(theme: &Theme, fill: Color) -> Color {
 /// the end of the scale it is already nearest to that clears it, and `None` where no step
 /// does.
 fn stepped_to_read(tone: Color, ground: Color) -> Option<Color> {
-    use crate::a11y::{contrast_ratio, relative_luminance};
-    let floor = crate::tokens::colors::ON_FILL_MIN_CONTRAST;
+    use tilo_ui_base::{a11y::contrast_ratio, a11y::relative_luminance};
+    let floor = tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST;
     if contrast_ratio(tone, ground) >= floor {
         return Some(tone);
     }
@@ -402,7 +402,7 @@ fn stepped_to_read(tone: Color, ground: Color) -> Option<Color> {
             clippy::cast_precision_loss,
             reason = "step ranges 1..=16, far below where f32 loses integer precision"
         )]
-        let candidate = crate::tokens::colors::mix8(tone, end, f32::from(step) / 16.0);
+        let candidate = tilo_ui_base::tokens::colors::mix8(tone, end, f32::from(step) / 16.0);
         if contrast_ratio(candidate, ground) >= floor {
             return Some(candidate);
         }

@@ -1,9 +1,9 @@
 //! When a conversation's day changes, and the clock each line carries.
 
-use crate::format;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::format;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 
 const DAY_SECS: i64 = 86_400;
 
@@ -52,7 +52,7 @@ impl ConversationClock {
     /// read; everything else takes the clock.
     #[must_use]
     pub fn local() -> Self {
-        let now = crate::clock::local_now();
+        let now = tilo_ui_base::clock::local_now();
         Self {
             offset: i64::from(now.offset().seconds()),
             now: now.timestamp().as_second(),
@@ -89,9 +89,9 @@ impl ConversationClock {
     #[must_use]
     pub fn clock(self, ts: i64) -> String {
         let in_day = ts.saturating_add(self.offset).rem_euclid(DAY_SECS);
-        crate::clock::hour_minute(
-            crate::num::u32_of_i64(in_day.div_euclid(3_600)),
-            crate::num::u32_of_i64(in_day.rem_euclid(3_600).div_euclid(60)),
+        tilo_ui_base::clock::hour_minute(
+            tilo_ui_base::num::u32_of_i64(in_day.div_euclid(3_600)),
+            tilo_ui_base::num::u32_of_i64(in_day.rem_euclid(3_600).div_euclid(60)),
         )
     }
 

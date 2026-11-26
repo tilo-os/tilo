@@ -48,11 +48,11 @@ pub fn add_font(file: &str, bytes: Vec<u8>, sha256: &str) {
 pub fn fonts_ready() -> String {
     let handed = HANDED.with(|handed| std::mem::take(&mut *handed.borrow_mut()));
     let catalog =
-        ui::font_catalog::FontCatalog::product("", ui::i18n::I18nManager::current_locale());
+        tilo_ui_base::font_catalog::FontCatalog::product("", tilo_ui_base::i18n::I18nManager::current_locale());
     let mut handed = handed;
     match catalog.load_browser_startup_bytes(|file| handed.remove(file)) {
         Ok(system) => {
-            drop(ui::text_render::TextRenderer::with_browser_font_system(
+            drop(tilo_ui_base::text_render::TextRenderer::with_browser_font_system(
                 system,
             ));
             READY.with(|ready| *ready.borrow_mut() = true);

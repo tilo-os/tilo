@@ -13,8 +13,9 @@ use std::rc::Rc;
 use tilo_actions::ActionSpec;
 use tilo_resource::Resource;
 use tilo_search::{FieldWeight, ListIndex};
-use ui_core::icons::Icon;
-use ui_core::widget::{Button, ButtonRole, Column, ControlSize, Element, Row, Text, Toggle};
+use tilo_ui_base::icons::Icon;
+use ui_core::{widget::Button, widget::ButtonRole, widget::Column, widget::ControlSize, widget::Row, widget::Text, widget::Toggle};
+use tilo_ui_base::widget::Element;
 
 use super::super::Actions;
 
@@ -220,7 +221,7 @@ pub fn actions_group<R: Resource>(
     show: &Rc<dyn Fn(&str)>,
 ) -> Element {
     let mut column = Column::new().with_no_padding().with_gap(4.0).push(Box::new(
-        Text::new(heading).with_role(ui_core::tokens::TextRole::Heading),
+        Text::new(heading).with_role(tilo_ui_base::tokens::TextRole::Heading),
     ));
     for hit in hits {
         let mut row = Row::new()

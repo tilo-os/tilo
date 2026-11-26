@@ -1,10 +1,10 @@
 #[cfg(feature = "model")]
-use crate::permissions::PermissionScope;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::theme::Theme;
-use crate::widget::ModelPath;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use tilo_ui_base::permissions::PermissionScope;
+use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::ModelPath;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 use std::any::Any;
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -21,15 +21,15 @@ use winit::event::WindowEvent;
     clippy::struct_excessive_bools,
     reason = "four independent, orthogonal builder toggles; not encoded state"
 )]
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     layout,
     "the language's `stack` and `row`, with their fill and padding"
 )]
 pub struct Container {
     child: Option<Box<dyn Widget>>,
-    structure: crate::widget::StructureChange,
-    ghosts: crate::widget::Ghosts,
-    motion: crate::tokens::EffectiveMotion,
+    structure: tilo_ui_base::widget::StructureChange,
+    ghosts: tilo_ui_base::widget::Ghosts,
+    motion: tilo_ui_base::tokens::EffectiveMotion,
     id: Option<String>,
     rect: Rect,
     has_background: bool,
@@ -53,7 +53,7 @@ pub struct Container {
     readable: bool,
     hug: bool,
     narrows: bool,
-    inset: Option<crate::tokens::Rhythm>,
+    inset: Option<tilo_ui_base::tokens::Rhythm>,
     activation: crate::widget::activation::Activation,
     bleed: (f64, f64),
     /// Grows from a zero basis instead of claiming `percent(1.0)`. In a
@@ -75,10 +75,10 @@ impl Default for Container {
 impl Container {
     pub fn new() -> Self {
         Self {
-            ghosts: crate::widget::Ghosts::default(),
-            motion: crate::tokens::EffectiveMotion::default(),
+            ghosts: tilo_ui_base::widget::Ghosts::default(),
+            motion: tilo_ui_base::tokens::EffectiveMotion::default(),
             child: None,
-            structure: crate::widget::StructureChange::None,
+            structure: tilo_ui_base::widget::StructureChange::None,
             id: None,
             rect: Rect::ZERO,
             has_background: false,
@@ -188,7 +188,7 @@ impl Container {
     pub fn replace_child(&mut self, child: Box<dyn Widget>) -> Option<Box<dyn Widget>> {
         self.structure = self
             .structure
-            .join(crate::widget::StructureChange::Described);
+            .join(tilo_ui_base::widget::StructureChange::Described);
         self.child.replace(child)
     }
 
@@ -269,7 +269,7 @@ impl Container {
     }
 
     #[must_use]
-    pub fn with_inset(mut self, inset: crate::tokens::Rhythm) -> Self {
+    pub fn with_inset(mut self, inset: tilo_ui_base::tokens::Rhythm) -> Self {
         self.inset = Some(inset);
         self.no_padding = false;
         self.padding_override = None;
@@ -370,7 +370,7 @@ impl Container {
             // Rest edge derived from the fill itself (HIG §9.5), crisp 1 px
             // inset so the stroke sits on the surface.
             Some(fill) if self.has_background => {
-                crate::surface::card(scene, transform, rect, theme.radius_standard, fill);
+                tilo_ui_base::surface::card(scene, transform, rect, theme.radius_standard, fill);
             }
             Some(fill) => scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -409,11 +409,11 @@ impl Container {
 }
 
 impl Widget for Container {
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::controls::ActionControls,
         #[cfg(feature = "model")]
-        dyn crate::widget::permission::PermissionGuarded,
-        dyn crate::presence::capability::PublishesPresence
+        dyn tilo_ui_base::widget::permission::PermissionGuarded,
+        dyn tilo_ui_base::presence::capability::PublishesPresence
     );
 
     fn build_layout(
@@ -464,7 +464,7 @@ impl Widget for Container {
             flex_shrink: if self.narrows { 1.0 } else { 0.0 },
             // A pinned width must not grow to fill a flex parent: `flex_basis:
             // auto` lets `size.width` resolve the basis instead.
-            padding: super::layout::insets_all(pad),
+            padding: tilo_ui_base::widget::layout::insets_all(pad),
             size: taffy::Size { width, height },
             min_size: taffy::Size {
                 width: match self.min_width {
@@ -473,7 +473,7 @@ impl Widget for Container {
                     None => taffy::Dimension::auto(),
                 },
                 height: self.min_height.map_or(taffy::Dimension::auto(), |size| {
-                    length(crate::num::f32_of_f64(size.height(theme)))
+                    length(tilo_ui_base::num::f32_of_f64(size.height(theme)))
                 }),
             },
             max_size: taffy::Size {
@@ -495,7 +495,7 @@ impl Widget for Container {
             },
             ..Default::default()
         };
-        let style = super::layout::filling(style, self.flex_grow);
+        let style = tilo_ui_base::widget::layout::filling(style, self.flex_grow);
 
         let node = if let Some(child) = child_node {
             taffy.parent_node(style, &[child])
@@ -507,19 +507,19 @@ impl Widget for Container {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
 
         if let Some(child) = &mut self.child
             && let Some(&child_node) = taffy.children(node).unwrap_or_default().first()
         {
             child.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
-            crate::widget::place_bands(
+            tilo_ui_base::widget::place_bands(
                 std::iter::once(child),
-                crate::widget::content_box(taffy, node, self.rect),
+                tilo_ui_base::widget::content_box(taffy, node, self.rect),
                 |_| 0.0,
             );
         }
-        let content = crate::widget::content_box(taffy, node, self.rect);
+        let content = tilo_ui_base::widget::content_box(taffy, node, self.rect);
         let children = match &mut self.child {
             Some(child) => std::slice::from_mut(child),
             None => &mut [],
@@ -530,7 +530,7 @@ impl Widget for Container {
 
     /// A container sized by its content grows with a band moving in it, or
     /// leaving it, and so moves what follows it.
-    fn disclosing(&self) -> Option<crate::widget::Disclosing> {
+    fn disclosing(&self) -> Option<tilo_ui_base::widget::Disclosing> {
         if self.fixed_height.is_some() || self.fill_height {
             return None;
         }
@@ -547,7 +547,7 @@ impl Widget for Container {
         let rise = child.map_or(0.0, |moving| {
             moving.reach(0.0) - moving.follower_offset(0.0)
         });
-        Some(crate::widget::Disclosing::Grows {
+        Some(tilo_ui_base::widget::Disclosing::Grows {
             by,
             reach: by + rise.max(0.0),
         })
@@ -555,15 +555,15 @@ impl Widget for Container {
 
     fn needs_animation_frame(&self) -> bool {
         !self.ghosts.is_empty()
-            || crate::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
     }
 
     fn needs_redraw(&self) -> bool {
         !self.ghosts.is_empty()
-            || crate::widget::defaults::needs_redraw(&|visit| self.for_each_child(visit))
+            || tilo_ui_base::widget::defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -573,20 +573,20 @@ impl Widget for Container {
         self.paint_surface(scene, transform, theme);
 
         if let Some(child) = &mut self.child {
-            crate::widget::draw_child(child.as_mut(), scene, transform, text_renderer, theme, &env);
+            tilo_ui_base::widget::draw_child(child.as_mut(), scene, transform, text_renderer, theme, &env);
         }
 
         self.ghosts.retain_drawn();
         let shifts = self.ghosts.shift(None, usize::from(self.child.is_some()));
         self.ghosts.draw(scene, transform, shifts.as_deref());
 
-        crate::widget::draw_over(
+        tilo_ui_base::widget::draw_over(
             self,
-            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
         );
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let Some(child) = &mut self.child
             && let Some(&child_node) = ctx.taffy.children(ctx.node_id).unwrap_or_default().first()
         {
@@ -621,16 +621,16 @@ impl Widget for Container {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
-        matches!(action, crate::a11y::Action::Activate) && self.activation.activate()
+        matches!(action, tilo_ui_base::a11y::Action::Activate) && self.activation.activate()
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         if !self.activation.is_bound() {
             return self.landmark.as_ref().map(|(name, key)| {
                 AccessNode::new(Role::Group)
@@ -741,7 +741,7 @@ impl Widget for Container {
     }
 
     /// A child replaced in place is described; so is what the child describes.
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
         let own = std::mem::take(&mut self.structure);
         self.child
             .as_mut()
@@ -750,7 +750,7 @@ impl Widget for Container {
 }
 
 crate::widget::activation::activation_controls!(Container, activation);
-impl crate::presence::capability::PublishesPresence for Container {
+impl tilo_ui_base::presence::capability::PublishesPresence for Container {
     fn presence_key(&self) -> Option<PresenceKey> {
         PresenceKey::widget(&self.presence_path)
     }
@@ -775,7 +775,7 @@ impl Container {
 }
 
 #[cfg(feature = "model")]
-impl crate::widget::permission::PermissionGuarded for Container {
+impl tilo_ui_base::widget::permission::PermissionGuarded for Container {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
     }
@@ -818,7 +818,7 @@ mod tests {
                 .with_child(Box::new(Container::new()))
                 .accessibility()
                 .expect("a landmark is in the tree");
-            assert_eq!(node.role, crate::a11y::Role::Group);
+            assert_eq!(node.role, tilo_ui_base::a11y::Role::Group);
             assert_eq!(node.name.as_deref(), Some("Settings"));
             assert_eq!(node.semantic_key.as_deref(), Some("settings.app"));
         }
@@ -939,14 +939,14 @@ mod tests {
                 let mut doc = automerge::AutoCommit::new();
                 assert!(Widget::perform_action(
                     &mut c,
-                    &crate::a11y::Action::Activate,
+                    &tilo_ui_base::a11y::Action::Activate,
                     &[],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT
                 ));
                 assert_eq!(hits.get(), 1);
                 let node = Widget::accessibility(&c).unwrap();
-                assert_eq!(node.role, crate::a11y::Role::Button);
+                assert_eq!(node.role, tilo_ui_base::a11y::Role::Button);
             }
 
             padding_override_insets_child_without_losing_fluid_width();

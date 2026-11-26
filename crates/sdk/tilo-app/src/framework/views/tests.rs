@@ -668,7 +668,7 @@ tilo_test_env::scenario! {
 
     phase a_waiting_section_says_where_its_answer_comes_from_and_when_it_was_asked;
     {
-        use ui_core::arriving::{Arrival, Source};
+        use tilo_ui_base::{arriving::Arrival, arriving::Source};
         let (mut engine, source, pumped) = remote_engine();
         source.answer(
             "aurora",
@@ -693,7 +693,7 @@ tilo_test_env::scenario! {
             section
                 .clock
                 .as_ref()
-                .is_some_and(ui_core::arriving::ArrivalClock::has_arrived),
+                .is_some_and(tilo_ui_base::arriving::ArrivalClock::has_arrived),
             "its placeholder knows the answer landed"
         );
     }

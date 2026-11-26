@@ -35,4 +35,4 @@ pub use page::{
 };
 pub use state::{OnboardingState, SecretBuffer, Secrets, WordMistakes};
 
-ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
+tilo_ui_base::embedded_catalog!(pub fn, ["en-US", "de-DE"]);

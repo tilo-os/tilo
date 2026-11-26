@@ -7,12 +7,12 @@
 
 use super::MOVE_SETTLED_PX;
 use crate::time::{Duration, Instant};
-use crate::tokens::MotionSource;
+use tilo_ui_base::tokens::MotionSource;
 use winit::event::MouseScrollDelta;
 
 /// Touchpad px per wheel detent for the discrete jump gestures; also the
 /// scale for hi-res wheel notches reported as pixel deltas.
-pub const JUMP_PX_PER_DETENT: f64 = crate::tokens::Layout::BASE.jump_px_per_detent as f64;
+pub const JUMP_PX_PER_DETENT: f64 = tilo_ui_base::tokens::Layout::BASE.jump_px_per_detent as f64;
 
 /// Turns fractional-detent scroll deltas into whole steps.
 #[derive(Default)]
@@ -55,30 +55,30 @@ pub fn wheel_jump_detents(delta: &MouseScrollDelta) -> f64 {
 
 /// A pan or a group's drawn offset at rest at `at`, arriving within a
 /// quarter pixel once sent somewhere.
-pub(super) fn strip_motion(at: f64) -> crate::motion::MotionValue<f64> {
-    crate::motion::MotionValue::new(at).with_tolerance(MOVE_SETTLED_PX)
+pub(super) fn strip_motion(at: f64) -> tilo_ui_base::motion::MotionValue<f64> {
+    tilo_ui_base::motion::MotionValue::new(at).with_tolerance(MOVE_SETTLED_PX)
 }
 
-/// The pan at rest at `from`, to snap to `to` on a [`crate::motion::Snap`]
+/// The pan at rest at `from`, to snap to `to` on a [`tilo_ui_base::motion::Snap`]
 /// timing: it arrives within a thousandth of its travel (a quarter pixel at
 /// least), as a token spring run once does, so a snap is over within its
 /// token however far it goes.
-pub(super) fn snap_motion(from: f64, to: f64) -> crate::motion::MotionValue<f64> {
-    crate::motion::MotionValue::new(from)
+pub(super) fn snap_motion(from: f64, to: f64) -> tilo_ui_base::motion::MotionValue<f64> {
+    tilo_ui_base::motion::MotionValue::new(from)
         .with_tolerance(MOVE_SETTLED_PX.max((to - from).abs() * 1e-3))
 }
 
-/// How the pan settles on a group's edge, on [`crate::motion::Snap`]: its spring, and how
+/// How the pan settles on a group's edge, on [`tilo_ui_base::motion::Snap`]: its spring, and how
 /// long a run from rest takes (zero when it lands).
 #[derive(Clone, Copy, Debug)]
 pub(super) struct SnapTiming {
-    pub(super) timing: crate::motion::Timing,
+    pub(super) timing: tilo_ui_base::motion::Timing,
     pub(super) settles: Duration,
 }
 
 impl SnapTiming {
-    pub(super) fn of(motion: crate::tokens::EffectiveMotion, source: MotionSource) -> Self {
-        let (spec, enter) = (crate::motion::Snap::SPEC, crate::motion::Direction::Enter);
+    pub(super) fn of(motion: tilo_ui_base::tokens::EffectiveMotion, source: MotionSource) -> Self {
+        let (spec, enter) = (tilo_ui_base::motion::Snap::SPEC, tilo_ui_base::motion::Direction::Enter);
         let timing = spec.timing(enter, motion, source);
         let settles = spec.settle_time(enter, motion, source);
         Self { timing, settles }

@@ -5,7 +5,7 @@ use imager_backend::support_report::{
     ComponentKind, ComponentSupport, DeviceBinding, Evidence, EvidenceFact, EvidenceScope, Remedy,
     SupportReason,
 };
-use ui::icons::Icon;
+use tilo_ui_base::icons::Icon;
 
 pub(crate) fn component_title(kind: ComponentKind) -> String {
     t(match kind {

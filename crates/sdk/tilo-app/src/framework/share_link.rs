@@ -18,7 +18,7 @@ use tilo_actions::remote::{CatalogueQuery, InvokeArgument, RemoteActionTarget, V
 use tilo_reference::link::share;
 use tilo_resource::share::ShareRequest;
 use ui_core::time::{Duration, Instant};
-use ui_core::{Arrival, CatalogueCall, InvocationCall, RemoteActions};
+use tilo_ui_base::{Arrival, CatalogueCall, InvocationCall, RemoteActions};
 
 /// How long a minting waits for the host's locator.
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -72,7 +72,7 @@ pub(crate) struct ShareLinks {
     remote: RemoteActions,
     /// Keeps `remote` the client every part of the window asks over, while the root lives: the app
     /// carries the one connection, and a part that asks later is heard on it too.
-    _carried: ui_core::remote_actions::CarriedGuard,
+    _carried: tilo_ui_base::remote_actions::CarriedGuard,
     pending: Vec<Pending>,
     /// Resources a view asked to copy a link to, in the order asked, each
     /// with the clipboard its click claimed: a browser copies only inside
@@ -111,7 +111,7 @@ impl ShareLinks {
         {
             self.copy_requested.push((
                 invocation.address.resource.clone(),
-                ui_core::reserve_clipboard_copy(),
+                tilo_ui_base::reserve_clipboard_copy(),
             ));
         }
     }

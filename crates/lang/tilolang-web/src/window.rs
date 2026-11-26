@@ -31,7 +31,7 @@ pub struct Staging<'a> {
 pub struct AppPage {
     window: Window,
     page: Page,
-    theme: ui::Theme,
+    theme: tilo_ui_base::Theme,
 }
 
 impl AppPage {
@@ -42,9 +42,9 @@ impl AppPage {
     /// what the app sent.
     pub fn open(app: &str, packages: &Rc<Packages>, staging: Staging<'_>) -> Result<Self, String> {
         let mut theme = if staging.dark {
-            ui::Theme::dark()
+            tilo_ui_base::Theme::dark()
         } else {
-            ui::Theme::light()
+            tilo_ui_base::Theme::light()
         };
         theme.reduce_motion = true;
         let mut opening = Opening::new(staging.viewport, theme.clone());

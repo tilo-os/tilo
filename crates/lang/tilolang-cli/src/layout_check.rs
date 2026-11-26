@@ -119,7 +119,7 @@ pub struct Options {
     pub shot_height: Option<u32>,
     /// The themes `shots` are taken in: a shipped theme by name
     /// (`glass`, `block`), in its light and dark variant, or a theme
-    /// bundle's directory (`ui::theme_bundle`); none takes the stock
+    /// bundle's directory (`tilo_ui_base::theme_bundle`); none takes the stock
     /// light and dark.
     pub themes: Vec<String>,
     /// The layer of the package to lay out, when it has more than one root (`Shell`, the `shell`
@@ -178,26 +178,26 @@ pub const DEFAULT_LOCALE: &str = "en-US";
 
 /// The light and the dark variant of the shipped theme `name`: `default` the stock pair, another
 /// name its preset and that preset's light sibling (`glass`, `glass light`).
-fn theme_pair(name: &str) -> Result<[(&'static str, ui::Theme); 2], String> {
-    if ui::theme::Preset::find(name) == Some(ui::theme::Preset::Dark) || name == "default" {
-        return Ok([("light", ui::Theme::light()), ("dark", ui::Theme::dark())]);
+fn theme_pair(name: &str) -> Result<[(&'static str, tilo_ui_base::Theme); 2], String> {
+    if tilo_ui_base::theme::Preset::find(name) == Some(tilo_ui_base::theme::Preset::Dark) || name == "default" {
+        return Ok([("light", tilo_ui_base::Theme::light()), ("dark", tilo_ui_base::Theme::dark())]);
     }
-    if ui::Theme::named(name).is_none() && Path::new(name).is_dir() {
+    if tilo_ui_base::Theme::named(name).is_none() && Path::new(name).is_dir() {
         let dir = Path::new(name);
         let theme = load_theme_bundle(dir).map_err(|e| format!("--theme {name}: {e}"))?;
         return Ok([("light", theme.clone()), ("dark", theme)]);
     }
-    let dark = ui::Theme::named(name).ok_or_else(|| format!("--theme {name}: no such theme"))?;
-    let light = ui::Theme::named(&format!("{name} light")).unwrap_or_else(|| dark.clone());
+    let dark = tilo_ui_base::Theme::named(name).ok_or_else(|| format!("--theme {name}: no such theme"))?;
+    let light = tilo_ui_base::Theme::named(&format!("{name} light")).unwrap_or_else(|| dark.clone());
     Ok([("light", light), ("dark", dark)])
 }
 
-/// The theme of the bundle directory `dir`: its [`ui::theme_bundle::DOCUMENT`] and a `<set>.wasm`
+/// The theme of the bundle directory `dir`: its [`tilo_ui_base::theme_bundle::DOCUMENT`] and a `<set>.wasm`
 /// beside it for each set the document names, each drawn on the machine code the device's daemon
 /// compiled for it when this computer has one, read from the store it keeps them in.
-fn load_theme_bundle(dir: &Path) -> Result<ui::Theme, ui::theme_bundle::BundleError> {
+fn load_theme_bundle(dir: &Path) -> Result<tilo_ui_base::Theme, tilo_ui_base::theme_bundle::BundleError> {
     let compiled = runtime_portal::process_link::compiled_modules();
-    ui::theme_bundle::load_from(dir, compiled.as_deref())
+    tilo_ui_base::theme_bundle::load_from(dir, compiled.as_deref())
 }
 
 /// The part of a shot's file name that says which theme family it is in: the name, or a bundle
@@ -310,10 +310,10 @@ pub fn check(options: &Options) -> Result<Report, String> {
 fn open(options: &Options) -> Result<(Vec<App>, BTreeSet<String>), String> {
     // Without the product's catalog this process's text falls back to the host's faces, so every
     // judgement about how it lays out would be about a typeface the product does not ship.
-    if let Some(problem) = ui::text_render::font_catalog_problem() {
+    if let Some(problem) = tilo_ui_base::text_render::font_catalog_problem() {
         return Err(problem);
     }
-    ui::clock::freeze_for_capture();
+    tilo_ui_base::clock::freeze_for_capture();
     stage_person_locale(&options.locale)?;
     tilo_app_window::i18n::ensure();
     let allow = options
@@ -519,19 +519,19 @@ pub(crate) fn header_row_controls(staged: &stage::Staged, viewport: (u32, u32)) 
     fn walk(
         node: &ui::headless::InspectionNode,
         rows: &[ui::kurbo::Rect],
-        root: &dyn ui::widget::Widget,
+        root: &dyn tilo_ui_base::widget::Widget,
         viewport: (u32, u32),
         out: &mut Vec<RowControl>,
     ) {
         let [x, y, w, h] = node.rect;
         let middle = ui::kurbo::Point::new(x + w / 2.0, y + h / 2.0);
         if let Some(access) = &node.semantics
-            && access.role == ui::a11y::Role::Button
+            && access.role == tilo_ui_base::a11y::Role::Button
             && reachable(node, viewport)
             && rows.iter().any(|row| row.contains(middle))
         {
             let id = node.test_id.clone().unwrap_or_default();
-            let primary = ui::widget::find_test_id(root, &id).is_some_and(is_primary_button);
+            let primary = tilo_ui_base::widget::find_test_id(root, &id).is_some_and(is_primary_button);
             out.push(RowControl {
                 name: access.name.clone().unwrap_or_default(),
                 menu: node.widget == "OverflowButton",
@@ -546,7 +546,7 @@ pub(crate) fn header_row_controls(staged: &stage::Staged, viewport: (u32, u32)) 
             walk(child, rows, root, viewport, out);
         }
     }
-    fn is_primary_button(widget: &dyn ui::widget::Widget) -> bool {
+    fn is_primary_button(widget: &dyn tilo_ui_base::widget::Widget) -> bool {
         if let Some(button) = widget
             .as_any()
             .and_then(|any| any.downcast_ref::<ui::widget::Button>())
@@ -578,7 +578,7 @@ pub(crate) fn header_row_controls(staged: &stage::Staged, viewport: (u32, u32)) 
 /// The names of the buttons the window draws where the person reaches them.
 fn button_names(node: &ui::headless::InspectionNode, viewport: (u32, u32), out: &mut Vec<String>) {
     if let Some(access) = &node.semantics
-        && access.role == ui::a11y::Role::Button
+        && access.role == tilo_ui_base::a11y::Role::Button
         && reachable(node, viewport)
         && let Some(name) = access.name.as_ref().filter(|name| !name.is_empty())
     {
@@ -592,9 +592,9 @@ fn button_names(node: &ui::headless::InspectionNode, viewport: (u32, u32), out: 
 /// The words the window showed from a catalogue in a language other than the one it speaks, since
 /// the last frame was read: one problem per message, at the window.
 fn mixed_language() -> Vec<audit::Problem> {
-    let language = ui::i18n::I18nManager::window_locale();
-    let found = ui::i18n::I18nManager::foreign_words();
-    ui::i18n::I18nManager::clear_foreign_words();
+    let language = tilo_ui_base::i18n::I18nManager::window_locale();
+    let found = tilo_ui_base::i18n::I18nManager::foreign_words();
+    tilo_ui_base::i18n::I18nManager::clear_foreign_words();
     found
         .into_iter()
         .map(|(key, locale)| audit::Problem {
@@ -981,7 +981,7 @@ fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, St
                 let mut worker = Worker {
                     apps,
                     options,
-                    text: ui::TextRenderer::new(),
+                    text: tilo_ui_base::TextRenderer::new(),
                     loaded: None,
                 };
                 while !stopped.load(Ordering::Relaxed) {
@@ -1111,7 +1111,7 @@ fn run_opens(
         let mut worker = Worker {
             apps,
             options,
-            text: ui::TextRenderer::new(),
+            text: tilo_ui_base::TextRenderer::new(),
             loaded: None,
         };
         // What the scenes before this one showed, and this one itself has shown of its own.
@@ -1192,7 +1192,7 @@ fn scene_units(phase: &[Found], index: usize) -> [Option<&Found>; 3] {
 struct Worker<'a> {
     apps: &'a [App],
     options: &'a Options,
-    text: ui::TextRenderer,
+    text: tilo_ui_base::TextRenderer,
     loaded: Option<(usize, Rc<stage::Packages>)>,
 }
 
@@ -1401,10 +1401,10 @@ fn button_named(node: &ui::headless::InspectionNode, label: &str) -> Option<Stri
     let pressable = node.semantics.as_ref().is_some_and(|access| {
         matches!(
             access.role,
-            ui::a11y::Role::Button
-                | ui::a11y::Role::ToggleButton
-                | ui::a11y::Role::ListItem
-                | ui::a11y::Role::TreeItem
+            tilo_ui_base::a11y::Role::Button
+                | tilo_ui_base::a11y::Role::ToggleButton
+                | tilo_ui_base::a11y::Role::ListItem
+                | tilo_ui_base::a11y::Role::TreeItem
         ) && !access.state.disabled
             && access.answers_to(label)
     });
@@ -1426,7 +1426,7 @@ fn drawn_row_named(node: &ui::headless::InspectionNode, label: &str) -> Option<u
     let row = node.semantics.as_ref().is_some_and(|access| {
         matches!(
             access.role,
-            ui::a11y::Role::ListItem | ui::a11y::Role::TreeItem
+            tilo_ui_base::a11y::Role::ListItem | tilo_ui_base::a11y::Role::TreeItem
         ) && !access.state.disabled
             && access.answers_to(label)
     });
@@ -1467,7 +1467,7 @@ fn checked_control_named(
         access.children.iter().find_map(|child| {
             let presses = matches!(
                 child.role,
-                ui::a11y::Role::Checkbox | ui::a11y::Role::Switch | ui::a11y::Role::RadioButton
+                tilo_ui_base::a11y::Role::Checkbox | tilo_ui_base::a11y::Role::Switch | tilo_ui_base::a11y::Role::RadioButton
             );
             if presses && !child.state.disabled && child.name.as_deref() == Some(label) {
                 child.action_target.clone()
@@ -1501,16 +1501,16 @@ fn painted_row_named(node: &ui::headless::InspectionNode, label: &str) -> Option
 /// The box of the row `label` among what `access`
 /// publishes, a menu's rows being its children's
 /// children: a menu row by its name, a table row by its name or the words of its first cell.
-fn row_named(access: &ui::a11y::AccessNode, label: &str) -> Option<ui::kurbo::Rect> {
+fn row_named(access: &tilo_ui_base::a11y::AccessNode, label: &str) -> Option<ui::kurbo::Rect> {
     for child in &access.children {
-        if child.role == ui::a11y::Role::MenuItem
+        if child.role == tilo_ui_base::a11y::Role::MenuItem
             && !child.state.disabled
             && child.name.as_deref() == Some(label)
             && let Some(bounds) = child.bounds
         {
             return Some(bounds.to_rect());
         }
-        if child.role == ui::a11y::Role::Row
+        if child.role == tilo_ui_base::a11y::Role::Row
             && !child.state.disabled
             && let Some(bounds) = child.bounds
             && (child.name.as_deref() == Some(label)
@@ -1534,7 +1534,7 @@ fn painted_button_named(node: &ui::headless::InspectionNode, label: &str) -> Opt
         access.children.iter().any(|child| {
             matches!(
                 child.role,
-                ui::a11y::Role::Button | ui::a11y::Role::ToggleButton
+                tilo_ui_base::a11y::Role::Button | tilo_ui_base::a11y::Role::ToggleButton
             ) && !child.state.disabled
                 && child.name.as_deref() == Some(label)
         })
@@ -1564,7 +1564,7 @@ struct AppCheck<'a> {
     hovers: &'a [String],
     presses: &'a [String],
     gathered: BTreeMap<Identity, Finding>,
-    text: &'a mut ui::TextRenderer,
+    text: &'a mut tilo_ui_base::TextRenderer,
     ran: usize,
     shown: Shown,
     /// The `--press` labels a control carried, so a label no layout carries at all is the one the
@@ -1613,7 +1613,7 @@ impl AppCheck<'_> {
             packages,
             &unit.scene.scenario,
             viewport,
-            ui::Theme::light(),
+            tilo_ui_base::Theme::light(),
             unit.scene.root.as_deref(),
             self.states,
         )
@@ -1891,7 +1891,7 @@ impl AppCheck<'_> {
             packages,
             &unit.scene.scenario,
             (first.width, first.height),
-            ui::Theme::light(),
+            tilo_ui_base::Theme::light(),
             unit.scene.root.as_deref(),
             self.states,
         )?;
@@ -2322,7 +2322,7 @@ impl AppCheck<'_> {
             &inspection.root,
             viewport,
             &declared,
-            ui::chrome::disclosure_gutter(&layout.theme()),
+            tilo_ui_base::chrome::disclosure_gutter(&layout.theme()),
             bar.controls
                 .iter()
                 .find(|control| control.id == "window-toolbar-location")
@@ -2664,7 +2664,7 @@ mod board_list {
 
     use super::stage;
     use ui::kurbo::Rect;
-    use ui::widget::Widget;
+    use tilo_ui_base::widget::Widget;
 
     const BOARD: &str = "so.tilo.lang.layoutboard";
 
@@ -2745,7 +2745,7 @@ mod board_list {
             &packages,
             "a board",
             (1280, 800),
-            ui::Theme::light(),
+            tilo_ui_base::Theme::light(),
             None,
             &[],
         )
@@ -2802,8 +2802,8 @@ mod board_list {
                 let scroll = scroll.as_any()?.downcast_ref::<ui::widget::Scrollable>()?;
                 matches!(
                     scroll.layout_info(),
-                    Some(ui::widget::LayoutInfo::Scroll(ui::widget::ScrollLayout {
-                        direction: ui::widget::ScrollDirection::Horizontal,
+                    Some(tilo_ui_base::widget::LayoutInfo::Scroll(tilo_ui_base::widget::ScrollLayout {
+                        direction: tilo_ui_base::widget::ScrollDirection::Horizontal,
                     }))
                 )
                 .then_some(scroll)
@@ -2826,7 +2826,7 @@ mod board_list {
 
     /// The width a list reads at, which every board gives it (`metrics.board_list_width`).
     fn list_measure() -> f64 {
-        f64::from(ui::Theme::light().tokens.metrics.board_list_width)
+        f64::from(tilo_ui_base::Theme::light().tokens.metrics.board_list_width)
     }
 
     /// A pane too narrow for its lists even at a card's measure scrolls them sideways instead of
@@ -2842,7 +2842,7 @@ mod board_list {
             &packages,
             "a board",
             (800, 800),
-            ui::Theme::light(),
+            tilo_ui_base::Theme::light(),
             None,
             &[],
         )
@@ -2923,7 +2923,7 @@ mod board_list {
             &packages,
             "a board",
             (1280, 800),
-            ui::Theme::light(),
+            tilo_ui_base::Theme::light(),
             None,
             &[],
         )
@@ -2955,7 +2955,7 @@ mod board_list {
 #[cfg(test)]
 mod row_press {
     use super::{drawn_row_named, row_named};
-    use ui::a11y::{AccessNode, Role};
+    use tilo_ui_base::{a11y::AccessNode, a11y::Role};
     use ui::headless::InspectionNode;
     use ui::kurbo::Rect;
 

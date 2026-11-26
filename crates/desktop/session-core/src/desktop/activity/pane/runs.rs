@@ -523,7 +523,7 @@ impl WorkspaceActivityPane {
                 app_label: Some(app_label.clone()),
                 id: resource.id.clone(),
                 kind: resource.kind.clone(),
-                label: ui::human_label(&resource.label, &resource.id)
+                label: tilo_ui_base::human_label(&resource.label, &resource.id)
                     .unwrap_or(&resource.id)
                     .to_owned(),
             });

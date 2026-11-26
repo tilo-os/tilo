@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use example_background_task::{App, MAX_LIMIT, Search, Task, count_primes, is_prime};
-use ui::a11y::Action;
+use tilo_ui_base::a11y::Action;
 use ui::headless::SemanticExpectation;
 use ui::prelude::{HeadlessApp, Invoke, Replica};
 

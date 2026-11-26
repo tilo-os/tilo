@@ -2,9 +2,9 @@
 //! it, and never loses it past its own edges.
 
 use super::*;
-use crate::component::{Described, Event, Intent};
+use tilo_ui_base::{component::Described, component::Event, component::Intent};
 use crate::headless::Driver;
-use crate::synthetic_input;
+use tilo_ui_base::synthetic_input;
 
 /// A page of the size a slide has, standing in the stage as the editor's does.
 fn stage() -> Stage {
@@ -104,7 +104,7 @@ fn the_slide_zooms_and_pans_without_losing_its_edges() {
 
 /// A stage holding `count` boxes a hundred page pixels apart, whose choosing and moving it
 /// reports on `queue`.
-fn boxes_props(queue: &crate::Intents<crate::component::Fired>, count: i64) -> StageProps {
+fn boxes_props(queue: &tilo_ui_base::Intents<tilo_ui_base::component::Fired>, count: i64) -> StageProps {
     let pins = (0..count)
         .map(|index| StagePinProps {
             key: format!("box-{index}"),
@@ -131,7 +131,7 @@ fn boxes_props(queue: &crate::Intents<crate::component::Fired>, count: i64) -> S
     }
 }
 
-fn boxes_stage(queue: &crate::Intents<crate::component::Fired>, count: i64) -> Stage {
+fn boxes_stage(queue: &tilo_ui_base::Intents<tilo_ui_base::component::Fired>, count: i64) -> Stage {
     Stage::from_props("stage", boxes_props(queue, count))
 }
 
@@ -139,7 +139,7 @@ fn boxes_stage(queue: &crate::Intents<crate::component::Fired>, count: i64) -> S
 /// zoom it and no key reaches it, while its places still move with the hand.
 #[test]
 fn a_still_stage_takes_no_zoom_or_keys_and_its_places_still_move() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let mut props = boxes_props(&queue, 1);
     props.still = true;
     let mut host = Driver::new(
@@ -181,17 +181,17 @@ fn a_still_stage_takes_no_zoom_or_keys_and_its_places_still_move() {
         .into_iter()
         .filter(|fired| fired.event == "moved")
         .map(|fired| match fired.value {
-            Some(crate::component::Value::List(parts)) => {
+            Some(tilo_ui_base::component::Value::List(parts)) => {
                 let mut parts = parts.into_iter();
                 let item = match parts.next() {
-                    Some(crate::component::Value::Text(item)) => item,
+                    Some(tilo_ui_base::component::Value::Text(item)) => item,
                     other => panic!("a place is named: {other:?}"),
                 };
                 let at = match parts.next() {
-                    Some(crate::component::Value::List(at)) => at
+                    Some(tilo_ui_base::component::Value::List(at)) => at
                         .into_iter()
                         .map(|value| match value {
-                            crate::component::Value::Int(number) => number,
+                            tilo_ui_base::component::Value::Int(number) => number,
                             other => panic!("a page point is whole: {other:?}"),
                         })
                         .collect(),
@@ -211,7 +211,7 @@ fn a_still_stage_takes_no_zoom_or_keys_and_its_places_still_move() {
 
 #[test]
 fn tab_walks_the_places_and_the_arrows_nudge_the_chosen_one() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let mut host = Driver::new(
         crate::State::new(),
         Box::new(boxes_stage(&queue, 2)),
@@ -219,7 +219,7 @@ fn tab_walks_the_places_and_the_arrows_nudge_the_chosen_one() {
     );
     // The window puts the keyboard on the stage, as a reader's focus does: the keys go where the
     // window's focus is.
-    host.perform_named("Slide", &crate::a11y::Action::Focus)
+    host.perform_named("Slide", &tilo_ui_base::a11y::Action::Focus)
         .expect("the stage takes the keyboard");
 
     // Tab chooses the first place, then the next, wrapping back to the first.
@@ -231,8 +231,8 @@ fn tab_walks_the_places_and_the_arrows_nudge_the_chosen_one() {
         .into_iter()
         .filter(|fired| fired.event == "select")
         .map(|fired| match fired.value {
-            Some(crate::component::Value::List(mut parts)) => match parts.remove(0) {
-                crate::component::Value::Text(item) => item,
+            Some(tilo_ui_base::component::Value::List(mut parts)) => match parts.remove(0) {
+                tilo_ui_base::component::Value::Text(item) => item,
                 other => panic!("a place is named: {other:?}"),
             },
             other => panic!("a place was chosen: {other:?}"),
@@ -257,17 +257,17 @@ fn tab_walks_the_places_and_the_arrows_nudge_the_chosen_one() {
         .into_iter()
         .filter(|fired| fired.event == "moved")
         .map(|fired| match fired.value {
-            Some(crate::component::Value::List(parts)) => {
+            Some(tilo_ui_base::component::Value::List(parts)) => {
                 let mut parts = parts.into_iter();
                 let item = match parts.next() {
-                    Some(crate::component::Value::Text(item)) => item,
+                    Some(tilo_ui_base::component::Value::Text(item)) => item,
                     other => panic!("a place is named: {other:?}"),
                 };
                 let at = match parts.next() {
-                    Some(crate::component::Value::List(at)) => at
+                    Some(tilo_ui_base::component::Value::List(at)) => at
                         .into_iter()
                         .map(|value| match value {
-                            crate::component::Value::Int(number) => number,
+                            tilo_ui_base::component::Value::Int(number) => number,
                             other => panic!("a page point is whole: {other:?}"),
                         })
                         .collect(),
@@ -289,7 +289,7 @@ fn tab_walks_the_places_and_the_arrows_nudge_the_chosen_one() {
 }
 
 /// A stage whose first place, "box-0", offers two commands, and whose second offers none.
-fn menu_stage(queue: &crate::Intents<crate::component::Fired>) -> Stage {
+fn menu_stage(queue: &tilo_ui_base::Intents<tilo_ui_base::component::Fired>) -> Stage {
     use crate::widget::{MenuItemProps, MenuPart};
 
     let command = |label: &str, event: &str, destructive: bool| {
@@ -344,7 +344,7 @@ fn menu_stage(queue: &crate::Intents<crate::component::Fired>) -> Stage {
 fn a_places_menu_opens_where_it_is_pressed_and_runs_its_command() {
     // The editor fits a 1280 × 720 page into 800 × 600 at 0.625, centred: page (96, 90) stands
     // at window (60, 131), and the place's middle at about (110, 159).
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let mut host = Driver::new(
         crate::State::new(),
         Box::new(menu_stage(&queue)),
@@ -432,7 +432,7 @@ fn a_finger_moves_a_box_taps_select_and_a_double_tap_opens_it() {
     // (`interaction::TouchPointerEmulator`, whose own tests prove the mapping): a place that
     // moves claims a drag, so a tap arrives as a click and a travelling finger as a left press
     // carried along. A test of this widget's half dispatches those events by hand.
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let mut host = Driver::new(
         crate::State::new(),
         Box::new(boxes_stage(&queue, 2)),
@@ -441,12 +441,12 @@ fn a_finger_moves_a_box_taps_select_and_a_double_tap_opens_it() {
     let (x, y) = BOX_0;
     assert_eq!(
         shown(&mut host).touch_claim(Point::new(x, y)),
-        crate::interaction::TouchClaim::Drag,
+        tilo_ui_base::interaction::TouchClaim::Drag,
         "a place that moves claims a finger's drag"
     );
     assert_eq!(
         shown(&mut host).touch_claim(Point::new(700.0, 550.0)),
-        crate::interaction::TouchClaim::Pointer,
+        tilo_ui_base::interaction::TouchClaim::Pointer,
         "the page itself is ordinary content: a finger there taps and scrolls"
     );
 
@@ -461,14 +461,14 @@ fn a_finger_moves_a_box_taps_select_and_a_double_tap_opens_it() {
         .into_iter()
         .filter(|fired| fired.event == "moved")
         .map(|fired| match fired.value {
-            Some(crate::component::Value::List(mut parts)) => {
+            Some(tilo_ui_base::component::Value::List(mut parts)) => {
                 let item = match parts.remove(0) {
-                    crate::component::Value::Text(item) => item,
+                    tilo_ui_base::component::Value::Text(item) => item,
                     other => panic!("a place is named: {other:?}"),
                 };
                 let at = match parts.remove(0) {
-                    crate::component::Value::List(mut at) => match at.remove(0) {
-                        crate::component::Value::Int(x) => x,
+                    tilo_ui_base::component::Value::List(mut at) => match at.remove(0) {
+                        tilo_ui_base::component::Value::Int(x) => x,
                         other => panic!("a page point is whole: {other:?}"),
                     },
                     other => panic!("a page point: {other:?}"),
@@ -503,7 +503,7 @@ fn a_finger_moves_a_box_taps_select_and_a_double_tap_opens_it() {
 
 #[test]
 fn a_finger_held_on_a_place_opens_its_menu() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let mut host = Driver::new(
         crate::State::new(),
         Box::new(menu_stage(&queue)),
@@ -590,7 +590,7 @@ fn on_screen(at: (f64, f64)) -> (f64, f64) {
 /// Drag the place at `from` to `to` (page points) with the hand, and the place's box where the
 /// stage last reported it: the page point it moved to.
 fn dragged(
-    queue: &crate::Intents<crate::component::Fired>,
+    queue: &tilo_ui_base::Intents<tilo_ui_base::component::Fired>,
     host: &mut Driver,
     from: (f64, f64),
     to: (f64, f64),
@@ -605,10 +605,10 @@ fn dragged(
         .into_iter()
         .rfind(|fired| fired.event == "moved")
         .map(|fired| match fired.value {
-            Some(crate::component::Value::List(mut parts)) => match parts.remove(1) {
-                crate::component::Value::List(mut at) => match at.remove(0) {
-                    crate::component::Value::Int(x) => match at.remove(0) {
-                        crate::component::Value::Int(y) => (x, y),
+            Some(tilo_ui_base::component::Value::List(mut parts)) => match parts.remove(1) {
+                tilo_ui_base::component::Value::List(mut at) => match at.remove(0) {
+                    tilo_ui_base::component::Value::Int(x) => match at.remove(0) {
+                        tilo_ui_base::component::Value::Int(y) => (x, y),
                         other => panic!("a page point is whole: {other:?}"),
                     },
                     other => panic!("a page point is whole: {other:?}"),
@@ -622,7 +622,7 @@ fn dragged(
 
 #[test]
 fn a_dragged_place_snaps_to_the_page_and_the_places_beside_it() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let mut host = Driver::new(
         crate::State::new(),
         Box::new(boxes_stage(&queue, 2)),

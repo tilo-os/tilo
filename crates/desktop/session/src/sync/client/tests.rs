@@ -254,12 +254,12 @@ tilo_test_env::scenario! {
         let people = sync.show(&mut tree, &no_records(), &|_| None);
         assert_eq!(people.len(), 1);
         // A person who gave no name is someone without a name yet, never their device's label.
-        assert_eq!(people[0].label, ui::presence::unnamed_person_label());
+        assert_eq!(people[0].label, tilo_ui_base::presence::unnamed_person_label());
         assert_eq!(people[0].user, Some(person(0xaa)));
 
         let members = &tree.workspaces[0].members;
         assert_eq!(members.len(), 1);
-        assert_eq!(members[0].name, ui::presence::unnamed_person_label());
+        assert_eq!(members[0].name, tilo_ui_base::presence::unnamed_person_label());
         assert!(members[0].id.is_person());
         let here = &tree.workspaces[0].present;
         assert_eq!(here.len(), 1);
@@ -646,7 +646,7 @@ tilo_test_env::scenario! {
         let people = sync.show(&mut shell(WORKSPACE), &no_records(), &|_| None);
         assert_eq!(people.len(), 1);
         assert_eq!(people[0].user, Some(person(0xaa)));
-        assert_eq!(people[0].label, ui::presence::unnamed_person_label());
+        assert_eq!(people[0].label, tilo_ui_base::presence::unnamed_person_label());
     }
 
     phase another_device_of_this_person_is_this_person;
@@ -682,17 +682,17 @@ fn tile(tab: u64) -> tilo_live::presence::Tile {
 /// Everyone's pointer as the shell draws it, over `tiles`: who, the tab they are over, and where it
 /// stands on the surface.
 fn drawn_on(sync: &Client, tiles: &[tilo_live::presence::Tile]) -> Vec<(u64, f64, f64)> {
-    let mut chats = ui::presence::CursorChats::default();
+    let mut chats = tilo_ui_base::presence::CursorChats::default();
     let members = sync.members(WORKSPACE);
     let pointers = tilo_session_core::presence::pointers(
         &members,
         &std::collections::HashMap::new(),
         tiles,
         &mut chats,
-        &ui::presence::PresenceCtx::empty(),
+        &tilo_ui_base::presence::PresenceCtx::empty(),
         ui::time::Instant::now(),
         now_ms(),
-        ui::tokens::EffectiveMotion::default(),
+        tilo_ui_base::tokens::EffectiveMotion::default(),
     );
     pointers
         .drawn
@@ -1453,7 +1453,7 @@ tilo_test_env::scenario! {
     // An agent's action reaches a device's session as its narration does on the live session: the
     // apps here are handed the work, and the cursor it drew stands where it acted.
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let (sync, _said) = session("Quinten", Some(0x04));
         let (handle, _tab) = desktop_running("so.tilo.notes");
         sync.attach_shell(handle);
@@ -1518,7 +1518,7 @@ tilo_test_env::scenario! {
             Some(person(0x04).as_str()),
             "the board says whose agent it is"
         );
-        let mut presence = ui::presence::PresenceCtx::default();
+        let mut presence = tilo_ui_base::presence::PresenceCtx::default();
         assert!(
             tilo_session_core::desktop::here::apply_narrated(&mut presence, &[admitted]),
             "the cursor moved to the control it acted on"

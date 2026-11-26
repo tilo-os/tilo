@@ -2,7 +2,7 @@
 //! inside a tile. Extends the base `Widget` trait with app-level metadata (kind, title, icon,
 //! permission hint, commands).
 
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 use std::cell::RefCell;
 use std::rc::Weak;
 
@@ -120,9 +120,9 @@ pub enum AppKind {
     Browser,
     Settings,
     /// Any other app, by its own glyph from the icon set
-    /// ([`crate::icons::app_glyph`]): a window wears its own app's mark,
+    /// ([`tilo_ui_base::icons::app_glyph`]): a window wears its own app's mark,
     /// never another app's.
-    App(crate::icons::Icon),
+    App(tilo_ui_base::icons::Icon),
 }
 
 impl AppKind {
@@ -138,7 +138,7 @@ impl AppKind {
     }
 }
 
-impl crate::widget::identity::AsDynWidget for dyn AppWidget {
+impl tilo_ui_base::widget::identity::AsDynWidget for dyn AppWidget {
     fn as_dyn_widget(&self) -> &dyn Widget {
         self
     }
@@ -148,7 +148,7 @@ impl crate::widget::identity::AsDynWidget for dyn AppWidget {
     }
 }
 
-crate::draw_child_of_dyn!(AppWidget);
+tilo_ui_base::draw_child_of_dyn!(AppWidget);
 
 /// Trait every in-process app implements so the shell can host it inside a `TileContent::App`.
 pub trait AppWidget: Widget {
@@ -243,7 +243,7 @@ pub trait AppWidget: Widget {
     /// The narrowest window this app is still usable in, in logical px: a Tilo app's compact layout, a
     /// client's `xdg_toplevel` min-size hint.
     fn min_window_width(&self) -> Option<f64> {
-        crate::widget::minimum_window_width(self)
+        tilo_ui_base::widget::minimum_window_width(self)
     }
 
     /// The widest window this app can fill, in logical px: a client's `xdg_toplevel` max-size hint.
@@ -270,7 +270,7 @@ pub trait AppWidget: Widget {
         &mut self,
         address: &tilo_actions::ActionAddress,
         _arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         Err(tilo_actions::ApiError::Unknown(address.clone()))
     }
 
@@ -283,7 +283,7 @@ pub trait AppWidget: Widget {
         _actor: Option<&tilo_actions::Actor>,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invoke_device_local_action(address, arguments)
     }
 
@@ -314,13 +314,13 @@ pub struct WindowPublication {
 /// lent the component's own authority over its widgets.
 #[cfg(feature = "model")]
 fn lent_permissions<'a>(
-    env: &crate::draw::DrawEnv<'a>,
+    env: &tilo_ui_base::draw::DrawEnv<'a>,
     binding: &crate::bound_dispatch::CallbackBinding,
-) -> crate::draw::DrawEnv<'a> {
+) -> tilo_ui_base::draw::DrawEnv<'a> {
     let permissions = binding.permissions.borrow().clone();
     let mut inner = env.clone();
     inner.permissions = Some(std::rc::Rc::new(permissions));
-    inner.paint_permissions = crate::permissions::shared_revision();
+    inner.paint_permissions = tilo_ui_base::permissions::shared_revision();
     inner
 }
 
@@ -332,7 +332,7 @@ mod component_adapter {
         /// Its record's committed heads and what is pending on top of them.
         pub(crate) document: (Vec<automerge::ChangeHash>, usize),
         pub(crate) inputs: PassInputs,
-        pub(crate) reads: crate::component_inputs::Reads,
+        pub(crate) reads: tilo_ui_base::component_inputs::Reads,
     }
 
     /// What a component's pass reads of its host besides its record: what its permissions mean now and its
@@ -371,17 +371,13 @@ mod component_adapter {
         pub(crate) inputs: PassInputs,
     }
 
-    use super::{AppProcessIntent, AppWidget, IconDescriptor, Widget};
+    use super::{AppProcessIntent, AppWidget, IconDescriptor};
+    use tilo_ui_base::widget::Widget;
     use crate::application::AppComponent;
     use crate::floating_surface::{FloatingSurfaceProvider, FloatingSurfaceWidgetExt};
-    use crate::widget::DrawChild;
-    use crate::widget::{
-        ActionDirectoryResourcePage, Affine, AppKind, AudiencePresentationProvider,
-        AudiencePresentationWidgetExt, AutoCommit, CompleteContentProvider,
-        CompleteContentWidgetExt, ControlBindingMetadata, FullscreenProvider, FullscreenWidgetExt,
-        HashMap, HashSet, Instant, NodeId, ObjId, PresenceKey, ResourceOperationStart, Scene,
-        TaffyTree, TaffyTreeExt, TextRenderer, Theme, WindowEvent,
-    };
+    use tilo_ui_base::widget::DrawChild;
+    use crate::{widget::AppKind, widget::Instant};
+    use tilo_ui_base::{widget::ActionDirectoryResourcePage, widget::Affine, widget::AudiencePresentationProvider, widget::AudiencePresentationWidgetExt, widget::AutoCommit, widget::CompleteContentProvider, widget::CompleteContentWidgetExt, widget::ControlBindingMetadata, widget::FullscreenProvider, widget::FullscreenWidgetExt, widget::HashMap, widget::HashSet, widget::NodeId, widget::ObjId, widget::PresenceKey, widget::ResourceOperationStart, widget::Scene, widget::TaffyTree, widget::TaffyTreeExt, widget::TextRenderer, widget::Theme, widget::WindowEvent};
 
     pub(crate) struct BoundAppWidget {
         pub(crate) component: AppComponent,
@@ -392,7 +388,7 @@ mod component_adapter {
         /// ([`AppComponent::take_save_status_changed`]): what shows it is drawn by the next frame.
         save_status_shown: bool,
         /// What the root's last pass read, as it stood once the pass ended: a pass that would read the same
-        /// is skipped ([`crate::component_inputs`]).
+        /// is skipped ([`tilo_ui_base::component_inputs`]).
         observation: Option<Observation>,
         /// The root asked for its next sync whatever its observation says: it was laid out anew, its update or
         /// a deadline changed it.
@@ -403,11 +399,11 @@ mod component_adapter {
         laid_out: Option<vello::kurbo::Size>,
         /// How a person reaches the window, as the window was last told: telling it again is
         /// no input.
-        environment: Option<crate::interaction::InteractionEnvironment>,
+        environment: Option<tilo_ui_base::interaction::InteractionEnvironment>,
         /// What the root's updates read since its last sync: a view built from what moved is input the sync
         /// it precedes takes up, and a build that loads the words it shows proves nothing
-        /// ([`crate::component_inputs`]).
-        update_reads: Option<crate::component_inputs::Reads>,
+        /// ([`tilo_ui_base::component_inputs`]).
+        update_reads: Option<tilo_ui_base::component_inputs::Reads>,
     }
 
     impl BoundAppWidget {
@@ -432,7 +428,7 @@ mod component_adapter {
             Now {
                 revision: binding.lifetime.revision(),
                 document: binding
-                    .read_document(outer, |document, _| crate::doc::settle_mark(document))
+                    .read_document(outer, |document, _| tilo_ui_base::doc::settle_mark(document))
                     .ok(),
                 inputs: Self::inputs(&self.component, &binding),
             }
@@ -447,14 +443,14 @@ mod component_adapter {
                     permissions: binding.permissions.borrow().directory_observation(),
                     save: component.record_save_now().ok_or_else(String::new),
                 },
-                locale: crate::i18n::I18nManager::revision(),
+                locale: tilo_ui_base::i18n::I18nManager::revision(),
             }
         }
 
         /// Whether the root's next pass would read only what its last one read: nothing reached the
         /// component, nothing it follows moved, and it asked for nothing.
         fn at_rest(&self, outer: &AutoCommit) -> bool {
-            if self.owes_sync || crate::component_inputs::forced() {
+            if self.owes_sync || tilo_ui_base::component_inputs::forced() {
                 return false;
             }
             let Some(observation) = &self.observation else {
@@ -517,17 +513,17 @@ mod component_adapter {
 
         /// The root's settle: what its widgets took up is written to the record, and shown in the same
         /// frame.
-        fn settle_root(&mut self, edits: &mut crate::widget::Edits<'_>) {
+        fn settle_root(&mut self, edits: &mut tilo_ui_base::widget::Edits<'_>) {
             let binding = self.component.callback_binding();
             binding
                 .with_settlement(edits.document_mut(), |document, resource_root| {
                     let Some(root) = self.component.root.as_deref_mut() else {
                         return;
                     };
-                    let before = crate::doc::settle_mark(document);
-                    root.settle(&mut crate::widget::Edits::lend(document), resource_root);
+                    let before = tilo_ui_base::doc::settle_mark(document);
+                    root.settle(&mut tilo_ui_base::widget::Edits::lend(document), resource_root);
                     let _ = binding.drain_owned_tree(root, document);
-                    if crate::doc::settle_mark(document) != before {
+                    if tilo_ui_base::doc::settle_mark(document) != before {
                         root.update(document, resource_root);
                         root.sync(document, resource_root);
                     }
@@ -547,7 +543,7 @@ mod component_adapter {
                     widget
                         .component
                         .callback_binding()
-                        .read_document(state, |document, _| crate::doc::settle_mark(document))
+                        .read_document(state, |document, _| tilo_ui_base::doc::settle_mark(document))
                         .ok(),
                     widget
                         .in_root(|root| root.layout_needs_measure() || root.is_layout_dirty())
@@ -568,19 +564,19 @@ mod component_adapter {
             // language that moves while it runs: the observation the pass ends
             // with is the language it read, so the next pass reads it again.
             let crossed = self.component.callback_binding().lifetime.crossed();
-            let locale = crate::i18n::I18nManager::revision();
+            let locale = tilo_ui_base::i18n::I18nManager::revision();
             let ((before, after), reads) = tilo_actions::profiling::unobserved(|| {
                 let binding = self.component.callback_binding();
                 let before = shown(self);
                 let ((), reads) = crate::resource::reads::reading(&binding.lifetime, || {
-                    crate::component_inputs::proving(|| self.sync_root(state));
+                    tilo_ui_base::component_inputs::proving(|| self.sync_root(state));
                 });
                 ((before, shown(self)), reads)
             });
             self.observation_pass(state, reads);
             let consistent = before == after
                 || self.component.callback_binding().lifetime.crossed() != crossed
-                || crate::i18n::I18nManager::revision() != locale;
+                || tilo_ui_base::i18n::I18nManager::revision() != locale;
             if consistent {
                 return;
             }
@@ -622,7 +618,7 @@ mod component_adapter {
         }
 
         /// Note what the pass that just ran read: `reads` outside the component, and what stands now.
-        fn observation_pass(&mut self, outer: &AutoCommit, reads: crate::component_inputs::Reads) {
+        fn observation_pass(&mut self, outer: &AutoCommit, reads: tilo_ui_base::component_inputs::Reads) {
             if self.in_root(|root| Self::busy(root)).unwrap_or(true) {
                 self.observation = None;
                 return;
@@ -666,8 +662,8 @@ mod component_adapter {
         /// edits at the record root.
         fn with_root_edits<R: Default>(
             &mut self,
-            edits: &mut crate::widget::Edits<'_>,
-            f: impl FnOnce(&mut (dyn Widget + 'static), &mut crate::widget::Edits<'_>, &ObjId) -> R,
+            edits: &mut tilo_ui_base::widget::Edits<'_>,
+            f: impl FnOnce(&mut (dyn Widget + 'static), &mut tilo_ui_base::widget::Edits<'_>, &ObjId) -> R,
         ) -> R {
             let binding = self.component.callback_binding();
             binding.note_input();
@@ -678,7 +674,7 @@ mod component_adapter {
                     };
                     f(
                         root,
-                        &mut crate::widget::Edits::lend(document),
+                        &mut tilo_ui_base::widget::Edits::lend(document),
                         resource_root,
                     )
                 })
@@ -713,7 +709,7 @@ mod component_adapter {
     }
 
     #[cfg(feature = "model")]
-    impl crate::widget::Continuable for BoundAppWidget {
+    impl tilo_ui_base::widget::Continuable for BoundAppWidget {
         fn continuation_metadata(
             &self,
             state: &AutoCommit,
@@ -723,7 +719,7 @@ mod component_adapter {
             binding
                 .read_document(state, |document, resource_root| {
                     let root = self.component.root.as_deref()?;
-                    crate::widget::capability::capability::<dyn crate::widget::Continuable>(root)?
+                    tilo_ui_base::widget::capability::capability::<dyn tilo_ui_base::widget::Continuable>(root)?
                         .continuation_metadata(document, resource_root)
                 })
                 .unwrap_or(None)
@@ -732,12 +728,12 @@ mod component_adapter {
         fn restore_continuation_metadata(
             &mut self,
             metadata: &::collaboration::ContinuationMetadata,
-            state: &mut crate::widget::Edits<'_>,
+            state: &mut tilo_ui_base::widget::Edits<'_>,
             _path: &ObjId,
         ) -> bool {
             self.with_root_edits(state, |root, edits, resource_root| {
-                let Some(continuable) = crate::widget::capability::capability_mut::<
-                    dyn crate::widget::Continuable,
+                let Some(continuable) = tilo_ui_base::widget::capability::capability_mut::<
+                    dyn tilo_ui_base::widget::Continuable,
                 >(&mut *root) else {
                     return false;
                 };
@@ -752,7 +748,7 @@ mod component_adapter {
             self.in_root_mut(|root| root.on_floating_surface_ime_source_changed(id));
         }
 
-        fn draw_floating_surface(&mut self, id: &str, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
+        fn draw_floating_surface(&mut self, id: &str, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) -> bool {
             #[allow(
                 unused_variables,
                 unused_mut,
@@ -762,7 +758,7 @@ mod component_adapter {
             self.in_root_mut(|root| {
                 root.draw_floating_surface(
                     id,
-                    &mut crate::draw::DrawCtx::new(
+                    &mut tilo_ui_base::draw::DrawCtx::new(
                         scene,
                         transform,
                         text_renderer,
@@ -788,14 +784,14 @@ mod component_adapter {
             &mut self,
             id: &str,
             event: &winit::event::WindowEvent,
-            ctx: &mut crate::widget::EventCtx<'_>,
+            ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
         ) -> bool {
             self.owes_sync = true;
             self.in_root_mut(|root| root.floating_surface_event(id, event, ctx))
                 .unwrap_or_default()
         }
 
-        fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
+        fn floating_surface_accessibility(&self, id: &str) -> Option<tilo_ui_base::a11y::AccessNode> {
             self.in_root(|root| root.floating_surface_accessibility(id))
                 .flatten()
         }
@@ -804,8 +800,8 @@ mod component_adapter {
             &mut self,
             id: &str,
             target: &str,
-            action: &crate::a11y::Action,
-            state: &mut crate::widget::Edits<'_>,
+            action: &tilo_ui_base::a11y::Action,
+            state: &mut tilo_ui_base::widget::Edits<'_>,
             _path: &ObjId,
         ) -> bool {
             self.with_root_edits(state, |root, edits, resource_root| {
@@ -822,7 +818,7 @@ mod component_adapter {
         fn floating_surface_ime(
             &self,
             id: &str,
-        ) -> Option<(crate::ime::InputContent, vello::kurbo::Rect)> {
+        ) -> Option<(tilo_ui_base::ime::InputContent, vello::kurbo::Rect)> {
             self.in_root(|root| root.floating_surface_ime(id)).flatten()
         }
 
@@ -843,7 +839,7 @@ mod component_adapter {
                 .unwrap_or_default()
         }
 
-        fn draw_floating_surfaces(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        fn draw_floating_surfaces(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
             #[allow(
                 unused_variables,
                 unused_mut,
@@ -851,7 +847,7 @@ mod component_adapter {
             )]
             let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
             self.in_root_mut(|root| {
-                root.draw_floating_surfaces(&mut crate::draw::DrawCtx::new(
+                root.draw_floating_surfaces(&mut tilo_ui_base::draw::DrawCtx::new(
                     scene,
                     transform,
                     text_renderer,
@@ -889,7 +885,7 @@ mod component_adapter {
     impl AudiencePresentationProvider for BoundAppWidget {
         fn audience_presentation_request(
             &self,
-        ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
+        ) -> Option<tilo_ui_base::fullscreen::AudiencePresentationRequest> {
             self.in_root(|root| root.audience_presentation_request())
                 .flatten()
         }
@@ -916,7 +912,7 @@ mod component_adapter {
         fn handle_audience_presentation_event(
             &mut self,
             event: &WindowEvent,
-            state: &mut crate::widget::Edits<'_>,
+            state: &mut tilo_ui_base::widget::Edits<'_>,
             _path: &ObjId,
         ) -> bool {
             self.owes_sync = true;
@@ -936,11 +932,11 @@ mod component_adapter {
             self.in_root(|root| root.fullscreen_intent()).flatten()
         }
 
-        fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
+        fn fullscreen_params(&self) -> tilo_ui_base::fullscreen::FullscreenRequest {
             self.in_root(FullscreenWidgetExt::fullscreen_params)
                 .unwrap_or_else(|| {
-                    crate::fullscreen::FullscreenRequest::mirror(
-                        crate::fullscreen::FullscreenTarget::Largest,
+                    tilo_ui_base::fullscreen::FullscreenRequest::mirror(
+                        tilo_ui_base::fullscreen::FullscreenTarget::Largest,
                     )
                 })
         }
@@ -972,7 +968,7 @@ mod component_adapter {
         fn draw_complete_content(
             &mut self,
             bounds: vello::kurbo::Rect,
-            ctx: &mut crate::draw::DrawCtx<'_>,
+            ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
         ) -> bool {
             #[allow(
                 unused_variables,
@@ -981,7 +977,7 @@ mod component_adapter {
             )]
             let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
             if self.component.behaviour.capture_protected {
-                crate::secret_paint::note_secret_painted();
+                tilo_ui_base::secret_paint::note_secret_painted();
             }
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
@@ -993,7 +989,7 @@ mod component_adapter {
             if root.complete_content_size().is_some() {
                 return root.draw_complete_content(
                     bounds,
-                    &mut crate::draw::DrawCtx::new(
+                    &mut tilo_ui_base::draw::DrawCtx::new(
                         scene,
                         transform,
                         text_renderer,
@@ -1009,16 +1005,16 @@ mod component_adapter {
             let offset = root
                 .primary_vertical_scroll()
                 .map(|region| region.metrics.offset);
-            if crate::widget::layout::lay_out_detached(root, bounds, theme, text_renderer).is_err()
+            if tilo_ui_base::widget::layout::lay_out_detached(root, bounds, theme, text_renderer).is_err()
             {
                 return false;
             }
             let inner = crate::widget::app_widget::lent_permissions(&env, &binding);
             root.draw_child(scene, transform, text_renderer, theme, &inner);
-            let _ = crate::widget::layout::lay_out_detached(root, live, theme, text_renderer);
+            let _ = tilo_ui_base::widget::layout::lay_out_detached(root, live, theme, text_renderer);
             if let Some(offset) = offset {
                 let _ = root.apply_primary_vertical_scroll(
-                    crate::widget::PrimaryScrollAction::Absolute(offset),
+                    tilo_ui_base::widget::PrimaryScrollAction::Absolute(offset),
                 );
             }
             self.relayout = true;
@@ -1034,27 +1030,27 @@ mod component_adapter {
     }
 
     impl Widget for BoundAppWidget {
-        crate::provides!(
+        tilo_ui_base::provides!(
             dyn crate::AppWidget,
-            dyn crate::widget::FullscreenProvider,
-            dyn crate::widget::CompleteContentProvider,
+            dyn tilo_ui_base::widget::FullscreenProvider,
+            dyn tilo_ui_base::widget::CompleteContentProvider,
             #[cfg(feature = "model")]
-            dyn crate::widget::Continuable,
+            dyn tilo_ui_base::widget::Continuable,
             dyn crate::floating_surface::FloatingSurfaceProvider,
-            dyn crate::widget::AudiencePresentationProvider,
+            dyn tilo_ui_base::widget::AudiencePresentationProvider,
             #[cfg(feature = "model")]
-            dyn crate::widget::presence_topology::Presences,
-            dyn crate::widget::undo_access::CommittedActions,
-            dyn crate::widget::undo_access::UndoControl,
-            dyn crate::widget::undo_access::LocalUndo,
+            dyn tilo_ui_base::widget::presence_topology::Presences,
+            dyn tilo_ui_base::widget::undo_access::CommittedActions,
+            dyn tilo_ui_base::widget::undo_access::UndoControl,
+            dyn tilo_ui_base::widget::undo_access::LocalUndo,
             #[cfg(feature = "model")]
             dyn crate::history_mode::capability::DocumentHistory,
-            dyn crate::widget::controls::ActionControls,
-            dyn crate::widget::resources::PublishesResources,
+            dyn tilo_ui_base::widget::controls::ActionControls,
+            dyn tilo_ui_base::widget::resources::PublishesResources,
             dyn crate::search::capability::SearchSource,
             #[cfg(feature = "model")]
-            dyn crate::widget::permission::PermissionGuarded,
-            dyn crate::presence::capability::PublishesPresence,
+            dyn tilo_ui_base::widget::permission::PermissionGuarded,
+            dyn tilo_ui_base::presence::capability::PublishesPresence,
             #[cfg(feature = "model")]
             dyn crate::resource::capability::ResourceScoped,
             dyn crate::view::capability::ViewState,
@@ -1064,17 +1060,17 @@ mod component_adapter {
             #[cfg(feature = "model")]
             dyn crate::component_lifecycle::HearsElsewhere,
             dyn crate::widget::WindowHistory,
-            dyn crate::widget::undo_points::UndoPoints,
-            dyn crate::widget::ResourceOperations,
+            dyn tilo_ui_base::widget::undo_points::UndoPoints,
+            dyn tilo_ui_base::widget::ResourceOperations,
             dyn crate::bound_dispatch::BoundWidget,
-            dyn crate::widget::component_walk::ComponentBoundary,
+            dyn tilo_ui_base::widget::component_walk::ComponentBoundary,
             dyn crate::bound_dispatch::BoundTraversal
         );
         fn as_any(&self) -> Option<&dyn std::any::Any> {
             Some(self)
         }
 
-        fn observe_physical_input(&mut self, input: crate::widget::PhysicalInput) {
+        fn observe_physical_input(&mut self, input: tilo_ui_base::widget::PhysicalInput) {
             self.in_root_mut(|root| root.observe_physical_input(input));
         }
 
@@ -1084,8 +1080,8 @@ mod component_adapter {
 
         fn native_input_snapshot(
             &self,
-            _: &crate::widget::AppModel,
-            _: &crate::widget::ModelPath,
+            _: &tilo_ui_base::widget::AppModel,
+            _: &tilo_ui_base::widget::ModelPath,
         ) -> Option<serde_json::Value> {
             let binding = self.component.callback_binding();
             let _entry = binding.enter().ok()?;
@@ -1103,7 +1099,7 @@ mod component_adapter {
                 .unwrap_or_default()
         }
 
-        fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
+        fn primary_vertical_scroll(&self) -> Option<tilo_ui_base::widget::PrimaryScrollRegion> {
             let binding = self.component.callback_binding();
             let _entry = binding.enter().ok()?;
             let mut region = self.component.root.as_deref()?.primary_vertical_scroll()?;
@@ -1112,20 +1108,20 @@ mod component_adapter {
         }
         fn apply_primary_vertical_scroll(
             &mut self,
-            action: crate::widget::PrimaryScrollAction,
-        ) -> crate::widget::PrimaryScrollResult {
+            action: tilo_ui_base::widget::PrimaryScrollAction,
+        ) -> tilo_ui_base::widget::PrimaryScrollResult {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
-                return crate::widget::PrimaryScrollResult::Unsupported;
+                return tilo_ui_base::widget::PrimaryScrollResult::Unsupported;
             };
             let Some(root) = self.component.root.as_deref_mut() else {
-                return crate::widget::PrimaryScrollResult::Unsupported;
+                return tilo_ui_base::widget::PrimaryScrollResult::Unsupported;
             };
             root.apply_primary_vertical_scroll(action)
                 .stamp(binding.lifetime_id)
         }
 
-        fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
+        fn mount_native_views(&mut self, host: &tilo_ui_base::widget::native_view::NativeViewHost<'_>) {
             self.in_root_mut(|root| root.mount_native_views(host));
         }
         fn unmount_native_views(&mut self) {
@@ -1134,13 +1130,13 @@ mod component_adapter {
         fn native_view_frame_start(&mut self) {
             self.in_root_mut(|root| root.native_view_frame_start());
         }
-        fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+        fn set_platform_conventions(&mut self, conventions: tilo_ui_base::platform::PlatformConventions) {
             self.owes_sync = true;
             self.in_root_mut(|root| root.set_platform_conventions(conventions));
         }
         fn set_interaction_environment(
             &mut self,
-            environment: crate::interaction::InteractionEnvironment,
+            environment: tilo_ui_base::interaction::InteractionEnvironment,
         ) {
             if self.environment != Some(environment) {
                 self.environment = Some(environment);
@@ -1148,8 +1144,8 @@ mod component_adapter {
             }
             self.in_root_mut(|root| root.set_interaction_environment(environment));
         }
-        fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
-            let (state, _) = crate::doc::document_ref(state, path);
+        fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+            let (state, _) = tilo_ui_base::doc::document_ref(state, path);
             if self.at_rest(state) {
                 #[cfg(debug_assertions)]
                 self.verify_rest(state);
@@ -1164,7 +1160,7 @@ mod component_adapter {
             self.observation_pass(state, reads);
             self.owes_settle = true;
         }
-        fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, _path: &ObjId) {
+        fn settle(&mut self, edits: &mut tilo_ui_base::widget::Edits<'_>, _path: &ObjId) {
             // Owed by a sync of this frame or the last: what it writes is
             // what that sync took up, and the observation follows it, unless
             // something reached the component since that sync, which only
@@ -1194,10 +1190,10 @@ mod component_adapter {
         }
         fn update(
             &mut self,
-            state: &crate::widget::AppModel,
-            path: &crate::widget::ModelPath,
+            state: &tilo_ui_base::widget::AppModel,
+            path: &tilo_ui_base::widget::ModelPath,
         ) -> bool {
-            let (state, _) = crate::doc::document_ref(state, path);
+            let (state, _) = tilo_ui_base::doc::document_ref(state, path);
             let binding = self.component.callback_binding();
             let permissions = binding.permissions.borrow().clone();
             let update = |component: &mut AppComponent| {
@@ -1218,7 +1214,7 @@ mod component_adapter {
             };
             let component = &mut self.component;
             let (changed, reads) = crate::resource::reads::reading(&binding.lifetime, || {
-                crate::presence::frame::frame(|presence| {
+                tilo_ui_base::presence::frame::frame(|presence| {
                     presence.with_permissions(permissions.clone(), || update(component))
                 })
                 .unwrap_or_else(|| update(component))
@@ -1268,7 +1264,7 @@ mod component_adapter {
             node: NodeId,
             origin: vello::kurbo::Point,
         ) {
-            let rect = crate::widget::layout_rect(taffy, node, origin);
+            let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
             if self.laid_out != Some(rect.size()) {
                 self.laid_out = Some(rect.size());
                 self.owes_sync = true;
@@ -1281,7 +1277,7 @@ mod component_adapter {
                 }
             });
         }
-        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
             #[allow(
                 unused_variables,
                 unused_mut,
@@ -1298,16 +1294,16 @@ mod component_adapter {
             // Protection belongs to this component even inside a shell or
             // chrome container; its enclosing presented frame must retain it.
             if self.component.behaviour.capture_protected {
-                crate::secret_paint::note_secret_painted();
+                tilo_ui_base::secret_paint::note_secret_painted();
             }
             let inner = crate::widget::app_widget::lent_permissions(&env, &binding);
             root.draw_child(scene, transform, text_renderer, theme, &inner);
         }
-        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
             let binding = self.component.callback_binding();
             // Whether this event alone panned a view: the host reads the
             // same answer once dispatch ends, so it is handed back.
-            let panned_before = crate::widget::take_view_only_pan();
+            let panned_before = tilo_ui_base::widget::take_view_only_pan();
             let declared_pan = self
                 .component
                 .root
@@ -1323,10 +1319,10 @@ mod component_adapter {
                     {
                         root.handle_event(
                             event,
-                            &mut crate::widget::EventCtx {
+                            &mut tilo_ui_base::widget::EventCtx {
                                 scale_factor: ctx.scale_factor,
                                 modifiers: ctx.modifiers,
-                                state: crate::widget::Edits::lend(document),
+                                state: tilo_ui_base::widget::Edits::lend(document),
                                 path: resource_root,
                                 handled: ctx.handled,
                                 focus_target: ctx.focus_target,
@@ -1346,9 +1342,9 @@ mod component_adapter {
             // it, or the scroller says so) shows through the scroller alone;
             // an edit it made moves the record, focus it moved is input of
             // its own.
-            let panned = crate::widget::take_view_only_pan();
+            let panned = tilo_ui_base::widget::take_view_only_pan();
             if panned || panned_before {
-                crate::widget::note_view_only_pan();
+                tilo_ui_base::widget::note_view_only_pan();
             }
             if *ctx.handled && !(panned || declared_pan) {
                 binding.note_input();
@@ -1446,10 +1442,10 @@ mod component_adapter {
         }
         fn perform_action(
             &mut self,
-            action: &crate::a11y::Action,
+            action: &tilo_ui_base::a11y::Action,
             key_path: &[u64],
-            state: &mut crate::widget::Edits<'_>,
-            _path: &crate::widget::ModelPath,
+            state: &mut tilo_ui_base::widget::Edits<'_>,
+            _path: &tilo_ui_base::widget::ModelPath,
         ) -> bool {
             self.with_root_edits(state, |root, edits, resource_root| {
                 root.perform_action(action, key_path, edits, resource_root)
@@ -1458,9 +1454,9 @@ mod component_adapter {
         fn perform_semantic_action(
             &mut self,
             target: &str,
-            action: &crate::a11y::Action,
-            state: &mut crate::widget::Edits<'_>,
-            _path: &crate::widget::ModelPath,
+            action: &tilo_ui_base::a11y::Action,
+            state: &mut tilo_ui_base::widget::Edits<'_>,
+            _path: &tilo_ui_base::widget::ModelPath,
         ) -> bool {
             self.with_root_edits(state, |root, edits, resource_root| {
                 root.perform_semantic_action(target, action, edits, resource_root)
@@ -1498,7 +1494,7 @@ mod component_adapter {
             self.in_root(|root| root.ime_edit_fingerprint(key))
                 .flatten()
         }
-        fn ime_content(&self) -> Option<crate::ime::InputContent> {
+        fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
             self.in_root(|root| root.ime_content()).flatten()
         }
         fn ime_multiline(&self) -> bool {
@@ -1508,28 +1504,28 @@ mod component_adapter {
         fn presented(&self) -> bool {
             self.in_root(|root| root.presented()).unwrap_or_default()
         }
-        fn arrives_from(&self) -> crate::arriving::Source {
+        fn arrives_from(&self) -> tilo_ui_base::arriving::Source {
             self.in_root(|root| root.arrives_from())
-                .unwrap_or(crate::arriving::Source::Local)
+                .unwrap_or(tilo_ui_base::arriving::Source::Local)
         }
-        fn arrival_progress(&self) -> Option<crate::arriving::Progress> {
+        fn arrival_progress(&self) -> Option<tilo_ui_base::arriving::Progress> {
             self.in_root(|root| root.arrival_progress()).flatten()
         }
-        fn arrival_shape(&self) -> crate::widget::SkeletonShape {
+        fn arrival_shape(&self) -> tilo_ui_base::widget::SkeletonShape {
             self.in_root(|root| root.arrival_shape())
-                .unwrap_or(crate::widget::SkeletonShape::Ground)
+                .unwrap_or(tilo_ui_base::widget::SkeletonShape::Ground)
         }
         fn text_review(&self) -> Option<(usize, String)> {
             self.in_root(|root| root.text_review()).flatten()
         }
-        fn nav_availability(&self) -> crate::gesture::NavAvailability {
+        fn nav_availability(&self) -> tilo_ui_base::gesture::NavAvailability {
             self.in_root(Widget::nav_availability).unwrap_or_default()
         }
         fn on_external_event(
             &mut self,
             payload: &str,
-            state: &mut crate::widget::Edits<'_>,
-            _root: &crate::widget::ModelPath,
+            state: &mut tilo_ui_base::widget::Edits<'_>,
+            _root: &tilo_ui_base::widget::ModelPath,
         ) {
             self.with_root_edits(state, |root, edits, resource_root| {
                 root.on_external_event(payload, edits, resource_root);
@@ -1537,11 +1533,11 @@ mod component_adapter {
         }
         fn on_nav_gesture(
             &mut self,
-            dir: crate::gesture::NavDirection,
-            state: &crate::widget::AppModel,
-            path: &crate::widget::ModelPath,
+            dir: tilo_ui_base::gesture::NavDirection,
+            state: &tilo_ui_base::widget::AppModel,
+            path: &tilo_ui_base::widget::ModelPath,
         ) -> bool {
-            let (state, _) = crate::doc::document_ref(state, path);
+            let (state, _) = tilo_ui_base::doc::document_ref(state, path);
             self.owes_sync = true;
             let binding = self.component.callback_binding();
             binding
@@ -1557,7 +1553,7 @@ mod component_adapter {
             self.in_root_mut(|root| root.take_focus_reset())
                 .unwrap_or_default()
         }
-        fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {
+        fn appearance_intent(&self) -> Option<tilo_ui_base::theme::AppearanceIntent> {
             self.in_root(|root| root.appearance_intent()).flatten()
         }
         fn set_motion_reduced(&mut self, reduced: bool) {
@@ -1626,8 +1622,8 @@ mod component_adapter {
             self.take_structure_change().rebuilds()
         }
         /// The root's change as it says it, and a relayout the component asked for, which rebuilds.
-        fn take_structure_change(&mut self) -> crate::widget::StructureChange {
-            use crate::widget::StructureChange;
+        fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
+            use tilo_ui_base::widget::StructureChange;
             let relayout = StructureChange::of(std::mem::take(&mut self.relayout));
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
@@ -1653,7 +1649,7 @@ mod component_adapter {
             change
         }
         /// The component's root carries the change below it; this wrapper only keeps the root's node.
-        fn remount_children(&mut self, remount: &mut crate::widget::Remount<'_>) -> bool {
+        fn remount_children(&mut self, remount: &mut tilo_ui_base::widget::Remount<'_>) -> bool {
             self.in_root_mut(|root| root.remount_children(remount))
                 .unwrap_or(true)
         }
@@ -1681,7 +1677,7 @@ mod component_adapter {
             self.in_root(|root| root.layout_needs_measure())
                 .unwrap_or_default()
         }
-        fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
             #[allow(
                 unused_variables,
                 unused_mut,
@@ -1689,10 +1685,10 @@ mod component_adapter {
             )]
             let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
             if self.component.behaviour.capture_protected {
-                crate::secret_paint::note_secret_painted();
+                tilo_ui_base::secret_paint::note_secret_painted();
             }
             self.in_root_mut(|root| {
-                root.draw_overlay(&mut crate::draw::DrawCtx::new(
+                root.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                     scene,
                     transform,
                     text_renderer,
@@ -1705,8 +1701,8 @@ mod component_adapter {
 
     impl crate::bound_dispatch::BoundWidget for BoundAppWidget {}
 
-    impl crate::widget::component_walk::ComponentBoundary for BoundAppWidget {
-        fn component_scope(&self) -> Option<crate::widget::component_walk::Binding> {
+    impl tilo_ui_base::widget::component_walk::ComponentBoundary for BoundAppWidget {
+        fn component_scope(&self) -> Option<tilo_ui_base::widget::component_walk::Binding> {
             Some(std::rc::Rc::new(self.component.callback_binding()))
         }
     }
@@ -1760,21 +1756,21 @@ mod component_adapter {
         }
     }
 
-    impl crate::widget::ResourceOperations for BoundAppWidget {
+    impl tilo_ui_base::widget::ResourceOperations for BoundAppWidget {
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-            self.in_root(|root| crate::widget::local_resource_operation_handlers(root))
+            self.in_root(|root| tilo_ui_base::widget::local_resource_operation_handlers(root))
                 .unwrap_or(&[])
         }
 
         fn resource_operation_handlers(&self) -> HashSet<String> {
-            self.in_root(|root| crate::widget::resource_operation_handlers(root))
+            self.in_root(|root| tilo_ui_base::widget::resource_operation_handlers(root))
                 .unwrap_or_default()
         }
 
         fn start_operation(
             &mut self,
-            op: &crate::widget::ResourceOperation<'_>,
-            doc: &mut crate::widget::Edits<'_>,
+            op: &tilo_ui_base::widget::ResourceOperation<'_>,
+            doc: &mut tilo_ui_base::widget::Edits<'_>,
             _path: &ObjId,
         ) -> Result<Option<ResourceOperationStart>, String> {
             let binding = self.component.callback_binding();
@@ -1784,10 +1780,10 @@ mod component_adapter {
                     let Some(root) = self.component.root.as_deref_mut() else {
                         return Err("component callback refused".into());
                     };
-                    crate::widget::start_operation(
+                    tilo_ui_base::widget::start_operation(
                         &mut *root,
                         op,
-                        &mut crate::widget::Edits::lend(document),
+                        &mut tilo_ui_base::widget::Edits::lend(document),
                         resource_root,
                     )
                 })
@@ -1811,7 +1807,7 @@ mod component_adapter {
             let update = binding
                 .read_document(doc, |document, resource_root| {
                     let root = self.component.root.as_deref_mut()?;
-                    crate::widget::poll_resource_operation(
+                    tilo_ui_base::widget::poll_resource_operation(
                         &mut *root,
                         invocation,
                         cancellation_requested,
@@ -1830,13 +1826,13 @@ mod component_adapter {
         }
     }
 
-    impl crate::widget::undo_points::UndoPoints for BoundAppWidget {
+    impl tilo_ui_base::widget::undo_points::UndoPoints for BoundAppWidget {
         fn get_state(&self) -> Option<String> {
-            self.in_root(|root| crate::widget::undo_points::get_state(root))
+            self.in_root(|root| tilo_ui_base::widget::undo_points::get_state(root))
                 .flatten()
         }
         fn set_state(&mut self, state: &str) {
-            self.in_root_mut(|root| crate::widget::undo_points::set_state(root, state));
+            self.in_root_mut(|root| tilo_ui_base::widget::undo_points::set_state(root, state));
         }
     }
 
@@ -1854,7 +1850,7 @@ mod component_adapter {
     impl crate::widget::WindowHistory for BoundAppWidget {
         fn set_window_presents_history(&mut self, tab_presents: bool) {
             self.in_root_mut(|root| {
-                if let Some(history) = crate::widget::capability::capability_mut::<
+                if let Some(history) = tilo_ui_base::widget::capability::capability_mut::<
                     dyn crate::widget::WindowHistory,
                 >(root)
                 {
@@ -1865,7 +1861,7 @@ mod component_adapter {
 
         fn window_history_control(&self) -> Option<crate::widget::HistoryControl> {
             self.in_root(|root| {
-                crate::widget::capability::capability::<dyn crate::widget::WindowHistory>(root)?
+                tilo_ui_base::widget::capability::capability::<dyn crate::widget::WindowHistory>(root)?
                     .window_history_control()
             })
             .flatten()
@@ -1876,7 +1872,7 @@ mod component_adapter {
             control: crate::widget::HistoryControl,
         ) -> Result<(), String> {
             self.in_root_mut(|root| {
-                crate::widget::capability::capability_mut::<dyn crate::widget::WindowHistory>(root)
+                tilo_ui_base::widget::capability::capability_mut::<dyn crate::widget::WindowHistory>(root)
                     .ok_or("History is unavailable")?
                     .invoke_window_history_control(control)
             })
@@ -1956,22 +1952,22 @@ mod component_adapter {
         }
     }
 
-    impl crate::presence::capability::PublishesPresence for BoundAppWidget {
+    impl tilo_ui_base::presence::capability::PublishesPresence for BoundAppWidget {
         fn presence_key(&self) -> Option<PresenceKey> {
-            self.in_root(|root| crate::presence::capability::presence_key(root))
+            self.in_root(|root| tilo_ui_base::presence::capability::presence_key(root))
                 .flatten()
         }
         #[cfg(feature = "model")]
         fn presence_payload(&self) -> Option<(PresenceKey, ::collaboration::PresencePayload)> {
-            self.in_root(|root| crate::presence::capability::presence_payload(root))
+            self.in_root(|root| tilo_ui_base::presence::capability::presence_payload(root))
                 .flatten()
         }
     }
 
     #[cfg(feature = "model")]
-    impl crate::widget::permission::PermissionGuarded for BoundAppWidget {
-        fn permission_scope(&self) -> Option<crate::permissions::PermissionScope> {
-            self.in_root(|root| crate::widget::permission::permission_scope(root))
+    impl tilo_ui_base::widget::permission::PermissionGuarded for BoundAppWidget {
+        fn permission_scope(&self) -> Option<tilo_ui_base::permissions::PermissionScope> {
+            self.in_root(|root| tilo_ui_base::widget::permission::permission_scope(root))
                 .flatten()
         }
     }
@@ -1998,8 +1994,8 @@ mod component_adapter {
         fn activate_search_result(
             &mut self,
             action_id: &str,
-            doc: &mut crate::widget::Edits<'_>,
-            _path: &crate::widget::ModelPath,
+            doc: &mut tilo_ui_base::widget::Edits<'_>,
+            _path: &tilo_ui_base::widget::ModelPath,
         ) {
             self.with_root_edits(doc, |root, edits, resource_root| {
                 crate::search::capability::activate_search_result(
@@ -2012,7 +2008,7 @@ mod component_adapter {
         }
     }
 
-    impl crate::widget::resources::PublishesResources for BoundAppWidget {
+    impl tilo_ui_base::widget::resources::PublishesResources for BoundAppWidget {
         fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
             let binding = self.component.callback_binding();
             binding
@@ -2020,7 +2016,7 @@ mod component_adapter {
                     let Some(root) = self.component.root.as_deref() else {
                         return Vec::new();
                     };
-                    crate::widget::resources::resources(root, document)
+                    tilo_ui_base::widget::resources::resources(root, document)
                 })
                 .unwrap_or_else(|_| Vec::new())
         }
@@ -2034,7 +2030,7 @@ mod component_adapter {
             binding
                 .read_document(doc, |document, _resource_root| {
                     let root = self.component.root.as_deref()?;
-                    crate::widget::resources::action_directory_resource_page(
+                    tilo_ui_base::widget::resources::action_directory_resource_page(
                         root,
                         document,
                         cursor,
@@ -2048,14 +2044,14 @@ mod component_adapter {
             binding
                 .read_document(doc, |document, _resource_root| {
                     let root = self.component.root.as_deref()?;
-                    crate::widget::resources::action_directory_revision(root, document)
+                    tilo_ui_base::widget::resources::action_directory_revision(root, document)
                 })
                 .unwrap_or(None)
         }
         fn action_directory_invocation_domain(
             &self,
             doc: &AutoCommit,
-        ) -> crate::widget::ActionDirectoryInvocationDomain {
+        ) -> tilo_ui_base::widget::ActionDirectoryInvocationDomain {
             let binding = self.component.callback_binding();
             binding
                 .read_document(doc, |document, _resource_root| {
@@ -2063,7 +2059,7 @@ mod component_adapter {
                         .root
                         .as_deref()
                         .map(|root| {
-                            crate::widget::resources::action_directory_invocation_domain(
+                            tilo_ui_base::widget::resources::action_directory_invocation_domain(
                                 root, document,
                             )
                         })
@@ -2076,7 +2072,7 @@ mod component_adapter {
             binding
                 .read_document(doc, |document, _resource_root| {
                     let root = self.component.root.as_deref()?;
-                    crate::widget::resources::resource(root, document, id)
+                    tilo_ui_base::widget::resources::resource(root, document, id)
                 })
                 .unwrap_or(None)
         }
@@ -2094,7 +2090,7 @@ mod component_adapter {
                     let Some(root) = self.component.root.as_deref() else {
                         return Vec::new();
                     };
-                    crate::widget::resources::resources_for(root, presence, document)
+                    tilo_ui_base::widget::resources::resources_for(root, presence, document)
                 })
                 .unwrap_or_else(|_| Vec::new())
         }
@@ -2108,7 +2104,7 @@ mod component_adapter {
             binding
                 .read_document(doc, |document, _resource_root| {
                     let root = self.component.root.as_deref()?;
-                    crate::widget::resources::resource_for(root, presence, document, id)
+                    tilo_ui_base::widget::resources::resource_for(root, presence, document, id)
                 })
                 .unwrap_or(None)
         }
@@ -2121,7 +2117,7 @@ mod component_adapter {
             binding
                 .read_document(doc, |document, _resource_root| {
                     let root = self.component.root.as_deref()?;
-                    crate::widget::resources::action_directory_visibility(
+                    tilo_ui_base::widget::resources::action_directory_visibility(
                         root,
                         document,
                         resource_id,
@@ -2131,17 +2127,17 @@ mod component_adapter {
         }
     }
 
-    impl crate::widget::controls::ActionControls for BoundAppWidget {
+    impl tilo_ui_base::widget::controls::ActionControls for BoundAppWidget {
         fn attach_controls(
             &mut self,
-            parent: &crate::ControlDomain,
-            attachment: crate::control_domain::DomainAttachment,
+            parent: &tilo_ui_base::ControlDomain,
+            attachment: tilo_ui_base::control_domain::DomainAttachment,
         ) {
             let binding = self.component.callback_binding();
             if let Some(domain) = binding.control_domain.upgrade() {
                 let _ = domain.attach_to(parent);
                 if let Some(root) = self.component.root.as_deref_mut() {
-                    crate::widget::controls::attach_controls(root, &domain, attachment);
+                    tilo_ui_base::widget::controls::attach_controls(root, &domain, attachment);
                 }
             }
         }
@@ -2151,7 +2147,7 @@ mod component_adapter {
                 return None;
             };
             let root = self.component.root.as_deref_mut()?;
-            if let Some(intent) = crate::widget::controls::take_control_invocation(root) {
+            if let Some(intent) = tilo_ui_base::widget::controls::take_control_invocation(root) {
                 let mut queued = binding.queued_controls.borrow_mut();
                 if queued.len() >= 64 {
                     queued.pop_front();
@@ -2163,7 +2159,7 @@ mod component_adapter {
         fn on_control_invocation_result(
             &mut self,
             _: &tilo_actions::ActionAddress,
-            _: &Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError>,
+            _: &Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError>,
         ) {
         }
         fn has_pending_control_invocation(&self) -> bool {
@@ -2173,19 +2169,19 @@ mod component_adapter {
             };
             !binding.queued_controls.borrow().is_empty()
                 || self.component.root.as_deref().is_some_and(|root| {
-                    crate::widget::controls::has_pending_control_invocation(root)
+                    tilo_ui_base::widget::controls::has_pending_control_invocation(root)
                 })
         }
-        fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-            self.in_root(|root| crate::widget::controls::action_control_bindings(root))
+        fn action_control_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
+            self.in_root(|root| tilo_ui_base::widget::controls::action_control_bindings(root))
                 .unwrap_or_default()
         }
         fn has_action_control_bindings(&self) -> bool {
-            self.in_root(|root| crate::widget::controls::has_action_control_bindings(root))
+            self.in_root(|root| tilo_ui_base::widget::controls::has_action_control_bindings(root))
                 .unwrap_or_default()
         }
         fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-            self.in_root(|root| crate::widget::controls::control_action_bindings(root))
+            self.in_root(|root| tilo_ui_base::widget::controls::control_action_bindings(root))
                 .unwrap_or_default()
         }
         fn refresh_control_action_availability(
@@ -2224,62 +2220,62 @@ mod component_adapter {
         }
     }
 
-    impl crate::widget::undo_access::LocalUndo for BoundAppWidget {
-        fn local_undo_status(&self) -> Option<crate::widget::undo_access::LocalUndoStatus> {
+    impl tilo_ui_base::widget::undo_access::LocalUndo for BoundAppWidget {
+        fn local_undo_status(&self) -> Option<tilo_ui_base::widget::undo_access::LocalUndoStatus> {
             let binding = self.component.callback_binding();
             let _entry = binding.enter().ok()?;
-            crate::widget::undo_access::local_undo_status(self.component.root.as_deref()?)
+            tilo_ui_base::widget::undo_access::local_undo_status(self.component.root.as_deref()?)
         }
 
         fn local_undo_is_deferred(&self) -> bool {
-            self.in_root(|root| crate::widget::undo_access::local_undo_is_deferred(root))
+            self.in_root(|root| tilo_ui_base::widget::undo_access::local_undo_is_deferred(root))
                 .unwrap_or_default()
         }
 
         fn handle_local_undo_request(
             &mut self,
-            request: crate::widget::undo_access::UndoRequest,
+            request: tilo_ui_base::widget::undo_access::UndoRequest,
         ) -> bool {
             self.in_root_mut(|root| {
-                crate::widget::undo_access::handle_local_undo_request(root, request)
+                tilo_ui_base::widget::undo_access::handle_local_undo_request(root, request)
             })
             .unwrap_or_default()
         }
     }
 
-    impl crate::widget::undo_access::UndoControl for BoundAppWidget {}
+    impl tilo_ui_base::widget::undo_access::UndoControl for BoundAppWidget {}
 
-    impl crate::widget::undo_access::CommittedActions for BoundAppWidget {
+    impl tilo_ui_base::widget::undo_access::CommittedActions for BoundAppWidget {
         fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
             None
         }
     }
 
     #[cfg(feature = "model")]
-    impl crate::widget::presence_topology::Presences for BoundAppWidget {
+    impl tilo_ui_base::widget::presence_topology::Presences for BoundAppWidget {
         fn join_presence(&mut self, presence: &tilo_actions::PresenceId) -> bool {
-            crate::widget::presence_topology::join_presence_in_children(self, presence)
+            tilo_ui_base::widget::presence_topology::join_presence_in_children(self, presence)
         }
         fn leave_presence(&mut self, presence: &tilo_actions::PresenceId) {
-            crate::widget::presence_topology::leave_presence_in_children(self, presence);
+            tilo_ui_base::widget::presence_topology::leave_presence_in_children(self, presence);
         }
         fn set_presence_label(&mut self, presence: &tilo_actions::PresenceId, label: &str) {
-            crate::widget::presence_topology::set_presence_label_in_children(self, presence, label);
+            tilo_ui_base::widget::presence_topology::set_presence_label_in_children(self, presence, label);
         }
         fn set_remote_only(&mut self, host: bool) {
-            crate::widget::presence_topology::set_remote_only_in_children(self, host);
+            tilo_ui_base::widget::presence_topology::set_remote_only_in_children(self, host);
         }
         /// Presence views (agent carets) live against the component's own record document, the one
         /// `sync` hands the app, never the outer App document: resolved against the outer document a Writer
         /// caret finds no block, and no presence is produced at all.
-        fn presences(&self, state: &AutoCommit) -> Vec<crate::widget::ViewPresence> {
+        fn presences(&self, state: &AutoCommit) -> Vec<tilo_ui_base::widget::ViewPresence> {
             let binding = self.component.callback_binding();
             binding
                 .read_document(state, |document, _resource_root| {
                     self.component
                         .root
                         .as_deref()
-                        .map(|root| crate::widget::presence_topology::presences(root, document))
+                        .map(|root| tilo_ui_base::widget::presence_topology::presences(root, document))
                         .unwrap_or_default()
                 })
                 .unwrap_or_default()
@@ -2371,14 +2367,14 @@ mod native_lifecycle_tests {
                 probe::instantiate_probe(&host, 41, LaunchTarget::New, RestoreInput::None).unwrap();
             let binding = component.callback_binding();
             let mut widget = BoundAppWidget::new(component);
-            let native_host = crate::widget::NativeViewHost::headless(
-                crate::platform::PlatformConventions::default(),
+            let native_host = tilo_ui_base::widget::NativeViewHost::headless(
+                tilo_ui_base::platform::PlatformConventions::default(),
                 1.0,
             );
 
-            crate::widget::mount_native_views(&mut widget, &native_host);
-            crate::widget::native_view_frame_start(&mut widget);
-            crate::widget::unmount_native_views(&mut widget);
+            tilo_ui_base::widget::mount_native_views(&mut widget, &native_host);
+            tilo_ui_base::widget::native_view_frame_start(&mut widget);
+            tilo_ui_base::widget::unmount_native_views(&mut widget);
             let observations = probe::take_native_lifecycle_observations();
             assert_eq!(
                 observations
@@ -2394,9 +2390,9 @@ mod native_lifecycle_tests {
             );
 
             binding.closing.set(true);
-            crate::widget::mount_native_views(&mut widget, &native_host);
-            crate::widget::native_view_frame_start(&mut widget);
-            crate::widget::unmount_native_views(&mut widget);
+            tilo_ui_base::widget::mount_native_views(&mut widget, &native_host);
+            tilo_ui_base::widget::native_view_frame_start(&mut widget);
+            tilo_ui_base::widget::unmount_native_views(&mut widget);
             assert!(probe::take_native_lifecycle_observations().is_empty());
 
             widget.component.close();

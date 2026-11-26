@@ -2,11 +2,7 @@
 //! [`State`](crate::state::State) / [`UndoLog`](collab_types::history::UndoLog), and the host
 //! ([`App`](crate::app::App)) drives it from Ctrl+Z.
 
-pub use crate::widget::undo_access::{
-    CommittedActions, LocalUndo, LocalUndoStatus, UndoAccess, UndoControl, UndoRequest, UndoStatus,
-    handle_local_undo_request, keeps_undo_step_open, local_undo_status, set_undo_status, shortcut,
-    take_committed_action, take_undo_request,
-};
+pub use tilo_ui_base::{widget::undo_access::CommittedActions, widget::undo_access::LocalUndo, widget::undo_access::LocalUndoStatus, widget::undo_access::UndoAccess, widget::undo_access::UndoControl, widget::undo_access::UndoRequest, widget::undo_access::UndoStatus, widget::undo_access::handle_local_undo_request, widget::undo_access::keeps_undo_step_open, widget::undo_access::local_undo_status, widget::undo_access::set_undo_status, widget::undo_access::shortcut, widget::undo_access::take_committed_action, widget::undo_access::take_undo_request};
 
 /// Turn the actions a widget dispatched during the last event into exactly one undo
 /// boundary. `root` and the `node_map` pointers must point at widgets that are alive for
@@ -15,9 +11,9 @@ pub use crate::widget::undo_access::{
 #[cfg(feature = "model")]
 pub fn record_dispatched_action<S: std::hash::BuildHasher>(
     state: &mut crate::state::State,
-    root: *mut dyn crate::widget::Widget,
-    node_map: &std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget, S>,
-    author: &crate::permissions::MemberId,
+    root: *mut dyn tilo_ui_base::widget::Widget,
+    node_map: &std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget, S>,
+    author: &tilo_ui_base::permissions::MemberId,
 ) -> bool {
     let mut brackets: Vec<Vec<automerge::ChangeHash>> = Vec::new();
     let mut visited = std::collections::HashSet::new();
@@ -29,7 +25,7 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
         // SAFETY: see the function's safety note. The reference is created and
         // dropped inside this iteration, so no two overlap.
         let w = unsafe { &mut *w_ptr };
-        if let Some(before) = crate::widget::undo_access::take_committed_action(w) {
+        if let Some(before) = tilo_ui_base::widget::undo_access::take_committed_action(w) {
             brackets.push(before);
         }
     }
@@ -46,19 +42,19 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
 #[cfg(feature = "model")]
 pub(crate) unsafe fn record_dispatched_action_bound(
     state: &mut crate::state::State,
-    root: *mut dyn crate::widget::Widget,
-    nodes: &std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
+    root: *mut dyn tilo_ui_base::widget::Widget,
+    nodes: &std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,
     order: impl IntoIterator<Item = taffy::NodeId>,
-    bindings: &crate::widget::bound_nodes::BoundNodeMap,
-    author: &crate::permissions::MemberId,
+    bindings: &tilo_ui_base::widget::bound_nodes::BoundNodeMap,
+    author: &tilo_ui_base::permissions::MemberId,
 ) -> bool {
     let mut brackets = Vec::new();
     {
         // SAFETY: the host provides its live, exclusively owned root. This borrow
         // ends before any descendant pointer is admitted below.
         let root = unsafe { &mut *root };
-        if let Ok(_entry) = crate::widget::bound_nodes::enter_widget(root)
-            && let Some(before) = crate::widget::undo_access::take_committed_action(root)
+        if let Ok(_entry) = tilo_ui_base::widget::bound_nodes::enter_widget(root)
+            && let Some(before) = tilo_ui_base::widget::undo_access::take_committed_action(root)
         {
             brackets.push(before);
         }
@@ -90,7 +86,7 @@ pub(crate) unsafe fn record_dispatched_action_bound(
             // SAFETY: the stable host topology supplies exclusive node access;
             // admission and lifetime are checked before the widget is reached.
             let taken = unsafe {
-                crate::widget::bound_nodes::mutate_bound_node(
+                tilo_ui_base::widget::bound_nodes::mutate_bound_node(
                     bindings,
                     nodes,
                     node,
@@ -106,8 +102,8 @@ pub(crate) unsafe fn record_dispatched_action_bound(
         } else {
             // SAFETY: each unique live node is visited only once this sweep.
             if let Ok(Some(before)) = unsafe {
-                crate::widget::bound_nodes::mutate_bound_node(bindings, nodes, node, |widget| {
-                    crate::widget::undo_access::take_committed_action(widget)
+                tilo_ui_base::widget::bound_nodes::mutate_bound_node(bindings, nodes, node, |widget| {
+                    tilo_ui_base::widget::undo_access::take_committed_action(widget)
                 })
             } {
                 brackets.push(before);
@@ -146,7 +142,7 @@ fn earliest_bracket(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::undo_access::EDIT_OPERATION;
+    use tilo_ui_base::widget::undo_access::EDIT_OPERATION;
 
     #[derive(Default)]
     struct NativeHistoryProbe {
@@ -197,11 +193,11 @@ mod tests {
             })
         }
     }
-    impl crate::widget::Widget for NativeHistoryProbe {
+    impl tilo_ui_base::widget::Widget for NativeHistoryProbe {
         fn name(&self) -> &str {
             "NativeHistoryProbe"
         }
-        crate::provides!(dyn LocalUndo);
+        tilo_ui_base::provides!(dyn LocalUndo);
         crate::testing::inert_widget_methods!(leaf_layout);
     }
 
@@ -212,7 +208,7 @@ mod tests {
 
         phase deferred_native_history_waits_for_original_ack_and_preserves_document;
         {
-            use crate::widget::{Edits, ResourceOperation, ResourceOperationStart};
+            use tilo_ui_base::{widget::Edits, widget::ResourceOperation, widget::ResourceOperationStart};
             let mut widget = NativeHistoryProbe::default();
             let mut doc = automerge::AutoCommit::new();
             let original = doc.get_heads();
@@ -225,9 +221,9 @@ mod tests {
                 EDIT_OPERATION,
                 &payload,
             );
-            assert!(crate::widget::resource_operation_handlers(&widget).contains(EDIT_OPERATION));
+            assert!(tilo_ui_base::widget::resource_operation_handlers(&widget).contains(EDIT_OPERATION));
             assert_eq!(
-                crate::widget::start_operation(
+                tilo_ui_base::widget::start_operation(
                     &mut widget,
                     &operation,
                     &mut Edits::lend(&mut doc),
@@ -237,7 +233,7 @@ mod tests {
                 Some(ResourceOperationStart::Accepted)
             );
             assert!(
-                crate::widget::poll_resource_operation(
+                tilo_ui_base::widget::poll_resource_operation(
                     &mut widget,
                     invocation,
                     false,
@@ -248,7 +244,7 @@ mod tests {
             );
             widget.acknowledged = true;
             assert!(
-                crate::widget::poll_resource_operation(
+                tilo_ui_base::widget::poll_resource_operation(
                     &mut widget,
                     other,
                     false,
@@ -258,10 +254,10 @@ mod tests {
                 .is_none()
             );
             assert!(
-                matches!(crate::widget::poll_resource_operation(&mut widget, invocation, false, &doc, &automerge::ROOT), Some(tilo_actions::InvocationUpdate::Succeeded { invocation: completed, .. }) if completed == invocation)
+                matches!(tilo_ui_base::widget::poll_resource_operation(&mut widget, invocation, false, &doc, &automerge::ROOT), Some(tilo_actions::InvocationUpdate::Succeeded { invocation: completed, .. }) if completed == invocation)
             );
             assert!(
-                crate::widget::poll_resource_operation(
+                tilo_ui_base::widget::poll_resource_operation(
                     &mut widget,
                     invocation,
                     false,
@@ -275,7 +271,7 @@ mod tests {
 
         phase deferred_native_history_cancellation_does_not_report_success;
         {
-            use crate::widget::{Edits, ResourceOperation};
+            use tilo_ui_base::{widget::Edits, widget::ResourceOperation};
             let mut widget = NativeHistoryProbe::default();
             let mut doc = automerge::AutoCommit::new();
             let invocation = tilo_actions::InvocationId::new();
@@ -286,7 +282,7 @@ mod tests {
                 EDIT_OPERATION,
                 &payload,
             );
-            crate::widget::start_operation(
+            tilo_ui_base::widget::start_operation(
                 &mut widget,
                 &operation,
                 &mut Edits::lend(&mut doc),
@@ -294,11 +290,11 @@ mod tests {
             )
             .unwrap();
             assert!(
-                matches!(crate::widget::poll_resource_operation(&mut widget, invocation, true, &doc, &automerge::ROOT), Some(tilo_actions::InvocationUpdate::Cancelled { invocation: canceled, .. }) if canceled == invocation)
+                matches!(tilo_ui_base::widget::poll_resource_operation(&mut widget, invocation, true, &doc, &automerge::ROOT), Some(tilo_actions::InvocationUpdate::Cancelled { invocation: canceled, .. }) if canceled == invocation)
             );
             widget.acknowledged = true;
             assert!(
-                crate::widget::poll_resource_operation(
+                tilo_ui_base::widget::poll_resource_operation(
                     &mut widget,
                     invocation,
                     false,
@@ -327,17 +323,17 @@ mod tests {
         phase undo_access_publishes_status_and_refuses_unavailable_verbs_once;
         {
             {
-                let mut spacer = crate::widget::Spacer::new();
-                crate::widget::undo_access::set_undo_status(&mut spacer, &mut || {
+                let mut spacer = tilo_ui_base::widget::Spacer::new();
+                tilo_ui_base::widget::undo_access::set_undo_status(&mut spacer, &mut || {
                     panic!("default widget must not request a summary")
                 });
             }
 
             {
-                use crate::widget::Widget;
+                use tilo_ui_base::widget::Widget;
                 let mut button = crate::widget::UndoButton::undo();
                 let mut calls = 0;
-                crate::widget::undo_access::set_undo_status(&mut button, &mut || {
+                tilo_ui_base::widget::undo_access::set_undo_status(&mut button, &mut || {
                     calls += 1;
                     status(true, false)
                 });
@@ -381,7 +377,7 @@ mod tests {
         phase undo_shortcuts_and_descriptions_never_promise_a_missing_action;
         {
             {
-                use crate::platform::{Platform, PlatformConventions};
+                use tilo_ui_base::{platform::Platform, platform::PlatformConventions};
                 let linux = PlatformConventions::new(Platform::Linux);
                 let shortcut = |c, command, shift| shortcut(linux, c, command, shift);
                 assert_eq!(shortcut("z", true, false), Some(UndoRequest::Undo));
@@ -437,7 +433,7 @@ pub(crate) fn step_summary(entry: &crate::state::UndoEntry) -> Option<String> {
 #[cfg(feature = "model")]
 pub fn state_status(
     state: &crate::state::State,
-    author: Option<&crate::permissions::MemberId>,
+    author: Option<&tilo_ui_base::permissions::MemberId>,
 ) -> UndoStatus {
     status_snapshot(&state.doc, state.undo_log(), author)
 }
@@ -448,7 +444,7 @@ pub fn state_status(
 pub(crate) fn status_snapshot(
     doc: &automerge::AutoCommit,
     history: &collab_types::history::UndoLog,
-    author: Option<&crate::permissions::MemberId>,
+    author: Option<&tilo_ui_base::permissions::MemberId>,
 ) -> UndoStatus {
     let undo = history.next_undo_as(doc, author);
     let redo = history.next_redo_as(doc, author);

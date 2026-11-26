@@ -62,7 +62,7 @@ tilo_test_env::scenario! {
         let dispatcher = tilo_app::framework::testing::dispatcher::<Tally>(TallyApp::ID);
         dispatcher
             .submit_now(
-                &mut tilo_app::widget::Edits::lend(tally.doc_mut()),
+                &mut tilo_ui_base::widget::Edits::lend(tally.doc_mut()),
                 Tally::BUMP.invoke(),
             )
             .unwrap();

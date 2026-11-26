@@ -2,7 +2,7 @@
 
 use super::super::tests::{dispatch_cursor, dispatch_left_button, lay_out_at_width_with, send_key};
 use super::super::{PINNED_W, TAB_BAR_HEIGHT, TabBar, TabDescriptor};
-use crate::widget::Widget as _;
+use tilo_ui_base::widget::Widget as _;
 use crate::window_toolbar::{ToolbarAction, ToolbarEvent, WindowToolbar};
 use vello::kurbo::Rect;
 use winit::event::ElementState;
@@ -10,8 +10,8 @@ use winit::keyboard::{Key, NamedKey};
 
 #[test]
 fn a_menu_alone_is_a_button_in_the_title_row_that_keeps_the_title() {
-    let _settled = crate::motion::testing::settled();
-    let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
     let menu = WindowToolbar {
         actions: vec![ToolbarAction {
             menu: true,
@@ -23,7 +23,7 @@ fn a_menu_alone_is_a_button_in_the_title_row_that_keeps_the_title() {
         }],
         ..WindowToolbar::default()
     };
-    let lookup = crate::i18n::I18nManager::lookup_plain;
+    let lookup = tilo_ui_base::i18n::I18nManager::lookup_plain;
     for tabs in [1_u64, 2] {
         let mut b = TabBar::new(
             "g1",

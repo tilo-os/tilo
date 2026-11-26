@@ -173,7 +173,7 @@ impl ui::widget::Widget for DeclaredLine {
         self.line.apply_layout(taffy, node, origin);
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,

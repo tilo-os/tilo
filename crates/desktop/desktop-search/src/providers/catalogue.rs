@@ -19,7 +19,7 @@
 
 use app_catalogue::{CatalogueEntry, Source as Origin};
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
-use ui::text_match::FieldWeight;
+use tilo_ui_base::text_match::FieldWeight;
 
 use crate::model::{Hit, InvokeTarget, LaunchPlace, Source, Target};
 
@@ -55,8 +55,8 @@ pub fn store_page(id: &str) -> Option<String> {
 
 /// The glyph the app's own rows wear: its own by name, else its
 /// category's, so a row offering an app looks like that app.
-fn glyph(entry: &CatalogueEntry) -> ui::icons::Icon {
-    ui::icons::app_glyph(&entry.id, entry.category.as_deref())
+fn glyph(entry: &CatalogueEntry) -> tilo_ui_base::icons::Icon {
+    tilo_ui_base::icons::app_glyph(&entry.id, entry.category.as_deref())
 }
 
 enum Row {
@@ -71,7 +71,7 @@ pub struct StoreCatalogue {
     entries: Vec<CatalogueEntry>,
     rows: Vec<Row>,
     fields: Vec<Vec<(String, FieldWeight)>>,
-    ranker: ui::text_match::ListIndex,
+    ranker: tilo_ui_base::text_match::ListIndex,
 }
 
 impl StoreCatalogue {
@@ -116,7 +116,7 @@ impl StoreCatalogue {
             entries: offered,
             rows,
             fields,
-            ranker: ui::text_match::ListIndex::default()
+            ranker: tilo_ui_base::text_match::ListIndex::default()
                 .with_ranks(ui::search::system::application_ranks),
         }
     }
@@ -335,7 +335,7 @@ mod tests {
             );
             assert_eq!(
                 app.icon,
-                Some(ui::icons::app_glyph("so.tilo.sheets", None)),
+                Some(tilo_ui_base::icons::app_glyph("so.tilo.sheets", None)),
                 "the row wears the app's own glyph"
             );
             let workbook = catalogue.query("workbook");
@@ -422,7 +422,7 @@ mod tests {
             );
             assert_eq!(
                 hits[0].icon,
-                Some(ui::icons::app_glyph("com.valvesoftware.Steam", None)),
+                Some(tilo_ui_base::icons::app_glyph("com.valvesoftware.Steam", None)),
                 "the row wears the app's glyph, whoever offers it"
             );
             assert!(catalogue.intent(&hits[0]) < 0.0);

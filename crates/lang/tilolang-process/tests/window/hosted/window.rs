@@ -8,7 +8,7 @@ use tilo_app_window::reconcile::{UiEvent, display};
 use tilo_app_window::{UiNode, Value};
 use tilolang_tilo::runtime::store::VersionKind;
 use tilolang_tilo::runtime::{ResourceRef, Value as RtValue};
-use ui::component::RowSource as _;
+use tilo_ui_base::component::RowSource as _;
 use ui::component_lifecycle::WindowTitle as _;
 use ui::tilo_actions::ActionInvoker;
 use ui::widget::{FilterCount, FindOptions, InPlace, SearchDriver};

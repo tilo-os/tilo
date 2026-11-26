@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-ui-base = { version = "0.1.0", path = "../../crates/ui/ui-base", default-features = false }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

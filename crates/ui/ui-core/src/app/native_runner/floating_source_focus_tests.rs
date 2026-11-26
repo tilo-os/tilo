@@ -34,7 +34,7 @@ impl crate::floating_surface::FloatingSurfaceProvider for FocusProbe {
             .push((id.map(|id| format!("ime:{id}")), false));
     }
 
-    fn draw_floating_surface(&mut self, id: &str, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
+    fn draw_floating_surface(&mut self, id: &str, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) -> bool {
         #[allow(
             unused_variables,
             unused_mut,
@@ -55,9 +55,9 @@ impl crate::floating_surface::FloatingSurfaceProvider for FocusProbe {
             .borrow_mut()
             .push((id.map(|id| format!("input:{id}")), false));
     }
-    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
+    fn floating_surface_accessibility(&self, id: &str) -> Option<tilo_ui_base::a11y::AccessNode> {
         (id == "a").then(|| {
-            crate::a11y::AccessNode::new(crate::a11y::Role::Button)
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button)
                 .with_hashed_key("source-a-send")
                 .with_action_target("source-a-send")
         })
@@ -66,21 +66,21 @@ impl crate::floating_surface::FloatingSurfaceProvider for FocusProbe {
         &mut self,
         id: &str,
         target: &str,
-        action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &automerge::ObjId,
     ) -> bool {
         let accepted = id == "a"
             && target == "source-a-send"
-            && matches!(action, crate::a11y::Action::Activate);
+            && matches!(action, tilo_ui_base::a11y::Action::Activate);
         if accepted {
             self.events.borrow_mut().push((Some(target.into()), true));
         }
         accepted
     }
-    fn floating_surface_ime(&self, id: &str) -> Option<(crate::ime::InputContent, KurboRect)> {
+    fn floating_surface_ime(&self, id: &str) -> Option<(tilo_ui_base::ime::InputContent, KurboRect)> {
         (id == "a").then_some((
-            crate::ime::InputContent::TEXT,
+            tilo_ui_base::ime::InputContent::TEXT,
             KurboRect::new(-700.0, 500.0, -699.0, 520.0),
         ))
     }
@@ -92,9 +92,9 @@ impl crate::floating_surface::FloatingSurfaceProvider for FocusProbe {
 }
 
 impl Widget for FocusProbe {
-    crate::provides!(dyn crate::floating_surface::FloatingSurfaceProvider);
+    tilo_ui_base::provides!(dyn crate::floating_surface::FloatingSurfaceProvider);
 
-    fn sync(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) {}
+    fn sync(&mut self, _: &tilo_ui_base::widget::AppModel, _: &tilo_ui_base::widget::ModelPath) {}
 
     fn build_layout(
         &mut self,
@@ -102,7 +102,7 @@ impl Widget for FocusProbe {
         _: &Theme,
         _: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        use crate::widget::TaffyTreeExt as _;
+        use tilo_ui_base::widget::TaffyTreeExt as _;
         taffy.leaf_node(taffy::Style::default())
     }
 
@@ -162,22 +162,22 @@ tilo_test_env::scenario! {
         let mut text = TextRenderer::new();
         assert!(root.draw_floating_surface(
             "b",
-            &mut crate::draw::DrawCtx::new(
+            &mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut text,
                 &Theme::default(),
-                crate::PresenceCtx::empty().draw_env(),
+                tilo_ui_base::PresenceCtx::empty().draw_env(),
             )
         ));
         assert!(!root.draw_floating_surface(
             "missing",
-            &mut crate::draw::DrawCtx::new(
+            &mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut text,
                 &Theme::default(),
-                crate::PresenceCtx::empty().draw_env(),
+                tilo_ui_base::PresenceCtx::empty().draw_env(),
             )
         ));
         root.on_floating_surface_ime_source_changed(None);
@@ -199,7 +199,7 @@ tilo_test_env::scenario! {
         )));
         let access = root.floating_surface_accessibility("a").unwrap();
         let tree =
-            crate::accesskit_bridge::surface_tree_update(Some(&access), vello::kurbo::Point::ZERO, 1.0);
+            tilo_ui_base::accesskit_bridge::surface_tree_update(Some(&access), vello::kurbo::Point::ZERO, 1.0);
         let target_node = tree
             .nodes
             .iter()
@@ -217,14 +217,14 @@ tilo_test_env::scenario! {
             &mut root,
             "b",
             &request,
-            &mut crate::widget::Edits::lend(&mut state),
+            &mut tilo_ui_base::widget::Edits::lend(&mut state),
             &automerge::ROOT,
         ));
         assert!(dispatch_native_surface_accessibility(
             &mut root,
             "a",
             &request,
-            &mut crate::widget::Edits::lend(&mut state),
+            &mut tilo_ui_base::widget::Edits::lend(&mut state),
             &automerge::ROOT,
         ));
     }

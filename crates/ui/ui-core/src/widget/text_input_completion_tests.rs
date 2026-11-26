@@ -12,7 +12,7 @@ fn focused_with_people(people: Vec<MentionCandidate>) -> TextInput {
 fn type_text(input: &mut TextInput, text: &str) {
     let mut document = AutoCommit::new();
     for character in text.chars() {
-        let event = crate::synthetic_input::char_key(&character.to_string());
+        let event = tilo_ui_base::synthetic_input::char_key(&character.to_string());
         drive(input, &mut document, &event, Modifiers::default());
     }
 }
@@ -22,7 +22,7 @@ fn press_named(input: &mut TextInput, key: NamedKey) -> bool {
     drive(
         input,
         &mut document,
-        &crate::synthetic_input::named_key(key),
+        &tilo_ui_base::synthetic_input::named_key(key),
         Modifiers::default(),
     )
 }
@@ -31,7 +31,7 @@ fn ada() -> Vec<MentionCandidate> {
     vec![MentionCandidate::new(
         tilo_action_policy::MemberId::person("u_ada"),
         "Ada Lovelace",
-        crate::tokens::PresenceHue::of_identity("u_ada"),
+        tilo_ui_base::tokens::PresenceHue::of_identity("u_ada"),
     )]
 }
 
@@ -42,7 +42,7 @@ tilo_test_env::scenario! {
 
     phase a_prose_field_offers_emoji_and_mentions_and_nothing_closes_a_dismissed_one;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut input = focused_with_people(ada());
         type_text(&mut input, "hi @ad");
         assert!(input.is_completion_open(), "a mention offers the roster");
@@ -102,7 +102,7 @@ tilo_test_env::scenario! {
 
     phase plain_opt_outs_and_structured_kinds_offer_nothing_they_should_not;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         for (setting, mentions, emoji) in [
             (TextCompletion::PLAIN, false, false),
             (TextCompletion::EMOJI, false, true),
@@ -195,7 +195,7 @@ tilo_test_env::scenario! {
 
     phase the_views_source_opens_on_the_trigger_and_narrows_per_keystroke_in_the_field;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut input = focused_with_people(ada());
         input.set_completion_sources(vec![people_source(), channels()]);
         type_text(&mut input, "@");
@@ -233,7 +233,7 @@ tilo_test_env::scenario! {
 
     phase arrows_wrap_page_keys_move_tab_inserts_and_escape_and_leaving_close;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut input = focused_with_people(Vec::new());
         input.set_completion_sources(vec![channels()]);
         let inserted = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -298,7 +298,7 @@ tilo_test_env::scenario! {
 
     phase no_match_says_so_offers_create_and_a_space_then_closes;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut input = focused_with_people(Vec::new());
         input.set_completion_sources(vec![channels()]);
         let created = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -337,7 +337,7 @@ tilo_test_env::scenario! {
 
     phase a_name_with_a_space_keeps_the_drawer_while_it_matches;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut input = focused_with_people(Vec::new());
         input.set_completion_sources(vec![people_source()]);
         type_text(&mut input, "@milan n");
@@ -348,7 +348,7 @@ tilo_test_env::scenario! {
 
     phase a_slow_source_shows_progress_and_its_rows_arrive_below_without_moving_the_selection;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut input = focused_with_people(Vec::new());
         let waiting = people_source().with_slow(SlowTier {
             header: "Outside the workspace".into(),
@@ -392,7 +392,7 @@ tilo_test_env::scenario! {
 
     phase the_drawer_is_a_list_that_names_its_count_and_selected_row;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut input = focused_with_people(Vec::new());
         input.set_completion_sources(vec![channels()]);
         type_text(&mut input, "#d");
@@ -401,7 +401,7 @@ tilo_test_env::scenario! {
         let drawer = node
             .children
             .iter()
-            .find(|child| child.role == crate::a11y::Role::ListBox)
+            .find(|child| child.role == tilo_ui_base::a11y::Role::ListBox)
             .expect("the open drawer is a list box");
         assert!(
             drawer
@@ -415,7 +415,7 @@ tilo_test_env::scenario! {
         let options: Vec<_> = drawer
             .children
             .iter()
-            .filter(|row| row.role == crate::a11y::Role::ListBoxOption)
+            .filter(|row| row.role == tilo_ui_base::a11y::Role::ListBoxOption)
             .collect();
         assert_eq!(options.len(), 2);
         assert!(options[0].state.selected);
@@ -424,12 +424,12 @@ tilo_test_env::scenario! {
 
 fn paint_with_drawer(input: &mut TextInput, theme: &Theme) {
     draw_with_theme(input, theme);
-    let presence = crate::presence::PresenceCtx::empty();
+    let presence = tilo_ui_base::presence::PresenceCtx::empty();
     let mut text = TextRenderer::new();
     let mut scene = Scene::new();
     Widget::draw_overlay(
         input,
-        &mut crate::draw::DrawCtx::new(
+        &mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
@@ -450,7 +450,7 @@ fn the_drawer_height_follows_its_rows_on_the_spring_and_lands_under_reduced_moti
         paint_with_drawer(&mut input, &theme);
         assert!(!input.completion.is_animating(), "opening does not grow");
         type_text(&mut input, "d");
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
         paint_with_drawer(&mut input, &theme);
         assert_eq!(
             input.completion.is_animating(),

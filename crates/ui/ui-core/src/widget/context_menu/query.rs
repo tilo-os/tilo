@@ -4,12 +4,12 @@
 //! the Menu key: [`super::note_input`]) takes typing when it has many rows or
 //! when a sentence can be asked of something: a query field at its top
 //! narrows its entries with the ranking every filtered list shares
-//! (`crate::text_match::ranked_rows`), and Enter runs the best match. Its last
+//! (`tilo_ui_base::text_match::ranked_rows`), and Enter runs the best match. Its last
 //! row, "Send to…", stands there before anything is typed: it opens the
 //! send-to box in the menu's place ([`crate::widget::SendToBox`]), carrying what
 //! was typed into its message, and the box sends it to whom the person names.
 
-use crate::i18n::{widget_format, widget_text};
+use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
 use std::cell::Cell;
 
 use vello::Scene;
@@ -19,13 +19,13 @@ use winit::event::WindowEvent;
 use super::{
     CONTEXT_GESTURE, ContextMenu, MenuItem, PADDING, QUERY_GAP, QUERY_MIN_ROWS, label_inset,
 };
-use crate::icons::Icon;
-use crate::paint::PaintCtx;
-use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
-use crate::text_render::TextRenderer;
-use crate::text_selection::Selection;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::{query_text::QueryComposition, query_text::QueryEventChange, query_text::QueryInk, query_text::QueryView};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::text_selection::Selection;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 
 /// A menu's query field: the typed text and its editing state.
 #[derive(Default)]
@@ -34,7 +34,7 @@ pub(super) struct MenuQuery {
     pub(super) selection: Selection,
     pub(super) composition: QueryComposition,
     /// The search index the rows are ranked with.
-    pub(super) index: crate::text_match::ListIndex,
+    pub(super) index: tilo_ui_base::text_match::ListIndex,
 }
 
 impl ContextMenu {
@@ -193,7 +193,7 @@ impl ContextMenu {
         };
         // Ranked as every list search ranks; separators and captions are
         // never a match.
-        self.shown = crate::text_match::ranked_rows(
+        self.shown = tilo_ui_base::text_match::ranked_rows(
             &query.index,
             query.text.trim(),
             self.items.iter().take(owned).map(|item| {
@@ -203,7 +203,7 @@ impl ContextMenu {
                 };
                 label
                     .into_iter()
-                    .map(|label| (label, crate::text_match::FieldWeight::TITLE))
+                    .map(|label| (label, tilo_ui_base::text_match::FieldWeight::TITLE))
             }),
         );
         if let Some(ask) = self.ask_row() {
@@ -249,7 +249,7 @@ impl ContextMenu {
         self.set_hover(first);
         self.layout_at_position();
         self.dirty = true;
-        crate::widget::note_resource_presentation_changed();
+        tilo_ui_base::widget::note_resource_presentation_changed();
     }
 
     /// Choose the row that sends what the menu is about: the menu goes, as
@@ -380,7 +380,7 @@ impl ContextMenu {
         let Some(field) = self.query_rect() else {
             return;
         };
-        let placeholder = crate::i18n::I18nManager::lookup_plain("menu-query-placeholder");
+        let placeholder = tilo_ui_base::i18n::I18nManager::lookup_plain("menu-query-placeholder");
         let Some(query) = self.query.as_mut() else {
             return;
         };
@@ -428,12 +428,12 @@ impl ContextMenu {
 
     /// The query field as assistive technology reads it: a text field whose
     /// value is what is typed, first, as it is drawn.
-    pub(super) fn query_access_node(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    pub(super) fn query_access_node(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let query = self.query.as_ref()?;
         Some(
             AccessNode::new(Role::TextInput)
-                .with_name(crate::i18n::I18nManager::lookup_plain("menu-query-name"))
+                .with_name(tilo_ui_base::i18n::I18nManager::lookup_plain("menu-query-name"))
                 .with_optional_value(Some(query.text.clone()))
                 .with_action_target("context-menu:query".to_owned())
                 .with_bounds(self.query_rect().unwrap_or(Rect::ZERO))

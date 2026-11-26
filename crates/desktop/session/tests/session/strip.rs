@@ -98,7 +98,7 @@ fn assert_pair_stands_in_the_strip([first, last]: [Placed; 2]) {
 
 #[test]
 fn two_windows_keep_the_strips_gutters_and_stand_below_the_bar() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     let (_terminal, _files, rects) = two_windows(&mut session);
     assert_pair_stands_in_the_strip(rects);
@@ -107,7 +107,7 @@ fn two_windows_keep_the_strips_gutters_and_stand_below_the_bar() {
 
 #[test]
 fn two_windows_stand_the_same_way_in_the_light_theme() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = super::shell::light_session();
     let (_terminal, _files, rects) = two_windows(&mut session);
     assert_pair_stands_in_the_strip(rects);

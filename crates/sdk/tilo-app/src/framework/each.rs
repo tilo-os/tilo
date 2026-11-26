@@ -5,19 +5,21 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
-use ui_core::widget::{AppModel, ModelPath, Remount, StructureChange};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::Remount, widget::StructureChange};
 
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_resource::{Id, Resource};
-use ui_core::a11y::{AccessNode, Role};
+use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 
-use ui_core::text_render::TextRenderer;
+use tilo_ui_base::text_render::TextRenderer;
 use ui_core::vello::kurbo::{Point, Rect};
-use ui_core::widget::{ContextMenu, Element, MenuItem, TaffyTreeExt, Widget, draw_child};
+use ui_core::{widget::ContextMenu, widget::MenuItem};
+use tilo_ui_base::{widget::Element, widget::TaffyTreeExt, widget::Widget, widget::draw_child};
 use ui_core::winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use ui_core::winit::keyboard::{Key, NamedKey};
-use ui_core::{Theme, taffy};
+use ui_core::taffy;
+use tilo_ui_base::Theme;
 
 use super::dispatch::Dispatcher;
 use super::live::Live;
@@ -90,8 +92,8 @@ enum Builds {
 /// What the tree pushed down to the list last, for rows built later.
 #[derive(Default)]
 struct Pushed {
-    conventions: Option<ui_core::platform::PlatformConventions>,
-    environment: Option<ui_core::interaction::InteractionEnvironment>,
+    conventions: Option<tilo_ui_base::platform::PlatformConventions>,
+    environment: Option<tilo_ui_base::interaction::InteractionEnvironment>,
     motion_reduced: Option<bool>,
 }
 
@@ -624,7 +626,7 @@ impl<R: Resource> Each<R> {
     }
 
     /// Route an event to the row menu. Returns whether it was consumed.
-    fn menu_event(&mut self, event: &WindowEvent, ctx: &mut ui_core::widget::EventCtx<'_>) -> bool {
+    fn menu_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) -> bool {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.menu.cursor = ctx.logical(position);
         }
@@ -724,7 +726,7 @@ impl<R: Resource> Widget for Each<R> {
     // Inputs pushed down the tree reach every built row, mounted or not,
     // and rows built later, so a row mounted later shows the same as one
     // that always was.
-    fn set_platform_conventions(&mut self, conventions: ui_core::platform::PlatformConventions) {
+    fn set_platform_conventions(&mut self, conventions: tilo_ui_base::platform::PlatformConventions) {
         self.pushed.conventions = Some(conventions);
         for view in self.rows.iter_mut().filter_map(|row| row.view.as_mut()) {
             view.widget.set_platform_conventions(conventions);
@@ -733,7 +735,7 @@ impl<R: Resource> Widget for Each<R> {
 
     fn set_interaction_environment(
         &mut self,
-        environment: ui_core::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         self.pushed.environment = Some(environment);
         for view in self.rows.iter_mut().filter_map(|row| row.view.as_mut()) {
@@ -947,14 +949,14 @@ impl<R: Resource> Widget for Each<R> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui_core::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         let inner = self.rect.origin();
         self.for_each_mounted(|view| {
             if let Some(child) = view.node {
                 view.widget.apply_layout(taffy, child, inner);
             }
         });
-        self.visible = ui_core::widget::layout_clip()
+        self.visible = tilo_ui_base::widget::layout_clip()
             .map(|clip| (clip.y0 - self.rect.y0, clip.y1 - self.rect.y0));
         self.laid_out = true;
         if self.window_stale() && self.remounts < MAX_REMOUNTS_PER_FRAME {
@@ -963,7 +965,7 @@ impl<R: Resource> Widget for Each<R> {
         }
     }
 
-    fn draw(&mut self, ctx: &mut ui_core::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -976,7 +978,7 @@ impl<R: Resource> Widget for Each<R> {
         });
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui_core::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if self.menu_event(event, ctx) {
             return;
         }
@@ -984,7 +986,7 @@ impl<R: Resource> Widget for Each<R> {
             self.rows
                 .get(index)
                 .and_then(Row::widget)
-                .is_some_and(ui_core::widget::holds_pointer)
+                .is_some_and(tilo_ui_base::widget::holds_pointer)
         });
         if let Some(index) = capturing {
             if let Some(view) = self.rows.get_mut(index).and_then(|row| row.view.as_mut())
@@ -1027,7 +1029,7 @@ impl<R: Resource> Widget for Each<R> {
         capture
     }
 
-    fn draw_overlay(&mut self, ctx: &mut ui_core::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1035,7 +1037,7 @@ impl<R: Resource> Widget for Each<R> {
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.for_each_mounted(|row| {
-            row.widget.draw_overlay(&mut ui_core::DrawCtx::new(
+            row.widget.draw_overlay(&mut tilo_ui_base::DrawCtx::new(
                 scene,
                 transform,
                 text,
@@ -1044,7 +1046,7 @@ impl<R: Resource> Widget for Each<R> {
             ));
         });
         // Drawn while it is open and while it leaves (`motion::Appear`).
-        self.menu.menu.draw_overlay(&mut ui_core::DrawCtx::new(
+        self.menu.menu.draw_overlay(&mut tilo_ui_base::DrawCtx::new(
             scene,
             transform,
             text,

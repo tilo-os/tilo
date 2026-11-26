@@ -65,7 +65,7 @@ fn deferred_server_preferred_client_routes_address_without_minting() {
         .unwrap();
     assert!(matches!(
         result,
-        crate::widget::ResourceOperationStart::Accepted
+        tilo_ui_base::widget::ResourceOperationStart::Accepted
     ));
     assert_eq!(
         calls.load(Ordering::SeqCst),

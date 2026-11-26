@@ -2,11 +2,11 @@
 
 use media::Source;
 
-use crate::component::{Component, Described, Event};
+use tilo_ui_base::{component::Component, component::Described, component::Event};
 use crate::widget::{MediaTransport, TransportArt, TransportFeed, TransportRepeat, TransportState};
 
 use super::media_transport::TransportTriggers;
-use crate::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 
 // The `TransportRepeat` choice is declared beside the enum, in `media_transport.rs`.
 
@@ -270,7 +270,7 @@ impl DeclaredTransport {
         // an engine that reports why it cannot play, which the view hears as `fail`.
         let mut engine = self.engine.take().unwrap_or_default();
         if let Some(volume) = volume {
-            engine.set_volume(crate::num::f32_of_f64(volume));
+            engine.set_volume(tilo_ui_base::num::f32_of_f64(volume));
         }
         if let Some(position) = position {
             #[expect(
@@ -310,8 +310,8 @@ impl DeclaredTransport {
             (
                 failed,
                 ended,
-                crate::num::f64_of_u64(engine.position_ms()),
-                engine.duration_ms().map(crate::num::f64_of_u64),
+                tilo_ui_base::num::f64_of_u64(engine.position_ms()),
+                engine.duration_ms().map(tilo_ui_base::num::f64_of_u64),
                 engine.is_playing(),
             )
         };
@@ -330,15 +330,15 @@ impl DeclaredTransport {
             {
                 self.measured = Some(duration);
                 self.length
-                    .fire(Some(crate::component::Value::Float(duration / 1000.0)));
+                    .fire(Some(tilo_ui_base::component::Value::Float(duration / 1000.0)));
             }
         }
         self.declared.playing = playing;
         self.feed.show(self.declared.clone());
         if let Some(reason) = failed {
-            self.fail.fire(Some(crate::component::Value::List(vec![
-                crate::component::Value::Text(reason),
-                crate::component::Value::Float(position / 1000.0),
+            self.fail.fire(Some(tilo_ui_base::component::Value::List(vec![
+                tilo_ui_base::component::Value::Text(reason),
+                tilo_ui_base::component::Value::Float(position / 1000.0),
             ])));
         }
         if ended && !self.ended_told {
@@ -358,7 +358,7 @@ impl DeclaredTransport {
             };
             if due && position > 0.0 {
                 self.told = Some(position);
-                self.progress.fire(Some(crate::component::Value::Float(
+                self.progress.fire(Some(tilo_ui_base::component::Value::Float(
                     (position / duration).clamp(0.0, 1.0),
                 )));
             }
@@ -392,9 +392,9 @@ impl DeclaredTransport {
                 }
             }
             if let Some(volume) = props.volume
-                && (engine.volume() - crate::num::f32_of_f64(volume)).abs() > 0.001
+                && (engine.volume() - tilo_ui_base::num::f32_of_f64(volume)).abs() > 0.001
             {
-                engine.set_volume(crate::num::f32_of_f64(volume));
+                engine.set_volume(tilo_ui_base::num::f32_of_f64(volume));
             }
             // The place the view declares is the one it was told, unless somebody moved it:
             // what the band reported is no seek back, a person's or an agent's jump is.
@@ -441,7 +441,7 @@ impl Described for DeclaredTransport {
     }
 }
 
-impl crate::widget::Widget for DeclaredTransport {
+impl tilo_ui_base::widget::Widget for DeclaredTransport {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
@@ -450,20 +450,20 @@ impl crate::widget::Widget for DeclaredTransport {
         Some(self)
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
         self.pump();
         self.band.sync(state, path);
     }
 
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
         self.band.update(state, path)
     }
 
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
-        theme: &crate::theme::Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
+        theme: &tilo_ui_base::theme::Theme,
+        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,
     ) -> taffy::NodeId {
         self.band.build_layout(taffy, theme, node_map)
     }
@@ -477,7 +477,7 @@ impl crate::widget::Widget for DeclaredTransport {
         self.band.apply_layout(taffy, node, origin);
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -487,25 +487,25 @@ impl crate::widget::Widget for DeclaredTransport {
         self.band.draw_child(scene, transform, text, theme, &env);
     }
 
-    fn children(&self) -> Vec<&dyn crate::widget::Widget> {
+    fn children(&self) -> Vec<&dyn tilo_ui_base::widget::Widget> {
         self.band.children()
     }
 
-    fn children_mut(&mut self) -> Vec<&mut (dyn crate::widget::Widget + '_)> {
+    fn children_mut(&mut self) -> Vec<&mut (dyn tilo_ui_base::widget::Widget + '_)> {
         self.band.children_mut()
     }
 
     /// The band is this widget's one layout child: the window reaches it (and the manual
     /// region its controls are placed in) through this, never only through the controls
     /// themselves.
-    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn crate::widget::Widget)) -> bool {
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn tilo_ui_base::widget::Widget)) -> bool {
         visitor(&self.band);
         true
     }
 
     /// The band places its own controls: without this the window never hands the band its
     /// region's policy, and its controls fall back to a plain flow that spills past the band.
-    fn manual_layout_policy(&self) -> Option<crate::widget::ManualPolicy> {
+    fn manual_layout_policy(&self) -> Option<tilo_ui_base::widget::ManualPolicy> {
         self.band.manual_layout_policy()
     }
 
@@ -521,7 +521,7 @@ impl crate::widget::Widget for DeclaredTransport {
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
         node: taffy::NodeId,
-        text: &mut crate::text_render::TextRenderer,
+        text: &mut tilo_ui_base::text_render::TextRenderer,
     ) {
         self.band.size_before_solve(taffy, node, text);
     }
@@ -530,7 +530,7 @@ impl crate::widget::Widget for DeclaredTransport {
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
         node: taffy::NodeId,
-        text: &mut crate::text_render::TextRenderer,
+        text: &mut tilo_ui_base::text_render::TextRenderer,
     ) -> bool {
         self.band.adjust_layout_style(taffy, node, text)
     }
@@ -562,7 +562,7 @@ impl crate::widget::Widget for DeclaredTransport {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         self.band.handle_event(event, ctx);
     }
@@ -571,7 +571,7 @@ impl crate::widget::Widget for DeclaredTransport {
         "MediaTransport"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.band.accessibility()
     }
 }

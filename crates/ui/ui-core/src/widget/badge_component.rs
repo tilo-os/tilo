@@ -1,7 +1,7 @@
 //! [`Badge`] as a described component.
 
-use crate::component::{Component, Described};
-use crate::widget::Tone;
+use tilo_ui_base::{component::Component, component::Described};
+use tilo_ui_base::widget::Tone;
 use crate::widget::chip::ChipStyle;
 
 use super::{Badge, BadgeContent};
@@ -23,7 +23,7 @@ pub struct BadgeProps {
     /// A status the pill means, washed into it.
     pub tone: Option<Tone>,
     /// The pace a changed count plays at: the theme's unless it says otherwise.
-    pub motion: crate::motion::Feel,
+    pub motion: tilo_ui_base::motion::Feel,
 }
 
 impl BadgeProps {

@@ -1,7 +1,7 @@
 //! [`Breadcrumb`] and its segments as described components.
 
-use crate::component::{Component, Described, Event, ResourceId};
-use crate::icons::Icon;
+use tilo_ui_base::{component::Component, component::Described, component::Event, component::ResourceId};
+use tilo_ui_base::icons::Icon;
 
 use super::Breadcrumb;
 
@@ -42,7 +42,7 @@ pub struct BreadcrumbSegmentProps {
     pub activate: Event,
 }
 
-crate::component::part_type!(BreadcrumbSegmentProps);
+tilo_ui_base::component::part_type!(BreadcrumbSegmentProps);
 
 impl Described for Breadcrumb {
     type Props = BreadcrumbProps;

@@ -176,7 +176,7 @@ fn runtime_bundles(root: &Path, data: &Path) -> Vec<(&'static str, OsString)> {
 /// bundle's include keeps as its `lib/fonts`.
 #[cfg(target_os = "linux")]
 fn carried_fonts(root: &Path) -> Option<PathBuf> {
-    let catalog = ui::font_catalog::catalog_root()?;
+    let catalog = tilo_ui_base::font_catalog::catalog_root()?;
     let fonts = root.join("fonts");
     std::os::unix::fs::symlink(&catalog, &fonts).ok()?;
     Some(fonts)

@@ -161,8 +161,8 @@ impl HistoryLog {
             passes_over: source.pass_over.is_some(),
         };
         let words = Words {
-            locale: crate::i18n::I18nManager::window_locale(),
-            catalogue: crate::i18n::I18nManager::revision(),
+            locale: tilo_ui_base::i18n::I18nManager::window_locale(),
+            catalogue: tilo_ui_base::i18n::I18nManager::revision(),
         };
         if self.words != words {
             self.words = words;
@@ -415,9 +415,9 @@ impl HistoryLog {
             };
             let summary = |context: Option<&tilo_actions::ActionContext>| {
                 if genesis {
-                    crate::i18n::I18nManager::lookup_plain("history-genesis")
+                    tilo_ui_base::i18n::I18nManager::lookup_plain("history-genesis")
                 } else if framework == Some(tilo_actions::FrameworkChange::Transfer) {
-                    crate::i18n::I18nManager::lookup_plain("history-moved")
+                    tilo_ui_base::i18n::I18nManager::lookup_plain("history-moved")
                 } else {
                     // A change that names no finer action than the document (a
                     // window's direct edit, or one written before it could name

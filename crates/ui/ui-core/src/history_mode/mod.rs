@@ -77,9 +77,10 @@ use automerge::{AutoCommit, ChangeHash};
 #[cfg(feature = "model")]
 use crate::history_source::{CompareError, HistorySource, compare_entries};
 #[cfg(feature = "model")]
-use crate::permissions::MemberId;
+use tilo_ui_base::permissions::MemberId;
 #[cfg(feature = "model")]
-use crate::{DocumentId, HistoryEntry, HistoryEntryId};
+use crate::{DocumentId, HistoryEntry};
+use tilo_ui_base::HistoryEntryId;
 
 #[cfg(feature = "model")]
 /// Full authority namespace for one historical resource.

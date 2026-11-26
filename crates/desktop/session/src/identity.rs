@@ -5,7 +5,7 @@
 //! The session reads each once at startup, then a worker reads it again
 //! whenever a directory it lives in changes ([`tilo_files::native::Watched`]):
 //!
-//! - the person's public identity and photo ([`ui::local_identity`]), which
+//! - the person's public identity and photo ([`tilo_ui_base::local_identity`]), which
 //!   the workspace sheet's people rows and the apps naming an author ask
 //!   for; and
 //! - the identity registry
@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use tilo_files::native::Watched;
 use tilo_session_core::desktop::state::{DesktopHandle, HostAction};
-use ui::local_identity::{LocalIdentity, LocalIdentitySource, PhotoSource};
+use tilo_ui_base::{local_identity::LocalIdentity, local_identity::LocalIdentitySource, local_identity::PhotoSource};
 
 use crate::platform::notice::Notices;
 
@@ -200,7 +200,7 @@ pub fn install() {
             watched.on_change(|| {
                 RECORD_GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             });
-            ui::local_identity::install_source(Some(Arc::new(WatchedLocalIdentity(watched))));
+            tilo_ui_base::local_identity::install_source(Some(Arc::new(WatchedLocalIdentity(watched))));
         }
         Err(error) => tracing::warn!(%error, "cannot watch the person's identity"),
     }
@@ -223,7 +223,7 @@ pub(crate) fn rename_to(name: &str) -> Result<(), String> {
     tilo_identity::store::rename_active_identity(&dir, name).map_err(|error| error.to_string())?;
     // This process wrote the identity: it reads it now, rather than going on with the name it
     // replaced until the watch over the directory says so.
-    ui::local_identity::refresh();
+    tilo_ui_base::local_identity::refresh();
     Ok(())
 }
 
@@ -241,7 +241,7 @@ pub(crate) fn own_photo_url() -> String {
             return kept.1.clone();
         }
     }
-    let url = ui::local_identity::own_public_photo()
+    let url = tilo_ui_base::local_identity::own_public_photo()
         .and_then(|photo| {
             let mut bytes = Vec::new();
             image::codecs::png::PngEncoder::new(&mut bytes)
@@ -280,7 +280,7 @@ pub(crate) fn set_photo(bytes: Option<&[u8]>) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     // This process wrote the identity: it reads it now, rather than going on with the picture it
     // replaced until the watch over the directory says so.
-    ui::local_identity::refresh();
+    tilo_ui_base::local_identity::refresh();
     Ok(())
 }
 

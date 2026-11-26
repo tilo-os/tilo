@@ -3,18 +3,15 @@ use std::rc::Rc;
 use serde::{Deserialize, Serialize};
 use tilo_contact_directory::{ContactDirectory, routing};
 use tilo_messaging::AccountList;
-use ui::LocalState;
+use tilo_ui_base::LocalState;
 use ui::framework::{Actions, Effected, Fixture, Live, ViewCx, WorkspaceResource};
-use ui::i18n::ArgValue;
-use ui::icons::Icon;
+use tilo_ui_base::i18n::ArgValue;
+use tilo_ui_base::icons::Icon;
 use ui::prelude::{Collection, Id};
 use ui::tilo_resource::{MemberId, PersonId, SharedResource as _};
 use ui::widget::virtual_list::{VecListModel, VirtualList};
-use ui::widget::{
-    Button, Column, Container, ConversationLine, ConversationList, DeliveryState, Element,
-    EmptyState, ListRow, ModelView, NavPane, NavShell, Row, Scrollable, Text, TextInput,
-    conversation::draft as draft_line,
-};
+use ui::{widget::Button, widget::Column, widget::Container, widget::ConversationLine, widget::ConversationList, widget::DeliveryState, widget::EmptyState, widget::ListRow, widget::ModelView, widget::NavPane, widget::NavShell, widget::Row, widget::Scrollable, widget::Text, widget::TextInput, widget::conversation::draft as draft_line};
+use tilo_ui_base::widget::Element;
 
 use crate::{CATALOG, Messages, MessagesEffect};
 
@@ -688,7 +685,7 @@ fn navigation(
     let nobody = nobody_listed(sources) && sources.record().conversations.is_empty();
     let people = overview(sources, actions, selected, drafts);
     let shell = NavShell::new()
-        .content_kind(ui::widget::ContentKind::Reading)
+        .content_kind(tilo_ui_base::widget::ContentKind::Reading)
         .with_window_toolbar();
     if nobody && entries.is_none() && !setup.visible() && !groups.visible() {
         return shell.nothing_listed(start_in_contacts(actions));
@@ -1283,7 +1280,7 @@ pub(super) fn fixture(fixture: &mut Fixture<Messages>) {
 
 fn capture_history() -> tilo_messaging::HistoryPage {
     use tilo_messaging::{Delivery, Direction, HistoryPage, Message};
-    let now_ms = u64::try_from(ui::clock::local_now().timestamp().as_millisecond()).unwrap_or(0);
+    let now_ms = u64::try_from(tilo_ui_base::clock::local_now().timestamp().as_millisecond()).unwrap_or(0);
     HistoryPage {
         route: routing::Route {
             person: Id::from_raw("00000000-0000-4000-8000-000000000001"),

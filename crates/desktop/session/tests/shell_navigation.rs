@@ -101,7 +101,7 @@ fn labels(session: &Session) -> String {
 
 #[test]
 fn the_launcher_lists_what_the_search_found_under_its_kinds() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_with(Rc::new(Asked::default()), &[("so.tilo.sheets", "Sheets")]);
     until(&mut session, "the shell to stand", |session| {
         labels(session).contains("All apps") || !session.accessible_labels().is_empty()
@@ -142,7 +142,7 @@ fn the_launcher_lists_what_the_search_found_under_its_kinds() {
 
 #[test]
 fn the_launcher_walks_its_rows_and_opens_the_one_it_reaches() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_with(
         Rc::new(Asked::default()),
         &[("so.tilo.notes", "Notes"), ("so.tilo.sheets", "Sheets")],
@@ -171,7 +171,7 @@ fn the_launcher_walks_its_rows_and_opens_the_one_it_reaches() {
 
 #[test]
 fn the_launcher_offers_the_welcome_cards_and_a_card_runs() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_with(Rc::new(Asked::default()), &[("so.tilo.notes", "Notes")]);
     until(&mut session, "the shell to stand", |session| {
         !session.accessible_labels().is_empty()
@@ -211,7 +211,7 @@ fn the_launcher_offers_the_welcome_cards_and_a_card_runs() {
 /// search keywords, so system search finds it by any of them.
 #[test]
 fn the_overview_answers_to_the_words_people_use_for_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_with(Rc::new(Asked::default()), &[("so.tilo.notes", "Notes")]);
     until(&mut session, "the shell to stand", |session| {
         !session.accessible_labels().is_empty()
@@ -248,7 +248,7 @@ fn the_overview_answers_to_the_words_people_use_for_it() {
 /// and the launcher leaves for what it opened.
 #[test]
 fn a_search_for_settings_opens_it_on_enter() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let asked = Rc::new(Asked::default());
     let mut session = session_with(Rc::clone(&asked), &[("so.tilo.settings", "Settings")]);
     until(&mut session, "the shell to stand", |session| {
@@ -282,7 +282,7 @@ fn a_search_for_settings_opens_it_on_enter() {
 /// strip to make, and, with one made, the strip before it peeking where a press goes to it.
 #[test]
 fn the_strip_rail_counts_the_strips_and_makes_one() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_with(Rc::new(Asked::default()), &[("so.tilo.notes", "Notes")]);
     until(&mut session, "the rail", |session| {
         labels(session).contains("1 of 1")
@@ -309,7 +309,7 @@ fn the_strip_rail_counts_the_strips_and_makes_one() {
 
 #[test]
 fn the_bars_strip_menu_adds_switches_renames_and_removes_a_strip() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_with(Rc::new(Asked::default()), &[("so.tilo.notes", "Notes")]);
     let rows = |session: &Session| session.layout_reading().rows;
     until(&mut session, "the bar to name its strip", |session| {
@@ -358,7 +358,7 @@ fn the_bars_strip_menu_adds_switches_renames_and_removes_a_strip() {
 
 #[test]
 fn the_strips_verb_lists_the_workspaces_strips_and_a_strip_is_chosen() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_with(Rc::new(Asked::default()), &[("so.tilo.notes", "Notes")]);
     let rows = |session: &Session| session.layout_reading().rows;
     until(&mut session, "the bar to name its strip", |session| {
@@ -406,7 +406,7 @@ fn the_strips_verb_lists_the_workspaces_strips_and_a_strip_is_chosen() {
 
 #[test]
 fn escape_puts_the_strips_list_away() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_with(Rc::new(Asked::default()), &[("so.tilo.notes", "Notes")]);
     until(&mut session, "the bar to name its strip", |session| {
         session.layout_reading().rows.iter().any(|row| row.current)
@@ -427,7 +427,7 @@ fn escape_puts_the_strips_list_away() {
 
 #[test]
 fn the_bars_workspace_menu_offers_renaming_and_deleting_a_workspace() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_with(Rc::new(Asked::default()), &[("so.tilo.notes", "Notes")]);
     until(&mut session, "the bar to name its workspace", |session| {
         session

@@ -240,7 +240,7 @@ impl App {
         // for whatever made the app sync next (Enter in the address opened nothing).
         self.needs_sync = true;
         self.root_widget.settle(
-            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
             &self.state.root,
         );
         // A part bound to an action runs it as a control invocation, as a frame's sync does.
@@ -313,7 +313,7 @@ impl App {
                 None => false,
             },
             // The window floats as a card, or stands in its strip again: it draws on the card's
-            // ground while it floats ([`crate::theme::Theme::as_card`]).
+            // ground while it floats ([`tilo_ui_base::theme::Theme::as_card`]).
             ToolbarEvent::Floating { .. } => {
                 crate::window_toolbar::deliver(event.clone());
                 self.rebuild_theme();

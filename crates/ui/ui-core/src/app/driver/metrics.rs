@@ -5,14 +5,14 @@
 
 use super::Driver;
 use crate::profiling::{FrameProfiler, FrameTiming};
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 use tilo_sort::CompactSort as _;
 
 /// What one completed layout pass did with its layout tree.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RelayoutStats {
     pub rebuilt: bool,
-    /// Widgets changed the retained tree in place ([`crate::widget::StructureChange::Children`]); it
+    /// Widgets changed the retained tree in place ([`tilo_ui_base::widget::StructureChange::Children`]); it
     /// was not rebuilt.
     pub remounted: bool,
     pub measured: bool,
@@ -127,7 +127,7 @@ impl Driver {
     /// Names the first node whose children, place or size differ, or why either tree has no
     /// geometry.
     pub fn verify_retained_geometry(&mut self) -> Result<(), String> {
-        use crate::widget::layout::composition_geometry;
+        use tilo_ui_base::widget::layout::composition_geometry;
         let Some(root) = self.app.layout.root_node else {
             return Ok(());
         };

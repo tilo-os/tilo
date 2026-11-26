@@ -133,8 +133,8 @@ fn rows(app: &mut TestApp<TlApp>) -> Vec<(String, [f64; 4])> {
 /// Chooses the sidebar's place `label`, as a person does: what is due before today waits in
 /// Today, and the inbox holds only what no day and no project sorts.
 fn open_place(app: &mut TestApp<TlApp>, label: &str) {
-    fn place<'a>(node: &'a ui::a11y::AccessNode, label: &str) -> Option<&'a ui::a11y::AccessNode> {
-        if node.role == ui::a11y::Role::TreeItem
+    fn place<'a>(node: &'a tilo_ui_base::a11y::AccessNode, label: &str) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
+        if node.role == tilo_ui_base::a11y::Role::TreeItem
             && node
                 .name
                 .as_deref()
@@ -249,12 +249,12 @@ fn reach_delete(app: &mut TestApp<TlApp>, title: &str) -> Delete {
     let (x, y) = (x + 2.0, y + h / 2.0);
     with_monotonic_time(at_now(), || {
         let harness = app.harness();
-        harness.send(&ui::synthetic_input::cursor_moved(x, y));
+        harness.send(&tilo_ui_base::synthetic_input::cursor_moved(x, y));
         for state in [
             ui::winit::event::ElementState::Pressed,
             ui::winit::event::ElementState::Released,
         ] {
-            harness.send(&ui::synthetic_input::mouse_input(
+            harness.send(&tilo_ui_base::synthetic_input::mouse_input(
                 state,
                 ui::winit::event::MouseButton::Right,
             ));
@@ -704,7 +704,7 @@ fn still_frames(
         // A still frame is one the window draws with nothing of the app moving: a widget asks for
         // it, and the window paints what it already shows.
         with_monotonic_time(at, || {
-            ui::motion::want_frames_until(at + ui::time::Duration::from_millis(1));
+            tilo_ui_base::motion::want_frames_until(at + ui::time::Duration::from_millis(1));
         });
         let (work, pixels) = frame_work(app, at);
         assert!(work.drew, "a still window draws the frame it is asked for");
@@ -846,12 +846,12 @@ fn idle_ticks(app: &mut TestApp<TlApp>, start: ui::time::Instant) -> (usize, std
 /// How many of the controls the window shows are bound to an action the app publishes, as the
 /// actions' own controls are (an invocation's is the press that runs it).
 fn bound_controls(app: &mut TestApp<TlApp>) -> usize {
-    ui::widget::controls::control_action_bindings(app.harness().root_widget())
+    tilo_ui_base::widget::controls::control_action_bindings(app.harness().root_widget())
         .into_iter()
         .filter(|binding| {
             matches!(
                 &binding.kind,
-                ui::widget::ControlBindingKind::Action(address) if address.action != "invoke"
+                tilo_ui_base::widget::ControlBindingKind::Action(address) if address.action != "invoke"
             )
         })
         .count()

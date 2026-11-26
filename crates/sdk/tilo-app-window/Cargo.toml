@@ -11,6 +11,7 @@ description = "A tilolang app's window in the toolkit: the generic adapter, the 
 
 [dependencies]
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 tilo-rich-edit = { version = "0.1.0", path = "../../ui/tilo-rich-edit" }
 # Dates and clocks as the person set them: how a day or a time reads in a sentence, said the
@@ -39,6 +40,7 @@ tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview", feature
 tilo-ui-graph = { version = "0.1.0", path = "../../ui/ui-graph" }
 # A content store in memory, as the device's holds a chosen file's bytes.
 tilo-content = { version = "0.1.0", path = "../../core/content" }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support", "model"] }
 
 [lints]

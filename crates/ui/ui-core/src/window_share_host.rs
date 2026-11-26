@@ -42,7 +42,7 @@ pub fn menu_item(window: &OpenWindow, shared: &[SharedWindow]) -> ToolbarAction 
         Some(share) => ToolbarAction::new(
             STOP_ITEM,
             "eye-off",
-            crate::i18n::I18nManager::format(
+            tilo_ui_base::i18n::I18nManager::format(
                 "window-stop-sharing-in",
                 &[("place", (&share.place).into())],
             ),
@@ -50,7 +50,7 @@ pub fn menu_item(window: &OpenWindow, shared: &[SharedWindow]) -> ToolbarAction 
         None => ToolbarAction::new(
             SHARE_ITEM,
             "screen-share",
-            crate::i18n::I18nManager::lookup_plain("window-share-to-channel"),
+            tilo_ui_base::i18n::I18nManager::lookup_plain("window-share-to-channel"),
         ),
     }
 }

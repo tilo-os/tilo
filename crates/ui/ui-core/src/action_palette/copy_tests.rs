@@ -3,17 +3,17 @@ fn speak(locale: &str) {
     if locale != "en-US" {
         catalogues.push((locale, ""));
     }
-    crate::i18n::I18nManager::install("en-US", locale, &catalogues)
+    tilo_ui_base::i18n::I18nManager::install("en-US", locale, &catalogues)
         .expect("the window's catalogues install");
 }
 
-fn query(palette: &ActionPalette) -> crate::a11y::AccessNode {
+fn query(palette: &ActionPalette) -> tilo_ui_base::a11y::AccessNode {
     palette
         .accessibility()
         .expect("an open palette is a dialog")
         .children
         .into_iter()
-        .find(|node| node.role == crate::a11y::Role::TextInput)
+        .find(|node| node.role == tilo_ui_base::a11y::Role::TextInput)
         .expect("the palette's query is a text field")
 }
 
@@ -62,7 +62,7 @@ fn the_palette_names_itself_in_the_windows_language() {
             vec![ActionParam::required("to", ParamType::Text, "To")],
         )),
     ];
-    let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+    let mut palette = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
         SearchField::with_language("de-DE")
     });
     palette.load_open_resources(&resources);

@@ -1,10 +1,11 @@
 //! `ChangeMark`: what someone else changed that the person has not seen yet (task-legibility §3), as
 //! one pill in the changer's colour: their face, and the task run it was part of.
 
-use crate::component::{self, Component, Event, Person, ResourceId};
-use crate::tokens::Rhythm;
-use crate::tokens::colors::PresenceHue;
-use crate::widget::{Button, Chip, ChipStyle, Container, Element, Tone};
+use tilo_ui_base::{component, component::Component, component::Event, component::Person, component::ResourceId};
+use tilo_ui_base::tokens::Rhythm;
+use tilo_ui_base::tokens::colors::PresenceHue;
+use crate::{widget::Button, widget::Chip, widget::ChipStyle, widget::Container};
+use tilo_ui_base::{widget::Element, widget::Tone};
 
 /// What someone else changed of a resource that the person looking has not seen yet: who, in which task
 /// run, and whether they made, changed or removed it.
@@ -86,9 +87,9 @@ impl ChangeMarkProps {
             Some("removed") => "change-mark-removed",
             _ => "change-mark-changed",
         };
-        let what = crate::i18n::widget_format(did, &[("who", by.name.clone().into())]);
+        let what = tilo_ui_base::i18n::widget_format(did, &[("who", by.name.clone().into())]);
         let spoken = match self.run.filter(|run| !run.is_empty()) {
-            Some(run) => crate::i18n::widget_format(
+            Some(run) => tilo_ui_base::i18n::widget_format(
                 "change-mark-in-run",
                 &[("what", what.into()), ("run", run.into())],
             ),
@@ -98,13 +99,13 @@ impl ChangeMarkProps {
             .said
             .filter(|said| !said.is_empty())
             .map_or_else(String::new, |said| {
-                let line = crate::i18n::widget_format(
+                let line = tilo_ui_base::i18n::widget_format(
                     "change-mark-said",
                     &[("who", by.name.clone().into()), ("said", said.into())],
                 );
                 let also = self.count.saturating_sub(1);
                 if also > 0 {
-                    crate::i18n::widget_format(
+                    tilo_ui_base::i18n::widget_format(
                         "change-mark-said-more",
                         &[("said", line.into()), ("count", also.into())],
                     )
@@ -161,10 +162,10 @@ impl ChangeMarkProps {
         // The catch-up is a surface of its own: read out, it says what it holds, never only the
         // words of the control it hangs from.
         pair.popover_mut()
-            .set_label(crate::i18n::widget_format("change-catch-up", &[]));
+            .set_label(tilo_ui_base::i18n::widget_format("change-catch-up", &[]));
         pair.popover_mut().set_confined_to_viewport(true);
         pair.popover_mut()
-            .set_max_width(f64::from(crate::tokens::Metrics::BASE.panel_width_list));
+            .set_max_width(f64::from(tilo_ui_base::tokens::Metrics::BASE.panel_width_list));
         pair.popover_mut().set_sheet_when_narrow(true);
         Some(Box::new(pair))
     }
@@ -194,7 +195,7 @@ impl ChangeMarkProps {
         let label = if window {
             let names = names(&who);
             match noun.filter(|noun| !noun.is_empty()) {
-                Some(noun) => crate::i18n::widget_format(
+                Some(noun) => tilo_ui_base::i18n::widget_format(
                     match (added, more) {
                         (true, false) => "change-window-new",
                         (true, true) => "change-window-new-more",
@@ -210,7 +211,7 @@ impl ChangeMarkProps {
                         ("one", noun_one.unwrap_or(noun).into()),
                     ],
                 ),
-                None => crate::i18n::widget_format(
+                None => tilo_ui_base::i18n::widget_format(
                     if more {
                         "change-window-more"
                     } else {
@@ -223,7 +224,7 @@ impl ChangeMarkProps {
             let name = who
                 .first()
                 .map_or_else(String::new, |person| person.name.clone());
-            crate::i18n::widget_format("change-mark-who", &[("who", name.into())])
+            tilo_ui_base::i18n::widget_format("change-mark-who", &[("who", name.into())])
         };
         let mut button = Button::new(key, &label)
             .role(crate::widget::ButtonRole::Plain)
@@ -246,11 +247,11 @@ fn names(people: &[Person]) -> String {
     match people.len() {
         0 => String::new(),
         1 => name(0),
-        2 => crate::i18n::widget_format(
+        2 => tilo_ui_base::i18n::widget_format(
             "change-mark-names-two",
             &[("first", name(0).into()), ("second", name(1).into())],
         ),
-        3 => crate::i18n::widget_format(
+        3 => tilo_ui_base::i18n::widget_format(
             "change-mark-names-three",
             &[
                 ("first", name(0).into()),
@@ -258,7 +259,7 @@ fn names(people: &[Person]) -> String {
                 ("third", name(2).into()),
             ],
         ),
-        more => crate::i18n::widget_format(
+        more => tilo_ui_base::i18n::widget_format(
             "change-mark-names-more",
             &[
                 ("first", name(0).into()),
@@ -271,8 +272,8 @@ fn names(people: &[Person]) -> String {
 
 /// The colour a face takes for `hue`: each theme paints it at its own presence lightness.
 fn face_colour(hue: PresenceHue) -> vello::peniko::Color {
-    static PALETTE: std::sync::LazyLock<crate::Theme> =
-        std::sync::LazyLock::new(crate::Theme::dark);
+    static PALETTE: std::sync::LazyLock<tilo_ui_base::Theme> =
+        std::sync::LazyLock::new(tilo_ui_base::Theme::dark);
     PALETTE.tokens.colors.presence.hue(hue)
 }
 
@@ -321,14 +322,14 @@ impl ChangeMark {
     }
 }
 
-impl crate::widget::Decorator for ChangeMark {
-    type Inner = dyn crate::widget::Widget;
+impl tilo_ui_base::widget::Decorator for ChangeMark {
+    type Inner = dyn tilo_ui_base::widget::Widget;
 
-    fn inner(&self) -> &(dyn crate::widget::Widget + 'static) {
+    fn inner(&self) -> &(dyn tilo_ui_base::widget::Widget + 'static) {
         self.element.as_ref()
     }
 
-    fn inner_mut(&mut self) -> &mut (dyn crate::widget::Widget + 'static) {
+    fn inner_mut(&mut self) -> &mut (dyn tilo_ui_base::widget::Widget + 'static) {
         self.element.as_mut()
     }
 
@@ -408,10 +409,10 @@ mod tests {
         // one message", never "changed one messages".
         phase a_mark_names_one_change_in_the_singular;
         {
-            crate::i18n::I18nManager::register_widget_messages();
-            crate::i18n::I18nManager::set_locale("en-US");
+            tilo_ui_base::i18n::I18nManager::register_widget_messages();
+            tilo_ui_base::i18n::I18nManager::set_locale("en-US");
             let said = |count: usize| {
-                crate::i18n::widget_format(
+                tilo_ui_base::i18n::widget_format(
                     "change-window-changed",
                     &[
                         ("who", "Mia".into()),
@@ -429,10 +430,10 @@ mod tests {
         // messages from Mia, Leo and Ada", never that they changed them.
         phase a_mark_of_new_items_says_what_is_new;
         {
-            crate::i18n::I18nManager::register_widget_messages();
-            crate::i18n::I18nManager::set_locale("en-US");
+            tilo_ui_base::i18n::I18nManager::register_widget_messages();
+            tilo_ui_base::i18n::I18nManager::set_locale("en-US");
             let said = |count: i64| {
-                crate::i18n::widget_format(
+                tilo_ui_base::i18n::widget_format(
                     "change-window-new",
                     &[
                         ("who", "Mia, Leo and Ada".into()),
@@ -451,13 +452,13 @@ mod tests {
         // names: it reads right for one person and for several.
         phase a_german_mark_reads_right_for_several_names;
         {
-            let language = crate::i18n::speak_window_language(&[(
+            let language = tilo_ui_base::i18n::speak_window_language(&[(
                 "de-DE".to_owned(),
                 "change-mark-probe = Probe".to_owned(),
             )]);
             assert_eq!(language, "de-DE");
             let said = |who: &str, count: usize, more: bool| {
-                crate::i18n::widget_format(
+                tilo_ui_base::i18n::widget_format(
                     if more {
                         "change-window-changed-more"
                     } else {

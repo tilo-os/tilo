@@ -15,7 +15,7 @@ impl HistoryHost {
     }
 
     /// The one row of the timeline a person selected, when they selected one.
-    pub(super) fn timeline_folder_selection(&self) -> Option<crate::HistoryEntryId> {
+    pub(super) fn timeline_folder_selection(&self) -> Option<tilo_ui_base::HistoryEntryId> {
         let (start, end) = self.timeline.selection()?;
         (start == end)
             .then(|| self.timeline.entries().get(start).map(|entry| entry.id))
@@ -89,7 +89,7 @@ impl HistoryHost {
         toolbar = toolbar.push(Box::new(actions));
         if let Some(status) = &self.folder_status {
             toolbar = toolbar.push(Box::new(
-                Text::new(status).with_live(crate::a11y::Politeness::Polite),
+                Text::new(status).with_live(tilo_ui_base::a11y::Politeness::Polite),
             ));
         }
         toolbar

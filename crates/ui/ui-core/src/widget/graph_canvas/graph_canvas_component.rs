@@ -3,10 +3,8 @@
 
 use tilo_ui_graph::component::{CaseDescription, EnumDescription};
 
-use crate::component::{
-    Component, Described, PropType, Type, Value, case_field, case_field_description,
-};
-use crate::widget::{Element, Spacer};
+use tilo_ui_base::{component::Component, component::Described, component::PropType, component::Type, component::Value, component::case_field, component::case_field_description};
+use tilo_ui_base::{widget::Element, widget::Spacer};
 
 use super::{GraphCanvas, GraphCanvasConnection, GraphCanvasNode};
 
@@ -26,7 +24,7 @@ impl PropType for Connection {
 
     fn from_value(value: &Value) -> Result<Self, String> {
         let Value::Case { case, fields } = value else {
-            return Err(crate::component::wrong(&Self::ty(), value));
+            return Err(tilo_ui_base::component::wrong(&Self::ty(), value));
         };
         if case != "connection" {
             return Err(format!(
@@ -100,7 +98,7 @@ pub struct GraphNodeProps {
     pub content: Option<Element>,
 }
 
-crate::component::part_type!(GraphNodeProps);
+tilo_ui_base::component::part_type!(GraphNodeProps);
 
 impl Described for GraphCanvas {
     type Props = GraphCanvasProps;
@@ -127,7 +125,7 @@ impl Described for GraphCanvas {
         let content = |node: &mut GraphNodeProps| -> Element {
             node.content
                 .take()
-                .unwrap_or_else(|| Box::new(Spacer::token(crate::tokens::SpacingStep::S0)))
+                .unwrap_or_else(|| Box::new(Spacer::token(tilo_ui_base::tokens::SpacingStep::S0)))
         };
         let canvas = if placed && !props.nodes.is_empty() {
             GraphCanvas::new(

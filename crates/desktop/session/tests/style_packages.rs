@@ -82,7 +82,7 @@ fn style_action(
 /// person had only the four the shell ships.
 #[test]
 fn make_it_mine_copies_strips_into_a_selectable_style() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     crate::common::app_store();
     let _ = workspace();
     // A session whose API a REPL reaches: the API is how the switch runs its own action
@@ -205,7 +205,7 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
 /// person's own mistake is named, and the store still holds the copy that last loaded.
 #[test]
 fn a_broken_copy_is_a_diagnostic_and_never_installs() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     crate::common::app_store();
     let dir = workspace().join("mine.broken");
     std::fs::create_dir_all(&dir).expect("a directory for the broken copy");
@@ -250,7 +250,7 @@ fn a_broken_copy_is_a_diagnostic_and_never_installs() {
 /// compiler's words and changes nothing.
 #[test]
 fn a_copied_style_is_offered_and_drawn_with_no_shell_in_the_store() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     tilo_test_env::in_own_process(
         module_path!(),
         "a_copied_style_is_offered_and_drawn_with_no_shell_in_the_store",
@@ -345,7 +345,7 @@ fn a_copied_style_is_offered_and_drawn_with_no_shell_in_the_store() {
 /// catalogue, so the REPL does the same").
 #[test]
 fn the_repl_makes_a_style_with_the_same_call() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     crate::common::app_store();
     let _ = workspace();
     // The session whose API this REPL reaches.

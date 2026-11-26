@@ -57,17 +57,17 @@ pub(crate) fn said(app: &mut impl Driven) -> Vec<String> {
 pub(crate) fn right_click(app: &mut impl Driven, (x, y): (f64, f64)) {
     use ui::winit::event::{ElementState, MouseButton};
     let harness = app.harness();
-    harness.send(&ui::synthetic_input::cursor_moved(x, y));
+    harness.send(&tilo_ui_base::synthetic_input::cursor_moved(x, y));
     for state in [ElementState::Pressed, ElementState::Released] {
-        harness.send(&ui::synthetic_input::mouse_input(state, MouseButton::Right));
+        harness.send(&tilo_ui_base::synthetic_input::mouse_input(state, MouseButton::Right));
     }
     harness.relayout();
 }
 
 /// The names of the open menu's items, in order.
 pub(crate) fn menu_items(app: &mut impl Driven) -> Vec<String> {
-    fn items(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
-        if node.role == ui::a11y::Role::MenuItem
+    fn items(node: &tilo_ui_base::a11y::AccessNode, out: &mut Vec<String>) {
+        if node.role == tilo_ui_base::a11y::Role::MenuItem
             && let Some(name) = &node.name
         {
             out.push(name.clone());
@@ -141,8 +141,8 @@ pub(crate) fn rows(app: &mut impl Driven) -> Vec<(String, [f64; 4], bool)> {
 /// Chooses the sidebar's place `label`, as a person does: a row a change takes out of the
 /// place it stood in is read where it went.
 pub(crate) fn choose(app: &mut impl Driven, label: &str) {
-    fn place<'a>(node: &'a ui::a11y::AccessNode, label: &str) -> Option<&'a ui::a11y::AccessNode> {
-        if node.role == ui::a11y::Role::TreeItem && node.answers_to(label) {
+    fn place<'a>(node: &'a tilo_ui_base::a11y::AccessNode, label: &str) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
+        if node.role == tilo_ui_base::a11y::Role::TreeItem && node.answers_to(label) {
             return Some(node);
         }
         node.children.iter().find_map(|child| place(child, label))

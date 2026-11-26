@@ -9,15 +9,16 @@
 
 use std::collections::HashMap;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui_base::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
-use tilo_ui::presence::PresenceCtx;
-use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::Theme;
-use tilo_ui::widget::{Column, Scrollable, Text, Widget};
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui::{widget::Column, widget::Scrollable, widget::Text};
+use tilo_ui_base::widget::Widget;
 
 const W: u32 = 400;
 const H: u32 = 300;
@@ -70,7 +71,7 @@ fn render(scrollable: &mut Scrollable, renderer: &mut OffscreenRenderer) -> Vec<
 
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    scrollable.draw(&mut tilo_ui::draw::DrawCtx::new(
+    scrollable.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut tr,

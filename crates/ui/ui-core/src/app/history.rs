@@ -11,7 +11,7 @@ use super::*;
 use crate::history_mode::api::HISTORY_OPERATION;
 #[cfg(feature = "model")]
 use crate::history_mode::frame::FrameworkInputFrame;
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 use crate::widget::search_request::SEARCH_OPERATION;
 
 impl App {
@@ -127,7 +127,7 @@ impl App {
         {
             let _ = crate::bound_dispatch::drain_control_invocations(self.root_widget.as_mut());
         }
-        while crate::widget::controls::take_control_invocation(self.root_widget.as_mut()).is_some()
+        while tilo_ui_base::widget::controls::take_control_invocation(self.root_widget.as_mut()).is_some()
         {
         }
     }
@@ -230,7 +230,7 @@ impl App {
             tree,
             observation: self.bound_broker_route().cloned(),
             autosave_generation: self.autosave_generation,
-            document: crate::doc::settle_mark(&self.state.doc),
+            document: tilo_ui_base::doc::settle_mark(&self.state.doc),
         };
         if self.layout.walks.routes.as_ref() != Some(&routes) {
             #[cfg(test)]
@@ -241,7 +241,7 @@ impl App {
         let status = self.window_status();
         let surfaces = super::runtime::HistorySurfaceInputs {
             news: crate::history_mode::news(),
-            document: crate::doc::settle_mark(&self.state.doc),
+            document: tilo_ui_base::doc::settle_mark(&self.state.doc),
             narrow: width < 600.0,
         };
         let walked = self
@@ -464,10 +464,10 @@ impl App {
             history.route_event(
                 self.root_widget.as_mut(),
                 event,
-                &mut crate::widget::EventCtx {
+                &mut tilo_ui_base::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &self.input.modifiers,
-                    state: crate::widget::Edits::lend(&mut self.state.doc),
+                    state: tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -478,10 +478,10 @@ impl App {
         } else if let Some(root) = self.layout.root_node {
             self.root_widget.handle_event(
                 event,
-                &mut crate::widget::EventCtx {
+                &mut tilo_ui_base::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &self.input.modifiers,
-                    state: crate::widget::Edits::lend(&mut self.state.doc),
+                    state: tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -759,10 +759,10 @@ impl App {
         {
             self.root_widget.handle_event(
                 event,
-                &mut crate::widget::EventCtx {
+                &mut tilo_ui_base::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &self.input.modifiers,
-                    state: crate::widget::Edits::lend(&mut self.state.doc),
+                    state: tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled,
                     focus_target: focus,
@@ -815,7 +815,7 @@ impl App {
         &mut self,
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
-    ) -> Option<Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError>> {
+    ) -> Option<Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError>> {
         let mut resources = self.history_local_resources();
         resources.extend(self.edit_resource_for(address));
         tilo_actions::api::resolve(&resources, address)?;
@@ -825,7 +825,7 @@ impl App {
             )?;
             self.execute_history_encoded_local(&encoded)
                 .map_err(tilo_actions::ApiError::Failed)?;
-            Ok(crate::widget::ResourceOperationStart::Completed(
+            Ok(tilo_ui_base::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             ))
         })())
@@ -879,7 +879,7 @@ impl App {
     pub(super) fn build_history_presentation(&mut self) {
         // A rebuild outside a layout pass (a press that changes the page) is in a window that
         // has shown its tree: what it builds arrives on its motion, as it would in a pass.
-        let _window = crate::motion::laying_out_window(self.layout.root_node.is_some());
+        let _window = tilo_ui_base::motion::laying_out_window(self.layout.root_node.is_some());
         self.build_presentation_layout();
         self.admit_layout_maps();
     }
@@ -1136,7 +1136,7 @@ impl Widget for FrameworkPresentation<'_> {
     fn build_layout(
         &mut self,
         _: &mut taffy::TaffyTree<()>,
-        _: &crate::Theme,
+        _: &tilo_ui_base::Theme,
         _: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         self.layout_root

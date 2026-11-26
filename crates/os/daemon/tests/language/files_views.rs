@@ -96,11 +96,11 @@ fn an_agents_view_of_files_lists_the_folder_the_persons_files_hold() {
 }
 
 /// A time `mtime` as `zone` reads it on the person's 24-hour clock.
-fn read_in_zone(mtime: u64, zone: ui::format::TimeZone) -> String {
+fn read_in_zone(mtime: u64, zone: tilo_ui_base::format::TimeZone) -> String {
     read_with(
-        ui::format::RegionFormats {
-            time: ui::clock::TimeStyle::H24,
-            ..ui::format::RegionFormats::default()
+        tilo_ui_base::format::RegionFormats {
+            time: tilo_ui_base::clock::TimeStyle::H24,
+            ..tilo_ui_base::format::RegionFormats::default()
         },
         mtime,
         zone,
@@ -108,12 +108,12 @@ fn read_in_zone(mtime: u64, zone: ui::format::TimeZone) -> String {
 }
 
 /// The time `mtime` as `zone` reads it with `region`.
-fn read_with(region: ui::format::RegionFormats, mtime: u64, zone: ui::format::TimeZone) -> String {
-    let at = ui::format::Timestamp::from_millisecond(i64::try_from(mtime).unwrap())
+fn read_with(region: tilo_ui_base::format::RegionFormats, mtime: u64, zone: tilo_ui_base::format::TimeZone) -> String {
+    let at = tilo_ui_base::format::Timestamp::from_millisecond(i64::try_from(mtime).unwrap())
         .expect("a time")
         .to_zoned(zone)
         .datetime();
-    ui::format::Formats::with(region).timestamp(at)
+    tilo_ui_base::format::Formats::with(region).timestamp(at)
 }
 
 /// An agent reads a file's time in the Files window as its person reads it on their page: on their
@@ -121,7 +121,7 @@ fn read_with(region: ui::format::RegionFormats, mtime: u64, zone: ui::format::Ti
 #[test]
 fn an_agents_view_of_files_reads_times_on_the_persons_clock_in_their_zone() {
     const ZONE: &str = "Pacific/Auckland";
-    let Ok(auckland) = ui::format::TimeZone::get(ZONE) else {
+    let Ok(auckland) = tilo_ui_base::format::TimeZone::get(ZONE) else {
         // A system without a zone database renders every zone as UTC.
         return;
     };
@@ -141,7 +141,7 @@ fn an_agents_view_of_files_reads_times_on_the_persons_clock_in_their_zone() {
         let mtime = person_keeps_a_folder(&host).await;
 
         let on_her_page = read_in_zone(mtime, auckland.clone());
-        let on_the_device = read_in_zone(mtime, ui::format::TimeZone::UTC);
+        let on_the_device = read_in_zone(mtime, tilo_ui_base::format::TimeZone::UTC);
         assert_ne!(on_her_page, on_the_device, "the zones read it apart");
 
         let deadline = Instant::now() + std::time::Duration::from_secs(10);
@@ -183,9 +183,9 @@ async fn agent_reads(session: &Session<'_>, workspace: &str, wanted: &str) -> St
 /// The time on the person's page for `kept` formats and `mtime`, as their page reads what the
 /// workspace keeps of them: the zone they chose, else their browser's.
 fn on_the_page(kept: &formats::Formats, mtime: u64, browser: &str) -> String {
-    let region = ui::format::RegionFormats::from_section(kept.formats.clone().unwrap_or_default());
-    let zone = ui::format::TimeZone::get(kept.chosen_zone.as_deref().unwrap_or(browser))
-        .unwrap_or(ui::format::TimeZone::UTC);
+    let region = tilo_ui_base::format::RegionFormats::from_section(kept.formats.clone().unwrap_or_default());
+    let zone = tilo_ui_base::format::TimeZone::get(kept.chosen_zone.as_deref().unwrap_or(browser))
+        .unwrap_or(tilo_ui_base::format::TimeZone::UTC);
     read_with(region, mtime, zone)
 }
 
@@ -197,8 +197,8 @@ fn a_zone_the_person_chooses_is_the_one_their_page_and_their_agent_read() {
     const BROWSER: &str = "Pacific/Auckland";
     const CHOSEN: &str = "Europe/Vienna";
     let (Ok(auckland), Ok(vienna)) = (
-        ui::format::TimeZone::get(BROWSER),
-        ui::format::TimeZone::get(CHOSEN),
+        tilo_ui_base::format::TimeZone::get(BROWSER),
+        tilo_ui_base::format::TimeZone::get(CHOSEN),
     ) else {
         // A system without a zone database renders every zone as UTC.
         return;
@@ -235,7 +235,7 @@ fn a_zone_the_person_chooses_is_the_one_their_page_and_their_agent_read() {
             serde_json::from_value(page_tells(&host, READ, json!({})).await).unwrap();
         assert_eq!(kept.chosen_zone, None);
         assert!(
-            ui::format::region::chosen_zone(kept.chosen_zone.as_deref()).is_none(),
+            tilo_ui_base::format::region::chosen_zone(kept.chosen_zone.as_deref()).is_none(),
             "the page reads its browser's zone, {BROWSER}, again",
         );
         let lines = agent_reads(&session, &workspace, &in_auckland).await;

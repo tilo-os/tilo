@@ -2,8 +2,8 @@
 //! large as the input the host has.
 
 use super::*;
-use crate::component::{Bound, Described};
-use crate::interaction::InteractionEnvironment;
+use tilo_ui_base::{component::Bound, component::Described};
+use tilo_ui_base::interaction::InteractionEnvironment;
 
 fn finger() -> f64 {
     f64::from(InteractionEnvironment::TOUCH.minimum_target())
@@ -16,7 +16,7 @@ tilo_test_env::scenario! {
 
     phase on_touch_a_step_done_is_a_fingers_target_and_a_pointers_by_mouse;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let stepper = || {
             Stepper::new(vec![
                 "Draft".to_owned(),
@@ -39,9 +39,9 @@ tilo_test_env::scenario! {
             host.set_interaction_environment(input);
             host.relayout_at((600, 200)).expect("the stepper lays out");
             let theme = Theme::light();
-            crate::text_render::with_layout_renderer(&theme, |text| {
+            tilo_ui_base::text_render::with_layout_renderer(&theme, |text| {
                 let mut scene = vello::Scene::new();
-                Widget::draw(&mut *host.root_mut::<Stepper>(), &mut crate::draw::DrawCtx::new(&mut scene, vello::kurbo::Affine::IDENTITY, text, &theme, crate::presence::PresenceCtx::default().draw_env()));
+                Widget::draw(&mut *host.root_mut::<Stepper>(), &mut tilo_ui_base::draw::DrawCtx::new(&mut scene, vello::kurbo::Affine::IDENTITY, text, &theme, tilo_ui_base::presence::PresenceCtx::default().draw_env()));
             });
             let announced = host
                 .root_mut::<Stepper>()
@@ -82,8 +82,8 @@ tilo_test_env::scenario! {
 
     phase on_touch_a_shortcut_recorder_and_an_autocompletes_field_stand_a_fingers_target_tall;
     {
-        let _settled = crate::motion::testing::settled();
-        let state = crate::LocalState::new("Ctrl+K".to_owned());
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let state = tilo_ui_base::LocalState::new("Ctrl+K".to_owned());
         let recorder: Box<dyn Widget> = Box::new(ShortcutRecorder::new("open", &state, "Ctrl+K"));
         let field = Auto::field("to", "ada@example.com");
         let mut host = crate::app::driver::Driver::for_root(
@@ -111,7 +111,7 @@ struct Auto;
 impl Auto {
     fn field(key: &str, text: &str) -> Box<dyn Widget> {
         let bound = Bound {
-            state: crate::LocalState::new(text.to_owned()),
+            state: tilo_ui_base::LocalState::new(text.to_owned()),
             edits: None,
             name: key.to_owned(),
             path: Vec::new(),

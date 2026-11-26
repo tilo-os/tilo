@@ -1,5 +1,5 @@
 use super::*;
-use crate::a11y::{AccessNode, Role};
+use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 use crate::window_toolbar::{ToolbarAction, ToolbarLocation, ToolbarNavigation};
 
 fn browser() -> WindowToolbar {
@@ -41,7 +41,7 @@ fn row() -> ToolbarRow {
         7,
         Some(&browser()),
         Theme::dark().motion(),
-        crate::motion::frame_now(),
+        tilo_ui_base::motion::frame_now(),
     );
     row.lay_out(Rect::new(40.0, 0.0, 640.0, 40.0));
     row
@@ -61,7 +61,7 @@ tilo_test_env::scenario! {
                 7,
                 Some(&browser()),
                 Theme::dark().motion(),
-                crate::motion::frame_now(),
+                tilo_ui_base::motion::frame_now(),
             );
             quiet.lay_out(bounds);
             let noticed = WindowToolbar {
@@ -73,7 +73,7 @@ tilo_test_env::scenario! {
                 7,
                 Some(&noticed),
                 Theme::dark().motion(),
-                crate::motion::frame_now(),
+                tilo_ui_base::motion::frame_now(),
             );
             row.lay_out(bounds);
             assert_eq!(
@@ -87,7 +87,7 @@ tilo_test_env::scenario! {
                 .iter()
                 .find(|node| node.name.as_deref() == Some("Saved report.pdf"))
                 .expect("the notice is the location's text");
-            assert_eq!(said.live, Some(crate::a11y::Politeness::Polite));
+            assert_eq!(said.live, Some(tilo_ui_base::a11y::Politeness::Polite));
             assert!(
                 quiet.accessibility().iter().all(|node| node.live.is_none()),
                 "the location is not a live region without a notice"
@@ -107,7 +107,7 @@ tilo_test_env::scenario! {
             7,
             Some(&undo),
             Theme::dark().motion(),
-            crate::motion::frame_now(),
+            tilo_ui_base::motion::frame_now(),
         );
         row.lay_out(Rect::new(40.0, 0.0, 640.0, 40.0));
         assert!(row.measure_views(&Theme::dark()), "the notice is measured");
@@ -144,7 +144,7 @@ tilo_test_env::scenario! {
             // the row (one at the compact breakpoint: its bar's row is 200 px
             // narrower, as a 420 px window's is 220 px) to a wide one's.
             // Narrower windows say it in a strip of their own.
-            let narrowest = f64::from(crate::tokens::Metrics::BASE.compact_breakpoint) - 200.0;
+            let narrowest = f64::from(tilo_ui_base::tokens::Metrics::BASE.compact_breakpoint) - 200.0;
             for width in (0..)
                 .map(|step: u32| narrowest + 4.0 * f64::from(step))
                 .take_while(|width| *width <= 1100.0)
@@ -250,7 +250,7 @@ tilo_test_env::scenario! {
                 3,
                 Some(&file_toolbar(3)),
                 theme.motion(),
-                crate::motion::frame_now(),
+                tilo_ui_base::motion::frame_now(),
             );
             quiet.lay_out(Rect::new(0.0, 0.0, 220.0, 40.0));
             let mut row = ToolbarRow::new();
@@ -259,7 +259,7 @@ tilo_test_env::scenario! {
                 3,
                 Some(&noticed),
                 theme.motion(),
-                crate::motion::frame_now(),
+                tilo_ui_base::motion::frame_now(),
             );
             row.lay_out(Rect::new(0.0, 0.0, 220.0, 40.0));
             assert_eq!(
@@ -289,7 +289,7 @@ tilo_test_env::scenario! {
                 .iter()
                 .find(|node| node.name.as_deref() == Some(text))
                 .expect("the strip's text is a node");
-            assert_eq!(said.live, Some(crate::a11y::Politeness::Polite));
+            assert_eq!(said.live, Some(tilo_ui_base::a11y::Politeness::Polite));
             for (button, (name, id)) in buttons.iter().zip(&actions) {
                 let target = format!("{NOTICE_TARGET_PREFIX}{id}");
                 assert!(
@@ -378,7 +378,7 @@ tilo_test_env::scenario! {
             9,
             Some(&terminal()),
             Theme::dark().motion(),
-            crate::motion::frame_now(),
+            tilo_ui_base::motion::frame_now(),
         );
         row.set_popup_area(Rect::new(0.0, 0.0, 800.0, 600.0));
         row.lay_out(Rect::new(40.0, 0.0, 640.0, 40.0));
@@ -448,7 +448,7 @@ tilo_test_env::scenario! {
                 1,
                 Some(&toolbar),
                 Theme::dark().motion(),
-                crate::motion::frame_now(),
+                tilo_ui_base::motion::frame_now(),
             );
             row.lay_out(Rect::new(0.0, 0.0, 640.0, 40.0));
             row.accessibility()
@@ -524,7 +524,7 @@ fn terminal() -> WindowToolbar {
 }
 
 fn text(key: &str) -> String {
-    crate::i18n::I18nManager::lookup_plain(key)
+    tilo_ui_base::i18n::I18nManager::lookup_plain(key)
 }
 
 fn find_node<'a>(nodes: &'a [AccessNode], role: Role, name: &str) -> Option<&'a AccessNode> {
@@ -574,7 +574,7 @@ fn address_book_row(editing: bool, width: f64) -> ToolbarRow {
         4,
         Some(&address_book(editing)),
         Theme::dark().motion(),
-        crate::motion::frame_now(),
+        tilo_ui_base::motion::frame_now(),
     );
     row.set_popup_area(Rect::new(0.0, 0.0, 1200.0, 800.0));
     row.lay_out(Rect::new(0.0, 0.0, width, 40.0));
@@ -727,7 +727,7 @@ tilo_test_env::scenario! {
             5,
             Some(&toolbar),
             Theme::dark().motion(),
-            crate::motion::frame_now(),
+            tilo_ui_base::motion::frame_now(),
         );
         row.lay_out(Rect::new(0.0, 0.0, 800.0, 40.0));
         let format = row.parts().actions[0].center();
@@ -773,7 +773,7 @@ tilo_test_env::scenario! {
             5,
             Some(&crowded),
             Theme::dark().motion(),
-            crate::motion::frame_now(),
+            tilo_ui_base::motion::frame_now(),
         );
         narrow.lay_out(Rect::new(0.0, 0.0, 100.0, 40.0));
         assert!(
@@ -806,7 +806,7 @@ tilo_test_env::scenario! {
             5,
             Some(&toolbar),
             Theme::dark().motion(),
-            crate::motion::frame_now(),
+            tilo_ui_base::motion::frame_now(),
         );
         row.lay_out(Rect::new(0.0, 0.0, 800.0, 40.0));
         assert!(row.open_overflow(), "the window's More menu holds both");
@@ -834,7 +834,7 @@ tilo_test_env::scenario! {
             5,
             Some(&toolbar),
             Theme::dark().motion(),
-            crate::motion::frame_now(),
+            tilo_ui_base::motion::frame_now(),
         );
         row.lay_out(Rect::new(0.0, 0.0, 800.0, 40.0));
         assert!(row.open_overflow());
@@ -864,7 +864,7 @@ tilo_test_env::scenario! {
                 5,
                 Some(&toolbar),
                 Theme::dark().motion(),
-                crate::motion::frame_now(),
+                tilo_ui_base::motion::frame_now(),
             );
             row.lay_out(Rect::new(0.0, 0.0, 600.0, 40.0));
             assert_eq!(
@@ -907,7 +907,7 @@ tilo_test_env::scenario! {
                 4,
                 Some(&toolbar),
                 Theme::dark().motion(),
-                crate::motion::frame_now(),
+                tilo_ui_base::motion::frame_now(),
             );
             row.lay_out(Rect::new(0.0, 0.0, 420.0, 40.0));
             row
@@ -988,9 +988,9 @@ fn calendar() -> WindowToolbar {
     .bounded()
 }
 
-fn a_week() -> crate::format::Period {
+fn a_week() -> tilo_ui_base::format::Period {
     let day = |d| jiff::civil::Date::new(2026, 10, d).ok().unwrap_or_default();
-    crate::format::Period::Days(day(19), day(25))
+    tilo_ui_base::format::Period::Days(day(19), day(25))
 }
 
 /// The calendar's bar with an address-like location, which cannot be the
@@ -1013,7 +1013,7 @@ fn calendar_row_of(toolbar: &WindowToolbar, width: f64) -> ToolbarRow {
         3,
         Some(toolbar),
         Theme::dark().motion(),
-        crate::motion::frame_now(),
+        tilo_ui_base::motion::frame_now(),
     );
     row.lay_out(Rect::new(0.0, 0.0, width, 40.0));
     assert!(
@@ -1058,7 +1058,7 @@ tilo_test_env::scenario! {
     {
         let theme = Theme::dark();
         let row = calendar_row(1280.0);
-        let widths = crate::text_render::with_layout_renderer(&theme, |text| {
+        let widths = tilo_ui_base::text_render::with_layout_renderer(&theme, |text| {
             SegmentedFace::tab_widths(&["Month", "Week", "Day"], VIEWS_SIZE, text, &theme)
         });
         let tabs = &row.parts().views;
@@ -1272,7 +1272,7 @@ tilo_test_env::scenario! {
             3,
             Some(&toolbar),
             Theme::dark().motion(),
-            crate::motion::frame_now(),
+            tilo_ui_base::motion::frame_now(),
         );
         row.lay_out(Rect::new(0.0, 0.0, 420.0, 40.0));
         assert_eq!(row.parts().views_menu, menu, "another view, the same place");
@@ -1347,7 +1347,7 @@ fn named<'a>(nodes: &'a [AccessNode], name: &str, out: &mut Vec<&'a AccessNode>)
 
 fn changed_to(row: &mut ToolbarRow, toolbar: &WindowToolbar, theme: &Theme) {
     let rect = row.row;
-    row.show(7, Some(toolbar), theme.motion(), crate::motion::frame_now());
+    row.show(7, Some(toolbar), theme.motion(), tilo_ui_base::motion::frame_now());
     row.lay_out(rect);
     row.start_part_change(theme);
 }
@@ -1462,10 +1462,10 @@ fn a_change_a_key_just_asked_for_lands_and_one_of_state_moves_nothing() {
     let mut with_sidebar = browser();
     with_sidebar.sidebar = Some(false);
     with_monotonic_time(t0, || {
-        crate::motion::note_source(MotionSource::Keyboard);
+        tilo_ui_base::motion::note_source(MotionSource::Keyboard);
         changed_to(&mut row, &with_sidebar, &theme);
         assert!(!row.needs_animation_frame(), "a key's change lands");
-        crate::motion::note_source(MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(MotionSource::Pointer);
         let mut opened = with_sidebar.clone();
         opened.sidebar = Some(true);
         changed_to(&mut row, &opened, &theme);

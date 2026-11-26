@@ -18,7 +18,7 @@ use ui_core::application::{
 };
 use ui_core::headless::Driver;
 use ui_core::launch::LaunchError;
-use ui_core::permissions::{MemberId, PermissionContext, Role, SharedPermissions};
+use tilo_ui_base::{permissions::MemberId, permissions::PermissionContext, permissions::Role, permissions::SharedPermissions};
 
 pub(super) const AUTHOR: &str = "test-author";
 use ui_core::resource::{
@@ -337,7 +337,7 @@ pub(super) fn hold_workspace_keys(
     workspace: &str,
 ) -> Result<(), LaunchError> {
     let route = super::app::resource_route(context)?;
-    ui_core::collaboration::document_content::ContentLink::of(&route)
+    tilo_ui_base::collaboration::document_content::ContentLink::of(&route)
         .hold_secret(workspace_secret(workspace));
     Ok(())
 }
@@ -467,7 +467,7 @@ pub struct HeadlessApp<A: ResourceApp, H: Host = Alone> {
     permissions: SharedPermissions,
     /// The window is a capture: every motion in it reads arrived while this
     /// is held, so what it photographs is the window at rest.
-    _settled: Option<ui_core::motion::testing::Settled>,
+    _settled: Option<tilo_ui_base::motion::testing::Settled>,
     marker: std::marker::PhantomData<(A, H)>,
 }
 
@@ -1016,7 +1016,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         let settled = capture
             .as_ref()
             .filter(|(capture, _)| !capture.is_driven())
-            .map(|_| ui_core::motion::testing::settled());
+            .map(|_| tilo_ui_base::motion::testing::settled());
         if let ui_core::storage::SettingsDocument::Profile(root) = profile.settings() {
             H::keeps_settings(&root);
         }
@@ -1100,7 +1100,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// which this runs.
     pub fn set_role(&mut self, role: Role) {
         self.permissions.set(PermissionContext::member(
-            &ui_core::permissions::MemberId::person(self.author.as_str()),
+            &tilo_ui_base::permissions::MemberId::person(self.author.as_str()),
             role,
         ));
         self.role = role;
@@ -1125,7 +1125,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// no grant left, as when the owner removes them.
     pub fn leave_workspace(&mut self) {
         self.permissions.set(PermissionContext::stranger(
-            &ui_core::permissions::MemberId::person(self.author.as_str()),
+            &tilo_ui_base::permissions::MemberId::person(self.author.as_str()),
         ));
         self.harness().relayout();
     }
@@ -1499,7 +1499,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         clippy::expect_used,
         reason = "a test naming a surface its app does not host is wrong"
     )]
-    pub fn surface_mut<S: ui_core::widget::Widget + 'static>(&mut self) -> &mut S {
+    pub fn surface_mut<S: tilo_ui_base::widget::Widget + 'static>(&mut self) -> &mut S {
         surface_in::<A, S>(self.harness()).expect("the view hosts this surface")
     }
 
@@ -1513,7 +1513,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// what the app's view drew of its state.
     pub fn texts(&mut self) -> Vec<String> {
         self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot| ui_core::a11y::texts(root.app_view()))
+            .with_widget_mut(|root: &mut ResourceRoot| tilo_ui_base::a11y::texts(root.app_view()))
             .unwrap_or_default()
     }
 
@@ -1568,7 +1568,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// now; `None` when the view hosts none. The frame is laid out again
     /// after the visit, so what the visit changed is what the next frame
     /// draws.
-    pub fn with_surface<S: ui_core::widget::Widget + 'static, T>(
+    pub fn with_surface<S: tilo_ui_base::widget::Widget + 'static, T>(
         &mut self,
         visit: impl FnOnce(&mut S) -> T,
     ) -> Option<T> {
@@ -1922,25 +1922,25 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// widget its view built — for assertions about view state the
     /// accessibility tree does not show, then run the frame after it.
     /// `None` when the view has no such widget.
-    pub fn with_widget<T: ui_core::widget::Widget + 'static, O>(
+    pub fn with_widget<T: tilo_ui_base::widget::Widget + 'static, O>(
         &mut self,
         visit: impl FnOnce(&mut T) -> O,
     ) -> Option<O> {
         self.harness()
             .with_widget_mut(|root: &mut super::root::ResourceRoot| {
-                ui_core::widget::find_mut::<T>(root.content.as_mut()).map(visit)
+                tilo_ui_base::widget::find_mut::<T>(root.content.as_mut()).map(visit)
             })
             .flatten()
     }
 
     /// Every presence this window shows besides its person, and where.
-    pub fn presences(&mut self) -> Vec<ui_core::widget::ViewPresence> {
+    pub fn presences(&mut self) -> Vec<tilo_ui_base::widget::ViewPresence> {
         let doc = self
             .read_document_of(&self.checkout().id, Clone::clone)
             .unwrap_or_default();
         self.harness()
             .with_widget_mut(|root: &mut ResourceRoot| {
-                ui_core::widget::presence_topology::Presences::presences(root, &doc)
+                tilo_ui_base::widget::presence_topology::Presences::presences(root, &doc)
             })
             .unwrap_or_default()
     }
@@ -2057,7 +2057,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// effects submitted are applied, and what they change is drawn. Every
     /// component syncs and settles, as after an event that reached it: a
     /// test may have changed what its views read past the framework
-    /// ([`ui_core::component_inputs`]).
+    /// ([`tilo_ui_base::component_inputs`]).
     pub fn settle(&mut self) {
         // The frame takes up what the event brought, the record's writer is offered what it
         // changed, and the frame after takes up what that answered.
@@ -2473,7 +2473,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         self.records
             .merge_replica(
                 &checkout,
-                ui_core::collaboration::DocumentMutation::Incremental(change),
+                tilo_ui_base::collaboration::DocumentMutation::Incremental(change),
             )
             .map(|(changed, _)| changed)
     }
@@ -2536,7 +2536,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         &self,
         entries: impl IntoIterator<Item = &'e tilo_actions::ActionContext>,
     ) -> Vec<String> {
-        let source = A::catalog().and_then(ui_core::i18n::EmbeddedCatalog::source);
+        let source = A::catalog().and_then(tilo_ui_base::i18n::EmbeddedCatalog::source);
         let catalogue = tilo_history::Catalogue::new("en-US", &Vec::from_iter(source));
         let reader = tilo_history::Reader::new("en-US")
             .with_app(&catalogue)
@@ -2617,17 +2617,17 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
 
 /// The custom surface of type `S` that `A`'s view hosts in `driver`,
 /// without running a frame (see [`super::testing::with_surface`]).
-pub fn surface_in<A: ResourceApp, S: ui_core::widget::Widget + 'static>(
+pub fn surface_in<A: ResourceApp, S: tilo_ui_base::widget::Widget + 'static>(
     driver: &mut Driver,
 ) -> Option<&mut S> {
     surface_of::<A, S>(driver.widget_mut::<ResourceRoot>()?)
 }
 
-pub(super) fn surface_of<A: ResourceApp, S: ui_core::widget::Widget + 'static>(
+pub(super) fn surface_of<A: ResourceApp, S: tilo_ui_base::widget::Widget + 'static>(
     root: &mut ResourceRoot,
 ) -> Option<&mut S> {
     root.typed::<A::Resource>()?;
-    ui_core::widget::find_mut::<S>(root.content.as_mut())
+    tilo_ui_base::widget::find_mut::<S>(root.content.as_mut())
 }
 
 impl<A: ResourceApp, H: Host> Drop for HeadlessApp<A, H> {

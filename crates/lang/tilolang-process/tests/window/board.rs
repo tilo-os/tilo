@@ -73,7 +73,7 @@ fn a_board_holding_cards_publishes_its_actions_and_each_card_its_own_control() {
 
 #[test]
 fn a_cards_menu_offers_its_moves_and_actions_and_keeps_every_binding_published() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut app = staged();
     let card = card_rect(&mut app, "Write the release notes");
     right_click(&mut app, (card[0] + card[2] / 2.0, card[1] + card[3] / 2.0));
@@ -95,7 +95,7 @@ fn a_cards_menu_offers_its_moves_and_actions_and_keeps_every_binding_published()
     );
     // An agent choosing a row presses it as a person's assistive tool does: the card moves.
     app.harness()
-        .perform_named("Move to Done", &ui::a11y::Action::Activate)
+        .perform_named("Move to Done", &tilo_ui_base::a11y::Action::Activate)
         .expect("the row is reachable");
     settle(&mut app);
     let card = card_rect(&mut app, "Write the release notes");

@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use serde::Deserialize;
 use ui::WakeHandle;
-use ui::collaboration::SessionResource;
+use tilo_ui_base::collaboration::SessionResource;
 use ui::serde_json::{Map, Value};
 
 const KEYBOARD: &str = "keyboard";

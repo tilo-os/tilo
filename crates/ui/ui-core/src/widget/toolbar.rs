@@ -1,8 +1,8 @@
 //! The toolbar: a measured strip of commands with a shared `ContextMenu` for overflow, so every
 //! command stays reachable however narrow the window. The extent cache is the sole source for
 //! intrinsic sizing, fitting and placement.
-use crate::num::{f32_of_f64, f64_of_usize};
-use crate::widget::{AppModel, ModelPath};
+use tilo_ui_base::{num::f32_of_f64, num::f64_of_usize};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -11,7 +11,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::context_menu::{ContextMenu, MenuItem};
-use crate::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 
 #[path = "toolbar_component.rs"]
 mod component;
@@ -20,12 +20,12 @@ mod damage;
 #[cfg(test)]
 #[path = "toolbar_touch_tests.rs"]
 mod touch_tests;
-use crate::a11y::{AccessNode, AccessState, Action, Role};
-use crate::paint::PaintCtx;
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::{TaffyTreeExt, Widget};
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Action, a11y::Role};
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 pub use component::{
     ToolbarButtonProps, ToolbarPart, ToolbarProps, ToolbarSeparatorProps, ToolbarSpacerProps,
 };
@@ -41,7 +41,7 @@ pub type GlyphPainter = fn(&mut Scene, Affine, Rect, &Theme);
 pub struct ToolbarCommand {
     pub label: String,
     /// Shown instead of the label when present.
-    pub icon: Option<crate::icons::Icon>,
+    pub icon: Option<tilo_ui_base::icons::Icon>,
     /// A colour well shown instead of a label or icon (the colour the next
     /// mark takes); the label is its accessible name and tooltip.
     pub swatch: Option<vello::peniko::Color>,
@@ -64,7 +64,7 @@ pub struct ToolbarCommand {
     /// to the More menu together, never one without the other.
     pub joined: bool,
     pub on_click: Box<dyn FnMut()>,
-    action: Option<super::ActionEmitter<()>>,
+    action: Option<tilo_ui_base::widget::ActionEmitter<()>>,
 }
 
 impl ToolbarCommand {
@@ -98,7 +98,7 @@ impl ToolbarCommand {
             && self
                 .action
                 .as_ref()
-                .is_none_or(super::ActionEmitter::is_available)
+                .is_none_or(tilo_ui_base::widget::ActionEmitter::is_available)
     }
 
     fn name(&self) -> &str {
@@ -155,8 +155,8 @@ pub struct Toolbar {
     measured_scale: Option<f32>,
     detached: Vec<Option<super::floating_surface::DetachedContent>>,
     theme: Theme,
-    interaction: crate::interaction::InteractionEnvironment,
-    shown: crate::scroll_copy::ShownFrames<damage::BarShown>,
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
+    shown: tilo_ui_base::scroll_copy::ShownFrames<damage::BarShown>,
 }
 
 impl Toolbar {
@@ -171,10 +171,10 @@ impl Toolbar {
             extents: Vec::new(),
             chip_extent: Size::ZERO,
             intrinsic: Size::ZERO,
-            font: crate::tokens::typography::stock().style(TextRole::Label),
+            font: tilo_ui_base::tokens::typography::stock().style(TextRole::Label),
             padding: 8.0,
-            minimum: crate::tokens::Metrics::BASE.min_pointer_target,
-            gap: crate::tokens::Spacing::default().s3,
+            minimum: tilo_ui_base::tokens::Metrics::BASE.min_pointer_target,
+            gap: tilo_ui_base::tokens::Spacing::default().s3,
             overflow_rect: Rect::ZERO,
             hovered: None,
             pointer: None,
@@ -191,8 +191,8 @@ impl Toolbar {
             measured_scale: None,
             detached: Vec::new(),
             theme: Theme::dark(),
-            interaction: crate::interaction::InteractionEnvironment::default(),
-            shown: crate::scroll_copy::ShownFrames::default(),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
+            shown: tilo_ui_base::scroll_copy::ShownFrames::default(),
         }
     }
 
@@ -209,7 +209,7 @@ impl Toolbar {
     #[must_use]
     pub fn push_icon(
         self,
-        icon: crate::icons::Icon,
+        icon: tilo_ui_base::icons::Icon,
         label: &str,
         on_click: impl FnMut() + 'static,
     ) -> Self {
@@ -226,7 +226,7 @@ impl Toolbar {
     #[must_use]
     pub fn push_icon_toggle(
         self,
-        icon: crate::icons::Icon,
+        icon: tilo_ui_base::icons::Icon,
         name: &str,
         active: bool,
         on_click: impl FnMut() + 'static,
@@ -278,7 +278,7 @@ impl Toolbar {
     #[must_use]
     pub fn with_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
         if let Some(command) = self.last_command() {
-            command.action = Some(super::ActionEmitter::new(binding));
+            command.action = Some(tilo_ui_base::widget::ActionEmitter::new(binding));
         }
         self
     }
@@ -480,7 +480,7 @@ impl Toolbar {
 
     pub fn lay_out_at(&mut self, rect: Rect, theme: &Theme) {
         if self.measured_scale != Some(theme.text_scale) || self.extents.len() != self.items.len() {
-            crate::text_render::with_layout_renderer(theme, |text| {
+            tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
                 self.lay_out_in(rect, text, theme);
             });
             return;
@@ -918,7 +918,7 @@ impl Toolbar {
                             if let Some(icon) = command.icon {
                                 row = row.with_icon(icon);
                             } else if command.swatch.is_some() {
-                                row = row.with_icon(crate::icons::Icon::Palette);
+                                row = row.with_icon(tilo_ui_base::icons::Icon::Palette);
                             }
                             if let Some(active) = command.active {
                                 row = row.with_checked(active);
@@ -1216,11 +1216,11 @@ impl Toolbar {
 /// margins of its own.
 const SEPARATOR_HAIRLINE: f32 = 1.0;
 
-impl crate::widget::controls::ActionControls for Toolbar {
+impl tilo_ui_base::widget::controls::ActionControls for Toolbar {
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         for item in &mut self.items {
             match item {
@@ -1230,7 +1230,7 @@ impl crate::widget::controls::ActionControls for Toolbar {
                     }
                 }
                 ToolbarItem::Element(element) => {
-                    crate::widget::controls::attach_controls(element.as_mut(), domain, attachment)
+                    tilo_ui_base::widget::controls::attach_controls(element.as_mut(), domain, attachment)
                 }
                 _ => {}
             }
@@ -1239,15 +1239,15 @@ impl crate::widget::controls::ActionControls for Toolbar {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.items.iter_mut().find_map(|item| match item {
             ToolbarItem::Button(command) => {
-                command.action.as_mut().and_then(super::ActionEmitter::take)
+                command.action.as_mut().and_then(tilo_ui_base::widget::ActionEmitter::take)
             }
             ToolbarItem::Element(element) => {
-                crate::widget::controls::take_control_invocation(element.as_mut())
+                tilo_ui_base::widget::controls::take_control_invocation(element.as_mut())
             }
             _ => None,
         })
     }
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         let mut bindings = Vec::new();
         for (index, item) in self.items.iter().enumerate() {
             match item {
@@ -1260,7 +1260,7 @@ impl crate::widget::controls::ActionControls for Toolbar {
                     }
                 }
                 ToolbarItem::Element(element) => bindings.extend(
-                    crate::widget::controls::control_action_bindings(element.as_ref()),
+                    tilo_ui_base::widget::controls::control_action_bindings(element.as_ref()),
                 ),
                 _ => {}
             }
@@ -1285,7 +1285,7 @@ impl crate::widget::controls::ActionControls for Toolbar {
                     }
                 }
                 ToolbarItem::Element(element) => {
-                    crate::widget::controls::refresh_control_action_availability(
+                    tilo_ui_base::widget::controls::refresh_control_action_availability(
                         element.as_mut(),
                         allowed,
                     )
@@ -1300,11 +1300,11 @@ impl crate::widget::controls::ActionControls for Toolbar {
 }
 
 impl Widget for Toolbar {
-    crate::described!();
+    tilo_ui_base::described!();
 
-    crate::provides!(dyn crate::widget::controls::ActionControls,);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls,);
 
-    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+    fn set_platform_conventions(&mut self, conventions: tilo_ui_base::platform::PlatformConventions) {
         Widget::set_platform_conventions(&mut self.menu, conventions);
         for item in &mut self.items {
             if let ToolbarItem::Element(element) = item {
@@ -1473,7 +1473,7 @@ impl Widget for Toolbar {
         tree.set_style(node, style).is_ok() || changed
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(tree, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(tree, node, origin);
         self.place();
         let elements = self.element_nodes(tree, node);
         for (index, child) in elements {
@@ -1491,7 +1491,7 @@ impl Widget for Toolbar {
             }
         }
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1586,7 +1586,7 @@ impl Widget for Toolbar {
                     scene.fill(
                         vello::peniko::Fill::NonZero,
                         transform,
-                        crate::chrome::chrome_hairline(theme),
+                        tilo_ui_base::chrome::chrome_hairline(theme),
                         None,
                         &line,
                     );
@@ -1605,7 +1605,7 @@ impl Widget for Toolbar {
                 Target::Overflow,
                 "More commands",
                 None,
-                Some(crate::icons::Icon::MoreHorizontal),
+                Some(tilo_ui_base::icons::Icon::MoreHorizontal),
                 false,
                 true,
             );
@@ -1618,9 +1618,9 @@ impl Widget for Toolbar {
     }
     fn mark_drawn(&mut self) {
         self.shown.present();
-        super::defaults::mark_drawn(self.children_mut());
+        tilo_ui_base::widget::defaults::mark_drawn(self.children_mut());
     }
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1629,7 +1629,7 @@ impl Widget for Toolbar {
         let (scene, transform, text, theme, mut env) = ctx.parts();
         for item in &mut self.items {
             if let ToolbarItem::Element(element) = item {
-                element.draw_overlay(&mut crate::draw::DrawCtx::new(
+                element.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                     scene,
                     transform,
                     text,
@@ -1642,7 +1642,7 @@ impl Widget for Toolbar {
             if let (Some(viewport), Some(anchor)) = (self.viewport, self.item_rects.get(*index)) {
                 menu.reanchor(*anchor, viewport);
             }
-            menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+            menu.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text,
@@ -1650,7 +1650,7 @@ impl Widget for Toolbar {
                 env.clone(),
             ));
         }
-        self.menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+        self.menu.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -1658,7 +1658,7 @@ impl Widget for Toolbar {
             env.clone(),
         ));
     }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if (self.focused || self.traps_focus())
             && matches!(event, WindowEvent::KeyboardInput { event, .. }
                 if event.repeat && event.state == ElementState::Pressed
@@ -1715,7 +1715,7 @@ impl Widget for Toolbar {
                 };
                 element.handle_event(
                     event,
-                    &mut crate::widget::EventCtx {
+                    &mut tilo_ui_base::widget::EventCtx {
                         taffy: &content.taffy,
                         ..ctx.reborrow(ctx.path, content.node)
                     },
@@ -1806,14 +1806,14 @@ impl Widget for Toolbar {
     }
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         if self.interaction != environment {
             self.interaction = environment;
             self.layout_dirty = true;
             self.measured_scale = None;
         }
-        super::defaults::set_interaction_environment(self.children_mut(), environment);
+        tilo_ui_base::widget::defaults::set_interaction_environment(self.children_mut(), environment);
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.items
@@ -2020,7 +2020,7 @@ impl Widget for Toolbar {
         &mut self,
         target: &str,
         action: &Action,
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if let Some((_, menu)) = self.item_menu.as_mut()
@@ -2121,7 +2121,7 @@ impl Toolbar {
         target: Target,
         label: &str,
         name: Option<&str>,
-        icon: Option<crate::icons::Icon>,
+        icon: Option<tilo_ui_base::icons::Icon>,
         active: bool,
         enabled: bool,
     ) {
@@ -2153,7 +2153,7 @@ pub fn paint_band(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rec
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            crate::chrome::chrome_hairline(theme),
+            tilo_ui_base::chrome::chrome_hairline(theme),
             None,
             &Rect::new(rect.x0, rect.y1 - rule, rect.x1, rect.y1),
         );
@@ -2181,10 +2181,10 @@ mod tests {
         use crate::app::driver::Framed;
         use std::cell::Cell;
         use std::rc::Rc;
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let press = || WindowEvent::KeyboardInput {
             device_id: winit::event::DeviceId::dummy(),
-            event: crate::synthetic_input::key_event(
+            event: tilo_ui_base::synthetic_input::key_event(
                 Key::Named(NamedKey::Enter),
                 None,
                 ElementState::Pressed,
@@ -2240,10 +2240,8 @@ mod tests {
 
         phase bound_commands_queue_the_same_action_in_the_row_and_overflow_and_obey_availability;
         {
-            use crate::widget::controls::{
-                control_action_bindings, refresh_control_action_availability, take_control_invocation,
-            };
-            let _settled = crate::motion::testing::settled();
+            use tilo_ui_base::{widget::controls::control_action_bindings, widget::controls::refresh_control_action_availability, widget::controls::take_control_invocation};
+            let _settled = tilo_ui_base::motion::testing::settled();
             let resource = tilo_actions::ResourceSpec::new("doc:toolbar", "doc", "Document")
                 .with_action(
                     tilo_actions::ActionSpec::operation(
@@ -2276,7 +2274,7 @@ mod tests {
                 assert!(toolbar.perform_semantic_action(
                     "toolbar.item.0",
                     &Action::Activate,
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT
                 ));
                 let invocation =
@@ -2306,7 +2304,7 @@ mod tests {
                 assert!(!toolbar.perform_semantic_action(
                     "toolbar.item.0",
                     &Action::Activate,
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT
                 ));
                 assert!(
@@ -2322,7 +2320,7 @@ mod tests {
         // what is shown: a row that starts after a group boundary, or ends at
         // one, shows no stray rule.
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let tb = Toolbar::new(Orientation::Horizontal)
                 .push_separator()
                 .push_button("Cut", || {})
@@ -2342,11 +2340,11 @@ mod tests {
 
         phase icon_commands_and_toggles_lay_out_in_a_painted_host;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let theme = Theme::dark();
             let mut text = TextRenderer::new();
             let mut tb = Toolbar::new(Orientation::Horizontal)
-                .push_icon(crate::icons::Icon::Search, "Find", || {})
+                .push_icon(tilo_ui_base::icons::Icon::Search, "Find", || {})
                 .push_toggle("Bold", true, || {})
                 .push_button("Insert table", || {});
             tb.lay_out_in(Rect::new(0.0, 0.0, 600.0, 40.0), &mut text, &theme);
@@ -2372,7 +2370,7 @@ mod tests {
 
         phase a_colour_well_is_a_square_command_named_for_its_colour;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let theme = Theme::dark();
             let mut text = TextRenderer::new();
             let yellow = vello::peniko::Color::from_rgb8(250, 204, 21);
@@ -2404,7 +2402,7 @@ mod tests {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
-    use crate::presence::PresenceCtx;
+    use tilo_ui_base::presence::PresenceCtx;
     use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -2423,10 +2421,10 @@ mod lifecycle_tests {
             height: Dimension::length(height),
         };
         tree.set_style(node, style).unwrap();
-        let mut bindings = crate::widget::bound_nodes::BoundNodeMap::default();
+        let mut bindings = tilo_ui_base::widget::bound_nodes::BoundNodeMap::default();
         unsafe {
             bindings.rebuild(tb, &tree, node, &nodes);
-            crate::widget::layout::compute_widget_layout(
+            tilo_ui_base::widget::layout::compute_widget_layout(
                 &mut tree,
                 node,
                 Size {
@@ -2445,14 +2443,14 @@ mod lifecycle_tests {
             .viewport
             .set(Some(Rect::new(0.0, 0.0, 360.0, 220.0)));
         let mut scene = Scene::new();
-        tb.draw(&mut crate::draw::DrawCtx::new(
+        tb.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
             &theme,
             presence.draw_env(),
         ));
-        tb.draw_overlay(&mut crate::draw::DrawCtx::new(
+        tb.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
@@ -2484,7 +2482,7 @@ mod lifecycle_tests {
         )
     }
     fn key_event(key: NamedKey) -> WindowEvent {
-        let event = crate::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
+        let event = tilo_ui_base::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
             device_id: winit::event::DeviceId::dummy(),
             event,
@@ -2510,7 +2508,7 @@ mod lifecycle_tests {
 
         phase commands_are_reachable_once_by_every_route_with_matching_semantic_bounds;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             {
                 let (mut tb, counts) = counted(2);
                 settle(&mut tb, 350.0, 45.0, 1.0);
@@ -2557,7 +2555,7 @@ mod lifecycle_tests {
                                     assert!(tb.perform_semantic_action(
                                         &format!("toolbar.item.{index}"),
                                         &Action::Activate,
-                                        &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                                        &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                                         &automerge::ROOT
                                     ));
                                 }
@@ -2588,7 +2586,7 @@ mod lifecycle_tests {
                                     assert!(tb.perform_semantic_action(
                                         &format!("toolbar.item.{index}"),
                                         &Action::Activate,
-                                        &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                                        &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                                         &automerge::ROOT
                                     ));
                                 }
@@ -2675,7 +2673,7 @@ mod lifecycle_tests {
 
         phase overflow_popup_dismissal_restores_focus_without_click_through;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             {
                 let (mut tb, counts) = counted(5);
                 settle(&mut tb, 180.0, 45.0, 1.0);
@@ -2764,10 +2762,10 @@ mod lifecycle_tests {
                         tree.set_style(*child, style).unwrap();
                     }
                     let mut text = TextRenderer::new();
-                    let mut bindings = crate::widget::bound_nodes::BoundNodeMap::default();
+                    let mut bindings = tilo_ui_base::widget::bound_nodes::BoundNodeMap::default();
                     unsafe {
                         bindings.rebuild(&host, &tree, node, &nodes);
-                        crate::widget::compute_widget_layout(
+                        tilo_ui_base::widget::compute_widget_layout(
                             &mut tree,
                             node,
                             Size {
@@ -2785,11 +2783,11 @@ mod lifecycle_tests {
                     presence
                         .viewport
                         .set(Some(Rect::new(0.0, 0.0, 360.0, 220.0)));
-                    host.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
+                    host.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
                     assert!(host.children_mut()[0].perform_semantic_action(
                         "toolbar.overflow",
                         &Action::Activate,
-                        &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                        &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                         &automerge::ROOT
                     ));
                     let send = |host: &mut crate::widget::Row, event: WindowEvent| {
@@ -2798,7 +2796,7 @@ mod lifecycle_tests {
                             .send(host, &event);
                     };
                     let mouse_event =
-                        |button, state| crate::synthetic_input::mouse_input(state, button);
+                        |button, state| tilo_ui_base::synthetic_input::mouse_input(state, button);
                     send(&mut host, mouse_event(button, ElementState::Pressed));
                     send(&mut host, mouse_event(button, ElementState::Released));
                     send(&mut host, key_event(NamedKey::Escape));
@@ -2812,7 +2810,7 @@ mod lifecycle_tests {
                         .center();
                     send(
                         &mut host,
-                        crate::synthetic_input::cursor_moved(point.x, point.y),
+                        tilo_ui_base::synthetic_input::cursor_moved(point.x, point.y),
                     );
                     send(
                         &mut host,
@@ -2836,8 +2834,8 @@ mod lifecycle_tests {
 #[cfg(test)]
 mod command_state_tests {
     use super::*;
-    use crate::icons::Icon;
-    use crate::presence::PresenceCtx;
+    use tilo_ui_base::icons::Icon;
+    use tilo_ui_base::presence::PresenceCtx;
     use crate::testing::dispatch;
     use std::cell::Cell;
     use std::rc::Rc;
@@ -2874,7 +2872,7 @@ mod command_state_tests {
 
         phase icon_toggles_disabled_commands_and_labels_follow_the_model;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let ran = Rc::new(Cell::new(0));
             let r = Rc::clone(&ran);
             let mut tb = Toolbar::new(Orientation::Horizontal)
@@ -2904,12 +2902,12 @@ mod command_state_tests {
             assert!(tb.item_rect(1).unwrap().width() > before);
             tb.set_dot(0, true);
             let mut scene = Scene::new();
-            tb.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
+            tb.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
         }
 
         phase priority_keeps_a_pair_together_and_the_more_menu_shows_state;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let mut tb = Toolbar::new(Orientation::Horizontal)
                 .push_button("Insert table", || {})
                 .with_priority(-1)
@@ -2950,7 +2948,7 @@ mod command_state_tests {
 
         phase joined_commands_give_way_together;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let mut tb = Toolbar::new(Orientation::Horizontal)
                 .push_button("Compile", || {})
                 .push_icon(Icon::Minus, "Zoom out", || {})
@@ -2971,7 +2969,7 @@ mod command_state_tests {
 
         phase a_menu_command_opens_its_menu_under_itself;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let sorted = Rc::new(Cell::new(false));
             let mut tb = Toolbar::new(Orientation::Horizontal).push_menu(
                 "Sort",

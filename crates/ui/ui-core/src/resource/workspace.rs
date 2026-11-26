@@ -17,7 +17,7 @@ use super::person::StoredResource;
 use super::{
     DocumentCheckout, DocumentId, ResourceOpenError, ResourceOwners, ResourceStore, ResourceType,
 };
-use crate::permissions::MemberId;
+use tilo_ui_base::permissions::MemberId;
 
 /// The id of the workspace's record of `kind`
 /// ([`collab_types::workspace_document_id`]): the same in every workspace, which
@@ -274,14 +274,14 @@ mod tests {
         std::thread::spawn(move || {
             let workspace = uuid::Uuid::new_v4();
             let manager =
-                crate::collaboration::CollaborationManager::native_initial_unanswered_fixture_for_test(
+                tilo_ui_base::collaboration::CollaborationManager::native_initial_unanswered_fixture_for_test(
                     APP,
                     workspace,
                     AutoCommit::new().save(),
                     &[RECORD],
                 );
             let construction =
-                crate::collaboration::native_initial::NativeConstruction::enter(manager)
+                tilo_ui_base::collaboration::native_initial::NativeConstruction::enter(manager)
                     .expect("the window's construction");
             // The app keeps the record itself: the window's own store opens it, the one that
             // reads its records through the window's broker, which has not replayed it yet.

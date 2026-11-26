@@ -2,10 +2,10 @@
 //! record, never drawn, every operation through the API a click takes, and
 //! the change it made flowing back to the person's window.
 
-use tilo_app::collaboration::DocumentMutation;
+use tilo_ui_base::collaboration::DocumentMutation;
 use tilo_app::framework::testing::TEST_WORKSPACE;
 use tilo_app::framework::{AttachedView, definition};
-use tilo_app::permissions::{KindSet, PermissionContext, TreePath};
+use tilo_ui_base::{permissions::KindSet, permissions::PermissionContext, permissions::TreePath};
 use tilo_app::prelude::*;
 use tilo_app::resource::DocumentCheckout;
 use tilo_app::tilo_resource::profiling::observe;
@@ -232,7 +232,7 @@ tilo_test_env::scenario! {
 
     phase a_grant_of_one_action_reaches_that_action_only;
     {
-        use tilo_app::permissions::policy::Level;
+        use tilo_ui_base::permissions::policy::Level;
         let app = TestApp::<TallyApp>::new().unwrap();
         let only_bump = PermissionContext::agent_granted(
             AGENT,
@@ -348,7 +348,7 @@ tilo_test_env::scenario! {
 
     phase an_agent_granted_one_action_does_that_one_and_no_other;
     {
-        use tilo_app::permissions::policy::Level;
+        use tilo_ui_base::permissions::policy::Level;
         let mut app = TestApp::<TallyApp>::new().unwrap();
         app.invoke(Tally::RENAME.with("visitors")).unwrap();
         let only_bump = PermissionContext::agent_granted(
@@ -379,7 +379,7 @@ tilo_test_env::scenario! {
         app.invoke(Tally::RENAME.with("visitors")).unwrap();
         // The view's member as a person of the workspace who only views.
         let viewer =
-            PermissionContext::member(&MemberId::person(AGENT), tilo_app::Role::Viewer);
+            PermissionContext::member(&MemberId::person(AGENT), tilo_ui_base::Role::Viewer);
         let mut view = attached(&app, viewer);
         assert!(
             !view
@@ -855,7 +855,7 @@ struct Lookup {
 }
 
 impl Widget for Lookup {
-    fn sync(&mut self, state: &tilo_app::widget::AppModel, path: &tilo_app::widget::ModelPath) {
+    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
         // An answer is taken up before anything is asked, so the answer to
         // what this frame asks lands after it, in a frame of its own.
         if let Some(answer) = self
@@ -866,7 +866,7 @@ impl Widget for Lookup {
             self.replies = None;
             self.dispatcher.submit(Log::ANSWER.with(answer));
         }
-        let (doc, _) = tilo_app::doc::document_ref(state, path);
+        let (doc, _) = tilo_ui_base::doc::document_ref(state, path);
         let Ok(log) = <Log as tilo_resource::Resource>::read(doc) else {
             return;
         };

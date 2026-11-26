@@ -5,8 +5,8 @@
 use vello::kurbo::{Point, Rect};
 
 use super::{ListRowFace, RowGeometry, RowLeading, RowMetrics, RowValue};
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::theme::Theme;
 use crate::widget::BadgeFace;
 
 /// Where a row led by a mark — a glyph or a face — starts its text, past the left edge of
@@ -262,7 +262,7 @@ impl ListRowFace<'_> {
         let lines = text.clamp_to_lines(
             self.title,
             &self.title_style(&m),
-            crate::num::f32_of_f64(spare),
+            tilo_ui_base::num::f32_of_f64(spare),
             usize::from(super::CARD_TITLE_LINES),
         );
         let lines = u8::try_from(lines.len()).unwrap_or(1);
@@ -523,13 +523,13 @@ impl ListRowFace<'_> {
             .len()
             .clamp(1, reserved);
         let unused = reserved - drawn;
-        let block = self.text_block(text, m) - title_line * crate::num::f64_of_usize(unused);
+        let block = self.text_block(text, m) - title_line * tilo_ui_base::num::f64_of_usize(unused);
         let text_top = if self.card {
             self.card_content_top(rect, m, text, theme)
         } else {
             rect.center().y - block / 2.0
         };
-        let mut top = text_top + title_line * crate::num::f64_of_usize(drawn);
+        let mut top = text_top + title_line * tilo_ui_base::num::f64_of_usize(drawn);
         if self.subtitle.is_some() {
             top += RowMetrics::line(text, &m.subtitle);
         }
@@ -678,7 +678,7 @@ impl ListRowFace<'_> {
             return width.min(cap);
         }
         self.meta.map_or(0.0, |meta| {
-            let shown = text.elide_to_width_style(meta, crate::num::f32_of_f64(cap), &m.meta);
+            let shown = text.elide_to_width_style(meta, tilo_ui_base::num::f32_of_f64(cap), &m.meta);
             f64::from(text.measure_style(&shown, None, &m.meta).0)
         })
     }
@@ -686,7 +686,7 @@ impl ListRowFace<'_> {
     /// Where each hover action sits in `rect`, in order. Empty unless the
     /// row is hovered, focused or revealing its actions.
     pub fn action_rects(&self, rect: Rect, theme: &Theme) -> Vec<Rect> {
-        crate::text_render::with_layout_renderer(theme, |text| {
+        tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
             self.action_rects_with(rect, &self.metrics(theme), text, theme)
         })
     }
@@ -823,7 +823,7 @@ impl ListRowFace<'_> {
 
 /// Where a row draws the box it leads with, in `slot` (its leading column): first in the column,
 /// with the glyph after it where the row says what kind of thing it is.
-pub(super) fn checkbox_box(slot: Rect, icon: Option<crate::icons::Icon>, m: &RowMetrics) -> Rect {
+pub(super) fn checkbox_box(slot: Rect, icon: Option<tilo_ui_base::icons::Icon>, m: &RowMetrics) -> Rect {
     match icon {
         Some(_) => Rect::new(
             slot.x0,

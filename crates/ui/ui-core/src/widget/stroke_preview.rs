@@ -19,8 +19,8 @@ use vello::kurbo::{
 use vello::peniko::{Color, Fill};
 
 use crate::color_compat::ColorCompat;
-use crate::theme::Theme;
-use crate::widget::{TaffyTreeExt, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[path = "stroke_preview_component.rs"]
 mod component;
@@ -317,7 +317,7 @@ impl StrokePreviewFace {
             return;
         }
         let radius = f64::from(theme.tokens.radii.control);
-        crate::surface::card(
+        tilo_ui_base::surface::card(
             scene,
             transform,
             rect,
@@ -331,7 +331,7 @@ impl StrokePreviewFace {
         let width = self.drawn_width(rect.height());
         let curve = curve_in(area);
         let samples = samples_of(curve, self.reveal);
-        crate::surface::push_card_clip(scene, transform, rect, radius);
+        tilo_ui_base::surface::push_card_clip(scene, transform, rect, radius);
         self.paint_mark(scene, transform, theme, &samples, width);
         self.paint_chip(scene, transform, curve.eval(1.0), width);
         scene.pop_layer();
@@ -509,7 +509,7 @@ impl StrokePreviewFace {
         // The paper the eraser uncovers, and a wash of its own ink: the checker a person reads as
         // "nothing here", whichever side of the light/dark line the theme falls on.
         let light = theme.tokens.colors.surfaces.raised;
-        let dark = crate::tokens::colors::Colors::hairline_on(light, CELL_WASH_ALPHA);
+        let dark = tilo_ui_base::tokens::colors::Colors::hairline_on(light, CELL_WASH_ALPHA);
         let reach = width * 0.55;
         let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
         for sample in samples {
@@ -554,7 +554,7 @@ impl StrokePreviewFace {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            crate::surface::edge_on(self.colour),
+            tilo_ui_base::surface::edge_on(self.colour),
             None,
             &chip,
         );
@@ -579,9 +579,9 @@ pub struct StrokePreview {
     colour: Color,
     label: Option<String>,
     /// How far the sample stroke is drawn in, `0..=1`.
-    reveal: crate::motion::Extent,
+    reveal: tilo_ui_base::motion::Extent,
     /// The motion the last frame was drawn with, so a change taken in place moves as the theme says.
-    motion: Option<crate::tokens::EffectiveMotion>,
+    motion: Option<tilo_ui_base::tokens::EffectiveMotion>,
     rect: Rect,
     dirty: bool,
 }
@@ -590,7 +590,7 @@ impl StrokePreview {
     /// A preview of `brush` at `size` artwork units in `colour`, drawn whole.
     #[must_use]
     pub fn new(brush: BrushCharacter, size: f64, colour: Color) -> Self {
-        let mut reveal = crate::motion::Extent::default();
+        let mut reveal = tilo_ui_base::motion::Extent::default();
         reveal.snap(1.0);
         Self {
             brush,
@@ -627,7 +627,7 @@ impl StrokePreview {
     pub fn spoken_name(&self) -> String {
         self.label
             .clone()
-            .unwrap_or_else(|| crate::i18n::widget_text("stroke-preview-name"))
+            .unwrap_or_else(|| tilo_ui_base::i18n::widget_text("stroke-preview-name"))
     }
 
     /// Name the preview for assistive technology; `None` or empty leaves the toolkit's name.
@@ -646,13 +646,13 @@ impl StrokePreview {
         self.size = size;
         self.colour = colour;
         self.dirty = true;
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let motion = self.motion.unwrap_or_else(|| {
-            crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), false)
+            tilo_ui_base::tokens::EffectiveMotion::new(tilo_ui_base::tokens::Motion::default(), false)
         });
         self.reveal.snap(0.0);
         self.reveal
-            .follow(1.0, motion, crate::motion::input_source(), now);
+            .follow(1.0, motion, tilo_ui_base::motion::input_source(), now);
     }
 
     /// How far the sample stroke is drawn in at `now`, `0..=1`.
@@ -663,7 +663,7 @@ impl StrokePreview {
 }
 
 impl Widget for StrokePreview {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -676,10 +676,10 @@ impl Widget for StrokePreview {
         let style = Style {
             size: Size {
                 width: Dimension::auto(),
-                height: Dimension::length(crate::num::f32_of_f64(PREFERRED_HEIGHT)),
+                height: Dimension::length(tilo_ui_base::num::f32_of_f64(PREFERRED_HEIGHT)),
             },
             min_size: Size {
-                width: Dimension::length(crate::num::f32_of_f64(PREFERRED_WIDTH)),
+                width: Dimension::length(tilo_ui_base::num::f32_of_f64(PREFERRED_WIDTH)),
                 height: Dimension::auto(),
             },
             flex_shrink: 1.0,
@@ -688,9 +688,9 @@ impl Widget for StrokePreview {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -698,14 +698,14 @@ impl Widget for StrokePreview {
         )]
         let (scene, transform, _text_renderer, theme, mut env) = ctx.parts();
         self.motion = Some(theme.motion());
-        let reveal = self.reveal_at(crate::motion::frame_now());
+        let reveal = self.reveal_at(tilo_ui_base::motion::frame_now());
         StrokePreviewFace::new(self.brush, self.size, self.colour)
             .revealed(reveal)
             .paint(scene, transform, theme, self.rect);
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.reveal.is_moving(crate::motion::frame_now())
+        self.dirty || self.reveal.is_moving(tilo_ui_base::motion::frame_now())
     }
 
     fn mark_drawn(&mut self) {
@@ -714,7 +714,7 @@ impl Widget for StrokePreview {
 
     /// Frames only while the sample stroke draws itself in.
     fn needs_animation_frame(&self) -> bool {
-        self.reveal.is_moving(crate::motion::frame_now())
+        self.reveal.is_moving(tilo_ui_base::motion::frame_now())
     }
 
     fn name(&self) -> &'static str {
@@ -725,9 +725,9 @@ impl Widget for StrokePreview {
         self.rect == Rect::ZERO
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
-        let character = crate::i18n::widget_text(&format!("stroke-preview-{}", self.brush.name()));
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
+        let character = tilo_ui_base::i18n::widget_text(&format!("stroke-preview-{}", self.brush.name()));
         Some(
             AccessNode::new(Role::Image)
                 .with_name(self.spoken_name())
@@ -745,7 +745,7 @@ fn pigment(hex: &str) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::component::Described;
+    use tilo_ui_base::component::Described;
     use vello_encoding::DrawTag;
 
     fn props(brush: &str) -> StrokePreviewProps {
@@ -759,18 +759,18 @@ mod tests {
 
     #[test]
     fn a_changed_sample_draws_itself_in_and_then_rests() {
-        let _frozen = crate::motion::testing::frozen();
-        let now = crate::motion::frame_now();
+        let _frozen = tilo_ui_base::motion::testing::frozen();
+        let now = tilo_ui_base::motion::frame_now();
         let mut preview = StrokePreview::from_props("preview", props("round"));
         assert_eq!(preview.brush(), BrushCharacter::Round);
         assert!(
             !preview.needs_animation_frame(),
             "a preview built for a frame rests as it is"
         );
-        assert_eq!(crate::motion::frames_wanted_by(now), Vec::<String>::new());
+        assert_eq!(tilo_ui_base::motion::frames_wanted_by(now), Vec::<String>::new());
 
         // A person choosing another brush in the pad: the sample draws itself in.
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
         assert!(preview.set_props(props("charcoal")), "taken in place");
         assert_eq!(preview.brush(), BrushCharacter::Charcoal);
         assert!(
@@ -778,35 +778,35 @@ mod tests {
             "the new stroke draws itself in"
         );
         assert!(
-            !crate::motion::frames_wanted_by(now).is_empty(),
+            !tilo_ui_base::motion::frames_wanted_by(now).is_empty(),
             "and asks the frame pump for the frames it draws in"
         );
         assert_eq!(preview.reveal_at(now), 0.0, "it starts at the path's start");
 
-        let until = crate::motion::frames_until().expect("the reveal is on its way");
+        let until = tilo_ui_base::motion::frames_until().expect("the reveal is on its way");
         assert!(until > now);
-        crate::motion::frame_drawn(until);
-        let _at = crate::motion::pin_frame_at(until);
+        tilo_ui_base::motion::frame_drawn(until);
+        let _at = tilo_ui_base::motion::pin_frame_at(until);
         assert!(
             !preview.needs_animation_frame(),
             "landed, the preview asks for no more frames"
         );
         assert_eq!(preview.reveal_at(until), 1.0);
-        assert_eq!(crate::motion::frames_wanted_by(until), Vec::<String>::new());
+        assert_eq!(tilo_ui_base::motion::frames_wanted_by(until), Vec::<String>::new());
     }
 
     #[test]
     fn a_change_that_is_not_a_persons_hand_lands_at_once() {
         // A key, an action or an agent sets the brush: the sample is there on the next frame, as
         // every result the person did not move something for is (HIG §9.7).
-        let _frozen = crate::motion::testing::frozen();
-        let now = crate::motion::frame_now();
+        let _frozen = tilo_ui_base::motion::testing::frozen();
+        let now = tilo_ui_base::motion::frame_now();
         let mut preview = StrokePreview::from_props("preview", props("round"));
-        crate::motion::note_source(crate::tokens::MotionSource::Action);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Action);
         assert!(preview.set_props(props("airbrush")));
         assert!(!preview.needs_animation_frame());
         assert_eq!(preview.reveal_at(now), 1.0);
-        assert_eq!(crate::motion::frames_wanted_by(now), Vec::<String>::new());
+        assert_eq!(tilo_ui_base::motion::frames_wanted_by(now), Vec::<String>::new());
     }
 
     #[test]
@@ -860,16 +860,16 @@ mod tests {
         let style = taffy.style(node).expect("the preview has a layout node");
         assert_eq!(
             style.min_size.width,
-            Dimension::length(crate::num::f32_of_f64(PREFERRED_WIDTH))
+            Dimension::length(tilo_ui_base::num::f32_of_f64(PREFERRED_WIDTH))
         );
         assert_eq!(
             style.size.height,
-            Dimension::length(crate::num::f32_of_f64(PREFERRED_HEIGHT))
+            Dimension::length(tilo_ui_base::num::f32_of_f64(PREFERRED_HEIGHT))
         );
         let node = preview.accessibility().expect("a preview is announced");
         assert_eq!(
             node.name.as_deref(),
-            Some(crate::i18n::widget_text("stroke-preview-name").as_str())
+            Some(tilo_ui_base::i18n::widget_text("stroke-preview-name").as_str())
         );
     }
 }

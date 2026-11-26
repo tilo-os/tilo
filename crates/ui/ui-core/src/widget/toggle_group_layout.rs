@@ -3,7 +3,7 @@
 
 use vello::kurbo::Rect;
 
-use crate::num::f64_of_usize;
+use tilo_ui_base::num::f64_of_usize;
 
 pub(super) fn stack(rect: Rect, n: usize) -> Vec<Rect> {
     let side = rect.width();

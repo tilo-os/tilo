@@ -19,10 +19,8 @@ use std::rc::Rc;
 use ui::advanced::WindowEvent;
 use ui::framework::{Dispatcher, Effected, ResourceApp, ViewCx};
 use ui::prelude::*;
-use ui::widget::{
-    Button, ButtonRole, Column, Element, FloatingPanel, Manual, MeasureConstraint, Row, Text,
-    Widget,
-};
+use ui::{widget::Button, widget::ButtonRole, widget::Column, widget::FloatingPanel, widget::Row, widget::Text};
+use tilo_ui_base::{widget::Element, widget::Manual, widget::MeasureConstraint, widget::Widget};
 
 use crate::presentation::Presentation;
 use crate::t;
@@ -88,7 +86,7 @@ impl Question {
             |tool| {
                 crate::t_args(
                     "display-confirm-tool-title",
-                    &[("tool", ui::i18n::ArgValue::Text(tool.clone()))],
+                    &[("tool", tilo_ui_base::i18n::ArgValue::Text(tool.clone()))],
                 )
             },
         )
@@ -108,7 +106,7 @@ pub fn status(seconds_left: Option<u64>, answering: bool) -> String {
             let seconds = f64::from(u32::try_from(seconds).unwrap_or(u32::MAX));
             crate::t_args(
                 "display-confirm-countdown",
-                &[("seconds", ui::i18n::ArgValue::Number(seconds))],
+                &[("seconds", tilo_ui_base::i18n::ArgValue::Number(seconds))],
             )
         },
     )
@@ -215,7 +213,7 @@ impl ResourceApp for DisplayConfirmApp {
     // Nothing is kept: there is no past to look back on.
     const DOCUMENT_HISTORY: bool = false;
 
-    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+    fn catalog() -> Option<&'static tilo_ui_base::i18n::EmbeddedCatalog> {
         Some(&crate::CATALOG)
     }
 
@@ -293,8 +291,8 @@ fn cards(cx: &mut ViewCx<DisplayConfirm>, shown: &Shown) -> Element {
     let question = &shown.question;
     let displays = question.displays.clone();
     let mut manual = Manual::new(move |layout| {
-        let edge = f64::from(ui::tokens::Spacing::BASE.s4);
-        let metrics = ui::tokens::Metrics::BASE;
+        let edge = f64::from(tilo_ui_base::tokens::Spacing::BASE.s4);
+        let metrics = tilo_ui_base::tokens::Metrics::BASE;
         for (index, display) in displays.iter().enumerate().take(layout.len()) {
             let width = f64::from(metrics.panel_width_sheet)
                 .min(display.width() - edge * 2.0)
@@ -302,7 +300,7 @@ fn cards(cx: &mut ViewCx<DisplayConfirm>, shown: &Shown) -> Element {
             let measured = layout.measure(
                 index,
                 ui::taffy::Size {
-                    width: MeasureConstraint::Exact(ui::num::f32_of_f64(width)),
+                    width: MeasureConstraint::Exact(tilo_ui_base::num::f32_of_f64(width)),
                     height: MeasureConstraint::Intrinsic,
                 },
             )?;
@@ -347,18 +345,18 @@ fn card(cx: &ViewCx<DisplayConfirm>, question: &Question, index: usize) -> Eleme
         &t("display-confirm-revert"),
     );
     let answers = Row::new()
-        .with_gap(ui::tokens::Spacing::BASE.s2)
+        .with_gap(tilo_ui_base::tokens::Spacing::BASE.s2)
         .push(Box::new(keep))
         .push(Box::new(revert));
     // Keep and Revert first, then the answer that also stops the asking:
     // the order the keyboard and a reader meet them.
     let mut footer = Column::new()
-        .with_gap(ui::tokens::Spacing::BASE.s2)
+        .with_gap(tilo_ui_base::tokens::Spacing::BASE.s2)
         .push(Box::new(answers));
     if let Some(tool) = &question.tool {
         let label = crate::t_args(
             "display-confirm-always",
-            &[("tool", ui::i18n::ArgValue::Text(tool.clone()))],
+            &[("tool", tilo_ui_base::i18n::ArgValue::Text(tool.clone()))],
         );
         footer = footer.push(Box::new(button(
             ConfirmEffect::KeepAndTrust,
@@ -390,7 +388,7 @@ struct Answering {
     shown: LocalState<Shown>,
 }
 
-impl ui::widget::Decorator for Answering {
+impl tilo_ui_base::widget::Decorator for Answering {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -401,7 +399,7 @@ impl ui::widget::Decorator for Answering {
         self.content.as_mut()
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         use ui::winit::keyboard::{Key, NamedKey};
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ui::winit::event::ElementState::Pressed
@@ -418,8 +416,8 @@ impl ui::widget::Decorator for Answering {
         true
     }
 
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let question = self.shown.get().question;
         Some(
             AccessNode::new(Role::Dialog)
@@ -438,7 +436,7 @@ impl ui::widget::Decorator for Answering {
 /// pointer, and out of the focus order and the accessibility tree.
 struct Mirror(Element);
 
-impl ui::widget::Decorator for Mirror {
+impl tilo_ui_base::widget::Decorator for Mirror {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -459,8 +457,8 @@ impl ui::widget::Decorator for Mirror {
         true
     }
 
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         Some(AccessNode::new(Role::Group).with_state(AccessState {
             hidden: true,
             ..AccessState::default()

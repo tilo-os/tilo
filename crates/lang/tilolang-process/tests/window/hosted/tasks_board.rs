@@ -10,7 +10,7 @@
 use crate::change_marks::Driven as _;
 use tilo_app_test_host::TestApp;
 use tilolang_process::window::app::TlApp;
-use ui::a11y::Role;
+use tilo_ui_base::a11y::Role;
 
 const DESKTOP: (u32, u32) = (1280, 800);
 const PHONE: (u32, u32) = (420, 860);
@@ -154,7 +154,7 @@ fn entries(app: &mut TestApp<TlApp>) -> Vec<ui::kurbo::Rect> {
 /// add in its heading, and what is typed in one makes a card of that list.
 #[test]
 fn a_lists_foot_adds_a_card_to_the_list_it_is_in() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut app = staged(DESKTOP);
     let packing_x = rect_of(&mut app, "Pack the kitchen")[0];
     let booked_x = rect_of(&mut app, "Book the van")[0];
@@ -246,7 +246,7 @@ fn a_lists_foot_adds_a_card_to_the_list_it_is_in() {
 
 #[test]
 fn a_card_dragged_within_its_list_and_into_another_lands_where_it_was_dropped() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut app = staged(DESKTOP);
     let packing_x = rect_of(&mut app, "Order boxes and tape")[0];
     let booked_x = rect_of(&mut app, "Book the van")[0];
@@ -382,7 +382,7 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
     assert!(marked, "the row it checked off is marked in Done: {done:?}");
     crate::change_marks::choose(&mut app, "Inbox");
     if let Some(dir) = crate::change_marks::shots_dir() {
-        for (shade, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
+        for (shade, theme) in [("light", tilo_ui_base::Theme::light()), ("dark", tilo_ui_base::Theme::dark())] {
             app.harness().set_theme(theme);
             settle(&mut app);
             app.harness()
@@ -401,7 +401,7 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
 fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
     use crate::change_marks::{action_id, choose, named, published_with, run, settle};
     use crate::history_window::{after, press_history, shoot, shows_history, times};
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut app = super::Session::new("so.tilo.tasks", "ada");
     settle(&mut app);
     // The task a person adds waits in the inbox, which the window shows it in.
@@ -469,7 +469,7 @@ fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
 /// The wall clock at `hour:minute:second` on `day` of 2026, in the zone this process reads as
 /// the person's.
 fn local(month: i8, day: i8, (hour, minute, second): (i8, i8, i8)) -> ui::time::SystemTime {
-    let at = ui::clock::instant_of(jiff::civil::date(2026, month, day).at(hour, minute, second, 0))
+    let at = tilo_ui_base::clock::instant_of(jiff::civil::date(2026, month, day).at(hour, minute, second, 0))
         .expect("the time exists where the person is");
     let ms = u64::try_from(at.as_millisecond()).expect("after 1970");
     ui::time::UNIX_EPOCH
@@ -485,11 +485,11 @@ fn shows(app: &mut TestApp<TlApp>, text: &str) -> bool {
 }
 
 /// Every accessible node of the window.
-fn accessible(app: &mut TestApp<TlApp>) -> Vec<ui::a11y::AccessNode> {
+fn accessible(app: &mut TestApp<TlApp>) -> Vec<tilo_ui_base::a11y::AccessNode> {
     let snapshot = app.harness().inspection();
     (snapshot.root.nodes().into_iter())
         .filter_map(|node| node.semantics.as_ref())
-        .flat_map(ui::a11y::AccessNode::nodes)
+        .flat_map(tilo_ui_base::a11y::AccessNode::nodes)
         .cloned()
         .collect()
 }
@@ -503,7 +503,7 @@ fn click_item(app: &mut TestApp<TlApp>, label: &str) {
     let found = all
         .iter()
         .find(|node| {
-            node.role == ui::a11y::Role::TreeItem
+            node.role == tilo_ui_base::a11y::Role::TreeItem
                 && node
                     .name
                     .as_deref()
@@ -511,7 +511,7 @@ fn click_item(app: &mut TestApp<TlApp>, label: &str) {
         })
         .and_then(|node| node.bounds);
     let Some(b) = found else {
-        let named: Vec<(&str, &ui::a11y::Role)> = all
+        let named: Vec<(&str, &tilo_ui_base::a11y::Role)> = all
             .iter()
             .filter_map(|node| Some((node.name.as_deref()?, &node.role)))
             .collect();
@@ -524,7 +524,7 @@ fn click_item(app: &mut TestApp<TlApp>, label: &str) {
 
 #[test]
 fn the_home_list_shows_the_inbox_tasks_of_a_busy_week() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // A day into the week the scenario stages: what is due before it is overdue and waits in
     // Today, what is due after it in Upcoming.
     ui::time::testing::with_wall(local(7, 1, (9, 0, 0)), || {
@@ -626,7 +626,7 @@ fn open_menu(app: &mut TestApp<TlApp>) -> Option<[f64; 4]> {
 /// every platform, right under the row's own edge rather than somewhere in the list.
 #[test]
 fn a_row_menu_opened_from_the_keyboard_stands_under_that_row() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     crate::support::installed("tasks");
     let mut app =
         TestApp::<TlApp>::capture_at(Some("a busy week"), DESKTOP).expect("the scenario stages");
@@ -666,7 +666,7 @@ fn a_row_menu_opened_from_the_keyboard_stands_under_that_row() {
 #[test]
 fn the_today_list_takes_in_tomorrows_task_when_the_persons_midnight_passes() {
     use ui::time::testing::with_wall;
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let before = local(6, 30, (23, 59, 0));
     let after = local(7, 1, (0, 0, 30));
     // 23:59 on the scenario's day: "Reply to Mia" is due tomorrow, so Today leaves it out.
@@ -778,9 +778,9 @@ fn shots() {
     };
     let dir = std::path::PathBuf::from(dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     for (size, viewport) in [("desktop", DESKTOP), ("phone", PHONE)] {
-        for (shade, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
+        for (shade, theme) in [("light", tilo_ui_base::Theme::light()), ("dark", tilo_ui_base::Theme::dark())] {
             let mut app = staged(viewport);
             app.harness().set_theme(theme);
             settle(&mut app);
@@ -877,13 +877,13 @@ fn title_field() -> String {
 /// Bo writing in the title of `task`, his caret `at` bytes into it, as his own window says: where
 /// the window draws his caret.
 fn bo_writing(app: &mut super::Session, task: &str, at: usize) -> [f64; 4] {
-    let key = ui::presence::PresenceKey::Widget {
+    let key = tilo_ui_base::presence::PresenceKey::Widget {
         path: ["tilolang", task, title_field().as_str()]
-            .map(|segment| ui::presence::PathSegment::Field(segment.to_owned()))
+            .map(|segment| tilo_ui_base::presence::PathSegment::Field(segment.to_owned()))
             .to_vec(),
     };
     app.harness().update_presence(|presence| {
-        let bo = ui::permissions::MemberId::person("bo");
+        let bo = tilo_ui_base::permissions::MemberId::person("bo");
         presence.names.insert(bo.clone(), "Bo".into());
         presence.set_caret(&key, bo, at);
         true
@@ -1111,7 +1111,7 @@ fn numbers_in(titles: &[String]) -> Vec<usize> {
     reason = "one story: a list, a scroll, an edit, an undo and a restart"
 )]
 fn the_task_list_holds_many_tasks_through_a_scroll_an_edit_an_undo_and_a_restart() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let n = 200;
     let storage = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("hosted-many-tasks");
     let _ = std::fs::remove_dir_all(&storage);

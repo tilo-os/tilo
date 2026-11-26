@@ -25,16 +25,17 @@ use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
 
-use crate::icons::Icon;
-use crate::local_state::LocalBinding;
-use crate::paint::PaintCtx;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::local_state::LocalBinding;
+use tilo_ui_base::paint::PaintCtx;
 
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::DrawChild;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::DrawChild;
 use crate::widget::control_size::ControlSize;
-use crate::widget::{Button, ButtonFace, ButtonRole, TaffyTreeExt, Widget, layout_rect};
+use crate::{widget::Button, widget::ButtonFace, widget::ButtonRole};
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget, widget::layout_rect};
 
 mod component;
 pub use component::BannerProps;
@@ -89,7 +90,7 @@ fn well(theme: &Theme, kind: BannerKind) -> Color {
     let colors = &theme.tokens.colors.surfaces;
     match kind {
         BannerKind::Neutral => colors.raised,
-        _ => crate::tokens::colors::mix8(colors.content, kind.color(theme), WELL_WASH),
+        _ => tilo_ui_base::tokens::colors::mix8(colors.content, kind.color(theme), WELL_WASH),
     }
 }
 
@@ -97,8 +98,8 @@ fn well(theme: &Theme, kind: BannerKind) -> Color {
 /// chip wears it, so the banner keeps its bounds without a grey line around a coloured ground.
 fn well_edge(theme: &Theme, kind: BannerKind) -> Color {
     match kind {
-        BannerKind::Neutral => crate::surface::edge_on(theme.tokens.colors.surfaces.raised),
-        _ => crate::tokens::colors::mix8(
+        BannerKind::Neutral => tilo_ui_base::surface::edge_on(theme.tokens.colors.surfaces.raised),
+        _ => tilo_ui_base::tokens::colors::mix8(
             theme.tokens.colors.surfaces.content,
             kind.color(theme),
             WELL_EDGE,
@@ -269,7 +270,7 @@ fn geometry_with(
     let body_w = body_x1 - body_x0;
     let widths: Vec<f64> = actions.iter().flatten().copied().collect();
     let actions_w = widths.iter().sum::<f64>()
-        + m.related * crate::num::f64_of_usize(widths.len().saturating_sub(1));
+        + m.related * tilo_ui_base::num::f64_of_usize(widths.len().saturating_sub(1));
     let leading = m.icon + m.gap;
     let beside = widths.is_empty() || body_w >= leading + m.text_basis + m.gap + actions_w;
     let text_w = if widths.is_empty() || !beside {
@@ -278,7 +279,7 @@ fn geometry_with(
         body_w - leading - m.gap - actions_w
     }
     .max(1.0);
-    let text_width = crate::num::f32_of_f64(text_w);
+    let text_width = tilo_ui_base::num::f32_of_f64(text_w);
     let title_h = f64::from(
         text.measure_style(content.title, Some(text_width), &title_style(theme))
             .1,
@@ -310,7 +311,7 @@ fn geometry_with(
     let height = natural.max(m.min_height);
     // Centring halves a length: each top lands on the display's pixels, so a control's edge is
     // drawn crisp at 1.5 as at 2.
-    let snap = crate::widget::layout::snap_to_device_pixels;
+    let snap = tilo_ui_base::widget::layout::snap_to_device_pixels;
     let top = snap((height - line_h) / 2.0);
     let text_top = if beside {
         snap(top + (line_h - text_h) / 2.0)
@@ -516,7 +517,7 @@ fn paint_banner(
     }
     if let Some(dismiss) = g.dismiss {
         let dismiss = shift(dismiss);
-        let name = crate::i18n::widget_format("widget-dismiss", &[]);
+        let name = tilo_ui_base::i18n::widget_format("widget-dismiss", &[]);
         let face = ButtonFace::icon_only(dismiss, Icon::X, &name)
             .control_size(ControlSize::Small)
             .hovered(dismiss.contains(hover));
@@ -567,10 +568,10 @@ impl BannerKind {
         }
     }
 
-    fn politeness(self) -> crate::a11y::Politeness {
+    fn politeness(self) -> tilo_ui_base::a11y::Politeness {
         match self {
-            BannerKind::Error | BannerKind::Warning => crate::a11y::Politeness::Assertive,
-            _ => crate::a11y::Politeness::Polite,
+            BannerKind::Error | BannerKind::Warning => tilo_ui_base::a11y::Politeness::Assertive,
+            _ => tilo_ui_base::a11y::Politeness::Polite,
         }
     }
 }
@@ -698,17 +699,17 @@ impl Widget for BannerBody {
         let width = known.width.unwrap_or(match available.width {
             taffy::AvailableSpace::Definite(width) => width,
             taffy::AvailableSpace::MinContent => {
-                crate::num::f32_of_f64(m.icon + m.gap + 2.0 * m.pad_x)
+                tilo_ui_base::num::f32_of_f64(m.icon + m.gap + 2.0 * m.pad_x)
             }
             taffy::AvailableSpace::MaxContent => {
-                crate::num::f32_of_f64(m.icon + m.gap + m.text_basis + 2.0 * m.pad_x)
+                tilo_ui_base::num::f32_of_f64(m.icon + m.gap + m.text_basis + 2.0 * m.pad_x)
             }
         });
         let theme = self.theme.clone();
         let g = self.geometry(text, &theme, f64::from(width));
         taffy::Size {
             width,
-            height: crate::num::f32_of_f64(g.height.ceil()),
+            height: tilo_ui_base::num::f32_of_f64(g.height.ceil()),
         }
     }
 
@@ -720,7 +721,7 @@ impl Widget for BannerBody {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -760,7 +761,7 @@ impl Widget for BannerBody {
         self.rect
     }
 
-    crate::redraw_flag!();
+    tilo_ui_base::redraw_flag!();
 
     fn is_layout_dirty(&self) -> bool {
         self.layout_dirty || self.rect == Rect::ZERO
@@ -796,7 +797,7 @@ pub struct Banner {
     on_dismiss: Option<Box<dyn FnMut()>>,
     /// What the view bound to the dismiss control: run when the person presses it, through the
     /// same API as the banner's own controls.
-    dismiss_press: crate::widget::Press,
+    dismiss_press: tilo_ui_base::widget::Press,
     /// The body's node, then one per button, in [`Widget::children`] order.
     nodes: Vec<NodeId>,
     rect: Rect,
@@ -805,7 +806,7 @@ pub struct Banner {
     /// Its arriving and leaving (`motion::Disclosure`): its box opens or
     /// closes from the top, what follows moving with its edge, and it
     /// stands out of the layout while it moves (`widget::Disclosing`).
-    band: crate::widget::BandMotion,
+    band: tilo_ui_base::widget::BandMotion,
     /// It is shown at rest from its first frame: what it stands in brings
     /// it in ([`Banner::arrives_in_place`]).
     arrives_in_place: bool,
@@ -856,13 +857,13 @@ impl Banner {
             dismiss_fired: false,
             dismiss_requested: Rc::new(Cell::new(false)),
             on_dismiss: None,
-            dismiss_press: crate::widget::Press::default(),
+            dismiss_press: tilo_ui_base::widget::Press::default(),
             nodes: Vec::new(),
             rect: Rect::ZERO,
             layout_dirty: true,
             dirty: true,
             // First paint shows the banner at rest; only a change moves it.
-            band: crate::widget::BandMotion::new(shown),
+            band: tilo_ui_base::widget::BandMotion::new(shown),
             arrives_in_place: false,
             device_scale: 1.0,
         }
@@ -871,7 +872,7 @@ impl Banner {
     /// A banner bound to `state`: it shows the notice while there is one and
     /// collapses, with its gap, while the state holds `None`. A new notice
     /// clears an earlier dismissal.
-    pub fn from_state(state: &crate::LocalState<Option<BannerNotice>>) -> Self {
+    pub fn from_state(state: &tilo_ui_base::LocalState<Option<BannerNotice>>) -> Self {
         let (notice, binding) = LocalBinding::new(state);
         let mut banner = Self::from_notice(notice);
         banner.source = Some(binding);
@@ -970,7 +971,7 @@ impl Banner {
             Button::icon_only(
                 &id,
                 Icon::X,
-                &crate::i18n::widget_format("widget-dismiss", &[]),
+                &tilo_ui_base::i18n::widget_format("widget-dismiss", &[]),
             )
             .control_size(ControlSize::Small)
             .on_open(move || requested.set(true)),
@@ -982,7 +983,7 @@ impl Banner {
     /// What pressing the dismiss control does: the action the view bound to it, run through
     /// the banner's own control API. Implies [`Self::dismissible`].
     #[must_use]
-    pub fn with_dismiss_press(mut self, press: crate::widget::Press) -> Self {
+    pub fn with_dismiss_press(mut self, press: tilo_ui_base::widget::Press) -> Self {
         if self.dismiss.is_none() {
             self = self.dismissible();
         }
@@ -1183,7 +1184,7 @@ impl Banner {
     }
 
     /// The body and the buttons, where the layout placed them.
-    fn draw_contents(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_contents(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1211,7 +1212,7 @@ impl Banner {
             return;
         }
         let theme = self.body.theme.clone();
-        crate::text_render::with_layout_renderer(&theme, |text| {
+        tilo_ui_base::text_render::with_layout_renderer(&theme, |text| {
             self.place_buttons(text, &theme);
         });
     }
@@ -1225,7 +1226,7 @@ impl Banner {
             return;
         }
         let theme = self.body.theme.clone();
-        let height = crate::text_render::with_layout_renderer(&theme, |text| {
+        let height = tilo_ui_base::text_render::with_layout_renderer(&theme, |text| {
             self.body.geometry(text, &theme, slot.width()).height.ceil()
         });
         let box_ = Rect::new(slot.x0, slot.y0, slot.x1, slot.y0 + height);
@@ -1256,13 +1257,13 @@ fn button_size(button: &mut Button, text: &mut TextRenderer) -> (f64, f64) {
 }
 
 impl Widget for Banner {
-    crate::described!();
+    tilo_ui_base::described!();
 
-    crate::provides!(
-        dyn crate::widget::ResourceOperations,
-        dyn crate::widget::controls::ActionControls
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::ResourceOperations,
+        dyn tilo_ui_base::widget::controls::ActionControls
     );
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
         let before = self.visible();
         self.poll_source();
         let mut changed = false;
@@ -1276,12 +1277,12 @@ impl Widget for Banner {
         // A banner that has come to rest takes its place in the layout, and
         // one setting off leaves it.
         if self.band.layout_moved(self.visible()) {
-            crate::widget::note_layout_moved();
+            tilo_ui_base::widget::note_layout_moved();
         }
         changed
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
         self.poll_source();
         if self.dismiss_requested.take() {
             self.dismiss_now();
@@ -1363,7 +1364,7 @@ impl Widget for Banner {
             self.rect = rect;
             self.dirty = true;
         }
-        self.device_scale = f64::from(super::layout::device_scale());
+        self.device_scale = f64::from(tilo_ui_base::widget::layout::device_scale());
         // Its identity matched nothing: it takes up the banner that stood
         // here before (what it says changed), or it arrived.
         let visible = self.visible();
@@ -1392,7 +1393,7 @@ impl Widget for Banner {
         self.place_contents();
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1407,7 +1408,7 @@ impl Widget for Banner {
             // Kept, so its column can draw it leaving when its view stops
             // building it.
             let mut painted = self.band.take_painted();
-            self.draw_contents(&mut crate::draw::DrawCtx::new(
+            self.draw_contents(&mut tilo_ui_base::draw::DrawCtx::new(
                 &mut painted,
                 Affine::IDENTITY,
                 text,
@@ -1423,7 +1424,7 @@ impl Widget for Banner {
             return;
         }
         let mut painted = self.band.take_painted();
-        self.draw_contents(&mut crate::draw::DrawCtx::new(
+        self.draw_contents(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut painted,
             Affine::IDENTITY,
             text,
@@ -1437,7 +1438,7 @@ impl Widget for Banner {
     /// rest.
     fn needs_animation_frame(&self) -> bool {
         self.band.needs_frame(self.visible())
-            || super::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
@@ -1452,14 +1453,14 @@ impl Widget for Banner {
         true
     }
 
-    fn note_placement(&mut self, placement: crate::widget::Placement) {
+    fn note_placement(&mut self, placement: tilo_ui_base::widget::Placement) {
         self.band.note_placement(placement);
     }
 
     fn place_disclosing(&mut self, slot: Rect) {
         // Placed by its container, the banner may never have been laid out itself: its
         // buttons land on the grid of the pass that places it, not the 1 it started at.
-        self.device_scale = f64::from(super::layout::device_scale());
+        self.device_scale = f64::from(tilo_ui_base::widget::layout::device_scale());
         self.band.place(slot);
         self.place_in_slot();
     }
@@ -1468,14 +1469,14 @@ impl Widget for Banner {
         self.band.paint_bounds(self.rect)
     }
 
-    fn disclosing(&self) -> Option<crate::widget::Disclosing> {
+    fn disclosing(&self) -> Option<tilo_ui_base::widget::Disclosing> {
         self.band.disclosing()
     }
 
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         if !self.visible() {
             return;
@@ -1529,7 +1530,7 @@ impl Widget for Banner {
 
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.band.structure_dirty);
-        super::defaults::take_structure_dirty(self.children_mut()) || own
+        tilo_ui_base::widget::defaults::take_structure_dirty(self.children_mut()) || own
     }
 
     fn needs_redraw(&self) -> bool {
@@ -1562,8 +1563,8 @@ impl Widget for Banner {
         self.rect
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         if !self.visible() {
             return None;
         }
@@ -1597,14 +1598,14 @@ impl Drop for Banner {
     }
 }
 
-impl crate::widget::ResourceOperations for Banner {
+impl tilo_ui_base::widget::ResourceOperations for Banner {
     fn start_operation(
         &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
+        op: &tilo_ui_base::widget::ResourceOperation<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let started = crate::widget::start_in_children(self, op, doc, path)?;
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
+        let started = tilo_ui_base::widget::start_in_children(self, op, doc, path)?;
         if self.dismiss_requested.take() {
             self.dismiss_now();
         }
@@ -1640,15 +1641,15 @@ mod tests;
 
 /// The dismiss control is a part of the banner: what the view bound to it is carried out here,
 /// where the banner's controls answer for it.
-impl crate::widget::controls::ActionControls for Banner {
+impl tilo_ui_base::widget::controls::ActionControls for Banner {
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         self.dismiss_press.attach(domain, attachment);
         for child in Widget::children_mut(self) {
-            crate::widget::controls::attach_controls(child, domain, attachment);
+            tilo_ui_base::widget::controls::attach_controls(child, domain, attachment);
         }
     }
 
@@ -1656,18 +1657,18 @@ impl crate::widget::controls::ActionControls for Banner {
         self.dismiss_press.take().or_else(|| {
             Widget::children_mut(self)
                 .into_iter()
-                .find_map(crate::widget::controls::take_control_invocation)
+                .find_map(tilo_ui_base::widget::controls::take_control_invocation)
         })
     }
 
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         let mut bindings: Vec<_> = self
             .dismiss_press
             .metadata(self.dismiss_control_id())
             .into_iter()
             .collect();
         for child in Widget::children(self) {
-            bindings.extend(crate::widget::controls::control_action_bindings(child));
+            bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(child));
         }
         bindings
     }
@@ -1680,7 +1681,7 @@ impl crate::widget::controls::ActionControls for Banner {
             self.dirty = true;
         }
         for child in Widget::children_mut(self) {
-            crate::widget::controls::refresh_control_action_availability(child, allowed);
+            tilo_ui_base::widget::controls::refresh_control_action_availability(child, allowed);
         }
     }
 }

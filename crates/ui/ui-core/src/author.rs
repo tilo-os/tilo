@@ -10,12 +10,13 @@ use unicode_normalization::UnicodeNormalization;
 use vello::kurbo::{Point, Rect};
 use vello::peniko::{Color, ImageData};
 
-use crate::i18n::widget_format;
-use crate::paint::PaintCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::{AvatarFace, ChipFace, ChipLead};
+use tilo_ui_base::i18n::widget_format;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use crate::{widget::ChipFace, widget::ChipLead};
+use tilo_ui_base::widget::AvatarFace;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Author<'a> {
@@ -243,8 +244,8 @@ impl<'a> Author<'a> {
     /// The mark of the service a bridged person writes from, where the
     /// toolkit has one: shown in place of the `via Discord` chip.
     #[must_use]
-    pub fn service_mark(&self) -> Option<crate::icons::Icon> {
-        crate::icons::service_mark(&self.persona()?.service)
+    pub fn service_mark(&self) -> Option<tilo_ui_base::icons::Icon> {
+        tilo_ui_base::icons::service_mark(&self.persona()?.service)
     }
 
     /// What the service mark says when hovered or read out: where the

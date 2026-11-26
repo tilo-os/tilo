@@ -1,7 +1,7 @@
 //! `ActivityTimeline` — the history pane, grouped.
 
-use crate::i18n::{widget_format, widget_text};
-use crate::num::f64_of_usize;
+use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
+use tilo_ui_base::num::f64_of_usize;
 use crate::time::SystemTime;
 use crate::widget::ChipLead;
 use std::collections::{HashMap, HashSet};
@@ -14,9 +14,9 @@ use vello::peniko::Color;
 use winit::event::{MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::paint::PaintCtx;
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::theme::Theme;
 use crate::widget::history::{
     HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, format_relative_time,
 };
@@ -26,7 +26,7 @@ use crate::widget::history_group::{
 };
 use crate::widget::name_field::{NameField, NameFieldOutcome, fit as fit_text};
 
-use crate::tokens::TextRole;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::EntryKind;
 
 pub const ROW_HEIGHT: f64 = 40.0;
@@ -67,23 +67,23 @@ const WASH_SELECTED: u8 = 56;
 
 /// Sibling filter chips keep one `s2` (HIG §7b: siblings of equal weight
 /// in a compact strip); the 6 px they kept before was off the scale.
-const CHIP_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+const CHIP_GAP: f64 = tilo_ui_base::tokens::Spacing::BASE.s2 as f64;
 
 /// A lifted entry row (hover, selection) is inset this much top and bottom,
 /// so two lifted neighbours keep one `s1` between them — the same clearance
 /// a band's backdrop keeps from the rows around it — instead of fusing into
 /// one block (HIG §7 "nothing touches").
-const ROW_LIFT_INSET: f64 = crate::tokens::Spacing::BASE.s1 as f64 / 2.0;
+const ROW_LIFT_INSET: f64 = tilo_ui_base::tokens::Spacing::BASE.s1 as f64 / 2.0;
 
 fn wash(surface: Color, alpha: u8) -> Color {
-    crate::tokens::colors::Colors::hairline_on(surface, alpha)
+    tilo_ui_base::tokens::colors::Colors::hairline_on(surface, alpha)
 }
 
 fn author_face(
     author: &HistoryAuthor,
     colour: Color,
-) -> crate::widget::avatar_face::AvatarFace<'_> {
-    let face = crate::widget::avatar_face::AvatarFace::new(&author.name, &author.identity_short)
+) -> tilo_ui_base::widget::avatar_face::AvatarFace<'_> {
+    let face = tilo_ui_base::widget::avatar_face::AvatarFace::new(&author.name, &author.identity_short)
         .presence(colour);
     if author.relation == crate::widget::history::AuthorRelation::Software {
         face.agent()
@@ -197,11 +197,11 @@ enum FocusedRow {
     Entry(HistoryEntryId),
 }
 
-fn work_icon(kind: &str) -> Option<(crate::icons::Icon, &'static str)> {
+fn work_icon(kind: &str) -> Option<(tilo_ui_base::icons::Icon, &'static str)> {
     match kind {
-        "task" | "issue" => Some((crate::icons::Icon::ListChecks, "history-work-task")),
-        "agent-session" => Some((crate::icons::Icon::Bot, "history-work-agent-run")),
-        "shortcut" => Some((crate::icons::Icon::Play, "history-work-shortcut")),
+        "task" | "issue" => Some((tilo_ui_base::icons::Icon::ListChecks, "history-work-task")),
+        "agent-session" => Some((tilo_ui_base::icons::Icon::Bot, "history-work-agent-run")),
+        "shortcut" => Some((tilo_ui_base::icons::Icon::Play, "history-work-shortcut")),
         _ => None,
     }
 }
@@ -224,7 +224,7 @@ impl RowGroup {
     /// The second line as a screen reader says it: each fact in order, then who.
     fn spoken_facts(&self) -> String {
         self.work
-            .map(|(_, kind)| crate::i18n::I18nManager::lookup_plain(kind))
+            .map(|(_, kind)| tilo_ui_base::i18n::I18nManager::lookup_plain(kind))
             .into_iter()
             .chain(self.meta_facts().into_iter().map(|fact| fact.text))
             .chain(self.lead.as_ref().map(|lead| {
@@ -261,7 +261,7 @@ struct RowGroup {
     expanded: bool,
     restorable: bool,
     is_section: bool,
-    work: Option<(crate::icons::Icon, &'static str)>,
+    work: Option<(tilo_ui_base::icons::Icon, &'static str)>,
     /// What an agent session was titled, which hovering the band shows
     /// ([`HistoryGroup::work_title`]).
     work_title: Option<String>,
@@ -321,7 +321,7 @@ struct SelectionBarPlacement {
     clippy::struct_excessive_bools,
     reason = "each flag tracks an independent interaction, rendering, or invalidation state"
 )]
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "`ui.ActivityTimeline` (`DescribedActivityTimeline`) is its described form"
 )]
@@ -463,7 +463,7 @@ impl ActivityTimeline {
             author_pill_painted: Rect::ZERO,
             author_pill_rect: Rect::ZERO,
             filters_people: false,
-            min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
+            min_pointer_target: f64::from(tilo_ui_base::tokens::Metrics::BASE.min_pointer_target),
             face_theme: Theme::default(),
             show_author_pill: true,
             show_day_headings: false,
@@ -595,7 +595,7 @@ impl ActivityTimeline {
         let Some(text) = self.row_face(i).and_then(|face| face.copy.as_deref()) else {
             return false;
         };
-        crate::text_selection::clipboard_copy(text);
+        tilo_ui_base::text_selection::clipboard_copy(text);
         true
     }
 
@@ -1502,7 +1502,7 @@ impl ActivityTimeline {
     fn place_controls(&mut self, theme: &Theme) {
         self.note_frame_theme(theme);
         let theme = self.face_theme.clone();
-        crate::text_render::with_layout_renderer(&theme, |tr| {
+        tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| {
             self.place_author_pill(tr, &theme);
             self.place_strip_chips(tr, &theme);
             self.place_selection_bar(tr, &theme);
@@ -2066,7 +2066,7 @@ fn draw_chip(
             &shape,
         );
     } else {
-        crate::surface::card(scene, transform, rect, radius, colors.surfaces.raised);
+        tilo_ui_base::surface::card(scene, transform, rect, radius, colors.surfaces.raised);
     }
     let size = theme.text(TextRole::Caption);
     let shown = fit_text(tr, label, &size, rect.width() - 8.0);
@@ -2198,7 +2198,7 @@ impl DaySection {
     }
 
     fn title(self) -> String {
-        crate::i18n::widget_format(
+        tilo_ui_base::i18n::widget_format(
             match self {
                 Self::Today => "day-today",
                 Self::Yesterday => "day-yesterday",
@@ -2235,7 +2235,7 @@ fn author_writer_lead(author: &HistoryAuthor, label: &str, theme: &Theme) -> Chi
             .tokens
             .colors
             .presence
-            .hue(crate::tokens::PresenceHue::of_agent(label)),
+            .hue(tilo_ui_base::tokens::PresenceHue::of_agent(label)),
     )
 }
 
@@ -2250,7 +2250,7 @@ fn civil_day(ts: SystemTime) -> i64 {
 /// Days since Monday of the week that contains `day`. `weekday` is
 /// 0 = Sunday … 6 = Saturday.
 fn monday_offset(day: i64) -> i64 {
-    i64::from((crate::date::weekday(day) + 6) % 7)
+    i64::from((tilo_ui_base::date::weekday(day) + 6) % 7)
 }
 
 impl ActivityTimeline {
@@ -2465,7 +2465,7 @@ impl ActivityTimeline {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                crate::surface::edge_on(surface),
+                tilo_ui_base::surface::edge_on(surface),
                 None,
                 &Line::new(Point::new(x, full_row.y0), Point::new(x, full_row.y1)),
             );
@@ -2489,9 +2489,9 @@ impl ActivityTimeline {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                crate::surface::edge_on(surface),
+                tilo_ui_base::surface::edge_on(surface),
                 None,
-                &crate::surface::edge_outline(lift, radius),
+                &tilo_ui_base::surface::edge_outline(lift, radius),
             );
             let edge = RoundedRect::from_rect(
                 Rect::new(row.x0, row.y0 + 2.0, row.x0 + 2.5, row.y1 - 2.0),
@@ -2584,13 +2584,13 @@ impl ActivityTimeline {
         );
         let mark = (mark.x1 <= body.x1).then_some(mark);
         if let Some(mark) = mark {
-            crate::icons::draw_icon(
+            tilo_ui_base::icons::draw_icon(
                 scene,
                 transform,
                 mark,
                 entry.entry_kind.icon(),
                 theme.tokens.colors.text_dim,
-                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
         }
 
@@ -2631,7 +2631,7 @@ impl ActivityTimeline {
                 let ink = theme.tokens.colors.ink_on(
                     theme.tokens.colors.surfaces.raised,
                     theme.tokens.colors.intent.accent_ink,
-                    crate::tokens::contrast::BODY_TEXT_MIN_CONTRAST,
+                    tilo_ui_base::tokens::contrast::BODY_TEXT_MIN_CONTRAST,
                 );
                 text_renderer.draw_style(
                     scene,
@@ -2806,13 +2806,13 @@ impl ActivityTimeline {
         if let Some((icon, _)) = rg.work {
             let side = f64::from(ctx.theme.tokens.metrics.icon_sm);
             let top = row.y0 + 15.0 - side / 2.0;
-            crate::icons::draw_icon(
+            tilo_ui_base::icons::draw_icon(
                 ctx.scene,
                 ctx.transform,
                 Rect::new(title_x, top, title_x + side, top + side),
                 icon,
                 ctx.theme.tokens.colors.text_dim,
-                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
             title_x += side + 6.0;
         }
@@ -2853,7 +2853,7 @@ impl ActivityTimeline {
                     tr,
                     theme,
                     name_rect,
-                    &crate::i18n::I18nManager::lookup_plain(if rg.name.is_some() {
+                    &tilo_ui_base::i18n::I18nManager::lookup_plain(if rg.name.is_some() {
                         "history-band-rename"
                     } else {
                         "history-band-name"
@@ -2911,7 +2911,7 @@ impl ActivityTimeline {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                crate::surface::edge_on(surface),
+                tilo_ui_base::surface::edge_on(surface),
                 None,
                 &Line::new(Point::new(x, full_row.y0), Point::new(x, full_row.y1)),
             );
@@ -2939,9 +2939,9 @@ impl ActivityTimeline {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            crate::surface::edge_on(surface),
+            tilo_ui_base::surface::edge_on(surface),
             None,
-            &crate::surface::edge_outline(row, radius),
+            &tilo_ui_base::surface::edge_outline(row, radius),
         );
         if is_focused {
             scene.stroke(
@@ -3310,7 +3310,7 @@ impl ActivityTimeline {
             )];
             for author in self.people() {
                 let lead = if author.relation == crate::widget::history::AuthorRelation::Software {
-                    crate::widget::ChipLead::Glyph(crate::icons::Icon::Bot)
+                    crate::widget::ChipLead::Glyph(tilo_ui_base::icons::Icon::Bot)
                 } else {
                     let (r, g, b) = author.rgb();
                     crate::widget::ChipLead::Face(Color::from_rgb8(r, g, b))
@@ -3324,7 +3324,7 @@ impl ActivityTimeline {
                 offered.push((
                     StripTarget::Writer(writer.clone()),
                     writer,
-                    crate::widget::ChipLead::Glyph(crate::icons::Icon::Bot),
+                    crate::widget::ChipLead::Glyph(tilo_ui_base::icons::Icon::Bot),
                 ));
             }
             for (target, label, lead) in offered {
@@ -3486,7 +3486,7 @@ impl ActivityTimeline {
         // Overlay bar under an edge derived from it: the bar announces a
         // selection through its copy and actions, not by wearing the focus
         // ring — `border_focus` means keyboard focus (HIG §9.4/§9.5).
-        crate::surface::card(
+        tilo_ui_base::surface::card(
             scene,
             transform,
             bar,
@@ -3537,7 +3537,7 @@ impl ActivityTimeline {
         // Raised card under an edge derived from it: the declared
         // `border_standard` this replaces is three shades from the dark
         // preset's raised surface and vanished there (HIG §9.5).
-        crate::surface::card(
+        tilo_ui_base::surface::card(
             scene,
             transform,
             self.rect,
@@ -3841,7 +3841,7 @@ impl ActivityTimeline {
                 *handled = true;
             }
             Key::Named(NamedKey::Backspace) => {
-                if crate::text_edit::delete_last_grapheme(&mut self.author_query) {
+                if tilo_ui_base::text_edit::delete_last_grapheme(&mut self.author_query) {
                     self.rebuild();
                     *handled = true;
                 }
@@ -3884,7 +3884,7 @@ impl ActivityTimeline {
             return;
         }
         let dy = match delta {
-            MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * super::wheel::line_of_wheel(),
+            MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * tilo_ui_base::widget::wheel::line_of_wheel(),
             MouseScrollDelta::PixelDelta(pp) => -pp.y,
         };
         let new_scroll = (self.scroll_y + dy).clamp(0.0, self.max_scroll());

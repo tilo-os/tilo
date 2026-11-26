@@ -7,9 +7,9 @@
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::TooltipSide;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::TooltipSide;
 
 /// Why an invocation from a control did not run, and where that control is.
 #[derive(Clone, Debug, PartialEq)]

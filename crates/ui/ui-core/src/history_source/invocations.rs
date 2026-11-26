@@ -69,7 +69,7 @@ impl InvocationStep {
                 )
             })
             .collect();
-        entries.join(&crate::i18n::widget_format(
+        entries.join(&tilo_ui_base::i18n::widget_format(
             "history-invocation-step-separator",
             &[],
         ))

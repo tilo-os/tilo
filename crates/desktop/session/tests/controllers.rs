@@ -33,8 +33,8 @@ use tilo_session::controllers::{ControllerId, ControllerWake, GamepadSources, So
 use tilo_session::{Options, Session, SessionConfig};
 use tilo_sheets::SheetState as _;
 use tilo_sheets::shortcut_guide::{Guide, Modality};
-use ui::ControllerFamily;
-use ui::input::{ControllerButton, KeyLegend, KeyboardBinding, KeyboardModifier};
+use tilo_ui_base::ControllerFamily;
+use tilo_ui_base::{input::ControllerButton, input::KeyLegend, input::KeyboardBinding, input::KeyboardModifier};
 
 /// What a key sends, evdev codes.
 const KEY_ESCAPE: u32 = 1;
@@ -219,7 +219,7 @@ fn focused_app(compositor: &Compositor) -> Option<String> {
 
 #[test]
 fn a_d_pad_moves_focus_a_activates_and_b_backs_out() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let fake = Fake::new(ControllerFamily::Xbox);
     let mut session = session_with(&fake);
     let mut client = mapped(&mut session, "org.example.App");
@@ -271,7 +271,7 @@ fn a_d_pad_moves_focus_a_activates_and_b_backs_out() {
 
 #[test]
 fn a_nintendo_pad_confirms_with_the_button_its_legend_calls_a() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // Nintendo prints A east, where an Xbox pad has B.
     let fake = Fake::new(ControllerFamily::Nintendo);
     let mut session = session_with(&fake);
@@ -314,7 +314,7 @@ fn a_nintendo_pad_confirms_with_the_button_its_legend_calls_a() {
 
 #[test]
 fn the_guide_chord_moves_between_windows() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let fake = Fake::new(ControllerFamily::Xbox);
     let mut session = session_with(&fake);
     let mut left = mapped(&mut session, "org.example.Left");
@@ -340,7 +340,7 @@ fn the_guide_chord_moves_between_windows() {
 
 #[test]
 fn a_bare_guide_tap_opens_quick_settings() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let fake = Fake::new(ControllerFamily::Xbox);
     let mut session = session_with(&fake);
     assert!(!session.quick_settings_open());
@@ -355,7 +355,7 @@ fn a_bare_guide_tap_opens_quick_settings() {
 
 #[test]
 fn the_guide_explains_the_controller_that_opened_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let fake = Fake::new(ControllerFamily::Nintendo);
     let mut session = session_with(&fake);
 
@@ -380,7 +380,7 @@ fn the_guide_explains_the_controller_that_opened_it() {
 
 #[test]
 fn a_controller_press_changes_a_shortcut_the_guide_waits_for() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _turns = take_turns();
     let fake = Fake::new(ControllerFamily::Xbox);
     let mut session = session_with(&fake);
@@ -422,7 +422,7 @@ fn a_controller_press_changes_a_shortcut_the_guide_waits_for() {
 
 #[test]
 fn the_menu_button_opens_the_window_in_fronts_menu() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let fake = Fake::new(ControllerFamily::Xbox);
     let mut session = session_with(&fake);
     let mut client = mapped(&mut session, "org.example.App");

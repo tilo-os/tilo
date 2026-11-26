@@ -300,7 +300,7 @@ impl NativeKeys {
         let logical = if matches!(key.keysym, keysyms::Meta_L | keysyms::Meta_R) {
             Key::Named(NamedKey::Meta)
         } else {
-            ui::keys::chord(
+            tilo_ui_base::keys::chord(
                 key.keysym,
                 key.text.as_deref(),
                 key.latin_keysym,
@@ -310,7 +310,7 @@ impl NativeKeys {
         };
         Press {
             key: logical,
-            bare: ui::keys::from_keysym(key.unmodified_keysym, None).0,
+            bare: tilo_ui_base::keys::from_keysym(key.unmodified_keysym, None).0,
             modifiers: held,
             pressed: key.pressed,
             repeat: key.repeat,
@@ -448,7 +448,7 @@ impl Shared {
                 ShellGesture::StepStrip(steps) => {
                     // A finger chose the strip: the change it makes is drawn sliding, not landed
                     // as a chord's would be.
-                    ui::motion::note_source(ui::tokens::MotionSource::Gesture);
+                    tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Gesture);
                     Invocation::new(CHROME_RESOURCE, "step-strip").with("steps", steps)
                 }
                 // A strip under the fingers is the shell's own drawing, as the strip deck is: the

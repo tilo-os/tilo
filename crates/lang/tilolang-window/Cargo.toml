@@ -24,6 +24,7 @@ tilo-clipboard = { version = "0.1.0", path = "../../platform/tilo-clipboard" }
 tilo-dialogs = { version = "0.1.0", path = "../../platform/tilo-dialogs" }
 # The content a window's apps keep and read: a file an action makes of what it holds, in memory.
 tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # The frame pipeline that lays the window out.
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 

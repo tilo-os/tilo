@@ -5,10 +5,10 @@
 use tilo_app_test_host::TestApp;
 use tilolang_process::window::app::TlApp;
 use ui::headless::{Driver, FrameSchedule};
-use ui::motion::{Direction, Drill};
+use tilo_ui_base::{motion::Direction, motion::Drill};
 use ui::time::testing::with_monotonic_time;
 use ui::time::{Instant, now};
-use ui::tokens::MotionSource;
+use tilo_ui_base::tokens::MotionSource;
 
 const NARROW: (u32, u32) = (420, 860);
 
@@ -189,7 +189,7 @@ fn a_push_in_a_narrow_window_settles_within_its_motion_and_then_asks_for_no_fram
     // A person opens a conversation, which stands in front of the list.
     let row = row_node(app.harness(), "Mill Lane Lettings");
     app.harness()
-        .perform_a11y_action(row, &ui::a11y::Action::Activate)
+        .perform_a11y_action(row, &tilo_ui_base::a11y::Action::Activate)
         .expect("the row opens what it names");
     app.frame();
     assert!(
@@ -250,7 +250,7 @@ fn a_row_of_the_tree_pushes_its_note_and_back_returns_to_the_tree() {
     // The person opens a note of the tree, which comes forward in front of it.
     let row = tree_row_node(app.harness(), "Groceries");
     app.harness()
-        .perform_a11y_action(row, &ui::a11y::Action::Activate)
+        .perform_a11y_action(row, &tilo_ui_base::a11y::Action::Activate)
         .expect("the row opens what it names");
     app.harness().relayout();
     assert!(
@@ -276,7 +276,7 @@ fn back_in_a_driven_phone_window_shows_the_tree_in_the_frame_it_takes() {
     assert_settles(&mut app, motion, "the staged tree");
     let row = tree_row_node(app.harness(), "Groceries");
     app.harness()
-        .perform_a11y_action(row, &ui::a11y::Action::Activate)
+        .perform_a11y_action(row, &tilo_ui_base::a11y::Action::Activate)
         .expect("the row opens what it names");
     assert_settles(&mut app, motion, "the note the row opened");
     assert!(
@@ -308,7 +308,7 @@ fn moving_through_the_list_with_the_keyboard_selects_and_enter_opens_at_once() {
     assert_settles(&mut app, motion, "back at the list");
     let row = row_node(app.harness(), "Mill Lane Lettings");
     app.harness()
-        .perform_a11y_action(row, &ui::a11y::Action::Focus)
+        .perform_a11y_action(row, &tilo_ui_base::a11y::Action::Focus)
         .expect("the row takes focus");
     app.harness().key("ArrowDown");
     app.frame();

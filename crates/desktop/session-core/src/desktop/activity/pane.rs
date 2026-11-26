@@ -37,11 +37,10 @@ use automerge::transaction::Transactable;
 use automerge::{ChangeHash, Prop, ReadDoc, ScalarValue, Value};
 use collab_types::caps::{Access, CapOverride, Effect, Scope};
 use tilo_action_policy::{Grantee, MemberId};
-use ui::presence::PresenceCtx;
+use tilo_ui_base::presence::PresenceCtx;
 use ui::widget::EntryKind;
-use ui::widget::{
-    ArtifactKind, HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter,
-};
+use ui::{widget::HistoryClassification, widget::HistoryEntry, widget::HistoryFilter};
+use tilo_ui_base::{widget::ArtifactKind, widget::HistoryEntryId};
 use ui::{
     ActivityDigest, ActivityTimeline, AgentSession, AuthorDirectory, BandUndoRequest, ChangeRange,
     DocumentId, GroupNameRequest, HistoryComparison, HistoryFacetIndex, HistorySelectionDetail,
@@ -256,7 +255,7 @@ fn humanize_app_id(app_id: &str) -> String {
         .unwrap_or(app_id)
         .split(['-', '_'])
         .filter(|part| !part.is_empty())
-        .map(ui::format::capitalize_first)
+        .map(tilo_ui_base::format::capitalize_first)
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -914,7 +913,7 @@ impl WorkspaceActivityPane {
                     let label = titles
                         .iter()
                         .find(|target| target.id == *id)
-                        .and_then(|target| ui::human_label(&target.label, &target.id))
+                        .and_then(|target| tilo_ui_base::human_label(&target.label, &target.id))
                         .or(app_label.as_deref())
                         .map_or_else(|| t("overview-untitled"), str::to_owned);
                     Some(ui::HistoryResourceTarget {
@@ -1590,7 +1589,7 @@ impl WorkspaceActivityPane {
             // The reader's own changes read as theirs.
             self.source
                 .authors_mut()
-                .set_reader(ui::permissions::MemberId::person(local.clone()));
+                .set_reader(tilo_ui_base::permissions::MemberId::person(local.clone()));
         }
         if !local.is_empty() && self.explicit_local_user.is_none() {
             let handle = automerge::ActorId::from(local.as_bytes()).to_hex_string();

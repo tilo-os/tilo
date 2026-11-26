@@ -35,14 +35,14 @@ pub(super) struct AppAssemblyOwnership {
     pub root: Option<Box<dyn Widget>>,
     pub wake: Option<crate::wake::WakeScope>,
     pub state: Option<State>,
-    pub control: Option<crate::ControlDomain>,
+    pub control: Option<tilo_ui_base::ControlDomain>,
     pub inputs: Option<AppConstructionInputs>,
     pub configured_theme: Option<Theme>,
     #[expect(
         clippy::option_option,
         reason = "the outer Option is the ownership slot; the inner one is the host's optional screen reader"
     )]
-    pub screen_reader: Option<Option<crate::screen_reader::ScreenReader>>,
+    pub screen_reader: Option<Option<tilo_ui_base::screen_reader::ScreenReader>>,
     pub values: AppAssemblyValues,
 }
 impl AppAssemblyOwnership {
@@ -82,12 +82,12 @@ pub(super) struct AppAssemblyValues {
     #[cfg(feature = "model")]
     pub history_key_release: Option<bool>,
     #[cfg(feature = "model")]
-    pub history_focus: Option<Option<crate::widget::layout::CompositionFocus>>,
+    pub history_focus: Option<Option<tilo_ui_base::widget::layout::CompositionFocus>>,
     pub text_renderer: Option<TextRenderer>,
     pub palette_source: Option<PaletteSource>,
     pub watch_system_settings: Option<bool>,
     pub layout: Option<LayoutRuntime>,
-    pub bindings: Option<crate::widget::bound_nodes::BoundNodeMap>,
+    pub bindings: Option<tilo_ui_base::widget::bound_nodes::BoundNodeMap>,
     #[cfg(feature = "model")]
     pub component_close_reports: Option<Vec<crate::application::ComponentCloseReport>>,
     pub close_admission: Option<crate::close_admission::Admission>,
@@ -102,7 +102,7 @@ pub(super) struct AppAssemblyValues {
     pub autofocus_first: Option<bool>,
     pub autofocus_on_structure_change: Option<bool>,
     pub appearance_reconcile: Option<bool>,
-    pub theme_store_stamp: Option<Option<crate::settings_source::SettingsStamp>>,
+    pub theme_store_stamp: Option<Option<tilo_ui_base::settings_source::SettingsStamp>>,
     pub last_theme_store_check: Option<Instant>,
     pub input: Option<InputRuntime>,
     #[cfg(feature = "model")]
@@ -123,8 +123,8 @@ pub(super) struct AppAssemblyValues {
     #[cfg(feature = "model")]
     pub committed_documents: Option<
         Vec<(
-            crate::collaboration::RouteSpec,
-            crate::collaboration::CommittedDocument,
+            tilo_ui_base::collaboration::RouteSpec,
+            tilo_ui_base::collaboration::CommittedDocument,
         )>,
     >,
     #[cfg(feature = "model")]
@@ -179,12 +179,12 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
         inputs
             .control_domain
             .clone()
-            .unwrap_or_else(crate::control_domain::ControlDomain::outer),
+            .unwrap_or_else(tilo_ui_base::control_domain::ControlDomain::outer),
     );
-    crate::widget::controls::attach_controls(
+    tilo_ui_base::widget::controls::attach_controls(
         root.as_mut(),
         control,
-        crate::control_domain::DomainAttachment::Initial,
+        tilo_ui_base::control_domain::DomainAttachment::Initial,
     );
     control.finish_initial_installation();
     #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
@@ -196,7 +196,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
     assembly.values.palette_source = Some(inputs.palette_source);
     assembly.values.watch_system_settings = Some(inputs.watch_system_settings);
     assembly.values.layout = Some(LayoutRuntime::new());
-    assembly.values.bindings = Some(crate::widget::bound_nodes::BoundNodeMap::new());
+    assembly.values.bindings = Some(tilo_ui_base::widget::bound_nodes::BoundNodeMap::new());
     assembly.values.close_admission = Some(crate::close_admission::Admission::default());
     #[cfg(feature = "model")]
     {
@@ -273,7 +273,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
     let floating = (inputs.floating_surface_client)();
     if floating.is_some() {
         // The shell says where this window's workspace stands.
-        crate::workspace_sync::hosted_by_shell();
+        tilo_ui_base::workspace_sync::hosted_by_shell();
     }
     assembly.values.floating = Some(Box::new(FloatingRuntime::new(floating)));
     // No callbacks or allocation remain in the transfer. Missing internal
@@ -413,7 +413,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
         #[cfg(feature = "model")]
         permission_ctx,
         #[cfg(feature = "model")]
-        painted_permissions: crate::permissions::shared_revision(),
+        painted_permissions: tilo_ui_base::permissions::shared_revision(),
         theme_epoch: 0,
         frame_theme_epoch: 0,
         #[cfg(feature = "model")]

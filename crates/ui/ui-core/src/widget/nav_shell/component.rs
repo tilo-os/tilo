@@ -1,7 +1,7 @@
 //! [`NavShell`] as a described component.
 
-use crate::component::{Component, Described, Event, PartViews, PropType, Type, Value};
-use crate::widget::Element;
+use tilo_ui_base::{component::Component, component::Described, component::Event, component::PartViews, component::PropType, component::Type, component::Value};
+use tilo_ui_base::widget::Element;
 
 use super::{Column, ContentKind, InspectorCollapse, NavPane, NavShell, SidebarCollapse};
 
@@ -85,7 +85,7 @@ pub struct NavShellProps {
     /// Files were dropped on the window, anywhere no component of its own took them: each as a
     /// `File` — its name, its media type, its size and where its bytes are — kept by the window.
     /// What an app takes a dropped document with, wherever on it the person lets go.
-    #[component(event(value = Vec<crate::component::File>))]
+    #[component(event(value = Vec<tilo_ui_base::component::File>))]
     pub drop: Event,
 }
 
@@ -495,7 +495,7 @@ impl PartViews for NavShell {
             if column == Column::Content {
                 if self.content_shown {
                     self.set_content_shown(false);
-                    self.stage_body(column, Some(Box::new(crate::widget::Spacer::new())));
+                    self.stage_body(column, Some(Box::new(tilo_ui_base::widget::Spacer::new())));
                 }
             } else {
                 self.stage_body(column, None);

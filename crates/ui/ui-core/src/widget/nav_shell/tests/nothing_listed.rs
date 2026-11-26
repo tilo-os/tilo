@@ -1,7 +1,7 @@
 //! The window's empty state ([`NavShell::nothing_listed`]).
 
 use super::*;
-use crate::component::Described as _;
+use tilo_ui_base::component::Described as _;
 
 const W: u32 = 1280;
 const H: u32 = 800;

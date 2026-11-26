@@ -193,7 +193,7 @@ fn stage_turning_off(set: &DisplaySet, left: &str, right: &str) {
 #[test]
 fn a_scale_chosen_in_settings_reaches_the_displays_and_is_kept() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session(1);
     let (connectors, set) = attached(&mut session);
     let connector = connectors[0].clone();
@@ -231,7 +231,7 @@ fn a_scale_chosen_in_settings_reaches_the_displays_and_is_kept() {
 #[test]
 fn a_change_that_could_dark_a_screen_waits_and_is_put_back() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session(2);
     let (connectors, set) = attached(&mut session);
     let (left, right) = (connectors[0].clone(), connectors[1].clone());
@@ -287,7 +287,7 @@ fn a_change_that_could_dark_a_screen_waits_and_is_put_back() {
 #[test]
 fn a_countdown_tick_keeps_the_keyboard_where_the_person_tabbed() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = tilo_test_env::held_wall_clock();
     let mut session = session(2);
     attached(&mut session);
@@ -332,7 +332,7 @@ fn a_countdown_tick_keeps_the_keyboard_where_the_person_tabbed() {
 #[test]
 fn a_change_that_could_dark_a_screen_asks_and_keep_leaves_it() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session(2);
     let (connectors, set) = attached(&mut session);
     let (left, right) = (connectors[0].clone(), connectors[1].clone());
@@ -368,7 +368,7 @@ fn a_change_that_could_dark_a_screen_asks_and_keep_leaves_it() {
 #[test]
 fn walking_away_puts_the_previous_layout_back_and_takes_the_question_down() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session(2);
     let (connectors, set) = attached(&mut session);
     let (left, right) = (connectors[0].clone(), connectors[1].clone());
@@ -398,7 +398,7 @@ fn walking_away_puts_the_previous_layout_back_and_takes_the_question_down() {
 #[test]
 fn a_tools_risky_change_asks_on_every_display_and_keeping_it_for_good_is_remembered() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // The card is what changed between the pictures this test compares: the bar's own minute
     // turning over is not.
     let _clock = tilo_test_env::held_wall_clock();
@@ -693,7 +693,7 @@ delegate_noop!(ToolState: ignore ZwlrOutputConfigurationHeadV1);
 #[test]
 fn the_mode_scale_and_rotation_chosen_in_settings_are_back_after_a_restart() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut first = session(1);
     let (connectors, set) = attached(&mut first);
     let connector = connectors[0].clone();
@@ -749,7 +749,7 @@ fn the_mode_scale_and_rotation_chosen_in_settings_are_back_after_a_restart() {
 #[test]
 fn the_keyboard_types_in_the_next_input_source_and_keeps_the_choice() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // The sources are chosen on a device whose session is not running, as `tilo` chooses them
     // there: kept for the session that follows, which types in the source the person chose.
     let input =

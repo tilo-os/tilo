@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use super::stage;
 use ui::kurbo::Rect;
-use ui::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 fn packages() -> (String, Rc<stage::Packages>) {
     let shell = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
@@ -213,9 +213,9 @@ fn dividers_of(staged: &stage::Staged) -> Vec<(String, Rect)> {
 }
 
 /// The shell layout of the window `staged` shows, as the shell says it held its header rows.
-fn shell_at(staged: &stage::Staged) -> Option<ui::widget::ShellLayout> {
-    fn find(node: &ui::headless::InspectionNode) -> Option<ui::widget::ShellLayout> {
-        if let Some(ui::widget::LayoutInfo::Shell(shell)) = &node.layout {
+fn shell_at(staged: &stage::Staged) -> Option<tilo_ui_base::widget::ShellLayout> {
+    fn find(node: &ui::headless::InspectionNode) -> Option<tilo_ui_base::widget::ShellLayout> {
+        if let Some(tilo_ui_base::widget::LayoutInfo::Shell(shell)) = &node.layout {
             return Some(*shell);
         }
         node.children.iter().find_map(find)
@@ -299,7 +299,7 @@ fn painted(staged: &stage::Staged, rect: Rect, viewport: (usize, usize)) -> usiz
     assert!(!rgba.is_empty(), "the frame renders");
     let device = rgba.len() / 4;
     let scale = ((device / (wide * tall)) as f64).sqrt().round().max(1.0) as usize;
-    let ground = ui::Theme::light().tokens.colors.surfaces.content.to_rgba8();
+    let ground = tilo_ui_base::Theme::light().tokens.colors.surfaces.content.to_rgba8();
     let ground = [ground.r, ground.g, ground.b];
     let mut inked = 0;
     for y in (rect.y0 as usize * scale)..(rect.y1 as usize * scale) {
@@ -352,7 +352,7 @@ fn divider_rules(staged: &stage::Staged, viewport: (usize, usize)) -> Vec<String
         [rgba[at], rgba[at + 1], rgba[at + 2]]
     };
     let luminance = |painted: [u8; 3]| {
-        ui::a11y::relative_luminance(ui::peniko::Color::from_rgb8(
+        tilo_ui_base::a11y::relative_luminance(ui::peniko::Color::from_rgb8(
             painted[0], painted[1], painted[2],
         ))
     };
@@ -419,12 +419,12 @@ fn divider_rules(staged: &stage::Staged, viewport: (usize, usize)) -> Vec<String
         }
     }
     if let Some((words, strength)) = accent_rule {
-        if strength < ui::surface::COLOURED_RULE_MIN_DELTA {
+        if strength < tilo_ui_base::surface::COLOURED_RULE_MIN_DELTA {
             wrong.push(format!(
                 "the divider {words:?} rules at {strength:.3}, under the \
                  {:.3} a rule that says where reading starts again moves its ground: a day's \
                  rule at another weight, not a mark",
-                ui::surface::COLOURED_RULE_MIN_DELTA
+                tilo_ui_base::surface::COLOURED_RULE_MIN_DELTA
             ));
         }
         if strength < quiet_rule * 2.0 {
@@ -440,7 +440,7 @@ fn divider_rules(staged: &stage::Staged, viewport: (usize, usize)) -> Vec<String
 /// The rows the window of `staged` laid out, as the person has them: a list keeps the row of an
 /// item under the swipe the item has, not among its children.
 fn list_rows(staged: &stage::Staged) -> Vec<&ui::widget::ListRow> {
-    fn collect<'a>(root: &'a dyn ui::widget::Widget, out: &mut Vec<&'a ui::widget::ListRow>) {
+    fn collect<'a>(root: &'a dyn tilo_ui_base::widget::Widget, out: &mut Vec<&'a ui::widget::ListRow>) {
         if let Some(row) = root
             .as_any()
             .and_then(|widget| widget.downcast_ref::<ui::widget::ListRow>())
@@ -627,7 +627,7 @@ fn the_traditional_desktop(
     app: &str,
     packages: &Rc<stage::Packages>,
     size: (u32, u32),
-    theme: ui::Theme,
+    theme: tilo_ui_base::Theme,
 ) -> stage::Staged {
     stage::Staged::over(
         app,
@@ -652,7 +652,7 @@ fn the_traditional_desktop_stands_as_a_person_reads_it() {
     {
         // Gone before the next window is staged: one window stands at a time, as when each part
         // was a test of its own.
-        let mut shell = the_traditional_desktop(&app, &packages, (1280, 800), ui::Theme::light());
+        let mut shell = the_traditional_desktop(&app, &packages, (1280, 800), tilo_ui_base::Theme::light());
         its_windows_show_their_apps_content_under_one_bar_each(&shell);
         its_people_are_called_by_their_names_never_their_ids(&mut shell);
     }
@@ -661,7 +661,7 @@ fn the_traditional_desktop_stands_as_a_person_reads_it() {
             &app,
             &packages,
             (width, height),
-            ui::Theme::light().with_text_scale(text),
+            tilo_ui_base::Theme::light().with_text_scale(text),
         );
         let mut controls = Vec::new();
         shell_controls(staged.harness().root_widget(), &mut controls);
@@ -669,7 +669,7 @@ fn the_traditional_desktop_stands_as_a_person_reads_it() {
         its_top_bar_is_one_row_whose_parts_never_press_into_each_other(&controls, width, &at);
         a_count_stands_on_its_icons_corner_and_over_no_other_control(&controls, width, &at);
     }
-    let phone = the_traditional_desktop(&app, &packages, (320, 568), ui::Theme::light());
+    let phone = the_traditional_desktop(&app, &packages, (320, 568), tilo_ui_base::Theme::light());
     on_a_phone_the_window_in_front_fills_the_room_between_the_bar_and_the_dock(&phone);
 }
 
@@ -741,7 +741,7 @@ fn a_layout_of_places_stands_as_windows_that_show_their_apps() {
         &packages,
         "a layout of places",
         (1280, 800),
-        ui::Theme::light(),
+        tilo_ui_base::Theme::light(),
         None,
         &[],
     )
@@ -774,7 +774,7 @@ fn the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar(
         packages,
         "a window of several places",
         (1280, 800),
-        ui::Theme::light(),
+        tilo_ui_base::Theme::light(),
         None,
         &[],
     )
@@ -810,7 +810,7 @@ fn a_window_alone_in_the_shell_takes_the_shell() {
         &packages,
         "a window alone in the shell",
         (1280, 800),
-        ui::Theme::light(),
+        tilo_ui_base::Theme::light(),
         None,
         &[],
     )
@@ -1220,12 +1220,12 @@ fn read_out(node: &ui::headless::InspectionNode, in_window: bool, out: &mut Vec<
 /// width (its controls a finger's target), as the layout check lays a phone out.
 fn desktop_read_out(staged: &mut stage::Staged, size: (u32, u32)) -> Vec<(bool, String)> {
     let input = if size.0 < 600 {
-        ui::interaction::InteractionEnvironment::TOUCH
+        tilo_ui_base::interaction::InteractionEnvironment::TOUCH
     } else {
-        ui::interaction::InteractionEnvironment::POINTER
+        tilo_ui_base::interaction::InteractionEnvironment::POINTER
     };
     staged
-        .lay_out(size, ui::Theme::light(), input, 1.0)
+        .lay_out(size, tilo_ui_base::Theme::light(), input, 1.0)
         .expect("the desktop lays out");
     let mut said = Vec::new();
     read_out(&staged.harness().inspection().root, false, &mut said);
@@ -1244,18 +1244,18 @@ fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
             &packages,
             "a busy week",
             size,
-            ui::Theme::light(),
+            tilo_ui_base::Theme::light(),
             None,
             &[],
         )
         .expect("the scenario stages");
         let input = if size.0 < 600 {
-            ui::interaction::InteractionEnvironment::TOUCH
+            tilo_ui_base::interaction::InteractionEnvironment::TOUCH
         } else {
-            ui::interaction::InteractionEnvironment::POINTER
+            tilo_ui_base::interaction::InteractionEnvironment::POINTER
         };
         staged
-            .lay_out(size, ui::Theme::light(), input, 1.0)
+            .lay_out(size, tilo_ui_base::Theme::light(), input, 1.0)
             .expect("the app lays out");
         let row = super::header_row_controls(&staged, size);
         let buttons = row.iter().filter(|control| !control.menu).count();
@@ -1296,18 +1296,18 @@ fn an_action_without_an_icon_is_reachable_from_the_row_that_offers_it() {
             &packages,
             "a week of notes",
             size,
-            ui::Theme::light(),
+            tilo_ui_base::Theme::light(),
             None,
             &[],
         )
         .expect("the scenario stages");
         let input = if size.0 < 600 {
-            ui::interaction::InteractionEnvironment::TOUCH
+            tilo_ui_base::interaction::InteractionEnvironment::TOUCH
         } else {
-            ui::interaction::InteractionEnvironment::POINTER
+            tilo_ui_base::interaction::InteractionEnvironment::POINTER
         };
         staged
-            .lay_out(size, ui::Theme::light(), input, 1.0)
+            .lay_out(size, tilo_ui_base::Theme::light(), input, 1.0)
             .expect("the notes lay out");
         let tree = staged.composed().expect("the window composes");
         // A tree's rows are built as the window shows them, so a note's menu stands in the row the
@@ -1328,9 +1328,9 @@ fn an_action_without_an_icon_is_reachable_from_the_row_that_offers_it() {
 /// — once, where what it makes will stand.
 fn rows_with_depth(
     node: &ui::headless::InspectionNode,
-    out: &mut Vec<(String, ui::widget::RowLayout, [f64; 4])>,
+    out: &mut Vec<(String, tilo_ui_base::widget::RowLayout, [f64; 4])>,
 ) {
-    if let Some(ui::widget::LayoutInfo::Row(row)) = &node.layout {
+    if let Some(tilo_ui_base::widget::LayoutInfo::Row(row)) = &node.layout {
         let name = node
             .semantics
             .as_ref()
@@ -1354,7 +1354,7 @@ fn a_notebook_is_a_tree_beside_the_note_it_opens() {
         &packages,
         "a week of notes",
         size,
-        ui::Theme::light(),
+        tilo_ui_base::Theme::light(),
         None,
         &[],
     )
@@ -1362,8 +1362,8 @@ fn a_notebook_is_a_tree_beside_the_note_it_opens() {
     staged
         .lay_out(
             size,
-            ui::Theme::light(),
-            ui::interaction::InteractionEnvironment::POINTER,
+            tilo_ui_base::Theme::light(),
+            tilo_ui_base::interaction::InteractionEnvironment::POINTER,
             1.0,
         )
         .expect("the window lays out");
@@ -1461,18 +1461,18 @@ fn a_notebooks_tree_keeps_its_room_under_the_notes_outline() {
             &packages,
             "the notebook and a note's outline",
             size,
-            ui::Theme::light(),
+            tilo_ui_base::Theme::light(),
             None,
             &[],
         )
         .expect("the scenario stages");
         let input = if size.0 < 600 {
-            ui::interaction::InteractionEnvironment::TOUCH
+            tilo_ui_base::interaction::InteractionEnvironment::TOUCH
         } else {
-            ui::interaction::InteractionEnvironment::POINTER
+            tilo_ui_base::interaction::InteractionEnvironment::POINTER
         };
         staged
-            .lay_out(size, ui::Theme::light(), input, 1.0)
+            .lay_out(size, tilo_ui_base::Theme::light(), input, 1.0)
             .expect("the notes lay out");
         if size.0 < 600 {
             // A phone opens on the note the notebook shows; Back goes to the notes' list.
@@ -1489,7 +1489,7 @@ fn a_notebooks_tree_keeps_its_room_under_the_notes_outline() {
                 .press_at(back[0] + back[2] / 2.0, back[1] + back[3] / 2.0)
                 .expect("the window goes back to its notes");
             staged
-                .lay_out(size, ui::Theme::light(), input, 1.0)
+                .lay_out(size, tilo_ui_base::Theme::light(), input, 1.0)
                 .expect("the notes lay out again");
         }
         let mut laid = Vec::new();
@@ -1594,23 +1594,23 @@ fn away_at(packages: &Rc<stage::Packages>, size: (u32, u32)) -> stage::Staged {
         packages,
         "while you were away",
         size,
-        ui::Theme::light(),
+        tilo_ui_base::Theme::light(),
         None,
         &[],
     )
     .expect("the scenario stages");
     staged
-        .lay_out(size, ui::Theme::light(), input_at(size), 1.0)
+        .lay_out(size, tilo_ui_base::Theme::light(), input_at(size), 1.0)
         .expect("the app lays out");
     staged
 }
 
 /// What a person holds a window with at `size`: a pointer at a desktop's width, a finger on one.
-fn input_at(size: (u32, u32)) -> ui::interaction::InteractionEnvironment {
+fn input_at(size: (u32, u32)) -> tilo_ui_base::interaction::InteractionEnvironment {
     if size.0 < 600 {
-        ui::interaction::InteractionEnvironment::TOUCH
+        tilo_ui_base::interaction::InteractionEnvironment::TOUCH
     } else {
-        ui::interaction::InteractionEnvironment::POINTER
+        tilo_ui_base::interaction::InteractionEnvironment::POINTER
     }
 }
 
@@ -1622,7 +1622,7 @@ fn input_at(size: (u32, u32)) -> ui::interaction::InteractionEnvironment {
 fn a_capture_shows_what_changed_and_its_catch_up_hangs_inside_the_window() {
     on_a_windows_stack(|| {
         tilo_app_window::i18n::ensure();
-        ui::clock::freeze_for_capture();
+        tilo_ui_base::clock::freeze_for_capture();
         let packages = tasks_packages();
         let mut away = away_at(&packages, (1280, 800));
         a_capture_writes_the_scenarios_steps_down_so_what_changed_shows(&mut away);
@@ -1713,7 +1713,7 @@ fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows(away: &mut st
     // The rows the window lays out stand under the mark that counts them, inside it.
     let listed: Vec<Rect> = list_rows(away)
         .into_iter()
-        .map(ui::widget::Widget::get_rect)
+        .map(tilo_ui_base::widget::Widget::get_rect)
         .collect();
     assert!(!listed.is_empty(), "the window lists the tasks it marks");
 
@@ -1754,7 +1754,7 @@ fn a_catch_up_hangs_inside_the_window_it_belongs_to(
         .expect("the window's header says what changed in it");
     away.press(&window.key, false)
         .expect("the window's mark opens its catch-up");
-    away.lay_out((1280, 800), ui::Theme::light(), input_at((1280, 800)), 1.0)
+    away.lay_out((1280, 800), tilo_ui_base::Theme::light(), input_at((1280, 800)), 1.0)
         .expect("the app lays out with its catch-up open");
     let wide = floating_rect(&away, "Popover").unwrap_or_else(|| {
         fn all(node: &ui::headless::InspectionNode, out: &mut Vec<String>) {
@@ -1808,20 +1808,20 @@ fn a_catch_up_hangs_inside_the_window_it_belongs_to(
 #[test]
 fn a_task_that_changed_since_you_looked_says_so_on_its_page() {
     tilo_app_window::i18n::ensure();
-    ui::clock::freeze_for_capture();
+    tilo_ui_base::clock::freeze_for_capture();
     let packages = tasks_packages();
     let mut changed = stage::Staged::over(
         "so.tilo.tasks",
         &packages,
         "a task that changed since you looked",
         (1280, 800),
-        ui::Theme::light(),
+        tilo_ui_base::Theme::light(),
         None,
         &[],
     )
     .expect("the scenario stages");
     changed
-        .lay_out((1280, 800), ui::Theme::light(), input_at((1280, 800)), 1.0)
+        .lay_out((1280, 800), tilo_ui_base::Theme::light(), input_at((1280, 800)), 1.0)
         .expect("the app lays out");
     let composed = changed.composed().expect("the window composed its view");
     let window = window_mark(&composed).unwrap_or_else(|| {
@@ -1846,7 +1846,7 @@ fn a_task_that_changed_since_you_looked_says_so_on_its_page() {
         .press(&window.key, false)
         .expect("the page's mark opens its catch-up");
     changed
-        .lay_out((1280, 800), ui::Theme::light(), input_at((1280, 800)), 1.0)
+        .lay_out((1280, 800), tilo_ui_base::Theme::light(), input_at((1280, 800)), 1.0)
         .expect("the page lays out with its catch-up open");
     let wide = floating_rect(&changed, "Popover").expect("the catch-up hangs over the window");
     assert!(
@@ -1867,14 +1867,14 @@ fn a_task_that_changed_since_you_looked_says_so_on_its_page() {
 #[test]
 fn a_channel_counts_what_is_unseen_in_its_header_and_marks_no_message() {
     tilo_app_window::i18n::ensure();
-    ui::clock::freeze_for_capture();
+    tilo_ui_base::clock::freeze_for_capture();
     let packages = app_packages("chat");
     let mut channels = stage::Staged::over(
         "so.tilo.chat",
         &packages,
         "a team's channels",
         (1280, 800),
-        ui::Theme::light(),
+        tilo_ui_base::Theme::light(),
         None,
         &[],
     )
@@ -1882,8 +1882,8 @@ fn a_channel_counts_what_is_unseen_in_its_header_and_marks_no_message() {
     channels
         .lay_out(
             (1280, 800),
-            ui::Theme::light(),
-            ui::interaction::InteractionEnvironment::POINTER,
+            tilo_ui_base::Theme::light(),
+            tilo_ui_base::interaction::InteractionEnvironment::POINTER,
             1.0,
         )
         .expect("the app lays out");
@@ -2016,7 +2016,7 @@ fn a_scenario_that_fails_is_said_rather_than_shown_empty() {
         &packages,
         "no such scenario",
         (1280, 800),
-        ui::Theme::light(),
+        tilo_ui_base::Theme::light(),
         None,
         &[],
     );
@@ -2053,17 +2053,17 @@ fn the_main_action_of(app: &str, packages: &Rc<stage::Packages>, scenario: &str,
         ((320, 568), true),
     ] {
         let theme = if dark {
-            ui::Theme::dark()
+            tilo_ui_base::Theme::dark()
         } else {
-            ui::Theme::light()
+            tilo_ui_base::Theme::light()
         };
         let mut staged =
             stage::Staged::over(app, packages, scenario, size, theme.clone(), None, &[])
                 .expect("the scenario stages");
         let input = if size.0 < 600 {
-            ui::interaction::InteractionEnvironment::TOUCH
+            tilo_ui_base::interaction::InteractionEnvironment::TOUCH
         } else {
-            ui::interaction::InteractionEnvironment::POINTER
+            tilo_ui_base::interaction::InteractionEnvironment::POINTER
         };
         staged
             .lay_out(size, theme, input, 1.0)
@@ -2296,20 +2296,20 @@ fn a_narrow_channels_mark_opens_its_catch_up() {
     // and it opens the catch-up as a sheet across the window's foot.
     on_a_windows_stack(|| {
         tilo_app_window::i18n::ensure();
-        ui::clock::freeze_for_capture();
+        tilo_ui_base::clock::freeze_for_capture();
         let packages = app_packages("chat");
         let mut channels = stage::Staged::over(
             "so.tilo.chat",
             &packages,
             "a team's channels",
             (320, 568),
-            ui::Theme::light(),
+            tilo_ui_base::Theme::light(),
             None,
             &[],
         )
         .expect("the scenario stages");
         channels
-            .lay_out_moving((320, 568), ui::Theme::light(), input_at((320, 568)))
+            .lay_out_moving((320, 568), tilo_ui_base::Theme::light(), input_at((320, 568)))
             .expect("the app lays out");
         // The header names the channel it shows: the row gives the title the room the word
         // needs, and the mark beside it gives up its names for one face instead of cutting it
@@ -2385,7 +2385,7 @@ fn a_narrow_channels_mark_opens_its_catch_up() {
 #[test]
 fn a_catch_up_row_counts_the_messages_a_step_holds_in_its_sentence() {
     tilo_app_window::i18n::ensure();
-    ui::clock::freeze_for_capture();
+    tilo_ui_base::clock::freeze_for_capture();
     let packages = app_packages("chat");
     // A thread two people wrote in: two posts, by two people, and nothing else since.
     let mut thread = stage::Staged::over(
@@ -2393,13 +2393,13 @@ fn a_catch_up_row_counts_the_messages_a_step_holds_in_its_sentence() {
         &packages,
         "a thread",
         (1280, 800),
-        ui::Theme::light(),
+        tilo_ui_base::Theme::light(),
         None,
         &[],
     )
     .expect("the scenario stages");
     thread
-        .lay_out((1280, 800), ui::Theme::light(), input_at((1280, 800)), 1.0)
+        .lay_out((1280, 800), tilo_ui_base::Theme::light(), input_at((1280, 800)), 1.0)
         .expect("the app lays out");
     let mark = shown_floating_rect(&thread, "ChangeMark").expect("the header shows its mark");
     thread
@@ -2426,19 +2426,19 @@ fn a_task_two_people_changed_names_them_both_in_its_catch_up() {
     // One row for the task however many changed it: everyone who did is named on the line, with a
     // face each, and what it says is the newest change's words.
     tilo_app_window::i18n::ensure();
-    ui::clock::freeze_for_capture();
+    tilo_ui_base::clock::freeze_for_capture();
     let packages = tasks_packages();
     let mut page = stage::Staged::over(
         "so.tilo.tasks",
         &packages,
         "a task two people changed",
         (1280, 800),
-        ui::Theme::light(),
+        tilo_ui_base::Theme::light(),
         None,
         &[],
     )
     .expect("the scenario stages");
-    page.lay_out((1280, 800), ui::Theme::light(), input_at((1280, 800)), 1.0)
+    page.lay_out((1280, 800), tilo_ui_base::Theme::light(), input_at((1280, 800)), 1.0)
         .expect("the app lays out");
     let window = {
         let composed = page.composed().expect("the page composes");
@@ -2509,7 +2509,7 @@ fn a_task_two_people_changed_names_them_both_in_its_catch_up() {
 fn the_gallerys_controls_show_what_their_fields_hold() {
     on_a_windows_stack(|| {
         tilo_app_window::i18n::ensure();
-        ui::clock::freeze_for_capture();
+        tilo_ui_base::clock::freeze_for_capture();
         let packages = app_packages("gallery");
         let ty = packages
             .compiled
@@ -2524,18 +2524,18 @@ fn the_gallerys_controls_show_what_their_fields_hold() {
             &packages,
             "controls",
             size,
-            ui::Theme::light(),
+            tilo_ui_base::Theme::light(),
             None,
             &[],
         )
         .expect("the scenario stages");
         staged
-            .lay_out(size, ui::Theme::light(), input_at(size), 1.0)
+            .lay_out(size, tilo_ui_base::Theme::light(), input_at(size), 1.0)
             .expect("the app lays out");
         let controls = super::listed_of(&mut staged, &ty).expect("the gallery is listed");
         staged.open(controls.clone());
         staged
-            .lay_out(size, ui::Theme::light(), input_at(size), 1.0)
+            .lay_out(size, tilo_ui_base::Theme::light(), input_at(size), 1.0)
             .expect("the gallery lays out");
         // The window opens on its basics: the controls' page is a view of the same resource.
         let page = packages
@@ -2547,7 +2547,7 @@ fn the_gallerys_controls_show_what_their_fields_hold() {
             .expect("the gallery declares the controls' page");
         staged.open_with(&controls, &page);
         staged
-            .lay_out(size, ui::Theme::light(), input_at(size), 1.0)
+            .lay_out(size, tilo_ui_base::Theme::light(), input_at(size), 1.0)
             .expect("the controls lay out");
         let nodes: Vec<(String, String)> = staged
             .harness()

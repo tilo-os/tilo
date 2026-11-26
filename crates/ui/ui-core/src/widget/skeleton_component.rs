@@ -1,7 +1,7 @@
 //! [`Skeleton`] as a described component.
 
-use crate::component::{Component, Described};
-use crate::widget::{MediaAspect, RowLeadingShape, RowShape};
+use tilo_ui_base::{component::Component, component::Described};
+use tilo_ui_base::{widget::MediaAspect, widget::RowLeadingShape, widget::RowShape};
 
 use super::{Skeleton, SkeletonShape};
 
@@ -22,7 +22,7 @@ pub enum SkeletonForm {
     Block,
 }
 
-crate::choice!(SkeletonForm, "SkeletonForm", {
+tilo_ui_base::choice!(SkeletonForm, "SkeletonForm", {
     Text => "text",
     Row => "row",
     Media => "media",

@@ -2,7 +2,7 @@
 //! device. Set only while a callback runs.
 use std::cell::RefCell;
 
-use crate::permissions::MemberId;
+use tilo_ui_base::permissions::MemberId;
 
 thread_local! {
     static EXECUTING_SCOPE: RefCell<Option<uuid::Uuid>> = const { RefCell::new(None) };

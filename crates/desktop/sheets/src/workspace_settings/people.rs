@@ -6,12 +6,10 @@
 //! beside it ([`Decision`]). Under the people come the work members gave
 //! servers, each with until when and, on the device that signed it, Revoke.
 
-use ui::icons::Icon;
-use ui::tokens::Rhythm;
-use ui::widget::{
-    Button, ButtonRole, ChipStyle, Column, ControlSize, Element, EmptyState, ListRow, Row, Section,
-    TextInput,
-};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::tokens::Rhythm;
+use ui::{widget::Button, widget::ButtonRole, widget::ChipStyle, widget::Column, widget::ControlSize, widget::EmptyState, widget::ListRow, widget::Row, widget::Section, widget::TextInput};
+use tilo_ui_base::widget::Element;
 
 use super::general::caption;
 use super::{Confirm, Parts, Settings, WorkspaceSettingsEffect};

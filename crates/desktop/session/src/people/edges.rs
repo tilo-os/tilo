@@ -18,14 +18,14 @@ use ui::kurbo::{Point, Rect, Size, Vec2};
 pub use ui::widgets::DockEdge;
 
 /// Gap between a widget and the display edge, and between stacked widgets.
-pub const MARGIN: f64 = ui::tokens::Spacing::BASE.s3 as f64;
+pub const MARGIN: f64 = tilo_ui_base::tokens::Spacing::BASE.s3 as f64;
 /// How far around a glance form a pointer coming to rest still counts as reaching for it; behind
 /// the form the zone runs on to the display edge. Kept small: inside it, a resting pointer brings
 /// the widget, so any wider and an app control near the edge would bring it when aimed at.
-pub const REACH_PAD: f64 = ui::tokens::Spacing::BASE.s2 as f64;
+pub const REACH_PAD: f64 = tilo_ui_base::tokens::Spacing::BASE.s2 as f64;
 
 /// A press that moves this far becomes a drag to another edge.
-pub const DRAG_SLOP: f64 = ui::tokens::Metrics::BASE.icon_label_gap as f64;
+pub const DRAG_SLOP: f64 = tilo_ui_base::tokens::Metrics::BASE.icon_label_gap as f64;
 
 /// A press on something waiting at an edge, and the drag to another edge it may become. While
 /// dragged it is drawn shifted by the pointer's travel ([`Self::shift`]); let go, it snaps to the

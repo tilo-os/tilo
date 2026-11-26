@@ -38,11 +38,11 @@ static REGISTRY: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 
 /// The shape each app declared for its window while its code is on its way
 /// (its manifest's `[appearance] arrival-skeleton`, through the toolkit's
-/// [`SkeletonShape`](crate::widget::SkeletonShape): the placeholder is the
+/// [`SkeletonShape`](tilo_ui_base::widget::SkeletonShape): the placeholder is the
 /// app shape, never the host's guess), kept apart from the registry so it outlives the app's code: a window
 /// takes the place of an app that is built but has not drawn its first frame yet,
 /// and that is when the declaration is needed most.
-static DECLARED_SHAPES: Mutex<Vec<(&'static str, crate::widget::SkeletonShape)>> =
+static DECLARED_SHAPES: Mutex<Vec<(&'static str, tilo_ui_base::widget::SkeletonShape)>> =
     Mutex::new(Vec::new());
 
 fn entries() -> std::sync::MutexGuard<'static, Vec<Entry>> {
@@ -72,7 +72,7 @@ pub fn register(definition: &'static ApplicationDefinition) -> bool {
 
 /// Register an application whose code `load` fetches when it is first needed.
 pub fn defer(app_id: &'static str, title: &'static str, load: Load) -> bool {
-    defer_arriving(app_id, title, crate::widget::SkeletonShape::Ground, load)
+    defer_arriving(app_id, title, tilo_ui_base::widget::SkeletonShape::Ground, load)
 }
 
 /// [`defer`] with the shape the app's window shows while its code is on its way: what the app declares
@@ -80,7 +80,7 @@ pub fn defer(app_id: &'static str, title: &'static str, load: Load) -> bool {
 pub fn defer_arriving(
     app_id: &'static str,
     title: &'static str,
-    arrival_shape: crate::widget::SkeletonShape,
+    arrival_shape: tilo_ui_base::widget::SkeletonShape,
     load: Load,
 ) -> bool {
     let mut registry = entries();
@@ -133,12 +133,12 @@ pub fn link_claim(link: &str) -> Option<LinkClaim> {
 /// The shape `app_id` declared for its window while it has nothing of it to show — its code on its
 /// way, or its first frame not drawn yet; [`SkeletonShape::Ground`] for an app whose host was told no
 /// declaration.
-pub fn declared_arrival_shape(app_id: &str) -> crate::widget::SkeletonShape {
+pub fn declared_arrival_shape(app_id: &str) -> tilo_ui_base::widget::SkeletonShape {
     DECLARED_SHAPES
         .lock_recover()
         .iter()
         .find_map(|(id, shape)| (*id == app_id).then_some(*shape))
-        .unwrap_or(crate::widget::SkeletonShape::Ground)
+        .unwrap_or(tilo_ui_base::widget::SkeletonShape::Ground)
 }
 
 /// Every registered application whose definition is loaded, in registration order.
@@ -280,7 +280,7 @@ mod tests {
 
         phase a_deferred_app_declares_what_its_window_shows_while_its_code_is_on_its_way;
         {
-            use crate::widget::SkeletonShape;
+            use tilo_ui_base::widget::SkeletonShape;
             assert!(defer_arriving(
                 "test.registry.shaped",
                 "Shaped",

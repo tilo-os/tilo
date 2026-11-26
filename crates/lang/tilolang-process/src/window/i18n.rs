@@ -18,6 +18,6 @@ pub fn ensure() {
     let Some(bundle) = super::installed_bundle() else {
         return;
     };
-    ui::i18n::speak_window_language(&bundle.catalogues());
+    tilo_ui_base::i18n::speak_window_language(&bundle.catalogues());
     let _ = SPOKEN.set(());
 }

@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use tilo_actions::{ActionAddress, ActionBinding, ControlInvocation};
 
 use super::{NavAction, NavDrop, NavList, NavModel, NavShared};
-use crate::widget::{ActionEmitter, ControlBindingMetadata};
+use tilo_ui_base::{widget::ActionEmitter, widget::ControlBindingMetadata};
 
 /// The emitters a list's bound gestures queue into. They live as long as the
 /// list, so new sections keep them and the host's ownership of them.
@@ -66,8 +66,8 @@ impl NavBindings {
 
     pub(super) fn attach(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         for producer in self.producers_mut() {
             producer.install(domain, attachment);
@@ -174,8 +174,8 @@ impl NavBindings {
 trait Producer {
     fn install(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     );
     fn take(&mut self) -> Option<ControlInvocation>;
     fn refresh(&mut self, allowed: &HashSet<ActionAddress>);
@@ -185,8 +185,8 @@ trait Producer {
 impl<I> Producer for ActionEmitter<I> {
     fn install(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         let _ = self.attach(domain, attachment);
     }

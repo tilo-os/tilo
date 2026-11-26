@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
-use crate::component::{Component, Described, Event, OfferedAction, Person, ResourceId, Value};
-use crate::icons::Icon;
+use tilo_ui_base::{component::Component, component::Described, component::Event, component::OfferedAction, component::Person, component::ResourceId, component::Value};
+use tilo_ui_base::icons::Icon;
 use crate::widget::attached::MenuPart;
 
 use super::{NavItem, NavList, NavSection};
@@ -335,7 +335,7 @@ fn place(key: &str, title: Option<String>, items: Vec<NavEntry>, select: Event) 
                     built = built.collapsible();
                 }
                 if let Some(add) = section.add {
-                    let icon = add.icon.unwrap_or(crate::icons::Icon::Plus);
+                    let icon = add.icon.unwrap_or(tilo_ui_base::icons::Icon::Plus);
                     built = built
                         .trailing_action(crate::widget::NavAction::new("add", icon, add.label));
                     match add.run {
@@ -404,16 +404,16 @@ impl NavList {
 const NAV_PARTS: [&str; 2] = ["NavItem", "NavSection"];
 
 /// A navigation list's places and sections, in order.
-impl crate::component::PartType for Vec<NavEntry> {
+impl tilo_ui_base::component::PartType for Vec<NavEntry> {
     const MANY: bool = true;
 
-    fn accepts() -> crate::component::Accepts {
-        crate::component::Accepts::OneOf(NAV_PARTS.iter().map(|name| (*name).to_owned()).collect())
+    fn accepts() -> tilo_ui_base::component::Accepts {
+        tilo_ui_base::component::Accepts::OneOf(NAV_PARTS.iter().map(|name| (*name).to_owned()).collect())
     }
 
     fn fill(
         &mut self,
-        source: &mut dyn crate::component::Source,
+        source: &mut dyn tilo_ui_base::component::Source,
         part: &str,
     ) -> Result<(), String> {
         let kinds = source.part_kinds(part);
@@ -442,16 +442,16 @@ impl crate::component::PartType for Vec<NavEntry> {
     }
 }
 
-impl crate::component::PartType for Vec<NavItemProps> {
+impl tilo_ui_base::component::PartType for Vec<NavItemProps> {
     const MANY: bool = true;
 
-    fn accepts() -> crate::component::Accepts {
-        crate::component::Accepts::Component(NavItemProps::NAME.into())
+    fn accepts() -> tilo_ui_base::component::Accepts {
+        tilo_ui_base::component::Accepts::Component(NavItemProps::NAME.into())
     }
 
     fn fill(
         &mut self,
-        source: &mut dyn crate::component::Source,
+        source: &mut dyn tilo_ui_base::component::Source,
         part: &str,
     ) -> Result<(), String> {
         let mut read = Vec::new();

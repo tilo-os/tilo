@@ -25,7 +25,7 @@ struct LockedSession {
 /// A session on two displays, its shell drawn and then locked behind the lock screen on both of
 /// them.
 fn locked_session() -> LockedSession {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let external = OutputConfig::new("HEADLESS-2", 1024, 768).at(WIDTH, 0);
     let home = private_home();
     let mut session = lockable_session(
@@ -175,7 +175,7 @@ fn a_lock_screen_that_will_not_stay_up_is_drawn_by_the_session() {
 #[test]
 fn a_session_left_locked_comes_back_locked() {
     const DISPLAY: &str = "HEADLESS-1";
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = private_home();
     let request = home.path().join("logout-request");
     // What a session that was killed leaves behind: the armed record, never published.
@@ -258,7 +258,7 @@ fn a_session_left_locked_comes_back_locked() {
 #[test]
 fn a_session_back_locked_takes_keys_typed_as_it_comes_up_and_the_password_after_quiet() {
     const DISPLAY: &str = "HEADLESS-1";
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = private_home();
     let request = home.path().join("logout-request");
     drop(tilo_session::recovery::Recovery::begin(&request).expect("the lock state"));

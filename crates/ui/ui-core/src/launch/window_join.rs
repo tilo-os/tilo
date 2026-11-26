@@ -1,6 +1,6 @@
 //! A live window opens at once on what this device holds, and joins its workspace in the background.
 //! The launch starts the join without waiting for it
-//! ([`crate::collaboration::CollaborationManager::join_native`]) and builds the app on its local
+//! ([`tilo_ui_base::collaboration::CollaborationManager::join_native`]) and builds the app on its local
 //! replica: the broker's answer arrives later as an event the running app takes, and the route's
 //! committed history merges in as at any other time. Only a window whose record is not on this device
 //! yet (its first open here) waits: it shows the page's loading state until the join is over, and is
@@ -12,7 +12,7 @@ use crate::App;
 /// A launch whose record is not on this device yet: the workspace's join, waited for off the window's
 /// thread, and the wake scope the app built after it takes, which the join's manager wakes.
 pub(crate) struct Arriving {
-    pub(crate) join: crate::collaboration::NativeJoin,
+    pub(crate) join: tilo_ui_base::collaboration::NativeJoin,
     scope: crate::wake::WakeScope,
 }
 
@@ -35,9 +35,9 @@ enum LocalFirst {
 pub(super) fn start_join(spec: &LaunchSpec, args: &LaunchArgs) -> Option<Joining> {
     (live_native(spec, args) && spec.attaches_runtime(args)).then(|| {
         join_in_scope(|| {
-            crate::collaboration::native_initial::ensure_unoccupied()
+            tilo_ui_base::collaboration::native_initial::ensure_unoccupied()
                 .map_err(LaunchError::Operation)?;
-            crate::collaboration::CollaborationManager::join_native(
+            tilo_ui_base::collaboration::CollaborationManager::join_native(
                 &spec.definition.resource_type,
                 native_connection()?,
             )
@@ -66,14 +66,14 @@ pub(super) fn build_window(spec: &LaunchSpec, args: &LaunchArgs) -> Result<App, 
 /// What a process that is its own launcher handed its first window
 /// ([`super::hand_connection`]): the connection its join takes, once, or why the process could not
 /// make one.
-static HANDED: std::sync::Mutex<Option<Result<crate::collaboration::HandedConnection, String>>> =
+static HANDED: std::sync::Mutex<Option<Result<tilo_ui_base::collaboration::HandedConnection, String>>> =
     std::sync::Mutex::new(None);
 
 /// Whether this process handed its first window a connection, or tried to: it is its own launcher,
 /// and its windows join the workspace as a launched process's do.
 static WAS_HANDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-pub(super) fn hand(connection: Result<crate::collaboration::HandedConnection, String>) {
+pub(super) fn hand(connection: Result<tilo_ui_base::collaboration::HandedConnection, String>) {
     *HANDED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(connection);
@@ -86,7 +86,7 @@ pub(super) fn was_handed() -> bool {
 
 /// Start the join `join` makes in a wake scope of its own, the one the app is built in.
 fn join_in_scope(
-    join: impl FnOnce() -> Result<crate::collaboration::CollaborationManager, LaunchError>,
+    join: impl FnOnce() -> Result<tilo_ui_base::collaboration::CollaborationManager, LaunchError>,
 ) -> Joining {
     let scope = crate::wake::WakeScope::new();
     let manager = {
@@ -99,7 +99,7 @@ fn join_in_scope(
 /// A started join and the wake scope it runs in.
 pub(super) struct Joining {
     scope: crate::wake::WakeScope,
-    manager: Result<crate::collaboration::CollaborationManager, LaunchError>,
+    manager: Result<tilo_ui_base::collaboration::CollaborationManager, LaunchError>,
 }
 
 impl std::fmt::Debug for Joining {
@@ -119,7 +119,7 @@ fn dispatch_local_first(spec: &LaunchSpec, args: &LaunchArgs, join: Option<Joini
         Err(Unbuilt::Failed(error)) => LocalFirst::Built(Err(error)),
         // The join is waited for off this thread.
         Err(Unbuilt::NotHere { manager, scope }) => {
-            match crate::collaboration::NativeJoin::start(manager) {
+            match tilo_ui_base::collaboration::NativeJoin::start(manager) {
                 Ok(join) => LocalFirst::Arriving(Arriving { join, scope }),
                 Err(error) => LocalFirst::Built(Err(error.into())),
             }
@@ -189,7 +189,7 @@ pub(super) fn wait_in_window(
 fn arriving_window() -> App {
     App::without_workspace(|| {
         Box::new(crate::widget::Skeleton::new(
-            crate::widget::SkeletonShape::Page,
+            tilo_ui_base::widget::SkeletonShape::Page,
         ))
     })
 }
@@ -267,7 +267,7 @@ pub(super) enum Unbuilt {
     /// ([`LaunchError::ResourceNotHere`]): the manager and the scope it wakes, to build in once the join
     /// is over.
     NotHere {
-        manager: crate::collaboration::CollaborationManager,
+        manager: tilo_ui_base::collaboration::CollaborationManager,
         scope: crate::wake::WakeScope,
     },
 }
@@ -293,7 +293,7 @@ pub(super) fn dispatch_definition_in(
     spec: &LaunchSpec,
     args: &LaunchArgs,
     scope: Option<crate::wake::WakeScope>,
-    manager: impl FnOnce() -> Result<crate::collaboration::CollaborationManager, LaunchError>,
+    manager: impl FnOnce() -> Result<tilo_ui_base::collaboration::CollaborationManager, LaunchError>,
 ) -> Result<DefinitionDispatch, Unbuilt> {
     super::dispatch_definition_with(spec, args, construct_native, scope, manager)
 }
@@ -308,21 +308,21 @@ pub(super) fn dispatch_definition_in(
 ///
 /// # Errors
 /// The process is its own launcher and has no connection for this window.
-pub(super) fn native_connection() -> Result<crate::collaboration::NativeConnection, LaunchError> {
+pub(super) fn native_connection() -> Result<tilo_ui_base::collaboration::NativeConnection, LaunchError> {
     if crate::window_link::is_building() {
-        return Ok(crate::collaboration::NativeConnection::Window(
+        return Ok(tilo_ui_base::collaboration::NativeConnection::Window(
             crate::window_link::take_collaboration(),
         ));
     }
     if !was_handed() {
-        return Ok(crate::collaboration::NativeConnection::Launch);
+        return Ok(tilo_ui_base::collaboration::NativeConnection::Launch);
     }
     let handed = HANDED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take();
     match handed {
-        Some(Ok(connection)) => Ok(crate::collaboration::NativeConnection::Handed(connection)),
+        Some(Ok(connection)) => Ok(tilo_ui_base::collaboration::NativeConnection::Handed(connection)),
         Some(Err(why)) => Err(LaunchError::Operation(why)),
         None => Err(LaunchError::Operation(
             "this window has no connection to its workspace: its process handed one to its first \
@@ -361,8 +361,8 @@ mod tests {
         let mut broker = None;
         let joining = join_in_scope(|| {
             let (manager, probe) =
-                crate::collaboration::CollaborationManager::native_joining_fixture_for_test(
-                    crate::collaboration::RouteSpec::app(probe::APP, workspace),
+                tilo_ui_base::collaboration::CollaborationManager::native_joining_fixture_for_test(
+                    tilo_ui_base::collaboration::RouteSpec::app(probe::APP, workspace),
                     "probe",
                     automerge::AutoCommit::new().save(),
                     runtime_collab::WorkspaceStatus::Ready,

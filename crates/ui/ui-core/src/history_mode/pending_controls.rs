@@ -44,7 +44,7 @@ pub struct ContinuationToken {
     nonce: Uuid,
 }
 
-pub(crate) use crate::control_domain::PendingControlOrigin;
+pub(crate) use tilo_ui_base::control_domain::PendingControlOrigin;
 
 impl PendingControlOrigin {
     fn lifetime_id(&self) -> Uuid {
@@ -91,7 +91,7 @@ struct PendingControl {
     observation: Result<crate::bound_dispatch::ControlObservation, String>,
     status: PendingControlStatus,
     outstanding_nonce: Option<Uuid>,
-    control_domain: Option<crate::control_domain::WeakControlDomain>,
+    control_domain: Option<tilo_ui_base::control_domain::WeakControlDomain>,
     label: Option<String>,
 }
 
@@ -189,7 +189,7 @@ impl SuspendedLocalControls {
 
     pub(crate) fn capture_registered(
         &mut self,
-        control: crate::control_domain::OwnedControl,
+        control: tilo_ui_base::control_domain::OwnedControl,
         observation: Result<crate::bound_dispatch::ControlObservation, String>,
     ) {
         self.capture(control.origin, control.invocation, observation);
@@ -248,7 +248,7 @@ impl SuspendedLocalControls {
                         .as_ref()
                         .is_some_and(|domain| domain.upgrade().is_none_or(|domain| domain.closed()))
                 {
-                    PendingControlStatus::Refused(crate::i18n::I18nManager::lookup_plain(
+                    PendingControlStatus::Refused(tilo_ui_base::i18n::I18nManager::lookup_plain(
                         "history-mode-control-owner-closed",
                     ))
                 } else {

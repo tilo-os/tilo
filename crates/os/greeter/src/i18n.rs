@@ -1,11 +1,11 @@
 //! The sign-in screen's Fluent catalogue.
 //!
 //! Every string the greeter shows is a key here, resolved in the machine's
-//! locale through the toolkit's [`mod@ui::i18n`] manager. The catalogues are
+//! locale through the toolkit's [`mod@tilo_ui_base::i18n`] manager. The catalogues are
 //! embedded, so a `--shots` render and a unit test resolve exactly what the
 //! login screen does.
 
-ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
+tilo_ui_base::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
 
 /// Load the catalogue on this thread if it is not loaded yet.
 pub fn ensure() {

@@ -19,7 +19,7 @@ pub mod semantic;
 use places::default_places;
 use reading::{Kind, Real};
 
-use crate::widget::ModelPath;
+use tilo_ui_base::widget::ModelPath;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -31,20 +31,21 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon, icon_for_path};
+use tilo_ui_base::{icons::Icon, icons::LUCIDE_DEFAULT_STROKE_PX, icons::draw_icon, icons::icon_for_path};
 
-use crate::selection::SelectionModel;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::selection::SelectionModel;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::ButtonRole;
-use crate::widget::DrawChild;
-use crate::widget::TaffyTreeExt;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::TaffyTreeExt;
 use crate::widget::file_table::{
     FileColumn, FileRow, FileTable, FileTableInputs, FileTableMetrics, NameCell,
     paint_icon_and_name,
 };
-use crate::widget::{Breadcrumb, SearchField, TextInput, Widget};
+use crate::{widget::Breadcrumb, widget::SearchField, widget::TextInput};
+use tilo_ui_base::widget::Widget;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -130,13 +131,13 @@ impl Place {
     fn label(&self) -> String {
         self.key.map_or_else(
             || self.name.clone(),
-            |key| crate::i18n::widget_format(key, &[]),
+            |key| tilo_ui_base::i18n::widget_format(key, &[]),
         )
     }
 }
 
 fn tr(key: &str) -> String {
-    crate::i18n::widget_format(key, &[])
+    tilo_ui_base::i18n::widget_format(key, &[])
 }
 
 const CANCEL_KEY: &str = "widget-filepicker-cancel";
@@ -252,7 +253,7 @@ pub struct FilePickerEntry {
 pub struct Requester {
     pub name: String,
     pub glyph: Icon,
-    pub image: Option<crate::icons::AppImage>,
+    pub image: Option<tilo_ui_base::icons::AppImage>,
 }
 
 /// The system search the host hands the picker: the paths matching a query
@@ -310,7 +311,7 @@ impl FileRow for PickerRow {
         if self.entry.is_dir {
             String::new()
         } else {
-            crate::format::size(self.entry.size)
+            tilo_ui_base::format::size(self.entry.size)
         }
     }
 
@@ -397,7 +398,7 @@ enum SaveNameError {
     NotAllowed(PathBuf),
 }
 
-#[crate::component::not_a_component(system, "files open through the system's file API")]
+#[tilo_ui_base::component::not_a_component(system, "files open through the system's file API")]
 pub struct FilePicker {
     rect: Rect,
     title: String,
@@ -1438,7 +1439,7 @@ impl FilePicker {
         };
         match &self.requester {
             Some(requester) => {
-                crate::i18n::widget_format(wants, &[("app", requester.name.clone().into())])
+                tilo_ui_base::i18n::widget_format(wants, &[("app", requester.name.clone().into())])
             }
             None => tr(plain),
         }
@@ -1608,7 +1609,7 @@ impl FilePicker {
         };
         style.min_size = Size::auto();
         let _ = taffy.set_style(node, style);
-        if super::solve_layout(
+        if tilo_ui_base::widget::solve_layout(
             &mut taffy,
             node,
             Size {
@@ -1783,8 +1784,8 @@ impl FilePicker {
         self.mode != FilePickerMode::Directory && self.filters.len() > 1
     }
 
-    fn focus_trap(&self) -> crate::overlay::FocusTrap {
-        crate::overlay::FocusTrap::new(
+    fn focus_trap(&self) -> tilo_ui_base::overlay::FocusTrap {
+        tilo_ui_base::overlay::FocusTrap::new(
             self.focus_targets()
                 .into_iter()
                 .map(PickerFocus::id)
@@ -2334,11 +2335,11 @@ impl FilePicker {
         };
         let message = match error {
             SaveNameError::Invalid => tr("widget-filepicker-name-invalid"),
-            SaveNameError::NoFolder(folder) => crate::i18n::widget_format(
+            SaveNameError::NoFolder(folder) => tilo_ui_base::i18n::widget_format(
                 "widget-filepicker-name-no-folder",
                 &[("folder", folder_name(folder).into())],
             ),
-            SaveNameError::NotAllowed(folder) => crate::i18n::widget_format(
+            SaveNameError::NotAllowed(folder) => tilo_ui_base::i18n::widget_format(
                 "widget-filepicker-name-not-allowed",
                 &[("folder", folder_name(folder).into())],
             ),
@@ -2415,7 +2416,7 @@ impl FilePicker {
         let now = crate::time::now();
         let is_double = matches!(
             self.last_click,
-            Some((pi, t)) if pi == i && now.duration_since(t) < crate::gesture::multi_click_interval()
+            Some((pi, t)) if pi == i && now.duration_since(t) < tilo_ui_base::gesture::multi_click_interval()
         );
         if self.multiple {
             self.selection.apply_click(i, ctrl, shift);
@@ -2472,12 +2473,12 @@ impl Widget for FilePicker {
             size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
-        let style = crate::widget::layout::filling(style, 1.0);
+        let style = tilo_ui_base::widget::layout::filling(style, 1.0);
         taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.apply_layout_helper();
     }
 
@@ -2487,7 +2488,7 @@ impl Widget for FilePicker {
         self.rect == Rect::ZERO
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2503,7 +2504,7 @@ impl Widget for FilePicker {
         let theme = &sheet;
 
         self.draw_header(scene, transform, text_renderer, theme);
-        self.draw_toolbar(&mut crate::draw::DrawCtx::new(
+        self.draw_toolbar(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -2511,14 +2512,14 @@ impl Widget for FilePicker {
             env.clone(),
         ));
         self.draw_sidebar(scene, transform, text_renderer, theme);
-        self.draw_list(&mut crate::draw::DrawCtx::new(
+        self.draw_list(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text_renderer,
             theme,
             env.clone(),
         ));
-        self.draw_footer(&mut crate::draw::DrawCtx::new(
+        self.draw_footer(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -2529,7 +2530,7 @@ impl Widget for FilePicker {
         self.draw_replace_prompt(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         if self.replace_prompt.is_some() {
             self.on_replace_prompt_event(event, ctx);
@@ -2593,7 +2594,7 @@ impl Widget for FilePicker {
             let mut field_handled = false;
             self.filename.handle_event(
                 event,
-                &mut crate::widget::EventCtx {
+                &mut tilo_ui_base::widget::EventCtx {
                     handled: &mut field_handled,
                     ..ctx.reborrow(ctx.path, ctx.node_id)
                 },
@@ -2601,7 +2602,7 @@ impl Widget for FilePicker {
         }
     }
 
-    crate::redraw_flag!();
+    tilo_ui_base::redraw_flag!();
 
     fn name(&self) -> &'static str {
         "FilePicker"
@@ -2611,8 +2612,8 @@ impl Widget for FilePicker {
         clippy::too_many_lines,
         reason = "one exhaustive accessibility projection keeps focus, bounds, and actions aligned"
     )]
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let filename_cursor = self.filename.cursor_pos();
         let filename_anchor =
             self.filename
@@ -2846,7 +2847,7 @@ impl Widget for FilePicker {
         self.focused_text().and_then(Widget::ime_cursor_rect)
     }
 
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
         self.focused_text().and_then(Widget::ime_content)
     }
 
@@ -2932,16 +2933,16 @@ impl Widget for FilePicker {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if key_path.is_empty() {
-            return matches!(action, crate::a11y::Action::Activate) && self.activate_focus();
+            return matches!(action, tilo_ui_base::a11y::Action::Activate) && self.activate_focus();
         }
 
-        use crate::a11y::{Action, hash_key};
+        use tilo_ui_base::{a11y::Action, a11y::hash_key};
         if self.replace_prompt.is_some() {
             let control = match key_path {
                 [REPLACE_PROMPT_KEY, key] => PickerFocus::from_id(*key)
@@ -3031,8 +3032,8 @@ impl FilePicker {
         ))
     }
 
-    fn replace_prompt_accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn replace_prompt_accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let name = self.replace_prompt_name()?;
         let button = |control: PickerFocus, label: &str, rect: Rect| {
             AccessNode::new(Role::Button)
@@ -3047,7 +3048,7 @@ impl FilePicker {
         };
         Some(
             AccessNode::new(Role::Dialog)
-                .with_name(crate::i18n::widget_format(
+                .with_name(tilo_ui_base::i18n::widget_format(
                     "widget-filepicker-replace-question",
                     &[("name", name.into())],
                 ))
@@ -3092,30 +3093,30 @@ impl FilePicker {
             transform,
             &frame,
         );
-        crate::chrome::fill_scrim(scene, transform, self.rect, 1.0, theme);
+        tilo_ui_base::chrome::fill_scrim(scene, transform, self.rect, 1.0, theme);
         scene.pop_layer();
 
         let card = self.replace_card_rect;
         let card_shape = RoundedRect::from_rect(card, radius);
-        crate::chrome::shell::panel_shadow(scene, transform, card, radius, theme, 1.0);
+        tilo_ui_base::chrome::shell::panel_shadow(scene, transform, card, radius, theme, 1.0);
         scene.fill(
             Fill::NonZero,
             transform,
-            crate::chrome::panel_ground(theme),
+            tilo_ui_base::chrome::panel_ground(theme),
             None,
             &card_shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            crate::chrome::panel_border(theme),
+            tilo_ui_base::chrome::panel_border(theme),
             None,
-            &crate::surface::edge_outline(card, radius),
+            &tilo_ui_base::surface::edge_outline(card, radius),
         );
 
         let text_w = px((card.width() - 2.0 * m.pad).max(0.0));
         let heading_style = theme.text(TextRole::Heading);
-        let heading = crate::i18n::widget_format(
+        let heading = tilo_ui_base::i18n::widget_format(
             "widget-filepicker-replace-title",
             &[("name", name.clone().into())],
         );
@@ -3129,7 +3130,7 @@ impl FilePicker {
             &heading_style,
         );
         let body =
-            crate::i18n::widget_format("widget-filepicker-replace-body", &[("name", name.into())]);
+            tilo_ui_base::i18n::widget_format("widget-filepicker-replace-body", &[("name", name.into())]);
         text_renderer.draw_style(
             scene,
             &body,
@@ -3175,7 +3176,7 @@ impl FilePicker {
             let drawn = requester
                 .image
                 .as_ref()
-                .is_some_and(|image| crate::icons::draw_app_image(scene, transform, icon, image));
+                .is_some_and(|image| tilo_ui_base::icons::draw_app_image(scene, transform, icon, image));
             if !drawn {
                 draw_icon(
                     scene,
@@ -3223,7 +3224,7 @@ impl FilePicker {
         }
     }
 
-    fn draw_toolbar(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_toolbar(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -3255,7 +3256,7 @@ impl FilePicker {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                crate::surface::edge_on(fill),
+                tilo_ui_base::surface::edge_on(fill),
                 None,
                 &well,
             );
@@ -3293,19 +3294,19 @@ impl FilePicker {
         }
         let tokens = &theme.tokens;
         let m = self.metrics;
-        let ground = crate::chrome::panel_ground(theme);
+        let ground = tilo_ui_base::chrome::panel_ground(theme);
         let side = self.sidebar_rect();
         scene.fill(
             Fill::NonZero,
             transform,
-            crate::tokens::Colors::hairline_on(ground, 10),
+            tilo_ui_base::tokens::Colors::hairline_on(ground, 10),
             None,
             &side,
         );
         scene.fill(
             Fill::NonZero,
             transform,
-            crate::chrome::panel_border(theme),
+            tilo_ui_base::chrome::panel_border(theme),
             None,
             &Rect::new(side.x1 - 1.0, side.y0, side.x1, side.y1),
         );
@@ -3328,7 +3329,7 @@ impl FilePicker {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    crate::tokens::Colors::hairline_on(ground, crate::chrome::HAIRLINE_ALPHA),
+                    tilo_ui_base::tokens::Colors::hairline_on(ground, tilo_ui_base::chrome::HAIRLINE_ALPHA),
                     None,
                     &shape,
                 );
@@ -3377,7 +3378,7 @@ impl FilePicker {
         }
     }
 
-    fn draw_list(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_list(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -3385,7 +3386,7 @@ impl FilePicker {
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let tokens = &theme.tokens;
-        self.table.draw(&mut crate::draw::DrawCtx::new(
+        self.table.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -3435,7 +3436,7 @@ impl FilePicker {
         }
     }
 
-    fn draw_footer(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_footer(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -3443,12 +3444,12 @@ impl FilePicker {
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let m = self.metrics;
-        let ground = crate::chrome::panel_ground(theme);
+        let ground = tilo_ui_base::chrome::panel_ground(theme);
         let top = self.rect.y1 - self.footer_h();
         scene.fill(
             Fill::NonZero,
             transform,
-            crate::tokens::Colors::hairline_on(ground, crate::chrome::HAIRLINE_ALPHA),
+            tilo_ui_base::tokens::Colors::hairline_on(ground, tilo_ui_base::chrome::HAIRLINE_ALPHA),
             None,
             &Rect::new(self.rect.x0, top, self.rect.x1, top + 1.0),
         );
@@ -3467,7 +3468,7 @@ impl FilePicker {
                 None,
                 &style,
             );
-            self.draw_filename_field(&mut crate::draw::DrawCtx::new(
+            self.draw_filename_field(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text_renderer,
@@ -3479,7 +3480,7 @@ impl FilePicker {
                 text_renderer.draw_style(
                     scene,
                     error,
-                    crate::widget::Tone::Danger.colour(theme),
+                    tilo_ui_base::widget::Tone::Danger.colour(theme),
                     transform.pre_translate(Vec2::new(
                         self.filename_rect.x0 + m.inset_x,
                         self.filename_rect.y1 + m.gap / 2.0,
@@ -3542,19 +3543,19 @@ impl FilePicker {
         let m = self.metrics;
         let radius = f64::from(tokens.radii.control);
         let menu = self.filter_menu_rect;
-        crate::chrome::shell::panel_shadow(scene, transform, menu, radius, theme, 1.0);
+        tilo_ui_base::chrome::shell::panel_shadow(scene, transform, menu, radius, theme, 1.0);
         let shape = RoundedRect::from_rect(menu, radius);
         scene.fill(
             Fill::NonZero,
             transform,
-            crate::chrome::panel_ground(theme),
+            tilo_ui_base::chrome::panel_ground(theme),
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            crate::chrome::panel_border(theme),
+            tilo_ui_base::chrome::panel_border(theme),
             None,
             &shape,
         );
@@ -3567,7 +3568,7 @@ impl FilePicker {
                     transform,
                     tokens
                         .colors
-                        .lift_on(crate::chrome::panel_ground(theme), 1.0),
+                        .lift_on(tilo_ui_base::chrome::panel_ground(theme), 1.0),
                     None,
                     &RoundedRect::from_rect(*row, f64::from(tokens.radii.detail)),
                 );
@@ -3607,7 +3608,7 @@ impl FilePicker {
         }
     }
 
-    fn draw_filename_field(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_filename_field(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -3632,7 +3633,7 @@ impl FilePicker {
             } else if self.has_keyboard_focus && self.focus == Some(PickerFocus::Filename) {
                 tokens.colors.border_focus
             } else {
-                crate::surface::edge_on(tokens.colors.surfaces.base)
+                tilo_ui_base::surface::edge_on(tokens.colors.surfaces.base)
             },
             None,
             &s,
@@ -3660,7 +3661,7 @@ impl FilePicker {
         &mut self,
         field: PickerFocus,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         match field {
             PickerFocus::Filename => {
@@ -3690,9 +3691,9 @@ impl FilePicker {
         }
     }
 
-    fn forward_to_fields(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn forward_to_fields(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let mut handled = false;
-        let mut inner = crate::widget::EventCtx {
+        let mut inner = tilo_ui_base::widget::EventCtx {
             handled: &mut handled,
             ..ctx.reborrow(ctx.path, ctx.node_id)
         };
@@ -3705,7 +3706,7 @@ impl FilePicker {
         }
     }
 
-    fn on_cursor_moved(&mut self, p: Point, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn on_cursor_moved(&mut self, p: Point, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.last_cursor = p;
         let new_button = if self.cancel_rect.contains(p) {
             Some(0)
@@ -3728,7 +3729,7 @@ impl FilePicker {
             *ctx.handled = true;
         }
         let moved =
-            crate::synthetic_input::cursor_moved(p.x * ctx.scale_factor, p.y * ctx.scale_factor);
+            tilo_ui_base::synthetic_input::cursor_moved(p.x * ctx.scale_factor, p.y * ctx.scale_factor);
         let _ = self.table.handle_event(&moved, ctx);
         if self.location.is_none() {
             self.crumbs.handle_event(&moved, ctx);
@@ -3740,7 +3741,7 @@ impl FilePicker {
         clippy::too_many_lines,
         reason = "one press dispatch over every part of the sheet, in hit order"
     )]
-    fn on_left_click(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn on_left_click(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let p = self.last_cursor;
         let modifiers = *ctx.modifiers;
         if self.filter_open {
@@ -3843,7 +3844,7 @@ impl FilePicker {
         &mut self,
         ke: &winit::event::KeyEvent,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         use winit::keyboard::{Key, NamedKey};
         let modifiers = *ctx.modifiers;
@@ -3962,7 +3963,7 @@ impl FilePicker {
     fn on_replace_prompt_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         use winit::keyboard::{Key, NamedKey};
         match event {

@@ -3,10 +3,10 @@
 
 use vello::kurbo::Rect;
 
-use crate::icons::Icon;
-use crate::paint::PaintCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 use crate::widget::{Button, ButtonFace, ButtonRole};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,7 +111,7 @@ impl JumpFace {
         // The pill floats over the conversation's words, so it stands on a surface of its own: the
         // shadow that lifts it off them and the ground its own words are read against.
         let panel =
-            crate::chrome::paint_panel(paint.scene, paint.transform, self.rect, paint.theme, 1.0);
+            tilo_ui_base::chrome::paint_panel(paint.scene, paint.transform, self.rect, paint.theme, 1.0);
         let face = ButtonFace::new(self.rect, &self.label)
             .icon(self.jump.icon())
             .role(ButtonRole::Plain)

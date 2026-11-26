@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rust_source import is_test_file, production_source  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-WIDGETS = Path("crates/ui/ui-core/src/widget")
+WIDGETS = (Path("crates/ui/ui-base/src/widget"), Path("crates/ui/ui-core/src/widget"))
 
 WRITES = re.compile(
     r"(?:\b(?:doc|state|document|model)\b(?:\.\w+)*|ctx\.state)\s*"
@@ -44,9 +44,9 @@ HELPERS = re.compile(
 
 def violations(root: Path) -> list[str]:
     found: list[str] = []
-    for path in sorted((root / WIDGETS).rglob("*.rs")):
+    for path in sorted(p for widgets in WIDGETS for p in (root / widgets).rglob("*.rs")):
         relative = path.relative_to(root)
-        if is_test_file(path.relative_to(root / WIDGETS)):
+        if is_test_file(path.relative_to(root / next(w for w in WIDGETS if path.is_relative_to(root / w)))):
             continue
         text = production_source(path.read_text(encoding="utf-8"))
         for pattern in (WRITES, HELPERS):

@@ -12,12 +12,12 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use tilo_copy_lint::catalog;
-use ui::i18n::{ArgValue, EmbeddedCatalog, I18nManager};
+use tilo_ui_base::{i18n::ArgValue, i18n::EmbeddedCatalog, i18n::I18nManager};
 
 /// The toolkit's widget labels, in the languages every binary carries them.
 const TOOLKIT_EN: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../ui/ui-core/locales/en-US.ftl"
+    "/../../ui/ui-base/locales/en-US.ftl"
 ));
 
 /// The Settings index: every window offers the same settings, in the same words.
@@ -147,7 +147,7 @@ fn resolved(
     keys(window)
         .into_iter()
         .map(|key| {
-            let said = ui::i18n::widget_text(&key);
+            let said = tilo_ui_base::i18n::widget_text(&key);
             (key, said)
         })
         .collect()
@@ -229,7 +229,7 @@ tilo_test_env::scenario! {
         I18nManager::add_shared_resource(&seed[0].0, seed[0].1.clone());
         assert_eq!(show_all(), "Show all 13");
         assert_eq!(
-            ui::i18n::widget_text("block-editor-empty"),
+            tilo_ui_base::i18n::widget_text("block-editor-empty"),
             "Write something…"
         );
 
@@ -252,7 +252,7 @@ tilo_test_env::scenario! {
         I18nManager::install("en-US", "de-DE", &shipped_source(window)).expect("search installs");
         assert_eq!(show_all(), "Show all 13");
         assert_eq!(
-            ui::i18n::widget_text("block-editor-empty"),
+            tilo_ui_base::i18n::widget_text("block-editor-empty"),
             "Write something…"
         );
 
@@ -260,7 +260,7 @@ tilo_test_env::scenario! {
         I18nManager::install("en-US", "de-DE", &with_pack(window)).expect("search installs in both");
         assert_eq!(show_all(), "Alle 13 zeigen");
         assert_eq!(
-            ui::i18n::widget_text("block-editor-empty"),
+            tilo_ui_base::i18n::widget_text("block-editor-empty"),
             "Etwas schreiben…"
         );
     }

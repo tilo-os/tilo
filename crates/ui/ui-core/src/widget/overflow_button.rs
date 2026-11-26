@@ -1,6 +1,6 @@
 //! The overflow button: the named place a control goes when the row it belongs to is too small.
 
-use crate::i18n::widget_text;
+use tilo_ui_base::i18n::widget_text;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -9,12 +9,13 @@ use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::icons::Icon;
+use tilo_ui_base::icons::Icon;
 
-use crate::theme::Theme;
-use crate::widget::DrawChild;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
 use crate::widget::context_menu::{ContextMenu, MenuItem};
-use crate::widget::{AppModel, Button, ModelPath, TaffyTreeExt, Widget};
+use crate::widget::Button;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
 
 /// The toolkit's one overflow rule: which of a row's `count` items give way to its button.
 pub(crate) fn give_way(
@@ -63,7 +64,7 @@ pub fn plan(width: f64, widths: impl IntoIterator<Item = f64>, gap: f64, button:
             .filter(|(_, hidden)| !**hidden)
             .map(|(width, _)| *width)
             .collect();
-        shown.iter().sum::<f64>() + gap * crate::num::f64_of_usize(shown.len().saturating_sub(1))
+        shown.iter().sum::<f64>() + gap * tilo_ui_base::num::f64_of_usize(shown.len().saturating_sub(1))
     };
     let hidden = give_way(widths.len(), width, button, used, |_| Some(0), |i| vec![i]);
     hidden.iter().take_while(|hidden| !**hidden).count()
@@ -71,7 +72,7 @@ pub fn plan(width: f64, widths: impl IntoIterator<Item = f64>, gap: f64, button:
 
 /// The trailing "More actions" API: a button holding the menu of what did not fit. The host
 /// lays it out where the row ends and hides it ([`Self::set_shown`]) when nothing is behind it.
-#[crate::component::not_a_component(shell, "the strip's overflow")]
+#[tilo_ui_base::component::not_a_component(shell, "the strip's overflow")]
 pub struct OverflowButton {
     button: Button,
     menu: ContextMenu,
@@ -216,7 +217,7 @@ impl Widget for OverflowButton {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if let Some(child) = taffy.children(node).ok().and_then(|c| c.first().copied()) {
             self.button
                 .apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
@@ -226,7 +227,7 @@ impl Widget for OverflowButton {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -239,14 +240,14 @@ impl Widget for OverflowButton {
         self.button.draw_child(scene, transform, text, theme, &env);
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+        self.menu.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -255,7 +256,7 @@ impl Widget for OverflowButton {
         ));
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if self.menu.is_open() {
             self.menu
                 .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
@@ -308,7 +309,7 @@ impl Widget for OverflowButton {
     /// The button, and while its menu is up, the commands behind it: the menu paints its rows
     /// itself, so a person using a screen reader reaches those commands here rather than
     /// nowhere.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         if !self.shown {
             return None;
         }
@@ -333,8 +334,8 @@ impl Widget for OverflowButton {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if self
@@ -389,7 +390,7 @@ impl Widget for OverflowButton {
     /// overflows.
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         Widget::set_interaction_environment(&mut self.button, environment);
         Widget::set_interaction_environment(&mut self.menu, environment);
@@ -500,7 +501,7 @@ mod tests {
             let mut button = OverflowButton::new("more");
             button.set_shown(true);
             let shut = button.accessibility().expect("the button names itself");
-            assert_eq!(shut.role, crate::a11y::Role::Button);
+            assert_eq!(shut.role, tilo_ui_base::a11y::Role::Button);
             assert_eq!(shut.name.as_deref(), Some("More actions"));
             assert_eq!(shut.state.expanded, Some(false));
             assert!(shut.children.is_empty(), "a shut button names no command");

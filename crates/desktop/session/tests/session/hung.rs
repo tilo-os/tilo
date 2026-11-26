@@ -88,7 +88,7 @@ fn until_answered(
 
 #[test]
 fn a_window_whose_app_stopped_answering_says_so_and_the_person_can_wait_or_quit_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     let mut other = mapped(&mut session, OTHER);
     let mut stuck = mapped(&mut session, STUCK);
@@ -186,7 +186,7 @@ fn a_window_whose_app_stopped_answering_says_so_and_the_person_can_wait_or_quit_
 /// window, moved into the shell package's place view.
 #[test]
 fn the_shell_draws_the_hung_card_in_the_windows_own_place() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = shell_session();
     crate::common::until(&mut session, "the shell's bar", |session| {
         crate::common::on_screen(session, "Notifications").is_some()

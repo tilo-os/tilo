@@ -6,7 +6,8 @@ use super::*;
 use vello::kurbo::{Point, Rect};
 
 use crate::floating_surface::{FloatingSurfaceHostMessage, Recipient, RecipientKind};
-use crate::widget::{Button, Column, ContextMenuArea, MenuEntry, Spacer};
+use crate::{widget::Button, widget::Column, widget::ContextMenuArea, widget::MenuEntry};
+use tilo_ui_base::widget::Spacer;
 
 struct Window;
 impl AppSurface for Window {
@@ -82,7 +83,7 @@ fn pointing_picks_the_thing_under_the_pointer_for_the_box() {
     let centre = button_centre(&app);
     send(
         &mut app,
-        &crate::synthetic_input::cursor_moved(centre.x, centre.y),
+        &tilo_ui_base::synthetic_input::cursor_moved(centre.x, centre.y),
     );
     frames(&mut app);
     assert_eq!(
@@ -93,7 +94,7 @@ fn pointing_picks_the_thing_under_the_pointer_for_the_box() {
 
     send(
         &mut app,
-        &crate::synthetic_input::mouse_input(
+        &tilo_ui_base::synthetic_input::mouse_input(
             winit::event::ElementState::Pressed,
             winit::event::MouseButton::Left,
         ),
@@ -142,7 +143,7 @@ fn escape_leaves_pointing_without_a_box() {
     frames(&mut app);
     send(
         &mut app,
-        &crate::synthetic_input::named_key(winit::keyboard::NamedKey::Escape),
+        &tilo_ui_base::synthetic_input::named_key(winit::keyboard::NamedKey::Escape),
     );
     frames(&mut app);
     assert!(!app.window_box.is_open(), "leaving pointing opens nothing");

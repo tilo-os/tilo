@@ -1,9 +1,9 @@
 use super::*;
 use crate::app::driver::Driver;
-use crate::chrome::SelectionState;
+use tilo_ui_base::chrome::SelectionState;
 use crate::state::State;
-use crate::theme::Theme;
-use crate::widget::Widget;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
 use crate::widget::nav_list::nav_row::{NavRowFace, NavSectionFace};
 use std::cell::RefCell as Cell2;
 use vello::kurbo::Rect;
@@ -163,7 +163,7 @@ fn harness(list: NavList, theme: Theme) -> Driver {
 }
 
 fn key(h: &mut Driver, key: Key) -> bool {
-    h.dispatch_to_root(&crate::synthetic_input::key_input(
+    h.dispatch_to_root(&tilo_ui_base::synthetic_input::key_input(
         &key,
         ElementState::Pressed,
     ))
@@ -203,12 +203,12 @@ fn spec_face<'a>(
 }
 
 fn still_moving(list: &NavList) -> bool {
-    crate::widget::Widget::needs_animation_frame(list)
+    tilo_ui_base::widget::Widget::needs_animation_frame(list)
 }
 
 impl NavList {
     fn inner_focus(&mut self) {
-        crate::widget::Widget::set_focus(&mut *self.list, true);
+        tilo_ui_base::widget::Widget::set_focus(&mut *self.list, true);
     }
 }
 
@@ -252,7 +252,7 @@ tilo_test_env::scenario! {
                 .filterable(),
             ]
         };
-        let state = crate::LocalState::new("user".to_owned());
+        let state = tilo_ui_base::LocalState::new("user".to_owned());
         let mut h = harness(NavList::new(sections()).bind_filter(&state), Theme::dark());
         assert_eq!(h.root::<NavList>().visible_item_ids(), ["users"]);
         // Written from outside the list's app, which wakes it as the owner of the state would.
@@ -456,7 +456,7 @@ tilo_test_env::scenario! {
             Theme::dark(),
         );
         let node = h.root::<NavList>().accessibility().expect("semantics");
-        assert_eq!(node.role, crate::a11y::Role::Tree);
+        assert_eq!(node.role, tilo_ui_base::a11y::Role::Tree);
         assert_eq!(node.semantic_key.as_deref(), Some("mail.places"));
         let inbox = node
             .children
@@ -534,7 +534,7 @@ tilo_test_env::scenario! {
         let list = NavList::new(destinations(8))
             .selection_actions((0..4).map(|index| (format!("item-{index}"), binding.clone())));
         let mut h = tall(list);
-        crate::widget::controls::ActionControls::refresh_control_action_availability(
+        tilo_ui_base::widget::controls::ActionControls::refresh_control_action_availability(
             &mut *h.root_mut::<NavList>(),
             &HashSet::new(),
         );
@@ -563,21 +563,21 @@ tilo_test_env::scenario! {
     // for a list without them.
     phase a_described_list_holds_places_and_sections_under_their_headings_in_order;
     {
-        use crate::component::Described as _;
+        use tilo_ui_base::component::Described as _;
         let place = |key: &str, label: &str| NavItemProps {
             key: key.into(),
             label: label.into(),
             icon: Some(Icon::Hash),
             ..NavItemProps::default()
         };
-        let queue = crate::Intents::default();
-        let add = crate::component::OfferedAction {
+        let queue = tilo_ui_base::Intents::default();
+        let add = tilo_ui_base::component::OfferedAction {
             label: "New channel".into(),
             icon: Some(Icon::Plus),
-            run: crate::component::Event::View(crate::component::Intent::new(
+            run: tilo_ui_base::component::Event::View(tilo_ui_base::component::Intent::new(
                 &queue, "channels", "add",
             )),
-            ..crate::component::OfferedAction::default()
+            ..tilo_ui_base::component::OfferedAction::default()
         };
         let list = NavList::from_props(
             "channels",
@@ -637,7 +637,7 @@ tilo_test_env::scenario! {
 
     phase a_group_folded_by_the_person_stays_folded_when_it_is_renamed_and_moved;
     {
-        use crate::component::{Described as _, ResourceId};
+        use tilo_ui_base::{component::Described as _, component::ResourceId};
         let group = |title: &str, id: &str| {
             NavEntry::Section(NavSectionProps {
                 title: title.into(),
@@ -689,7 +689,7 @@ tilo_test_env::scenario! {
 
     phase a_place_that_names_another_stands_under_it_with_the_places_that_name_it;
     {
-        use crate::component::Described as _;
+        use tilo_ui_base::component::Described as _;
         let place = |key: &str, label: &str, parent: Option<&str>| NavItemProps {
             key: key.into(),
             label: label.into(),
@@ -748,7 +748,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn a_bound_selection_flows_both_ways() {
-    let state = crate::LocalState::new(Some("sent".to_owned()));
+    let state = tilo_ui_base::LocalState::new(Some("sent".to_owned()));
     let mut h = harness(
         NavList::new(mailboxes()).bind_selection(&state),
         Theme::dark(),
@@ -788,7 +788,7 @@ tilo_test_env::scenario! {
 
     phase a_selected_row_lifts_visibly_on_every_ground;
     {
-        use crate::chrome::{SELECTION_MIN_STEP, lightness_step, selection_tier_on};
+        use tilo_ui_base::{chrome::SELECTION_MIN_STEP, chrome::lightness_step, chrome::selection_tier_on};
         for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
             let colors = &theme.tokens.colors;
             for (name, ground) in [
@@ -877,9 +877,9 @@ tilo_test_env::scenario! {
         )])
         .selected("later");
         let mut h = Driver::for_root(State::new(), list, (280, 360), Theme::dark());
-        h.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
+        h.set_interaction_environment(tilo_ui_base::InteractionEnvironment::TOUCH);
         h.relayout_at((280, 360)).expect("layout");
-        let target = f64::from(crate::InteractionEnvironment::TOUCH.minimum_target());
+        let target = f64::from(tilo_ui_base::InteractionEnvironment::TOUCH.minimum_target());
         for id in ["today", "later"] {
             let height = h
                 .root::<NavList>()
@@ -892,10 +892,10 @@ tilo_test_env::scenario! {
             );
         }
         let snapshot = h.inspection();
-        let mut rows: Vec<(String, crate::a11y::Role, bool)> = Vec::new();
+        let mut rows: Vec<(String, tilo_ui_base::a11y::Role, bool)> = Vec::new();
         fn walk(
             node: &crate::headless::InspectionNode,
-            rows: &mut Vec<(String, crate::a11y::Role, bool)>,
+            rows: &mut Vec<(String, tilo_ui_base::a11y::Role, bool)>,
         ) {
             if node.widget == "NavRow"
                 && let Some(semantics) = &node.semantics
@@ -917,7 +917,7 @@ tilo_test_env::scenario! {
                 .map(|(_, role, selected)| (*role, *selected))
                 .unwrap_or_else(|| panic!("{name}'s row is drawn: {rows:?}"))
         };
-        assert_eq!(row("Today").0, crate::a11y::Role::TreeItem);
+        assert_eq!(row("Today").0, tilo_ui_base::a11y::Role::TreeItem);
         assert!(
             !row("Today").1,
             "the destination beside the chosen one is not chosen"
@@ -928,7 +928,7 @@ tilo_test_env::scenario! {
     phase trailing_parts_line_up_and_give_way_to_actions;
     {
         let theme = Theme::dark();
-        let mut text = crate::text_render::TextRenderer::new();
+        let mut text = tilo_ui_base::text_render::TextRenderer::new();
         let people = ["alice".to_owned(), "bob".to_owned()];
         let face = NavRowFace::new(Rect::new(0.0, 0.0, 280.0, 40.0), "Firewall zone")
             .status(RowStatus::Warning)
@@ -1021,7 +1021,7 @@ tilo_test_env::scenario! {
             (subs.height() - home.height()).abs() < 0.5,
             "one word too wide for the rail stays one line"
         );
-        let mut text = crate::text_render::TextRenderer::new();
+        let mut text = tilo_ui_base::text_render::TextRenderer::new();
         for (label, width) in [
             ("Subscriptions", 60.0),
             ("Connections", 52.0),
@@ -1058,7 +1058,7 @@ tilo_test_env::scenario! {
             width <= f64::from(big.tokens.metrics.rail_max_width),
             "{width}"
         );
-        let mut text = crate::text_render::TextRenderer::new();
+        let mut text = tilo_ui_base::text_render::TextRenderer::new();
         text.set_text_scale(big.text_scale);
         let caption = width - 4.0 * f64::from(big.tokens.spacing.s1);
         assert_eq!(
@@ -1183,16 +1183,16 @@ tilo_test_env::scenario! {
     {
         let bound = published("res-inbox", "open");
         let address = bound.address().clone();
-        let mut list = places(crate::component::Event::Action(bound), None);
+        let mut list = places(tilo_ui_base::component::Event::Action(bound), None);
         list.shared.borrow_mut().choose("item:inbox");
-        let taken = crate::widget::controls::take_control_invocation(&mut list);
+        let taken = tilo_ui_base::widget::controls::take_control_invocation(&mut list);
         assert_eq!(
             taken.as_ref().map(|taken| taken.address.clone()),
             Some(address),
             "one press runs the place's action once"
         );
         assert!(
-            crate::widget::controls::take_control_invocation(&mut list).is_none(),
+            tilo_ui_base::widget::controls::take_control_invocation(&mut list).is_none(),
             "the press is taken once"
         );
     }
@@ -1202,11 +1202,11 @@ tilo_test_env::scenario! {
         let bound = published("res-project", "new_project");
         let address = bound.address().clone();
         let mut list = places(
-            crate::component::Event::None,
-            Some(crate::component::OfferedAction {
+            tilo_ui_base::component::Event::None,
+            Some(tilo_ui_base::component::OfferedAction {
                 label: "New project".into(),
-                run: crate::component::Event::Action(bound),
-                ..crate::component::OfferedAction::default()
+                run: tilo_ui_base::component::Event::Action(bound),
+                ..tilo_ui_base::component::OfferedAction::default()
             }),
         );
         let model = list.list.model();
@@ -1218,14 +1218,14 @@ tilo_test_env::scenario! {
             list.shared.borrow_mut().run_section_action(&section),
             "the add answers a press"
         );
-        let taken = crate::widget::controls::take_control_invocation(&mut list);
+        let taken = tilo_ui_base::widget::controls::take_control_invocation(&mut list);
         assert_eq!(
             taken.as_ref().map(|taken| taken.address.clone()),
             Some(address),
             "one press runs the add once"
         );
         assert!(
-            crate::widget::controls::take_control_invocation(&mut list).is_none(),
+            tilo_ui_base::widget::controls::take_control_invocation(&mut list).is_none(),
             "the add is taken once"
         );
     }
@@ -1293,7 +1293,7 @@ fn a_section_action_is_pressed_at_the_input_s_target() {
             .push((section.to_owned(), action.to_owned()));
     });
     let mut h = harness(list, Theme::dark());
-    h.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
+    h.set_interaction_environment(tilo_ui_base::InteractionEnvironment::TOUCH);
     let header = h
         .root::<NavList>()
         .row_rect("folders")
@@ -1319,7 +1319,7 @@ fn a_section_action_is_pressed_at_the_input_s_target() {
             .expect("the painted square"),
         )
     };
-    let finger = f64::from(crate::InteractionEnvironment::TOUCH.minimum_target());
+    let finger = f64::from(tilo_ui_base::InteractionEnvironment::TOUCH.minimum_target());
     assert!(
         painted.width() < finger && painted.height() < finger,
         "the square keeps its size: {painted:?}"
@@ -1328,7 +1328,7 @@ fn a_section_action_is_pressed_at_the_input_s_target() {
         target.width() + 0.5 >= finger && target.height() + 0.5 >= finger,
         "a finger's target: {target:?}"
     );
-    fn button(node: &crate::a11y::AccessNode) -> Option<&crate::a11y::AccessNode> {
+    fn button(node: &tilo_ui_base::a11y::AccessNode) -> Option<&tilo_ui_base::a11y::AccessNode> {
         if node
             .action_target
             .as_deref()
@@ -1400,10 +1400,10 @@ fn published(resource: &str, action: &str) -> tilo_actions::ActionBinding<()> {
 }
 
 fn places(
-    select: crate::component::Event,
-    add: Option<crate::component::OfferedAction>,
+    select: tilo_ui_base::component::Event,
+    add: Option<tilo_ui_base::component::OfferedAction>,
 ) -> NavList {
-    use crate::component::Described;
+    use tilo_ui_base::component::Described;
     use crate::widget::{NavEntry, NavItemProps, NavListProps, NavSectionProps};
     let inbox = NavItemProps {
         key: "inbox".into(),
@@ -1443,7 +1443,7 @@ fn layout_of(list: &NavList, id: &str) -> crate::widget::nav_list::nav_row::NavR
     let item = spec_of(list, id);
     let theme = Theme::dark();
     let face = spec_face(&item, row, id);
-    let mut text = crate::text_render::TextRenderer::new();
+    let mut text = tilo_ui_base::text_render::TextRenderer::new();
     crate::widget::nav_list::nav_row::nav_row_layout(&theme, &mut text, &face)
 }
 
@@ -1489,7 +1489,7 @@ fn a_checked_row_toggles_as_a_whole_and_is_never_chosen() {
     click_at(&mut h, work.center().x, work.center().y);
     assert_eq!(take(&mut h), Some(serde_json::json!(["work", true])));
     assert_eq!(list_of(&h).selected_id(), None);
-    crate::widget::Widget::set_focus(
+    tilo_ui_base::widget::Widget::set_focus(
         &mut *h.root_mut::<crate::widget::Unattached<NavList>>().0.list,
         true,
     );
@@ -1718,7 +1718,7 @@ fn populated_inserted_removed_and_reordered_navigation_paints_without_live_overl
 
 #[test]
 fn focused_navigation_target_stays_at_its_painted_row_after_population() {
-    fn is_focused(node: &crate::a11y::AccessNode, label: &str) -> bool {
+    fn is_focused(node: &tilo_ui_base::a11y::AccessNode, label: &str) -> bool {
         (node.name.as_deref() == Some(label) && node.state.focused)
             || node.children.iter().any(|child| is_focused(child, label))
     }
@@ -1732,7 +1732,7 @@ fn focused_navigation_target_stays_at_its_painted_row_after_population() {
         .a11y_node_named("Auth first request")
         .expect("published row");
     frame
-        .perform_a11y_action(target, &crate::a11y::Action::Focus)
+        .perform_a11y_action(target, &tilo_ui_base::a11y::Action::Focus)
         .expect("focus real row");
     let mut sections = api_sections(true);
     sections[0]
@@ -1804,12 +1804,12 @@ fn tall(list: NavList) -> Driver {
     h
 }
 
-fn published_afresh(list: &NavList) -> Option<crate::a11y::AccessNode> {
+fn published_afresh(list: &NavList) -> Option<tilo_ui_base::a11y::AccessNode> {
     list.list
         .walk_keeping_nothing(|| Widget::accessibility(list))
 }
 
-fn rows_of(list: &NavList) -> Vec<std::sync::Arc<crate::a11y::AccessNode>> {
+fn rows_of(list: &NavList) -> Vec<std::sync::Arc<tilo_ui_base::a11y::AccessNode>> {
     Widget::accessibility_shared(list)
         .expect("the list's node")
         .children
@@ -1848,7 +1848,7 @@ fn host_frame(app: &mut crate::app::App, damage: &mut crate::app::SurfaceDamage)
 /// or built. Also the rows the list publishes.
 #[cfg(feature = "native")]
 fn keystroke_walk_beside(count: usize) -> (usize, usize, usize) {
-    use crate::a11y::Role;
+    use tilo_ui_base::a11y::Role;
     let shell = crate::widget::NavShell::new()
         .sidebar(Box::new(NavList::new(destinations(count))))
         .content(Box::new(
@@ -1873,7 +1873,7 @@ fn keystroke_walk_beside(count: usize) -> (usize, usize, usize) {
     let key = Key::Character("s".into());
     app.surface_input(
         &Region,
-        crate::synthetic_input::key_input(&key, ElementState::Pressed),
+        tilo_ui_base::synthetic_input::key_input(&key, ElementState::Pressed),
         false,
     );
     host_frame(&mut app, &mut damage);
@@ -1939,7 +1939,7 @@ fn the_first_tap_after_pointer_use_chooses_the_row_it_landed_on() {
     assert!(
         touch_row.height() > seen_row.height()
             && touch_row.height() + 0.5
-                >= f64::from(crate::InteractionEnvironment::TOUCH.minimum_collection_row()),
+                >= f64::from(tilo_ui_base::InteractionEnvironment::TOUCH.minimum_collection_row()),
         "once the tap has landed the rows are touch-sized: {seen_row:?} then {touch_row:?}"
     );
 }
@@ -1962,8 +1962,8 @@ fn a_hover_comes_in_over_the_theme_motion_and_then_rests() {
         .center();
     let t0 = crate::time::now();
     with_monotonic_time(t0, || {
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
-        h.dispatch_to_root(&crate::synthetic_input::cursor_moved(at.x, at.y));
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
+        h.dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y));
         h.poll_frame().expect("the frame paints");
         assert!(
             h.frame_schedule().needs_animation_frame,
@@ -2003,7 +2003,7 @@ fn list_of(h: &Driver) -> &NavList {
 }
 
 fn take(h: &mut Driver) -> Option<serde_json::Value> {
-    use crate::widget::controls::ActionControls;
+    use tilo_ui_base::widget::controls::ActionControls;
     h.root_mut::<crate::widget::Unattached<NavList>>()
         .0
         .take_control_invocation()
@@ -2015,18 +2015,18 @@ fn bound_row_and_section_buttons_run_their_actions_with_the_row() {
     let list = NavList::new(mailboxes())
         .item_action(
             NavAction::new("archive", Icon::Archive, "Archive"),
-            crate::widget::test_string_action_binding(),
+            tilo_ui_base::widget::test_string_action_binding(),
         )
-        .section_action("new-folder", crate::widget::test_string_action_binding());
+        .section_action("new-folder", tilo_ui_base::widget::test_string_action_binding());
     let mut h = unowned(list);
     let work = list_of(&h).row_rect("work").expect("work");
     let s2 = f64::from(Theme::dark().tokens.spacing.s2);
     click_at(&mut h, work.x1 - s2 - 10.0, work.center().y);
     assert_eq!(take(&mut h), Some(serde_json::json!("work")));
-    let bindings = crate::widget::controls::control_action_bindings(list_of(&h));
+    let bindings = tilo_ui_base::widget::controls::control_action_bindings(list_of(&h));
     let bound: Vec<&str> = bindings
         .iter()
-        .filter(|binding| matches!(binding.kind, crate::widget::ControlBindingKind::Action(_)))
+        .filter(|binding| matches!(binding.kind, tilo_ui_base::widget::ControlBindingKind::Action(_)))
         .map(|binding| binding.control_id.as_str())
         .collect();
     assert!(
@@ -2037,7 +2037,7 @@ fn bound_row_and_section_buttons_run_their_actions_with_the_row() {
         bound.iter().any(|id| id.starts_with("row-action:0:")),
         "{bound:?}"
     );
-    assert!(crate::widget::controls::has_action_control_bindings(
+    assert!(tilo_ui_base::widget::controls::has_action_control_bindings(
         list_of(&h)
     ));
     let header_y = work.y0 - crate::widget::nav_list::nav_row::nav_row_height(&Theme::dark()) / 2.0;
@@ -2045,15 +2045,15 @@ fn bound_row_and_section_buttons_run_their_actions_with_the_row() {
     assert_eq!(take(&mut h), Some(serde_json::json!("folders")));
     assert_eq!(take(&mut h), None);
 
-    crate::widget::controls::refresh_control_action_availability(
+    tilo_ui_base::widget::controls::refresh_control_action_availability(
         &mut h.root_mut::<crate::widget::Unattached<NavList>>().0,
         &HashSet::new(),
     );
     let node = Widget::accessibility(list_of(&h)).expect("semantics");
     fn find<'a>(
-        node: &'a crate::a11y::AccessNode,
+        node: &'a tilo_ui_base::a11y::AccessNode,
         prefix: &str,
-    ) -> Option<&'a crate::a11y::AccessNode> {
+    ) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
         if node
             .action_target
             .as_deref()
@@ -2100,24 +2100,24 @@ fn bound_check_rename_and_delete_run_their_actions() {
     )])
     .on_check_action(bound())
     .on_rename_action(bound())
-    .on_delete_action(crate::widget::test_string_action_binding());
+    .on_delete_action(tilo_ui_base::widget::test_string_action_binding());
     let mut h = unowned(list);
     let work = list_of(&h).row_rect("work").expect("work");
     click_at(&mut h, work.center().x, work.center().y);
     assert_eq!(take(&mut h), Some(serde_json::json!(["work", true])));
-    crate::widget::Widget::set_focus(
+    tilo_ui_base::widget::Widget::set_focus(
         &mut *h.root_mut::<crate::widget::Unattached<NavList>>().0.list,
         true,
     );
     h.relayout_at((280, 360)).expect("layout");
     assert!(key(&mut h, Key::Named(NamedKey::Delete)));
     assert_eq!(take(&mut h), Some(serde_json::json!("work")));
-    let bindings = crate::widget::controls::control_action_bindings(list_of(&h));
+    let bindings = tilo_ui_base::widget::controls::control_action_bindings(list_of(&h));
     assert!(
         bindings
             .iter()
             .any(|binding| binding.control_id.starts_with("key:")
-                && matches!(binding.kind, crate::widget::ControlBindingKind::Action(_))),
+                && matches!(binding.kind, tilo_ui_base::widget::ControlBindingKind::Action(_))),
         "a bound check is the checkable row's control: {bindings:?}"
     );
 }
@@ -2157,12 +2157,12 @@ fn a_zero_count_is_no_count() {
 // choosing one runs what the view bound, without the host's menu.
 #[test]
 fn a_rows_own_menu_opens_where_it_stands_and_runs_its_command() {
-    use crate::component::{Event, Fired, Intent};
+    use tilo_ui_base::{component::Event, component::Fired, component::Intent};
     use crate::widget::MenuItemProps;
     use crate::widget::attached::MenuPart;
     use winit::event::MouseButton;
 
-    let queue = crate::Intents::<Fired>::default();
+    let queue = tilo_ui_base::Intents::<Fired>::default();
     let mut menus = std::collections::HashMap::new();
     menus.insert(
         "item:travel".to_owned(),

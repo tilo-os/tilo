@@ -10,20 +10,20 @@
 use std::cell::Cell;
 
 use crate::widget::floating_list::{FloatingList, FloatingRow};
-use crate::widget::{AppModel, EventCtx, ModelPath};
+use tilo_ui_base::{widget::AppModel, widget::EventCtx, widget::ModelPath};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::icons::Icon;
-use crate::platform::{PlatformConventions, Shortcut};
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{platform::PlatformConventions, platform::Shortcut};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 use crate::widget::floating_surface::{self, PanelAlign, PopoverSide};
 
 mod editing;
@@ -58,10 +58,10 @@ pub enum MenuItem {
         icon: Option<Icon>,
         /// The app's own artwork, painted in the icon's place once it has pixels: a row that
         /// names an app ([`MenuItem::with_image`]).
-        image: Option<crate::icons::AppImage>,
+        image: Option<tilo_ui_base::icons::AppImage>,
         /// The face the label is set in, when it previews one: a font picker's rows show each
         /// family in itself ([`MenuItem::with_sample`]).
-        sample: Option<crate::text_render::FontChoice>,
+        sample: Option<tilo_ui_base::text_render::FontChoice>,
         /// `Some` reserves the leading selection gutter and publishes a
         /// semantic checked state. `None` is an ordinary command row.
         checked: Option<bool>,
@@ -99,7 +99,7 @@ pub enum MenuItem {
         address: Option<tilo_actions::ActionAddress>,
         /// What a press of the row does, when the view bound it: the action runs through the
         /// menu's ownership, as a control's own press does.
-        press: crate::widget::Press,
+        press: tilo_ui_base::widget::Press,
     },
     Separator,
     /// A line of secondary text about the rows around it ("Hosted by
@@ -146,7 +146,7 @@ impl MenuItem {
             group: None,
             asks_first: false,
             address: None,
-            press: crate::widget::Press::default(),
+            press: tilo_ui_base::widget::Press::default(),
         }
     }
 
@@ -155,7 +155,7 @@ impl MenuItem {
     /// publishes the row as that action. Every menu of the shell and the toolkit builds its
     /// rows this way.
     #[must_use]
-    pub fn bound(label: impl Into<String>, press: crate::widget::Press) -> Self {
+    pub fn bound(label: impl Into<String>, press: tilo_ui_base::widget::Press) -> Self {
         Self::command(label.into(), std::rc::Rc::new(|| {})).for_press(press)
     }
 
@@ -205,7 +205,7 @@ impl MenuItem {
     }
 
     #[must_use]
-    pub fn with_icon(mut self, icon: crate::icons::Icon) -> Self {
+    pub fn with_icon(mut self, icon: tilo_ui_base::icons::Icon) -> Self {
         if let MenuItem::Action {
             icon: item_icon, ..
         } = &mut self
@@ -218,7 +218,7 @@ impl MenuItem {
     /// Paint the app `image` names in the row's icon place, its glyph ([`Self::with_icon`]) until
     /// the artwork has pixels: a row that opens or names an app.
     #[must_use]
-    pub fn with_image(mut self, image: crate::icons::AppImage) -> Self {
+    pub fn with_image(mut self, image: tilo_ui_base::icons::AppImage) -> Self {
         if let MenuItem::Action {
             image: item_image, ..
         } = &mut self
@@ -231,7 +231,7 @@ impl MenuItem {
     /// Set the row's label in `face` instead of the interface's own: a font picker shows each
     /// family in itself, so a person chooses by reading it.
     #[must_use]
-    pub fn with_sample(mut self, face: crate::text_render::FontChoice) -> Self {
+    pub fn with_sample(mut self, face: tilo_ui_base::text_render::FontChoice) -> Self {
         if let MenuItem::Action {
             sample: row_sample, ..
         } = &mut self
@@ -244,7 +244,7 @@ impl MenuItem {
     /// The face this row's label is set in, when it previews one
     /// ([`Self::with_sample`]).
     #[must_use]
-    pub fn sample(&self) -> Option<&crate::text_render::FontChoice> {
+    pub fn sample(&self) -> Option<&tilo_ui_base::text_render::FontChoice> {
         match self {
             MenuItem::Action { sample, .. } => sample.as_ref(),
             _ => None,
@@ -312,7 +312,7 @@ impl MenuItem {
     /// Say that choosing the row presses what the view bound to it (`press`): the row runs the
     /// action itself, through the menu's ownership.
     #[must_use]
-    pub fn for_press(mut self, press: crate::widget::Press) -> Self {
+    pub fn for_press(mut self, press: tilo_ui_base::widget::Press) -> Self {
         if let MenuItem::Action {
             press: item_press, ..
         } = &mut self
@@ -323,7 +323,7 @@ impl MenuItem {
     }
 
     /// The press choosing the row does, when the view bound it.
-    pub fn press(&self) -> Option<&crate::widget::Press> {
+    pub fn press(&self) -> Option<&tilo_ui_base::widget::Press> {
         match self {
             MenuItem::Action { press, .. } if !press.is_none() => Some(press),
             _ => None,
@@ -599,7 +599,7 @@ pub fn opens_from_keyboard(
     )
 }
 
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "opened by the `ui.ContextMenu` attachment and a row's menu"
 )]
@@ -658,17 +658,17 @@ pub struct ContextMenu {
     platform: PlatformConventions,
     /// The host's input capabilities: on a coarse pointer a row is as tall as
     /// a target must be, since the row is the target.
-    interaction: crate::interaction::InteractionEnvironment,
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
     /// The trailing column (shortcuts, chevrons) from the last measure.
     trailing_width: f64,
     /// Its coming from the pointer or the control that opened it, and
     /// going back (`motion::Appear`).
-    appear: crate::motion::Appearing,
+    appear: tilo_ui_base::motion::Appearing,
     /// The pose it was last drawn in: rows are hit where they are drawn
     /// while it moves.
-    drawn: crate::motion::Pose,
+    drawn: tilo_ui_base::motion::Pose,
     /// What the menu acts on, which a typed question is about.
-    about: Option<crate::shared_subject::SharedSelection>,
+    about: Option<tilo_ui_base::shared_subject::SharedSelection>,
     /// Where the row this menu adds itself (asking the typed sentence)
     /// sits; its owner's rows end there, and choosing it is never reported
     /// through [`ContextMenu::take_selection`].
@@ -742,10 +742,10 @@ impl ContextMenu {
             submenu_selection: None,
             submenu_focused: false,
             platform: PlatformConventions::default(),
-            interaction: crate::interaction::InteractionEnvironment::default(),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
             trailing_width: 0.0,
-            appear: crate::motion::Appearing::closed(),
-            drawn: crate::motion::Pose::REST,
+            appear: tilo_ui_base::motion::Appearing::closed(),
+            drawn: tilo_ui_base::motion::Pose::REST,
             about: None,
             own_rows: None,
             rows_are_the_owners: false,
@@ -820,7 +820,7 @@ impl ContextMenu {
     /// drawn where it is), so a question typed into it is about that.
     /// Without it the app attaches what is under the pointer, else its
     /// window.
-    pub fn set_about(&mut self, about: Option<crate::shared_subject::SharedSelection>) {
+    pub fn set_about(&mut self, about: Option<tilo_ui_base::shared_subject::SharedSelection>) {
         self.send_to.set_about(about.clone());
         self.about = about;
     }
@@ -1065,7 +1065,7 @@ impl ContextMenu {
         // all: a menu narrower than the hint cuts it mid-word, so the hint is
         // measured with the rows.
         if self.query.is_some() {
-            let hint = crate::i18n::I18nManager::lookup_plain("menu-query-placeholder");
+            let hint = tilo_ui_base::i18n::I18nManager::lookup_plain("menu-query-placeholder");
             let (w, _) = text.measure_style(&hint, None, &style);
             width = width.max(f64::from(w));
         }
@@ -1075,7 +1075,7 @@ impl ContextMenu {
         self.measured_width =
             (width + self.trailing_width + 2.0 * label_inset(theme)).max(f64::from(
                 theme.tokens.metrics.menu_min_width
-                    * crate::tokens::Metrics::text_growth(theme.text_scale),
+                    * tilo_ui_base::tokens::Metrics::text_growth(theme.text_scale),
             ));
         self.row_height = (height + f64::from(theme.tokens.spacing.s2))
             .max(f64::from(theme.tokens.metrics.menu_row_height))
@@ -1407,7 +1407,7 @@ impl ContextMenu {
         );
         // A nested menu follows the pointer across rows, which is too
         // frequent to animate (hover over menus is instant): it is there.
-        menu.appear = crate::motion::Appearing::opened();
+        menu.appear = tilo_ui_base::motion::Appearing::opened();
         if keyboard {
             menu.focus_first_action();
         }
@@ -1417,7 +1417,7 @@ impl ContextMenu {
         self.submenu_focused = keyboard;
         self.dirty = true;
         // Hover opens it without marking the move handled.
-        crate::widget::note_resource_presentation_changed();
+        tilo_ui_base::widget::note_resource_presentation_changed();
     }
 
     /// Close the nested menu, keeping this one open.
@@ -1426,7 +1426,7 @@ impl ContextMenu {
             self.list.set_marked(None);
             self.dirty = true;
             // Hover closes it without marking the move handled.
-            crate::widget::note_resource_presentation_changed();
+            tilo_ui_base::widget::note_resource_presentation_changed();
         }
         self.submenu_focused = false;
     }
@@ -1448,7 +1448,7 @@ impl ContextMenu {
     fn route_to_submenu(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         if self.submenu.is_none() {
             return false;
@@ -1581,15 +1581,15 @@ impl ContextMenu {
 
 /// The reference row height at 1× (`metrics.menu_row_height`), used until a
 /// paint has measured the labels against the theme.
-const ROW_HEIGHT: f64 = crate::tokens::Metrics::BASE.menu_row_height as f64;
+const ROW_HEIGHT: f64 = tilo_ui_base::tokens::Metrics::BASE.menu_row_height as f64;
 const SEPARATOR_HEIGHT: f64 = 9.0;
 /// The air between a control and the menu it opened: the `s1` step.
-const ANCHOR_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
+const ANCHOR_GAP: f64 = tilo_ui_base::tokens::Spacing::BASE.s1 as f64;
 const MENU_WIDTH: f64 = 220.0;
 /// A caption line's share of a row's height.
 const CAPTION_ROW_SHARE: f64 = 0.75;
 /// The air between the query field and the first row: the `s1` step.
-const QUERY_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
+const QUERY_GAP: f64 = tilo_ui_base::tokens::Spacing::BASE.s1 as f64;
 /// The rows a menu needs before it takes typing: a short menu is read at a
 /// glance, and a field over it only pushes the commands away. At and below
 /// this many, the menu opens as a plain list.
@@ -1601,7 +1601,7 @@ const STILL_POINTER: f64 = 0.5;
 /// The panel's vertical inset around its rows: the `s2` menu inset
 /// (`floating_surface::menu_inset`), so the armed row runs concentric with
 /// the panel at the top and bottom too.
-const PADDING: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+const PADDING: f64 = tilo_ui_base::tokens::Spacing::BASE.s2 as f64;
 
 /// Distance from the panel's edge to a row's content, on both sides.
 pub(crate) fn label_inset(theme: &Theme) -> f64 {
@@ -1668,7 +1668,7 @@ impl ContextMenu {
 }
 
 impl Widget for ContextMenu {
-    crate::provides!(dyn crate::widget::controls::ActionControls,);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls,);
 
     /// A menu paints its panel in the window's top layer and nothing in
     /// place: it asks for a frame only when what it paints — its own panel
@@ -1703,7 +1703,7 @@ impl Widget for ContextMenu {
     /// to the toolkit's minimum and the menu is placed again around it.
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         if self.interaction != environment {
             self.interaction = environment;
@@ -1780,7 +1780,7 @@ impl Widget for ContextMenu {
     /// A menu paints nothing in place: it is a floating Panel in the
     /// window's top layer ([`Widget::draw_overlay`]), so no later sibling,
     /// pane or chrome covers it.
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1790,7 +1790,7 @@ impl Widget for ContextMenu {
         self.set_text_scale(theme.text_scale);
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1812,7 +1812,7 @@ impl Widget for ContextMenu {
         // takes no input.
         self.appear.follow(self.open, theme.motion());
         if !self.appear.is_drawn() {
-            self.drawn = crate::motion::Pose::REST;
+            self.drawn = tilo_ui_base::motion::Pose::REST;
             self.paint_send_to(scene, transform, text_renderer, theme);
             return;
         }
@@ -1827,7 +1827,7 @@ impl Widget for ContextMenu {
                 transform,
                 theme.tokens.colors.intent.accent_ink,
                 None,
-                &crate::surface::edge_outline(row, f64::from(theme.tokens.radii.item)),
+                &tilo_ui_base::surface::edge_outline(row, f64::from(theme.tokens.radii.item)),
             );
         }
         let pose = self.appear.pose(self.rect, self.appear_anchor());
@@ -1839,7 +1839,7 @@ impl Widget for ContextMenu {
             self.paint_menu(scene, transform, text_renderer, theme);
         });
         if let Some((_, menu)) = self.submenu.as_mut() {
-            menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+            menu.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text_renderer,
@@ -1868,7 +1868,7 @@ impl Widget for ContextMenu {
         false
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if !self.open {
             if self.send_to.is_open() {
                 self.handle_alone(event, ctx);
@@ -2115,8 +2115,8 @@ impl Widget for ContextMenu {
         self.query_caret()
     }
 
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
-        self.query_caret().map(|_| crate::ime::InputContent::TEXT)
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
+        self.query_caret().map(|_| tilo_ui_base::ime::InputContent::TEXT)
     }
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
@@ -2145,8 +2145,8 @@ impl Widget for ContextMenu {
         !self.open && !self.send_to_alone_drawn()
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         // Menu items are painted rows rather than child widgets, so publish
         // virtual children. A container-only node made the menu visible to an
         // assistive technology but hid every action inside it.
@@ -2227,7 +2227,7 @@ impl Widget for ContextMenu {
                 }
                 // What the row draws, apart from what it is called and says: an ask-first row's
                 // label ends in its marker, and its shortcut stands at its trailing edge.
-                node.drawn = Some(crate::a11y::Drawn {
+                node.drawn = Some(tilo_ui_base::a11y::Drawn {
                     label: item
                         .shown_label()
                         .map_or_else(|| label.clone(), std::borrow::Cow::into_owned),
@@ -2290,8 +2290,8 @@ impl Widget for ContextMenu {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !self.open && !self.send_to.is_open() {
@@ -2305,13 +2305,13 @@ impl Widget for ContextMenu {
             return true;
         }
         if target == "context-menu:query" {
-            let crate::a11y::Action::SetValue(text) = action else {
+            let tilo_ui_base::a11y::Action::SetValue(text) = action else {
                 return false;
             };
             self.set_query(text);
             return true;
         }
-        if !matches!(action, crate::a11y::Action::Activate) {
+        if !matches!(action, tilo_ui_base::a11y::Action::Activate) {
             return false;
         }
         if self.activate_emoji_target(target) {
@@ -2360,24 +2360,24 @@ mod placement_tests;
 #[cfg(test)]
 mod nested_and_anchored_tests {
     use super::*;
-    use crate::presence::PresenceCtx;
+    use tilo_ui_base::presence::PresenceCtx;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     const WINDOW: Rect = Rect::new(0.0, 0.0, 800.0, 600.0);
 
     fn cursor_at(p: Point) -> WindowEvent {
-        crate::synthetic_input::cursor_moved(p.x, p.y)
+        tilo_ui_base::synthetic_input::cursor_moved(p.x, p.y)
     }
-    use crate::synthetic_input::mouse_press;
-    use crate::synthetic_input::mouse_release;
-    use crate::synthetic_input::named_key;
+    use tilo_ui_base::synthetic_input::mouse_press;
+    use tilo_ui_base::synthetic_input::mouse_release;
+    use tilo_ui_base::synthetic_input::named_key;
     use crate::testing::dispatch;
     fn paint(m: &mut ContextMenu) {
         let presence = PresenceCtx::default();
         let previous = presence.push_viewport(WINDOW);
         let mut scene = Scene::new();
-        m.draw_overlay(&mut crate::draw::DrawCtx::new(
+        m.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),
@@ -2390,7 +2390,7 @@ mod nested_and_anchored_tests {
     fn file_menu(fired: &Arc<AtomicU32>) -> ContextMenu {
         let markdown = Arc::clone(fired);
         ContextMenu::with_items(vec![
-            MenuItem::action("Open", || {}).with_shortcut(crate::platform::Shortcut::command("O")),
+            MenuItem::action("Open", || {}).with_shortcut(tilo_ui_base::platform::Shortcut::command("O")),
             MenuItem::submenu(
                 "New file",
                 vec![
@@ -2401,7 +2401,7 @@ mod nested_and_anchored_tests {
                 ],
             ),
             MenuItem::action("Delete", || {})
-                .with_shortcut(crate::platform::Shortcut::key("Delete")),
+                .with_shortcut(tilo_ui_base::platform::Shortcut::key("Delete")),
         ])
     }
 
@@ -2413,7 +2413,7 @@ mod nested_and_anchored_tests {
         phase a_submenu_opens_beside_its_row_by_hover_and_by_keyboard;
         {
             // Motion reads at its end: this test checks the resting frame.
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let fired = Arc::new(AtomicU32::new(0));
             let mut m = file_menu(&fired);
             m.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
@@ -2462,7 +2462,7 @@ mod nested_and_anchored_tests {
         // Autofill under its own item) follows the pointer and takes a pick.
         phase a_pick_two_menus_deep_runs_and_closes_the_whole_menu;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let fired = Arc::new(AtomicU32::new(0));
             let login = Arc::clone(&fired);
             let mut m = ContextMenu::with_items(vec![
@@ -2519,7 +2519,7 @@ mod nested_and_anchored_tests {
         // and the arrows move on from there, past a rule, to the row Enter chooses.
         phase a_nested_menu_under_the_pointer_takes_the_arrows;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let fired = Arc::new(AtomicU32::new(0));
             let other = Arc::clone(&fired);
             let mut m = ContextMenu::with_items(vec![
@@ -2562,7 +2562,7 @@ mod nested_and_anchored_tests {
         // where a shortcut would stand, and says so to assistive technology.
         phase a_detail_stands_at_the_rows_end_and_is_announced;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let label = "Aurora Skies, the whole discography";
             let mut plain = ContextMenu::with_items(vec![MenuItem::action(label, || {})]);
             let mut counted = ContextMenu::with_items(vec![
@@ -2587,9 +2587,9 @@ mod nested_and_anchored_tests {
         // check keeps the column its neighbours' glyphs stand in.
         phase the_tree_carries_the_rule_the_danger_and_the_leading_column;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let mut menu = ContextMenu::with_items(vec![
-                MenuItem::icon_action(crate::icons::Icon::Copy, "Copy link", || {}),
+                MenuItem::icon_action(tilo_ui_base::icons::Icon::Copy, "Copy link", || {}),
                 MenuItem::action("Rename", || {}),
                 MenuItem::separator(),
                 MenuItem::destructive_action("Delete", || {}),
@@ -2597,7 +2597,7 @@ mod nested_and_anchored_tests {
             menu.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
             menu.layout_within(&mut TextRenderer::new(), &Theme::light());
             let node = Widget::accessibility(&menu).expect("an open menu is announced");
-            use crate::a11y::Role;
+            use tilo_ui_base::a11y::Role;
             let roles: Vec<_> = node.children.iter().map(|child| child.role).collect();
             assert_eq!(
                 roles,
@@ -2622,12 +2622,12 @@ mod nested_and_anchored_tests {
         phase shortcuts_widen_the_menu_and_a_bare_key_has_no_modifier;
         {
             // Motion reads at its end: this test checks the resting frame.
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let fired = Arc::new(AtomicU32::new(0));
             let label = "Open the most recent document";
             let mut plain = ContextMenu::with_items(vec![MenuItem::action(label, || {})]);
             let mut shortcut = ContextMenu::with_items(vec![
-                MenuItem::action(label, || {}).with_shortcut(crate::platform::Shortcut::command("O")),
+                MenuItem::action(label, || {}).with_shortcut(tilo_ui_base::platform::Shortcut::command("O")),
             ]);
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
@@ -2643,9 +2643,9 @@ mod nested_and_anchored_tests {
             let mut with = file_menu(&fired);
             with.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
             with.layout_within(&mut tr, &theme);
-            let conventions = crate::platform::PlatformConventions::default();
+            let conventions = tilo_ui_base::platform::PlatformConventions::default();
             assert_eq!(
-                crate::platform::Shortcut::key("Delete").label(conventions),
+                tilo_ui_base::platform::Shortcut::key("Delete").label(conventions),
                 "Delete"
             );
         }
@@ -2653,7 +2653,7 @@ mod nested_and_anchored_tests {
         phase a_trailing_menu_hangs_from_its_anchors_trailing_edge_inside_the_margin;
         {
             // Motion reads at its end: this test checks the resting frame.
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let mut m = ContextMenu::with_items(vec![
                 MenuItem::action("Rename", || {}),
                 MenuItem::action("Duplicate", || {}),
@@ -2681,7 +2681,7 @@ mod nested_and_anchored_tests {
         phase a_single_row_menu_is_concentric_with_its_row;
         {
             // Motion reads at its end: this test checks the resting frame.
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let theme = Theme::dark();
             let single = crate::widget::floating_surface::single_row_radius(&theme);
             assert!(single < f64::from(theme.tokens.radii.panel));
@@ -2698,11 +2698,11 @@ mod nested_and_anchored_tests {
         {
             use crate::app::driver::Framed;
             // Motion reads at its end: this test checks the resting frame.
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let fired = Arc::new(AtomicU32::new(0));
             let f = Arc::clone(&fired);
             let button =
-                crate::widget::Button::icon_only("more", crate::icons::Icon::MoreHorizontal, "More")
+                crate::widget::Button::icon_only("more", tilo_ui_base::icons::Icon::MoreHorizontal, "More")
                     .with_menu(vec![MenuItem::action("Print", move || {
                         f.fetch_add(1, Ordering::SeqCst);
                     })]);
@@ -2728,7 +2728,7 @@ mod nested_and_anchored_tests {
             assert_eq!(fired.load(Ordering::SeqCst), 1, "the real Print item runs");
             assert!(!framed.is_open(), "choosing Print closes the menu");
             Framed::harness_mut(&mut framed)
-                .perform_named("more", &crate::a11y::Action::Activate)
+                .perform_named("more", &tilo_ui_base::a11y::Action::Activate)
                 .expect("assistive activation invokes the same admitted opener");
             let _ = Framed::harness_mut(&mut framed).poll_frame();
             assert!(framed.is_open(), "assistive activation opens the same menu");

@@ -37,8 +37,8 @@ pub(crate) fn rects_of(window: &ui::headless::Driver, widget: &str) -> Vec<[f64;
 
 /// Where the open menu draws its item `name`.
 fn menu_item_bounds(app: &mut TestApp<TlApp>, name: &str) -> Option<ui::kurbo::Rect> {
-    fn find(node: &ui::a11y::AccessNode, name: &str) -> Option<ui::kurbo::Rect> {
-        if node.role == ui::a11y::Role::MenuItem && node.name.as_deref() == Some(name) {
+    fn find(node: &tilo_ui_base::a11y::AccessNode, name: &str) -> Option<ui::kurbo::Rect> {
+        if node.role == tilo_ui_base::a11y::Role::MenuItem && node.name.as_deref() == Some(name) {
             return node
                 .bounds
                 .map(|b| ui::kurbo::Rect::new(b.x0, b.y0, b.x1, b.y1));
@@ -97,7 +97,7 @@ fn last_message(app: &mut TestApp<TlApp>) -> [f64; 4] {
 
 #[test]
 fn a_messages_menu_is_its_views_then_every_action_it_did_not_place() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut app = staged(DESKTOP);
     let row = last_message(&mut app);
     right_click(&mut app, center(row));
@@ -125,7 +125,7 @@ fn a_messages_menu_is_its_views_then_every_action_it_did_not_place() {
 
 #[test]
 fn choosing_the_views_own_command_runs_its_action_in_the_app() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut app = staged(DESKTOP);
     let row = last_message(&mut app);
     right_click(&mut app, center(row));
@@ -142,7 +142,7 @@ fn choosing_the_views_own_command_runs_its_action_in_the_app() {
 
 #[test]
 fn a_swipe_past_the_threshold_runs_the_action_in_the_app() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut app = staged(PHONE);
     assert!(!shows(&mut app, "Pinned"));
     let row = last_message(&mut app);
@@ -184,9 +184,9 @@ fn shots() {
     };
     let dir = std::path::PathBuf::from(dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     for (size, viewport) in [("desktop", DESKTOP), ("phone", PHONE)] {
-        for (shade, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
+        for (shade, theme) in [("light", tilo_ui_base::Theme::light()), ("dark", tilo_ui_base::Theme::dark())] {
             let mut app = staged(viewport);
             app.harness().set_theme(theme);
             settle(&mut app);
@@ -194,13 +194,13 @@ fn shots() {
             app.harness().render_png(&name("rest"));
             let row = last_message(&mut app);
             let (x, y) = center(row);
-            app.harness().send(&ui::synthetic_input::cursor_moved(x, y));
+            app.harness().send(&tilo_ui_base::synthetic_input::cursor_moved(x, y));
             app.harness().relayout();
             app.harness().render_png(&name("hover"));
             right_click(&mut app, (x, y));
             app.harness().relayout();
             app.harness().render_png(&name("menu"));
-            app.harness().send(&ui::synthetic_input::named_key(
+            app.harness().send(&tilo_ui_base::synthetic_input::named_key(
                 ui::winit::keyboard::NamedKey::Escape,
             ));
             app.harness().relayout();

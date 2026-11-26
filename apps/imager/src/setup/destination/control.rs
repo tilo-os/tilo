@@ -36,8 +36,8 @@ impl Presses {
 }
 
 pub struct Bound {
-    inner: ui::widget::Element,
-    bindings: Vec<ui::widget::ControlBindingMetadata>,
+    inner: tilo_ui_base::widget::Element,
+    bindings: Vec<tilo_ui_base::widget::ControlBindingMetadata>,
     keys: Option<Control>,
 }
 
@@ -59,7 +59,7 @@ pub fn is_activation_key(event: &winit::event::WindowEvent) -> bool {
 
 impl Bound {
     pub fn new<'a>(
-        inner: ui::widget::Element,
+        inner: tilo_ui_base::widget::Element,
         controls: impl IntoIterator<Item = (String, &'a Control)>,
     ) -> Self {
         Self {
@@ -79,23 +79,23 @@ impl Bound {
     }
 }
 
-impl ui::widget::Decorator for Bound {
-    type Inner = dyn ui::widget::Widget;
+impl tilo_ui_base::widget::Decorator for Bound {
+    type Inner = dyn tilo_ui_base::widget::Widget;
 
-    fn inner(&self) -> &(dyn ui::widget::Widget + 'static) {
+    fn inner(&self) -> &(dyn tilo_ui_base::widget::Widget + 'static) {
         &*self.inner
     }
 
-    fn inner_mut(&mut self) -> &mut (dyn ui::widget::Widget + 'static) {
+    fn inner_mut(&mut self) -> &mut (dyn tilo_ui_base::widget::Widget + 'static) {
         &mut *self.inner
     }
 
-    ui::provides!(dyn ui::widget::controls::ActionControls; inner = inner);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls; inner = inner);
 
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         if let Some(control) = &self.keys
             && self.inner.is_focused()
@@ -110,19 +110,19 @@ impl ui::widget::Decorator for Bound {
     }
 }
 
-impl ui::widget::controls::ActionControls for Bound {
+impl tilo_ui_base::widget::controls::ActionControls for Bound {
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        ui::widget::controls::take_control_invocation(&mut *self.inner)
+        tilo_ui_base::widget::controls::take_control_invocation(&mut *self.inner)
     }
 
     fn refresh_control_action_availability(
         &mut self,
         allowed: &std::collections::HashSet<ui::tilo_actions::ActionAddress>,
     ) {
-        ui::widget::controls::refresh_control_action_availability(&mut *self.inner, allowed);
+        tilo_ui_base::widget::controls::refresh_control_action_availability(&mut *self.inner, allowed);
     }
 
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         self.bindings.clone()
     }
 }
@@ -142,11 +142,11 @@ impl Control {
         &self.press.effect
     }
 
-    pub fn metadata(&self, control_id: &str) -> ui::widget::ControlBindingMetadata {
+    pub fn metadata(&self, control_id: &str) -> tilo_ui_base::widget::ControlBindingMetadata {
         let effect = &self.press.effect;
-        ui::widget::ControlBindingMetadata {
+        tilo_ui_base::widget::ControlBindingMetadata {
             control_id: control_id.to_owned(),
-            kind: ui::widget::ControlBindingKind::Action(effect.address_on(effect.published_at())),
+            kind: tilo_ui_base::widget::ControlBindingKind::Action(effect.address_on(effect.published_at())),
         }
     }
 

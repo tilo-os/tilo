@@ -20,7 +20,7 @@ pub mod locales;
 use std::rc::Rc;
 
 use ui::prelude::*;
-use ui::selection::KeySelection;
+use tilo_ui_base::selection::KeySelection;
 use ui::widget::{ListRow, TreeMarks, VecListModel, VirtualList};
 
 /// The sections that hold notes, by stable tree node id. The other nodes
@@ -143,7 +143,7 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
-    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+    fn catalog() -> Option<&'static tilo_ui_base::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)
     }
 
@@ -214,7 +214,7 @@ impl ResourceApp for App {
 
         Box::new(
             NavShell::new()
-                .content_kind(ui::widget::ContentKind::Page)
+                .content_kind(tilo_ui_base::widget::ContentKind::Page)
                 .mode(NavMode::Push)
                 .sidebar(Box::new(master))
                 .content(detail)

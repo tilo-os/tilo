@@ -9,13 +9,13 @@ use super::*;
 /// control's.
 #[test]
 fn a_german_bar_names_its_new_tab_and_its_tabs_controls_in_german() {
-    use crate::a11y::Role;
-    use crate::i18n::I18nManager;
-    const EN: &str = include_str!("../../locales/en-US.ftl");
-    const DE: &str = include_str!("../../locales/de-DE.ftl");
+    use tilo_ui_base::a11y::Role;
+    use tilo_ui_base::i18n::I18nManager;
+    const EN: &str = include_str!("../../../ui-base/locales/en-US.ftl");
+    const DE: &str = include_str!("../../../ui-base/locales/de-DE.ftl");
     I18nManager::install("en-US", "de-DE", &[("en-US", EN), ("de-DE", DE)]).unwrap();
-    let _settled = crate::motion::testing::settled();
-    let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
     let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Chat")], 1);
     b.set_window_controls(true);
     b.set_mark(1, Some(TabMark::Muted));

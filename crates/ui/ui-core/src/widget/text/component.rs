@@ -1,7 +1,7 @@
 //! [`Text`] as a described component.
 
-use crate::component::{Component, Described};
-use crate::tokens::TextRole;
+use tilo_ui_base::{component::Component, component::Described};
+use tilo_ui_base::tokens::TextRole;
 
 use super::{Text, TextSource};
 
@@ -29,7 +29,7 @@ pub struct TextProps {
     /// What it says is announced when it changes instead of only read on the way past: a line a
     /// person is told without looking (a notice passing, a status that moved). `polite` waits for
     /// a pause, `assertive` interrupts; unset, it is read without announcing.
-    pub live: Option<crate::a11y::Politeness>,
+    pub live: Option<tilo_ui_base::a11y::Politeness>,
 }
 
 impl Described for Text {
@@ -67,7 +67,7 @@ impl Described for Text {
     fn set_props(&mut self, props: TextProps) -> bool {
         let numeric = matches!(
             self.modifiers.kind,
-            Some(crate::text_render::TextKind::Numeric)
+            Some(tilo_ui_base::text_render::TextKind::Numeric)
         );
         let lines = props
             .lines

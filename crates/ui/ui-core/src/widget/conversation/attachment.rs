@@ -2,13 +2,13 @@
 
 use vello::kurbo::{Point, Rect, Size};
 
-use crate::format;
-use crate::icons::Icon;
-use crate::paint::PaintCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::Tone;
+use tilo_ui_base::format;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::Tone;
 use crate::widget::{ChipFace, ChipLead};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,8 +95,8 @@ impl UploadProgress {
             return Some(1.0);
         }
         let sent = self.sent.min(total);
-        Some(crate::num::f32_of_f64(
-            crate::num::f64_of_u64(sent) / crate::num::f64_of_u64(total),
+        Some(tilo_ui_base::num::f32_of_f64(
+            tilo_ui_base::num::f64_of_u64(sent) / tilo_ui_base::num::f64_of_u64(total),
         ))
     }
 
@@ -310,7 +310,7 @@ impl<'a> AttachmentFace<'a> {
         let theme = paint.theme;
         let caption = self.meta();
         let style = theme.text(TextRole::Caption);
-        let wrap = Some(crate::num::f32_of_f64(width));
+        let wrap = Some(tilo_ui_base::num::f32_of_f64(width));
         let (_, height) = paint.text.measure_style(&caption, wrap, &style);
         let ink = if self.summary.availability == Availability::Ready {
             theme.text_dim

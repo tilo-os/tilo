@@ -14,7 +14,7 @@ const UNRECORDED: &str = "history-local-action-unrecorded";
 
 #[derive(Default)]
 pub(super) struct LocalInputCapture {
-    queues: HashMap<crate::collaboration::RouteSpec, Queue>,
+    queues: HashMap<tilo_ui_base::collaboration::RouteSpec, Queue>,
     pending: HashMap<u64, PendingCapture>,
     transport_connected: bool,
     // One bounded, inert copy of the last authenticated pre-input surface.
@@ -34,20 +34,20 @@ pub(super) struct LocalInputCapture {
     /// is another app's). Edits on them still land and are saved here, and
     /// the person is told their history does not record them, until the
     /// connection is replaced.
-    reports_nothing: std::collections::HashSet<crate::collaboration::RouteSpec>,
+    reports_nothing: std::collections::HashSet<tilo_ui_base::collaboration::RouteSpec>,
     /// Edits made under input whose every route reports nothing. Only a
     /// recorded edit sets it.
     unrecorded_edits: crate::local_document_action::UnsignedEdits,
     /// Changes the broker refused, kept for the person's Retry.
     refused: Vec<(
-        crate::collaboration::RouteSpec,
+        tilo_ui_base::collaboration::RouteSpec,
         crate::local_document_action::CapturedAction,
     )>,
 }
 
 struct PendingCapture {
     capture: crate::local_document_action::CapturedAction,
-    route: crate::collaboration::RouteSpec,
+    route: tilo_ui_base::collaboration::RouteSpec,
     _lease: crate::local_document_action::Lease,
     /// The published surface a capture made under a stale one is reported
     /// against, held until its outcome is known.
@@ -61,7 +61,7 @@ impl LocalInputCapture {
     /// id of its own, reported from `now`.
     fn hold(
         &mut self,
-        route: crate::collaboration::RouteSpec,
+        route: tilo_ui_base::collaboration::RouteSpec,
         capture: crate::local_document_action::CapturedAction,
         lease: crate::local_document_action::Lease,
         now: crate::time::Instant,
@@ -241,7 +241,7 @@ impl App {
         if let Some(revision) = revision.as_ref() {
             let mut aliases: HashMap<
                 Option<uuid::Uuid>,
-                (crate::collaboration::RouteSpec, HashMap<String, String>),
+                (tilo_ui_base::collaboration::RouteSpec, HashMap<String, String>),
             > = HashMap::new();
             for address in snapshot.actions.keys() {
                 match self.actions.bound_publication.target(address) {
@@ -375,7 +375,7 @@ impl App {
             }
             // A new connection may be one the broker admits reports on.
             self.local_input_capture.reports_nothing.clear();
-            let unrecorded = crate::i18n::I18nManager::lookup_plain(UNRECORDED);
+            let unrecorded = tilo_ui_base::i18n::I18nManager::lookup_plain(UNRECORDED);
             if self.local_input_capture.failure.as_deref() == Some(unrecorded.as_str()) {
                 self.local_input_capture.failure = None;
                 self.needs_sync = true;
@@ -563,7 +563,7 @@ impl App {
         tracing::warn!("an edit was saved that this window's connection cannot record in history");
         if self.local_input_capture.failure.is_none() {
             self.local_input_capture.failure =
-                Some(crate::i18n::I18nManager::lookup_plain(UNRECORDED));
+                Some(tilo_ui_base::i18n::I18nManager::lookup_plain(UNRECORDED));
             self.needs_sync = true;
         }
     }
@@ -595,7 +595,7 @@ impl App {
     /// say so in plain words. A change still on its way says nothing.
     pub(super) fn local_input_capture_failed(&mut self, error: &str) {
         tracing::warn!(%error, "a change could not be saved to the history");
-        self.local_input_capture.failure = Some(crate::i18n::I18nManager::lookup_plain(
+        self.local_input_capture.failure = Some(tilo_ui_base::i18n::I18nManager::lookup_plain(
             "history-local-action-not-saved",
         ));
         self.needs_sync = true;
@@ -611,11 +611,11 @@ impl App {
         let mut resource = tilo_actions::ResourceSpec::new(
             UNSAVED_RESOURCE,
             UNSAVED_RESOURCE,
-            crate::i18n::I18nManager::lookup_plain("history-local-action-not-saved"),
+            tilo_ui_base::i18n::I18nManager::lookup_plain("history-local-action-not-saved"),
         );
         match tilo_actions::ActionSpec::operation(
             "retry",
-            crate::i18n::I18nManager::lookup_plain("history-local-action-retry"),
+            tilo_ui_base::i18n::I18nManager::lookup_plain("history-local-action-retry"),
             tilo_actions::OperationKind::Effect,
             UNSAVED_OPERATION,
             &(),
@@ -640,7 +640,7 @@ impl App {
             .and_then(|resource| tilo_actions::ActionBinding::unit_for(resource, "retry").ok());
         Some(match retry {
             Some(binding) => status.with_action(crate::widget::StatusAction {
-                label: crate::i18n::I18nManager::lookup_plain("history-local-action-retry"),
+                label: tilo_ui_base::i18n::I18nManager::lookup_plain("history-local-action-retry"),
                 binding,
             }),
             None => status,
@@ -756,7 +756,7 @@ fn is_connection_without_reports(error: &runtime_collab::LocalDocumentActionErro
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collaboration::{CollabEvent, CollabRequest, PeerTransport, RouteSpec};
+    use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest, collaboration::PeerTransport, collaboration::RouteSpec};
     use std::cell::RefCell;
 
     struct Peer(Rc<RefCell<Vec<CollabRequest>>>);
@@ -942,7 +942,7 @@ mod tests {
             let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
             let requests = Rc::new(RefCell::new(Vec::new()));
             app.collaboration.manager =
-                crate::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
+                tilo_ui_base::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
             let route = RouteSpec::app("notes", uuid::Uuid::new_v4());
             let queue = Queue::new();
             app.local_input_capture.queues.insert(route, queue.clone());
@@ -973,7 +973,7 @@ mod tests {
             let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
             let requests = Rc::new(RefCell::new(Vec::new()));
             app.collaboration.manager =
-                crate::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
+                tilo_ui_base::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
             let queue = Queue::new();
             let route = RouteSpec::app("retired", uuid::Uuid::new_v4());
             app.local_input_capture
@@ -1027,7 +1027,7 @@ mod tests {
             let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
             let requests = Rc::new(RefCell::new(Vec::new()));
             app.collaboration.manager =
-                crate::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
+                tilo_ui_base::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
             let route = RouteSpec::app("test", uuid::Uuid::new_v4());
             let queue = Queue::new();
             app.local_input_capture

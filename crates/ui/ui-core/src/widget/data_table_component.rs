@@ -6,13 +6,13 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::component::{Component, Described, Event, ResourceId, Value};
-use crate::selection::SelectionModel;
-use crate::text_render::TextKind;
-use crate::widget::Widget;
+use tilo_ui_base::{component::Component, component::Described, component::Event, component::ResourceId, component::Value};
+use tilo_ui_base::selection::SelectionModel;
+use tilo_ui_base::text_render::TextKind;
+use tilo_ui_base::widget::Widget;
 use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 
-crate::choice!(crate::text_render::TextKind, "TextKind", {
+tilo_ui_base::choice!(tilo_ui_base::text_render::TextKind, "TextKind", {
     Prose => "prose",
     Numeric => "numeric",
     Secret => "secret",
@@ -29,7 +29,7 @@ pub enum TableColumnWidth {
     Fixed,
 }
 
-crate::choice!(TableColumnWidth, "TableColumnWidth", {
+tilo_ui_base::choice!(TableColumnWidth, "TableColumnWidth", {
     Auto => "auto",
     Flex => "flex",
     Fixed => "fixed",
@@ -98,9 +98,9 @@ impl PartialEq for DataTableRowProps {
     }
 }
 
-crate::component::part_type!(DataTableColumnProps);
-crate::component::part_type!(DataTableRowProps);
-crate::component::part_type!(DataTableCellProps);
+tilo_ui_base::component::part_type!(DataTableColumnProps);
+tilo_ui_base::component::part_type!(DataTableRowProps);
+tilo_ui_base::component::part_type!(DataTableCellProps);
 
 /// A table of resources as columns and rows: the attributes of a device, the songs in a library, the
 /// rules of a firewall.
@@ -191,7 +191,7 @@ fn width_of(column: &DataTableColumnProps) -> ColumnWidth {
     match column.width.unwrap_or_default() {
         TableColumnWidth::Auto => ColumnWidth::Auto,
         TableColumnWidth::Flex => ColumnWidth::Flex(1.0),
-        TableColumnWidth::Fixed => ColumnWidth::Fixed(crate::num::f32_of_f64(
+        TableColumnWidth::Fixed => ColumnWidth::Fixed(tilo_ui_base::num::f32_of_f64(
             column.pixels.unwrap_or(120.0).max(1.0),
         )),
     }
@@ -382,7 +382,7 @@ impl Described for DescribedTable {
     }
 }
 
-impl crate::widget::Decorator for DescribedTable {
+impl tilo_ui_base::widget::Decorator for DescribedTable {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -397,7 +397,7 @@ impl crate::widget::Decorator for DescribedTable {
         "DataTable"
     }
 
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
         self.table.take_structure_change()
     }
 }

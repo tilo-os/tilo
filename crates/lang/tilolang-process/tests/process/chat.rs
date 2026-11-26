@@ -170,8 +170,8 @@ fn a_members_picture_reaches_another_members_view_of_an_earlier_message() {
         Rc::default(),
         &bus,
     );
-    let ada_id = ui::permissions::MemberId::person("ada");
-    let bo_id = ui::permissions::MemberId::person("bo");
+    let ada_id = tilo_ui_base::permissions::MemberId::person("ada");
+    let bo_id = tilo_ui_base::permissions::MemberId::person("bo");
     bus.member(ada_id.clone(), "Ada");
     bus.member(bo_id, "Bo");
     settle_all(&mut host, &mut [&mut ada, &mut bo], |_| false);

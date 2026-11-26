@@ -256,17 +256,17 @@ mod tests {
         fn enter(person: Option<&str>) -> Self {
             tilo_app_window::i18n::ensure();
             Self {
-                prev_locale: ui::i18n::I18nManager::current_locale(),
-                prev_person: ui::i18n::set_person_locale(person),
+                prev_locale: tilo_ui_base::i18n::I18nManager::current_locale(),
+                prev_person: tilo_ui_base::i18n::set_person_locale(person),
             }
         }
     }
 
     impl Drop for ThreadLocaleGuard {
         fn drop(&mut self) {
-            let _ = ui::i18n::set_person_locale(self.prev_person.as_deref());
-            ui::i18n::I18nManager::set_locale(&self.prev_locale);
-            ui::format::region::install_here(None, None);
+            let _ = tilo_ui_base::i18n::set_person_locale(self.prev_person.as_deref());
+            tilo_ui_base::i18n::I18nManager::set_locale(&self.prev_locale);
+            tilo_ui_base::format::region::install_here(None, None);
         }
     }
 
@@ -280,19 +280,19 @@ mod tests {
         };
 
         let _guard = ThreadLocaleGuard::enter(Some("en-US"));
-        ui::i18n::I18nManager::set_locale("en-US");
+        tilo_ui_base::i18n::I18nManager::set_locale("en-US");
 
         let (compiled, actions) = compile_probe();
         let platform = Rc::new(Packages::new(Rc::new(vec![compiled]), Vec::new()));
-        let utc = ui::clock::Zone::of(ui::format::TimeZone::UTC);
+        let utc = tilo_ui_base::clock::Zone::of(tilo_ui_base::format::TimeZone::UTC);
         let mut harness = LocalAgreementHost::open(
             "Packages",
             Rc::clone(&platform) as Rc<dyn Platform>,
             move |formats| {
-                ui::format::region::install_here(Some(formats), Some(utc.clone()));
+                tilo_ui_base::format::region::install_here(Some(formats), Some(utc.clone()));
             },
             |locale| {
-                let _ = ui::i18n::set_person_locale(Some(locale));
+                let _ = tilo_ui_base::i18n::set_person_locale(Some(locale));
             },
         );
         assert_platform_agrees(&mut harness, &actions);
@@ -300,10 +300,10 @@ mod tests {
         let catalog_rev = || {
             platform
                 .words_revision()
-                .wrapping_sub(ui::format::region::revision())
+                .wrapping_sub(tilo_ui_base::format::region::revision())
         };
         let rev_before = catalog_rev();
-        ui::i18n::I18nManager::set_locale("de-DE");
+        tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
         assert_ne!(
             catalog_rev(),
             rev_before,

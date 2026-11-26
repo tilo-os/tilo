@@ -60,10 +60,10 @@ fn a_region_the_person_changes_reaches_the_sessions_own_formats() {
     // here is never another test's region, nor this machine's.
     let _home = tilo_test_env::TestHome::new().expect("a home");
     let mut session = session();
-    let before = ui::format::region::current();
+    let before = tilo_ui_base::format::region::current();
     assert_eq!(
         before.first_day,
-        ui::format::region::FirstDayOfWeek::Monday,
+        tilo_ui_base::format::region::FirstDayOfWeek::Monday,
         "a home that chose no region starts its week on Monday, so Sunday below is a change"
     );
 
@@ -72,15 +72,15 @@ fn a_region_the_person_changes_reaches_the_sessions_own_formats() {
     // on a later pass, though the session started with Monday.
     choose("Sunday", "H12");
     when(&mut session, || {
-        ui::format::region::current().first_day == ui::format::region::FirstDayOfWeek::Sunday
+        tilo_ui_base::format::region::current().first_day == tilo_ui_base::format::region::FirstDayOfWeek::Sunday
     });
     assert_eq!(
-        ui::clock::hour_minute(14, 5),
+        tilo_ui_base::clock::hour_minute(14, 5),
         "2:05 PM",
         "their views write the clock the person reads"
     );
     assert_eq!(
-        ui::format::first_weekday(),
+        tilo_ui_base::format::first_weekday(),
         jiff::civil::Weekday::Sunday,
         "the week starts on the day the person chose"
     );
@@ -88,9 +88,9 @@ fn a_region_the_person_changes_reaches_the_sessions_own_formats() {
     // And back: their region is read again, not kept from the day the session started.
     choose("Monday", "H24");
     when(&mut session, || {
-        ui::format::region::current().first_day == ui::format::region::FirstDayOfWeek::Monday
+        tilo_ui_base::format::region::current().first_day == tilo_ui_base::format::region::FirstDayOfWeek::Monday
     });
-    assert_eq!(ui::format::first_weekday(), jiff::civil::Weekday::Monday);
-    assert_eq!(ui::clock::hour_minute(14, 5), "14:05");
-    ui::format::region::install(before);
+    assert_eq!(tilo_ui_base::format::first_weekday(), jiff::civil::Weekday::Monday);
+    assert_eq!(tilo_ui_base::clock::hour_minute(14, 5), "14:05");
+    tilo_ui_base::format::region::install(before);
 }

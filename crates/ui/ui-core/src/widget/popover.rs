@@ -7,23 +7,23 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::autocomplete::{Suggestion, SuggestionList};
 use crate::widget::floating_surface;
-use crate::widget::{AppModel, ModelPath, TaffyTreeExt, Widget};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
 
 /// Side of the anchor a popover prefers to open on. It flips to the
 /// opposite side when the window is too small there; see
 /// [`Popover::resolved_side`].
 pub use crate::widget::floating_surface::PopoverSide;
 
-use crate::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 pub use crate::widget::floating_surface::PanelAlign;
 
 #[derive(Clone, Copy, Debug, Default)]
-#[crate::component::not_a_component(part, "a popover with no body of its own")]
+#[tilo_ui_base::component::not_a_component(part, "a popover with no body of its own")]
 pub struct NoContent;
 
 impl Widget for NoContent {
@@ -107,7 +107,7 @@ fn mark_main_answer(content: &mut dyn Widget) {
 
 /// An anchored floating Panel holding an option menu or any content widget.
 /// See the module docs for the contract.
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "the panel `ui.Popover` is built from, around the view's content"
 )]
@@ -169,8 +169,8 @@ struct PopoverPanel {
     /// The host must place the content again.
     stale: bool,
     /// Its coming from the anchor and going back (`motion::Appear`).
-    appear: crate::motion::Appearing,
-    drawn: crate::motion::Pose,
+    appear: tilo_ui_base::motion::Appearing,
+    drawn: tilo_ui_base::motion::Pose,
 
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
@@ -214,8 +214,8 @@ impl<C: Widget> Popover<C> {
                 content_size: (0.0, 0.0),
                 content_origin: Point::ZERO,
                 stale: false,
-                appear: crate::motion::Appearing::closed(),
-                drawn: crate::motion::Pose::REST,
+                appear: tilo_ui_base::motion::Appearing::closed(),
+                drawn: tilo_ui_base::motion::Pose::REST,
             },
         }
     }
@@ -421,7 +421,7 @@ impl<C: Widget> Popover<C> {
     /// Width available to the body inside the current placement viewport.
     /// Hosts use this before measuring responsive content, not after clipping.
     pub fn available_content_width(&self, theme: &Theme) -> f32 {
-        crate::num::f32_of_f64(
+        tilo_ui_base::num::f32_of_f64(
             (self.panel.area(theme).width() - 2.0 * self.panel.padding(theme))
                 .floor()
                 .max(0.0),
@@ -689,8 +689,8 @@ impl PopoverPanel {
             return;
         }
         let available = Size {
-            width: taffy::AvailableSpace::Definite(crate::num::f32_of_f64(inner.width())),
-            height: taffy::AvailableSpace::Definite(crate::num::f32_of_f64(inner.height())),
+            width: taffy::AvailableSpace::Definite(tilo_ui_base::num::f32_of_f64(inner.width())),
+            height: taffy::AvailableSpace::Definite(tilo_ui_base::num::f32_of_f64(inner.height())),
         };
         let laid_out = floating_surface::DetachedContent::lay_out(content, theme, available, tr);
         content.apply_layout(&laid_out.taffy, laid_out.node, inner.origin());
@@ -739,7 +739,7 @@ impl PopoverPanel {
         &self,
         content: &mut dyn Widget,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         floating_surface::DetachedContent::forward(
             content,
@@ -785,7 +785,7 @@ impl PopoverPanel {
             self.content_size = (f64::from(l.size.width), f64::from(l.size.height));
             let theme = self.layout_theme.clone();
             if self.open {
-                crate::text_render::with_layout_renderer(&theme, |tr| {
+                tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| {
                     self.place(content, tr, &theme);
                 });
             }
@@ -812,11 +812,11 @@ impl PopoverPanel {
         }
         if self.open {
             let theme = self.layout_theme.clone();
-            crate::text_render::with_layout_renderer(&theme, |tr| self.place(content, tr, &theme));
+            tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| self.place(content, tr, &theme));
         }
     }
 
-    fn draw_overlay(&mut self, content: &mut dyn Widget, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, content: &mut dyn Widget, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -827,7 +827,7 @@ impl PopoverPanel {
         // closing panel is drawn until it has gone, but takes no input.
         self.appear.follow(self.open, theme.motion());
         if !self.appear.is_drawn() {
-            self.drawn = crate::motion::Pose::REST;
+            self.drawn = tilo_ui_base::motion::Pose::REST;
             return;
         }
         self.layout_theme = theme.clone();
@@ -851,7 +851,7 @@ impl PopoverPanel {
                 self.menu.paint(scene, transform, text_renderer, theme);
             } else {
                 floating_surface::paint(scene, transform, self.rect, theme);
-                let on_panel = theme.on_ground(crate::chrome::panel_ground(theme));
+                let on_panel = theme.on_ground(tilo_ui_base::chrome::panel_ground(theme));
                 // A hosted content follows the panel on the host's next
                 // layout pass; until then it is drawn where it belongs.
                 let shift = self.content_target(theme) - self.content_origin;
@@ -860,7 +860,7 @@ impl PopoverPanel {
                 }
                 let transform = transform * Affine::translate(shift);
                 content.draw_child(scene, transform, text_renderer, &on_panel, &env);
-                content.draw_overlay(&mut crate::draw::DrawCtx::new(
+                content.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                     scene,
                     transform,
                     text_renderer,
@@ -875,7 +875,7 @@ impl PopoverPanel {
         &mut self,
         content: &mut dyn Widget,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         self.dirty = true;
         if !self.open {
@@ -928,7 +928,7 @@ impl PopoverPanel {
                 {
                     // The panel takes these before the window does, as a dialog does: the answer
                     // the keyboard is on is pressed here, and Enter gives it.
-                    crate::widget::activate_focused(
+                    tilo_ui_base::widget::activate_focused(
                         content,
                         &mut ctx.state,
                         ctx.path,
@@ -971,8 +971,8 @@ impl PopoverPanel {
         }
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let Some(options) = self.options.as_ref() else {
             return self.label.as_ref().map(|label| {
                 AccessNode::new(Role::Group)
@@ -1023,11 +1023,11 @@ impl PopoverPanel {
     fn body_size_style(&self, theme: &Theme) -> (Dimension, Dimension) {
         if self.presented.is_none() {
             let given = self.max_width.map_or(Dimension::auto(), |width| {
-                Dimension::length(crate::num::f32_of_f64(width))
+                Dimension::length(tilo_ui_base::num::f32_of_f64(width))
             });
             return (given, Dimension::auto());
         }
-        let available = Dimension::length(crate::num::f32_of_f64(self.body_width(theme)));
+        let available = Dimension::length(tilo_ui_base::num::f32_of_f64(self.body_width(theme)));
         if self.is_sheet() || self.max_width.is_some() {
             (available, Dimension::auto())
         } else {
@@ -1064,7 +1064,7 @@ impl PopoverPanel {
 /// The body of a prompt popover ([`Popover::prompt`]): a caption, one
 /// field and a hint under it. Enter submits what was typed; Escape closes
 /// the popover without it.
-#[crate::component::not_a_component(part, "the body of a prompt popover")]
+#[tilo_ui_base::component::not_a_component(part, "the body of a prompt popover")]
 pub struct PopoverPrompt {
     caption: String,
     hint: String,
@@ -1159,12 +1159,12 @@ impl PopoverPrompt {
 impl Widget for PopoverPrompt {
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let (state, path) = crate::doc::document(state, path);
+        let (state, path) = tilo_ui_base::doc::document(state, path);
         Widget::perform_action(&mut self.input, action, &[], state, path)
     }
 
@@ -1177,14 +1177,14 @@ impl Widget for PopoverPrompt {
         self.theme = theme.clone();
         let (w, h) = self.size(theme);
         let style = Style {
-            size: Size::from_lengths(crate::num::f32_of_f64(w), crate::num::f32_of_f64(h)),
+            size: Size::from_lengths(tilo_ui_base::num::f32_of_f64(w), tilo_ui_base::num::f32_of_f64(h)),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         let field = self.field_rect();
         self.input.apply_layout_external(field);
     }
@@ -1199,7 +1199,7 @@ impl Widget for PopoverPrompt {
         self.layout_dirty = false;
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1213,7 +1213,7 @@ impl Widget for PopoverPrompt {
                 &self.caption,
                 colors.text_primary,
                 transform.pre_translate(Vec2::new(self.rect.x0, self.rect.y0)),
-                Some(crate::num::f32_of_f64(self.rect.width())),
+                Some(tilo_ui_base::num::f32_of_f64(self.rect.width())),
                 &theme.text(TextRole::Label),
             );
         }
@@ -1225,13 +1225,13 @@ impl Widget for PopoverPrompt {
                 &self.hint,
                 colors.text_dim,
                 transform.pre_translate(Vec2::new(self.rect.x0, y)),
-                Some(crate::num::f32_of_f64(self.rect.width())),
+                Some(tilo_ui_base::num::f32_of_f64(self.rect.width())),
                 &theme.text(TextRole::Caption),
             );
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -1270,11 +1270,11 @@ impl Widget for PopoverPrompt {
         self.input.ime_edit_fingerprint(key)
     }
 
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
         Widget::ime_content(&self.input)
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let mut node = Widget::accessibility(&self.input)?;
         if !self.caption.is_empty() {
             node.name = Some(self.caption.clone());
@@ -1451,17 +1451,17 @@ impl Popover {
     }
 }
 
-impl<C: Widget + 'static> crate::widget::controls::ActionControls for Popover<C> {
+impl<C: Widget + 'static> tilo_ui_base::widget::controls::ActionControls for Popover<C> {
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         if let Some(dismiss) = self.panel.dismiss.as_mut() {
             dismiss.attach(domain, attachment);
         }
         for child in self.children_mut() {
-            crate::widget::controls::attach_controls(child, domain, attachment);
+            tilo_ui_base::widget::controls::attach_controls(child, domain, attachment);
         }
     }
 
@@ -1473,7 +1473,7 @@ impl<C: Widget + 'static> crate::widget::controls::ActionControls for Popover<C>
             .or_else(|| {
                 self.children_mut()
                     .into_iter()
-                    .find_map(crate::widget::controls::take_control_invocation)
+                    .find_map(tilo_ui_base::widget::controls::take_control_invocation)
             })
     }
 
@@ -1485,19 +1485,19 @@ impl<C: Widget + 'static> crate::widget::controls::ActionControls for Popover<C>
             dismiss.refresh_availability(allowed);
         }
         for child in self.children_mut() {
-            crate::widget::controls::refresh_control_action_availability(child, allowed);
+            tilo_ui_base::widget::controls::refresh_control_action_availability(child, allowed);
         }
     }
 }
 
 impl<C: Widget + 'static> Widget for Popover<C> {
-    crate::provides!(dyn crate::widget::controls::ActionControls,);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls,);
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         if self.panel.open && self.panel.stale {
-            crate::widget::note_layout_moved();
+            tilo_ui_base::widget::note_layout_moved();
         }
-        let content = super::defaults::update(self.children_mut(), state, path);
+        let content = tilo_ui_base::widget::defaults::update(self.children_mut(), state, path);
         content | self.panel.menu.advance()
     }
 
@@ -1541,7 +1541,7 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         self.panel.apply_layout(&mut self.content, taffy, node);
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1550,7 +1550,7 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.panel.draw_overlay(
             &mut self.content,
-            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
         );
     }
 
@@ -1597,17 +1597,17 @@ impl<C: Widget + 'static> Widget for Popover<C> {
                     || self.panel.menu.needs_animation_frame()))
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.panel.handle_event(&mut self.content, event, ctx);
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.panel.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.panel.dirty, self)
     }
 
     fn mark_drawn(&mut self) {
         self.panel.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
         // A closed panel's content is laid out in the host's tree (so reopening finds its
         // nodes) but not painted ([`Self::for_each_layout_child`] reaches it,
         // [`Self::children_mut`] does not).
@@ -1673,14 +1673,14 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         self.panel.hidden()
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.panel.accessibility()
     }
 }
 
 /// A button that opens a popover anchored to its own rect
 /// ([`crate::widget::Button::with_popover`]): a filter's options, a share sheet's details.
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "the button and its panel `ui.PopoverButton` is built from"
 )]
@@ -1763,7 +1763,7 @@ impl<C: Widget + 'static> PopoverButton<C> {
 }
 
 impl<C: Widget + 'static> Widget for PopoverButton<C> {
-    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+    fn set_platform_conventions(&mut self, conventions: tilo_ui_base::platform::PlatformConventions) {
         self.button.set_platform_conventions(conventions);
         self.popover.set_platform_conventions(conventions);
     }
@@ -1788,7 +1788,7 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let at = crate::widget::layout_rect(taffy, node, origin).origin();
+        let at = tilo_ui_base::widget::layout_rect(taffy, node, origin).origin();
         let Some((button, popover)) = Self::nodes(taffy, node) else {
             return;
         };
@@ -1797,7 +1797,7 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
         self.popover.apply_layout(taffy, popover, at);
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1810,14 +1810,14 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
             .draw_child(scene, transform, text_renderer, theme, &env);
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        self.button.draw_overlay(&mut crate::draw::DrawCtx::new(
+        self.button.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -1825,7 +1825,7 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
             env.clone(),
         ));
         self.popover.set_anchor(self.button.get_rect());
-        self.popover.draw_overlay(&mut crate::draw::DrawCtx::new(
+        self.popover.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -1834,7 +1834,7 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
         ));
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let nodes = Self::nodes(ctx.taffy, ctx.node_id);
         let (button, popover) = nodes.unwrap_or((ctx.node_id, ctx.node_id));
         if self.popover.is_open() {
@@ -1849,7 +1849,7 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
         self.button
             .handle_event(event, &mut ctx.reborrow(ctx.path, button));
         let path = ctx.path;
-        crate::widget::controls::start_pending_control_invocations(
+        tilo_ui_base::widget::controls::start_pending_control_invocations(
             &mut self.button,
             &mut ctx.edits(),
             path,
@@ -1891,9 +1891,9 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if !self.button.perform_action(action, key_path, state, path) {

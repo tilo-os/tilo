@@ -26,7 +26,7 @@ fn a_window_asked_for_opens_its_slot_and_its_content_arrives_inside_its_frame() 
         }
         {
             let mut g = make_group();
-            g.set_motion_source(crate::tokens::MotionSource::Keyboard);
+            g.set_motion_source(tilo_ui_base::tokens::MotionSource::Keyboard);
             g.start_spawn_animation();
             assert!(
                 (g.layout_width_px() - g.dest_width_px()).abs() < 0.5,
@@ -44,7 +44,7 @@ impl Widget for Arrives {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _t: &crate::theme::Theme,
+        _t: &tilo_ui_base::theme::Theme,
         _m: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         taffy.leaf_node(taffy::Style::default())
@@ -95,7 +95,7 @@ fn a_new_tab_shows_the_tab_before_it_until_it_draws_then_cross_fades() {
         drawn.set(true);
         g.advance_tab_handover(&theme);
         assert_eq!(g.stand_in_tab(), None, "it has drawn");
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let fade = g.tab_fade.as_ref().expect("the two cross-fade");
         assert_eq!(
             fade.outgoing(now).map(|(id, alpha)| (*id, alpha)),
@@ -190,12 +190,12 @@ fn a_springing_window_is_moved_and_clipped_and_never_stretched() {
 fn a_key_closes_a_window_at_once_and_a_click_after_its_fade() {
     crate::time::testing::with_monotonic_time(crate::time::now(), || {
         let mut g = make_group();
-        g.set_motion_source(crate::tokens::MotionSource::Keyboard);
+        g.set_motion_source(tilo_ui_base::tokens::MotionSource::Keyboard);
         g.start_closing();
         assert!(g.close_complete(), "a key's close is complete at once");
 
         let mut g = make_group();
-        g.set_motion_source(crate::tokens::MotionSource::Pointer);
+        g.set_motion_source(tilo_ui_base::tokens::MotionSource::Pointer);
         g.start_closing();
         assert!(!g.close_complete(), "a click's close fades first");
         assert!(

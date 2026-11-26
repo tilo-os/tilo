@@ -25,7 +25,7 @@ use crate::Shared;
 use crate::i18n::{t, t_args};
 use crate::platform::notice::{Notice, Notices};
 use tilo_session_core::desktop::notifications::NotificationIconKind;
-use ui::i18n::ArgValue;
+use tilo_ui_base::i18n::ArgValue;
 
 /// The two app sheets, and what they were answered.
 pub(crate) struct AppSheets {

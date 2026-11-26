@@ -3,8 +3,9 @@
 
 use tilo_ui::State;
 use tilo_ui::headless::Driver;
-use tilo_ui::theme::Theme;
-use tilo_ui::widget::{Container, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui::widget::Container;
+use tilo_ui_base::widget::Widget;
 use winit::event::ElementState;
 
 fn frame(root: Box<dyn Widget>) -> Driver {
@@ -13,8 +14,8 @@ fn frame(root: Box<dyn Widget>) -> Driver {
         root,
         (400, 240),
         Theme::dark(),
-        tilo_ui::font_catalog::fixture_renderer(),
-        tilo_ui::permissions::MemberId::person("portable-review"),
+        tilo_ui_base::font_catalog::fixture_renderer(),
+        tilo_ui_base::permissions::MemberId::person("portable-review"),
     )
 }
 
@@ -67,13 +68,13 @@ fn typing_into_a_block_editor_re_measures_only_the_edited_line() {
         "the editor's focused line owns keyboard focus"
     );
 
-    let x = tilo_ui::keys::parse("x");
-    frame.send_host_event(&tilo_ui::synthetic_input::key_input(
+    let x = tilo_ui_base::keys::parse("x");
+    frame.send_host_event(&tilo_ui_base::synthetic_input::key_input(
         &x,
         ElementState::Pressed,
     ));
     let typed = frame.last_relayout();
-    frame.send_host_event(&tilo_ui::synthetic_input::key_input(
+    frame.send_host_event(&tilo_ui_base::synthetic_input::key_input(
         &x,
         ElementState::Released,
     ));
@@ -111,13 +112,13 @@ fn typing_into_a_block_editor_re_measures_only_the_edited_line() {
     // the composed tree (its node ids, focus) survives. The retained
     // geometry check compares the result with a fresh composition.
     let rebuilt_before = frame.rebuilt_frames();
-    let enter = tilo_ui::keys::parse("Enter");
-    frame.send_host_event(&tilo_ui::synthetic_input::key_input(
+    let enter = tilo_ui_base::keys::parse("Enter");
+    frame.send_host_event(&tilo_ui_base::synthetic_input::key_input(
         &enter,
         ElementState::Pressed,
     ));
     let split = frame.last_relayout();
-    frame.send_host_event(&tilo_ui::synthetic_input::key_input(
+    frame.send_host_event(&tilo_ui_base::synthetic_input::key_input(
         &enter,
         ElementState::Released,
     ));
@@ -173,8 +174,8 @@ fn note_frame(text: &str) -> Driver {
 /// typing those characters lights up — and not on the rest of the block.
 #[test]
 fn an_agents_written_text_glows_on_exactly_those_characters() {
-    use tilo_ui::permissions::MemberId;
-    use tilo_ui::presence::SelectionRange;
+    use tilo_ui_base::permissions::MemberId;
+    use tilo_ui_base::presence::SelectionRange;
     let text = "The quick brown fox jumps";
     let key = tilo_rich_edit::block_editor::block_presence_key("b1c2d3e4");
     let (start, end) = (4u64, 9u64); // "quick"
@@ -233,7 +234,7 @@ fn an_agents_written_text_glows_on_exactly_those_characters() {
         std::fs::create_dir_all(&dir).unwrap();
         typed_frame.render_png(&dir.join("note-person-typing.png"));
         agent_frame.render_png(&dir.join("note-agent-caret-and-glow.png"));
-        agent_frame.set_theme(tilo_ui::theme::Theme::light());
+        agent_frame.set_theme(tilo_ui_base::theme::Theme::light());
         agent_frame.render_png(&dir.join("note-agent-caret-and-glow-light.png"));
     }
     let line = (0, typed.1, width / 2, typed.3);
@@ -253,7 +254,7 @@ fn an_agents_written_text_glows_on_exactly_those_characters() {
 /// the same words.
 #[test]
 fn an_agent_writing_wears_one_tag_at_its_caret() {
-    use tilo_ui::permissions::MemberId;
+    use tilo_ui_base::permissions::MemberId;
     let text = "The quick brown fox jumps";
     let key = tilo_rich_edit::block_editor::block_presence_key("b1c2d3e4");
     let mut frame = note_frame(text);

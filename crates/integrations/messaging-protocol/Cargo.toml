@@ -44,6 +44,7 @@ tokio-tungstenite = { version = "=0.28.0", default-features = false, features = 
 
 [dev-dependencies]
 messages = { path = "../../../apps/messages" }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
 # The headless test host the tests open the app in, as a person's device hosts it.
 tilo-app-test-host = { path = "../../sdk/tilo-app-test-host" }

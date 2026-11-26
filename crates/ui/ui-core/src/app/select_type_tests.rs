@@ -3,14 +3,14 @@
 //! message.
 
 use super::*;
-use crate::presence::capability::PublishesPresence;
+use tilo_ui_base::presence::capability::PublishesPresence;
 use crate::shared_selection::{SharedSelection, set_send_host_available};
 
 /// A list whose third row is selected.
 struct SelectedRow;
 
 impl Widget for SelectedRow {
-    crate::provides!(dyn PublishesPresence);
+    tilo_ui_base::provides!(dyn PublishesPresence);
     crate::testing::inert_widget_methods!(leaf_layout);
     fn name(&self) -> &'static str {
         "selected-row"
@@ -27,7 +27,7 @@ impl PublishesPresence for SelectedRow {
 }
 
 fn typed(text: &str) -> winit::event::WindowEvent {
-    crate::synthetic_input::char_key(text)
+    tilo_ui_base::synthetic_input::char_key(text)
 }
 
 #[cfg(feature = "native")]
@@ -125,14 +125,14 @@ fn the_window_paints_no_caret_under_the_box_that_has_the_keys() {
         fn name(&self) -> &'static str {
             "caret-probe"
         }
-        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
             #[allow(
                 unused_variables,
                 unused_mut,
                 reason = "a draw binds only the parts it uses"
             )]
             let (_, _, _, _, mut env) = ctx.parts();
-            self.0.set(Some(crate::caret_owner::shown()));
+            self.0.set(Some(tilo_ui_base::caret_owner::shown()));
         }
     }
     let carets = Rc::new(Cell::new(None));

@@ -2,7 +2,7 @@
 //! code inside the windows the process already has.
 
 use tilo_resource::{Doc, Reader};
-use ui_core::permissions::{LivePermissions, Role};
+use tilo_ui_base::{permissions::LivePermissions, permissions::Role};
 use ui_core::widget::AppWidget;
 
 use super::app::{Editing, ResourceApp, action_registry, build_root, role_permissions};
@@ -33,7 +33,7 @@ pub fn publish_root<A: ResourceApp>() -> i32 {
     };
     let permissions =
         LivePermissions::fixed(role_permissions("dev", "dev", Role::Owner).borrow().clone());
-    let me = ui_core::collaboration::local_user_id();
+    let me = tilo_ui_base::collaboration::local_user_id();
     let root = build_root::<A>(
         reader,
         Editing::Live {

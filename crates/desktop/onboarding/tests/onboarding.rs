@@ -98,7 +98,7 @@ fn every_step_renders_without_a_screen() {
 #[test]
 fn paired_device_confirmation_names_the_outcome_in_both_themes() {
     let mut app = staged("ready-joined");
-    for theme in [ui::theme::Theme::light(), ui::theme::Theme::dark()] {
+    for theme in [tilo_ui_base::theme::Theme::light(), tilo_ui_base::theme::Theme::dark()] {
         app.harness().set_theme(theme);
         app.harness().resize((800, 600)).unwrap();
         app.settle();

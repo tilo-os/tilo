@@ -51,7 +51,7 @@ impl Unit {
     #[must_use]
     pub fn format(self, value: u64) -> String {
         match self {
-            Self::Bytes => crate::format::size(value),
+            Self::Bytes => tilo_ui_base::format::size(value),
             Self::Files => counted(value, "jobs-files-one", "jobs-files"),
             Self::Items => counted(value, "jobs-items-one", "jobs-items"),
             Self::Steps => counted(value, "jobs-steps-one", "jobs-steps"),
@@ -61,11 +61,11 @@ impl Unit {
 
 fn counted(value: u64, one: &str, other: &str) -> String {
     let key = if value == 1 { one } else { other };
-    crate::i18n::widget_format(
+    tilo_ui_base::i18n::widget_format(
         key,
         &[(
             "count",
-            crate::i18n::ArgValue::from(crate::format::count(value)),
+            tilo_ui_base::i18n::ArgValue::from(tilo_ui_base::format::count(value)),
         )],
     )
 }
@@ -294,9 +294,9 @@ impl Job {
             reason = "a clamped fraction is a whole percentage point"
         )]
         let percent = (fraction * 100.0).round() as u32;
-        Some(crate::i18n::widget_format(
+        Some(tilo_ui_base::i18n::widget_format(
             "jobs-percent",
-            &[("percent", crate::i18n::ArgValue::from(percent.to_string()))],
+            &[("percent", tilo_ui_base::i18n::ArgValue::from(percent.to_string()))],
         ))
     }
 
@@ -306,24 +306,24 @@ impl Job {
     pub fn live_line(&self) -> String {
         let phase = self.phase.trim();
         match (&self.progress, phase.is_empty()) {
-            (_, true) => crate::i18n::widget_format("jobs-starting", &[]),
+            (_, true) => tilo_ui_base::i18n::widget_format("jobs-starting", &[]),
             (Progress::Starting, false) => phase.to_owned(),
-            (Progress::Measured { done, total }, false) => crate::i18n::widget_format(
+            (Progress::Measured { done, total }, false) => tilo_ui_base::i18n::widget_format(
                 "jobs-phase-of",
                 &[
-                    ("phase", crate::i18n::ArgValue::from(phase.to_owned())),
-                    ("done", crate::i18n::ArgValue::from(self.unit.format(*done))),
+                    ("phase", tilo_ui_base::i18n::ArgValue::from(phase.to_owned())),
+                    ("done", tilo_ui_base::i18n::ArgValue::from(self.unit.format(*done))),
                     (
                         "total",
-                        crate::i18n::ArgValue::from(self.unit.format(*total)),
+                        tilo_ui_base::i18n::ArgValue::from(self.unit.format(*total)),
                     ),
                 ],
             ),
-            (Progress::Seen { seen }, false) => crate::i18n::widget_format(
+            (Progress::Seen { seen }, false) => tilo_ui_base::i18n::widget_format(
                 "jobs-phase-seen",
                 &[
-                    ("phase", crate::i18n::ArgValue::from(phase.to_owned())),
-                    ("seen", crate::i18n::ArgValue::from(self.unit.format(*seen))),
+                    ("phase", tilo_ui_base::i18n::ArgValue::from(phase.to_owned())),
+                    ("seen", tilo_ui_base::i18n::ArgValue::from(self.unit.format(*seen))),
                 ],
             ),
         }
@@ -334,11 +334,11 @@ impl Job {
     pub fn outcome_line(&self) -> Option<String> {
         match self.outcome.as_ref()? {
             Outcome::Done(summary) => Some(summary.clone()),
-            Outcome::Failed(reason) => Some(crate::i18n::widget_format(
+            Outcome::Failed(reason) => Some(tilo_ui_base::i18n::widget_format(
                 "jobs-failed",
-                &[("reason", crate::i18n::ArgValue::from(reason.clone()))],
+                &[("reason", tilo_ui_base::i18n::ArgValue::from(reason.clone()))],
             )),
-            Outcome::Stopped => Some(crate::i18n::widget_format("jobs-stopped", &[])),
+            Outcome::Stopped => Some(tilo_ui_base::i18n::widget_format("jobs-stopped", &[])),
         }
     }
 
@@ -535,7 +535,7 @@ fn finish(id: JobId, outcome: Outcome) {
                     title,
                     crate::attention::Action::new(
                         crate::attention::SHOW_JOB,
-                        crate::i18n::widget_format("jobs-show-me", &[]),
+                        tilo_ui_base::i18n::widget_format("jobs-show-me", &[]),
                     ),
                 )
                 .about(subject.label)

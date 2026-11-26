@@ -20,8 +20,9 @@ use vello::peniko::{Blob, Color, Fill, ImageBrush};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::pictures::Pictures;
-use crate::theme::Theme;
-use crate::widget::{PictureSource, TaffyTreeExt, Widget};
+use tilo_ui_base::theme::Theme;
+use crate::widget::PictureSource;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 /// The widest a stroke's brush may be, in artwork units.
 const MAX_SIZE: f64 = 512.0;
@@ -119,7 +120,7 @@ impl PaintSurface {
     /// The pressure a hand lays with, at `speed` units a sample: a fast sweep thins, a slow one
     /// swells, and a pen that reports pressure says its own.
     fn pressure(&self, speed: f64) -> f64 {
-        if let Some(pen) = crate::pen::current()
+        if let Some(pen) = tilo_ui_base::pen::current()
             && pen.pressure > 0.0
         {
             return pen.pressure.clamp(0.0, 1.0);
@@ -131,7 +132,7 @@ impl PaintSurface {
     fn live_brush(&self) -> Brush {
         let mut brush = self.brush;
         if brush.preset == Preset::Calligraphy
-            && let Some(pen) = crate::pen::current()
+            && let Some(pen) = tilo_ui_base::pen::current()
             && (pen.tilt.0.abs() + pen.tilt.1.abs()) > 0.5
         {
             brush.angle = Some(90.0 - pen.tilt.0);
@@ -312,7 +313,7 @@ fn flat(_: Point) -> f64 {
 }
 
 impl Widget for PaintSurface {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -328,9 +329,9 @@ impl Widget for PaintSurface {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         self.paint(ctx.scene, ctx.transform, ctx.theme);
     }
 
@@ -342,7 +343,7 @@ impl Widget for PaintSurface {
         self.dirty = false;
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let factor = ctx.scale_factor;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -460,8 +461,8 @@ impl Widget for PaintSurface {
         "PaintSurface"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         Some(AccessNode::new(Role::Image).with_optional_name(self.label.clone()))
     }
 
@@ -481,7 +482,7 @@ pub use paint_surface_component::PaintSurfaceProps;
 #[cfg(test)]
 mod tests {
     use super::{PaintSurface, PaintSurfaceProps};
-    use crate::component::Described;
+    use tilo_ui_base::component::Described;
     use tilo_paint_strokes::Preset;
     use vello::kurbo::{Point, Rect};
 

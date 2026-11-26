@@ -33,12 +33,12 @@ use winit::event::{ElementState, KeyEvent, Modifiers, RawKeyEvent, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
 
 use tilo_rich_edit::slash_menu::SlashMenu;
-use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::presence::PresenceCtx;
-use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::Theme;
+use tilo_ui_base::offscreen::OffscreenRenderer;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 use tilo_ui::widget::Dropdown;
-use tilo_ui::widget::Widget;
+use tilo_ui_base::widget::Widget;
 use tilo_ui::widget::autocomplete::{Autocomplete, Suggestion};
 use tilo_ui::widget::context_menu::{ContextMenu, MenuItem};
 
@@ -64,7 +64,7 @@ fn color_of(px: (u8, u8, u8, u8)) -> Color {
 /// CIE L* of an opaque sRGB pixel, from the crate's own WCAG luminance so the
 /// two "perceptual" numbers in the repo cannot drift apart.
 fn lightness(px: (u8, u8, u8, u8)) -> f64 {
-    let y = tilo_ui::a11y::relative_luminance(color_of(px));
+    let y = tilo_ui_base::a11y::relative_luminance(color_of(px));
     let f = if y > 216.0 / 24389.0 {
         y.cbrt()
     } else {
@@ -85,10 +85,10 @@ fn dispatch(widget: &mut dyn Widget, event: &WindowEvent) {
     let mut focus = None;
     widget.handle_event(
         event,
-        &mut tilo_ui::widget::EventCtx {
+        &mut tilo_ui_base::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::default(),
-            state: tilo_ui::widget::Edits::lend(&mut doc),
+            state: tilo_ui_base::widget::Edits::lend(&mut doc),
             path: &ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -99,7 +99,7 @@ fn dispatch(widget: &mut dyn Widget, event: &WindowEvent) {
 }
 
 fn cursor_moved(p: Point) -> WindowEvent {
-    tilo_ui::synthetic_input::cursor_moved(p.x, p.y)
+    tilo_ui_base::synthetic_input::cursor_moved(p.x, p.y)
 }
 
 fn key_press(key: NamedKey) -> WindowEvent {
@@ -116,7 +116,7 @@ fn key_press(key: NamedKey) -> WindowEvent {
         None,
         key,
     );
-    tilo_ui::synthetic_input::keyboard_input(event)
+    tilo_ui_base::synthetic_input::keyboard_input(event)
 }
 
 struct Rendered {
@@ -219,9 +219,9 @@ fn assert_armed_row(
         "{surface}/{theme_name}: armed row {hi:?} vs plain row {lo:?} differ by only \
          ΔL*={delta:.2} (< {MIN_ARMED_DELTA_L})"
     );
-    let ratio = tilo_ui::a11y::contrast_ratio(ink, color_of(hi));
+    let ratio = tilo_ui_base::a11y::contrast_ratio(ink, color_of(hi));
     assert!(
-        ratio >= tilo_ui::tokens::colors::ON_FILL_MIN_CONTRAST,
+        ratio >= tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST,
         "{surface}/{theme_name}: armed-row ink {ink:?} on painted fill {hi:?} is {ratio:.2}:1"
     );
 }
@@ -245,7 +245,7 @@ fn slash_probe(row: Rect) -> Point {
 fn drawn_menu(menu: &mut ContextMenu, theme: &Theme) -> Rendered {
     let presence = PresenceCtx::default();
     render(theme, |scene, tr| {
-        menu.draw_overlay(&mut tilo_ui::draw::DrawCtx::new(
+        menu.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             Affine::IDENTITY,
             tr,
@@ -266,7 +266,7 @@ fn labels() -> [&'static str; 4] {
 )]
 fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
     // Motion reads at its end: this test checks the resting frame.
-    let _settled = tilo_ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     {
         for (name, theme) in themes() {
             let mut menu = ContextMenu::new();
@@ -339,7 +339,7 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
 #[test]
 fn list_menu_cursor_rows_are_visible_in_both_themes() {
     // Motion reads at its end: this test checks the resting frame.
-    let _settled = tilo_ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     {
         for (name, theme) in themes() {
             let options: Vec<String> = labels().iter().map(|s| (*s).to_string()).collect();
@@ -362,14 +362,14 @@ fn list_menu_cursor_rows_are_visible_in_both_themes() {
 
             let presence = PresenceCtx::default();
             let rendered = render(&theme, |scene, tr| {
-                dd.draw(&mut tilo_ui::draw::DrawCtx::new(
+                dd.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                     scene,
                     Affine::IDENTITY,
                     tr,
                     &theme,
                     presence.draw_env(),
                 ));
-                dd.draw_overlay(&mut tilo_ui::draw::DrawCtx::new(
+                dd.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                     scene,
                     Affine::IDENTITY,
                     tr,
@@ -411,14 +411,14 @@ fn list_menu_cursor_rows_are_visible_in_both_themes() {
 
             let presence = PresenceCtx::default();
             let rendered = render(&theme, |scene, tr| {
-                ac.draw(&mut tilo_ui::draw::DrawCtx::new(
+                ac.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                     scene,
                     Affine::IDENTITY,
                     tr,
                     &theme,
                     presence.draw_env(),
                 ));
-                ac.draw_overlay(&mut tilo_ui::draw::DrawCtx::new(
+                ac.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                     scene,
                     Affine::IDENTITY,
                     tr,
@@ -470,7 +470,7 @@ fn list_menu_cursor_rows_are_visible_in_both_themes() {
 #[test]
 fn closed_dropdown_hover_is_visible_on_an_opaque_ground() {
     // Motion reads at its end: this test checks the resting frame.
-    let _settled = tilo_ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     {
         // Guards the sampling method itself: every case composites over the
         // theme's window ground, so a transparent ground would make each ΔL*
@@ -500,7 +500,7 @@ fn closed_dropdown_hover_is_visible_on_an_opaque_ground() {
             let probe = Point::new(control.x1 - 44.0, control.center().y);
 
             let resting = render(&theme, |scene, tr| {
-                dd.draw(&mut tilo_ui::draw::DrawCtx::new(
+                dd.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                     scene,
                     Affine::IDENTITY,
                     tr,
@@ -511,7 +511,7 @@ fn closed_dropdown_hover_is_visible_on_an_opaque_ground() {
             dispatch(&mut dd, &cursor_moved(control.center()));
             assert!(!dd.is_open(), "a hover must not open the list");
             let hovered = render(&theme, |scene, tr| {
-                dd.draw(&mut tilo_ui::draw::DrawCtx::new(
+                dd.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                     scene,
                     Affine::IDENTITY,
                     tr,

@@ -1,8 +1,8 @@
 //! What a docked column reports when what stands in it changes.
 
 use super::{Docked, DockedProps};
-use crate::component::Described;
-use crate::widget::{StructureChange, Widget};
+use tilo_ui_base::component::Described;
+use tilo_ui_base::{widget::StructureChange, widget::Widget};
 
 struct InPlace {
     pending: bool,
@@ -67,22 +67,22 @@ tilo_test_env::scenario! {
             }
         }
         let measure = f64::from(crate::widget::arrange::MEASURE_REM)
-            * f64::from(crate::widget::arrange::rem_of(&crate::theme::Theme::dark()));
+            * f64::from(crate::widget::arrange::rem_of(&tilo_ui_base::theme::Theme::dark()));
         let page = || {
             Box::new(
                 crate::widget::arrange::Page::new().push(Box::new(crate::widget::Text::new(
                     "Words read at the measure",
                 ))),
-            ) as crate::widget::Element
+            ) as tilo_ui_base::widget::Element
         };
-        let scroll = |content: crate::widget::Element| {
+        let scroll = |content: tilo_ui_base::widget::Element| {
             Box::new(
                 crate::widget::Scrollable::new_vertical()
                     .fit_content_height()
                     .with_child(Box::new(crate::widget::Stack::new().push(content))),
-            ) as crate::widget::Element
+            ) as tilo_ui_base::widget::Element
         };
-        let held = |content: crate::widget::Element| {
+        let held = |content: tilo_ui_base::widget::Element| {
             let docked = Docked::from_props(
                 "docked",
                 DockedProps {
@@ -94,7 +94,7 @@ tilo_test_env::scenario! {
                 crate::State::new(),
                 docked,
                 (1600, 900),
-                crate::theme::Theme::dark(),
+                tilo_ui_base::theme::Theme::dark(),
             );
             harness.relayout();
             let mut found = Vec::new();
@@ -108,7 +108,7 @@ tilo_test_env::scenario! {
                 Box::new(crate::widget::Fitted::new(
                     page(),
                     crate::widget::arrange::Fit::fill(1.0),
-                )) as crate::widget::Element,
+                )) as tilo_ui_base::widget::Element,
             ),
             ("a scroll around a page", scroll(page())),
         ] {
@@ -144,7 +144,7 @@ tilo_test_env::scenario! {
             }
         }
         let measure = f64::from(crate::widget::arrange::MEASURE_REM)
-            * f64::from(crate::widget::arrange::rem_of(&crate::theme::Theme::dark()));
+            * f64::from(crate::widget::arrange::rem_of(&tilo_ui_base::theme::Theme::dark()));
         let mut docked = Docked::from_props(
             "docked",
             DockedProps {
@@ -160,8 +160,8 @@ tilo_test_env::scenario! {
                         "Words read at the measure",
                     ))),
                 )))),
-        ) as crate::widget::Element;
-        let Some(views) = crate::component::Described::part_views(&mut docked, "content") else {
+        ) as tilo_ui_base::widget::Element;
+        let Some(views) = tilo_ui_base::component::Described::part_views(&mut docked, "content") else {
             panic!("a column changes its content in place");
         };
         views.insert(0, content);
@@ -169,7 +169,7 @@ tilo_test_env::scenario! {
             crate::State::new(),
             docked,
             (1600, 900),
-            crate::theme::Theme::dark(),
+            tilo_ui_base::theme::Theme::dark(),
         );
         harness.relayout();
         let mut found = Vec::new();
@@ -201,7 +201,7 @@ tilo_test_env::scenario! {
             crate::State::new(),
             docked(false),
             (1600, 900),
-            crate::theme::Theme::dark(),
+            tilo_ui_base::theme::Theme::dark(),
         );
         harness.relayout();
         let mut found = 0;
@@ -223,7 +223,7 @@ tilo_test_env::scenario! {
             }
         }
         let mut docked = docked(false);
-        let Some(views) = crate::component::Described::part_views(&mut docked, "foot") else {
+        let Some(views) = tilo_ui_base::component::Described::part_views(&mut docked, "foot") else {
             panic!("a column takes a bar after it was built");
         };
         views.insert(0, Box::new(crate::widget::Text::new("Outline")));
@@ -231,7 +231,7 @@ tilo_test_env::scenario! {
             crate::State::new(),
             docked,
             (1600, 900),
-            crate::theme::Theme::dark(),
+            tilo_ui_base::theme::Theme::dark(),
         );
         harness.relayout();
         let mut found = 0;

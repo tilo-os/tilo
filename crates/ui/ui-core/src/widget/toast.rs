@@ -1,15 +1,15 @@
 //! Transient notices and the notification card.
-use crate::i18n::widget_text;
-use crate::num::f32_of_f64;
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::num::f32_of_f64;
 use crate::time::Duration;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
 
-use crate::paint::PaintCtx;
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use crate::widget::ButtonRole;
 use crate::widget::text_input::FieldFace;
 use crate::widget::{Button, ButtonFace, ControlSize};
@@ -409,7 +409,7 @@ fn card_pad(theme: &Theme) -> (f64, f64) {
     )
 }
 
-pub(crate) fn kind_icon(kind: ToastKind) -> crate::icons::Icon {
+pub(crate) fn kind_icon(kind: ToastKind) -> tilo_ui_base::icons::Icon {
     match kind {
         ToastKind::Info => crate::widget::BannerKind::Info,
         ToastKind::Success => crate::widget::BannerKind::Success,
@@ -421,7 +421,7 @@ pub(crate) fn kind_icon(kind: ToastKind) -> crate::icons::Icon {
 
 fn leading_side(theme: &Theme, card: &ToastCard<'_>) -> Option<f64> {
     if card.kind == ToastKind::Info && card.person.is_some() {
-        return Some(crate::widget::AvatarSize::Regular.side(theme));
+        return Some(tilo_ui_base::widget::AvatarSize::Regular.side(theme));
     }
     (card.kind != ToastKind::Info || card.icon.is_some() || card.app_image.is_some())
         .then(|| f64::from(theme.tokens.metrics.icon_md))
@@ -444,16 +444,16 @@ pub(crate) fn kind_color(kind: ToastKind, theme: &Theme) -> vello::peniko::Color
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SenderMark<'a> {
-    pub image: Option<&'a crate::icons::AppImage>,
+    pub image: Option<&'a tilo_ui_base::icons::AppImage>,
     /// The glyph painted when there is no artwork, or it cannot be decoded.
-    pub icon: Option<crate::icons::Icon>,
+    pub icon: Option<tilo_ui_base::icons::Icon>,
 }
 
 impl<'a> SenderMark<'a> {
     #[must_use]
     pub const fn new(
-        image: Option<&'a crate::icons::AppImage>,
-        icon: Option<crate::icons::Icon>,
+        image: Option<&'a tilo_ui_base::icons::AppImage>,
+        icon: Option<tilo_ui_base::icons::Icon>,
     ) -> Self {
         Self { image, icon }
     }
@@ -468,20 +468,20 @@ impl<'a> SenderMark<'a> {
         color: vello::peniko::Color,
     ) -> bool {
         if let Some(image) = self.image
-            && crate::icons::draw_app_image(scene, transform, rect, image)
+            && tilo_ui_base::icons::draw_app_image(scene, transform, rect, image)
         {
             return true;
         }
         let Some(icon) = self.icon else {
             return false;
         };
-        crate::icons::draw_icon(
+        tilo_ui_base::icons::draw_icon(
             scene,
             transform,
             rect,
             icon,
             color,
-            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         true
     }
@@ -505,24 +505,24 @@ pub struct ToastCard<'a> {
     /// What plain information leads with instead of a severity glyph,
     /// which only warnings, errors and successes carry: a glyph naming
     /// what the card is about...
-    pub icon: Option<crate::icons::Icon>,
+    pub icon: Option<tilo_ui_base::icons::Icon>,
     pub person: Option<(&'a str, &'a str)>,
     pub person_agent: bool,
     /// The sending application's own artwork, where a glyph cannot name it.
     /// A person's avatar leads ahead of it; a severity glyph wins over it,
     /// so an alert never loses its state colour.
-    pub app_image: Option<&'a crate::icons::AppImage>,
+    pub app_image: Option<&'a tilo_ui_base::icons::AppImage>,
     pub alpha: f32,
     pub closable: bool,
     pub close_hovered: bool,
     pub close_pressed: bool,
     pub actionable: bool,
     pub secondary_action: &'a str,
-    pub secondary_action_icon: Option<crate::icons::Icon>,
+    pub secondary_action_icon: Option<tilo_ui_base::icons::Icon>,
     pub secondary_action_hovered: bool,
     pub secondary_action_pressed: bool,
     pub primary_action: &'a str,
-    pub primary_action_icon: Option<crate::icons::Icon>,
+    pub primary_action_icon: Option<tilo_ui_base::icons::Icon>,
     pub primary_action_hovered: bool,
     pub primary_action_pressed: bool,
     pub progress: Option<f32>,
@@ -571,7 +571,7 @@ impl<'a> ToastCard<'a> {
         self
     }
     #[must_use]
-    pub fn icon(mut self, icon: Option<crate::icons::Icon>) -> Self {
+    pub fn icon(mut self, icon: Option<tilo_ui_base::icons::Icon>) -> Self {
         self.icon = icon;
         self
     }
@@ -588,7 +588,7 @@ impl<'a> ToastCard<'a> {
         self
     }
     #[must_use]
-    pub fn app_image(mut self, image: Option<&'a crate::icons::AppImage>) -> Self {
+    pub fn app_image(mut self, image: Option<&'a tilo_ui_base::icons::AppImage>) -> Self {
         self.app_image = image;
         self
     }
@@ -647,10 +647,10 @@ impl<'a> ToastCard<'a> {
     pub fn actions(
         mut self,
         secondary: &'a str,
-        secondary_icon: crate::icons::Icon,
+        secondary_icon: tilo_ui_base::icons::Icon,
         secondary_hovered: bool,
         primary: &'a str,
-        primary_icon: crate::icons::Icon,
+        primary_icon: tilo_ui_base::icons::Icon,
         primary_hovered: bool,
     ) -> Self {
         self.secondary_action = secondary;
@@ -1004,13 +1004,13 @@ pub fn paint_card(
         let sz = f64::from(theme.tokens.metrics.icon_sm);
         let ix = rect.x1 - pad_x - sz;
         let iy = rect.y1 - pad_y - sz;
-        crate::icons::draw_icon(
+        tilo_ui_base::icons::draw_icon(
             scene,
             transform,
             Rect::new(ix, iy, ix + sz, iy + sz),
-            crate::icons::Icon::ChevronRight,
+            tilo_ui_base::icons::Icon::ChevronRight,
             kind_color(card.kind, theme).with_alpha(a),
-            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
     }
 
@@ -1021,12 +1021,12 @@ fn agent_or_person_face<'a>(
     card: &ToastCard<'_>,
     name: &'a str,
     identity: &'a str,
-) -> crate::widget::AvatarFace<'a> {
-    let face = crate::widget::AvatarFace::new(name, identity);
+) -> tilo_ui_base::widget::AvatarFace<'a> {
+    let face = tilo_ui_base::widget::AvatarFace::new(name, identity);
     if !card.person_agent {
         return face;
     }
-    match crate::tokens::colors::PresenceHue::of_agent_client(name) {
+    match tilo_ui_base::tokens::colors::PresenceHue::of_agent_client(name) {
         Some(hue) => face.hue(hue).agent(),
         None => face.agent(),
     }
@@ -1247,7 +1247,7 @@ pub fn choice_width(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
     label: &str,
-    icon: Option<crate::icons::Icon>,
+    icon: Option<tilo_ui_base::icons::Icon>,
 ) -> f64 {
     let mut face =
         ButtonFace::new(Rect::ZERO, label).control_size(crate::widget::ControlSize::Small);
@@ -1304,7 +1304,7 @@ pub fn paint_card_surface(
 pub fn card_ground(theme: &Theme) -> (vello::peniko::Color, vello::peniko::Color) {
     (
         crate::widget::floating_surface::card_ground(theme),
-        crate::chrome::panel_border(theme),
+        tilo_ui_base::chrome::panel_border(theme),
     )
 }
 
@@ -1445,21 +1445,21 @@ fn paint_dismiss_button(
             theme,
             &ButtonFace::new(close_rect, "")
                 .role(ButtonRole::Plain)
-                .icon(crate::icons::Icon::X)
+                .icon(tilo_ui_base::icons::Icon::X)
                 .control_size(crate::widget::control_size::ControlSize::Small)
                 .hovered(card.close_hovered)
                 .pressed(card.close_pressed)
-                .accessible_name(&crate::i18n::widget_format("widget-dismiss", &[])),
+                .accessible_name(&tilo_ui_base::i18n::widget_format("widget-dismiss", &[])),
         );
     } else {
         let side = f64::from(theme.tokens.metrics.icon_sm) * DISMISS_GLYPH_SCALE;
-        crate::icons::draw_icon(
+        tilo_ui_base::icons::draw_icon(
             scene,
             transform,
             Rect::from_center_size(close_rect.center(), (side, side)),
-            crate::icons::Icon::X,
+            tilo_ui_base::icons::Icon::X,
             theme.tokens.colors.text_tertiary,
-            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
     }
     if faded {
@@ -1591,7 +1591,7 @@ fn paint_card_text(
 /// "Link copied", or "Notes closed" with its Undo after the window went. A small pill near the
 /// bottom of [`Self::place`]'s area; a press of a button, by pointer or assistive technology,
 /// hands its action's id to the host, which carries it out.
-#[crate::component::not_a_component(framework, "the host's notice drawn over its windows")]
+#[tilo_ui_base::component::not_a_component(framework, "the host's notice drawn over its windows")]
 pub struct NoticeLayer {
     notice: std::rc::Rc<std::cell::RefCell<Transient<crate::window_toolbar::ToolbarNotice>>>,
     rect: Rect,
@@ -1631,8 +1631,8 @@ impl NoticeLayer {
         self.rect = area;
     }
 
-    fn motion(&self) -> crate::tokens::EffectiveMotion {
-        crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), self.reduce_motion)
+    fn motion(&self) -> tilo_ui_base::tokens::EffectiveMotion {
+        tilo_ui_base::tokens::EffectiveMotion::new(tilo_ui_base::tokens::Motion::default(), self.reduce_motion)
     }
 
     fn button_at(&self, at: Point) -> Option<usize> {
@@ -1695,7 +1695,7 @@ impl NoticeLayer {
         }
         let style = theme
             .text(TextRole::Label)
-            .with_weight(crate::text_render::TextWeight::Medium);
+            .with_weight(tilo_ui_base::text_render::TextWeight::Medium);
         let inset = f64::from(theme.tokens.spacing.s8);
         let pad_x = f64::from(theme.tokens.spacing.s4);
         let pad_y = f64::from(theme.tokens.spacing.s2);
@@ -1745,7 +1745,7 @@ impl NoticeLayer {
                 &crate::widget::floating_surface::painted_bounds(rect, theme),
             );
         }
-        crate::surface::shadow(
+        tilo_ui_base::surface::shadow(
             scene,
             transform,
             rect,
@@ -1760,16 +1760,16 @@ impl NoticeLayer {
             None,
             &RoundedRect::from_rect(rect, radius),
         );
-        crate::surface::floating_edge(scene, transform, rect, radius, theme);
+        tilo_ui_base::surface::floating_edge(scene, transform, rect, radius, theme);
         let center_y = rect.center().y;
         let x0 = rect.x0 + pad_x;
-        crate::icons::draw_icon(
+        tilo_ui_base::icons::draw_icon(
             scene,
             transform,
             Rect::from_center_size(Point::new(x0 + icon / 2.0, center_y), (icon, icon)),
             kind_icon(notice.kind),
             kind_color(notice.kind, theme),
-            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         let origin = Point::new(x0 + icon + gap, center_y - text_height / 2.0);
         text_renderer.draw_style(
@@ -1805,7 +1805,7 @@ impl NoticeLayer {
     }
 }
 
-impl crate::widget::Widget for NoticeLayer {
+impl tilo_ui_base::widget::Widget for NoticeLayer {
     fn name(&self) -> &'static str {
         "Notice"
     }
@@ -1813,8 +1813,8 @@ impl crate::widget::Widget for NoticeLayer {
     /// A notice came up or went: what the layer says (its text, its buttons) changed.
     fn update(
         &mut self,
-        _state: &crate::widget::AppModel,
-        _path: &crate::widget::ModelPath,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         let up = {
             let notice = self.notice.borrow();
@@ -1827,9 +1827,9 @@ impl crate::widget::Widget for NoticeLayer {
         &mut self,
         tree: &mut taffy::TaffyTree<()>,
         _theme: &Theme,
-        map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
+        map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,
     ) -> taffy::NodeId {
-        use crate::widget::TaffyTreeExt as _;
+        use tilo_ui_base::widget::TaffyTreeExt as _;
         let style = taffy::Style {
             position: taffy::Position::Absolute,
             inset: taffy::Rect {
@@ -1847,14 +1847,14 @@ impl crate::widget::Widget for NoticeLayer {
         tree.widget_leaf(style, map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
     /// The layer covers the surface whatever it says: once laid out it has nothing to measure.
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1868,8 +1868,8 @@ impl crate::widget::Widget for NoticeLayer {
             notice.get().cloned().zip(notice.span())
         };
         self.buttons = shown.map_or_else(Vec::new, |(notice, span)| {
-            let alpha = crate::motion::Transient::opacity(
-                crate::motion::Transient::CONFIRMATION,
+            let alpha = tilo_ui_base::motion::Transient::opacity(
+                tilo_ui_base::motion::Transient::CONFIRMATION,
                 span,
                 now,
                 self.motion(),
@@ -1895,14 +1895,14 @@ impl crate::widget::Widget for NoticeLayer {
             self.hovered,
             self.pressed,
         )));
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn needs_animation_frame(&self) -> bool {
         let span = self.notice.borrow().span();
         span.is_some_and(|span| {
-            crate::motion::Transient::is_moving(
-                crate::motion::Transient::CONFIRMATION,
+            tilo_ui_base::motion::Transient::is_moving(
+                tilo_ui_base::motion::Transient::CONFIRMATION,
                 span,
                 crate::time::now(),
                 self.motion(),
@@ -1914,8 +1914,8 @@ impl crate::widget::Widget for NoticeLayer {
     fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
         let (_, gone) = self.notice.borrow().span()?;
         let now = crate::time::now();
-        let fade_from = crate::motion::Transient::exit_starts(
-            crate::motion::Transient::CONFIRMATION,
+        let fade_from = tilo_ui_base::motion::Transient::exit_starts(
+            tilo_ui_base::motion::Transient::CONFIRMATION,
             gone,
             self.motion(),
         );
@@ -1928,8 +1928,8 @@ impl crate::widget::Widget for NoticeLayer {
 
     /// A polite status with the words, and each button where it is drawn: a reader presses it as
     /// the pointer does.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Politeness, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Politeness, a11y::Role};
         let notice = self.notice.borrow();
         let shown = notice.get();
         let buttons = shown
@@ -1956,19 +1956,19 @@ impl crate::widget::Widget for NoticeLayer {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &crate::widget::ModelPath,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         let Some(&key) = key_path.last() else {
             return false;
         };
-        matches!(action, crate::a11y::Action::Activate)
+        matches!(action, tilo_ui_base::a11y::Action::Activate)
             && self.press_action(|actions| {
                 actions
                     .iter()
-                    .find(|action| crate::a11y::hash_key(&action.id) == key)
+                    .find(|action| tilo_ui_base::a11y::hash_key(&action.id) == key)
             })
     }
 }

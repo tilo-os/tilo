@@ -425,7 +425,7 @@ fn capture(session: &mut Session, name: &str) {
 /// record's undo floats it again.
 #[test]
 fn the_chord_floats_the_window_and_the_record_keeps_where_it_stands() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = shell();
     let chat = tab_of(&session, CHAT).expect("the conversation is open");
     let in_strip = rect(&session, chat);
@@ -527,7 +527,7 @@ fn the_chord_floats_the_window_and_the_record_keeps_where_it_stands() {
 /// and letting go there snaps it into that gap as one step of the shell's record.
 #[test]
 fn a_float_carried_over_its_strip_snaps_into_the_gap_it_was_dropped_in() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = shell();
     let chat = tab_of(&session, CHAT).expect("the conversation is open");
     let mail = tab_of(&session, MAIL).expect("a letter is open");
@@ -755,7 +755,7 @@ fn shown_floating(session: &mut Session, tab: u64, card: ui::kurbo::Rect) -> boo
 /// after it was carried away and let go elsewhere and after it snapped back, reaches that window.
 #[test]
 fn a_click_where_a_float_bar_stood_reaches_the_window_there() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = shell();
     let chat = tab_of(&session, CHAT).expect("the conversation is open");
 

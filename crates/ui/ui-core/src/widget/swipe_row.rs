@@ -5,21 +5,22 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::Fill;
 use winit::event::{TouchPhase, WindowEvent};
 
-use crate::icons::Icon;
-use crate::motion::{Direction, MotionValue, Snap};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{motion::Direction, motion::MotionValue, motion::Snap};
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 use crate::time::Instant;
-use crate::tokens::{MotionSource, TextRole};
-use crate::widget::DrawChild;
-use crate::widget::{Decorator, Element, EventCtx, SwipeActionProps, Widget};
+use tilo_ui_base::{tokens::MotionSource, tokens::TextRole};
+use tilo_ui_base::widget::DrawChild;
+use crate::widget::SwipeActionProps;
+use tilo_ui_base::{widget::Decorator, widget::Element, widget::EventCtx, widget::Widget};
 
 /// How far a released row must have moved, as a share of its width, for its action to run.
 pub const COMMIT_SHARE: f64 = 0.35;
 /// How far a finger moves before the row decides whether the drag is sideways: the platform's
 /// tap slop, past which a touch is no tap.
-const SLOP: f64 = crate::interaction::TouchPointerEmulator::TAP_SLOP;
+const SLOP: f64 = tilo_ui_base::interaction::TouchPointerEmulator::TAP_SLOP;
 
 struct Side {
     icon: Icon,
@@ -68,7 +69,7 @@ struct Drag {
     samples: [(f64, Instant); 2],
 }
 
-#[crate::component::not_a_component(part, "a row's swipe, from `ui.Swipe` and its `swipe` slot")]
+#[tilo_ui_base::component::not_a_component(part, "a row's swipe, from `ui.Swipe` and its `swipe` slot")]
 pub struct SwipeRow {
     content: Element,
     leading: Option<Side>,
@@ -78,7 +79,7 @@ pub struct SwipeRow {
     drawn: f64,
     ran: usize,
     /// Whether the person uses a touchscreen now: a finger's sideways drag then reaches the row
-    /// as a left-button drag ([`crate::interaction::TouchClaim::DragAcross`]); a mouse's drag
+    /// as a left-button drag ([`tilo_ui_base::interaction::TouchClaim::DragAcross`]); a mouse's drag
     /// selects text instead.
     touch: bool,
     pointer: Point,
@@ -107,7 +108,7 @@ impl SwipeRow {
 
     #[must_use]
     pub fn offset(&self) -> f64 {
-        self.offset.get(crate::motion::frame_now())
+        self.offset.get(tilo_ui_base::motion::frame_now())
     }
 
     #[must_use]
@@ -147,19 +148,19 @@ impl SwipeRow {
         offset.abs() >= self.width() * COMMIT_SHARE
     }
 
-    fn settle(&mut self, velocity: f64, theme_motion: crate::tokens::EffectiveMotion) {
-        let now = crate::motion::frame_now();
+    fn settle(&mut self, velocity: f64, theme_motion: tilo_ui_base::tokens::EffectiveMotion) {
+        let now = tilo_ui_base::motion::frame_now();
         let timing = Snap::SPEC.timing(Direction::Exit, theme_motion, MotionSource::Gesture);
         self.offset.release(0.0, velocity, timing, now);
     }
 
     fn release(&mut self, drag: &Drag, cancelled: bool) {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let offset = self.offset.get(now);
         let [(x0, t0), (x1, t1)] = drag.samples;
         let dt = t1.saturating_duration_since(t0).as_secs_f64();
         let velocity = if dt > 0.0 { (x1 - x0) / dt } else { 0.0 };
-        let motion = crate::tokens::EffectiveMotion::default();
+        let motion = tilo_ui_base::tokens::EffectiveMotion::default();
         let projected = Snap::rest_for(offset, velocity, motion);
         let flung = projected.signum() == offset.signum() && self.past_threshold(projected);
         if !cancelled && offset != 0.0 && (self.past_threshold(offset) || flung) {
@@ -174,7 +175,7 @@ impl SwipeRow {
             }
         }
         // The motion is read with the theme's at the next draw; until then, the default.
-        self.settle(velocity, crate::tokens::EffectiveMotion::default());
+        self.settle(velocity, tilo_ui_base::tokens::EffectiveMotion::default());
     }
 
     /// A finger's drag that reaches the row as the pointer: the left button goes down once the
@@ -225,7 +226,7 @@ impl SwipeRow {
     }
 
     fn contact(&mut self, id: u64, phase: TouchPhase, at: Point) -> bool {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         match phase {
             TouchPhase::Started if self.drag.is_none() && self.content.get_rect().contains(at) => {
                 let from = self.offset.get(now);
@@ -390,14 +391,14 @@ impl Decorator for SwipeRow {
         self.content.handle_event(event, ctx);
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         // Reduced motion lands a settle at once.
         if theme.motion().reduced() && self.drag.is_none() && self.offset.is_moving(now) {
             self.offset.snap(0.0);
@@ -431,17 +432,17 @@ impl Decorator for SwipeRow {
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
-        self.touch = environment.modality == crate::interaction::InputModality::Touch;
+        self.touch = environment.modality == tilo_ui_base::interaction::InputModality::Touch;
         self.content.set_interaction_environment(environment);
     }
 
     /// A finger heading across swipes the row; heading up or down it scrolls the list.
-    fn touch_claim(&self, point: Point) -> crate::interaction::TouchClaim {
+    fn touch_claim(&self, point: Point) -> tilo_ui_base::interaction::TouchClaim {
         let has_action = self.leading.is_some() || self.trailing.is_some();
         if has_action && self.content.get_rect().contains(point) {
-            crate::interaction::TouchClaim::DragAcross
+            tilo_ui_base::interaction::TouchClaim::DragAcross
         } else {
             self.content.touch_claim(point)
         }
@@ -452,23 +453,23 @@ impl Decorator for SwipeRow {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.offset.is_moving(crate::motion::frame_now()) || self.content.needs_animation_frame()
+        self.offset.is_moving(tilo_ui_base::motion::frame_now()) || self.content.needs_animation_frame()
     }
 
     /// Rest what the frame drew.
     fn mark_drawn(&mut self) {
-        self.drawn = self.offset.get(crate::motion::frame_now());
+        self.drawn = self.offset.get(tilo_ui_base::motion::frame_now());
         self.content.mark_drawn();
     }
 
     fn needs_redraw(&self) -> bool {
-        let offset = self.offset.get(crate::motion::frame_now());
+        let offset = self.offset.get(tilo_ui_base::motion::frame_now());
         (offset - self.drawn).abs() > f64::EPSILON
             || (self.content.needs_redraw() || self.content.needs_animation_frame())
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
-        let offset = self.offset.get(crate::motion::frame_now());
+        let offset = self.offset.get(tilo_ui_base::motion::frame_now());
         if (offset - self.drawn).abs() > f64::EPSILON {
             regions.push(self.content.get_rect());
         } else {
@@ -500,7 +501,7 @@ pub(crate) fn uncovered_colors(
     let ink = colors.ink_on(
         fill,
         colors.intent.on_accent,
-        crate::tokens::contrast::BODY_TEXT_MIN_CONTRAST,
+        tilo_ui_base::tokens::contrast::BODY_TEXT_MIN_CONTRAST,
     );
     (fill, ink)
 }

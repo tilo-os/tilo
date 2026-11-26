@@ -1,7 +1,7 @@
 //! `DatePicker` widget — month-grid calendar picker.
 
-use crate::i18n::widget_text;
-use crate::widget::{AppModel, ModelPath};
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 mod feed;
 pub use feed::{DateFeed, DateShown};
@@ -13,14 +13,14 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Shape, Stroke, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::TaffyTreeExt;
-use crate::widget::binding::{BoxedBinding, Pulled};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled};
 #[path = "date_picker_component.rs"]
 mod component;
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 use crate::widget::text::centered_text_top;
 pub use component::DatePickerProps;
 
@@ -46,7 +46,7 @@ pub struct DatePicker {
     /// The day under the pointer, which lifts.
     hovered: Option<Date>,
     /// Where the chosen day's disc stands: it slides to the day chosen next in the same month.
-    disc: crate::motion::MotionValue<Point>,
+    disc: tilo_ui_base::motion::MotionValue<Point>,
     /// The day and month `disc` was last placed for.
     disc_for: Option<(Date, (i16, i8))>,
     /// Whether the picker holds keyboard focus. Drives a focus ring around
@@ -88,7 +88,7 @@ impl DatePicker {
             next_button_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             hovered: None,
-            disc: crate::motion::MotionValue::new(Point::ZERO),
+            disc: tilo_ui_base::motion::MotionValue::new(Point::ZERO),
             disc_for: None,
             is_focused: false,
             navigator: false,
@@ -108,7 +108,7 @@ impl DatePicker {
             month_view: self.month_view,
             focused: self.is_focused,
             hovered: self.hovered,
-            today: self.today.unwrap_or_else(crate::clock::today),
+            today: self.today.unwrap_or_else(tilo_ui_base::clock::today),
             marked: self.marked.clone(),
         }
     }
@@ -149,15 +149,15 @@ impl DatePicker {
         let cell = if self.navigator {
             // The smallest cell a narrow sidebar gets is six spacing steps.
             (width / grid_f64(GRID_COLS))
-                .clamp(f64::from(crate::tokens::Spacing::BASE.s6), CELL_SIZE)
+                .clamp(f64::from(tilo_ui_base::tokens::Spacing::BASE.s6), CELL_SIZE)
         } else {
             CELL_SIZE
         };
         (HEADER_HEIGHT + WEEKDAY_HEIGHT + cell * grid_f64(GRID_ROWS)).ceil()
     }
 
-    pub fn from_state(state: &crate::LocalState<Date>) -> Self {
-        let (selected, binding) = crate::widget::binding::local(state);
+    pub fn from_state(state: &tilo_ui_base::LocalState<Date>) -> Self {
+        let (selected, binding) = tilo_ui_base::widget::binding::local(state);
         Self {
             local_state: Some(binding),
             ..Self::new(selected)
@@ -166,9 +166,9 @@ impl DatePicker {
 
     /// Create a date picker following a day held as its ISO text (`"2026-06-30"`): one set
     /// there is shown, today when the text names no day.
-    pub fn from_text_state(state: &crate::LocalState<String>) -> Self {
-        let (selected, binding) = crate::widget::binding::derived(state, |text| {
-            crate::component::moment_day(text).unwrap_or_else(crate::clock::today)
+    pub fn from_text_state(state: &tilo_ui_base::LocalState<String>) -> Self {
+        let (selected, binding) = tilo_ui_base::widget::binding::derived(state, |text| {
+            tilo_ui_base::component::moment_day(text).unwrap_or_else(tilo_ui_base::clock::today)
         });
         Self {
             local_state: Some(binding),
@@ -252,15 +252,15 @@ impl DatePicker {
     }
 
     fn disc_moving(&self) -> bool {
-        self.disc.is_moving(crate::motion::frame_now())
+        self.disc.is_moving(tilo_ui_base::motion::frame_now())
     }
 
     /// Where the chosen day's disc stands this frame: it slides from the day chosen before
     /// when both are on the month shown, and stands on the day at once otherwise (a month
     /// turned, the first look).
-    fn follow_disc(&mut self, motion: crate::tokens::EffectiveMotion) -> Option<Point> {
-        use crate::motion::{Direction, ListChange};
-        let now = crate::motion::frame_now();
+    fn follow_disc(&mut self, motion: tilo_ui_base::tokens::EffectiveMotion) -> Option<Point> {
+        use tilo_ui_base::{motion::Direction, motion::ListChange};
+        let now = tilo_ui_base::motion::frame_now();
         let target = self
             .day_rects
             .iter()
@@ -272,10 +272,10 @@ impl DatePicker {
             .is_some_and(|(day, month)| day != self.selected && month == self.month_view);
         if slides {
             let timing =
-                ListChange::MOVE.timing(Direction::Enter, motion, crate::motion::input_source());
+                ListChange::MOVE.timing(Direction::Enter, motion, tilo_ui_base::motion::input_source());
             self.disc.set(target, timing, now);
             if let Some(until) = self.disc.settles_at() {
-                crate::motion::want_frames_until(until);
+                tilo_ui_base::motion::want_frames_until(until);
             }
         } else if self.disc.target() != target {
             self.disc.snap(target);
@@ -394,7 +394,7 @@ pub enum ExternalDatePickerHit {
 }
 
 impl Widget for DatePicker {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(binding) = &mut self.local_state
@@ -465,7 +465,7 @@ impl Widget for DatePicker {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.set_rect(crate::widget::layout_rect(taffy, node, origin));
+        self.set_rect(tilo_ui_base::widget::layout_rect(taffy, node, origin));
     }
 
     /// The grid draws its days at a fixed cell size: its height follows the width it is given,
@@ -475,7 +475,7 @@ impl Widget for DatePicker {
         false
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -506,11 +506,11 @@ impl Widget for DatePicker {
         // vanished on a raised card. Focus adds `border_focus` on the same
         // half-pixel-inset outline, so the ring sits exactly over the rest
         // edge and a focused picker is the rest picker plus one stroke.
-        let outline = crate::surface::edge_outline(self.rect, radius);
+        let outline = tilo_ui_base::surface::edge_outline(self.rect, radius);
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            crate::surface::edge_on(fill),
+            tilo_ui_base::surface::edge_on(fill),
             None,
             &outline,
         );
@@ -529,7 +529,7 @@ impl Widget for DatePicker {
         self.draw_day_grid(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         match event {
             WindowEvent::KeyboardInput {
                 event:
@@ -676,8 +676,8 @@ impl Widget for DatePicker {
     /// left unset since the grid is rendered inline. A picker told what a choice
     /// does ([`Self::on_choose`]) is reached by its id; a fed picker
     /// ([`DateFeed`]) by its name, so its choices still go to the app's feed.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let node = AccessNode::new(Role::ComboBox)
             .with_optional_name(self.accessible_name.as_ref().map(|name| widget_text(name)))
             .with_value(self.selected.to_string())
@@ -700,12 +700,12 @@ impl Widget for DatePicker {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         match action {
             Action::SetValue(value) => {
                 let Ok(date) = Date::strptime("%Y-%m-%d", value.trim()) else {
@@ -746,7 +746,7 @@ impl DatePicker {
 
         let (y, m) = self.month_view;
         let header_label =
-            crate::format::month_heading(jiff::civil::Date::new(y, m, 1).unwrap_or(self.selected));
+            tilo_ui_base::format::month_heading(jiff::civil::Date::new(y, m, 1).unwrap_or(self.selected));
         // Every line in the picker is centred on its *measured* height; the
         // font size alone sat the 12 px labels 1.5 px low in each band.
         let (label_w, label_h) = text_renderer.measure_style(&header_label, None, &text_style);
@@ -763,18 +763,18 @@ impl DatePicker {
 
         let edge = f64::from(tokens.metrics.icon_sm);
         for (button, icon) in [
-            (self.prev_button_rect, crate::icons::Icon::ChevronLeft),
-            (self.next_button_rect, crate::icons::Icon::ChevronRight),
+            (self.prev_button_rect, tilo_ui_base::icons::Icon::ChevronLeft),
+            (self.next_button_rect, tilo_ui_base::icons::Icon::ChevronRight),
         ] {
             let centre =
                 vello::kurbo::Point::new(button.center().x, self.rect.y0 + HEADER_HEIGHT / 2.0);
-            crate::icons::draw_icon(
+            tilo_ui_base::icons::draw_icon(
                 scene,
                 transform,
                 Rect::from_center_size(centre, (edge, edge)),
                 icon,
                 text_color,
-                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
         }
     }
@@ -821,7 +821,7 @@ impl DatePicker {
         let text_color = tokens.colors.text_primary;
         let dim_color = tokens.colors.text_dim;
 
-        let today = self.today.unwrap_or_else(crate::clock::today);
+        let today = self.today.unwrap_or_else(tilo_ui_base::clock::today);
         let (vy, vm) = self.month_view;
         let chosen_at = self.follow_disc(theme.motion());
 
@@ -911,7 +911,7 @@ fn day_disc(cell: Rect) -> vello::kurbo::Circle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::presence::PresenceCtx;
+    use tilo_ui_base::presence::PresenceCtx;
     use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -956,7 +956,7 @@ mod tests {
         phase clicking_a_date_focuses_the_grid_for_keyboard_navigation;
         {
             let initial = Date::new(2024, 6, 1).unwrap();
-            let state = crate::LocalState::new(initial);
+            let state = tilo_ui_base::LocalState::new(initial);
             let mut host = crate::app::driver::Driver::for_root(
                 crate::State::new(),
                 DatePicker::from_state(&state),
@@ -1024,7 +1024,7 @@ mod tests {
                 let theme = Theme::dark();
                 let mut tr = TextRenderer::new();
                 let mut scene = Scene::new();
-                picker.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::default().draw_env()));
+                picker.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::default().draw_env()));
                 let style = theme.text(TextRole::Caption);
                 // Draw order: header label, seven weekday labels, then day cells;
                 // the month steps are icons, not glyph runs.
@@ -1074,7 +1074,7 @@ mod tests {
         phase date_picker_semantics_and_shared_state_track_selection;
         {
             fn accessibility_reports_combobox_role_and_selected_date_value() {
-                use crate::a11y::Role;
+                use tilo_ui_base::a11y::Role;
                 let dp = DatePicker::new(Date::new(2024, 6, 15).unwrap());
                 let node = Widget::accessibility(&dp).expect("date picker is a selector");
                 assert_eq!(node.role, Role::ComboBox);
@@ -1086,7 +1086,7 @@ mod tests {
             fn local_state_keeps_date_pickers_in_sync() {
                 let first = Date::new(2026, 3, 12).unwrap();
                 let second = Date::new(2027, 8, 4).unwrap();
-                let state = crate::LocalState::new(first);
+                let state = tilo_ui_base::LocalState::new(first);
                 let mut left = DatePicker::from_state(&state);
                 let mut right = DatePicker::from_state(&state);
                 let doc = AutoCommit::new();
@@ -1101,7 +1101,7 @@ mod tests {
             fn semantic_date_change_updates_state_and_callback() {
                 let initial = Date::new(2026, 1, 1).unwrap();
                 let expected = Date::new(2026, 11, 23).unwrap();
-                let state = crate::LocalState::new(initial);
+                let state = tilo_ui_base::LocalState::new(initial);
                 let captured = Rc::new(RefCell::new(None));
                 let callback = Rc::clone(&captured);
                 let mut picker = DatePicker::from_state(&state).on_choose("date-picker", move |date| {
@@ -1111,9 +1111,9 @@ mod tests {
 
                 assert!(Widget::perform_action(
                     &mut picker,
-                    &crate::a11y::Action::SetValue("2026-11-23".into()),
+                    &tilo_ui_base::a11y::Action::SetValue("2026-11-23".into()),
                     &[],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ));
                 assert_eq!(state.with(|date| *date), expected);
@@ -1121,9 +1121,9 @@ mod tests {
 
                 assert!(!Widget::perform_action(
                     &mut picker,
-                    &crate::a11y::Action::SetValue("2026-02-30".into()),
+                    &tilo_ui_base::a11y::Action::SetValue("2026-02-30".into()),
                     &[],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ));
                 assert_eq!(state.with(|date| *date), expected);
@@ -1154,7 +1154,7 @@ mod tests {
 
         phase a_bound_text_day_is_shown_and_followed;
         {
-            let state = crate::LocalState::new("2026-06-30".to_owned());
+            let state = tilo_ui_base::LocalState::new("2026-06-30".to_owned());
             let mut picker = DatePicker::from_text_state(&state);
             assert_eq!(
                 picker.selected(),
@@ -1176,7 +1176,7 @@ mod tests {
             picker.advance_month();
             let walked_to = picker.month_view();
             assert!(
-                <DatePicker as crate::component::Described>::set_props(
+                <DatePicker as tilo_ui_base::component::Described>::set_props(
                     &mut picker,
                     crate::widget::DatePickerProps::default()
                 ),
@@ -1208,7 +1208,7 @@ mod tests {
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
-        dp.draw(&mut crate::draw::DrawCtx::new(
+        dp.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut tr,

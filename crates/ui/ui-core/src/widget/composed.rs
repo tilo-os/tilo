@@ -6,12 +6,12 @@ use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use super::DrawChild;
-use super::{AppModel, Element, EventCtx, ModelPath, Widget, layout_rect};
-use crate::i18n::I18nManager;
-use crate::interaction::InteractionEnvironment;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{widget::AppModel, widget::Element, widget::EventCtx, widget::ModelPath, widget::Widget, widget::layout_rect};
+use tilo_ui_base::i18n::I18nManager;
+use tilo_ui_base::interaction::InteractionEnvironment;
 
-use crate::theme::Theme;
+use tilo_ui_base::theme::Theme;
 
 /// A widget's composition: the element tree it rebuilds at every layout, or
 /// keeps across layouts until it is invalidated ([`Composed::build_layout_kept`]), and
@@ -131,7 +131,7 @@ impl Composed {
         }
     }
 
-    pub fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -193,23 +193,23 @@ macro_rules! forward_to_composed {
             self.$field.apply_layout(taffy, node, origin);
         }
 
-        fn draw(&mut self, ctx: &mut $crate::draw::DrawCtx<'_>) {
+        fn draw(&mut self, ctx: &mut $tilo_ui_base::draw::DrawCtx<'_>) {
             self.$field.draw(ctx);
         }
 
         fn handle_event(
             &mut self,
             event: &$crate::winit::event::WindowEvent,
-            ctx: &mut $crate::widget::EventCtx<'_>,
+            ctx: &mut $tilo_ui_base::widget::EventCtx<'_>,
         ) {
             self.$field.handle_event(event, ctx);
         }
 
-        fn children(&self) -> Vec<&dyn $crate::widget::Widget> {
+        fn children(&self) -> Vec<&dyn $tilo_ui_base::widget::Widget> {
             self.$field.children()
         }
 
-        fn children_mut(&mut self) -> Vec<&mut (dyn $crate::widget::Widget + '_)> {
+        fn children_mut(&mut self) -> Vec<&mut (dyn $tilo_ui_base::widget::Widget + '_)> {
             self.$field.children_mut()
         }
 
@@ -226,7 +226,7 @@ macro_rules! forward_to_composed {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::Spacer;
+    use tilo_ui_base::widget::Spacer;
 
     tilo_test_env::scenario! {
         /// Invalidation and input of a composed widget.

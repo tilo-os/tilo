@@ -5,7 +5,7 @@
 )]
 
 use super::*;
-use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release, named_key};
+use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release, synthetic_input::named_key};
 use crate::testing::dispatch;
 use automerge::AutoCommit;
 
@@ -183,16 +183,16 @@ tilo_test_env::scenario! {
         assert!(Widget::perform_semantic_action(
             &mut group,
             "send.0",
-            &crate::a11y::Action::Activate,
-            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+            &tilo_ui_base::a11y::Action::Activate,
+            &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
             &automerge::ROOT,
         ));
         assert_eq!(group.selected(), Some(0));
         assert!(!Widget::perform_semantic_action(
             &mut group,
             "send.2",
-            &crate::a11y::Action::Activate,
-            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+            &tilo_ui_base::a11y::Action::Activate,
+            &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
             &automerge::ROOT,
         ));
     }

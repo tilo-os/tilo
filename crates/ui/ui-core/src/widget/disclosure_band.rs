@@ -9,11 +9,11 @@ use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Affine, Point, Rect};
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::DrawChild;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
 use crate::widget::floating_surface::DetachedContent;
-use crate::widget::{BandMotion, Element, TaffyTreeExt, Widget, layout_rect};
+use tilo_ui_base::{widget::BandMotion, widget::Element, widget::TaffyTreeExt, widget::Widget, widget::layout_rect};
 
 #[path = "disclosure_band_component.rs"]
 mod component;
@@ -21,7 +21,7 @@ pub use component::DisclosureBandProps;
 
 /// Content a view builds only while it is open (a tile's details under
 /// it, a row's section), in a column as a band
-/// ([`crate::widget::Disclosing::Band`]).
+/// ([`tilo_ui_base::widget::Disclosing::Band`]).
 ///
 /// Built after its window has shown, it arrives: its box opens from the
 /// top over its content while the widgets after it in its column move down
@@ -125,12 +125,12 @@ impl DisclosureBand {
 }
 
 impl Widget for DisclosureBand {
-    crate::described!();
+    tilo_ui_base::described!();
 
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
         let changed = self.child.update(state, path);
         if self.band.layout_moved(true) {
-            crate::widget::note_layout_moved();
+            tilo_ui_base::widget::note_layout_moved();
         }
         changed
     }
@@ -180,7 +180,7 @@ impl Widget for DisclosureBand {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -230,7 +230,7 @@ impl Widget for DisclosureBand {
         true
     }
 
-    fn note_placement(&mut self, placement: crate::widget::Placement) {
+    fn note_placement(&mut self, placement: tilo_ui_base::widget::Placement) {
         self.band.note_placement(placement);
     }
 
@@ -242,7 +242,7 @@ impl Widget for DisclosureBand {
         self.band.paint_bounds(self.rect)
     }
 
-    fn disclosing(&self) -> Option<crate::widget::Disclosing> {
+    fn disclosing(&self) -> Option<tilo_ui_base::widget::Disclosing> {
         self.band.disclosing()
     }
 
@@ -251,12 +251,12 @@ impl Widget for DisclosureBand {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         let Some(node) = self.child_node.filter(|_| self.band.laid_in_flow) else {
             return;
         };
-        crate::widget::route_to_children(
+        tilo_ui_base::widget::route_to_children(
             std::slice::from_mut(&mut self.child),
             &[node],
             event,
@@ -290,7 +290,7 @@ impl Widget for DisclosureBand {
 
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.band.structure_dirty) || self.hosting_changed();
-        super::defaults::take_structure_dirty(self.children_mut()) || own
+        tilo_ui_base::widget::defaults::take_structure_dirty(self.children_mut()) || own
     }
 
     fn needs_redraw(&self) -> bool {

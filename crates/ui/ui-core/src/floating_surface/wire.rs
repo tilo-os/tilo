@@ -6,7 +6,7 @@
 )]
 use serde::{Deserialize, Serialize};
 
-use crate::a11y::PointedControl;
+use tilo_ui_base::a11y::PointedControl;
 
 pub use tilo_actions::send_to::{Recipient, RecipientKind, recipients_matching};
 
@@ -224,7 +224,7 @@ pub enum FloatingSurfaceClientMessage {
     /// Reopen the workspace's most recently closed tab.
     ReopenClosedTab,
     /// Dial the holders of this window's workspace again now: the person pressed "Try again" on a
-    /// workspace whose content could not arrive ([`crate::workspace_sync::retry`]). The shell
+    /// workspace whose content could not arrive ([`tilo_ui_base::workspace_sync::retry`]). The shell
     /// says how it went in the window's next appearance.
     RetryWorkspace {
         instance: Option<u64>,
@@ -492,7 +492,7 @@ pub enum FloatingSurfaceHostMessage {
     Closed {
         id: String,
     },
-    /// Where and for whom the app's window is shown ([`crate::theme::WindowAppearance`]): the
+    /// Where and for whom the app's window is shown ([`tilo_ui_base::theme::WindowAppearance`]): the
     /// temperature of the workspace holding it and the person's colour.
     Appearance {
         /// The host's configured theme document as JSON; apps cannot read its settings file
@@ -514,10 +514,10 @@ pub enum FloatingSurfaceHostMessage {
         /// A presence hue by its stored name (`PresenceHue::id`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         your_colour: Option<String>,
-        /// Whether the workspace the window is in has synced with its host ([`crate::workspace_sync`]);
+        /// Whether the workspace the window is in has synced with its host ([`tilo_ui_base::workspace_sync`]);
         /// absent for a workspace that syncs with no host, and from older shells.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        workspace_sync: Option<crate::workspace_sync::WorkspaceSync>,
+        workspace_sync: Option<tilo_ui_base::workspace_sync::WorkspaceSync>,
         /// How round the shell draws the window's corners, in logical
         /// pixels: its window radius while the window is framed among
         /// others, 0 while it is drawn edge to edge. Absent from older
@@ -583,7 +583,7 @@ pub enum FloatingSurfaceHostMessage {
 
 impl FloatingSurfaceHostMessage {
     #[must_use]
-    pub fn appearance(appearance: &crate::theme::WindowAppearance) -> Self {
+    pub fn appearance(appearance: &tilo_ui_base::theme::WindowAppearance) -> Self {
         Self::Appearance {
             theme: None,
             theme_bundle: None,
@@ -599,8 +599,8 @@ impl FloatingSurfaceHostMessage {
     /// workspace appearance.
     #[must_use]
     pub fn appearance_with_theme(
-        appearance: &crate::theme::WindowAppearance,
-        theme: &crate::Theme,
+        appearance: &tilo_ui_base::theme::WindowAppearance,
+        theme: &tilo_ui_base::Theme,
         theme_bundle: Option<&str>,
     ) -> Self {
         let mut message = Self::appearance(appearance);
@@ -621,7 +621,7 @@ impl FloatingSurfaceHostMessage {
     /// bundle where the sandbox reads it and names that directory here, and the document it sent
     /// then draws with that bundle's sets.
     #[must_use]
-    pub fn configured_theme(&self) -> Option<crate::Theme> {
+    pub fn configured_theme(&self) -> Option<tilo_ui_base::Theme> {
         let Self::Appearance {
             theme: Some(document),
             theme_bundle,
@@ -636,21 +636,21 @@ impl FloatingSurfaceHostMessage {
             let compiled = runtime_portal::process_link::compiled_modules();
             #[cfg(not(feature = "local-daemons"))]
             let compiled: Option<std::path::PathBuf> = None;
-            let _ = crate::theme_bundle::load_from(
+            let _ = tilo_ui_base::theme_bundle::load_from(
                 std::path::Path::new(directory),
                 compiled.as_deref(),
             );
         }
         #[cfg(target_arch = "wasm32")]
         let _ = theme_bundle;
-        let document: crate::theme_document::ThemeDocument =
+        let document: tilo_ui_base::theme_document::ThemeDocument =
             serde_json::from_value(document.clone()).ok()?;
-        crate::Theme::from_document(&document)
+        tilo_ui_base::Theme::from_document(&document)
     }
 
     /// What an [`Self::Appearance`] message says, `None` for any other.
     #[must_use]
-    pub fn window_appearance(&self) -> Option<crate::theme::WindowAppearance> {
+    pub fn window_appearance(&self) -> Option<tilo_ui_base::theme::WindowAppearance> {
         let Self::Appearance {
             workspace_hue,
             your_colour,
@@ -660,14 +660,14 @@ impl FloatingSurfaceHostMessage {
         else {
             return None;
         };
-        Some(crate::theme::WindowAppearance {
+        Some(tilo_ui_base::theme::WindowAppearance {
             corner_radius: corner_radius.filter(|radius| radius.is_finite() && *radius >= 0.0),
             workspace_hue: workspace_hue
                 .filter(|hue| hue.is_finite())
                 .map(|hue| hue.rem_euclid(360.0)),
             your_colour: your_colour
                 .as_deref()
-                .and_then(crate::tokens::PresenceHue::from_id),
+                .and_then(tilo_ui_base::tokens::PresenceHue::from_id),
         })
     }
 }

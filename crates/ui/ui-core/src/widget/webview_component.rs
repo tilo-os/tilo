@@ -6,7 +6,7 @@
 //! hands it to every `ui.WebView` it builds, so the address a view names (`uri`) is the only
 //! thing that crosses the wire and no live engine does. An app that draws its own page hands
 //! its engine in, and reads that engine's events itself.
-use crate::component::{Component, Described, Event};
+use tilo_ui_base::{component::Component, component::Described, component::Event};
 use crate::webview::SharedEngine;
 
 use super::WebView;
@@ -72,7 +72,7 @@ impl Described for WebView {
             .or_else(crate::webview::window_engine)
             .unwrap_or_else(|| {
                 let missing: SharedEngine = tilo_webview::chromium::UnavailableEngine::new(
-                    crate::i18n::I18nManager::lookup_plain("webview-unavailable"),
+                    tilo_ui_base::i18n::I18nManager::lookup_plain("webview-unavailable"),
                 );
                 missing
             });

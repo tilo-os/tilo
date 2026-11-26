@@ -6,11 +6,12 @@ use winit::event::{ElementState, WindowEvent};
 
 use super::TabBar;
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::DrawChild;
-use crate::widget::{EditOutcome, EditableLabel, Widget};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::DrawChild;
+use crate::{widget::EditOutcome, widget::EditableLabel};
+use tilo_ui_base::widget::Widget;
 
 pub(super) struct TabRename {
     tab: u64,
@@ -66,7 +67,7 @@ impl TabBar {
     pub fn rename_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         self.touch();
         let Some(rename) = self.rename.as_mut() else {
@@ -134,7 +135,7 @@ impl TabBar {
         self.touch();
         let now = crate::time::now();
         let second = self.last_tab_press.is_some_and(|(tab, at)| {
-            tab == id && now.saturating_duration_since(at) < crate::gesture::multi_click_interval()
+            tab == id && now.saturating_duration_since(at) < tilo_ui_base::gesture::multi_click_interval()
         });
         if second {
             self.last_tab_press = None;
@@ -217,7 +218,7 @@ impl TabBar {
         }
     }
 
-    pub(super) fn draw_rename(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub(super) fn draw_rename(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -238,7 +239,7 @@ impl TabBar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::synthetic_input::{char_key, cursor_moved, mouse_press, mouse_release, named_key};
+    use tilo_ui_base::{synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release, synthetic_input::named_key};
     use crate::testing::dispatch;
     use crate::widget::TabDescriptor;
     use winit::keyboard::NamedKey;
@@ -291,7 +292,7 @@ mod tests {
         {
             let mut bar = bar();
             let theme = Theme::dark();
-            let mut text = crate::TextRenderer::new();
+            let mut text = tilo_ui_base::TextRenderer::new();
             assert!(bar.begin_rename(1, "Tab name"));
             bar.measure_rename(&mut text, &theme);
             let (_, _, at_first) = bar.title_advance[&1].clone();
@@ -317,7 +318,7 @@ mod tests {
         {
             let mut bar = bar();
             let theme = Theme::dark();
-            let mut text = crate::TextRenderer::new();
+            let mut text = tilo_ui_base::TextRenderer::new();
             assert!(bar.begin_rename(1, "Tab name"));
             type_text(&mut bar, "Meeting notes");
             bar.measure_rename(&mut text, &theme);

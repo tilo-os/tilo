@@ -1,6 +1,6 @@
 //! Toolkit-owned host for a small app's typed resource/action surface. Apps provide their
 //! retained root, one discoverable resource, and an immediate operation closure.
-use crate::widget::{AppModel, ModelPath};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use std::collections::HashMap;
 
 use crate::automerge::{AutoCommit, ObjId};
@@ -10,7 +10,7 @@ use crate::tilo_actions::{
     ActionBinding, ActionBindingError, ActionContract, ActionOutput, ActionParam, ActionSpec,
     EncodedAction, ExecutionMode, OperationKind, ParamType, ResourceSpec, ResultSpec,
 };
-use crate::widget::{ResourceOperation, ResourceOperationStart, TaffyTreeExt, Widget};
+use tilo_ui_base::{widget::ResourceOperation, widget::ResourceOperationStart, widget::TaffyTreeExt, widget::Widget};
 
 pub const OPERATION_TYPE: &str = "tilo.app.operation";
 
@@ -68,7 +68,7 @@ pub fn typed_resource(
     ResourceSpec::new(format!("{kind}:root"), kind, label).with_action(action)
 }
 
-/// A value that can connect a [`LocalState`](crate::LocalState) field directly
+/// A value that can connect a [`LocalState`](tilo_ui_base::LocalState) field directly
 /// to a typed resource action.
 pub trait ActionValue: Clone + Send + Sync + 'static {
     fn param_type() -> ParamType;
@@ -179,7 +179,7 @@ impl ActionForm {
         mut self,
         name: impl Into<String>,
         description: impl Into<String>,
-        state: &crate::LocalState<T>,
+        state: &tilo_ui_base::LocalState<T>,
     ) -> Self {
         let name = name.into();
         let state_for_read = state.clone();
@@ -282,7 +282,7 @@ pub fn form(root: Box<dyn Widget>, form: ActionForm) -> Box<dyn Widget> {
 
 type Immediate = Box<dyn FnMut(&[u8]) -> Result<ActionOutput, String>>;
 
-#[crate::component::not_a_component(framework, "hosts a resource's actions for the framework")]
+#[tilo_ui_base::component::not_a_component(framework, "hosts a resource's actions for the framework")]
 pub struct ResourceActionHost {
     root: Box<dyn Widget>,
     resource: ResourceSpec,
@@ -304,9 +304,9 @@ pub fn immediate(
 }
 
 impl Widget for ResourceActionHost {
-    crate::provides!(
-        dyn crate::widget::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn tilo_ui_base::widget::ResourceOperations
     );
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
@@ -316,7 +316,7 @@ impl Widget for ResourceActionHost {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        theme: &crate::Theme,
+        theme: &tilo_ui_base::Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.root.build_layout(taffy, theme, node_map);
@@ -330,7 +330,7 @@ impl Widget for ResourceActionHost {
         taffy.widget_node(style, &[child], node_map, self)
     }
 
-    crate::forward_to_child!(root, rect);
+    tilo_ui_base::forward_to_child!(root, rect);
 
     fn is_focusable(&self) -> bool {
         self.root.is_focusable()
@@ -357,7 +357,7 @@ impl Widget for ResourceActionHost {
         self.root.ime_edit_fingerprint(key)
     }
 
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
         self.root.ime_content()
     }
 
@@ -369,7 +369,7 @@ impl Widget for ResourceActionHost {
         self.root.traps_focus()
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.root.accessibility()
     }
 
@@ -383,9 +383,9 @@ impl Widget for ResourceActionHost {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.root.perform_action(action, key_path, state, path)
@@ -394,8 +394,8 @@ impl Widget for ResourceActionHost {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.root
@@ -439,7 +439,7 @@ impl Widget for ResourceActionHost {
     }
 }
 
-impl crate::widget::ResourceOperations for ResourceActionHost {
+impl tilo_ui_base::widget::ResourceOperations for ResourceActionHost {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[OPERATION_TYPE]
     }
@@ -447,10 +447,10 @@ impl crate::widget::ResourceOperations for ResourceActionHost {
     fn start_operation(
         &mut self,
         op: &ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
+        if let Some(started) = tilo_ui_base::widget::start_in_children(self, op, doc, path)? {
             return Ok(Some(started));
         }
         let request = op.request();
@@ -463,7 +463,7 @@ impl crate::widget::ResourceOperations for ResourceActionHost {
     }
 }
 
-impl crate::widget::resources::PublishesResources for ResourceActionHost {
+impl tilo_ui_base::widget::resources::PublishesResources for ResourceActionHost {
     fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         vec![self.resource.clone()]
     }
@@ -476,8 +476,8 @@ mod tests {
     #[test]
     fn action_form_validates_controls_and_connects_invocation() {
         {
-            let name = crate::LocalState::new(String::from("Ada"));
-            let enabled = crate::LocalState::new(true);
+            let name = tilo_ui_base::LocalState::new(String::from("Ada"));
+            let enabled = tilo_ui_base::LocalState::new(true);
             let form = ActionForm::new("profile", "Profile", "save", "Save")
                 .field("name", "Display name", &name)
                 .field("enabled", "Enabled", &enabled);
@@ -506,7 +506,7 @@ mod tests {
         }
 
         {
-            let value = crate::LocalState::new(String::new());
+            let value = tilo_ui_base::LocalState::new(String::new());
             let form = ActionForm::new("profile", "Profile", "save", "Save").field(
                 "name",
                 "Display name",

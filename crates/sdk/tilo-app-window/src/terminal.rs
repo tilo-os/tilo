@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ui::key_input::{Inputs, Keys};
+use tilo_ui_base::{key_input::Inputs, key_input::Keys};
 use ui::terminal::{Palette, Sessions};
 
 /// The sessions a window holds, as the handles `ui.Terminal` reads: rebuilt when a session was
@@ -65,6 +65,6 @@ impl Handles {
 
 /// The palette a terminal draws with, from the theme's own terminal colours.
 #[must_use]
-pub fn palette(theme: &ui::Theme) -> Palette {
+pub fn palette(theme: &tilo_ui_base::Theme) -> Palette {
     Palette::from_theme(theme)
 }

@@ -16,7 +16,7 @@
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
-use ui::collaboration::SessionResource;
+use tilo_ui_base::collaboration::SessionResource;
 
 /// Where the app reports what it read and changed. A probe started only to stand in for a view that
 /// draws a part of the shell reports nothing.
@@ -47,7 +47,7 @@ const SETTLING: Duration = Duration::from_millis(250);
 fn main() {
     // What every surface app does before its window opens. From here on the session's published
     // resources are this app's, as they are any app's.
-    ui::surface_services::connect();
+    tilo_ui_base::surface_services::connect();
     if let Ok(report) = std::env::var(REPORT) {
         // Written whole and then put in place, so the test reads a report or nothing rather than
         // the middle of one.

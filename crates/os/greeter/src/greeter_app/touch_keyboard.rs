@@ -17,11 +17,12 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use taffy::{NodeId, Style, TaffyTree};
-use ui::a11y::{AccessNode, AccessState, Action, Role};
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Action, a11y::Role};
 use ui::passcode_keyboard::{PasscodeInput, PasscodeKey, PasscodeKeyboard};
 
-use ui::theme::Theme;
-use ui::widget::{FieldRole, SecretPrompt, TaffyTreeExt as _, Widget};
+use tilo_ui_base::theme::Theme;
+use ui::{widget::FieldRole, widget::SecretPrompt};
+use tilo_ui_base::{widget::TaffyTreeExt as _, widget::Widget};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use zeroize::Zeroizing;
@@ -50,9 +51,9 @@ impl super::GreeterApp {
         let keyboard = self.keyboards.unwrap_or_else(|| {
             self.environment
                 .available
-                .contains(ui::InputDevice::Keyboard)
+                .contains(tilo_ui_base::InputDevice::Keyboard)
         });
-        !keyboard || self.environment.modality == ui::InputModality::Touch
+        !keyboard || self.environment.modality == tilo_ui_base::InputModality::Touch
     }
 
     /// Open the keyboard the chosen person's secret wants: the number pad
@@ -253,7 +254,7 @@ impl Widget for TouchKeyboard {
             flex_shrink: 0.0,
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::length(ui::num::f32_of_f64(height)),
+                height: taffy::Dimension::length(tilo_ui_base::num::f32_of_f64(height)),
             },
             max_size: taffy::Size {
                 width: taffy::Dimension::length(max_width(theme)),
@@ -266,7 +267,7 @@ impl Widget for TouchKeyboard {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = ui::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.rect = rect;
             self.dirty.set(true);
@@ -278,7 +279,7 @@ impl Widget for TouchKeyboard {
         }
     }
 
-    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -296,7 +297,7 @@ impl Widget for TouchKeyboard {
         self.dirty.set(false);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = Some(Point::new(position.x, position.y));
@@ -351,8 +352,8 @@ impl Widget for TouchKeyboard {
         &mut self,
         action: &Action,
         key_path: &[u64],
-        _state: &mut ui::widget::Edits<'_>,
-        _path: &ui::widget::ModelPath,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         let ([key], Action::Activate) = (key_path, action) else {
             return false;
@@ -361,7 +362,7 @@ impl Widget for TouchKeyboard {
         let Some((pressed, _)) = keyboard
             .layout(self.rect, self.metrics.0, self.metrics.1)
             .into_iter()
-            .find(|(candidate, _)| ui::a11y::hash_key(&key_id(*candidate)) == *key)
+            .find(|(candidate, _)| tilo_ui_base::a11y::hash_key(&key_id(*candidate)) == *key)
         else {
             return false;
         };
@@ -510,7 +511,7 @@ mod tests {
                     && key.action_target.is_some())
             );
             assert_eq!(
-                ui::screen_reader::describe(&node.children[9]),
+                tilo_ui_base::screen_reader::describe(&node.children[9]),
                 "Delete, button"
             );
 
@@ -522,7 +523,7 @@ mod tests {
                 .and_then(|key| key.action_target.clone())
                 .unwrap();
             let mut doc = automerge::AutoCommit::new();
-            let mut edits = ui::widget::Edits::lend(&mut doc);
+            let mut edits = tilo_ui_base::widget::Edits::lend(&mut doc);
             assert!(keyboard.perform_semantic_action(
                 &two,
                 &Action::Activate,
@@ -552,7 +553,7 @@ mod tests {
                 .and_then(|key| key.action_target.clone())
                 .unwrap();
             let mut doc = automerge::AutoCommit::new();
-            let mut edits = ui::widget::Edits::lend(&mut doc);
+            let mut edits = tilo_ui_base::widget::Edits::lend(&mut doc);
             assert!(letters.perform_semantic_action(
                 &symbols,
                 &Action::Activate,

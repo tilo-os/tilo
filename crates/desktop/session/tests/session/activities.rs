@@ -107,7 +107,7 @@ fn session_wide(width: i32) -> Session {
 /// A running timer is the bar's pill, and the pill opens as its card over the shell.
 #[test]
 fn the_bar_names_the_running_timer_and_its_card_opens_from_the_pill() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = super::shell::held_clock();
     let dir = shots_dir();
     let mut session = session();
@@ -146,7 +146,7 @@ fn the_bar_names_the_running_timer_and_its_card_opens_from_the_pill() {
 /// none stands on the shell.
 #[test]
 fn a_narrow_shell_keeps_its_cards_in_the_pill() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = super::shell::held_clock();
     let dir = shots_dir();
     let mut session = session_wide(420);
@@ -223,7 +223,7 @@ fn recording() -> Summary {
 /// the card's header ends it.
 #[test]
 fn a_floating_timer_stands_in_the_corner_and_is_paused_and_ended_from_its_card() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     settle(&mut session, 8);
     show(&session, CLOCKS, tea(), true);
@@ -255,7 +255,7 @@ fn a_floating_timer_stands_in_the_corner_and_is_paused_and_ended_from_its_card()
 /// What keeps to the bar comes out of the pill as a card at a press, and goes back into it.
 #[test]
 fn the_pill_pulls_a_card_out_and_folds_it_back() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     settle(&mut session, 8);
     show(&session, CLOCKS, tea(), false);
@@ -277,7 +277,7 @@ fn the_pill_pulls_a_card_out_and_folds_it_back() {
 /// the recording stops from its own button, and the mute reaches the call.
 #[test]
 fn a_call_is_ended_and_a_recording_stopped_from_their_cards() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     settle(&mut session, 8);
     show(&session, "so.tilo.calls", call(), true);
@@ -298,7 +298,7 @@ fn a_call_is_ended_and_a_recording_stopped_from_their_cards() {
 /// Three cards at most stand over the windows; the person picks the corner they dock in.
 #[test]
 fn the_cards_dock_in_the_corner_the_person_chose_three_at_most() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     settle(&mut session, 8);
     show(&session, "so.tilo.calls", call(), true);
@@ -328,7 +328,7 @@ fn the_cards_dock_in_the_corner_the_person_chose_three_at_most() {
 /// on the dark palette and light on the light one, each written as a picture.
 #[test]
 fn the_cards_follow_the_persons_theme() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = super::shell::held_clock();
     let card = |presentation: fn() -> ui::application::ComponentRunnerInputs, theme: &str| {
         let mut session = Session::headless(
@@ -379,7 +379,7 @@ fn the_cards_follow_the_persons_theme() {
 /// back.
 #[test]
 fn a_phone_drops_the_card_from_under_the_bar() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_wide(420);
     settle(&mut session, 8);
     show(&session, CLOCKS, tea(), true);
@@ -421,7 +421,7 @@ fn a_phone_drops_the_card_from_under_the_bar() {
 /// A song's card says where it is and what is left, and a press along its bar takes it there.
 #[test]
 fn a_songs_card_takes_it_along_its_length() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     settle(&mut session, 8);
     let song = Summary::new(Kind::Music, "Song", "")
@@ -467,21 +467,21 @@ fn session_with(
 /// The time's width as the bar's own type lays it out, unconstrained: what the whole clock needs.
 fn clock_needs(clock: &str) -> f64 {
     let style = ui::widget::Text::new(clock)
-        .with_role(ui::tokens::TextRole::Subheading)
+        .with_role(tilo_ui_base::tokens::TextRole::Subheading)
         .numeric()
         .text_style()
         .clone();
-    let (needs, _) = ui::font_catalog::fixture_renderer().measure_style(clock, None, &style);
+    let (needs, _) = tilo_ui_base::font_catalog::fixture_renderer().measure_style(clock, None, &style);
     f64::from(needs)
 }
 
 /// The person's clocks in `style` on this thread, as their region settings carry them, so a
 /// capture shows a clock of a shape the test names: 12-hour `12:59 PM`, 24-hour `23:59`.
-fn clock_style(style: ui::clock::TimeStyle) {
-    ui::format::region::install_here(
-        Some(ui::format::RegionFormats {
+fn clock_style(style: tilo_ui_base::clock::TimeStyle) {
+    tilo_ui_base::format::region::install_here(
+        Some(tilo_ui_base::format::RegionFormats {
             time: style,
-            ..ui::format::RegionFormats::default()
+            ..tilo_ui_base::format::RegionFormats::default()
         }),
         None,
     );
@@ -490,9 +490,9 @@ fn clock_style(style: ui::clock::TimeStyle) {
 /// Hold this thread's clock at `hour`:`minute` on the capture's own day, so every picture shows
 /// one time and the widest a clock gets (`12:59 PM`, `23:59`).
 fn clock_at(hour: i8, minute: i8) -> ui::time::testing::SharedWall {
-    let at = ui::format::DateTime::new(2026, 6, 30, hour, minute, 0, 0)
+    let at = tilo_ui_base::format::DateTime::new(2026, 6, 30, hour, minute, 0, 0)
         .ok()
-        .and_then(ui::clock::instant_of)
+        .and_then(tilo_ui_base::clock::instant_of)
         .expect("the capture's day at a time in the device's zone");
     let wall = ui::time::testing::SharedWall::default();
     wall.follow();
@@ -546,10 +546,10 @@ fn whole_clock(session: &Session, name: &str, width: i32, clipped: &mut Vec<Stri
 /// (the pill onto one control); the time is never the one squeezed.
 #[test]
 fn the_bar_shows_the_whole_clock_on_a_phone_and_a_desktop() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let dir = shots_dir();
     let mut clipped = Vec::new();
-    clock_style(ui::clock::TimeStyle::H12);
+    clock_style(tilo_ui_base::clock::TimeStyle::H12);
     let _twelve = clock_at(12, 59);
     for (size, width) in [("phone", PHONE_WIDTH), ("desktop", crate::common::WIDTH)] {
         for (theme, presentation) in [
@@ -590,7 +590,7 @@ fn the_bar_shows_the_whole_clock_on_a_phone_and_a_desktop() {
         }
     }
     // The 24-hour clock, at the longest it reads, on the phone where the bar is tightest.
-    clock_style(ui::clock::TimeStyle::H24);
+    clock_style(tilo_ui_base::clock::TimeStyle::H24);
     let _late = clock_at(23, 59);
     for (theme, presentation) in [
         (
@@ -610,7 +610,7 @@ fn the_bar_shows_the_whole_clock_on_a_phone_and_a_desktop() {
         super::shell::capture_to(&mut session, &dir, &name);
         whole_clock(&session, &name, PHONE_WIDTH, &mut clipped);
     }
-    ui::format::region::install_here(None, None);
+    tilo_ui_base::format::region::install_here(None, None);
     assert!(
         clipped.is_empty(),
         "the bar's clock is clipped, though it is short fixed content a glance reads:\n{}",
@@ -623,7 +623,7 @@ fn the_bar_shows_the_whole_clock_on_a_phone_and_a_desktop() {
 /// on a desktop and on a phone, each written as a picture.
 #[test]
 fn the_start_cards_read_in_the_persons_theme() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = super::shell::held_clock();
     let cards = |presentation: fn() -> ui::application::ComponentRunnerInputs,
                  width: i32,
@@ -722,7 +722,7 @@ fn theme_contrast(frame: &[u8], size: (u32, u32), rect: (usize, usize, usize, us
 /// state written as a picture.
 #[test]
 fn the_desktop_pill_pauses_a_running_timer_and_turns_to_resume() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = super::shell::held_clock();
     let dir = shots_dir();
     for (theme, presentation) in [

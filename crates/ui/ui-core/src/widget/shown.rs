@@ -11,8 +11,9 @@ use std::cell::Cell;
 
 use winit::event::WindowEvent;
 
-use crate::component::{Component, Described, PartViews};
-use crate::widget::{Element, EventCtx, Interaction, Widget};
+use tilo_ui_base::{component::Component, component::Described, component::PartViews};
+use crate::widget::Interaction;
+use tilo_ui_base::{widget::Element, widget::EventCtx, widget::Widget};
 
 thread_local! {
     static SHOWN: Cell<Option<Interaction>> = const { Cell::new(None) };
@@ -61,7 +62,7 @@ pub enum State {
     Focused,
 }
 
-crate::choice!(State, "InteractionState", {
+tilo_ui_base::choice!(State, "InteractionState", {
     Rest => "rest", Hovered => "hovered", Pressed => "pressed", Focused => "focused",
 });
 
@@ -104,11 +105,11 @@ impl InState {
     }
 
     fn nothing() -> Element {
-        Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0))
+        Box::new(tilo_ui_base::widget::Spacer::token(tilo_ui_base::tokens::SpacingStep::S0))
     }
 }
 
-impl crate::widget::Decorator for InState {
+impl tilo_ui_base::widget::Decorator for InState {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -123,7 +124,7 @@ impl crate::widget::Decorator for InState {
         clippy::disallowed_methods,
         reason = "a decorator is the widget it wraps: that widget draws under the decorator's key"
     )]
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         let state = self.state.interaction();
         with(state, || self.content.draw(ctx));
     }
@@ -154,11 +155,11 @@ impl crate::widget::Decorator for InState {
 
     /// Hidden, with what it holds: a reader and the keyboard's order meet the live control, never
     /// its picture.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let mut node = self
             .content
             .accessibility()
-            .unwrap_or_else(|| crate::a11y::AccessNode::new(crate::a11y::Role::Group));
+            .unwrap_or_else(|| tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group));
         node.state.hidden = true;
         node.state.focusable = false;
         Some(node)

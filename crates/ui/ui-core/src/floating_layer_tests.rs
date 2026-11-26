@@ -639,9 +639,9 @@ tilo_test_env::scenario! {
 
     phase a_screenshots_controls_are_labelled_in_their_slots;
     {
-        use crate::text_render::TextRenderer;
-        use crate::theme::Theme;
-        use crate::tokens::TextRole;
+        use tilo_ui_base::text_render::TextRenderer;
+        use tilo_ui_base::theme::Theme;
+        use tilo_ui_base::tokens::TextRole;
 
         let summary = Summary::new(Kind::Other, "Screenshot", "")
             .with_id("shot-1")

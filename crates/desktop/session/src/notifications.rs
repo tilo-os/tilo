@@ -573,7 +573,7 @@ impl SessionNotifications {
             return Some(notifications::quiet_label(&QuietReason::Presenting));
         }
         focus.map(|end| {
-            notifications::quiet_label(&QuietReason::FocusUntil(ui::clock::hour_minute(
+            notifications::quiet_label(&QuietReason::FocusUntil(tilo_ui_base::clock::hour_minute(
                 (end / 60).into(),
                 (end % 60).into(),
             )))
@@ -1603,7 +1603,7 @@ impl Service for Served {
 
     /// A reading says how long ago each notice arrived, so it is read again as each minute turns.
     fn wakes_in(&self) -> Option<Duration> {
-        let second = ui::clock::local_now()
+        let second = tilo_ui_base::clock::local_now()
             .timestamp()
             .as_second()
             .rem_euclid(60);

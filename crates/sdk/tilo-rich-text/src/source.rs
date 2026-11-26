@@ -13,11 +13,11 @@ use tilo_document::{RichText, RichTextAction, RichTextState};
 use ui::automerge::ObjId;
 use ui::automerge::transaction::Transactable;
 use ui::framework::{Dispatcher, Live, ResourceSelection, WorkspaceResource};
-use ui::presence::PresenceKey;
+use tilo_ui_base::presence::PresenceKey;
 use ui::rich_edit::PresenceKeyFn;
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::{Demand, Doc, Invoke, ModelError, Resource, Tracker};
-use ui::widget::Edits;
+use tilo_ui_base::widget::Edits;
 
 /// Everything the editor reads.
 fn all() -> Demand {

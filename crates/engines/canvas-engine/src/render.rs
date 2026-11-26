@@ -11,9 +11,9 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tilo_ui::num::f32_of_f64;
+use tilo_ui_base::num::f32_of_f64;
 
-use tilo_ui::TextRenderer;
+use tilo_ui_base::TextRenderer;
 use tilo_ui::vello::Scene;
 use tilo_ui::vello::kurbo::{Affine, BezPath, Cap, Join, PathEl, Point, Rect, Shape as _, Stroke};
 use tilo_ui::vello::peniko::{
@@ -2242,7 +2242,7 @@ fn draw_shadow(
     );
 }
 
-pub fn text_style(shape: &Shape) -> Option<tilo_ui::TextStyle> {
+pub fn text_style(shape: &Shape) -> Option<tilo_ui_base::TextStyle> {
     let Shape::Text {
         size,
         font,
@@ -2257,28 +2257,28 @@ pub fn text_style(shape: &Shape) -> Option<tilo_ui::TextStyle> {
         return None;
     };
     let family = match font.as_deref().and_then(crate::fonts::family) {
-        None => tilo_ui::FontChoice::SansSerif,
-        Some(family) => tilo_ui::FontChoice::Named(family.to_owned()),
+        None => tilo_ui_base::FontChoice::SansSerif,
+        Some(family) => tilo_ui_base::FontChoice::Named(family.to_owned()),
     };
     let weight = weight.unwrap_or(400);
     let tier = match weight {
-        0..=449 => tilo_ui::TextWeight::Regular,
-        450..=549 => tilo_ui::TextWeight::Medium,
-        550..=649 => tilo_ui::TextWeight::Semibold,
-        _ => tilo_ui::TextWeight::Bold,
+        0..=449 => tilo_ui_base::TextWeight::Regular,
+        450..=549 => tilo_ui_base::TextWeight::Medium,
+        550..=649 => tilo_ui_base::TextWeight::Semibold,
+        _ => tilo_ui_base::TextWeight::Bold,
     };
     let align = match align.as_deref() {
-        Some("center") => tilo_ui::ParagraphAlign::Center,
-        Some("end") => tilo_ui::ParagraphAlign::End,
-        _ => tilo_ui::ParagraphAlign::Start,
+        Some("center") => tilo_ui_base::ParagraphAlign::Center,
+        Some("end") => tilo_ui_base::ParagraphAlign::End,
+        _ => tilo_ui_base::ParagraphAlign::Start,
     };
     Some(
-        tilo_ui::TextStyle::content(f32_of_f64(*size))
+        tilo_ui_base::TextStyle::content(f32_of_f64(*size))
             .with_family(family)
             .with_weight(tier)
             // The shipped faces are variable: any weight between their
             // lightest and boldest draws as given.
-            .with_font_variation(tilo_ui::OpenTypeTag::WEIGHT, f32::from(weight))
+            .with_font_variation(tilo_ui_base::OpenTypeTag::WEIGHT, f32::from(weight))
             .with_italic(*italic)
             .with_tracking(f32_of_f64(tracking.unwrap_or(0.0) / 1000.0))
             .with_line_height(f32_of_f64(line_height.unwrap_or(1.2)))
@@ -2290,7 +2290,7 @@ pub fn text_style(shape: &Shape) -> Option<tilo_ui::TextStyle> {
 /// out in, and how far its first baseline sits below the layout's top.
 fn text_frame(
     shape: &Shape,
-    style: &tilo_ui::TextStyle,
+    style: &tilo_ui_base::TextStyle,
     text: &mut TextRenderer,
 ) -> Option<(f64, f64, Option<f32>)> {
     let Shape::Text {
@@ -2377,10 +2377,10 @@ pub fn letters(shape: &Shape, text: &mut TextRenderer) -> Vec<Letter> {
 /// direction at its middle, the line placed at the path's start, middle or
 /// end by `align`. Letters past either end are left out.
 fn on_path<'a>(
-    glyphs: &'a [tilo_ui::GlyphOutline],
+    glyphs: &'a [tilo_ui_base::GlyphOutline],
     path: &BezPath,
     align: Option<&str>,
-) -> Vec<(BezPath, &'a tilo_ui::GlyphOutline)> {
+) -> Vec<(BezPath, &'a tilo_ui_base::GlyphOutline)> {
     let mut points: Vec<Point> = Vec::new();
     tilo_ui::vello::kurbo::flatten(path.iter(), 0.1, |element| match element {
         PathEl::MoveTo(at) if points.is_empty() => points.push(at),
@@ -2603,7 +2603,7 @@ fn draw_grid(
             label,
             transform * Affine::translate((x + pixel * 2.0, y + pixel)),
             None,
-            &tilo_ui::TextStyle::content(font),
+            &tilo_ui_base::TextStyle::content(font),
         );
     };
     let lines = |from: f64, to: f64| {

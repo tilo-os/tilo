@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use tilo_app_test_host::TestApp;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::add_app::{AddApp, AddAppEffect, AddState, MOVE, MOVE_SWITCH, Offer};
-use ui::a11y::Action as A11yAction;
+use tilo_ui_base::a11y::Action as A11yAction;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
 

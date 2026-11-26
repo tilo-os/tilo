@@ -34,7 +34,7 @@ pub(super) fn field_after_enter(tree: &UiNode, key: &str) -> Option<String> {
                 description.bindings.iter().any(|binding| {
                     matches!(
                         binding.ty,
-                        ui::component::Type::Text | ui::component::Type::RichText
+                        tilo_ui_base::component::Type::Text | tilo_ui_base::component::Type::RichText
                     )
                 })
             })
@@ -64,7 +64,7 @@ pub(super) enum Press {
 }
 
 /// The node key and event to fire for the control that answers a press, matched the way the toolkit
-/// matches every shortcut ([`ui::platform::Shortcut::same_press`]): one key, in one spelling, with
+/// matches every shortcut ([`tilo_ui_base::platform::Shortcut::same_press`]): one key, in one spelling, with
 /// the modifiers it names, and a command modifier that is the platform's own. So an app's `key:
 /// "Ctrl+Enter"` is Command+Enter on a Mac and `key: "e"` is the unshifted E on every layout (a
 /// `Button`'s `press`, a `MenuItem`'s `choose`, as the action's `key:` reaches them through
@@ -75,7 +75,7 @@ pub(super) enum Press {
 pub(super) fn shortcut_action_where(
     node: &UiNode,
     focused: Option<&str>,
-    pressed: &ui::platform::Shortcut,
+    pressed: &tilo_ui_base::platform::Shortcut,
 ) -> Option<(String, String)> {
     if let Some(path) = focused.and_then(|key| path_to(node, key)) {
         // Out from the control the keyboard is in: what it declares itself, then what else is
@@ -104,7 +104,7 @@ pub(super) fn shortcut_action_where(
     declared_within(node, pressed)
 }
 
-fn declared_action(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<(String, String)> {
+fn declared_action(node: &UiNode, pressed: &tilo_ui_base::platform::Shortcut) -> Option<(String, String)> {
     // A control that cannot be pressed now does not answer its key either: a click on it does
     // nothing.
     let disabled = node.props.contains_key("enabled") && !crate::reconcile::flag(node, "enabled");
@@ -131,7 +131,7 @@ fn declared_action(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<(S
 /// offers (`ui.MenuButton(actions: actions(r))`, a bar's commands, a row's) declares each one's
 /// key and the event choosing it fires in the value itself, as a menu item's node declares its
 /// own in its props.
-fn offered_event(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<String> {
+fn offered_event(node: &UiNode, pressed: &tilo_ui_base::platform::Shortcut) -> Option<String> {
     // A row's own commands answer while that row is selected, not for the window: the row the
     // list holds offers them through its item (`ui.ListItem`), and its keyboard answers there.
     if crate::shell::row_like(&node.kind) {
@@ -144,12 +144,12 @@ fn offered_event(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<Stri
 
 /// The event of the command `value` holds whose key is `pressed`, in a value or in the list of
 /// values a control offers.
-fn offered_within(value: &Value, pressed: &ui::platform::Shortcut) -> Option<String> {
+fn offered_within(value: &Value, pressed: &tilo_ui_base::platform::Shortcut) -> Option<String> {
     match value {
         Value::Action(offered) => offered
             .key
             .as_deref()
-            .filter(|key| ui::platform::Shortcut::from(*key).same_press(pressed))
+            .filter(|key| tilo_ui_base::platform::Shortcut::from(*key).same_press(pressed))
             .map(|_| offered.event.clone()),
         Value::List(items) => items.iter().find_map(|item| offered_within(item, pressed)),
         Value::Opt(Some(inner)) => offered_within(inner, pressed),
@@ -157,7 +157,7 @@ fn offered_within(value: &Value, pressed: &ui::platform::Shortcut) -> Option<Str
     }
 }
 
-fn declared_within(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<(String, String)> {
+fn declared_within(node: &UiNode, pressed: &tilo_ui_base::platform::Shortcut) -> Option<(String, String)> {
     declared_action(node, pressed).or_else(|| {
         node.children
             .iter()
@@ -165,15 +165,15 @@ fn declared_within(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<(S
     })
 }
 
-pub(super) fn declares(node: &UiNode, pressed: &ui::platform::Shortcut) -> bool {
+pub(super) fn declares(node: &UiNode, pressed: &tilo_ui_base::platform::Shortcut) -> bool {
     let one = matches!(
         node.props.get("key"),
         Some(Value::Text(key))
-            if ui::platform::Shortcut::from(key.as_str()).same_press(pressed)
+            if tilo_ui_base::platform::Shortcut::from(key.as_str()).same_press(pressed)
     );
     one || match node.props.get("keys") {
         Some(Value::List(keys)) => keys.iter().any(|key| match key {
-            Value::Text(key) => ui::platform::Shortcut::from(key.as_str()).same_press(pressed),
+            Value::Text(key) => tilo_ui_base::platform::Shortcut::from(key.as_str()).same_press(pressed),
             _ => false,
         }),
         _ => false,
@@ -223,7 +223,7 @@ pub(super) fn takes_typing(widget: &dyn Widget) -> bool {
 /// the end of a list, where the app's key puts the person instead of making an empty item. It
 /// answers before any control: a header or bar button that names the same key leads the person to
 /// the entry the app wrote for it.
-pub(super) fn focus_field(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<String> {
+pub(super) fn focus_field(node: &UiNode, pressed: &tilo_ui_base::platform::Shortcut) -> Option<String> {
     if text_field(node) && declares(node, pressed) {
         return Some(node.key.clone());
     }
@@ -232,14 +232,14 @@ pub(super) fn focus_field(node: &UiNode, pressed: &ui::platform::Shortcut) -> Op
         .find_map(|child| focus_field(child, pressed))
 }
 
-pub(super) fn shortcut_declared(node: &UiNode, key: &str) -> Option<ui::platform::Shortcut> {
+pub(super) fn shortcut_declared(node: &UiNode, key: &str) -> Option<tilo_ui_base::platform::Shortcut> {
     let control = node.kind == crate::adapter::kind("Button")
         || node.kind == crate::adapter::kind("MenuItem");
     if control
         && node.key == key
         && let Some(Value::Text(declared)) = node.props.get("key")
     {
-        return Some(ui::platform::Shortcut::from(declared.as_str()));
+        return Some(tilo_ui_base::platform::Shortcut::from(declared.as_str()));
     }
     node.children
         .iter()
@@ -259,7 +259,7 @@ mod tests {
             "press".to_owned(),
             tilo_render_protocol::patch::Event::default(),
         );
-        let pressed = ui::platform::Shortcut::from("Ctrl+S");
+        let pressed = tilo_ui_base::platform::Shortcut::from("Ctrl+S");
         for off in [Value::Bool(false), Value::Int(0)] {
             button.props.insert("enabled".to_owned(), off);
             assert!(

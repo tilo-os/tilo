@@ -13,7 +13,7 @@ use std::sync::{Mutex, OnceLock};
 
 use tilolang_tilo::tilolang::PackageMeta;
 use ui::framework::{AppName, OpeningCx, OpeningView, ResourceApp, ViewCx};
-use ui::widget::Element;
+use tilo_ui_base::widget::Element;
 
 use super::resource::Workspace;
 
@@ -59,7 +59,7 @@ impl ResourceApp for TlApp {
         })
     }
 
-    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+    fn catalog() -> Option<&'static tilo_ui_base::i18n::EmbeddedCatalog> {
         Some(&super::i18n::CATALOG)
     }
 

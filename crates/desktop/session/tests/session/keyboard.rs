@@ -302,7 +302,7 @@ fn displays(session: &mut Session) -> Vec<String> {
 #[test]
 fn a_touch_into_a_field_brings_the_keyboard_up_on_that_display() {
     const APP: &str = "org.example.Notes";
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = private_home();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_RUNTIME_DIR", home.path());
@@ -381,7 +381,7 @@ fn a_touch_into_a_field_brings_the_keyboard_up_on_that_display() {
 /// The always-on choice: the keyboard stands on a display with no field and nothing touched at all.
 #[test]
 fn an_always_on_keyboard_is_up_where_the_person_works_with_no_field_at_all() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = private_home();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_RUNTIME_DIR", home.path());
@@ -425,7 +425,7 @@ fn an_always_on_keyboard_is_up_where_the_person_works_with_no_field_at_all() {
 fn the_keyboard_goes_away_when_the_field_loses_the_focus() {
     const NOTES: &str = "org.example.Notes";
     const MAIL: &str = "org.example.Mail";
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = private_home();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_RUNTIME_DIR", home.path());
@@ -510,7 +510,7 @@ fn the_keyboard_goes_away_when_the_field_loses_the_focus() {
 /// published action, so what a press of its Dismiss asks for is what a step of an agent's asks for.
 #[test]
 fn the_keyboard_shows_and_hides_by_its_published_action() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = private_home();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_RUNTIME_DIR", home.path());
@@ -582,7 +582,7 @@ fn controls(session: &Session) -> Vec<Control> {
 #[test]
 fn the_keyboards_keys_are_listed_and_pressed_through_the_sessions_api() {
     const APP: &str = "org.example.Notes";
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = private_home();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_RUNTIME_DIR", home.path());

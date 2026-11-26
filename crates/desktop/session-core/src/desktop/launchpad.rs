@@ -11,7 +11,7 @@
 
 use crate::desktop::i18n::t;
 use crate::desktop::state::HostAction;
-use ui::icons::Icon;
+use tilo_ui_base::icons::Icon;
 
 /// The "Open an app" button in the shell's targets and the accessibility tree; a card is
 /// [`LaunchpadAction::target`].

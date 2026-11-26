@@ -72,7 +72,7 @@ fn preset_menu(session: &mut Session) -> String {
 /// `tilo-control snapshot`'s request, and the bar stands in it.
 #[test]
 fn a_snapshot_through_the_test_control_socket_shows_the_shells_bar() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("test-control.sock");
     let mut session = crate::common::headless(Options {
@@ -433,7 +433,7 @@ fn written(shot: &image::RgbaImage, rect: (f64, f64, f64, f64)) -> usize {
 /// ("summarise") included.
 #[test]
 fn a_sentence_typed_through_the_socket_reaches_the_canvas_caret_in_order() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("test-control.sock");
     let mut session = crate::common::headless(Options {
@@ -504,7 +504,7 @@ fn a_sentence_typed_through_the_socket_reaches_the_canvas_caret_in_order() {
 /// title is drawn where the shell lays it out, not cut off by a canvas with no room.
 #[test]
 fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("test-control.sock");
     let apps = crate::common::seeded_apps();
@@ -715,7 +715,7 @@ fn center((x, y, width, height): (f64, f64, f64, f64)) -> (f64, f64) {
 /// window it sees even where two windows carry one title.
 #[test]
 fn each_windows_tab_is_named_by_the_group_that_holds_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("test-control.sock");
     let mut session = session_showing(shell(&[(20, "Alpha"), (21, "Beta")]), &socket);
@@ -761,7 +761,7 @@ tilo_test_env::scenario! {
     // Letters typed through the socket land in the field the shell is listening through: the open
     // search's query, not the window behind it.
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let root = private_home();
         let socket = root.path().join("test-control.sock");
         let mut session = session_showing(shell(&[(20, "Alpha")]), &socket);
@@ -793,7 +793,7 @@ tilo_test_env::scenario! {
     // A tab dragged through the socket from one window's bar to another's is the other window's,
     // as the person's own drag makes it.
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let root = private_home();
         let socket = root.path().join("test-control.sock");
         let mut session = session_showing(shell(&[(20, "Alpha"), (21, "Beta")]), &socket);
@@ -845,7 +845,7 @@ fn swipe_frame(session: &mut Session, socket: &Path, title: &str, png: &Path) ->
 /// test control drives the shell's gestures the way a touchpad does.
 #[test]
 fn a_held_swipe_through_the_socket_carries_the_strip_with_the_fingers() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("test-control.sock");
     let shots = std::env::var_os("STRIP_SWIPE_SHOTS")
@@ -915,7 +915,7 @@ fn a_held_swipe_through_the_socket_carries_the_strip_with_the_fingers() {
 /// person's own right click does.
 #[test]
 fn a_secondary_click_through_the_socket_opens_the_window_menu() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("test-control.sock");
     let mut session = session_showing(shell(&[(20, "Alpha")]), &socket);
@@ -963,7 +963,7 @@ fn a_secondary_click_through_the_socket_opens_the_window_menu() {
 /// at it: the other tab's pill brings that tab to the front.
 #[test]
 fn a_named_control_is_invoked_through_the_socket() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("test-control.sock");
     let mut session = session_showing(tabbed(&[(20, "Alpha"), (21, "Beta")]), &socket);

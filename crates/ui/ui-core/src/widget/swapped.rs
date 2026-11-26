@@ -14,13 +14,13 @@ use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use super::{AppModel, DrawChild, DrawCtx, Element, EventCtx, ModelPath, TaffyTreeExt, Widget};
-use crate::motion::{CrossFade, Feel, frame_now, recent_input};
-use crate::theme::Theme;
+use tilo_ui_base::{widget::AppModel, widget::DrawChild, widget::DrawCtx, widget::Element, widget::EventCtx, widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
+use tilo_ui_base::{motion::CrossFade, motion::Feel, motion::frame_now, motion::recent_input};
+use tilo_ui_base::theme::Theme;
 use crate::time::Instant;
-use crate::tokens::{EffectiveMotion, MotionSource};
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
 
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     framework,
     "a host keeps the view it showed while a whole one is swapped for it"
 )]
@@ -56,7 +56,7 @@ impl Swapped {
             current,
             previous: Some(previous),
             previous_opacity: 1.0,
-            fade: CrossFade::of_spec(crate::motion::SWAP, 0),
+            fade: CrossFade::of_spec(tilo_ui_base::motion::SWAP, 0),
             generation: 1,
             feel: Feel::Standard,
             theme: None,
@@ -193,7 +193,7 @@ fn container(fill: f32) -> taffy::Style {
         },
         ..taffy::Style::default()
     };
-    crate::widget::layout::filling(style, fill)
+    tilo_ui_base::widget::layout::filling(style, fill)
 }
 
 /// Both views stand in the one cell, over each other, each taking the whole of it: the page that
@@ -254,7 +254,7 @@ impl Widget for Swapped {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         let origin = self.rect.origin();
         let mut index = 0;
         if let Some(previous) = self.previous.as_mut()
@@ -276,7 +276,7 @@ impl Widget for Swapped {
             && outgoing > 0.0
         {
             let rect = self.rect;
-            crate::widget::in_opacity_layer(scene, transform, rect, outgoing, |scene| {
+            tilo_ui_base::widget::in_opacity_layer(scene, transform, rect, outgoing, |scene| {
                 previous.draw_child(scene, transform, text, theme, &env);
             });
         }
@@ -286,7 +286,7 @@ impl Widget for Swapped {
         }
         let rect = self.rect;
         let current = &mut self.current;
-        crate::widget::in_opacity_layer(scene, transform, rect, incoming, |scene| {
+        tilo_ui_base::widget::in_opacity_layer(scene, transform, rect, incoming, |scene| {
             current.draw_child(scene, transform, text, theme, &env);
         });
     }
@@ -311,7 +311,7 @@ impl Widget for Swapped {
         self.current.wants_pointer_capture()
     }
 
-    fn touch_claim(&self, point: Point) -> crate::interaction::TouchClaim {
+    fn touch_claim(&self, point: Point) -> tilo_ui_base::interaction::TouchClaim {
         self.current.touch_claim(point)
     }
 

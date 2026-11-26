@@ -224,7 +224,7 @@ fn painted(session: &mut Session, output: &str) -> usize {
 /// focused display's own strip, and the other display keeps its strip and its windows throughout.
 #[test]
 fn each_display_keeps_the_strip_it_shows() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = docked();
     let mut client = client(&mut session);
     tab(&mut session, &mut client, "org.example.Left");
@@ -301,7 +301,7 @@ fn each_display_keeps_the_strip_it_shows() {
 /// displays are two strips' worth of room, so nothing is shared across the border.
 #[test]
 fn a_window_opening_beside_one_display_leaves_the_other_alone() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = docked();
     let mut client = client(&mut session);
     tab(&mut session, &mut client, "org.example.Left");
@@ -352,7 +352,7 @@ fn bottom_edge(session: &mut Session, output: &str, (from, to): (i32, i32)) -> V
 /// border onto the other display.
 #[test]
 fn the_strip_rail_stands_on_the_display_in_use() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // One instant for the whole test: the rail a window's opening shows stays up while it is read.
     tilo_clock::testing::with_monotonic_time(tilo_clock::now(), || {
         let mut session = docked();
@@ -378,7 +378,7 @@ fn the_strip_rail_stands_on_the_display_in_use() {
 
 #[test]
 fn new_windows_open_on_the_display_with_focus() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = docked();
     let mut client = client(&mut session);
     let names: Vec<String> = displays(&session).into_iter().map(|d| d.label).collect();
@@ -408,7 +408,7 @@ fn new_windows_open_on_the_display_with_focus() {
 /// with the window shows that window too.
 #[test]
 fn a_mode_action_mirrors_the_other_display() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = docked();
     let mut client = client(&mut session);
     tab(&mut session, &mut client, "org.example.Left");
@@ -437,7 +437,7 @@ fn a_mode_action_mirrors_the_other_display() {
 
 #[test]
 fn focus_follows_the_pointer_onto_the_other_display() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = docked();
     let mut client = client(&mut session);
     tab(&mut session, &mut client, "org.example.Left");
@@ -474,7 +474,7 @@ fn focus_follows_the_pointer_onto_the_other_display() {
 
 #[test]
 fn focus_steps_across_displays_and_a_window_moves_to_the_next() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = docked();
     let mut client = client(&mut session);
     tab(&mut session, &mut client, "org.example.Left");
@@ -508,7 +508,7 @@ fn focus_steps_across_displays_and_a_window_moves_to_the_next() {
 
 #[test]
 fn a_mirror_is_one_display() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session(&[(0, 0), (0, 0)]);
     let mut client = client(&mut session);
     assert!(
@@ -522,7 +522,7 @@ fn a_mirror_is_one_display() {
 
 #[test]
 fn a_dialog_floats_centred_over_its_parent_without_a_tab() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = docked();
     let mut client = client(&mut session);
     let parent = tab(&mut session, &mut client, "org.example.Editor");
@@ -568,7 +568,7 @@ fn a_dialog_floats_centred_over_its_parent_without_a_tab() {
 /// under Proton — takes a tab on the display with focus, and the keyboard with it.
 #[test]
 fn a_fixed_size_window_takes_a_tab_and_the_keyboard() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = docked();
     let mut client = client(&mut session);
     focus_display(&mut session, &mut client, 1);
@@ -608,7 +608,7 @@ fn a_fixed_size_window_takes_a_tab_and_the_keyboard() {
 /// pass leaves the keyboard with it, and a tab opened after it comes in front as any tab does.
 #[test]
 fn a_fixed_size_window_takes_its_own_tab_beside_the_tabs() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = docked();
     let mut client = client(&mut session);
     tab(&mut session, &mut client, "org.example.Manager");

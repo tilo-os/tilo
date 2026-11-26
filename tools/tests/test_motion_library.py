@@ -54,7 +54,7 @@ class MotionLibraryTests(unittest.TestCase):
     def test_the_library_tests_comments_and_content_curves_are_exempt(self):
         root = self.fixture(
             {
-                "crates/ui/ui-core/src/motion/named.rs": "fn f() { Curve::EaseOut; }\n",
+                "crates/ui/ui-base/src/motion/named.rs": "fn f() { Curve::EaseOut; }\n",
                 "crates/ui/ui-core/src/animation/animated.rs": "fn f() { Curve::EaseOut; }\n",
                 "crates/ui/ui-core/src/widget/a_tests.rs": "fn f() { Curve::EaseOut; }\n",
                 "crates/ui/ui-core/src/widget/b.rs": (
@@ -93,7 +93,7 @@ class MotionLibraryTests(unittest.TestCase):
                     "fn f() { IdleFade::new(Duration::from_millis(BAR_HOLD_MS), CHROME_FADE); }\n"
                     "fn g() { let d = m.context(source, m.durations.fast()); }\n"
                 ),
-                "crates/ui/ui-core/src/motion/named.rs": (
+                "crates/ui/ui-base/src/motion/named.rs": (
                     "pub const LIFE: Duration = Duration::from_millis(1200);\n"
                     "fn f() { SpringSpec::settling_within(d); }\n"
                 ),

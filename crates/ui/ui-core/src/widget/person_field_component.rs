@@ -1,6 +1,6 @@
 //! [`PersonField`] as a described component.
 
-use crate::component::{Bound, Component, Described, Person};
+use tilo_ui_base::{component::Bound, component::Component, component::Described, component::Person};
 
 use super::PersonField;
 
@@ -25,9 +25,9 @@ impl Described for PersonField {
         let PersonFieldProps { value, people, me } = props;
         let shown = value.clone();
         Self::from_state(key, &value.state, people.unwrap_or_default(), me).on_change(move |who| {
-            shown.edited(crate::component::Value::Text(
+            shown.edited(tilo_ui_base::component::Value::Text(
                 who.map_or_else(String::new, |who| {
-                    crate::component::actor_text(&who.identity)
+                    tilo_ui_base::component::actor_text(&who.identity)
                 }),
             ));
         })

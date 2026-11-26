@@ -6,8 +6,8 @@ use automerge::AutoCommit;
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 
 use super::*;
-use crate::a11y::{Action, Role};
-use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
+use tilo_ui_base::{a11y::Action, a11y::Role};
+use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release};
 use crate::widget::find_bar::{FindMatch, FindMode};
 use crate::window_toolbar::ToolbarEvent;
 
@@ -16,7 +16,7 @@ fn leaf(
     node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     widget: &mut (dyn Widget + 'static),
 ) -> taffy::NodeId {
-    use crate::widget::TaffyTreeExt;
+    use tilo_ui_base::widget::TaffyTreeExt;
     taffy.widget_leaf(taffy::Style::default(), node_map, widget)
 }
 
@@ -78,7 +78,7 @@ impl Findable for Draft {
 }
 
 impl Widget for Draft {
-    crate::provides!(dyn Findable);
+    tilo_ui_base::provides!(dyn Findable);
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
@@ -115,7 +115,7 @@ fn act(search: &mut WindowSearch, target: &str, action: &Action) -> bool {
     search.perform_semantic_action(
         target,
         action,
-        &mut crate::widget::Edits::lend(&mut doc),
+        &mut tilo_ui_base::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
     )
 }
@@ -142,10 +142,10 @@ fn route(search: &mut WindowSearch, event: &WindowEvent) -> bool {
     let modifiers = winit::event::Modifiers::default();
     let mut handled = false;
     let mut focus = None;
-    let mut ctx = crate::widget::EventCtx {
+    let mut ctx = tilo_ui_base::widget::EventCtx {
         scale_factor: 1.0,
         modifiers: &modifiers,
-        state: crate::widget::Edits::lend(&mut doc),
+        state: tilo_ui_base::widget::Edits::lend(&mut doc),
         path: &automerge::ROOT,
         handled: &mut handled,
         focus_target: &mut focus,
@@ -358,13 +358,13 @@ tilo_test_env::scenario! {
         assert!(search.replacing(), "the replacement holds the keyboard");
 
         for key in ["d", "o", "g"] {
-            route(&mut search, &crate::synthetic_input::char_key(key));
+            route(&mut search, &tilo_ui_base::synthetic_input::char_key(key));
         }
         assert_eq!(search.replacement(), "dog");
         assert_eq!(search.query(), "", "the query is untouched");
         route(
             &mut search,
-            &crate::synthetic_input::named_key(NamedKey::Escape),
+            &tilo_ui_base::synthetic_input::named_key(NamedKey::Escape),
         );
         assert!(!search.options_open(), "Escape closes the options first");
         assert!(search.is_open() && search.has_keyboard() && !search.replacing());
@@ -410,16 +410,16 @@ tilo_test_env::scenario! {
     phase the_find_and_replace_chords_follow_the_platform;
     {
         let key = |text: &str, code: KeyCode| {
-            let mut event = crate::synthetic_input::key_event(
+            let mut event = tilo_ui_base::synthetic_input::key_event(
                 Key::Character(text.into()),
                 None,
                 ElementState::Pressed,
             );
             event.physical_key = PhysicalKey::Code(code);
-            crate::synthetic_input::keyboard_input(event)
+            tilo_ui_base::synthetic_input::keyboard_input(event)
         };
-        let linux = PlatformConventions::new(crate::platform::Platform::Linux);
-        let mac = PlatformConventions::new(crate::platform::Platform::MacOs);
+        let linux = PlatformConventions::new(tilo_ui_base::platform::Platform::Linux);
+        let mac = PlatformConventions::new(tilo_ui_base::platform::Platform::MacOs);
         let ctrl = ModifiersState::CONTROL;
         let f = key("f", KeyCode::KeyF);
         let h = key("h", KeyCode::KeyH);

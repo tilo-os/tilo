@@ -1,7 +1,7 @@
 use crate::floating_surface::FloatingSurfaceWidgetExt as _;
-use crate::gpu::RenderContext;
+use tilo_ui_base::gpu::RenderContext;
 #[cfg(feature = "native")]
-use crate::platform::resolve_app_id;
+use tilo_ui_base::platform::resolve_app_id;
 #[cfg(feature = "native")]
 use crate::render_thread::RenderThreadHandle;
 #[cfg(feature = "native")]
@@ -9,9 +9,9 @@ use crate::render_thread::timing::{MainStage, MainStages, record_main_stage};
 #[cfg(feature = "native")]
 use crate::render_thread::{FrameOutcome, RenderRequest};
 #[cfg(feature = "native")]
-use crate::widget::AudiencePresentationWidgetExt as _;
+use tilo_ui_base::widget::AudiencePresentationWidgetExt as _;
 #[cfg(feature = "native")]
-use crate::widget::FullscreenWidgetExt as _;
+use tilo_ui_base::widget::FullscreenWidgetExt as _;
 #[cfg(feature = "native")]
 use std::sync::{Arc, mpsc};
 use taffy::AvailableSpace;
@@ -176,7 +176,7 @@ const MAX_PENDING_APPLICATION_LAUNCHES: usize = 256;
 /// workspace's identity of them with Tilo's model, else the operating system's account.
 pub(crate) fn local_person() -> tilo_actions::MemberId {
     #[cfg(feature = "model")]
-    let person = crate::collaboration::local_user_id();
+    let person = tilo_ui_base::collaboration::local_user_id();
     #[cfg(not(feature = "model"))]
     let person = tilo_actions::MemberId::Person(tilo_actions::PersonId::from(
         crate::process::environment()
@@ -210,7 +210,7 @@ pub enum UserEvent {
     /// Opt-in workload input with an absolute schedule and stable input identity.
     NativeScenarioInput(crate::native_scenario::Packet),
     RenderReady(winit::window::WindowId),
-    /// Delivered to [`crate::widget::Widget::on_external_event`] rather than translated to a
+    /// Delivered to [`tilo_ui_base::widget::Widget::on_external_event`] rather than translated to a
     /// `WindowEvent` (e.g.
     External(String),
     /// A host command chosen in the operating system chrome (a menu item), entering the same API as
@@ -253,22 +253,20 @@ impl From<accesskit_winit::Event> for UserEvent {
     }
 }
 #[cfg(feature = "model")]
-use crate::collaboration::{
-    ActionDirectoryRequest, CollabEvent, CollabRequest, CollaborationManager, PresencePayload,
-};
+use tilo_ui_base::{collaboration::ActionDirectoryRequest, collaboration::CollabEvent, collaboration::CollabRequest, collaboration::CollaborationManager, collaboration::PresencePayload};
 use crate::focus_navigation::Direction;
-use crate::ime::ImeWindowState;
+use tilo_ui_base::ime::ImeWindowState;
 #[cfg(feature = "model")]
-use crate::permissions::PermissionContext;
-use crate::presence::PresenceCtx;
+use tilo_ui_base::permissions::PermissionContext;
+use tilo_ui_base::presence::PresenceCtx;
 #[cfg(feature = "model")]
-use crate::presence::PresenceKey;
+use tilo_ui_base::presence::PresenceKey;
 use crate::state::State;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 use crate::time::Duration;
 use crate::time::Instant;
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 use taffy::{NodeId, TaffyTree};
 use vello::kurbo::Rect as KurboRect;
 
@@ -299,7 +297,7 @@ fn scroll_opt_disabled() -> bool {
 #[cfg(feature = "model")]
 mod continuation_tests {
     use super::continuation_publication;
-    use crate::collaboration::{CollabRequest, ContinuationMetadata};
+    use tilo_ui_base::{collaboration::CollabRequest, collaboration::ContinuationMetadata};
 
     #[test]
     fn vanished_continuations_clear_the_durable_projection() {
@@ -425,8 +423,8 @@ pub(crate) fn fullscreen_request_decision(requested: bool, want: Option<bool>) -
 }
 
 #[cfg(feature = "native")]
-fn find_appearance_intent(w: &dyn Widget) -> Option<crate::theme::AppearanceIntent> {
-    let _entry = crate::widget::bound_nodes::enter_widget(w).ok()?;
+fn find_appearance_intent(w: &dyn Widget) -> Option<tilo_ui_base::theme::AppearanceIntent> {
+    let _entry = tilo_ui_base::widget::bound_nodes::enter_widget(w).ok()?;
     if let Some(intent) = w.appearance_intent() {
         return Some(intent);
     }
@@ -494,7 +492,7 @@ pub enum ControlBindingStatus {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ControlBindingCoverage {
-    pub binding: crate::widget::ControlBindingMetadata,
+    pub binding: tilo_ui_base::widget::ControlBindingMetadata,
     pub status: ControlBindingStatus,
 }
 
@@ -516,7 +514,7 @@ pub struct App {
     retirement: Option<crate::semantic_document_read::retirement::RootRetirementPrelude>,
     #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
     startup_renderer: Option<native_runner::startup::RendererPreparation>,
-    control_domain: crate::ControlDomain,
+    control_domain: tilo_ui_base::ControlDomain,
     wake_scope: Option<crate::wake::WakeScope>,
     state: Box<State>,
     root_widget: Box<dyn Widget>,
@@ -530,12 +528,12 @@ pub struct App {
     #[cfg(feature = "model")]
     history_key_release: bool,
     #[cfg(feature = "model")]
-    history_focus: Option<crate::widget::layout::CompositionFocus>,
+    history_focus: Option<tilo_ui_base::widget::layout::CompositionFocus>,
     text_renderer: TextRenderer,
     palette_source: PaletteSource,
     watch_system_settings: bool,
     layout: LayoutRuntime,
-    bindings: crate::widget::bound_nodes::BoundNodeMap,
+    bindings: tilo_ui_base::widget::bound_nodes::BoundNodeMap,
     #[cfg(feature = "model")]
     component_close_reports: Vec<crate::application::ComponentCloseReport>,
     close_admission: crate::close_admission::Admission,
@@ -559,16 +557,16 @@ pub struct App {
     /// without a click.
     pub autofocus_first: bool,
     /// Opt-in: re-establishes keyboard focus on every structural rebuild.
-    /// [`crate::widget::Widget::take_focus_reset`] jumps to the first
+    /// [`tilo_ui_base::widget::Widget::take_focus_reset`] jumps to the first
     /// focusable (wizard advancing a step); otherwise focus is preserved by
     /// ordinal position so an unrelated rebuild doesn't drop the caret.
     pub autofocus_on_structure_change: bool,
     /// Opt-in, off by default so host-themed apps pay nothing: polls the
-    /// tree each tick for [`crate::widget::Widget::appearance_intent`] and
+    /// tree each tick for [`tilo_ui_base::widget::Widget::appearance_intent`] and
     /// re-themes live.
     pub appearance_reconcile: bool,
     /// Shared settings-file watcher for OS-wide theme changes made in Settings.
-    theme_store_stamp: Option<crate::settings_source::SettingsStamp>,
+    theme_store_stamp: Option<tilo_ui_base::settings_source::SettingsStamp>,
     last_theme_store_check: Instant,
     /// The schedule an "Automatic" theme follows and whether it was night when last applied: sunrise
     /// and sunset re-theme without a file change.
@@ -588,7 +586,7 @@ pub struct App {
     #[cfg(feature = "model")]
     pub permission_ctx: PermissionContext,
     #[cfg(feature = "model")]
-    /// [`crate::permissions::shared_revision`] as the last frame painted with it: what widgets paint
+    /// [`tilo_ui_base::permissions::shared_revision`] as the last frame painted with it: what widgets paint
     /// follows permissions that can change with nothing in the tree marking it, so a frame draws again
     /// from cleared drawings after it moves.
     painted_permissions: u64,
@@ -605,13 +603,13 @@ pub struct App {
 
     accessibility: Box<AccessibilityRuntime>,
 
-    /// Compared against [`crate::widget::Widget::fullscreen_intent`] each frame so a steady desired
+    /// Compared against [`tilo_ui_base::widget::Widget::fullscreen_intent`] each frame so a steady desired
     /// state issues one `set_fullscreen` call — see [`fullscreen_request_decision`].
     window: WindowRuntime,
     #[cfg(feature = "model")]
     committed_documents: Vec<(
-        crate::collaboration::RouteSpec,
-        crate::collaboration::CommittedDocument,
+        tilo_ui_base::collaboration::RouteSpec,
+        tilo_ui_base::collaboration::CommittedDocument,
     )>,
     #[cfg(feature = "model")]
     autosave_generation: u64,
@@ -667,7 +665,7 @@ enum PaletteSource {
 }
 
 struct AppConstructionInputs {
-    control_domain: Option<crate::ControlDomain>,
+    control_domain: Option<tilo_ui_base::ControlDomain>,
     #[cfg(feature = "model")]
     collab_manager: CollaborationManager,
     #[cfg(feature = "model")]
@@ -678,19 +676,19 @@ struct AppConstructionInputs {
     palette_source: PaletteSource,
     watch_system_settings: bool,
     debug_mode: fn() -> bool,
-    theme_store_stamp: fn() -> Option<crate::settings_source::SettingsStamp>,
+    theme_store_stamp: fn() -> Option<tilo_ui_base::settings_source::SettingsStamp>,
     local_author: ConstructionValue<tilo_actions::MemberId>,
     presence_ctx: ConstructionValue<PresenceCtx>,
-    screen_reader: fn() -> Option<crate::screen_reader::ScreenReader>,
+    screen_reader: fn() -> Option<tilo_ui_base::screen_reader::ScreenReader>,
     /// The person's colour before a host says it: the stored choice where
     /// this process may read the person's settings, `None` elsewhere.
-    your_colour: fn() -> Option<crate::tokens::PresenceHue>,
+    your_colour: fn() -> Option<tilo_ui_base::tokens::PresenceHue>,
     high_contrast: fn() -> bool,
     reduce_motion: fn() -> bool,
     text_scale: fn() -> f32,
     ui_scale: fn() -> f32,
     #[cfg(feature = "model")]
-    pending_continuation_restore: fn() -> Option<crate::collaboration::ContinuationMetadata>,
+    pending_continuation_restore: fn() -> Option<tilo_ui_base::collaboration::ContinuationMetadata>,
     profiler: fn() -> Option<crate::profiling::FrameProfiler>,
     floating_surface_client: fn() -> Option<crate::floating_surface::FloatingSurfaceServiceClient>,
     #[cfg(feature = "model")]
@@ -708,7 +706,7 @@ impl AppConstructionInputs {
             inputs,
             binding,
             Self::production().with_manager(
-                crate::collaboration::native_initial::take_manager()
+                tilo_ui_base::collaboration::native_initial::take_manager()
                     .unwrap_or_else(|| CollaborationManager::for_resource(&binding.checkout)),
             ),
         )
@@ -792,7 +790,7 @@ impl AppConstructionInputs {
         #[cfg(feature = "native")]
         crate::process::native::install_default_if_unset(None);
         #[cfg(feature = "native")]
-        crate::emoji_catalogue::keep_uses_on_the_device();
+        tilo_ui_base::emoji_catalogue::keep_uses_on_the_device();
         Self {
             control_domain: None,
             #[cfg(feature = "model")]
@@ -809,7 +807,7 @@ impl AppConstructionInputs {
             debug_mode: || {
                 cfg!(debug_assertions) && crate::process::environment().diagnostics.debug_overlay
             },
-            theme_store_stamp: crate::settings_source::stamp,
+            theme_store_stamp: tilo_ui_base::settings_source::stamp,
             local_author: ConstructionValue::Lazy(local_person),
             #[cfg(feature = "model")]
             presence_ctx: ConstructionValue::Lazy(App::initial_presence_context),
@@ -817,7 +815,7 @@ impl AppConstructionInputs {
             presence_ctx: ConstructionValue::Lazy(PresenceCtx::empty),
             screen_reader: || {
                 if crate::process::environment().accessibility.screen_reader
-                    || crate::screen_reader::settings().enabled
+                    || tilo_ui_base::screen_reader::settings().enabled
                 {
                     Some(App::configured_screen_reader())
                 } else {
@@ -826,7 +824,7 @@ impl AppConstructionInputs {
             },
             // The colour a person is known by is their workspace identity's: Tilo's model's.
             #[cfg(feature = "model")]
-            your_colour: crate::local_identity::own_colour,
+            your_colour: tilo_ui_base::local_identity::own_colour,
             #[cfg(not(feature = "model"))]
             your_colour: || None,
             high_contrast: || crate::process::environment().accessibility.high_contrast,
@@ -844,13 +842,13 @@ impl AppConstructionInputs {
                     .unwrap_or(1.0)
             },
             #[cfg(feature = "model")]
-            pending_continuation_restore: crate::collaboration::continuation_restore_env,
+            pending_continuation_restore: tilo_ui_base::collaboration::continuation_restore_env,
             profiler: crate::profiling::FrameProfiler::from_env,
             floating_surface_client:
                 crate::floating_surface::FloatingSurfaceServiceClient::for_window,
             #[cfg(feature = "model")]
-            startup_presence_scope: crate::presence::local_workspace_key,
-            surface_id: ConstructionValue::Lazy(crate::platform::local_surface_id),
+            startup_presence_scope: tilo_ui_base::presence::local_workspace_key,
+            surface_id: ConstructionValue::Lazy(tilo_ui_base::platform::local_surface_id),
         }
     }
 
@@ -864,20 +862,20 @@ impl AppConstructionInputs {
             // A host may put the window on a workspace after it is built.
             delivery: WorkspaceDelivery::LINKED,
             configured_theme: ConstructionValue::Lazy(Theme::dark),
-            text_renderer: ConstructionValue::Lazy(crate::font_catalog::fixture_renderer),
+            text_renderer: ConstructionValue::Lazy(tilo_ui_base::font_catalog::fixture_renderer),
             palette_source: PaletteSource::Owned {
-                renderer: crate::font_catalog::fixture_renderer,
+                renderer: tilo_ui_base::font_catalog::fixture_renderer,
                 field: || crate::widget::SearchField::with_language("en_US"),
             },
             watch_system_settings: true,
             debug_mode: || false,
             theme_store_stamp: || None,
             local_author: ConstructionValue::Lazy(|| {
-                crate::permissions::MemberId::person("fixture-user")
+                tilo_ui_base::permissions::MemberId::person("fixture-user")
             }),
             presence_ctx: ConstructionValue::Lazy(|| {
                 let mut presence = PresenceCtx::empty();
-                presence.set_own_identity([crate::permissions::MemberId::person("fixture-user")]);
+                presence.set_own_identity([tilo_ui_base::permissions::MemberId::person("fixture-user")]);
                 presence
             }),
             screen_reader: || None,
@@ -960,7 +958,7 @@ impl App {
         ) -> AppConstructionInputs,
     ) -> Result<Box<Self>, crate::launch::LaunchError> {
         let scope =
-            crate::collaboration::native_initial::take_component_scope().unwrap_or_default();
+            tilo_ui_base::collaboration::native_initial::take_component_scope().unwrap_or_default();
         let retirement = component.take_root_retirement();
         let mut assembly = retirement_assembly::ComponentAssemblyOwnership {
             component: None,
@@ -1058,7 +1056,7 @@ impl App {
     pub(crate) fn native_component_presentation() -> crate::application::ComponentRunnerInputs {
         let accessibility = crate::process::environment().accessibility;
         let theme = Theme::configured().with_a11y(
-            &crate::a11y::A11ySettings {
+            &tilo_ui_base::a11y::A11ySettings {
                 high_contrast: accessibility.high_contrast,
                 reduce_motion: accessibility.reduce_motion,
                 ..Default::default()
@@ -1119,7 +1117,7 @@ impl App {
     #[cfg(feature = "native")]
     fn close_native_content(&mut self) {
         self.close_components();
-        crate::widget::unmount_native_views(self.root_widget.as_mut());
+        tilo_ui_base::widget::unmount_native_views(self.root_widget.as_mut());
     }
 
     #[cfg(feature = "model")]
@@ -1158,9 +1156,9 @@ impl App {
     #[cfg(feature = "model")]
     fn initial_presence_context() -> PresenceCtx {
         let mut context = PresenceCtx::empty();
-        let own = crate::collaboration::local_user_id();
+        let own = tilo_ui_base::collaboration::local_user_id();
         context.set_own_identity(std::iter::once(own.clone()));
-        if let Some(hue) = crate::local_identity::own_colour() {
+        if let Some(hue) = tilo_ui_base::local_identity::own_colour() {
             context.set_presence_hue(own, hue);
         }
         context
@@ -1209,7 +1207,7 @@ impl App {
     }
 
     /// Registered producer inventory; legacy private ownership remains unqualified.
-    pub fn control_coverage(&self) -> crate::ControlCoverage {
+    pub fn control_coverage(&self) -> tilo_ui_base::ControlCoverage {
         self.control_domain.coverage()
     }
 
@@ -1286,7 +1284,7 @@ impl App {
     ) -> Self {
         let scope = crate::wake::WakeScope::new();
         let _entry = scope.enter();
-        let domain = crate::control_domain::ControlDomain::outer();
+        let domain = tilo_ui_base::control_domain::ControlDomain::outer();
         let root = factory();
         Self::from_scoped_parts_with_inputs(scope, state, root, || {
             let mut inputs = inputs();
@@ -1310,7 +1308,7 @@ impl App {
     ) -> Result<Self, E> {
         let scope = crate::wake::WakeScope::new();
         let _entry = scope.enter();
-        let domain = crate::control_domain::ControlDomain::outer();
+        let domain = tilo_ui_base::control_domain::ControlDomain::outer();
         let root = factory()?;
         Ok(Self::from_scoped_parts_with_ownership(
             scope, state, root, domain,
@@ -1321,13 +1319,13 @@ impl App {
         scope: crate::WakeScope,
         state: State,
         root: Box<dyn Widget>,
-        domain: crate::ControlDomain,
+        domain: tilo_ui_base::ControlDomain,
     ) -> Self {
         let mut inputs = AppConstructionInputs::production();
         #[cfg(feature = "model")]
         {
             inputs = inputs.with_manager(
-                crate::collaboration::native_initial::take_manager().unwrap_or_default(),
+                tilo_ui_base::collaboration::native_initial::take_manager().unwrap_or_default(),
             );
         }
         inputs.control_domain = Some(domain);
@@ -1421,7 +1419,7 @@ impl App {
         let _entry = scope.enter();
         // The window's controls, as a window of its own attaches them: what they bind is what
         // the app publishes and what a reader operates.
-        let domain = crate::control_domain::ControlDomain::outer();
+        let domain = tilo_ui_base::control_domain::ControlDomain::outer();
         let mut app = Self::with_parts(
             Some(scope),
             state,
@@ -1496,7 +1494,7 @@ impl App {
 
     pub(crate) fn permissions_moved(&self) -> bool {
         #[cfg(feature = "model")]
-        let moved = self.painted_permissions != crate::permissions::shared_revision();
+        let moved = self.painted_permissions != tilo_ui_base::permissions::shared_revision();
         // Without the model nothing grants or takes away a permission while the window runs.
         #[cfg(not(feature = "model"))]
         let moved = false;
@@ -1919,12 +1917,12 @@ impl App {
             };
             self.collaboration
                 .manager
-                .send(crate::collaboration::CollabRequest::PublishSearchIndex { delta_json });
+                .send(tilo_ui_base::collaboration::CollabRequest::PublishSearchIndex { delta_json });
         }
     }
 
     #[cfg(feature = "model")]
-    fn private_continuity_route(&mut self) -> Option<crate::collaboration::RouteSpec> {
+    fn private_continuity_route(&mut self) -> Option<tilo_ui_base::collaboration::RouteSpec> {
         let observation = self.collaboration.manager.primary_route()?.clone();
         let instance = self.collaboration.manager.private_window_instance()?;
         if self.continuation.last_private_route.as_ref() != Some(&observation)
@@ -1948,7 +1946,7 @@ pub(crate) fn monitor_info(
     index: usize,
     monitor: &winit::monitor::MonitorHandle,
     primary: bool,
-) -> crate::fullscreen::MonitorInfo {
+) -> tilo_ui_base::fullscreen::MonitorInfo {
     #[cfg(target_os = "linux")]
     let physical_mm = {
         use winit::platform::wayland::MonitorHandleExtWayland;
@@ -1956,7 +1954,7 @@ pub(crate) fn monitor_info(
     };
     #[cfg(not(target_os = "linux"))]
     let physical_mm = None;
-    crate::fullscreen::MonitorInfo {
+    tilo_ui_base::fullscreen::MonitorInfo {
         index: u32::try_from(index).unwrap_or(u32::MAX),
         width: monitor.size().width,
         height: monitor.size().height,
@@ -1964,7 +1962,7 @@ pub(crate) fn monitor_info(
         scale: monitor.scale_factor(),
         builtin: monitor
             .name()
-            .is_some_and(|name| crate::fullscreen::connector_is_builtin(&name)),
+            .is_some_and(|name| tilo_ui_base::fullscreen::connector_is_builtin(&name)),
         physical_mm,
     }
 }
@@ -1982,12 +1980,12 @@ impl App {
                 let monitors: Vec<winit::monitor::MonitorHandle> =
                     window.available_monitors().collect();
                 let primary = window.primary_monitor();
-                let infos: Vec<crate::fullscreen::MonitorInfo> = monitors
+                let infos: Vec<tilo_ui_base::fullscreen::MonitorInfo> = monitors
                     .iter()
                     .enumerate()
                     .map(|(i, m)| monitor_info(i, m, primary.as_ref() == Some(m)))
                     .collect();
-                let chosen = crate::fullscreen::select_output(&infos, params.target)
+                let chosen = tilo_ui_base::fullscreen::select_output(&infos, params.target)
                     .and_then(|idx| monitors.get(idx as usize).cloned());
                 window.set_fullscreen(Some(Fullscreen::Borderless(chosen)));
             } else {
@@ -2034,7 +2032,7 @@ impl App {
     /// the shell-ui channel: the workspace's temperature and the person's
     /// colour. A window the shell never told stays neutral and keeps the
     /// colour it started with. Returns whether the theme changed.
-    pub fn set_window_appearance(&mut self, appearance: crate::theme::WindowAppearance) -> bool {
+    pub fn set_window_appearance(&mut self, appearance: tilo_ui_base::theme::WindowAppearance) -> bool {
         if appearance == self.accessibility.window {
             return false;
         }
@@ -2047,7 +2045,7 @@ impl App {
 
     /// What the host said about where and for whom this window is shown.
     #[must_use]
-    pub fn window_appearance(&self) -> crate::theme::WindowAppearance {
+    pub fn window_appearance(&self) -> tilo_ui_base::theme::WindowAppearance {
         self.accessibility.window
     }
 
@@ -2059,13 +2057,13 @@ impl App {
         &self,
         window: vello::kurbo::Rect,
         transform: vello::kurbo::Affine,
-    ) -> Option<crate::theme::SurfaceShape> {
+    ) -> Option<tilo_ui_base::theme::SurfaceShape> {
         let radius = if self.window.fullscreen_active {
             0.0
         } else {
             f64::from(self.accessibility.window.corner_radius?)
         };
-        Some(crate::theme::SurfaceShape::rounded(window, radius).transformed(transform))
+        Some(tilo_ui_base::theme::SurfaceShape::rounded(window, radius).transformed(transform))
     }
 
     /// What a standalone app read from its host OS, through the same API as
@@ -2074,21 +2072,21 @@ impl App {
     #[cfg(feature = "native")]
     pub(crate) fn apply_host_appearance(
         &mut self,
-        host: crate::host_appearance::HostAppearance,
+        host: tilo_ui_base::host_appearance::HostAppearance,
     ) -> bool {
-        if crate::host_appearance::session_document_owns_appearance() {
+        if tilo_ui_base::host_appearance::session_document_owns_appearance() {
             return false;
         }
         // The host's light or dark is also what an appearance the person left open draws with
         // from now on, so the theme applied here and any "in use" the app shows are one reading.
-        crate::theme::install_host_scheme(
+        tilo_ui_base::theme::install_host_scheme(
             host.scheme
-                .map(|scheme| scheme == crate::host_appearance::Scheme::Dark),
+                .map(|scheme| scheme == tilo_ui_base::host_appearance::Scheme::Dark),
         );
         let _entry = self.enter_wake_scope();
-        let mut base_theme = crate::host_appearance::theme(host);
+        let mut base_theme = tilo_ui_base::host_appearance::theme(host);
         base_theme.caret_width = self.accessibility.base_theme.caret_width;
-        self.apply_appearance_intent(crate::theme::AppearanceIntent {
+        self.apply_appearance_intent(tilo_ui_base::theme::AppearanceIntent {
             base_theme,
             high_contrast: host.high_contrast,
             reduce_motion: host.reduce_motion,
@@ -2098,7 +2096,7 @@ impl App {
     }
 
     #[cfg(feature = "native")]
-    fn apply_appearance_intent(&mut self, intent: crate::theme::AppearanceIntent) -> bool {
+    fn apply_appearance_intent(&mut self, intent: tilo_ui_base::theme::AppearanceIntent) -> bool {
         let mut changed = false;
         let base = &self.accessibility.base_theme;
         if intent.base_theme.name != base.name
@@ -2140,7 +2138,7 @@ impl App {
             && now.saturating_duration_since(self.last_theme_store_check)
                 >= Duration::from_millis(750)
             && self.theme_schedule.is_some_and(|(schedule, night)| {
-                schedule.is_night(crate::theme::local_moment()) != night
+                schedule.is_night(tilo_ui_base::theme::local_moment()) != night
             })
         {
             self.last_theme_store_check = now;
@@ -2155,14 +2153,14 @@ impl App {
         // says its revision in one atomic read and wakes this loop when it
         // rings, so its change arrives on the wake it caused rather than on
         // some later input after the debounce.
-        if crate::settings_source::installed_source().is_some()
+        if tilo_ui_base::settings_source::installed_source().is_some()
             && let Some(due) = now.checked_sub(Duration::from_millis(750))
         {
             self.last_theme_store_check = due;
         }
         self.reconcile_configured_theme_with(
             crate::time::now(),
-            crate::settings_source::stamp,
+            tilo_ui_base::settings_source::stamp,
             Self::apply_configured_theme,
         )
     }
@@ -2171,7 +2169,7 @@ impl App {
     fn reconcile_configured_theme_with(
         &mut self,
         now: Instant,
-        stamp: impl FnOnce() -> Option<crate::settings_source::SettingsStamp>,
+        stamp: impl FnOnce() -> Option<tilo_ui_base::settings_source::SettingsStamp>,
         apply: impl FnOnce(&mut Self),
     ) -> bool {
         if !self.watch_system_settings {
@@ -2195,8 +2193,8 @@ impl App {
 
     #[cfg(feature = "native")]
     fn apply_configured_theme(&mut self) {
-        crate::format::region::refresh();
-        crate::i18n::follow_configured_language();
+        tilo_ui_base::format::region::refresh();
+        tilo_ui_base::i18n::follow_configured_language();
         self.accessibility.base_theme = self
             .floating
             .host_theme
@@ -2215,9 +2213,9 @@ impl App {
         if let Some(scale) = comforts.ui_scale {
             self.accessibility.ui_scale = scale;
         }
-        self.theme_schedule = Theme::automatic_schedule_from(&crate::settings_source::load())
-            .map(|schedule| (schedule, schedule.is_night(crate::theme::local_moment())));
-        let settings = crate::screen_reader::settings();
+        self.theme_schedule = Theme::automatic_schedule_from(&tilo_ui_base::settings_source::load())
+            .map(|schedule| (schedule, schedule.is_night(tilo_ui_base::theme::local_moment())));
+        let settings = tilo_ui_base::screen_reader::settings();
         self.set_screen_reader_enabled(
             settings.enabled || crate::process::environment().accessibility.screen_reader,
         );
@@ -2360,7 +2358,7 @@ impl App {
                 .focused_node
                 .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
             self.focus_history.stable_metadata = self.focused_node.and_then(|id| {
-                self.inspect_node(id, |widget| crate::widget::undo_points::get_state(widget))
+                self.inspect_node(id, |widget| tilo_ui_base::widget::undo_points::get_state(widget))
                     .ok()
                     .flatten()
             });
@@ -2394,12 +2392,12 @@ impl App {
     }
 
     /// Whether the root's widgets changed their structure since the last call; a change they do not
-    /// describe ([`crate::widget::StructureChange::Rebuild`]) leaves the rebuild that follows
+    /// describe ([`tilo_ui_base::widget::StructureChange::Rebuild`]) leaves the rebuild that follows
     /// undescribed.
     #[track_caller]
     pub(crate) fn take_root_structure_dirty(&mut self) -> bool {
         let change = self.root_widget.take_structure_change();
-        if change == crate::widget::StructureChange::Rebuild {
+        if change == tilo_ui_base::widget::StructureChange::Rebuild {
             self.layout.rebuild_described = false;
             #[cfg(test)]
             {
@@ -2408,11 +2406,11 @@ impl App {
         }
         // A widget that replaced children without saying so is found here.
         let stale = self.layout_maps_stale();
-        if change != crate::widget::StructureChange::None || stale {
+        if change != tilo_ui_base::widget::StructureChange::None || stale {
             // The resources and controls declared are the tree's.
             self.invalidate_widget_resource_cache();
         }
-        if change == crate::widget::StructureChange::Children && !stale {
+        if change == tilo_ui_base::widget::StructureChange::Children && !stale {
             self.layout.remount = true;
             self.layout.layout_dirty = true;
             return false;
@@ -2442,7 +2440,7 @@ impl App {
         let mut name = None;
         // SAFETY: the caller owns this tree; nothing borrows the widget.
         let _ = unsafe {
-            crate::widget::bound_nodes::inspect_bound_node(
+            tilo_ui_base::widget::bound_nodes::inspect_bound_node(
                 &self.bindings,
                 &self.layout.node_map,
                 node,
@@ -2456,7 +2454,7 @@ impl App {
         let mut answers = false;
         // SAFETY: the caller owns this tree; nothing borrows the widget.
         let _ = unsafe {
-            crate::widget::bound_nodes::inspect_bound_node(
+            tilo_ui_base::widget::bound_nodes::inspect_bound_node(
                 &self.bindings,
                 &self.layout.node_map,
                 node,
@@ -2501,7 +2499,7 @@ impl App {
                 None
             } else {
                 self.focused_node.and_then(|id| {
-                    self.inspect_node(id, |widget| crate::widget::undo_points::get_state(widget))
+                    self.inspect_node(id, |widget| tilo_ui_base::widget::undo_points::get_state(widget))
                         .ok()
                         .flatten()
                 })
@@ -2526,7 +2524,7 @@ impl App {
                     .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
                 // Read from the live tree, never through the layout maps: a
                 // rebuild can follow widgets replaced since they were made.
-                let identity = crate::widget::layout::CompositionFocus::capture_live(
+                let identity = tilo_ui_base::widget::layout::CompositionFocus::capture_live(
                     self.root_widget.as_ref(),
                 );
                 let live = self.focused_node.and_then(|id| self.answer_name(id));
@@ -2583,7 +2581,7 @@ impl App {
             .accessibility
             .focus_trap_active
             .then(|| unsafe {
-                crate::widget::layout::CompositionFocus::current(
+                tilo_ui_base::widget::layout::CompositionFocus::current(
                     &self.layout.node_map,
                     &self.bindings,
                     None,
@@ -2648,7 +2646,7 @@ impl App {
                 None
             } else {
                 unsafe {
-                    crate::widget::layout::CompositionFocus::current(
+                    tilo_ui_base::widget::layout::CompositionFocus::current(
                         &self.layout.node_map,
                         &self.bindings,
                         Some(&self.focusable_order),
@@ -2672,7 +2670,7 @@ impl App {
                         && let Some(state) = prev_focus_state.as_deref()
                     {
                         let _ = self.mutate_node(id, |widget| {
-                            crate::widget::undo_points::set_state(widget, state)
+                            tilo_ui_base::widget::undo_points::set_state(widget, state)
                         });
                     }
                 }
@@ -2707,7 +2705,7 @@ impl App {
             // a replacement.
             // SAFETY: sync retained this exact exclusively owned topology.
             self.focused_node = unsafe {
-                crate::widget::layout::CompositionFocus::current(
+                tilo_ui_base::widget::layout::CompositionFocus::current(
                     &self.layout.node_map,
                     &self.bindings,
                     Some(&self.focusable_order),
@@ -2715,11 +2713,11 @@ impl App {
             };
         }
         self.invalidate_widget_resource_cache();
-        self.window.minimum_width = crate::widget::minimum_window_width(self.root_widget.as_ref());
+        self.window.minimum_width = tilo_ui_base::widget::minimum_window_width(self.root_widget.as_ref());
     }
 
     /// The narrowest the window's layout works at, in logical pixels, as of the last build of its tree
-    /// ([`crate::widget::Widget::minimum_window_width`]).
+    /// ([`tilo_ui_base::widget::Widget::minimum_window_width`]).
     pub fn minimum_window_width(&self) -> Option<f64> {
         self.window.minimum_width
     }
@@ -2732,7 +2730,7 @@ impl App {
     fn reconcile_minimum_size(&mut self, window: &Window, frame: bool) -> bool {
         if frame && self.window.preferred_size.is_some() {
             self.window.preferred_size =
-                crate::widget::preferred_window_size(self.root_widget.as_ref());
+                tilo_ui_base::widget::preferred_window_size(self.root_widget.as_ref());
         }
         if self.window.preferred_size != self.window.preferred_size_stated {
             self.window.preferred_size_stated = self.window.preferred_size;
@@ -2813,7 +2811,7 @@ impl Drop for App {
         self.layout.node_map.clear();
         self.close_wake_scope();
         let _entry = self.enter_wake_scope();
-        let _closing = crate::motion::closing_window();
+        let _closing = tilo_ui_base::motion::closing_window();
         let root = std::mem::replace(
             &mut self.root_widget,
             Box::new(crate::widget::Container::new()),
@@ -2822,7 +2820,7 @@ impl Drop for App {
     }
 }
 
-fn clear_stray_focus(widget: &mut dyn crate::widget::Widget) {
+fn clear_stray_focus(widget: &mut dyn tilo_ui_base::widget::Widget) {
     if widget.is_focusable() && widget.is_focused() {
         widget.set_focus(false);
     }
@@ -2876,7 +2874,7 @@ mod occlusion_probe_event_tests {
     use super::*;
     #[test]
     fn occlusion_probe_only_explicit_exposure_or_interaction_bypasses_backoff() {
-        let pointer = crate::synthetic_input::cursor_moved(10.0, 20.0);
+        let pointer = tilo_ui_base::synthetic_input::cursor_moved(10.0, 20.0);
         assert!(render_probe_event(&pointer));
         let mut retry = crate::render_thread::retry::RenderRetryState::default();
         assert!(
@@ -3060,7 +3058,7 @@ fn humanize_ident(ident: &str) -> String {
     ident
         .split(|c: char| c == '-' || c == '_' || c == '.' || c.is_whitespace())
         .filter(|w| !w.is_empty())
-        .map(crate::format::capitalize_first)
+        .map(tilo_ui_base::format::capitalize_first)
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -3152,13 +3150,13 @@ pub(crate) mod control_fixture_tests {
         child: Box<dyn Widget>,
         pub resources: Rc<RefCell<Vec<tilo_actions::ResourceSpec>>>,
         pub log: Rc<RefCell<Vec<serde_json::Value>>>,
-        output: Rc<RefCell<Option<crate::ControlOutbox>>>,
+        output: Rc<RefCell<Option<tilo_ui_base::ControlOutbox>>>,
     }
     impl Widget for Fixture {
-        crate::provides!(
-            dyn crate::widget::controls::ActionControls,
-            dyn crate::widget::resources::PublishesResources,
-            dyn crate::widget::ResourceOperations
+        tilo_ui_base::provides!(
+            dyn tilo_ui_base::widget::controls::ActionControls,
+            dyn tilo_ui_base::widget::resources::PublishesResources,
+            dyn tilo_ui_base::widget::ResourceOperations
         );
 
         crate::testing::delegate_widget_methods!(
@@ -3172,61 +3170,61 @@ pub(crate) mod control_fixture_tests {
         fn name(&self) -> &str {
             "Ordinary confirmation fixture"
         }
-        fn children(&self) -> Vec<&dyn crate::widget::Widget> {
+        fn children(&self) -> Vec<&dyn tilo_ui_base::widget::Widget> {
             vec![self.child.as_ref()]
         }
-        fn children_mut(&mut self) -> Vec<&mut (dyn crate::widget::Widget + '_)> {
+        fn children_mut(&mut self) -> Vec<&mut (dyn tilo_ui_base::widget::Widget + '_)> {
             vec![self.child.as_mut()]
         }
     }
 
-    impl crate::widget::ResourceOperations for Fixture {
+    impl tilo_ui_base::widget::ResourceOperations for Fixture {
         fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-            let mut handlers = crate::widget::resource_operation_handlers(&*self.child);
+            let mut handlers = tilo_ui_base::widget::resource_operation_handlers(&*self.child);
             handlers.insert("fixture.control".into());
             handlers
         }
 
         fn start_operation(
             &mut self,
-            op: &crate::widget::ResourceOperation<'_>,
-            doc: &mut crate::widget::Edits<'_>,
+            op: &tilo_ui_base::widget::ResourceOperation<'_>,
+            doc: &mut tilo_ui_base::widget::Edits<'_>,
             path: &automerge::ObjId,
-        ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
             let request = op.request();
             if request.type_id != "fixture.control" {
-                return crate::widget::start_operation(
+                return tilo_ui_base::widget::start_operation(
                     &mut *self.child,
                     op,
-                    &mut crate::widget::Edits::lend(doc.document_mut()),
+                    &mut tilo_ui_base::widget::Edits::lend(doc.document_mut()),
                     path,
                 );
             }
             self.log
                 .borrow_mut()
                 .push(serde_json::from_slice(request.payload).unwrap());
-            Ok(Some(crate::widget::ResourceOperationStart::Completed(
+            Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             )))
         }
     }
 
-    impl crate::widget::resources::PublishesResources for Fixture {
+    impl tilo_ui_base::widget::resources::PublishesResources for Fixture {
         fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
             self.resources.borrow().clone()
         }
     }
 
-    impl crate::widget::controls::ActionControls for Fixture {
+    impl tilo_ui_base::widget::controls::ActionControls for Fixture {
         fn attach_controls(
             &mut self,
-            domain: &crate::ControlDomain,
-            attachment: crate::control_domain::DomainAttachment,
+            domain: &tilo_ui_base::ControlDomain,
+            attachment: tilo_ui_base::control_domain::DomainAttachment,
         ) {
-            crate::widget::controls::attach_controls(self.child.as_mut(), domain, attachment);
+            tilo_ui_base::widget::controls::attach_controls(self.child.as_mut(), domain, attachment);
             if self.output.borrow().is_none() {
                 *self.output.borrow_mut() =
-                    Some(domain.producer(crate::ControlProducerDiscipline::Fifo { limit: 64 }));
+                    Some(domain.producer(tilo_ui_base::ControlProducerDiscipline::Fifo { limit: 64 }));
             }
         }
     }

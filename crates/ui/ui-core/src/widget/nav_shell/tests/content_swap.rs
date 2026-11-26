@@ -3,7 +3,7 @@
 //! once for a person who asked for less motion.
 
 use super::*;
-use crate::component::Described as _;
+use tilo_ui_base::component::Described as _;
 
 fn props(key: Option<&str>) -> NavShellProps {
     NavShellProps {
@@ -21,9 +21,9 @@ fn props(key: Option<&str>) -> NavShellProps {
 #[test]
 fn a_new_content_key_brings_the_content_it_shows_in() {
     // A person chose the pane: the content eases in on the press's motion.
-    crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+    tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
     let mut shell = NavShell::from_props("window", props(Some("appearance")));
-    let now = crate::motion::frame_now();
+    let now = tilo_ui_base::motion::frame_now();
     assert!(shell.set_props(props(Some("appearance"))));
     assert!(
         !shell.content_fade.is_moving(now),
@@ -57,7 +57,7 @@ fn a_still_window_shows_the_content_at_once() {
     let mut h = harness(shell, 1280, 800, theme);
     settle(&mut h, 1280, 800);
     h.root_mut::<NavShell>().set_props(props(Some("sound")));
-    let now = crate::motion::frame_now();
+    let now = tilo_ui_base::motion::frame_now();
     let shell = h.root::<NavShell>();
     assert!(!shell.content_fade.is_moving(now));
     assert_eq!(shell.content_fade.progress(now), 1.0);
@@ -68,9 +68,9 @@ fn a_still_window_shows_the_content_at_once() {
 #[test]
 fn an_action_lands_the_content_at_once() {
     let mut shell = NavShell::from_props("window", props(Some("appearance")));
-    crate::motion::note_source(crate::tokens::MotionSource::Action);
+    tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Action);
     assert!(shell.set_props(props(Some("sound"))));
-    let now = crate::motion::frame_now();
+    let now = tilo_ui_base::motion::frame_now();
     assert!(
         !shell.content_fade.is_moving(now),
         "an action lands the content at once"

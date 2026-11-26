@@ -22,7 +22,7 @@ use tilo_session_core::desktop::i18n::{t, t_args};
 use tilo_session_core::desktop::people::PeopleNames;
 use tilo_session_core::desktop::workspace_settings::{self as domain, emoji_pane};
 use tilo_sheets::workspace_settings as sheet;
-use ui::workspace_emoji::{CustomEmoji, Small, WorkspaceEmoji, make_small};
+use tilo_ui_base::{workspace_emoji::CustomEmoji, workspace_emoji::Small, workspace_emoji::WorkspaceEmoji, workspace_emoji::make_small};
 
 use crate::followed_resource::FollowedResource;
 
@@ -65,7 +65,7 @@ pub(crate) struct Emoji {
 /// The emoji as the tab follows them.
 struct Open {
     workspace: String,
-    person: ui::permissions::MemberId,
+    person: tilo_ui_base::permissions::MemberId,
     /// The grants they were followed with: a workspace whose grants changed has them followed
     /// again.
     policy: tilo_action_policy::WorkspacePolicy,
@@ -215,7 +215,7 @@ impl Emoji {
     ) -> Option<FollowedResource<Record>> {
         let workspace = workspace?;
         let workspace_id = workspace.id().to_string();
-        let author = ui::permissions::MemberId::person(person);
+        let author = tilo_ui_base::permissions::MemberId::person(person);
         let held = self.open.borrow();
         let current = held.as_ref().filter(|open| {
             open.workspace == workspace_id

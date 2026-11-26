@@ -8,14 +8,14 @@ use vello::kurbo::{Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Color;
 
 use crate::color_compat::ColorCompat;
-use crate::icons;
-use crate::num::f32_of_f64;
-use crate::paint::PaintCtx;
+use tilo_ui_base::icons;
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::paint::PaintCtx;
 use crate::search::{ActivationModifier, CommandRow, SearchResult};
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
 
 pub(super) struct RowState<'a> {
     pub selected: bool,
@@ -27,7 +27,7 @@ fn row_ground(theme: &Theme, selected: bool) -> Color {
     if selected {
         crate::widget::floating_surface::armed_row(theme).0
     } else {
-        crate::chrome::panel_ground(theme)
+        tilo_ui_base::chrome::panel_ground(theme)
     }
 }
 
@@ -237,9 +237,9 @@ fn draw_trailing(
         right = at.x0 - 8.0;
     }
     if !row.faces.is_empty() {
-        let stack = crate::presence::FaceStack::WINDOW;
+        let stack = tilo_ui_base::presence::FaceStack::WINDOW;
         let (shown, more) = stack.split(row.faces.len());
-        let faces: Vec<crate::presence::Face<'_>> = row
+        let faces: Vec<tilo_ui_base::presence::Face<'_>> = row
             .faces
             .iter()
             .take(shown)
@@ -326,7 +326,7 @@ fn draw_trailing(
                 SMALL_TEXT_MIN_CONTRAST,
             )
         };
-        let keycaps = crate::keycaps::active();
+        let keycaps = tilo_ui_base::keycaps::active();
         let labels = vec![keycaps.key(alternate.modifier.key()), keycaps.key("Enter")];
         let caps_w = crate::widget::InputHint::measure_keycap_labels(&labels, text_renderer, theme);
         let gap = f64::from(theme.tokens.spacing.s1);
@@ -393,7 +393,7 @@ fn draw_marked(
 ) {
     let marked = style
         .clone()
-        .with_weight(crate::text_render::TextWeight::Semibold);
+        .with_weight(tilo_ui_base::text_render::TextWeight::Semibold);
     let mut x = origin.x;
     let mut at = 0usize;
     let mut pieces: Vec<(&str, bool)> = Vec::new();

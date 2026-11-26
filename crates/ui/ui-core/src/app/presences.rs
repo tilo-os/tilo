@@ -9,7 +9,7 @@ impl super::App {
     /// Idempotent. Returns whether a view was newly created.
     pub fn join_presence(&mut self, presence: &tilo_actions::PresenceId) -> bool {
         let joined =
-            crate::widget::presence_topology::join_presence(self.root_widget.as_mut(), presence);
+            tilo_ui_base::widget::presence_topology::join_presence(self.root_widget.as_mut(), presence);
         if joined {
             self.invalidate_widget_resource_cache();
             self.needs_sync = true;
@@ -19,7 +19,7 @@ impl super::App {
 
     /// Drop a presence's view (its run ended). Idempotent.
     pub fn leave_presence(&mut self, presence: &tilo_actions::PresenceId) {
-        crate::widget::presence_topology::leave_presence(self.root_widget.as_mut(), presence);
+        tilo_ui_base::widget::presence_topology::leave_presence(self.root_widget.as_mut(), presence);
         self.invalidate_widget_resource_cache();
         self.needs_sync = true;
     }
@@ -28,13 +28,13 @@ impl super::App {
     /// multi-presence widgets publish their presence-independent
     /// catalogue schema instead of their own caret's snapshot.
     pub fn set_remote_only(&mut self, host: bool) {
-        crate::widget::presence_topology::set_remote_only(self.root_widget.as_mut(), host);
+        tilo_ui_base::widget::presence_topology::set_remote_only(self.root_widget.as_mut(), host);
         self.invalidate_widget_resource_cache();
     }
 
     /// Name shown beside a presence's caret.
     pub fn set_presence_label(&mut self, presence: &tilo_actions::PresenceId, label: &str) {
-        crate::widget::presence_topology::set_presence_label(
+        tilo_ui_base::widget::presence_topology::set_presence_label(
             self.root_widget.as_mut(),
             presence,
             label,
@@ -42,7 +42,7 @@ impl super::App {
     }
 
     /// Current presence of every remote presence this app holds a view for.
-    pub fn presences(&self) -> Vec<crate::widget::ViewPresence> {
-        crate::widget::presence_topology::presences(self.root_widget.as_ref(), &self.state.doc)
+    pub fn presences(&self) -> Vec<tilo_ui_base::widget::ViewPresence> {
+        tilo_ui_base::widget::presence_topology::presences(self.root_widget.as_ref(), &self.state.doc)
     }
 }

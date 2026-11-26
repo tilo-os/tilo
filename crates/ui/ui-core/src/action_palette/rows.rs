@@ -1,8 +1,8 @@
 //! The rows a host feeds the palette itself, and the argument it collects for one. Rows are data: what
 //! the list shows (the shared search row model) and what choosing one needs.
 
-use crate::icons::{self, Icon};
-use crate::platform::{HostShortcut, PlatformConventions, Shortcut};
+use tilo_ui_base::{icons, icons::Icon};
+use tilo_ui_base::{platform::HostShortcut, platform::PlatformConventions, platform::Shortcut};
 use crate::search::system::{ResourceKind, icon_for_kind};
 pub use crate::search::{ActivationModifier, Alternate, RowFace};
 use crate::search::{CommandRow, SearchResult, SearchRow};
@@ -416,7 +416,7 @@ impl CommandEntry {
             .as_ref()
             .map(|shortcut| shortcut.keycap_labels(platform))
             .or_else(|| {
-                let keycaps = crate::keycaps::active();
+                let keycaps = tilo_ui_base::keycaps::active();
                 self.keybinding.as_ref().map(|binding| {
                     binding
                         .split('+')
@@ -474,7 +474,7 @@ pub struct CommandOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::Platform;
+    use tilo_ui_base::platform::Platform;
 
     fn row_with(shortcut: &str) -> CommandEntry {
         let mut entry = CommandEntry::new("check", "Complete");

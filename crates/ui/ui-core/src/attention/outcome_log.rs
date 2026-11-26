@@ -116,11 +116,11 @@ impl Entry {
             (None, None) => String::new(),
             (Some(about), None) => about.clone(),
             (None, Some(because)) => because.clone(),
-            (Some(about), Some(because)) => crate::i18n::widget_format(
+            (Some(about), Some(because)) => tilo_ui_base::i18n::widget_format(
                 "attention-because",
                 &[
-                    ("about", crate::i18n::ArgValue::from(about.clone())),
-                    ("because", crate::i18n::ArgValue::from(because.clone())),
+                    ("about", tilo_ui_base::i18n::ArgValue::from(about.clone())),
+                    ("because", tilo_ui_base::i18n::ArgValue::from(because.clone())),
                 ],
             ),
         }

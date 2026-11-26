@@ -21,6 +21,7 @@ tilolang-tilo = { version = "0.1.0", path = "../tilolang-tilo" }
 # The window `tilo-layout-check` lays out: an app's instance staged with a scenario, its
 # views laid out by the toolkit.
 tilolang-window = { version = "0.1.0", path = "../tilolang-window" }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # The page a laid-out window is written as, and the code editor's colours for tilolang.
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 # The pinned startup fonts a page hands its windows.

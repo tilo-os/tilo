@@ -3,9 +3,7 @@
 
 use tilo_ui_graph::component::{CaseDescription, EnumDescription};
 
-use crate::component::{
-    Component, Described, PropType, Type, Value, case_field, case_field_description,
-};
+use tilo_ui_base::{component::Component, component::Described, component::PropType, component::Type, component::Value, component::case_field, component::case_field_description};
 use crate::widget::chart_labels::format_compact;
 
 use super::{RangeBar, RangeChart, RangeStyle};
@@ -29,7 +27,7 @@ impl PropType for RangeSpan {
 
     fn from_value(value: &Value) -> Result<Self, String> {
         let Value::Case { case, fields } = value else {
-            return Err(crate::component::wrong(&Self::ty(), value));
+            return Err(tilo_ui_base::component::wrong(&Self::ty(), value));
         };
         if case != "range" {
             return Err(format!("a row of a range chart is a `range`, not `{case}`"));
@@ -88,7 +86,7 @@ pub enum RangeKind {
     Milestones,
 }
 
-crate::choice!(RangeKind, "RangeKind", {
+tilo_ui_base::choice!(RangeKind, "RangeKind", {
     Timeline => "timeline",
     Plan => "plan",
     Intervals => "intervals",

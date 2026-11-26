@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 #[cfg(feature = "native")]
 use crate::App;
-use crate::Theme;
+use tilo_ui_base::Theme;
 use crate::headless::{self, Driver};
 
 #[cfg(feature = "native")]
@@ -40,7 +40,7 @@ use window_join::{Unbuilt, construct_native, dispatch_live, live_native, native_
 /// `Err` hands the window why no connection could be made: it does not open, rather than open on
 /// records of this device alone.
 #[cfg(all(feature = "native", feature = "model"))]
-pub fn hand_connection(connection: Result<crate::collaboration::HandedConnection, String>) {
+pub fn hand_connection(connection: Result<tilo_ui_base::collaboration::HandedConnection, String>) {
     if let Ok(handed) = &connection {
         let mut launched = (*crate::process::environment()).clone();
         launched.identity.workspace_id = Some(handed.workspace.to_string());
@@ -132,8 +132,8 @@ pub struct LaunchArgs {
     /// `TILO_SHOTS_THEME`.
     pub theme: Option<String>,
     /// `--workspace-hue DEGREES` and `--your-colour NAME`: what the shell would tell the captured
-    /// window about where and for whom it is shown ([`crate::theme::WindowAppearance`]).
-    pub window: crate::theme::WindowAppearance,
+    /// window about where and for whom it is shown ([`tilo_ui_base::theme::WindowAppearance`]).
+    pub window: tilo_ui_base::theme::WindowAppearance,
     /// `--history`: a capture shows History open, where the app has History.
     pub history: bool,
     /// `--window-bar`: a capture is drawn as a shell window shows the app, under the window's bar
@@ -411,7 +411,7 @@ pub enum LaunchError {
     DuplicateApplication(String),
     UnknownApplication(String),
     #[cfg(feature = "model")]
-    CapabilityDenied(crate::permissions::PermissionScope),
+    CapabilityDenied(tilo_ui_base::permissions::PermissionScope),
     BindingMismatch,
     MissingComponentHost,
     /// Setup failed after the record became Ready: `recovery` holds its store (and any close reports)
@@ -810,7 +810,7 @@ pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     tilo_startup_metrics::mark("app-launch-start");
     tilo_process::raise_open_file_limit();
     init_app_log();
-    crate::collaboration::install_channel_settings();
+    tilo_ui_base::collaboration::install_channel_settings();
     let args: Vec<String> = std::env::args().collect();
     run_with_args(spec, &args)
 }
@@ -841,18 +841,18 @@ fn run_with_args_with_attachment(
     // A capture shows the same date and time on every run, and so does a
     // drive built from a scenario's fixtures: it is staged as its capture.
     if capture_clock::pins_the_clock(&args) {
-        crate::clock::freeze_for_capture();
+        tilo_ui_base::clock::freeze_for_capture();
     }
     if let Some(scale) = args.device_scale {
-        crate::offscreen::set_capture_device_scale(scale);
+        tilo_ui_base::offscreen::set_capture_device_scale(scale);
     }
     if let Some(on) = args.distinct_letters {
         let _ = CAPTURE_DISTINCT_LETTERS.set(on);
     }
-    crate::i18n::I18nManager::set_pseudo_locale(if args.pseudo_locale {
-        crate::i18n::PseudoLocale::Expanded
+    tilo_ui_base::i18n::I18nManager::set_pseudo_locale(if args.pseudo_locale {
+        tilo_ui_base::i18n::PseudoLocale::Expanded
     } else {
-        crate::i18n::PseudoLocale::Off
+        tilo_ui_base::i18n::PseudoLocale::Off
     });
     if let Some(directory) = &args.shots_dir {
         return capture_every_scenario(spec, &args, directory);
@@ -918,7 +918,7 @@ fn run_parsed(
     {
         return Ok(());
     }
-    let attaches = !crate::surface_services::is_surface() && (spec.runtime_attachment)(&args);
+    let attaches = !tilo_ui_base::surface_services::is_surface() && (spec.runtime_attachment)(&args);
     if opens_native_window(&args) && attaches {
         attach(spec.app_id).map_err(|error| {
             LaunchError::Operation(format!("native runtime attachment failed: {error}"))
@@ -927,7 +927,7 @@ fn run_parsed(
     // A surface app reads what its session publishes over the connection the
     // session's broker admits for its launch, as any app does; it is made
     // before the window opens, so the first frame already shows it.
-    crate::surface_services::connect();
+    tilo_ui_base::surface_services::connect();
     // Threads may start from here on; startup marks are written from their
     // own, never by the thread that marks.
     tilo_startup_metrics::start_writer();
@@ -1030,7 +1030,7 @@ fn prepare_font_database_beside() {
     let _ = crate::background::Background::current().spawn("font-database-prepare", || {
         tilo_startup_metrics::span(
             "font-database-prepare",
-            crate::text_render::prepare_font_database,
+            tilo_ui_base::text_render::prepare_font_database,
         );
     });
 }
@@ -1099,7 +1099,7 @@ fn dispatch_definition_with_manager(
         crate::application::ComponentRunnerInputs,
         bool,
     ) -> Result<App, LaunchError>,
-    manager: impl FnOnce() -> Result<crate::collaboration::CollaborationManager, LaunchError>,
+    manager: impl FnOnce() -> Result<tilo_ui_base::collaboration::CollaborationManager, LaunchError>,
 ) -> Result<DefinitionDispatch, LaunchError> {
     let scope = live_native(spec, args).then(crate::wake::WakeScope::new);
     dispatch_definition_with(spec, args, native, scope, manager).map_err(Unbuilt::into_error)
@@ -1115,7 +1115,7 @@ fn dispatch_definition_with(
         bool,
     ) -> Result<App, LaunchError>,
     scope: Option<crate::wake::WakeScope>,
-    manager: impl FnOnce() -> Result<crate::collaboration::CollaborationManager, LaunchError>,
+    manager: impl FnOnce() -> Result<tilo_ui_base::collaboration::CollaborationManager, LaunchError>,
 ) -> Result<DefinitionDispatch, Unbuilt> {
     validate_spec_args(args, spec)?;
     let _selected_local = (!opens_native_window(args))
@@ -1124,7 +1124,7 @@ fn dispatch_definition_with(
     let _wake_entry = scope.as_ref().map(crate::wake::WakeScope::enter);
     let construction = scope
         .map(|scope| {
-            crate::collaboration::native_initial::NativeConstruction::enter_component(
+            tilo_ui_base::collaboration::native_initial::NativeConstruction::enter_component(
                 manager()?,
                 scope,
             )
@@ -1187,7 +1187,7 @@ fn dispatch_definition_with(
             driver.set_theme(shot_theme(args));
         }
         if args.touch {
-            driver.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
+            driver.set_interaction_environment(tilo_ui_base::interaction::InteractionEnvironment::TOUCH);
         }
         if !args.native_audit
             && let Some(scenario) = spec.component_capture_scenario
@@ -1217,7 +1217,7 @@ fn dispatch_definition_with(
             DefinitionDispatch::Rendered(driver)
         });
     }
-    let app = crate::collaboration::native_initial::transfer_to_app(|| {
+    let app = tilo_ui_base::collaboration::native_initial::transfer_to_app(|| {
         native(
             component,
             prepared.runner_inputs,
@@ -1225,7 +1225,7 @@ fn dispatch_definition_with(
         )
     })
     .map_err(LaunchError::Operation)??;
-    crate::collaboration::native_initial::check_current().map_err(LaunchError::Operation)?;
+    tilo_ui_base::collaboration::native_initial::check_current().map_err(LaunchError::Operation)?;
     Ok(DefinitionDispatch::Native(Box::new(app)))
 }
 
@@ -1250,18 +1250,18 @@ fn show_history_for_capture(driver: &mut Driver, args: &LaunchArgs) -> Result<()
 
 #[cfg(all(feature = "native", feature = "model"))]
 fn selected_local_construction()
--> Result<crate::collaboration::native_initial::NativeConstruction, LaunchError> {
-    crate::collaboration::native_initial::NativeConstruction::enter(
-        crate::collaboration::CollaborationManager::disabled(),
+-> Result<tilo_ui_base::collaboration::native_initial::NativeConstruction, LaunchError> {
+    tilo_ui_base::collaboration::native_initial::NativeConstruction::enter(
+        tilo_ui_base::collaboration::CollaborationManager::disabled(),
     )
     .map_err(LaunchError::Operation)
 }
 
 /// The actions socket the session handed this process, when it is a surface app's: `None` when the
-/// number in [`crate::surface_services::ACTIONS_FD_ENV`] names no socket.
+/// number in [`tilo_ui_base::surface_services::ACTIONS_FD_ENV`] names no socket.
 #[cfg(all(feature = "native", feature = "model"))]
 fn surface_peer() -> Option<crate::surface_peer::SurfacePeer> {
-    let number = std::env::var(crate::surface_services::ACTIONS_FD_ENV).ok()?;
+    let number = std::env::var(tilo_ui_base::surface_services::ACTIONS_FD_ENV).ok()?;
     let number: i32 = number.trim().parse().ok()?;
     crate::surface_peer::SurfacePeer::from_descriptor(number)
 }
@@ -1270,18 +1270,18 @@ fn surface_peer() -> Option<crate::surface_peer::SurfacePeer> {
 fn native_launch_manager(
     spec: &LaunchSpec,
     args: &LaunchArgs,
-) -> Result<crate::collaboration::CollaborationManager, LaunchError> {
+) -> Result<tilo_ui_base::collaboration::CollaborationManager, LaunchError> {
     // A surface app is handed the actions of the shell that places its
     // window, in place of a workspace it never joins: it needs no workspace of
     // its own, selected or not.
     if let Some(peer) = surface_peer() {
-        return Ok(crate::collaboration::CollaborationManager::with_peer_transport(peer));
+        return Ok(tilo_ui_base::collaboration::CollaborationManager::with_peer_transport(peer));
     }
-    crate::collaboration::native_initial::ensure_unoccupied().map_err(LaunchError::Operation)?;
+    tilo_ui_base::collaboration::native_initial::ensure_unoccupied().map_err(LaunchError::Operation)?;
     if !(spec.runtime_attachment)(args) {
-        return Ok(crate::collaboration::CollaborationManager::disabled());
+        return Ok(tilo_ui_base::collaboration::CollaborationManager::disabled());
     }
-    crate::collaboration::CollaborationManager::for_native_launch(
+    tilo_ui_base::collaboration::CollaborationManager::for_native_launch(
         &spec.definition.resource_type,
         native_connection()?,
     )
@@ -1289,10 +1289,10 @@ fn native_launch_manager(
 }
 
 #[cfg(all(feature = "native", feature = "model"))]
-impl From<crate::collaboration::NativeLaunchError> for LaunchError {
-    fn from(error: crate::collaboration::NativeLaunchError) -> Self {
+impl From<tilo_ui_base::collaboration::NativeLaunchError> for LaunchError {
+    fn from(error: tilo_ui_base::collaboration::NativeLaunchError) -> Self {
         match error {
-            crate::collaboration::NativeLaunchError::Operation(message) => Self::Operation(message),
+            tilo_ui_base::collaboration::NativeLaunchError::Operation(message) => Self::Operation(message),
         }
     }
 }
@@ -1341,7 +1341,7 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
     let theme = match std::env::var("TILO_SHOTS_ACCENT")
         .ok()
         .and_then(|hex| crate::color::parse_hex(&hex))
-        .and_then(crate::tokens::nearest_presence_hue)
+        .and_then(tilo_ui_base::tokens::nearest_presence_hue)
     {
         Some(hue) => theme.with_your_colour(hue),
         None => theme,
@@ -1530,11 +1530,11 @@ fn parse_args_extended(
             }
             "--your-colour" => {
                 let value = take_value(args, &mut index, flag, inline)?;
-                let hue = crate::tokens::PresenceHue::from_id(value).ok_or_else(|| {
+                let hue = tilo_ui_base::tokens::PresenceHue::from_id(value).ok_or_else(|| {
                     LaunchError::Scenario(format!(
                         "{flag}: no presence colour is called {value:?} (one of {})",
-                        crate::tokens::PresenceHue::ALL
-                            .map(crate::tokens::PresenceHue::id)
+                        tilo_ui_base::tokens::PresenceHue::ALL
+                            .map(tilo_ui_base::tokens::PresenceHue::id)
                             .join(", ")
                     ))
                 })?;
@@ -1918,7 +1918,7 @@ mod tests {
                 assert!(parsed.has("--empty"));
                 assert_eq!(
                     parsed.window,
-                    crate::theme::WindowAppearance::default(),
+                    tilo_ui_base::theme::WindowAppearance::default(),
                     "a capture without a shell is neutral"
                 );
             }
@@ -1934,9 +1934,9 @@ mod tests {
                 let parsed = parse_args(&args, &[], &[]).unwrap();
                 assert_eq!(
                     parsed.window,
-                    crate::theme::WindowAppearance {
+                    tilo_ui_base::theme::WindowAppearance {
                         workspace_hue: Some(40.0),
-                        your_colour: Some(crate::tokens::PresenceHue::Violet),
+                        your_colour: Some(tilo_ui_base::tokens::PresenceHue::Violet),
                         corner_radius: None,
                     }
                 );
@@ -1945,7 +1945,7 @@ mod tests {
                     ..parsed
                 });
                 assert_eq!(theme.document.palette.hue, Some(40.0));
-                assert_eq!(theme.tokens.colors.you, crate::tokens::PresenceHue::Violet);
+                assert_eq!(theme.tokens.colors.you, tilo_ui_base::tokens::PresenceHue::Violet);
                 for bad in [
                     &["app", "--shots=/tmp/s.png", "--workspace-hue=warm"][..],
                     &["app", "--shots=/tmp/s.png", "--your-colour=chartreuse"][..],
@@ -2273,13 +2273,13 @@ mod tests {
         history.commit();
         let heads = history.get_heads();
         let (manager, joined) =
-            crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
+            tilo_ui_base::collaboration::CollaborationManager::native_initial_fixture_for_test(
                 "so.tilo.launch-fixture",
                 workspace,
                 history.save(),
             );
         let construction =
-            crate::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
+            tilo_ui_base::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
         let documents = crate::launch::fixture_workspace::at(
             &environment._directory.path().join("native-canonical"),
         );
@@ -2352,13 +2352,13 @@ mod tests {
         history.commit();
         let heads = history.get_heads();
         let (manager, _) =
-            crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
+            tilo_ui_base::collaboration::CollaborationManager::native_initial_fixture_for_test(
                 "so.tilo.launch-fixture",
                 workspace,
                 history.save(),
             );
         let _construction =
-            crate::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
+            tilo_ui_base::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
         let documents = crate::launch::fixture_workspace::at(
             &environment._directory.path().join("legacy-cache"),
         );
@@ -2416,13 +2416,13 @@ mod tests {
         history.put(automerge::ROOT, "retained", "primary").unwrap();
         history.commit();
         let (manager, joined) =
-            crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
+            tilo_ui_base::collaboration::CollaborationManager::native_initial_fixture_for_test(
                 "so.tilo.launch-fixture",
                 workspace,
                 history.save(),
             );
         let _construction =
-            crate::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
+            tilo_ui_base::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
         let documents =
             crate::launch::fixture_workspace::at(&environment._directory.path().join("primary"));
         crate::launch::fixture_workspace::publish(
@@ -2500,7 +2500,7 @@ mod tests {
         let environment = LaunchFixtureEnv::new();
         let workspace = uuid::Uuid::new_v4();
         let id = crate::resource::DocumentId::minted();
-        let manager = crate::collaboration::CollaborationManager::connected_fixture_for_test(
+        let manager = tilo_ui_base::collaboration::CollaborationManager::connected_fixture_for_test(
             probe::APP,
             workspace,
         );
@@ -2602,9 +2602,9 @@ mod tests {
         let _environment = LaunchFixtureEnv::new();
         let mut env_override = tilo_test_env::ScopedEnv::new();
         env_override.set("TILO_SVC_COLLAB_FD", "-1");
-        let manager = crate::collaboration::CollaborationManager::for_native_launch(
+        let manager = tilo_ui_base::collaboration::CollaborationManager::for_native_launch(
             &crate::resource::ResourceType::new("launch-fixture.document"),
-            crate::collaboration::NativeConnection::Launch,
+            tilo_ui_base::collaboration::NativeConnection::Launch,
         );
         drop(env_override);
         assert!(
@@ -2638,7 +2638,7 @@ mod prepared_launch_tests {
         definition: &crate::application::ApplicationDefinition,
         args: &LaunchArgs,
         target: LaunchTarget,
-        authority: crate::permissions::SharedPermissions,
+        authority: tilo_ui_base::permissions::SharedPermissions,
     ) -> Result<PreparedComponentInputs, LaunchError> {
         PREPARES.set(PREPARES.get().saturating_add(1));
         let root = PathBuf::from(args.value("--fixture-root").expect("explicit test root"));

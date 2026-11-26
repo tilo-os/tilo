@@ -2,9 +2,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::{TextInput, Widget};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use crate::widget::TextInput;
+use tilo_ui_base::widget::Widget;
 
 const WIDTH: u32 = 320;
 const HEIGHT: u32 = 260;
@@ -37,9 +38,9 @@ fn unrepainted(before: &[u8], after: &[u8], damage: &[Rect]) -> Vec<(u32, u32)> 
 
 #[test]
 fn an_edited_line_repaints_its_ink_that_rises_past_its_row() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let theme = Theme::dark();
-    let presence = crate::presence::PresenceCtx::empty();
+    let presence = tilo_ui_base::presence::PresenceCtx::empty();
     let mut renderer = TextRenderer::new();
     renderer.set_text_scale(theme.text_scale);
     let marks = "\u{301}".repeat(10);
@@ -51,7 +52,7 @@ fn an_edited_line_repaints_its_ink_that_rises_past_its_row() {
         let mut scene = Scene::new();
         Widget::draw(
             field,
-            &mut crate::draw::DrawCtx::new(
+            &mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut renderer,
@@ -87,7 +88,7 @@ fn an_edited_line_repaints_its_ink_that_rises_past_its_row() {
         "the edit repaints its line, not the field: {damage:?}"
     );
 
-    let mut gpu = crate::offscreen::OffscreenRenderer::try_new_for_pixel_test(WIDTH, HEIGHT, true)
+    let mut gpu = tilo_ui_base::offscreen::OffscreenRenderer::try_new_for_pixel_test(WIDTH, HEIGHT, true)
         .expect("pixel test renderer");
     let before = gpu.render(&shown, Color::BLACK);
     let after = gpu.render(&edited, Color::BLACK);

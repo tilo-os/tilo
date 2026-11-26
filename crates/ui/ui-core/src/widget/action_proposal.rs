@@ -52,7 +52,7 @@ impl ModelPass {
         };
         let mut args = fluent::FluentArgs::new();
         args.set("model", self.names.as_str());
-        crate::i18n::I18nManager::lookup(key, Some(&args))
+        tilo_ui_base::i18n::I18nManager::lookup(key, Some(&args))
     }
 }
 
@@ -79,8 +79,8 @@ impl ContextPart {
 /// The name a title or a part is read under; the key itself when the
 /// catalogue has nothing for it, so a missing entry never hides a part.
 pub fn titled(key: &str) -> String {
-    if crate::i18n::I18nManager::has_message(key) {
-        crate::i18n::I18nManager::lookup(key, None)
+    if tilo_ui_base::i18n::I18nManager::has_message(key) {
+        tilo_ui_base::i18n::I18nManager::lookup(key, None)
     } else {
         key.to_owned()
     }
@@ -135,7 +135,7 @@ impl ProposalContext {
                 "limit",
                 i64::try_from(MAX_CONTEXT_PARTS).unwrap_or(i64::MAX),
             );
-            return Some(crate::i18n::I18nManager::lookup(
+            return Some(tilo_ui_base::i18n::I18nManager::lookup(
                 "proposal-context-too-many",
                 Some(&args),
             ));
@@ -150,7 +150,7 @@ impl ProposalContext {
                     "limit",
                     i64::try_from(MAX_CONTEXT_BYTES / 1024).unwrap_or(i64::MAX),
                 );
-                crate::i18n::I18nManager::lookup("proposal-context-too-long", Some(&args))
+                tilo_ui_base::i18n::I18nManager::lookup("proposal-context-too-long", Some(&args))
             })
     }
 }

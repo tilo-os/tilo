@@ -94,7 +94,7 @@ impl ActivityView {
 }
 
 /// A per-window history move: the `target` of a `history` command.
-pub type HistoryDirection = ui::gesture::NavDirection;
+pub type HistoryDirection = tilo_ui_base::gesture::NavDirection;
 
 fn history_direction(target: &str) -> Result<HistoryDirection, String> {
     match target {
@@ -1055,7 +1055,7 @@ pub enum ScrollAction {
     End,
 }
 
-impl From<ScrollAction> for ui::widget::PrimaryScrollAction {
+impl From<ScrollAction> for tilo_ui_base::widget::PrimaryScrollAction {
     fn from(value: ScrollAction) -> Self {
         match value {
             ScrollAction::Line(v) => Self::Line(v),

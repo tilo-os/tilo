@@ -61,7 +61,7 @@ fn asking_on_a_banner(session: &Session) -> bool {
 /// The session keeps the workspace until the person says yes.
 #[test]
 fn deleting_a_workspace_asks_in_its_own_question_and_keep_deletes_nothing() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     let (_identity, key, cert) = this_computer(home.env());
@@ -109,7 +109,7 @@ fn deleting_a_workspace_asks_in_its_own_question_and_keep_deletes_nothing() {
 /// The person's yes is what deletes the workspace, from here and from this device's record.
 #[test]
 fn the_persons_yes_deletes_the_workspace() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     let (_identity, key, cert) = this_computer(home.env());
@@ -155,7 +155,7 @@ fn the_persons_yes_deletes_the_workspace() {
 /// leaving it is not on offer.
 #[test]
 fn the_settings_of_a_sole_members_workspace_offer_deleting_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     let (_identity, key, cert) = this_computer(home.env());
@@ -203,7 +203,7 @@ fn the_settings_of_a_sole_members_workspace_offer_deleting_it() {
     app.settle();
     for button in ["ws-general-delete", "ws-settings-decision.primary"] {
         app.harness()
-            .perform_named(button, &ui::a11y::Action::Activate)
+            .perform_named(button, &tilo_ui_base::a11y::Action::Activate)
             .unwrap_or_else(|error| panic!("press {button}: {error}"));
         app.settle();
     }

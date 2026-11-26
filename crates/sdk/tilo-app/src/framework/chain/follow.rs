@@ -53,7 +53,7 @@ impl ChainCore {
     fn read_held(&self) {
         // Outside a pass there is nothing to follow, and once in a pass is
         // enough: later looks the pass takes read the same parts.
-        let Some(pass) = ui_core::component_inputs::running_pass() else {
+        let Some(pass) = tilo_ui_base::component_inputs::running_pass() else {
             return;
         };
         if self.read_at.get() == Some(pass) {

@@ -12,7 +12,7 @@
 //! behaves as any other list of rows does.
 //!
 //! The rows are virtual: a host renders them as the list shows them
-//! ([`crate::component::RowSource`]), so a notebook of ten thousand notes costs the rows on
+//! ([`tilo_ui_base::component::RowSource`]), so a notebook of ten thousand notes costs the rows on
 //! screen. What the list needs of a row it does not hold — whether it opens, how deep it
 //! stands — a row says itself ([`TreeViewNodeProps::branch`], [`TreeViewNodeProps::depth`]), so
 //! the window it shows needs no row outside it.
@@ -22,27 +22,23 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::rc::Rc;
 
-use crate::component::{
-    Accepts, Component, Described, Event, PartType, Person, ResourceId, SharedRows, Source, Value,
-};
-use crate::icons::Icon;
-use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
-use crate::selection::KeySelection;
+use tilo_ui_base::{component::Accepts, component::Component, component::Described, component::Event, component::PartType, component::Person, component::ResourceId, component::SharedRows, component::Source, component::Value};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{reorder::DropPlacement, reorder::DropTarget, reorder::ReorderDrop};
+use tilo_ui_base::selection::KeySelection;
 use crate::widget::nav_list::NavigationSource;
-use crate::widget::{
-    Button, ButtonProps, ChangeMarkProps, Decorator, Element, HoverToolbar, ListModel, ListRow,
-    MenuItem, MenuItemProps, Press, TreeMarks, TreeRow, VirtualList, Widget,
-};
+use crate::{widget::Button, widget::ButtonProps, widget::ChangeMarkProps, widget::HoverToolbar, widget::ListModel, widget::ListRow, widget::MenuItem, widget::MenuItemProps, widget::TreeMarks, widget::TreeRow, widget::VirtualList};
+use tilo_ui_base::{widget::Decorator, widget::Element, widget::Press, widget::Widget};
 
 use crate::widget::virtual_list::by_hand;
 
 /// The height of one row of a tree: an outline's rows are its own token, the compact row's
 /// height, shorter than a list's row of the same theme.
-pub const TREE_ROW_HEIGHT: f32 = crate::tokens::Density::Compact.rows().single;
+pub const TREE_ROW_HEIGHT: f32 = tilo_ui_base::tokens::Density::Compact.rows().single;
 
 /// The height a tree's row stands at when it carries a line beside its name: the compact row's
 /// two-line height, so the line under the name is as tall as a list row's line.
-pub const TREE_ROW_DOUBLE_HEIGHT: f32 = crate::tokens::Density::Compact.rows().double;
+pub const TREE_ROW_DOUBLE_HEIGHT: f32 = tilo_ui_base::tokens::Density::Compact.rows().double;
 
 /// What one row of a tree shows besides its label: a leading glyph, the tone its title reads
 /// in, trailing text and what assistive technology says of it.
@@ -75,7 +71,7 @@ pub enum TreeTone {
     Secondary,
 }
 
-crate::choice!(TreeTone, "TreeTone", {
+tilo_ui_base::choice!(TreeTone, "TreeTone", {
     Primary => "primary",
     Secondary => "secondary",
 });
@@ -147,9 +143,9 @@ pub struct TreeViewNodeProps {
     pub change: Option<ChangeMarkProps>,
 }
 
-crate::component::part_type!(TreeViewNodeProps);
-crate::component::part_type!(TreeViewRowProps);
-crate::component::part_type!(ButtonProps);
+tilo_ui_base::component::part_type!(TreeViewNodeProps);
+tilo_ui_base::component::part_type!(TreeViewRowProps);
+tilo_ui_base::component::part_type!(ButtonProps);
 
 impl TreeViewRows {
     /// The nodes the view gave whole, as it wrote them.
@@ -313,7 +309,7 @@ pub struct TreeViewProps {
     pub selection: Option<Vec<ResourceId>>,
     /// The pace its own motion plays at: branches unfolding, rows arriving and leaving. Unset, the
     /// theme's.
-    pub motion: Option<crate::motion::Feel>,
+    pub motion: Option<tilo_ui_base::motion::Feel>,
     /// A node was selected: carries the resource it shows.
     #[component(event(value = ResourceId))]
     pub select: Event,
@@ -1203,18 +1199,18 @@ impl ListModel for TreeRows {
         }
     }
 
-    fn row_state(&self, index: usize) -> crate::arriving::Arrival<(), &'static str> {
+    fn row_state(&self, index: usize) -> tilo_ui_base::arriving::Arrival<(), &'static str> {
         if let Rows::Rendered(remote) = &self.rows
             && let Ok(rows) = remote.source.try_borrow()
             && let Some(key) = rows.key_at(index)
             && !rows.rendered(&key)
         {
-            return crate::arriving::Arrival::local();
+            return tilo_ui_base::arriving::Arrival::local();
         }
-        crate::arriving::Arrival::Ready(())
+        tilo_ui_base::arriving::Arrival::Ready(())
     }
 
-    fn poll_changes(&mut self) -> Vec<crate::collection_transition::ListModelChange<String>> {
+    fn poll_changes(&mut self) -> Vec<tilo_ui_base::collection_transition::ListModelChange<String>> {
         let Rows::Rendered(remote) = &self.rows else {
             return Vec::new();
         };
@@ -1224,10 +1220,10 @@ impl ListModel for TreeRows {
         let changes = rows.take_changes();
         for change in &changes {
             match change {
-                crate::collection_transition::ListModelChange::RowsChanged { keys } => {
+                tilo_ui_base::collection_transition::ListModelChange::RowsChanged { keys } => {
                     remote.forget(keys);
                 }
-                crate::collection_transition::ListModelChange::Reset => remote.clear(),
+                tilo_ui_base::collection_transition::ListModelChange::Reset => remote.clear(),
                 _ => {}
             }
         }
@@ -1320,7 +1316,7 @@ impl ListModel for TreeRows {
 fn row_of(
     rows: &TreeRows,
     key: &str,
-    feel: crate::motion::Feel,
+    feel: tilo_ui_base::motion::Feel,
     marks: &TreeMarks<String>,
     matching: Option<&HashSet<String>>,
     chevron_column: f64,
@@ -1457,7 +1453,7 @@ impl DescribedTreeView {
             into,
             after,
         } = props;
-        let feel = motion.unwrap_or(crate::motion::Feel::Standard);
+        let feel = motion.unwrap_or(tilo_ui_base::motion::Feel::Standard);
         let marks = Rc::new(TreeMarks::<String>::default());
         let rows = TreeRows::of(
             nodes,
@@ -1621,7 +1617,7 @@ impl Described for DescribedTreeView {
             self.list.set_scroll_offset(scroll);
         }
         self.list
-            .set_feel(motion.unwrap_or(crate::motion::Feel::Standard));
+            .set_feel(motion.unwrap_or(tilo_ui_base::motion::Feel::Standard));
         true
     }
 }
@@ -1643,13 +1639,13 @@ impl Decorator for DescribedTreeView {
     }
 
     /// The list's change is the described tree's: it adds no structure of its own.
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
         self.list.take_structure_change()
     }
 
     // The tree tells the window hosting it that the person opened a row of it, as a list of
     // places does: what a narrow window's drawer closes on.
-    crate::provides!(dyn NavigationSource; inner = list);
+    tilo_ui_base::provides!(dyn NavigationSource; inner = list);
 }
 
 impl NavigationSource for DescribedTreeView {
@@ -1661,9 +1657,9 @@ impl NavigationSource for DescribedTreeView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Theme;
+    use tilo_ui_base::Theme;
     use crate::app::driver::Driver;
-    use crate::component::{BoundValue, Fired, Intent};
+    use tilo_ui_base::{component::BoundValue, component::Fired, component::Intent};
     use crate::headless::InspectionNode;
     use crate::widget::TreeMove;
 
@@ -1671,7 +1667,7 @@ mod tests {
         key: &str,
         parent: Option<&str>,
         branch: bool,
-        queue: &crate::Intents<Fired>,
+        queue: &tilo_ui_base::Intents<Fired>,
     ) -> TreeViewNodeProps {
         TreeViewNodeProps {
             item: ResourceId(key.to_owned()),
@@ -1684,7 +1680,7 @@ mod tests {
     }
 
     /// The three moves a tree reports, each on the tree itself.
-    fn moves(queue: &crate::Intents<Fired>) -> Moves {
+    fn moves(queue: &tilo_ui_base::Intents<Fired>) -> Moves {
         Moves {
             drop: Event::View(Intent::new(queue, "tree", "drop")),
             into: Event::View(Intent::new(queue, "tree", "into")),
@@ -1711,7 +1707,7 @@ mod tests {
     /// does not follow its link and stands at the top level.
     #[test]
     fn parents_that_close_a_loop_keep_every_node_once() {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let tree = tree_of(
             vec![
                 node("a", Some("b"), false, &queue),
@@ -1745,7 +1741,7 @@ mod tests {
     /// them as much as several: the heading above the tree names it once.
     #[test]
     fn hiding_the_root_keeps_every_top_level_node() {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let named = DescribedTreeView::from_props(
             "tree",
             TreeViewProps {
@@ -1804,7 +1800,7 @@ mod tests {
     /// view stops saying it.
     #[test]
     fn a_tree_the_view_narrows_keeps_the_person_s_own_folding() {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let nodes = || {
             vec![
                 node("plan", None, true, &queue),
@@ -1846,7 +1842,7 @@ mod tests {
     /// own — or the end of the top level, which names no row to land at.
     #[test]
     fn a_move_names_the_row_that_moved_and_the_row_it_lands_at() {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let tree = tree_of(
             vec![
                 node("a", None, true, &queue),
@@ -1910,7 +1906,7 @@ mod tests {
     #[test]
     fn a_nodes_quick_actions_ride_over_its_row() {
         use crate::app::driver::Driver;
-        use crate::theme::Theme;
+        use tilo_ui_base::theme::Theme;
 
         fn names(node: &crate::headless::InspectionNode, out: &mut Vec<String>) {
             out.push(node.widget.clone());
@@ -1918,11 +1914,11 @@ mod tests {
                 names(child, out);
             }
         }
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut quick = node("a", None, true, &queue);
         quick.toolbar = vec![ButtonProps {
             label: "New sub-note".into(),
-            icon: Some(crate::icons::Icon::Plus),
+            icon: Some(tilo_ui_base::icons::Icon::Plus),
             icon_only: true,
             press: Event::View(Intent::new(&queue, "a", "quick")),
             ..ButtonProps::default()
@@ -1946,7 +1942,7 @@ mod tests {
     /// says none.
     #[test]
     fn a_node_says_how_far_its_branch_got() {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut said = node("a", None, true, &queue);
         said.progress = Some("1/3".into());
         said.row = Some(TreeViewRowProps::default());
@@ -1983,7 +1979,7 @@ mod tests {
     /// that opens it, even when no node under it is in the list yet.
     #[test]
     fn a_folder_with_nothing_in_it_still_shows_its_disclosure() {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let tree = tree_of(
             vec![
                 node("folder", None, true, &queue),
@@ -2011,12 +2007,12 @@ mod tests {
     #[test]
     fn a_press_chooses_a_trees_row_whatever_the_view_reports() {
         use crate::app::driver::Driver;
-        use crate::theme::Theme;
+        use tilo_ui_base::theme::Theme;
 
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         for select in [
             Event::None,
-            Event::View(Intent::new(&crate::Intents::default(), "tree", "select")),
+            Event::View(Intent::new(&tilo_ui_base::Intents::default(), "tree", "select")),
         ] {
             let tree = tree_of(
                 vec![
@@ -2052,11 +2048,11 @@ mod tests {
     fn a_branch_row_keeps_its_box_and_words_on_its_depths_column() {
         use crate::app::driver::Driver;
         use crate::headless::InspectionNode;
-        use crate::theme::Theme;
+        use tilo_ui_base::theme::Theme;
         use crate::widget::TREE_INDENT;
-        use crate::widget::{LayoutInfo, RowLayout};
+        use tilo_ui_base::{widget::LayoutInfo, widget::RowLayout};
 
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let boxed = |key: &str, parent: Option<&str>, branch: bool, checked: bool| {
             let mut props = node(key, parent, branch, &queue);
             props.row = Some(TreeViewRowProps {
@@ -2145,8 +2141,8 @@ mod tests {
     fn a_tree_that_fills_its_pane_stands_its_rows_on_the_panes_content_edge() {
         use crate::app::driver::Driver;
         use crate::headless::InspectionNode;
-        use crate::theme::Theme;
-        use crate::widget::{LayoutInfo, RowLayout};
+        use tilo_ui_base::theme::Theme;
+        use tilo_ui_base::{widget::LayoutInfo, widget::RowLayout};
 
         // // Where the top-level row's box and its content start, and where its chevron column // stands,
         // for a tree of `nodes` in a 320 px window.
@@ -2181,9 +2177,9 @@ mod tests {
             });
             (box_x0, content, chevron)
         }
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let theme = Theme::dark();
-        let gutter = crate::chrome::column_gutter(&theme);
+        let gutter = tilo_ui_base::chrome::column_gutter(&theme);
         let step = f64::from(crate::widget::TREE_INDENT);
 
         let (flat_box, flat, chevron) = column(true, vec![node("A note", None, false, &queue)]);
@@ -2222,7 +2218,7 @@ mod tests {
              {gutter}"
         );
 
-        let bleed = crate::chrome::row_bleed(&theme);
+        let bleed = tilo_ui_base::chrome::row_bleed(&theme);
         let (_, inside, chevron) = column(false, vec![node("A branch", None, true, &queue)]);
         assert!(
             (inside - (bleed.max(step))).abs() < 0.5,
@@ -2240,12 +2236,12 @@ mod tests {
     /// its corner are controls of the row, reached and worked under the one node it is.
     #[test]
     fn a_trees_row_holds_the_controls_it_shows() {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         use crate::app::driver::Driver;
-        use crate::theme::Theme;
+        use tilo_ui_base::theme::Theme;
         use accesskit::Role as AkRole;
 
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut props = node("a", None, true, &queue);
         props.row = Some(TreeViewRowProps {
             checkbox: Some(false),
@@ -2323,7 +2319,7 @@ mod tests {
         let element = row_of(
             tree.rows(),
             key,
-            crate::motion::Feel::Standard,
+            tilo_ui_base::motion::Feel::Standard,
             &tree.marks,
             None,
             0.0,
@@ -2338,18 +2334,18 @@ mod tests {
     /// A tree row shows who else is at the item it stands for, as a list row shows it.
     #[test]
     fn a_tree_row_says_who_else_is_at_the_item() {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut props = node("a", None, false, &queue);
         props.presence = Some(Person {
             identity: tilo_actions::MemberId::person("bo").into(),
             name: "Bo".to_owned(),
-            hue: crate::tokens::PresenceHue::of_identity("bo"),
+            hue: tilo_ui_base::tokens::PresenceHue::of_identity("bo"),
             picture: None,
         });
         let tree = tree_of(vec![props], true, Moves::default());
         assert_eq!(
             row_face(&tree, "a", |row| row.with_face(|face| face.presence_hue())),
-            Some(crate::tokens::PresenceHue::of_identity("bo")),
+            Some(tilo_ui_base::tokens::PresenceHue::of_identity("bo")),
             "the row says who else is at the item"
         );
         let plain = tree_of(vec![node("b", None, false, &queue)], true, Moves::default());
@@ -2364,7 +2360,7 @@ mod tests {
     /// at the top level: the row it stood under is one the tree may never have built.
     #[test]
     fn a_removed_node_stands_struck_after_the_nodes() {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let kept = node("a", None, false, &queue);
         let gone = TreeViewNodeProps {
             item: ResourceId("gone".to_owned()),
@@ -2428,7 +2424,7 @@ mod tests {
     struct ShownRows {
         rows: Vec<ShownRow>,
         shown: std::ops::Range<usize>,
-        queue: crate::Intents<Fired>,
+        queue: tilo_ui_base::Intents<Fired>,
         /// The rows the host rendered anew, reported at the list's next poll.
         changed: Vec<ShownRow>,
     }
@@ -2443,10 +2439,10 @@ mod tests {
     struct RowSource {
         key: String,
         props: Vec<(&'static str, Value)>,
-        queue: crate::Intents<Fired>,
+        queue: tilo_ui_base::Intents<Fired>,
     }
 
-    impl crate::component::Source for RowSource {
+    impl tilo_ui_base::component::Source for RowSource {
         fn key(&self) -> &str {
             &self.key
         }
@@ -2470,20 +2466,20 @@ mod tests {
             None
         }
 
-        fn children(&mut self, _part: &str) -> Vec<crate::Element> {
+        fn children(&mut self, _part: &str) -> Vec<tilo_ui_base::Element> {
             Vec::new()
         }
 
         fn components(
             &mut self,
             _part: &str,
-            _read: &mut dyn FnMut(&mut dyn crate::component::Source) -> Result<(), String>,
+            _read: &mut dyn FnMut(&mut dyn tilo_ui_base::component::Source) -> Result<(), String>,
         ) -> Result<usize, String> {
             Ok(0)
         }
     }
 
-    impl crate::component::RowSource for ShownRows {
+    impl tilo_ui_base::component::RowSource for ShownRows {
         fn len(&self) -> usize {
             self.rows.len()
         }
@@ -2511,7 +2507,7 @@ mod tests {
         fn read(
             &mut self,
             key: &str,
-            read: &mut dyn FnMut(&mut dyn crate::component::Source) -> Result<(), String>,
+            read: &mut dyn FnMut(&mut dyn tilo_ui_base::component::Source) -> Result<(), String>,
         ) -> Result<bool, String> {
             let Some(at) = self.at(key) else {
                 return Ok(false);
@@ -2543,11 +2539,11 @@ mod tests {
             self.at(id).map(|_| id.to_owned())
         }
 
-        fn take_changes(&mut self) -> Vec<crate::collection_transition::ListModelChange<String>> {
+        fn take_changes(&mut self) -> Vec<tilo_ui_base::collection_transition::ListModelChange<String>> {
             if self.changed.is_empty() {
                 return Vec::new();
             }
-            vec![crate::collection_transition::ListModelChange::RowsChanged {
+            vec![tilo_ui_base::collection_transition::ListModelChange::RowsChanged {
                 keys: std::mem::take(&mut self.changed)
                     .into_iter()
                     .map(|row| row.key)
@@ -2566,15 +2562,15 @@ mod tests {
         rows: Vec<ShownRow>,
     ) -> (
         Driver,
-        crate::Intents<Fired>,
+        tilo_ui_base::Intents<Fired>,
         std::rc::Rc<std::cell::RefCell<ShownRows>>,
     ) {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         struct WithRows {
-            rows: crate::component::SharedRows,
-            queue: crate::Intents<Fired>,
+            rows: tilo_ui_base::component::SharedRows,
+            queue: tilo_ui_base::Intents<Fired>,
         }
-        impl crate::component::Source for WithRows {
+        impl tilo_ui_base::component::Source for WithRows {
             fn key(&self) -> &str {
                 "tree"
             }
@@ -2598,19 +2594,19 @@ mod tests {
                 None
             }
 
-            fn children(&mut self, _part: &str) -> Vec<crate::Element> {
+            fn children(&mut self, _part: &str) -> Vec<tilo_ui_base::Element> {
                 Vec::new()
             }
 
             fn components(
                 &mut self,
                 _part: &str,
-                _read: &mut dyn FnMut(&mut dyn crate::component::Source) -> Result<(), String>,
+                _read: &mut dyn FnMut(&mut dyn tilo_ui_base::component::Source) -> Result<(), String>,
             ) -> Result<usize, String> {
                 Ok(0)
             }
 
-            fn rows(&mut self, part: &str) -> Option<crate::component::SharedRows> {
+            fn rows(&mut self, part: &str) -> Option<tilo_ui_base::component::SharedRows> {
                 (part == "nodes").then(|| std::rc::Rc::clone(&self.rows))
             }
         }
@@ -2620,7 +2616,7 @@ mod tests {
             queue: queue.clone(),
             changed: Vec::new(),
         }));
-        let rows: crate::component::SharedRows = shown.clone();
+        let rows: tilo_ui_base::component::SharedRows = shown.clone();
         let mut source = WithRows {
             rows,
             queue: queue.clone(),
@@ -2631,7 +2627,7 @@ mod tests {
             crate::State::new(),
             tree,
             (600, 400),
-            crate::theme::Theme::light(),
+            tilo_ui_base::theme::Theme::light(),
         );
         (harness, queue, shown)
     }
@@ -2639,7 +2635,7 @@ mod tests {
     /// The move `movement` reports of the focused row, as the queue heard it.
     fn moved(
         harness: &mut Driver,
-        queue: &crate::Intents<Fired>,
+        queue: &tilo_ui_base::Intents<Fired>,
         movement: TreeMove,
     ) -> Vec<(String, String, Option<Value>)> {
         harness

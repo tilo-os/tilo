@@ -208,7 +208,7 @@ pub use resource::{Terminal, TerminalEffect, TerminalShell};
 mod command_list;
 
 #[cfg(feature = "desktop")]
-pub fn mounted_terminal(widget: &mut dyn ui::widget::Widget) -> Option<&mut TerminalWidget> {
+pub fn mounted_terminal(widget: &mut dyn tilo_ui_base::widget::Widget) -> Option<&mut TerminalWidget> {
     ui::framework::testing::surface_in_root::<TerminalShell, TerminalView>(widget)
         .map(TerminalView::terminal_mut)
 }

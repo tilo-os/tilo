@@ -30,13 +30,11 @@ use ui::floating_surface::{
     FloatingRole, FloatingSource, FloatingSurfaceHostMessage, FloatingSurfacePresentation,
     FloatingSurfaceRequest, protocol_rect,
 };
-use ui::tokens::{MotionSource, Rhythm};
+use tilo_ui_base::{tokens::MotionSource, tokens::Rhythm};
 use ui::widget::arrange::{Fit, Part, Stack};
 use ui::widget::toast::ToastKind;
-use ui::widget::{
-    Absent, Element, NavPane, NavShell, PermissionPrompt, PictureInPictureAsk, PromptChoice,
-    SidebarPlacement, Widget,
-};
+use ui::{widget::Absent, widget::NavPane, widget::NavShell, widget::PermissionPrompt, widget::PromptChoice, widget::SidebarPlacement};
+use tilo_ui_base::{widget::Element, widget::PictureInPictureAsk, widget::Widget};
 
 use crate::i18n::{t, t_args};
 use crate::pane::Pane;
@@ -246,7 +244,7 @@ fn part(element: Element, fit: Fit) -> Part {
 /// What brings a column to the front: a click or a tap slides it in; a key, an agent's action or
 /// nothing the person just did moves it without.
 fn by_input() -> MotionSource {
-    ui::motion::recent_input(ui::time::now()).unwrap_or(MotionSource::Action)
+    tilo_ui_base::motion::recent_input(ui::time::now()).unwrap_or(MotionSource::Action)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -374,7 +372,7 @@ pub struct AppWindow {
     detail_space: HashMap<String, (f32, f32, f32)>,
     /// The layout node of each keyed widget of the body, as its last build or remount made them,
     /// and the body's own node: what the room each view call is offered is read from
-    /// ([`ui::widget::offered_room`]).
+    /// ([`tilo_ui_base::widget::offered_room`]).
     laid_nodes: Option<(ui::taffy::NodeId, HashMap<String, ui::taffy::NodeId>)>,
     /// The view calls of each level that read the space layout gives them, by key in that level's
     /// tree, as the app declared them: what the window measures after every layout.
@@ -496,7 +494,7 @@ impl AppWindow {
                     .upgrade()?
                     .borrow()
                     .get(key)
-                    .map(|rows| Rc::clone(rows) as ui::component::SharedRows)
+                    .map(|rows| Rc::clone(rows) as tilo_ui_base::component::SharedRows)
             });
             Reconciler::new(Rc::clone(&events)).with_rows(rows_of)
         };
@@ -701,7 +699,7 @@ impl AppWindow {
     /// by the row it is on, never by the window.
     fn listed_action(
         &self,
-        pressed: &ui::platform::Shortcut,
+        pressed: &tilo_ui_base::platform::Shortcut,
     ) -> Option<tilo_actions::ActionAddress> {
         let shown: Vec<String> = [self.root.as_ref(), self.detail.as_ref()]
             .into_iter()
@@ -741,7 +739,7 @@ impl AppWindow {
             && let Some(field) = self
                 .built
                 .as_ref()
-                .and_then(|built| focus_field(built, &ui::platform::Shortcut::from(key)))
+                .and_then(|built| focus_field(built, &tilo_ui_base::platform::Shortcut::from(key)))
         {
             self.focus_request = Some(field);
             self.flush();
@@ -900,7 +898,7 @@ impl AppWindow {
                 ToUi::Loading => self.show_loading(),
                 ToUi::Activate => self.activations = self.activations.saturating_add(1),
                 ToUi::ShowRun { run } => self.shown_runs.push(run),
-                ToUi::Speak(language) => ui::i18n::I18nManager::set_locale(&language),
+                ToUi::Speak(language) => tilo_ui_base::i18n::I18nManager::set_locale(&language),
                 ToUi::Kept(kept) => self.kept(kept),
                 // The window's page does what the app asked, and its answer goes back as the
                 // engine gave it. An operation the page answers at once is done here; one the
@@ -1187,7 +1185,7 @@ impl AppWindow {
     }
 
     fn show_loading(&mut self) {
-        let loading = ui::widget::EmptyState::new(ui::i18n::widget_text("arriving-loading")).busy();
+        let loading = ui::widget::EmptyState::new(tilo_ui_base::i18n::widget_text("arriving-loading")).busy();
         if let Some(pane) = self.shell_pane() {
             pane.set(Box::new(loading));
         }
@@ -1345,7 +1343,7 @@ impl AppWindow {
         let mut files = Vec::new();
         for path in paths {
             match ui::files::dropped_file(path) {
-                Ok(file) => files.push(ui::component::Value::File(file)),
+                Ok(file) => files.push(tilo_ui_base::component::Value::File(file)),
                 Err(refusal) => {
                     let words = Words::Plain(refusal.words());
                     self.notice(&words, wire::NoticeKind::Error, false);
@@ -1358,7 +1356,7 @@ impl AppWindow {
         self.reconciler.borrow().adapter().fire(
             &key,
             "drop",
-            Some(ui::component::Value::List(files)),
+            Some(tilo_ui_base::component::Value::List(files)),
         );
         true
     }
@@ -1654,7 +1652,7 @@ impl AppWindow {
         let composed = &*moved::relabeled(composed, &relabels);
         let reconciler = Rc::clone(&self.reconciler);
         // What an update builds into a composed window arrives; its first tree shows at rest.
-        let _window = ui::motion::laying_out_window(old.is_some());
+        let _window = tilo_ui_base::motion::laying_out_window(old.is_some());
         let mut rebuilt = false;
         if let Some(pane) = self.shell_pane() {
             let mut reconciler = reconciler.borrow_mut();
@@ -1725,7 +1723,7 @@ impl AppWindow {
         Box::new(
             // Who asks stands over the question, as an app asking for a capability does.
             PermissionPrompt::for_owner(ask.invoker.clone(), question)
-                .with_icon(ui::icons::Icon::Shield)
+                .with_icon(tilo_ui_base::icons::Icon::Shield)
                 .with_choices(vec![
                     (PromptChoice::Allow, t("tilolang-ask-confirm")),
                     (PromptChoice::Always, t("tilolang-ask-always")),
@@ -2139,7 +2137,7 @@ impl AppWindow {
         // when what it shows is text.
         let edits_text = matches!(held, Held::Rich { .. })
             || match self.reconciler.borrow().adapter().merge_of(composed) {
-                Some(merge) => merge == ui::component::Merge::Splice,
+                Some(merge) => merge == tilo_ui_base::component::Merge::Splice,
                 None => match self.bound.borrow().get(composed) {
                     Some(Value::Text(_)) | None => true,
                     Some(Value::Opt(held)) => {
@@ -2543,10 +2541,10 @@ impl AppWindow {
         {
             return None;
         }
-        let pressed = ui::platform::Shortcut::pressed(
+        let pressed = tilo_ui_base::platform::Shortcut::pressed(
             &key.logical_key,
             modifiers,
-            ui::platform::PlatformConventions::default(),
+            tilo_ui_base::platform::PlatformConventions::default(),
         )?;
         self.press_where(&pressed)
     }
@@ -2574,7 +2572,7 @@ impl AppWindow {
         self.moved.now(&self.app_id)
     }
 
-    fn press_where(&self, pressed: &ui::platform::Shortcut) -> Option<Press> {
+    fn press_where(&self, pressed: &tilo_ui_base::platform::Shortcut) -> Option<Press> {
         match self
             .moved
             .press(&self.app_id, pressed, |action| self.declared_keys(action))
@@ -2586,7 +2584,7 @@ impl AppWindow {
     }
 
     /// Where a press of `pressed` leads, as the app declared its keys.
-    fn press_as_declared(&self, pressed: &ui::platform::Shortcut) -> Option<Press> {
+    fn press_as_declared(&self, pressed: &tilo_ui_base::platform::Shortcut) -> Option<Press> {
         let built = self.built.as_ref()?;
         let focused = self.focused_control();
         // A key a text field declares is the field's: where the keyboard is already in it, it
@@ -2612,8 +2610,8 @@ impl AppWindow {
 
     /// The press the field the keyboard is in takes as its own: Enter, which a field of one line
     /// that submits commits what it holds with.
-    fn enter_press(&mut self, ctx: &mut ui::widget::EventCtx<'_>) {
-        let enter = ui::synthetic_input::named_key(ui::winit::keyboard::NamedKey::Enter);
+    fn enter_press(&mut self, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
+        let enter = tilo_ui_base::synthetic_input::named_key(ui::winit::keyboard::NamedKey::Enter);
         self.body.handle_event(&enter, ctx);
     }
 
@@ -2836,7 +2834,7 @@ impl AppWindow {
     /// where a question the call it makes raises stands. A control not laid out says nothing.
     fn note_key_control(&self, key: Option<&str>) {
         if let Some(rect) = key.and_then(|key| rect_of(self.body.as_ref(), key)) {
-            ui::press::note_control(rect);
+            tilo_ui_base::press::note_control(rect);
         }
     }
 
@@ -3036,7 +3034,7 @@ fn say(words: &Words) -> String {
     match words {
         Words::Plain(text) => text.clone(),
         Words::Phrase { id, args } => {
-            let args: Vec<(&str, ui::i18n::ArgValue)> = args
+            let args: Vec<(&str, tilo_ui_base::i18n::ArgValue)> = args
                 .iter()
                 .map(|(name, value)| (name.as_str(), value.as_str().into()))
                 .collect();
@@ -3112,11 +3110,11 @@ pub fn splice_between(before: &str, after: &str) -> (usize, usize, String) {
     (start, delete, insert)
 }
 
-/// The text a bound control holds `value` as: an actor as [`ui::component::actor_text`] spells
+/// The text a bound control holds `value` as: an actor as [`tilo_ui_base::component::actor_text`] spells
 /// it, so the edit it reports reads back as the same actor; anything else as it shows.
 fn bound_text(value: &Value) -> String {
     match value {
-        Value::Actor(who) => ui::component::actor_text(&who.id),
+        Value::Actor(who) => tilo_ui_base::component::actor_text(&who.id),
         Value::Opt(Some(inner)) => bound_text(inner),
         other => crate::reconcile::display(other),
     }
@@ -3124,8 +3122,8 @@ fn bound_text(value: &Value) -> String {
 
 /// Whether a chord as the app published it, or the person moved it, is the press `pressed`, matched
 /// as the toolkit matches every shortcut: one key in one spelling, read through the keyboard in use.
-fn same_press(chord: &str, pressed: &ui::platform::Shortcut) -> bool {
-    ui::platform::Shortcut::from(chord).same_press(pressed)
+fn same_press(chord: &str, pressed: &tilo_ui_base::platform::Shortcut) -> bool {
+    tilo_ui_base::platform::Shortcut::from(chord).same_press(pressed)
 }
 
 /// Show what each bound control under `node` is bound to, as `bound` holds it by key in the
@@ -3198,7 +3196,7 @@ impl AppWindow {
     /// changed. A level's own view is measured every layout; each view call the app declared as
     /// reading its space ([`ToUi::Spaces`]) is measured too.
     ///
-    /// The space is the room layout offers the call ([`ui::widget::offered_room`]), never the size
+    /// The space is the room layout offers the call ([`tilo_ui_base::widget::offered_room`]), never the size
     /// of what it drew: a call packed by its content (a part in a bar) reads the room its parent
     /// has, so drawing less never makes it read less and draw less again.
     fn follow_spaces(&mut self, taffy: &ui::taffy::TaffyTree<()>, body: ui::taffy::NodeId) {
@@ -3249,7 +3247,7 @@ impl AppWindow {
             {
                 return None;
             }
-            let room = ui::widget::offered_room(taffy, node);
+            let room = tilo_ui_base::widget::offered_room(taffy, node);
             Some((f64::from(room.width), f64::from(room.height)))
         };
         let mut told: Vec<(Level, String, (f32, f32, f32))> = Vec::new();
@@ -3443,7 +3441,7 @@ impl AppWindow {
         }
         let key = first_list(self.composed()?)?;
         let rows = self.rows.borrow().get(key).map(Rc::clone)?;
-        let len = ui::component::RowSource::len(&*rows.borrow());
+        let len = tilo_ui_base::component::RowSource::len(&*rows.borrow());
         Some(len)
     }
 
@@ -3538,7 +3536,7 @@ impl ui::widget::WindowHistory for AppWindow {
 /// host, which fullscreens the window.
 fn fullscreen_intent_of(root: &dyn Widget) -> Option<bool> {
     if let Some(provider) =
-        ui::widget::capability::capability::<dyn ui::widget::FullscreenProvider>(root)
+        tilo_ui_base::widget::capability::capability::<dyn tilo_ui_base::widget::FullscreenProvider>(root)
         && let Some(intent) = provider.fullscreen_intent()
     {
         return Some(intent);
@@ -3552,23 +3550,23 @@ fn fullscreen_intent_of(root: &dyn Widget) -> Option<bool> {
     found
 }
 
-impl ui::widget::FullscreenProvider for AppWindow {
+impl tilo_ui_base::widget::FullscreenProvider for AppWindow {
     fn fullscreen_intent(&self) -> Option<bool> {
         fullscreen_intent_of(self.body.as_ref())
     }
 
-    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
+    fn fullscreen_params(&self) -> tilo_ui_base::fullscreen::FullscreenRequest {
         fullscreen_params_of(self.body.as_ref()).unwrap_or_else(|| {
-            ui::fullscreen::FullscreenRequest::mirror(ui::fullscreen::FullscreenTarget::Largest)
+            tilo_ui_base::fullscreen::FullscreenRequest::mirror(tilo_ui_base::fullscreen::FullscreenTarget::Largest)
         })
     }
 }
 
 /// The request the view's fullscreen intent carries, wherever it stands in the tree: which
 /// screen a presentation fills, and whether it is the window or a surface of its own.
-fn fullscreen_params_of(root: &dyn Widget) -> Option<ui::fullscreen::FullscreenRequest> {
+fn fullscreen_params_of(root: &dyn Widget) -> Option<tilo_ui_base::fullscreen::FullscreenRequest> {
     if let Some(provider) =
-        ui::widget::capability::capability::<dyn ui::widget::FullscreenProvider>(root)
+        tilo_ui_base::widget::capability::capability::<dyn tilo_ui_base::widget::FullscreenProvider>(root)
         && provider.fullscreen_intent().is_some()
     {
         return Some(provider.fullscreen_params());
@@ -3663,7 +3661,7 @@ impl ui::floating_surface::FloatingSurfaceProvider for AppWindow {
     }
 
     /// The picture, drawn into the floating window the shell stood for it.
-    fn draw_floating_surface(&mut self, id: &str, ctx: &mut ui::draw::DrawCtx<'_>) -> bool {
+    fn draw_floating_surface(&mut self, id: &str, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) -> bool {
         if id != self.pip_surface_id() {
             return false;
         }
@@ -3709,7 +3707,7 @@ impl AppWindow {
 /// done, and the picture draws in its own window again.
 fn picture_in_picture_returned(root: &mut dyn Widget) {
     if let Some(provider) =
-        ui::widget::capability::capability_mut::<dyn ui::widget::PictureInPictureProvider>(root)
+        tilo_ui_base::widget::capability::capability_mut::<dyn tilo_ui_base::widget::PictureInPictureProvider>(root)
     {
         provider.picture_in_picture_returned();
     }
@@ -3722,7 +3720,7 @@ fn picture_in_picture_returned(root: &mut dyn Widget) {
 /// floated surface mirrors.
 fn picture_in_picture_region(root: &dyn Widget) -> Option<ui::kurbo::Rect> {
     if let Some(provider) =
-        ui::widget::capability::capability::<dyn ui::widget::PictureInPictureProvider>(root)
+        tilo_ui_base::widget::capability::capability::<dyn tilo_ui_base::widget::PictureInPictureProvider>(root)
         && let Some(region) = provider.floating_picture_in_picture_region()
     {
         return Some(region);
@@ -3741,10 +3739,10 @@ fn picture_in_picture_region(root: &dyn Widget) -> Option<ui::kurbo::Rect> {
 fn picture_in_picture_drawn(
     root: &mut dyn Widget,
     target: ui::kurbo::Rect,
-    ctx: &mut ui::draw::DrawCtx<'_>,
+    ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
 ) -> bool {
     if let Some(provider) =
-        ui::widget::capability::capability_mut::<dyn ui::widget::PictureInPictureProvider>(root)
+        tilo_ui_base::widget::capability::capability_mut::<dyn tilo_ui_base::widget::PictureInPictureProvider>(root)
         && let Some(source) = provider.floating_picture_in_picture_region()
         && provider.draw_picture_in_picture(source, target, ctx)
     {
@@ -3762,7 +3760,7 @@ fn picture_in_picture_drawn(
 /// app keeps floating until its own control takes it back.
 fn picture_in_picture_floating(root: &dyn Widget) -> bool {
     if let Some(provider) =
-        ui::widget::capability::capability::<dyn ui::widget::PictureInPictureProvider>(root)
+        tilo_ui_base::widget::capability::capability::<dyn tilo_ui_base::widget::PictureInPictureProvider>(root)
         && provider.picture_in_picture_floating()
     {
         return true;
@@ -3779,7 +3777,7 @@ fn picture_in_picture_floating(root: &dyn Widget) -> bool {
 /// Whether a player in the view has a picture-in-picture request waiting, at any depth.
 fn picture_in_picture_wanted(root: &dyn Widget) -> bool {
     if let Some(provider) =
-        ui::widget::capability::capability::<dyn ui::widget::PictureInPictureProvider>(root)
+        tilo_ui_base::widget::capability::capability::<dyn tilo_ui_base::widget::PictureInPictureProvider>(root)
         && provider.wants_picture_in_picture()
     {
         return true;
@@ -3797,7 +3795,7 @@ fn picture_in_picture_wanted(root: &dyn Widget) -> bool {
 /// the shell's containers, so the window asks down the tree for the one that has a request.
 fn picture_in_picture_of(root: &dyn Widget) -> Option<PictureInPictureAsk> {
     if let Some(provider) =
-        ui::widget::capability::capability::<dyn ui::widget::PictureInPictureProvider>(root)
+        tilo_ui_base::widget::capability::capability::<dyn tilo_ui_base::widget::PictureInPictureProvider>(root)
         && let Some(ask) = provider.take_picture_in_picture()
     {
         return Some(ask);
@@ -3818,14 +3816,14 @@ fn picture_in_picture_of(root: &dyn Widget) -> Option<PictureInPictureAsk> {
 /// the places the session's outputs name.
 fn audio_of(root: &dyn Widget, samples: &mut Vec<i16>) {
     if let Some(provider) =
-        ui::widget::capability::capability::<dyn ui::widget::AudioTapProvider>(root)
+        tilo_ui_base::widget::capability::capability::<dyn tilo_ui_base::widget::AudioTapProvider>(root)
     {
         samples.extend(provider.take_audio());
     }
     root.for_each_child(&mut |child| audio_of(child, samples));
 }
 
-impl ui::widget::Decorator for AppWindow {
+impl tilo_ui_base::widget::Decorator for AppWindow {
     type Inner = dyn Widget;
 
     /// A view that declared `protect capture` is left out of captures and streams wherever the
@@ -3837,13 +3835,13 @@ impl ui::widget::Decorator for AppWindow {
     // The window is the publisher of the app's actions and the one that answers choosing one
     // ([`crate::catalogue`]), and it answers for the views' search where their frame says where it
     // goes; everything else is the body's and forwarded to it.
-    fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
+    fn provide<'a>(&'a self, request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn ui::widget::Queryable>() && self.offers_search() {
             request.provide::<dyn ui::widget::Queryable>(self);
             return;
         }
-        if request.wants::<dyn ui::widget::resources::PublishesResources>() {
-            request.provide::<dyn ui::widget::resources::PublishesResources>(self);
+        if request.wants::<dyn tilo_ui_base::widget::resources::PublishesResources>() {
+            request.provide::<dyn tilo_ui_base::widget::resources::PublishesResources>(self);
             return;
         }
         if request.wants::<dyn ui::host_operation::ResourceOperations>() {
@@ -3860,10 +3858,10 @@ impl ui::widget::Decorator for AppWindow {
         }
         // A player in the view asks the window for fullscreen, however the view's containers
         // nest it: the window answers the host's one question, and the host fullscreens it.
-        if request.wants::<dyn ui::widget::FullscreenProvider>()
+        if request.wants::<dyn tilo_ui_base::widget::FullscreenProvider>()
             && fullscreen_intent_of(self.body.as_ref()).is_some()
         {
-            request.provide::<dyn ui::widget::FullscreenProvider>(self);
+            request.provide::<dyn tilo_ui_base::widget::FullscreenProvider>(self);
             return;
         }
         // Likewise a player's picture-in-picture: the window floats the picture the view asked
@@ -3877,13 +3875,13 @@ impl ui::widget::Decorator for AppWindow {
         self.body.provide(request);
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
+    fn provide_mut<'a>(&'a mut self, request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>) {
         if request.wants::<dyn ui::widget::Queryable>() && self.offers_search() {
             request.provide::<dyn ui::widget::Queryable>(self);
             return;
         }
-        if request.wants::<dyn ui::widget::resources::PublishesResources>() {
-            request.provide::<dyn ui::widget::resources::PublishesResources>(self);
+        if request.wants::<dyn tilo_ui_base::widget::resources::PublishesResources>() {
+            request.provide::<dyn tilo_ui_base::widget::resources::PublishesResources>(self);
             return;
         }
         if request.wants::<dyn ui::host_operation::ResourceOperations>() {
@@ -3894,10 +3892,10 @@ impl ui::widget::Decorator for AppWindow {
             request.provide::<dyn ui::widget::WindowHistory>(self);
             return;
         }
-        if request.wants::<dyn ui::widget::FullscreenProvider>()
+        if request.wants::<dyn tilo_ui_base::widget::FullscreenProvider>()
             && fullscreen_intent_of(self.body.as_ref()).is_some()
         {
-            request.provide::<dyn ui::widget::FullscreenProvider>(self);
+            request.provide::<dyn tilo_ui_base::widget::FullscreenProvider>(self);
             return;
         }
         if request.wants::<dyn ui::floating_surface::FloatingSurfaceProvider>()
@@ -3912,7 +3910,7 @@ impl ui::widget::Decorator for AppWindow {
     fn build_layout(
         &mut self,
         taffy: &mut ui::taffy::TaffyTree<()>,
-        theme: &ui::Theme,
+        theme: &tilo_ui_base::Theme,
         node_map: &mut HashMap<ui::taffy::NodeId, *mut dyn Widget>,
     ) -> ui::taffy::NodeId {
         // A width class a layout found builds the body again, with what its empty states offer
@@ -3930,7 +3928,7 @@ impl ui::widget::Decorator for AppWindow {
 
     // A remount changes the body's tree in place under the node it keeps: a keyed widget it moved
     // or replaced stands at a new node, and the one it left is gone from the tree.
-    fn remount_children(&mut self, remount: &mut ui::widget::Remount<'_>) -> bool {
+    fn remount_children(&mut self, remount: &mut tilo_ui_base::widget::Remount<'_>) -> bool {
         let applied = self.body.remount_children(remount);
         if let Some((body, _)) = &self.laid_nodes {
             let body = *body;
@@ -3982,7 +3980,7 @@ impl ui::widget::Decorator for AppWindow {
     fn handle_event(
         &mut self,
         event: &ui::winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         use ui::winit::event::WindowEvent;
         // A press in the window is the person putting the keyboard where they chose: a keyboard
@@ -4017,7 +4015,7 @@ impl ui::widget::Decorator for AppWindow {
         let modifiers = ctx.modifiers.state();
         self.held = wire::Held {
             shift: modifiers.shift_key(),
-            command: ui::PlatformConventions::default().command_modifier_down(modifiers),
+            command: tilo_ui_base::PlatformConventions::default().command_modifier_down(modifiers),
             alt: modifiers.alt_key(),
         };
         if let WindowEvent::Ime(ime) = event {
@@ -4126,8 +4124,8 @@ impl ui::widget::Decorator for AppWindow {
 
     /// The window's own changes (a shell built, a bar shown) rebuild; what its body describes (a
     /// column's content changed in place) stays described.
-    fn take_structure_change(&mut self) -> ui::widget::StructureChange {
-        let own = ui::widget::StructureChange::of(std::mem::take(&mut self.structure_dirty));
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
+        let own = tilo_ui_base::widget::StructureChange::of(std::mem::take(&mut self.structure_dirty));
         own.join(self.body.take_structure_change())
     }
 }

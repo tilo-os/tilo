@@ -29,7 +29,7 @@ fn centre_notice(session: &mut tilo_session::Session) -> Value {
 
 #[test]
 fn a_notification_handed_to_a_live_agent_becomes_its_task() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let mut session = crate::common::seeded_session(root.path());
 

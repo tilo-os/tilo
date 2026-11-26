@@ -1,5 +1,5 @@
 use super::*;
-use crate::widget::{AppModel, ModelPath};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use automerge::{ReadDoc, transaction::Transactable};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{Action, ActionError, ActionTransport, ExecutionLocus};
@@ -46,10 +46,10 @@ struct Owner {
     sibling: Option<Box<Owner>>,
 }
 impl Widget for Owner {
-    crate::provides!(
+    tilo_ui_base::provides!(
         dyn crate::history_mode::capability::DocumentHistory,
-        dyn crate::widget::document_effects::DocumentEffects,
-        dyn crate::widget::ResourceOperations
+        dyn tilo_ui_base::widget::document_effects::DocumentEffects,
+        dyn tilo_ui_base::widget::ResourceOperations
     );
 
     fn sync(&mut self, _: &AppModel, _: &ModelPath) {}
@@ -61,28 +61,28 @@ impl Widget for Owner {
     }
 }
 
-impl crate::widget::ResourceOperations for Owner {
+impl tilo_ui_base::widget::ResourceOperations for Owner {
     fn start_operation(
         &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
+        op: &tilo_ui_base::widget::ResourceOperation<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
+        if let Some(started) = tilo_ui_base::widget::start_in_children(self, op, doc, path)? {
             return Ok(Some(started));
         }
-        Ok(Some(crate::widget::ResourceOperationStart::Completed(
+        Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))
     }
 }
 
-impl crate::widget::document_effects::DocumentEffects for Owner {
+impl tilo_ui_base::widget::document_effects::DocumentEffects for Owner {
     fn start_document_effects(
         &mut self,
-        operation: &crate::widget::ResourceOperation<'_>,
-        applied: &crate::widget::document_effects::AppliedDocument<'_>,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        operation: &tilo_ui_base::widget::ResourceOperation<'_>,
+        applied: &tilo_ui_base::widget::document_effects::AppliedDocument<'_>,
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
         assert_eq!(operation.kind(), tilo_actions::OperationKind::Document);
         self.effect_replies.push(applied.invocation());
         self.effect_receipts.push((
@@ -98,7 +98,7 @@ impl crate::widget::document_effects::DocumentEffects for Owner {
                 .unwrap()
                 .into(),
         ));
-        Ok(Some(crate::widget::ResourceOperationStart::Accepted))
+        Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -135,7 +135,7 @@ fn execute(
     doc: &mut AutoCommit,
     action: &Write,
     broker: bool,
-) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
     execute_mode(owner, doc, action, broker, false)
 }
 
@@ -145,7 +145,7 @@ fn execute_mode(
     action: &Write,
     broker: bool,
     background: bool,
-) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
     let mut registry = tilo_actions::ActionRegistry::new();
     registry.register::<Write>("ack.write");
     let resource = tilo_actions::ResourceSpec::new("ack.owner", "ack.owner", "Owner");
@@ -251,7 +251,7 @@ tilo_test_env::scenario! {
         };
         assert_eq!(
             execute_mode(&mut owner, &mut doc, &action, true, true).unwrap(),
-            crate::widget::ResourceOperationStart::Accepted
+            tilo_ui_base::widget::ResourceOperationStart::Accepted
         );
         assert_eq!(owner.effect_receipts[0].0, source);
         assert_ne!(owner.effect_replies[0], source);
@@ -275,7 +275,7 @@ tilo_test_env::scenario! {
         };
         assert_eq!(
             execute_mode(&mut owner, &mut doc, &local, false, true).unwrap(),
-            crate::widget::ResourceOperationStart::Accepted
+            tilo_ui_base::widget::ResourceOperationStart::Accepted
         );
         assert_eq!(owner.effect_receipts.len(), 1);
         assert_eq!(owner.effect_receipts[0].1, before);
@@ -283,7 +283,7 @@ tilo_test_env::scenario! {
         assert!(owner.sibling.as_ref().unwrap().effect_receipts.is_empty());
         assert!(matches!(
             execute(&mut owner, &mut doc, &local, false).unwrap(),
-            crate::widget::ResourceOperationStart::Completed(_)
+            tilo_ui_base::widget::ResourceOperationStart::Completed(_)
         ));
         assert_eq!(owner.effect_receipts.len(), 1);
         let submitted = Write {
@@ -294,7 +294,7 @@ tilo_test_env::scenario! {
         };
         assert!(matches!(
             execute_mode(&mut owner, &mut doc, &submitted, false, true).unwrap(),
-            crate::widget::ResourceOperationStart::Completed(_)
+            tilo_ui_base::widget::ResourceOperationStart::Completed(_)
         ));
         assert_eq!(owner.effect_receipts.len(), 1);
         let refused = Write {

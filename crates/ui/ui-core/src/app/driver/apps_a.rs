@@ -5,7 +5,7 @@ use vello::kurbo::Rect;
 use winit::event::{ElementState, MouseButton};
 
 use super::Driver;
-use crate::a11y::AccessNode;
+use tilo_ui_base::a11y::AccessNode;
 use crate::part_row::{PartRow, PartRowHost, RowInput, RowPlace};
 use crate::widget::tabs::TOOLBAR_ROW_HEIGHT;
 use crate::widget::window_toolbar_row::{NOTICE_TARGET_PREFIX, ToolbarRow};
@@ -57,7 +57,7 @@ impl Driver {
     /// What the window's bar, as the shell draws it across a window `width` wide, tells assistive
     /// technology it shows: the app's parts, and the notice where the location stands.
     #[must_use]
-    pub fn window_bar_accessibility(&self, width: f64) -> Vec<crate::a11y::AccessNode> {
+    pub fn window_bar_accessibility(&self, width: f64) -> Vec<tilo_ui_base::a11y::AccessNode> {
         self.notice_bar(width).toolbar_row().accessibility()
     }
 
@@ -90,17 +90,17 @@ impl Driver {
         let host: &mut dyn PartRowHost = &mut *self.app;
         let _ = bar.route(
             host,
-            &crate::synthetic_input::cursor_moved(at.x * scale, at.y * scale),
+            &tilo_ui_base::synthetic_input::cursor_moved(at.x * scale, at.y * scale),
             &input,
         );
         let (pressed, _) = bar.route(
             host,
-            &crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Left),
+            &tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Left),
             &input,
         );
         let _ = bar.route(
             host,
-            &crate::synthetic_input::mouse_input(ElementState::Released, MouseButton::Left),
+            &tilo_ui_base::synthetic_input::mouse_input(ElementState::Released, MouseButton::Left),
             &input,
         );
         drop(running);
@@ -138,7 +138,7 @@ impl Driver {
             .ok_or_else(|| format!("the bar lists no notice button {index} at {width} px"))?
             .clone();
         let running = self.running();
-        let ran = bar.perform(&mut *self.app, &target, &crate::a11y::Action::Activate);
+        let ran = bar.perform(&mut *self.app, &target, &tilo_ui_base::a11y::Action::Activate);
         drop(running);
         self.relayout();
         if !ran {
@@ -168,7 +168,7 @@ impl Driver {
         name: &str,
         bytes: Vec<u8>,
         sha256: &str,
-    ) -> Result<bool, crate::font_catalog::FontCatalogError> {
+    ) -> Result<bool, tilo_ui_base::font_catalog::FontCatalogError> {
         let changed = self
             .app
             .text_renderer
@@ -182,7 +182,7 @@ impl Driver {
     /// The window's bar laid out across a window `width` wide, as the app declares it, without
     /// showing it: where a notice's geometry is read from.
     fn notice_bar(&self, width: f64) -> Box<PartRow> {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let _running = self.running();
         let safe = self.app.layout.safe_area;
         let mut row = Box::new(PartRow::new());

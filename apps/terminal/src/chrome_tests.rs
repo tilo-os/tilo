@@ -4,7 +4,7 @@
 use super::{build_test_widget, send_cursor_move, send_left_press, shell_command};
 use crate::TerminalWidget;
 use automerge::AutoCommit;
-use ui::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 use vello::kurbo::Rect;
 
 tilo_test_env::scenario! {
@@ -12,7 +12,7 @@ tilo_test_env::scenario! {
 
     phase ended_session_banner_reserves_its_own_band_above_the_grid;
     {
-        use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+        use tilo_ui_base::{Theme, presence::PresenceCtx, text_render::TextRenderer};
         use vello::{Scene, kurbo::Affine};
 
         let mut widget = TerminalWidget::spawn_command(shell_command("true", "exit /b 0"))
@@ -48,8 +48,8 @@ tilo_test_env::scenario! {
     phase an_ended_shell_restarts_in_place;
     {
         use crate::resource::TerminalEffect;
-        use ui::widget::Widget;
-        use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+        use tilo_ui_base::widget::Widget;
+        use tilo_ui_base::{Theme, presence::PresenceCtx, text_render::TextRenderer};
         use vello::{Scene, kurbo::Affine};
 
         let mut widget = TerminalWidget::spawn_command(shell_command("echo before", "echo before"))
@@ -80,7 +80,7 @@ tilo_test_env::scenario! {
             .iter()
             .find(|node| node.name.as_deref() == Some("Restart shell"))
             .expect("the ended session offers to restart its shell");
-        assert_eq!(restart.role, ui::a11y::Role::Button);
+        assert_eq!(restart.role, tilo_ui_base::a11y::Role::Button);
         let button = restart.bounds.expect("the button is on screen").to_rect();
         let restart_unavailable = |widget: &TerminalWidget| {
             widget
@@ -118,7 +118,7 @@ tilo_test_env::scenario! {
     {
         let (mut w, _) = build_test_widget();
         w.place_at(Rect::new(0.0, 0.0, 1000.0, 640.0));
-        let pad = f64::from(ui::Theme::default().tokens.spacing.s3);
+        let pad = f64::from(tilo_ui_base::Theme::default().tokens.spacing.s3);
         assert!(
             (w.grid_rect().x1 - (1000.0 - pad)).abs() < 1e-9,
             "the grid reaches the body padding on the right: {:?}",
@@ -128,7 +128,7 @@ tilo_test_env::scenario! {
 
     phase the_history_bar_shows_on_scroll_and_fades_at_rest;
     {
-        use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+        use tilo_ui_base::{Theme, presence::PresenceCtx, text_render::TextRenderer};
         use vello::{Scene, kurbo::Affine};
 
         let draw = |w: &mut TerminalWidget, theme: &Theme| {
@@ -157,7 +157,7 @@ tilo_test_env::scenario! {
         draw(&mut w, &theme);
         assert!(w.scrollbar_opacity() > 0.99, "scrolling back shows the bar");
         assert!(
-            ui::widget::Widget::next_wake_deadline(&w).is_some(),
+            tilo_ui_base::widget::Widget::next_wake_deadline(&w).is_some(),
             "the terminal wakes when the bar starts to fade"
         );
         assert_eq!(w.grid_size(), screen, "the bar resizes nothing");

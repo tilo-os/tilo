@@ -1,11 +1,12 @@
 //! [`ListRow`] as a described component.
 
-use crate::component::{Bound, Component, Described, Event, ResourceId, Value};
-use crate::icons::Icon;
-use crate::widget::{AvatarProps, Element};
+use tilo_ui_base::{component::Bound, component::Component, component::Described, component::Event, component::ResourceId, component::Value};
+use tilo_ui_base::icons::Icon;
+use crate::widget::AvatarProps;
+use tilo_ui_base::widget::Element;
 
 use super::{Leading, ListRow};
-use crate::widget::Tone;
+use tilo_ui_base::widget::Tone;
 
 /// A row of a list: what an item is, in one line, with the start of its content under it
 /// and a quiet fact on its trailing edge.
@@ -74,7 +75,7 @@ pub struct ListRowProps {
     pub check: Event,
     /// The pace the row's own motion plays at: its mark coming and going, and the row
     /// arriving, leaving and changing places in its list.
-    pub motion: Option<crate::motion::Feel>,
+    pub motion: Option<tilo_ui_base::motion::Feel>,
     /// The row stands dense: one quiet line at the caption's size with the small glyph, as
     /// tall as that line and its inset, for a reference under content rather than a list of
     /// items.
@@ -254,20 +255,20 @@ impl ListRow {
         });
         self.selected = selected;
         self.quiet = quiet;
-        self.feel = motion.unwrap_or(crate::motion::Feel::Standard);
+        self.feel = motion.unwrap_or(tilo_ui_base::motion::Feel::Standard);
         self.dense = dense;
         self.check_binding = None;
         self.check_identity = None;
         self.check_action = match check.clone() {
             // The app's own action for what a check is: the box holds it, so pressing the box
             // and an agent's invocation of the action are the one route.
-            Event::Action(binding) => Some(crate::widget::ActionEmitter::new(binding)),
+            Event::Action(binding) => Some(tilo_ui_base::widget::ActionEmitter::new(binding)),
             Event::None | Event::View(_) => None,
         };
         self.leading = if let Some(bound) = checkbox {
             // The box follows the value it is bound to: one set elsewhere (another device, an
             // agent, an undo) shows in the row rather than only in the state behind it.
-            let (checked, binding) = crate::widget::binding::local(&bound.state);
+            let (checked, binding) = tilo_ui_base::widget::binding::local(&bound.state);
             self.check_binding = Some(binding);
             // A box the app gives no action of its own says which field it edits, as every other
             // field-bound control does: an agent or a screen reader naming it reaches the field.

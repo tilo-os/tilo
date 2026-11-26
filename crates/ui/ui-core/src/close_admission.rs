@@ -1,6 +1,7 @@
 //! Shared, device-local close admission. Saving an external document still goes through its declared
 //! action; host chrome owns only the close decision.
-use crate::widget::{Button, Column, ModalDialog, Text, Widget};
+use crate::{widget::Button, widget::Column, widget::ModalDialog, widget::Text};
+use tilo_ui_base::widget::Widget;
 use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionAddress, ActionSpec, OperationKind, ResourceSpec};
 
@@ -64,7 +65,7 @@ pub(crate) enum Leaving {
 pub(crate) struct Confirming {
     pub store: crate::resource::ResourceStore,
     pub id: crate::resource::DocumentId,
-    pub route: crate::collaboration::RouteSpec,
+    pub route: tilo_ui_base::collaboration::RouteSpec,
     pub heads: Vec<automerge::ChangeHash>,
 }
 
@@ -77,7 +78,7 @@ pub(crate) struct Confirming {
 pub(crate) struct Barrier {
     /// The barrier on its way, and what it confirms once answered.
     pub pending: Option<(
-        crate::collaboration::DocumentPublicationReceipt,
+        tilo_ui_base::collaboration::DocumentPublicationReceipt,
         Vec<Confirming>,
     )>,
     /// The heads of each route the workspace confirmed last.
@@ -93,7 +94,7 @@ pub(crate) struct Barrier {
 /// Heads by route.
 #[cfg(feature = "model")]
 pub(crate) type RouteHeads =
-    std::collections::HashMap<crate::collaboration::RouteSpec, Vec<automerge::ChangeHash>>;
+    std::collections::HashMap<tilo_ui_base::collaboration::RouteSpec, Vec<automerge::ChangeHash>>;
 
 /// What a closing window's components still wait on: writes they sent as they checkpointed,
 /// not yet answered, and those the workspace refused.
@@ -195,7 +196,7 @@ impl Admission {
         title: &str,
         detail: &str,
         choices: &[Choice],
-        platform: crate::platform::PlatformConventions,
+        platform: tilo_ui_base::platform::PlatformConventions,
     ) {
         self.session = uuid::Uuid::new_v4();
         self.choices = choices.to_vec();
@@ -224,7 +225,7 @@ impl Admission {
                 ),
             ));
         }
-        let mut dialog = ModalDialog::new(crate::i18n::I18nManager::lookup_plain(title), content)
+        let mut dialog = ModalDialog::new(tilo_ui_base::i18n::I18nManager::lookup_plain(title), content)
             .open(true)
             .dismiss_action(
                 tilo_actions::ActionBinding::unit_for(&resource, Choice::KeepEditing.id())
@@ -236,7 +237,7 @@ impl Admission {
             .iter()
             .map(|action| ActionAddress::new(resource.id.as_str(), &action.id))
             .collect();
-        crate::widget::controls::refresh_control_action_availability(&mut dialog, &allowed);
+        tilo_ui_base::widget::controls::refresh_control_action_availability(&mut dialog, &allowed);
         self.dialog = Some(Box::new(dialog));
     }
     pub fn validate(&self, command: &Command) -> bool {
@@ -292,12 +293,12 @@ fn resource_for(session: uuid::Uuid, choices: &[Choice]) -> ResourceSpec {
     let mut resource = ResourceSpec::new(
         format!("tilo.host.close:{session}"),
         "tilo.host.close",
-        crate::i18n::I18nManager::lookup_plain("close-title"),
+        tilo_ui_base::i18n::I18nManager::lookup_plain("close-title"),
     );
     for choice in choices {
         if let Ok(action) = ActionSpec::operation(
             choice.id(),
-            crate::i18n::I18nManager::lookup_plain(choice.label()),
+            tilo_ui_base::i18n::I18nManager::lookup_plain(choice.label()),
             OperationKind::View,
             OPERATION,
             &Command {
@@ -356,7 +357,7 @@ mod tests {
                 "close-title",
                 "close-unsaved",
                 &[Choice::Discard, Choice::KeepEditing],
-                crate::platform::PlatformConventions::default(),
+                tilo_ui_base::platform::PlatformConventions::default(),
             );
             let stale = Command {
                 session: admission.session,
@@ -368,7 +369,7 @@ mod tests {
                 "close-title",
                 "close-unsaved",
                 &[Choice::Discard, Choice::KeepEditing],
-                crate::platform::PlatformConventions::default(),
+                tilo_ui_base::platform::PlatformConventions::default(),
             );
             assert!(!admission.validate(&stale));
             assert!(tilo_actions::api::resolve(&admission.resources(), &stale_address).is_none());

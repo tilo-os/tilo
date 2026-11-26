@@ -34,11 +34,11 @@ pub(crate) fn relabeled<'a>(
 fn relabel(node: &mut crate::UiNode, relabels: &[(String, Option<String>)]) {
     use crate::Value;
     let now = |keys: &str| -> Option<Option<String>> {
-        let pressed = ui::platform::Shortcut::from(keys);
+        let pressed = tilo_ui_base::platform::Shortcut::from(keys);
         relabels
             .iter()
             .find(|(declared, _)| {
-                ui::platform::Shortcut::from(declared.as_str()).same_press(&pressed)
+                tilo_ui_base::platform::Shortcut::from(declared.as_str()).same_press(&pressed)
             })
             .map(|(_, now)| now.clone())
     };
@@ -86,7 +86,7 @@ pub(crate) enum MovedPress {
     /// No moved command is on it or was on it: the press as it came.
     Unmoved,
     /// The new keys of a moved command: the press the app declared the command on.
-    To(ui::platform::Shortcut),
+    To(tilo_ui_base::platform::Shortcut),
     /// Keys the app gave a command the person moved off them: no press of the app's.
     Off,
 }
@@ -135,21 +135,21 @@ impl MovedCommands {
     pub(crate) fn press(
         &self,
         app: &str,
-        pressed: &ui::platform::Shortcut,
+        pressed: &tilo_ui_base::platform::Shortcut,
         keys_of: impl Fn(&str) -> Option<String>,
     ) -> MovedPress {
         let moved = self.of(app);
         if moved.is_empty() {
             return MovedPress::Unmoved;
         }
-        let on = |chord: &str| ui::platform::Shortcut::from(chord).same_press(pressed);
+        let on = |chord: &str| tilo_ui_base::platform::Shortcut::from(chord).same_press(pressed);
         // The new keys first: a command moved onto keys another moved command left is run there.
         if let Some(original) = moved
             .iter()
             .filter(|(_, chord)| chord.as_deref().is_some_and(on))
             .find_map(|(action, _)| keys_of(action))
         {
-            return MovedPress::To(ui::platform::Shortcut::from(original.as_str()));
+            return MovedPress::To(tilo_ui_base::platform::Shortcut::from(original.as_str()));
         }
         if moved
             .iter()

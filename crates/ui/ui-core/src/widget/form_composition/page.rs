@@ -8,7 +8,7 @@ use super::{
     PageLayout, Parts, Point, Rect, Scrollable, TaffyTree, Text, TextRenderer, TextRole, Theme,
     Widget, column_style, fr, length, minmax, percent, retained_parts, spacing,
 };
-use crate::tokens::Rhythm;
+use tilo_ui_base::tokens::Rhythm;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Lead {
@@ -124,14 +124,14 @@ impl Widget for PageBody {
             .collect();
         FormSection::share_label_column(&mut parts, tree, text);
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.parts.draw(&mut crate::draw::DrawCtx::new(
+        self.parts.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -184,7 +184,7 @@ impl Widget for PinnedActions {
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,
-        _text: &mut crate::text_render::TextRenderer,
+        _text: &mut tilo_ui_base::text_render::TextRenderer,
     ) -> bool {
         let right = length(self.gutter + self.gutter_probe.get());
         match tree.style(node) {
@@ -196,7 +196,7 @@ impl Widget for PinnedActions {
             _ => false,
         }
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -204,7 +204,7 @@ impl Widget for PinnedActions {
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let rect = self.parts.rect;
-        crate::surface::separator(
+        tilo_ui_base::surface::separator(
             scene,
             transform,
             rect.x0,
@@ -213,7 +213,7 @@ impl Widget for PinnedActions {
             0.0,
             theme.tokens.colors.surfaces.content,
         );
-        self.parts.draw(&mut crate::draw::DrawCtx::new(
+        self.parts.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -581,12 +581,12 @@ macro_rules! framed_page {
                 map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
                 node
             }
-            fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+            fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text, theme, mut env) = ctx.parts();
                 self.frame
                     .parts
-                    .draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+                    .draw(&mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
             }
         }
     };

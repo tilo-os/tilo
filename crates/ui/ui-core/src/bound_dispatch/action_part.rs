@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use automerge::AutoCommit;
 
 use super::PendingResourceAction;
-use crate::permissions::MemberId;
+use tilo_ui_base::permissions::MemberId;
 
 /// The toolkit's part of a resource's action state ([`crate::resource::ResourceActions::toolkit`]): the
 /// action open on the resource, the undo status each window was answered, and the invocation
@@ -15,7 +15,7 @@ use crate::permissions::MemberId;
 pub(crate) struct ResourceActionState {
     pub(super) pending: Option<PendingResourceAction>,
     pub(super) statuses:
-        HashMap<(MemberId, crate::application::InstanceId), crate::widget::undo_access::UndoStatus>,
+        HashMap<(MemberId, crate::application::InstanceId), tilo_ui_base::widget::undo_access::UndoStatus>,
     /// The status last answered per author's window, with where the document, the history and the
     /// pending action stood: a frame asks every time, and it changes only when one of them moves.
     pub(super) answered: HashMap<
@@ -24,7 +24,7 @@ pub(crate) struct ResourceActionState {
             crate::state::HistoryMoment,
             bool,
             u64,
-            crate::widget::undo_access::UndoStatus,
+            tilo_ui_base::widget::undo_access::UndoStatus,
         ),
     >,
 }
@@ -35,7 +35,7 @@ impl ResourceActionState {
     ) -> Vec<(
         tilo_actions::MemberId,
         crate::application::InstanceId,
-        crate::widget::undo_access::UndoStatus,
+        tilo_ui_base::widget::undo_access::UndoStatus,
     )> {
         let mut statuses = self
             .statuses

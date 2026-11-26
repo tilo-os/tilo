@@ -5,7 +5,7 @@
 //! role.
 
 use super::*;
-use crate::Theme;
+use tilo_ui_base::Theme;
 use crate::widget::primitives::SurfaceLevel;
 
 fn theme() -> Theme {
@@ -38,20 +38,20 @@ fn words(body: &str) -> Element {
 }
 
 fn lay_out(map: &mut Map) {
-    let mut text = crate::font_catalog::fixture_renderer();
-    crate::widget::layout::lay_out_detached(map, VIEWPORT, &theme(), &mut text)
+    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+    tilo_ui_base::widget::layout::lay_out_detached(map, VIEWPORT, &theme(), &mut text)
         .expect("the map lays out");
 }
 
 fn draw(map: &mut Map) {
     let mut scene = Scene::new();
-    let mut text = crate::font_catalog::fixture_renderer();
-    map.draw(&mut crate::draw::DrawCtx::new(
+    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+    map.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut text,
         &theme(),
-        crate::presence::PresenceCtx::default().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::default().draw_env(),
     ));
 }
 
@@ -77,7 +77,7 @@ fn in_view(map: &Map, area: Rect) -> bool {
 /// and words, and never zooms; and the card never grows past what the viewport shows.
 #[test]
 fn an_answer_asked_at_the_edge_is_panned_into_view_whole() {
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     let old = pointed((560.0, 420.0));
     let reply = "Nine tasks are due this week, and each is listed here. ".repeat(30);
     let mut map = answer("turn", (560.0, 420.0), (520.0, 2000.0), &reply);
@@ -106,7 +106,7 @@ fn an_answer_asked_at_the_edge_is_panned_into_view_whole() {
 /// all of it in view, until the person moves the lens themselves.
 #[test]
 fn a_growing_answer_is_kept_in_view_until_the_person_pans() {
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     let old = pointed((100.0, 380.0));
     let mut map = answer("turn", (100.0, 380.0), (400.0, 480.0), "Thinking…");
     drop(old);
@@ -147,12 +147,12 @@ fn a_growing_answer_is_kept_in_view_until_the_person_pans() {
 /// the camera shows its top, and does not go to the foot of a room it will not fill.
 #[test]
 fn an_answer_that_said_no_height_yet_is_not_followed_to_its_foot() {
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     let old = pointed((100.0, 500.0));
     let mut map = Map::new().pin(
         "turn",
         grown(100.0, 500.0, 400.0, 480.0),
-        Box::new(crate::widget::Spacer::new()),
+        Box::new(tilo_ui_base::widget::Spacer::new()),
     );
     drop(old);
     lay_out(&mut map);
@@ -168,7 +168,7 @@ fn an_answer_that_said_no_height_yet_is_not_followed_to_its_foot() {
 /// not chase it and push the turn out. One it can show with the turn still in view, it shows.
 #[test]
 fn the_turn_wins_over_a_place_the_agent_puts_off_screen() {
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     let old = pointed((100.0, 100.0));
     let mut turn = answer("turn", (100.0, 100.0), (400.0, 480.0), "Two tasks are due.");
     drop(old);
@@ -268,7 +268,7 @@ fn list(rows: u64) -> Element {
 /// takes it, however many rows it holds.
 #[test]
 fn a_found_list_hugs_its_rows_up_to_its_room() {
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     let mut short = Map::new().pin("inbox", grown(0.0, 100.0, 400.0, 480.0), list(6));
     lay_out(&mut short);
     let inbox = short.laid.borrow()["inbox"];
@@ -304,9 +304,9 @@ fn a_found_list_hugs_its_rows_up_to_its_room() {
 /// The same holds through a place's own surface (`ui.Place`), as the canvas stands a found list.
 #[test]
 fn a_found_list_in_its_place_hugs_its_rows() {
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     let place: Element = Box::new(
-        <crate::widget::canvas_place::CanvasPlace as crate::component::Described>::from_props(
+        <crate::widget::canvas_place::CanvasPlace as tilo_ui_base::component::Described>::from_props(
             "inbox",
             crate::widget::canvas_place::PlaceProps {
                 name: Some("All inboxes".into()),
@@ -337,7 +337,7 @@ fn a_found_list_in_its_place_hugs_its_rows() {
 /// running past the edge. It only pans.
 #[test]
 fn a_turn_and_the_place_it_opened_are_framed_together() {
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     let old = pointed((40.0, 480.0));
     let mut turn = answer(
         "turn",
@@ -392,7 +392,7 @@ fn a_turn_and_the_place_it_opened_are_framed_together() {
 /// moves as little as it can.
 #[test]
 fn a_short_pair_asked_at_the_foot_is_panned_the_least() {
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     let old = pointed((40.0, 520.0));
     let both = Map::new()
         .pin(
@@ -431,7 +431,7 @@ fn a_short_pair_asked_at_the_foot_is_panned_the_least() {
 /// edge: the camera is the person's until something new is out of sight (`canvas.md` §7).
 #[test]
 fn an_answer_in_view_moves_nothing() {
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     let old = pointed((300.0, 100.0));
     let resting = old.camera();
     // Its trailing edge 8 pixels inside the viewport's, nearer than the margin a pan keeps.
@@ -453,7 +453,7 @@ fn an_answer_in_view_moves_nothing() {
 /// running past the edge: the pointing itself never moves the camera, only the answer it brings.
 #[test]
 fn the_caret_never_moves_the_camera() {
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     let old = pointed((700.0, 560.0));
     let resting = old.camera();
     let caret = PinPlace {
@@ -483,10 +483,10 @@ fn the_caret_never_moves_the_camera() {
 /// not only in the copy, or the line turns open over nothing.
 #[test]
 fn unfolding_a_hugging_answers_steps_grows_it_by_them() {
-    let _frame = crate::motion::pin_frame();
-    let _settled = crate::motion::testing::settled();
+    let _frame = tilo_ui_base::motion::pin_frame();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // The row as a view describes it (Chat's turn): its steps are its body's views.
-    let row = <crate::widget::DisclosureRow as crate::component::Described>::from_props(
+    let row = <crate::widget::DisclosureRow as tilo_ui_base::component::Described>::from_props(
         "steps",
         crate::widget::DisclosureRowProps {
             title: "Looked up Notes and 5 more steps".into(),
@@ -502,14 +502,14 @@ fn unfolding_a_hugging_answers_steps_grows_it_by_them() {
         },
     );
     let card = crate::widget::arrange::Stack::stack()
-        .gap(crate::tokens::Rhythm::Related)
+        .gap(tilo_ui_base::tokens::Rhythm::Related)
         .push(Box::new(crate::widget::Text::new("Two notes changed.")))
         .push(Box::new(row));
     let body: Element =
         Box::new(crate::widget::Scrollable::new_vertical().with_child(Box::new(card)));
     let band = crate::widget::canvas_place::PLACE_BAND;
     let place: Element = Box::new(
-        <crate::widget::canvas_place::CanvasPlace as crate::component::Described>::from_props(
+        <crate::widget::canvas_place::CanvasPlace as tilo_ui_base::component::Described>::from_props(
             "turn",
             crate::widget::canvas_place::PlaceProps {
                 name: Some("what changed?".into()),
@@ -541,12 +541,12 @@ fn unfolding_a_hugging_answers_steps_grows_it_by_them() {
     let folded = laid(&mut host);
     // The person presses the steps' line, the card's last, and the frames the press asks for run
     // as the live window runs them: laid out where something moved, never built again whole.
-    host.send(&crate::synthetic_input::cursor_moved(
+    host.send(&tilo_ui_base::synthetic_input::cursor_moved(
         folded.x0 + 30.0,
         folded.y1 - 10.0,
     ));
     for state in [ElementState::Pressed, ElementState::Released] {
-        host.send(&crate::synthetic_input::mouse_input(
+        host.send(&tilo_ui_base::synthetic_input::mouse_input(
             state,
             winit::event::MouseButton::Left,
         ));
@@ -572,7 +572,7 @@ fn unfolding_a_hugging_answers_steps_grows_it_by_them() {
 #[test]
 fn a_banner_added_to_a_hugging_answer_stands_without_the_pointer() {
     let card = crate::widget::arrange::Stack::stack()
-        .gap(crate::tokens::Rhythm::Related)
+        .gap(tilo_ui_base::tokens::Rhythm::Related)
         .push(Box::new(crate::widget::Text::new(
             "The model's answer could not be used.",
         )));

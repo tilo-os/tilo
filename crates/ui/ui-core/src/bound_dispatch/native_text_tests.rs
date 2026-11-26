@@ -32,20 +32,20 @@ impl Action for TextEdit {
 
 #[derive(Default)]
 struct TextOwner {
-    emitter: Option<crate::widget::ActionEmitter<String>>,
+    emitter: Option<tilo_ui_base::widget::ActionEmitter<String>>,
 }
 impl Widget for TextOwner {
-    crate::provides!(
+    tilo_ui_base::provides!(
         dyn crate::history_mode::capability::DocumentHistory,
-        dyn crate::widget::controls::ActionControls
+        dyn tilo_ui_base::widget::controls::ActionControls
     );
     crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "Text owner");
 }
-impl crate::widget::controls::ActionControls for TextOwner {
+impl tilo_ui_base::widget::controls::ActionControls for TextOwner {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.emitter
             .as_mut()
-            .and_then(crate::widget::ActionEmitter::take)
+            .and_then(tilo_ui_base::widget::ActionEmitter::take)
     }
 }
 impl crate::history_mode::capability::DocumentHistory for TextOwner {
@@ -147,7 +147,7 @@ fn value(records: &ResourceStore, checkout: &DocumentCheckout, field: &str) -> S
 fn restore(
     binding: &CallbackBinding,
     outer: &mut AutoCommit,
-    request: crate::widget::undo_access::UndoRequest,
+    request: tilo_ui_base::widget::undo_access::UndoRequest,
 ) -> crate::state::UndoEntry {
     binding
         .history_request(outer, request)
@@ -183,19 +183,19 @@ tilo_test_env::scenario! {
             5,
             "coalescing history does not combine canonical envelopes"
         );
-        restore(&binding, &mut outer, crate::widget::undo_access::UndoRequest::Undo);
+        restore(&binding, &mut outer, tilo_ui_base::widget::undo_access::UndoRequest::Undo);
         assert_eq!(value(&records, &checkout, "second"), "");
         assert_eq!(value(&records, &checkout, "first"), "abc");
-        let entry = restore(&binding, &mut outer, crate::widget::undo_access::UndoRequest::Undo);
+        let entry = restore(&binding, &mut outer, tilo_ui_base::widget::undo_access::UndoRequest::Undo);
         let step = entry.step.unwrap();
         let inverse: TextEdit = serde_json::from_slice(&step.compensation.unwrap().payload).unwrap();
         let redo: TextEdit = serde_json::from_slice(&step.action.unwrap().payload).unwrap();
         assert_eq!(inverse.value, "ab");
         assert_eq!(redo.value, "abc");
         assert_eq!(value(&records, &checkout, "first"), "");
-        restore(&binding, &mut outer, crate::widget::undo_access::UndoRequest::Redo);
+        restore(&binding, &mut outer, tilo_ui_base::widget::undo_access::UndoRequest::Redo);
         assert_eq!(value(&records, &checkout, "first"), "abc");
-        restore(&binding, &mut outer, crate::widget::undo_access::UndoRequest::Redo);
+        restore(&binding, &mut outer, tilo_ui_base::widget::undo_access::UndoRequest::Redo);
         assert_eq!(value(&records, &checkout, "second"), "xy");
     }
 
@@ -221,22 +221,22 @@ tilo_test_env::scenario! {
             }
             edit(&two, &mut outer, "other", "foreign", true, &mut wire);
             edit(&one, &mut outer, "first", "abc", true, &mut wire);
-            restore(&one, &mut outer, crate::widget::undo_access::UndoRequest::Undo);
+            restore(&one, &mut outer, tilo_ui_base::widget::undo_access::UndoRequest::Undo);
             assert_eq!(value(&records, &checkout, "first"), "ab");
             assert_eq!(value(&records, &checkout, "other"), "foreign");
-            restore(&one, &mut outer, crate::widget::undo_access::UndoRequest::Undo);
+            restore(&one, &mut outer, tilo_ui_base::widget::undo_access::UndoRequest::Undo);
             assert_eq!(value(&records, &checkout, "first"), "");
             assert_eq!(value(&records, &checkout, "other"), "foreign");
             for text in ["1", "12", "123"] {
                 edit(&one, &mut outer, "first", text, false, &mut wire);
             }
-            restore(&one, &mut outer, crate::widget::undo_access::UndoRequest::Undo);
+            restore(&one, &mut outer, tilo_ui_base::widget::undo_access::UndoRequest::Undo);
             assert_eq!(
                 value(&records, &checkout, "first"),
                 "12",
                 "an agent/programmatic call is one step"
             );
-            restore(&one, &mut outer, crate::widget::undo_access::UndoRequest::Undo);
+            restore(&one, &mut outer, tilo_ui_base::widget::undo_access::UndoRequest::Undo);
             assert_eq!(value(&records, &checkout, "first"), "1");
         }
     }
@@ -253,10 +253,10 @@ tilo_test_env::scenario! {
         records.create_resource(&checkout).unwrap();
         let (binding, _scope, _owner) =
             super::author_writer_tests::mount(&records, &checkout, "You", 1, true);
-        let domain = crate::ControlDomain::new();
-        domain.set_owner(crate::control_domain::ControlOwner::Component(std::rc::Rc::new(binding)));
+        let domain = tilo_ui_base::ControlDomain::new();
+        domain.set_owner(tilo_ui_base::control_domain::ControlOwner::Component(std::rc::Rc::new(binding)));
         let mut emitter =
-            crate::widget::ActionEmitter::new_in(crate::widget::test_string_action_binding(), &domain);
+            tilo_ui_base::widget::ActionEmitter::new_in(tilo_ui_base::widget::test_string_action_binding(), &domain);
         with_physical_text(true, || emitter.emit("same".into())).unwrap();
         emitter.emit("same".into()).unwrap();
         let queued = domain.drain_partitioned().components;
@@ -276,7 +276,7 @@ tilo_test_env::scenario! {
     phase physical_text_provenance_survives_initial_ownership_transfer_and_legacy_draining;
     {
         let mut initial =
-            crate::widget::ActionEmitter::new(crate::widget::test_string_action_binding());
+            tilo_ui_base::widget::ActionEmitter::new(tilo_ui_base::widget::test_string_action_binding());
         with_physical_text(true, || initial.emit("same".into())).unwrap();
         initial.emit("same".into()).unwrap();
         let records = crate::resource::ResourceOwners::in_memory()
@@ -289,10 +289,10 @@ tilo_test_env::scenario! {
         records.create_resource(&checkout).unwrap();
         let (binding, _scope, _owner) =
             super::author_writer_tests::mount(&records, &checkout, "You", 1, true);
-        let domain = crate::ControlDomain::new();
-        domain.set_owner(crate::control_domain::ControlOwner::Component(std::rc::Rc::new(binding)));
+        let domain = tilo_ui_base::ControlDomain::new();
+        domain.set_owner(tilo_ui_base::control_domain::ControlOwner::Component(std::rc::Rc::new(binding)));
         initial
-            .attach(&domain, crate::control_domain::DomainAttachment::Initial)
+            .attach(&domain, tilo_ui_base::control_domain::DomainAttachment::Initial)
             .unwrap();
         let mut queued = domain.drain_partitioned().components.into_iter();
         let (physical, first) = queued.next().unwrap();
@@ -308,21 +308,21 @@ tilo_test_env::scenario! {
             initial.take().is_none(),
             "registered holders cannot leak descriptors through legacy taking"
         );
-        let mut legacy = crate::widget::ActionEmitter::new(crate::widget::test_string_action_binding());
+        let mut legacy = tilo_ui_base::widget::ActionEmitter::new(tilo_ui_base::widget::test_string_action_binding());
         with_physical_text(true, || legacy.emit("same".into())).unwrap();
         legacy.emit("same".into()).unwrap();
         let mut parent = crate::widget::Column::new().push(Box::new(TextOwner {
             emitter: Some(legacy),
         }));
         let (physical, marked, _) = capture_physical_drain(|| {
-            crate::widget::controls::take_attributed_control_invocation(&mut parent)
+            tilo_ui_base::widget::controls::take_attributed_control_invocation(&mut parent)
         });
         let (programmatic, unmarked, _) = capture_physical_drain(|| {
-            crate::widget::controls::take_attributed_control_invocation(&mut parent)
+            tilo_ui_base::widget::controls::take_attributed_control_invocation(&mut parent)
         });
         assert_eq!(marked, Input::Continuing);
         assert_eq!(unmarked, Input::Discrete);
         assert_eq!(physical, programmatic);
-        assert_eq!(crate::widget::input_provenance::drained_input(), Input::Discrete);
+        assert_eq!(tilo_ui_base::widget::input_provenance::drained_input(), Input::Discrete);
     }
 }

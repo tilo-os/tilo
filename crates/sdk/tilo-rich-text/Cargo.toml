@@ -12,6 +12,7 @@ description = "The SDK rich-text editor: the toolkit's block editor bound to til
 framework = true
 
 [dependencies]
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # The framework the editor takes part in (surfaces, dispatcher, live state)
 # and the toolkit's block editor it presents the document with.
 ui = { package = "tilo-app", path = "../tilo-app", default-features = false }
@@ -28,6 +29,7 @@ serde.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 ui = { package = "tilo-app", path = "../tilo-app", features = ["test-support"] }
 # The headless test host the tests open the app in, as a person's device hosts it.
 tilo-app-test-host = { path = "../tilo-app-test-host" }

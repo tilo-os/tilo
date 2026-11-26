@@ -5,7 +5,7 @@ use super::super::*;
 use super::draw_to_populate;
 use super::drive;
 use super::mods;
-use crate::synthetic_input::{char_key, cursor_moved, mouse_press, mouse_release, named_key};
+use tilo_ui_base::{synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release, synthetic_input::named_key};
 use crate::testing::Dispatch;
 use automerge::ObjType;
 use automerge::transaction::Transactable as _;
@@ -17,9 +17,9 @@ tilo_test_env::scenario! {
 
     phase accessibility_exposes_role_name_value_and_grapheme_actions;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
-            use crate::a11y::{AccessibleTextSelection, Role};
+            use tilo_ui_base::{a11y::AccessibleTextSelection, a11y::Role};
             let mut ti = TextInput::new(Vec::new());
             ti.text = "hello".to_string();
             ti.core.set_selection(1, 4);
@@ -48,7 +48,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            use crate::a11y::Action;
+            use tilo_ui_base::a11y::Action;
 
             let family = "👩‍👩‍👧‍👦";
             let original = format!("a{family}b");
@@ -68,7 +68,7 @@ tilo_test_env::scenario! {
                     focus: 2,
                 },
                 &[],
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(
@@ -81,7 +81,7 @@ tilo_test_env::scenario! {
                 &mut ti,
                 &Action::SetValue("new value".into()),
                 &[],
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(ti.value(), "new value");
@@ -102,7 +102,7 @@ tilo_test_env::scenario! {
         // A field bound to a document's text reads it, never writes it, and reports the edit the
         // app is to make.
         {
-            use crate::a11y::Action;
+            use tilo_ui_base::a11y::Action;
             let mut document = AutoCommit::new();
             let title = document
                 .put_object(&automerge::ROOT, "title", ObjType::Text)
@@ -124,7 +124,7 @@ tilo_test_env::scenario! {
                     focus: 0,
                 },
                 &[],
-                &mut crate::widget::Edits::lend(&mut document),
+                &mut tilo_ui_base::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             assert_eq!(input.value(), "Draft", "moving the caret changes no text");
@@ -133,7 +133,7 @@ tilo_test_env::scenario! {
                 &mut input,
                 &Action::SetValue("Project Atlas".into()),
                 &[],
-                &mut crate::widget::Edits::lend(&mut document),
+                &mut tilo_ui_base::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             assert_eq!(
@@ -153,7 +153,7 @@ tilo_test_env::scenario! {
 
     phase secret_input_masks_rendering_and_accessibility_but_keeps_the_value;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let mut ti = TextInput::local().with_secret(true);
 
@@ -236,7 +236,7 @@ tilo_test_env::scenario! {
             assert_eq!(node.text_selection, None, "{kind:?}: no selection offsets");
             assert_eq!(
                 Widget::ime_content(&ti),
-                Some(crate::ime::InputContent::PASSWORD),
+                Some(tilo_ui_base::ime::InputContent::PASSWORD),
                 "{kind:?}: no input-method suggestions learn the key"
             );
         }
@@ -287,9 +287,9 @@ tilo_test_env::scenario! {
 
     phase secret_field_carries_a_show_hide_control_off_the_tab_order;
     {
-        use crate::a11y::{Action, Role};
+        use tilo_ui_base::{a11y::Action, a11y::Role};
 
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let mut ti = TextInput::local()
                 .with_secret(true)
@@ -338,7 +338,7 @@ tilo_test_env::scenario! {
                 .perform_action(
                     &Action::Activate,
                     &[],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 );
             assert!(activated, "Enter/Space and AT activation toggle");
@@ -365,7 +365,7 @@ tilo_test_env::scenario! {
                 .perform_action(
                     &Action::Activate,
                     &[],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 );
             assert!(!ti.is_revealed(), "a second activation hides it again");
@@ -430,14 +430,14 @@ tilo_test_env::scenario! {
 
 #[test]
 fn a_secret_never_reaches_the_clipboard() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let services = crate::process::ProcessServices::null();
     let _host = crate::process::enter(&services);
-    let clipboard = || crate::text_selection::clipboard_paste();
+    let clipboard = || tilo_ui_base::text_selection::clipboard_paste();
 
     for revealed in [false, true] {
         {
-            crate::text_selection::clipboard_copy("before");
+            tilo_ui_base::text_selection::clipboard_copy("before");
             let mut ti = TextInput::local()
                 .with_secret(true)
                 .with_initial_value("s3cr3t");
@@ -466,7 +466,7 @@ fn a_secret_never_reaches_the_clipboard() {
         }
 
         {
-            crate::text_selection::clipboard_copy("pasted");
+            tilo_ui_base::text_selection::clipboard_copy("pasted");
             let mut ti = TextInput::local()
                 .with_secret(true)
                 .with_initial_value("s3cr3t")
@@ -486,7 +486,7 @@ fn a_secret_never_reaches_the_clipboard() {
         }
 
         {
-            crate::text_selection::clipboard_copy("hunter2");
+            tilo_ui_base::text_selection::clipboard_copy("hunter2");
             let mut ti = TextInput::local().with_secret(true);
             if revealed {
                 ti.toggle_reveal();

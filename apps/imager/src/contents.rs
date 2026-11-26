@@ -1,6 +1,6 @@
 //! What a drive contains, in words, for its row.
 
-use ui::i18n::ArgValue;
+use tilo_ui_base::i18n::ArgValue;
 
 use crate::resource::CATALOG;
 
@@ -12,7 +12,7 @@ pub(crate) fn drive_contents(count: usize, names: &[&str]) -> String {
     if names.is_empty() {
         return CATALOG.t_args("imager-drive-partitions", &[("count", count)]);
     }
-    let joined = ui::format::list(
+    let joined = tilo_ui_base::format::list(
         &names
             .iter()
             .map(|name| (*name).to_owned())
@@ -26,7 +26,7 @@ pub(crate) fn drive_contents(count: usize, names: &[&str]) -> String {
 
 #[cfg(feature = "destination")]
 pub(crate) fn drive_line(first: &str, count: usize, names: &[&str]) -> String {
-    ui::format::list(&[first.to_owned(), drive_contents(count, names)])
+    tilo_ui_base::format::list(&[first.to_owned(), drive_contents(count, names)])
 }
 
 #[cfg(test)]

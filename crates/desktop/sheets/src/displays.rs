@@ -23,9 +23,8 @@ use std::rc::Rc;
 use ui::advanced::WindowEvent;
 use ui::framework::{Dispatcher, Effected, ResourceApp, ViewCx};
 use ui::prelude::*;
-use ui::widget::{
-    Button, ButtonRole, Column, Element, ListRow, ModalDialog, Row, Text, TextInput, Widget,
-};
+use ui::{widget::Button, widget::ButtonRole, widget::Column, widget::ListRow, widget::ModalDialog, widget::Row, widget::Text, widget::TextInput};
+use tilo_ui_base::{widget::Element, widget::Widget};
 
 use crate::presentation::{Presentation, presented};
 use crate::{caption, t, t_args};
@@ -175,12 +174,12 @@ impl Layout {
         t(&format!("display-mode-{}-detail", self.key()))
     }
 
-    fn icon(self) -> ui::icons::Icon {
+    fn icon(self) -> tilo_ui_base::icons::Icon {
         match self {
-            Self::Extend => ui::icons::Icon::Columns2,
-            Self::Mirror => ui::icons::Icon::Copy,
-            Self::BuiltinOnly => ui::icons::Icon::PanelLeft,
-            Self::ExternalOnly => ui::icons::Icon::PanelRight,
+            Self::Extend => tilo_ui_base::icons::Icon::Columns2,
+            Self::Mirror => tilo_ui_base::icons::Icon::Copy,
+            Self::BuiltinOnly => tilo_ui_base::icons::Icon::PanelLeft,
+            Self::ExternalOnly => tilo_ui_base::icons::Icon::PanelRight,
         }
     }
 }
@@ -477,7 +476,7 @@ impl ResourceApp for DisplaysApp {
     // Nothing is kept: there is no past to look back on.
     const DOCUMENT_HISTORY: bool = false;
 
-    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+    fn catalog() -> Option<&'static tilo_ui_base::i18n::EmbeddedCatalog> {
         Some(&crate::CATALOG)
     }
 
@@ -708,7 +707,7 @@ fn activate(sheet: &Sheet, spot: &Spot, dispatch: &Dispatcher<DisplaySheet>) -> 
 fn sheet(shown: &Shown, parts: &Parts) -> Element {
     let sheet = &shown.sheet;
     let spot = shown.spot();
-    let gap = ui::tokens::Spacing::BASE.s3;
+    let gap = tilo_ui_base::tokens::Spacing::BASE.s3;
     let mut body = Column::new().with_gap(gap);
     body = body.push(layouts(sheet, spot.as_ref(), parts));
     if let Some(band) = band(sheet, spot.as_ref(), parts) {
@@ -725,7 +724,7 @@ fn sheet(shown: &Shown, parts: &Parts) -> Element {
         ModalDialog::new(t("display-sheet-title"), body)
             .with_test_id("display-sheet")
             .with_description(sheet.description())
-            .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
+            .with_max_width(f64::from(tilo_ui_base::tokens::Metrics::BASE.panel_width_sheet))
             .on_dismiss(move || close.send(&DisplaysEffect::Close)),
     ))
 }
@@ -743,7 +742,7 @@ fn layouts(sheet: &Sheet, spot: Option<&Spot>, parts: &Parts) -> Element {
                 )),
         );
     }
-    let mut column = Column::new().with_gap(ui::tokens::Spacing::BASE.s1);
+    let mut column = Column::new().with_gap(tilo_ui_base::tokens::Spacing::BASE.s1);
     for row in &sheet.layouts {
         let here = Spot::Layout(row.layout);
         let press = parts.clone();
@@ -772,7 +771,7 @@ fn band(sheet: &Sheet, spot: Option<&Spot>, parts: &Parts) -> Option<Element> {
         Band::Saving => Some(caption(&t("display-sheet-saving-layout"))),
         Band::Refused(reason) => Some(caption(&t_args(
             "display-rejected",
-            &[("reason", ui::i18n::ArgValue::Text(reason.clone()))],
+            &[("reason", tilo_ui_base::i18n::ArgValue::Text(reason.clone()))],
         ))),
         Band::Confirm { status, answering } => {
             let button = |here: Spot, id: &str, label: &str| {
@@ -793,14 +792,14 @@ fn band(sheet: &Sheet, spot: Option<&Spot>, parts: &Parts) -> Option<Element> {
             );
             Some(Box::new(
                 Column::new()
-                    .with_gap(ui::tokens::Spacing::BASE.s2)
+                    .with_gap(tilo_ui_base::tokens::Spacing::BASE.s2)
                     .push(Box::new(
                         Text::new(&t("display-confirm-title")).with_role(TextRole::Label),
                     ))
                     .push(caption(status))
                     .push(Box::new(
                         Row::new()
-                            .with_gap(ui::tokens::Spacing::BASE.s2)
+                            .with_gap(tilo_ui_base::tokens::Spacing::BASE.s2)
                             .push(Box::new(keep))
                             .push(Box::new(revert)),
                     )),
@@ -814,20 +813,20 @@ fn band(sheet: &Sheet, spot: Option<&Spot>, parts: &Parts) -> Option<Element> {
 fn wireless(sheet: &Sheet, spot: Option<&Spot>, parts: &Parts) -> Element {
     let search = parts.clone();
     let heading = Row::new()
-        .with_gap(ui::tokens::Spacing::BASE.s2)
+        .with_gap(tilo_ui_base::tokens::Spacing::BASE.s2)
         .push(Box::new(
             Text::new(&t("wireless-heading")).with_role(TextRole::Label),
         ))
         .push(Box::new(
             Button::icon_only(
                 "display-search",
-                ui::icons::Icon::Refresh,
+                tilo_ui_base::icons::Icon::Refresh,
                 &t("wireless-search-again"),
             )
             .on_open(move || search.send(&DisplaysEffect::Search)),
         ));
     let mut column = Column::new()
-        .with_gap(ui::tokens::Spacing::BASE.s2)
+        .with_gap(tilo_ui_base::tokens::Spacing::BASE.s2)
         .push(Box::new(heading));
     if let Some(stream) = &sheet.stream {
         column = column.push(stream_options(stream, parts));
@@ -844,9 +843,9 @@ fn stream_options(stream: &Stream, parts: &Parts) -> Element {
     let on = stream.audio;
     let share = ListRow::new("display-share-audio", t("wireless-share-audio"))
         .icon(if on {
-            ui::icons::Icon::Volume2
+            tilo_ui_base::icons::Icon::Volume2
         } else {
-            ui::icons::Icon::VolumeX
+            tilo_ui_base::icons::Icon::VolumeX
         })
         .checked(on)
         .on_activate(move || audio.send(&DisplaysEffect::ShareAudio { on: !on }));
@@ -856,7 +855,7 @@ fn stream_options(stream: &Stream, parts: &Parts) -> Element {
     let fps = parts.clone();
     let rate = stream.fps;
     let chips = Row::new()
-        .with_gap(ui::tokens::Spacing::BASE.s2)
+        .with_gap(tilo_ui_base::tokens::Spacing::BASE.s2)
         .push(Box::new(
             Text::new(&t("wireless-stream")).with_role(TextRole::Caption),
         ))
@@ -887,7 +886,7 @@ fn stream_options(stream: &Stream, parts: &Parts) -> Element {
                 "display-stream-fps",
                 &t_args(
                     "wireless-stream-fps",
-                    &[("fps", ui::i18n::ArgValue::Number(f64::from(rate)))],
+                    &[("fps", tilo_ui_base::i18n::ArgValue::Number(f64::from(rate)))],
                 ),
             )
             .on_click(move || {
@@ -898,7 +897,7 @@ fn stream_options(stream: &Stream, parts: &Parts) -> Element {
         ));
     Box::new(
         Column::new()
-            .with_gap(ui::tokens::Spacing::BASE.s2)
+            .with_gap(tilo_ui_base::tokens::Spacing::BASE.s2)
             .push(Box::new(share))
             .push(Box::new(chips)),
     )
@@ -927,7 +926,7 @@ fn pin_field(spot: Option<&Spot>, parts: &Parts) -> Element {
     }
     Box::new(
         Column::new()
-            .with_gap(ui::tokens::Spacing::BASE.s1)
+            .with_gap(tilo_ui_base::tokens::Spacing::BASE.s1)
             .push(Box::new(
                 Text::new(&t("wireless-credential-label")).with_role(TextRole::Label),
             ))
@@ -939,7 +938,7 @@ fn pin_field(spot: Option<&Spot>, parts: &Parts) -> Element {
 }
 
 fn receivers(sheet: &Sheet, spot: Option<&Spot>, parts: &Parts) -> Element {
-    let mut column = Column::new().with_gap(ui::tokens::Spacing::BASE.s1);
+    let mut column = Column::new().with_gap(tilo_ui_base::tokens::Spacing::BASE.s1);
     if sheet.receivers.is_empty() {
         let (message, detail, retry) = match &sheet.discovery {
             Discovery::Searching => (t("wireless-scanning"), t("wireless-scanning-detail"), None),
@@ -980,9 +979,9 @@ fn receivers(sheet: &Sheet, spot: Option<&Spot>, parts: &Parts) -> Element {
                 &[
                     (
                         "protocol",
-                        ui::i18n::ArgValue::Text(receiver.protocol.clone()),
+                        tilo_ui_base::i18n::ArgValue::Text(receiver.protocol.clone()),
                     ),
-                    ("detail", ui::i18n::ArgValue::Text(receiver.detail.clone())),
+                    ("detail", tilo_ui_base::i18n::ArgValue::Text(receiver.detail.clone())),
                 ],
             ),
         };
@@ -1004,7 +1003,7 @@ fn receivers(sheet: &Sheet, spot: Option<&Spot>, parts: &Parts) -> Element {
             receiver.name.clone(),
         )
         .subtitle(subline)
-        .icon(ui::icons::Icon::Monitor)
+        .icon(tilo_ui_base::icons::Icon::Monitor)
         .selected(spot == Some(&here))
         .trailing(Box::new(action))
         .on_activate(move || row_press.act(&row_pressed));
@@ -1136,7 +1135,7 @@ impl Keys {
     }
 }
 
-impl ui::widget::Decorator for Keys {
+impl tilo_ui_base::widget::Decorator for Keys {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -1147,7 +1146,7 @@ impl ui::widget::Decorator for Keys {
         self.content.as_mut()
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         use ui::winit::keyboard::{Key, NamedKey};
         let (key, repeat) = match event {
             WindowEvent::KeyboardInput { event: key, .. }

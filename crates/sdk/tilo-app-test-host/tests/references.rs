@@ -9,8 +9,8 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending, ReceiptStatus,
 };
-use tilo_app::RemoteActions;
-use tilo_app::a11y::Action as A11yAction;
+use tilo_ui_base::RemoteActions;
+use tilo_ui_base::a11y::Action as A11yAction;
 use tilo_app::prelude::*;
 use tilo_reference::ResourceRef;
 

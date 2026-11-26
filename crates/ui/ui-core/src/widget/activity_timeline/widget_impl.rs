@@ -5,10 +5,10 @@ use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::Key;
 
-use crate::i18n::widget_text;
+use tilo_ui_base::i18n::widget_text;
 
-use crate::theme::Theme;
-use crate::widget::{ModelPath, TaffyTreeExt, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
 
 use super::{ActivityTimeline, FILTER_STRIP_HEIGHT, FocusedRow, PADDING, VisualRow, row_time};
 
@@ -52,7 +52,7 @@ impl Widget for ActivityTimeline {
             let style = taffy::Style {
                 size: taffy::Size {
                     width: taffy::style_helpers::percent(1.0_f32),
-                    height: taffy::style_helpers::length(crate::num::f32_of_f64(height)),
+                    height: taffy::style_helpers::length(tilo_ui_base::num::f32_of_f64(height)),
                 },
                 ..Default::default()
             };
@@ -63,7 +63,7 @@ impl Widget for ActivityTimeline {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let prev = self.rect;
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if prev != self.rect {
             self.dirty = true;
         }
@@ -83,7 +83,7 @@ impl Widget for ActivityTimeline {
         self.layout_dirty = false;
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -112,7 +112,7 @@ impl Widget for ActivityTimeline {
         self.dirty = false;
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         match event {
             WindowEvent::Ime(_) if self.naming.is_some() => {
                 self.handle_naming_ime(event, *ctx.modifiers, ctx.handled);
@@ -199,8 +199,8 @@ impl Widget for ActivityTimeline {
 
     fn update(
         &mut self,
-        _state: &crate::widget::AppModel,
-        _path: &crate::widget::ModelPath,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         self.follow_clock()
     }
@@ -241,8 +241,8 @@ impl Widget for ActivityTimeline {
 
     /// The description carries both counts, because "7 items" over a list
     /// of three collapsed bands would not describe what is on screen.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let groups = self
             .rows
             .iter()
@@ -285,7 +285,7 @@ impl Widget for ActivityTimeline {
                     }
                     VisualRow::Entry(entry, depth) => {
                         let item = self.entries.get(*entry)?;
-                        let id = crate::HistoryEntryId::hex(&item.id);
+                        let id = tilo_ui_base::HistoryEntryId::hex(&item.id);
                         let said = if item.is_genesis() {
                             self.summary_of(item).to_owned()
                         } else {
@@ -348,11 +348,11 @@ impl Widget for ActivityTimeline {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         let row = if let Some(key) = target.strip_prefix("timeline-group:") {
             self.rows
                 .iter()
@@ -377,7 +377,7 @@ impl Widget for ActivityTimeline {
                         if self
                             .entries
                             .get(*entry)
-                            .is_some_and(|item| crate::HistoryEntryId::hex(&item.id) == hex_id) =>
+                            .is_some_and(|item| tilo_ui_base::HistoryEntryId::hex(&item.id) == hex_id) =>
                     {
                         Some(index)
                     }
@@ -427,16 +427,16 @@ impl Widget for ActivityTimeline {
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         let naming = self.naming.as_ref()?;
         let scope = format!("{:?}:{:?}", naming.target, self.selection);
-        Some(crate::ime::scoped_fingerprint(
+        Some(tilo_ui_base::ime::scoped_fingerprint(
             scope.as_bytes(),
             naming.field.ime_edit_fingerprint(key)?,
             key,
         ))
     }
 
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
-        Some(crate::ime::InputContent::TEXT)
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
+        Some(tilo_ui_base::ime::InputContent::TEXT)
     }
 
-    crate::redraw_flag!();
+    tilo_ui_base::redraw_flag!();
 }

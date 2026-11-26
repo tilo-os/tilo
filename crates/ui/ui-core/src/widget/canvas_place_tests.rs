@@ -40,11 +40,11 @@ fn a_places_surface_stands_where_it_was_put() {
         },
         Box::new(place),
     );
-    let mut text = crate::font_catalog::fixture_renderer();
-    crate::widget::layout::lay_out_detached(
+    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+    tilo_ui_base::widget::layout::lay_out_detached(
         &mut map,
         Rect::new(0.0, 0.0, 800.0, 600.0),
-        &crate::Theme::dark(),
+        &tilo_ui_base::Theme::dark(),
         &mut text,
     )
     .expect("the map lays out");
@@ -91,7 +91,7 @@ fn a_right_click_on_a_place_opens_its_actions() {
             name: Some("Inbox".into()),
             carries: Some("tl:mail:root".into()),
             controls: None,
-            body: Some(Box::new(crate::widget::Spacer::fixed(300.0))),
+            body: Some(Box::new(tilo_ui_base::widget::Spacer::fixed(300.0))),
             items: vec![MenuItemProps {
                 label: "Archive".into(),
                 ..MenuItemProps::default()
@@ -100,11 +100,11 @@ fn a_right_click_on_a_place_opens_its_actions() {
         },
     );
     let mut place = place;
-    let mut text = crate::font_catalog::fixture_renderer();
-    crate::widget::layout::lay_out_detached(
+    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+    tilo_ui_base::widget::layout::lay_out_detached(
         &mut place,
         Rect::new(0.0, 0.0, 400.0, 300.0),
-        &crate::Theme::dark(),
+        &tilo_ui_base::Theme::dark(),
         &mut text,
     )
     .expect("the place lays out");
@@ -112,11 +112,11 @@ fn a_right_click_on_a_place_opens_its_actions() {
         crate::State::new(),
         place,
         (400, 300),
-        crate::Theme::dark(),
+        tilo_ui_base::Theme::dark(),
     );
     host.relayout();
-    host.send(&crate::synthetic_input::cursor_moved(200.0, 150.0));
-    host.send(&crate::synthetic_input::mouse_input(
+    host.send(&tilo_ui_base::synthetic_input::cursor_moved(200.0, 150.0));
+    host.send(&tilo_ui_base::synthetic_input::mouse_input(
         winit::event::ElementState::Pressed,
         winit::event::MouseButton::Right,
     ));
@@ -151,11 +151,11 @@ fn a_place_says_what_it_is_at_rest() {
         },
         Box::new(place),
     );
-    let mut text = crate::font_catalog::fixture_renderer();
-    crate::widget::layout::lay_out_detached(
+    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+    tilo_ui_base::widget::layout::lay_out_detached(
         &mut map,
         Rect::new(0.0, 0.0, 800.0, 600.0),
-        &crate::Theme::dark(),
+        &tilo_ui_base::Theme::dark(),
         &mut text,
     )
     .expect("the map lays out");
@@ -213,11 +213,11 @@ fn a_long_caption_wraps_and_is_said_in_full() {
             },
             Box::new(place),
         );
-        let mut text = crate::font_catalog::fixture_renderer();
-        crate::widget::layout::lay_out_detached(
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+        tilo_ui_base::widget::layout::lay_out_detached(
             &mut map,
             Rect::new(0.0, 0.0, 800.0, 600.0),
-            &crate::Theme::dark(),
+            &tilo_ui_base::Theme::dark(),
             &mut text,
         )
         .expect("the map lays out");

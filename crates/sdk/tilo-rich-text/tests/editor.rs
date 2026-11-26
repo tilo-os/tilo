@@ -13,9 +13,9 @@ use tilo_app_test_host::TestApp;
 use tilo_document::{RichText, RichTextAction};
 use tilo_rich_text::RichTextViews;
 use ui::framework::{ResourceApp, ViewCx};
-use ui::permissions::Role;
+use tilo_ui_base::permissions::Role;
 use ui::tilo_actions::Action;
-use ui::widget::Element;
+use tilo_ui_base::widget::Element;
 
 /// An app whose whole view is one line.
 struct Document;
@@ -31,7 +31,7 @@ impl ResourceApp for Document {
 }
 
 fn open() -> TestApp<Document> {
-    ui::i18n::I18nManager::init("en-US");
+    tilo_ui_base::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<Document>::new().unwrap();
     // Focus the editor the way a person does: click into it.
     let target = app
@@ -119,7 +119,7 @@ fn a_paste_past_what_one_text_may_hold_is_not_kept_and_says_why() {
 /// The same edit in a window reading German.
 #[test]
 fn a_paste_past_what_one_text_may_hold_is_said_in_german() {
-    ui::i18n::I18nManager::init("de-DE");
+    tilo_ui_base::i18n::I18nManager::init("de-DE");
     let mut app = TestApp::<Document>::new().unwrap();
     let target = app
         .harness()
@@ -275,7 +275,7 @@ fn shift_enter_is_a_line_break_inside_the_paragraph() {
 
 #[test]
 fn a_viewer_is_refused_and_the_document_is_untouched() {
-    ui::i18n::I18nManager::init("en-US");
+    tilo_ui_base::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<Document>::with_role(Role::Viewer).unwrap();
     let target = app
         .harness()

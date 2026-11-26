@@ -3,9 +3,10 @@
 use imager_backend::support_report::{
     Applicability, ComponentKind, ComponentSupport, ReportSource, SupportReport, SupportState,
 };
-use ui::tokens::typography::TextRole;
+use tilo_ui_base::tokens::typography::TextRole;
 use ui::widget::list_row::ListRow;
-use ui::widget::{Text, Widget};
+use ui::widget::Text;
+use tilo_ui_base::widget::Widget;
 
 use crate::setup::hardware_text::{
     component_icon, component_title, evidence_text, reason_text, remedy_text,
@@ -77,7 +78,7 @@ impl HardwareReport {
 
 pub(crate) fn summary_text(report: &SupportReport) -> String {
     let summary = report.summary();
-    let counts: &[(&str, ui::i18n::ArgValue)] = &[
+    let counts: &[(&str, tilo_ui_base::i18n::ArgValue)] = &[
         ("supported", summary.supported.into()),
         ("limited", summary.limited.into()),
         ("unsupported", summary.unsupported.into()),
@@ -105,7 +106,7 @@ pub(crate) fn summary_row(report: &HardwareReport) -> Box<dyn Widget> {
             Text::new(&t("installer-hardware-checking"))
                 .with_id("installer.hardware.checking")
                 .with_role(TextRole::Caption)
-                .with_live(ui::a11y::Politeness::Polite),
+                .with_live(tilo_ui_base::a11y::Politeness::Polite),
         ),
         HardwareReport::Unavailable => Box::new(
             Text::new(&t("installer-hardware-unavailable"))
@@ -116,7 +117,7 @@ pub(crate) fn summary_row(report: &HardwareReport) -> Box<dyn Widget> {
             Text::new(&summary_text(report))
                 .with_id("installer.hardware.summary")
                 .with_role(TextRole::Body)
-                .with_live(ui::a11y::Politeness::Polite),
+                .with_live(tilo_ui_base::a11y::Politeness::Polite),
         ),
     }
 }

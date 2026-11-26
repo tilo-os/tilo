@@ -30,16 +30,16 @@ pub(crate) fn apply_keyboard(
     keyboard: &tilo_compositor::KeyboardLayout,
 ) {
     compositor.set_keyboard_layout(keyboard);
-    let keycaps = ui::keycaps::Keycaps::from_xkb(&keyboard.layout, &keyboard.variant);
-    ui::keycaps::set_active(keycaps);
+    let keycaps = tilo_ui_base::keycaps::Keycaps::from_xkb(&keyboard.layout, &keyboard.variant);
+    tilo_ui_base::keycaps::set_active(keycaps);
     // A chord on a mark is shown as the keys this layout presses for it, read from the keymap the
     // chords are matched with.
-    ui::keycaps::set_typed_marks(
+    tilo_ui_base::keycaps::set_typed_marks(
         compositor
             .typed_marks()
             .into_iter()
             .map(|typed| {
-                let key = ui::keycaps::TypedMark {
+                let key = tilo_ui_base::keycaps::TypedMark {
                     key: keycaps.native_symbol(&typed.key_name, &typed.key_text),
                     shift: typed.shift,
                     alt_gr: typed.level3,
@@ -373,7 +373,7 @@ fn installed_apps() -> Apps {
                 .map(|app| App {
                     key: app.id.clone(),
                     name: app.title.clone(),
-                    icon: ui::icons::app_glyph(&app.id, app.category.as_deref())
+                    icon: tilo_ui_base::icons::app_glyph(&app.id, app.category.as_deref())
                         .name()
                         .to_owned(),
                     category: app.category.clone().unwrap_or_default(),

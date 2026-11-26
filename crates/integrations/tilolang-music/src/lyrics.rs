@@ -369,8 +369,8 @@ pub fn normalize_artist(raw: &str) -> String {
 fn lrclib_search_url(meta: &TrackMeta) -> String {
     format!(
         "https://lrclib.net/api/search?track_name={}&artist_name={}",
-        ui::uri::encode_component(&normalize_title(&meta.title)),
-        ui::uri::encode_component(&normalize_artist(&meta.artist)),
+        tilo_ui_base::uri::encode_component(&normalize_title(&meta.title)),
+        tilo_ui_base::uri::encode_component(&normalize_artist(&meta.artist)),
     )
 }
 
@@ -379,9 +379,9 @@ fn lrclib_search_url(meta: &TrackMeta) -> String {
 pub fn lrclib_url(meta: &TrackMeta) -> String {
     format!(
         "https://lrclib.net/api/get?track_name={}&artist_name={}&album_name={}&duration={}",
-        ui::uri::encode_component(&normalize_title(&meta.title)),
-        ui::uri::encode_component(&normalize_artist(&meta.artist)),
-        ui::uri::encode_component(&normalize_title(&meta.album)),
+        tilo_ui_base::uri::encode_component(&normalize_title(&meta.title)),
+        tilo_ui_base::uri::encode_component(&normalize_artist(&meta.artist)),
+        tilo_ui_base::uri::encode_component(&normalize_title(&meta.album)),
         meta.duration_s
     )
 }

@@ -3,7 +3,7 @@
 //! remote presence may only change its own view.
 
 use super::*;
-use crate::collaboration::CollabEvent;
+use tilo_ui_base::collaboration::CollabEvent;
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -68,26 +68,26 @@ fn tree(view: &str) -> Vec<ResourceSpec> {
 }
 
 impl Widget for TwoViews {
-    crate::provides!(
-        dyn crate::widget::presence_topology::Presences,
-        dyn crate::widget::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::presence_topology::Presences,
+        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn tilo_ui_base::widget::ResourceOperations
     );
 
     crate::testing::inert_widget_methods!(leaf_layout, name = "two-views");
 }
 
-impl crate::widget::ResourceOperations for TwoViews {
+impl tilo_ui_base::widget::ResourceOperations for TwoViews {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[VIEW_TYPE]
     }
 
     fn start_operation(
         &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        _: &mut crate::widget::Edits<'_>,
+        op: &tilo_ui_base::widget::ResourceOperation<'_>,
+        _: &mut tilo_ui_base::widget::Edits<'_>,
         _: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
         let crate::host_operation::OperationRequest { type_id, .. } = op.request();
         let presence = crate::invocation_scope::current_presence();
         let mut probe = self.0.borrow_mut();
@@ -95,13 +95,13 @@ impl crate::widget::ResourceOperations for TwoViews {
             *probe.carets.entry(presence.clone()).or_default() += 1;
         }
         probe.view_ops.push((type_id.to_owned(), presence));
-        Ok(Some(crate::widget::ResourceOperationStart::Completed(
+        Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))
     }
 }
 
-impl crate::widget::resources::PublishesResources for TwoViews {
+impl tilo_ui_base::widget::resources::PublishesResources for TwoViews {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         tree(if self.0.borrow().host {
             "schema"
@@ -132,7 +132,7 @@ impl crate::widget::resources::PublishesResources for TwoViews {
     }
 }
 
-impl crate::widget::presence_topology::Presences for TwoViews {
+impl tilo_ui_base::widget::presence_topology::Presences for TwoViews {
     fn join_presence(&mut self, presence: &PresenceId) -> bool {
         let mut probe = self.0.borrow_mut();
         if probe.joined.contains(presence) {
@@ -152,18 +152,18 @@ impl crate::widget::presence_topology::Presences for TwoViews {
             .labels
             .insert(presence.clone(), label.to_owned());
     }
-    fn presences(&self, _: &automerge::AutoCommit) -> Vec<crate::widget::ViewPresence> {
+    fn presences(&self, _: &automerge::AutoCommit) -> Vec<tilo_ui_base::widget::ViewPresence> {
         let probe = self.0.borrow();
         probe
             .joined
             .iter()
-            .map(|presence| crate::widget::ViewPresence {
+            .map(|presence| tilo_ui_base::widget::ViewPresence {
                 presence: presence.clone(),
                 label: probe.labels.get(presence).cloned(),
-                key: crate::PresenceKey::Widget {
-                    path: vec![crate::PathSegment::Field("wp_block".into())],
+                key: tilo_ui_base::PresenceKey::Widget {
+                    path: vec![tilo_ui_base::PathSegment::Field("wp_block".into())],
                 },
-                payload: crate::PresencePayload::Caret {
+                payload: tilo_ui_base::PresencePayload::Caret {
                     pos: probe.carets.get(presence).copied().unwrap_or(0),
                 },
             })
@@ -422,10 +422,10 @@ tilo_test_env::scenario! {
                 views,
                 device_id: "D".into(),
                 instance_id: 1,
-                permissions: crate::permissions::SharedPermissions::new(
-                    crate::permissions::PermissionContext::permissive(),
+                permissions: tilo_ui_base::permissions::SharedPermissions::new(
+                    tilo_ui_base::permissions::PermissionContext::permissive(),
                 ),
-                author: crate::permissions::MemberId::person("fixture-user"),
+                author: tilo_ui_base::permissions::MemberId::person("fixture-user"),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &target,
@@ -451,7 +451,7 @@ tilo_test_env::scenario! {
             found: &mut Option<Vec<ResourceSpec>>,
         ) {
             if found.is_none() && widget.name() == "BoundComponent" {
-                *found = Some(crate::widget::resources::resources_for(
+                *found = Some(tilo_ui_base::widget::resources::resources_for(
                     widget,
                     Some(presence),
                     doc,
