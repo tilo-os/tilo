@@ -2043,6 +2043,7 @@ mod window_tests {
             columns: 4,
             rows: 4,
             cells,
+            editable: true,
             edit: Event::View(Intent::new(queue, "sheet", "edit")),
             ..Default::default()
         });

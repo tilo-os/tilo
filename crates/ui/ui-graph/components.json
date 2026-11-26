@@ -2580,6 +2580,18 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "enabled",
+          "doc": "Whether a press on a row runs now.",
+          "type": "bool"
+        },
+        {
+          "name": "description",
+          "doc": "Why it cannot be pressed now, where the label does not say (an action whose requirement does not hold): spoken as its description beside its name.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "events": [
@@ -7674,6 +7686,18 @@
           }
         },
         {
+          "name": "enabled",
+          "doc": "Whether a press on the page runs now.",
+          "type": "bool"
+        },
+        {
+          "name": "description",
+          "doc": "Why it cannot be pressed now, where the name does not say (an action whose requirement does not hold): spoken as its description beside its name.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "still",
           "doc": "The stage stands the page where the view puts it and takes nothing of its own: the wheel and a pinch do not zoom it, no pan moves it, the keys that walk and move its places do not reach it, and a dragged place does not line up with the page's margins. A stage laid over a page another view draws sets this, so the page under it keeps its own zoom and its own keys and its places move only where the hand puts them.",
           "type": "bool"
@@ -8797,6 +8821,18 @@
           "name": "step",
           "doc": "The grid a drag lands on, in seconds: one frame (1/30) for a film, nothing for free time.",
           "type": "float"
+        },
+        {
+          "name": "enabled",
+          "doc": "Whether a press on a track runs now.",
+          "type": "bool"
+        },
+        {
+          "name": "description",
+          "doc": "Why it cannot be pressed now, where the label does not say (an action whose requirement does not hold): spoken as its description beside its name.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "parts": [

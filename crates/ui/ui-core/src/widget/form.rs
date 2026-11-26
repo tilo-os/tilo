@@ -260,6 +260,26 @@ mod tests {
             }
         }
 
+        fn a_colour_pickers_group_says_its_value_in_a_box() {
+            use vello::peniko::Color;
+            let field = labeled_field(
+                "advanced-label",
+                ColorPicker::new(Color::from_rgb8(20, 40, 60)),
+            );
+            let group = Widget::children(&field)
+                .get(1)
+                .and_then(|child| child.accessibility())
+                .expect("the picker is accessible");
+            assert_eq!(group.role, Role::Group);
+            assert!(
+                group
+                    .children
+                    .iter()
+                    .any(|child| child.role == Role::ComboBox),
+                "the group holds the box that says its value"
+            );
+        }
+
         fn composite_inputs_share_the_contract() {
             use jiff::civil::Date;
             use vello::peniko::Color;
@@ -288,11 +308,13 @@ mod tests {
                     Role::ComboBox,
                 ),
                 (
+                    // The picker stands as a group holding its own controls, its value among
+                    // them; the box that says the value is a ComboBox inside it.
                     labeled_field(
                         "advanced-label",
                         ColorPicker::new(Color::from_rgb8(20, 40, 60)),
                     ),
-                    Role::ComboBox,
+                    Role::Group,
                 ),
                 (
                     labeled_field(
@@ -377,6 +399,7 @@ mod tests {
         labeled_field_hugs_its_content_inside_a_tall_form();
         standard_boolean_and_range_controls_share_the_contract();
         composite_inputs_share_the_contract();
+        a_colour_pickers_group_says_its_value_in_a_box();
         a_label_over_a_boxed_control_is_the_controls_name();
         a_named_control_keeps_its_name_under_a_label();
         a_label_names_a_waiting_block();
