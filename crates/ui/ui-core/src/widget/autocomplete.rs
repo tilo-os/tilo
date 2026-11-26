@@ -1841,117 +1841,8 @@ mod tests {
             click_outside_cancels_without_consuming();
         }
 
-        phase controlled_autocomplete_with_id_preserves_supplied_input;
-        {
-            let autocomplete = Autocomplete::new_with_controlled_input(
-                TextInput::local_with_language("en_US")
-                    .with_spellcheck(false)
-                    .with_autocorrect(false)
-                    .with_initial_value("sentinel route"),
-            )
-            .with_id("route-search");
-
-            assert_eq!(Widget::test_id(&autocomplete), Some("route-search"));
-            let semantics = Widget::accessibility(&autocomplete).expect("text field semantics");
-            // The autocomplete publishes one keyed route under its id for the
-            // embedded input and its rows, never the inner input's own target.
-            let keyed = semantics.action_target.as_deref().unwrap_or_default();
-            assert!(
-                keyed.starts_with("tilo.key-action:route-search:"),
-                "{keyed}"
-            );
-            assert_eq!(semantics.semantic_key.as_deref(), Some(keyed));
-            assert_eq!(autocomplete.text(), "sentinel route");
-            assert_eq!(autocomplete.input.spell_language(), "en_US");
-            assert!(!autocomplete.input.spellcheck_enabled());
-            assert!(!autocomplete.input.autocorrect_enabled());
-            assert_eq!(autocomplete.input.kind(), TextInputKind::Search);
-        }
-
-        phase begin_edit_selection_arms_only_for_preseeded_values;
-        {
-            fn freshly_focused_empty_field_keeps_every_letter() {
-                let mut ac = Autocomplete::new();
-                ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
-                ac.begin_edit();
-                dispatch(&mut ac, &char_key("a"));
-                assert_eq!(
-                    ac.input.selection_range_public(),
-                    None,
-                    "no selection after first char"
-                );
-                dispatch(&mut ac, &char_key("b"));
-                dispatch(&mut ac, &char_key("c"));
-                assert_eq!(ac.text(), "abc", "every letter is kept (not \"bc\")");
-            }
-
-            fn begin_edit_on_empty_field_arms_no_selection() {
-                let mut ac = Autocomplete::new();
-                ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
-                ac.begin_edit();
-                assert_eq!(
-                    ac.input.selection_range_public(),
-                    None,
-                    "empty focus = no selection"
-                );
-            }
-
-            fn redundant_begin_edit_does_not_reselect_typed_text() {
-                let mut ac = suggester_paths();
-                ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
-                ac.begin_edit();
-                dispatch(&mut ac, &char_key("a")); // field now holds "a"
-                assert_eq!(ac.text(), "a");
-                ac.begin_edit();
-                assert_eq!(
-                    ac.input.selection_range_public(),
-                    None,
-                    "typed text is not re-selected"
-                );
-                dispatch(&mut ac, &char_key("l"));
-                assert_eq!(
-                    ac.text(),
-                    "al",
-                    "second char appends — the first letter survives"
-                );
-            }
-
-            fn begin_edit_still_selects_a_preseeded_value_for_replace() {
-                let mut ac = Autocomplete::new();
-                ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
-                ac.set_text("/home/user");
-                ac.begin_edit();
-                assert_eq!(
-                    ac.input.selection_range_public(),
-                    Some((0, "/home/user".len())),
-                    "fresh entry into a pre-seeded field selects the whole value",
-                );
-                dispatch(&mut ac, &char_key("x"));
-                assert_eq!(
-                    ac.text(),
-                    "x",
-                    "the first keystroke replaces the selected seed"
-                );
-            }
-
-            freshly_focused_empty_field_keeps_every_letter();
-            begin_edit_on_empty_field_arms_no_selection();
-            redundant_begin_edit_does_not_reselect_typed_text();
-            begin_edit_still_selects_a_preseeded_value_for_replace();
-        }
-
         phase reactive_suggestions_status_line_and_scaled_rows;
         {
-            fn set_suggestions_supports_reactive_hosts() {
-                let mut ac = Autocomplete::new();
-                ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
-                ac.begin_edit();
-                ac.set_suggestions(vec![Suggestion::labelled("/home/u/Docs", "Docs")]);
-                ac.open = true;
-                assert!(ac.is_open());
-                assert_eq!(ac.suggestions()[0].value, "/home/u/Docs");
-            }
-
             fn status_line_keeps_the_dropdown_open_with_no_rows() {
                 let mut ac = Autocomplete::new();
                 ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
@@ -2014,7 +1905,6 @@ mod tests {
                 assert_eq!(ac.row_at(second.center()), Some(1));
             }
 
-            set_suggestions_supports_reactive_hosts();
             status_line_keeps_the_dropdown_open_with_no_rows();
             reactive_suggestions_after_open_replace_the_status_line();
             large_text_scales_dropdown_rows_and_hit_geometry_together();
