@@ -294,7 +294,8 @@ impl Workspaces {
             return Err("the workspace's record names another workspace".into());
         }
         self.serve_direct(&hosted).await?;
-        let state = self.hold_open(&name, hosted).await;
+        let state = self.read_held(&name, hosted);
+        self.keep_held(&name, &state).await;
         let mut hosted = state.lock().await;
         let hint = self
             .transport_hint_as(&hosted, CopyRole::KeyHolder)

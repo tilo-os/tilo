@@ -464,7 +464,8 @@ impl Workspaces {
         )
         .map_err(|error| error.to_string())?;
         hosted.handed_by = Some(holder.clone());
-        let state = self.hold_open(workspace, hosted).await;
+        let state = self.read_held(workspace, hosted);
+        self.keep_held(workspace, &state).await;
         let hosted = state.lock().await;
         self.serve_direct(&hosted).await?;
         drop(hosted);

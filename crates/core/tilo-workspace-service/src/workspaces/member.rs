@@ -1045,7 +1045,8 @@ impl Workspaces {
                 tracing::warn!(%name, %error, "a member copy's device address was not kept");
             }
             self.bind_member(&hosted).await?;
-            let state = self.hold_open(&name, hosted).await;
+            let state = self.read_held(&name, hosted);
+            self.keep_held(&name, &state).await;
             // Synced once it is held: what the serving device sends from the start is kept in it.
             self.serve_member(&state, device).await?;
         }

@@ -181,7 +181,8 @@ async fn keep_again(workspaces: &Workspaces, workspace: &str) -> Result<bool, St
     }
     std::fs::remove_file(&released).map_err(|error| error.to_string())?;
     workspaces.serve_direct(&hosted).await?;
-    let state = workspaces.hold_open(workspace, hosted).await;
+    let state = workspaces.read_held(workspace, hosted);
+    workspaces.keep_held(workspace, &state).await;
     workspaces.serve_kept(std::slice::from_ref(&state)).await?;
     workspaces.keep_reading(&state).await;
     let _ = workspaces.inner.changes.send(workspace.to_owned());

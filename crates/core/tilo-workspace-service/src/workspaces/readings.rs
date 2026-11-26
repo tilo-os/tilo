@@ -269,9 +269,9 @@ impl Reading {
 }
 
 impl Workspaces {
-    /// Keep `hosted`, opened here as `workspace`, among the workspaces this service holds and
-    /// reads from now on: what every copy taken up here goes through.
-    pub(super) async fn hold_open(
+    /// `hosted`, opened here as `workspace`, read from now on: what every copy taken up here
+    /// goes through before [`Self::keep_held`] keeps it among the workspaces this service holds.
+    pub(super) fn read_held(
         &self,
         workspace: &str,
         hosted: HostedWorkspace,
@@ -279,12 +279,20 @@ impl Workspaces {
         let reading = hosted.reading();
         let state = Arc::new(tokio::sync::Mutex::new(hosted));
         self.inner.readings.hold(workspace, &state, reading);
+        state
+    }
+
+    /// Keep `state`, [`Self::read_held`] as `workspace`, among the workspaces this service holds.
+    pub(super) async fn keep_held(
+        &self,
+        workspace: &str,
+        state: &Arc<tokio::sync::Mutex<HostedWorkspace>>,
+    ) {
         self.inner
             .workspaces
             .lock()
             .await
-            .insert(workspace.to_owned(), Arc::clone(&state));
-        state
+            .insert(workspace.to_owned(), Arc::clone(state));
     }
 
     /// What `workspace` is read through: its store and its copy, a command or a read at a time.
