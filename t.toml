@@ -7864,7 +7864,7 @@ needs = ["tilolang-runtime", "lounge-fonts"]
 env = { CARGO_BUILD_JOBS = "8" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/lounge/apps/**"]
-timeout_secs = 3600
+timeout_secs = 7200
 default = false
 
 # The same apps for the checks that run the Lounge's programs directly (the page checks, the
@@ -7879,7 +7879,7 @@ needs = ["tilolang-runtime", "lounge-fonts"]
 env = { CARGO_BUILD_JOBS = "8" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/lounge-check/apps/**"]
-timeout_secs = 3600
+timeout_secs = 7200
 default = false
 
 # The product font catalog, which the image's context and every check that runs the Lounge's
