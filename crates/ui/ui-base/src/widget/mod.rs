@@ -692,7 +692,7 @@ pub fn humanize_control_id(id: &str) -> String {
     crate::format::capitalize_first(&tail.replace(['_', '-'], " "))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn test_action_binding<I>(spec: tilo_actions::ActionSpec) -> tilo_actions::ActionBinding<I>
 where
     I: serde::Serialize,

@@ -547,7 +547,7 @@ impl LookDesign for Look {
 
 /// Theme documents that exercise each surface finish (glass, block, pixelated, liquid
 /// glass), for the finish painters' own tests: no shipped theme wears them.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn finish_document(id: &str) -> ThemeDocument {
     let json = match id {
         "glass" => include_str!("../tests/fixtures/finishes/glass.json"),
