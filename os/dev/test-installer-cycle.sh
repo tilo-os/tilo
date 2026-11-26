@@ -741,14 +741,16 @@ fi
 
 # The sealed boot has no serial-console test instrumentation.  The installed
 # target consumes its one-boot greetd handoff here, so its first visible surface
-# is OOBE rather than the password greeter.  The disk secret is typed once, when
-# the unlock prompt is on the screen: typed earlier, its keys reach the boot
-# menu and pick an entry; typed later, an OOBE surface could own the keyboard.
+# is OOBE rather than the password greeter: the first sign-in founds the
+# person, and setup opens at backing up their identity.  The disk secret is
+# typed once, when the unlock prompt is on the screen: typed earlier, its keys
+# reach the boot menu and pick an entry; typed later, an OOBE surface could own
+# the keyboard.
 oobe_started=0
 unlock_sent=0
 for attempt in $(seq 1 60); do
   if image="$(shot_ocr target-observe 2>/dev/null)" \
-    && grep -Eqi 'Create[[:space:]]+your[[:space:]]+local' "$out/target-observe.txt"; then
+    && grep -Eqi 'Back[[:space:]]+up[[:space:]]+your[[:space:]]+Tilo[[:space:]]+identity' "$out/target-observe.txt"; then
     cp -f "$image" "$out/07-first-boot-oobe.png"
     cp -f "$out/target-observe.txt" "$out/07-first-boot-oobe.txt"
     target_oobe_seen="$(date +%s)"
@@ -786,16 +788,10 @@ if [ "$oobe_started" -ne 1 ]; then
     > "$out/target-journal.txt" 2> "$out/target-journal-console.txt" || true
   die "first installed boot did not reach direct OOBE"
 fi
-wait_screen 08-oobe-intro 'Create[[:space:]]+your[[:space:]]+local' 10 1 \
-  || die "first installed boot did not preserve the OOBE introduction"
-
-# Use the real first-use flow: Create identity -> acknowledge no recovery ->
-# Create. OCR of the backup screen is the barrier for the async mint.
-"$vm" keys tab ret
-sleep 2
-"$vm" keys spc tab tab ret
-wait_screen 09-oobe-backup 'Back[[:space:]]+up[[:space:]]+your[[:space:]]+Tilo[[:space:]]+identity' 120 2 \
-  || die "OOBE did not create the local/device identity chain"
+# Backing up is offered, never forced on someone who already uses Tilo: the
+# same screen keeps the way to join the person they have on another device.
+grep -Eqi 'another[[:space:]]+device' "$out/07-first-boot-oobe.txt" \
+  || die "first-boot backup does not offer joining from another device"
 
 # Simulate power loss at the durable identity/backup boundary.  The following
 # cold boot must resume this exact OOBE screen without recreating the identity.
