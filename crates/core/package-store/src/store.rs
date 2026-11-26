@@ -124,9 +124,10 @@ pub(crate) struct StoreLock {
 
 impl StoreLock {
     fn acquire(layout: &Layout) -> Result<Self, StoreError> {
-        std::fs::create_dir_all(layout.root())?;
+        std::fs::create_dir_all(layout.root()).map_err(crate::io_at("create", layout.root()))?;
         let lock =
-            advisory_lock::FileLock::open(&layout.lock(), advisory_lock::LockMode::Exclusive)?;
+            advisory_lock::FileLock::open(&layout.lock(), advisory_lock::LockMode::Exclusive)
+                .map_err(crate::io_at("lock", layout.lock()))?;
         Ok(Self { _lock: lock })
     }
 }
@@ -264,16 +265,16 @@ fn staging_name(id: PackageId, what: &str) -> String {
     format!("{}.{what}.{}.{nanos}", id.to_hex(), std::process::id())
 }
 
-fn swap_in(staged: &Path, live: &Path, retired: &Path) -> std::io::Result<bool> {
+fn swap_in(staged: &Path, live: &Path, retired: &Path) -> Result<bool, StoreError> {
     let had_live = std::fs::symlink_metadata(live).is_ok();
     if had_live {
-        std::fs::rename(live, retired)?;
+        std::fs::rename(live, retired).map_err(crate::io_at("move aside", live))?;
     }
     if let Err(error) = std::fs::rename(staged, live) {
         if had_live {
             let _ = std::fs::rename(retired, live);
         }
-        return Err(error);
+        return Err(crate::io_at("rename", staged)(error));
     }
     Ok(had_live)
 }
@@ -495,8 +496,10 @@ impl PackageStore {
     pub fn remove_image(&self, id: PackageId) -> Result<Removed, StoreError> {
         let _lock = self.lock()?;
         if self.image(id)?.is_some() {
-            remove_tree(&self.layout.meta_dir(id))?;
-            remove_tree(&self.layout.payload(id))?;
+            remove_tree(&self.layout.meta_dir(id))
+                .map_err(crate::io_at("remove", self.layout.meta_dir(id)))?;
+            remove_tree(&self.layout.payload(id))
+                .map_err(crate::io_at("remove", self.layout.payload(id)))?;
         }
         let evicted_blobs = self.collect_garbage_locked()?;
         Ok(Removed {
@@ -694,18 +697,19 @@ impl PackageStore {
         meta: &PackageMeta,
     ) -> Result<(), StoreError> {
         let layout = &self.layout;
-        std::fs::create_dir_all(layout.packages())?;
+        std::fs::create_dir_all(layout.packages())
+            .map_err(crate::io_at("create", layout.packages()))?;
         let tmp = layout.tmp();
         let tree = tmp.join(staging_name(meta.id, "tree"));
         let record = tmp.join(staging_name(meta.id, "pkg"));
         let result = (|| -> Result<(), StoreError> {
-            std::fs::create_dir_all(&tree)?;
+            std::fs::create_dir_all(&tree).map_err(crate::io_at("create", &tree))?;
             let executable = meta.executable_path();
             let image = Self::image_tree(content, meta, &tree)?;
             for (rel, hash) in &meta.collection.entries {
                 let target = tree.join(rel);
                 if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent)?;
+                    std::fs::create_dir_all(parent).map_err(crate::io_at("create", parent))?;
                 }
                 if !(image.is_some() && rel == tilo_app_package::TREE_FILE) {
                     content.export(hash, &target)?;
@@ -717,21 +721,22 @@ impl PackageStore {
                     Some(spec) => spec.is_executable(rel),
                     None => executable.as_deref() == Some(rel.as_str()),
                 };
-                set_mode(&target, if runs { 0o555 } else { 0o444 })?;
+                set_mode(&target, if runs { 0o555 } else { 0o444 })
+                    .map_err(crate::io_at("set mode of", &target))?;
             }
             if let Some(spec) = &image {
                 spec.apply(&tree)?;
             }
-            std::fs::create_dir_all(&record)?;
-            tilo_files::native::atomic::write(
-                &record.join(SIGNED_ROOT_FILE),
-                &meta.signed_root_bytes(),
-            )?;
-            tilo_files::native::atomic::write(&record.join(MANIFEST_FILE), &meta.manifest_bytes)?;
-            tilo_files::native::atomic::write(
-                &record.join(COLLECTION_FILE),
-                &meta.collection_bytes,
-            )?;
+            std::fs::create_dir_all(&record).map_err(crate::io_at("create", &record))?;
+            let signed_root = record.join(SIGNED_ROOT_FILE);
+            tilo_files::native::atomic::write(&signed_root, &meta.signed_root_bytes())
+                .map_err(crate::io_at("write", &signed_root))?;
+            let manifest = record.join(MANIFEST_FILE);
+            tilo_files::native::atomic::write(&manifest, &meta.manifest_bytes)
+                .map_err(crate::io_at("write", &manifest))?;
+            let collection = record.join(COLLECTION_FILE);
+            tilo_files::native::atomic::write(&collection, &meta.collection_bytes)
+                .map_err(crate::io_at("write", &collection))?;
             let retired_tree = tmp.join(staging_name(meta.id, RETIRED_TREE));
             // A launch holding or running the replaced copy keeps it: the
             // staging sweep removes it once nothing does.
@@ -739,11 +744,11 @@ impl PackageStore {
                 && !lease::busy(layout, meta.id)?
                 && !InUse::now().holds(&retired_tree)
             {
-                remove_tree(&retired_tree)?;
+                remove_tree(&retired_tree).map_err(crate::io_at("remove", &retired_tree))?;
             }
             let retired_record = tmp.join(staging_name(meta.id, "retired-pkg"));
             if swap_in(&record, &layout.meta_dir(meta.id), &retired_record)? {
-                remove_tree(&retired_record)?;
+                remove_tree(&retired_record).map_err(crate::io_at("remove", &retired_record))?;
             }
             Ok(())
         })();
@@ -772,8 +777,10 @@ impl PackageStore {
             })?;
         let path = tree.join(tilo_app_package::TREE_FILE);
         content.export(hash, &path)?;
-        let spec =
-            tilo_app_package::TreeSpec::from_bytes(&std::fs::read(&path)?).map_err(payload)?;
+        let spec = tilo_app_package::TreeSpec::from_bytes(
+            &std::fs::read(&path).map_err(crate::io_at("read", &path))?,
+        )
+        .map_err(payload)?;
         spec.check(&meta.collection).map_err(payload)?;
         Ok(Some(spec))
     }
@@ -921,8 +928,9 @@ impl PackageStore {
             lease::forget(layout, id, taken)?;
         } else if row.payload_root.starts_with(layout.root().join("payloads")) {
             // A tree from before payloads were content addressed.
-            remove_tree(&row.payload_root)?;
-            remove_tree(&integrity::detached_record_dir(layout.root(), &row.id))?;
+            remove_tree(&row.payload_root).map_err(crate::io_at("remove", &row.payload_root))?;
+            let detached = integrity::detached_record_dir(layout.root(), &row.id);
+            remove_tree(&detached).map_err(crate::io_at("remove", &detached))?;
         }
         Ok(())
     }
@@ -970,10 +978,10 @@ impl PackageStore {
             return Ok(());
         }
         let tmp = self.layout.tmp();
-        std::fs::create_dir_all(&tmp)?;
+        std::fs::create_dir_all(&tmp).map_err(crate::io_at("create", &tmp))?;
         let gone = tmp.join(staging_name(id, what));
-        std::fs::rename(path, &gone)?;
-        remove_tree(&gone)?;
+        std::fs::rename(path, &gone).map_err(crate::io_at("move aside", path))?;
+        remove_tree(&gone).map_err(crate::io_at("remove", &gone))?;
         Ok(())
     }
 
@@ -1008,10 +1016,14 @@ impl PackageStore {
             .filter_map(|row| self.layout.materialised_id(&row.payload_root))
             .collect();
         let mut found = BTreeSet::new();
-        for entry in std::fs::read_dir(&packages)? {
-            let entry = entry?;
+        for entry in std::fs::read_dir(&packages).map_err(crate::io_at("read", &packages))? {
+            let entry = entry.map_err(crate::io_at("read", &packages))?;
             // Only directories directly under `pkgs/`; a link is never followed.
-            if !entry.file_type()?.is_dir() {
+            if !entry
+                .file_type()
+                .map_err(crate::io_at("read", entry.path()))?
+                .is_dir()
+            {
                 continue;
             }
             let name = entry.file_name();
@@ -1066,8 +1078,8 @@ impl PackageStore {
         if !std::fs::symlink_metadata(&leases).is_ok_and(|meta| meta.is_dir()) {
             return Ok(());
         }
-        for entry in std::fs::read_dir(&leases)? {
-            let entry = entry?;
+        for entry in std::fs::read_dir(&leases).map_err(crate::io_at("read", &leases))? {
+            let entry = entry.map_err(crate::io_at("read", &leases))?;
             let Some(id) = entry
                 .file_name()
                 .to_str()
@@ -1096,8 +1108,9 @@ impl PackageStore {
             return Ok(0);
         }
         let mut bytes = 0u64;
-        for entry in std::fs::read_dir(&tmp)? {
-            let path = entry?.path();
+        for entry in std::fs::read_dir(&tmp).map_err(crate::io_at("read", &tmp))? {
+            let entry = entry.map_err(crate::io_at("read", &tmp))?;
+            let path = entry.path();
             let replaced = path
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -1118,7 +1131,7 @@ impl PackageStore {
                 Ok(meta) if meta.is_file() => meta.len(),
                 _ => crate::tree_size(&path),
             };
-            remove_entry(&path)?;
+            remove_entry(&path).map_err(crate::io_at("remove", &path))?;
             bytes = bytes.saturating_add(size);
             if let Some((id, taken)) = taken
                 && !self.layout.payload(id).exists()

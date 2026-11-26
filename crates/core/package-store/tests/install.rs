@@ -954,3 +954,59 @@ fn an_app_takes_over_its_earlier_id_only_from_the_same_publisher() {
     let store = PackageStore::at(fresh.path());
     install(&store, &tasks);
 }
+
+/// Make `path` readable and not writable, as a file another account made is to this one.
+#[cfg(unix)]
+fn readable_only(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o444)).unwrap();
+}
+
+tilo_test_env::scenario! {
+    fn a_shared_store;
+
+    phase a_reinstall_takes_the_lock_and_lease_another_account_made;
+    {
+        let identity = SigningIdentity::generate();
+        let (_payload, packed) = package(&identity, "so.tilo.shared", "1.0.0", &v1_files());
+        let root = scratch();
+        let store = PackageStore::at(root.path());
+        install(&store, &packed);
+
+        // The store's lock and the live tree's lease, as a device's daemon makes them and a
+        // person's session then meets: readable, not writable, by the session's account.
+        #[cfg(unix)]
+        {
+            readable_only(&root.path().join(".lock"));
+            let lease = store.layout().lease(packed.id());
+            std::fs::create_dir_all(lease.parent().unwrap()).unwrap();
+            std::fs::write(&lease, b"").unwrap();
+            readable_only(&lease);
+        }
+
+        // Installing the same version again is a reinstall: it replaces the live tree, so it
+        // takes the tree's lease as well as the store's lock. Neither being writable to this
+        // account must not refuse it.
+        store
+            .install(full_tapp(&packed).as_slice(), admit_all, None)
+            .expect("a reinstall where another account made the lock and the lease");
+        assert_eq!(installed(&store, "so.tilo.shared").version, "1.0.0");
+    }
+
+    phase an_io_failure_names_the_path_and_operation;
+    {
+        let identity = SigningIdentity::generate();
+        let (_payload, packed) = package(&identity, "so.tilo.named", "1.0.0", &v1_files());
+        let root = scratch();
+        let store = PackageStore::at(root.path());
+        // A lock path that cannot be opened: the failure must say which file and what was
+        // tried, or a store two accounts share cannot be fixed from its message.
+        std::fs::create_dir_all(root.path().join(".lock")).unwrap();
+        let error = store
+            .install(full_tapp(&packed).as_slice(), admit_all, None)
+            .expect_err("a lock that is a directory refuses the install");
+        let said = error.to_string();
+        assert!(said.contains("lock"), "{said}");
+        assert!(said.contains(".lock"), "{said}");
+    }
+}

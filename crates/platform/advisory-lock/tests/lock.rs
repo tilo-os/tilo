@@ -248,6 +248,23 @@ tilo_test_env::scenario! {
         assert!(FileLock::try_exclusive(open_lock_file(&path).unwrap()).is_ok());
     }
 
+    phase a_lock_file_this_account_may_only_read_still_locks;
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (_directory, path) = fresh_lock_path();
+        std::fs::write(&path, b"").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        // `flock` needs no write access: a lock file another account made (a device's store that
+        // its daemon and a person's session share) still locks for one that may only read it.
+        let held = FileLock::open(&path, LockMode::Exclusive).expect("a readable lock file locks");
+        assert!(busy(FileLock::try_open(&path, LockMode::Exclusive)));
+        drop(held);
+        // Writing the holder's record needs the file, so a read-only lock refuses it rather
+        // than silently not recording.
+        let read_only = FileLock::open(&path, LockMode::Exclusive).unwrap();
+        assert!(read_only.resource_owner().is_err());
+    }
+
     phase open_current_follows_a_replaced_name;
     {
         let (_directory, path) = fresh_lock_path();

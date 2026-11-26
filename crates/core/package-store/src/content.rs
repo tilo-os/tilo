@@ -41,17 +41,23 @@ impl Content<'_> {
     pub(crate) fn ingest(&self, len: u64, reader: &mut dyn Read) -> Result<BlobHash, StoreError> {
         let stored = if len <= SMALL_BLOB {
             let mut bytes = Vec::with_capacity(usize::try_from(len).unwrap_or(0));
-            reader.take(len).read_to_end(&mut bytes)?;
+            reader
+                .take(len)
+                .read_to_end(&mut bytes)
+                .map_err(crate::io_at("read payload", self.staging))?;
             self.runtime
                 .block_on(self.store.ingest(bytes::Bytes::from(bytes)))
                 .map_err(content_error)?
         } else {
             // The store copies the staged bytes in and the file is gone
             // right after, so it needs no durability of its own.
-            let staged = tempfile::NamedTempFile::new_in(self.staging)?;
-            std::io::copy(&mut reader.take(len), &mut staged.as_file())?;
+            let staged = tempfile::NamedTempFile::new_in(self.staging)
+                .map_err(crate::io_at("create", self.staging))?;
+            let staged_path = staged.path().to_path_buf();
+            std::io::copy(&mut reader.take(len), &mut staged.as_file())
+                .map_err(crate::io_at("write", &staged_path))?;
             self.runtime
-                .block_on(self.store.ingest_file(staged.path()))
+                .block_on(self.store.ingest_file(&staged_path))
                 .map_err(content_error)?
         };
         Ok(BlobHash(*stored.as_bytes()))
@@ -90,10 +96,11 @@ impl Content<'_> {
         let Some(len) = self.len(blob)? else {
             return Ok(None);
         };
-        let dir = tempfile::tempdir_in(self.staging)?;
+        let dir =
+            tempfile::tempdir_in(self.staging).map_err(crate::io_at("create", self.staging))?;
         let target = dir.path().join("blob");
         self.export(blob, &target)?;
-        let file = std::fs::File::open(&target)?;
+        let file = std::fs::File::open(&target).map_err(crate::io_at("open", &target))?;
         Ok(Some((len, file)))
     }
 
@@ -152,7 +159,7 @@ pub(crate) fn session_with_close<R: Send>(
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()?;
-                std::fs::create_dir_all(staging)?;
+                std::fs::create_dir_all(staging).map_err(crate::io_at("create", staging))?;
                 let store = runtime
                     .block_on(ContentStore::open(&dir))
                     .map_err(content_error)?;

@@ -28,7 +28,9 @@ pub fn hold_payload_in(layout: &Layout, payload_root: &Path) -> io::Result<Optio
         return Ok(None);
     };
     let path = lease_file(layout, id)?;
-    FileLock::open_current(&path, LockMode::Shared).map(Some)
+    FileLock::open_current(&path, LockMode::Shared)
+        .map(Some)
+        .map_err(|error| at(&path, &error))
 }
 
 /// Record that the launch holding `lease` used its tree now: the app it
@@ -91,10 +93,11 @@ pub fn last_use(layout: &Layout, id: PackageId) -> Option<u64> {
 /// `id`'s lease, exclusively, when no launch holds it.
 #[cfg(feature = "store")]
 pub(crate) fn take(layout: &Layout, id: PackageId) -> io::Result<Option<FileLock>> {
-    match FileLock::try_open_current(&lease_file(layout, id)?, LockMode::Exclusive) {
+    let path = lease_file(layout, id)?;
+    match FileLock::try_open_current(&path, LockMode::Exclusive) {
         Ok(lock) => Ok(Some(lock)),
         Err(TryLockError::WouldBlock) => Ok(None),
-        Err(TryLockError::Error(error)) => Err(error),
+        Err(TryLockError::Error(error)) => Err(at(&path, &error)),
     }
 }
 
@@ -107,7 +110,7 @@ pub(crate) fn busy(layout: &Layout, id: PackageId) -> io::Result<bool> {
     match FileLock::try_open(&path, LockMode::Exclusive) {
         Ok(_) => Ok(false),
         Err(TryLockError::WouldBlock) => Ok(true),
-        Err(TryLockError::Error(error)) => Err(error),
+        Err(TryLockError::Error(error)) => Err(at(&path, &error)),
     }
 }
 
@@ -115,8 +118,9 @@ pub(crate) fn busy(layout: &Layout, id: PackageId) -> io::Result<bool> {
 /// waiting on it takes the next file at the name.
 #[cfg(feature = "store")]
 pub(crate) fn forget(layout: &Layout, id: PackageId, taken: FileLock) -> io::Result<()> {
-    match std::fs::remove_file(layout.lease(id)) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+    let path = layout.lease(id);
+    match std::fs::remove_file(&path) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(at(&path, &error)),
         _ => {}
     }
     drop(taken);
@@ -141,10 +145,13 @@ fn lease_file(layout: &Layout, id: PackageId) -> io::Result<std::path::PathBuf> 
                     error.kind(),
                     io::ErrorKind::NotFound | io::ErrorKind::IsADirectory
                 ) => {}
-            Err(error) => return Err(error),
+            Err(error) => return Err(at(dir, &error)),
         }
-        std::fs::create_dir_all(dir)?;
-        if !std::fs::symlink_metadata(dir)?.is_dir() {
+        std::fs::create_dir_all(dir).map_err(|error| at(dir, &error))?;
+        if !std::fs::symlink_metadata(dir)
+            .map_err(|error| at(dir, &error))?
+            .is_dir()
+        {
             return Err(io::Error::other(format!(
                 "{} is not a directory of leases",
                 dir.display()
@@ -152,6 +159,12 @@ fn lease_file(layout: &Layout, id: PackageId) -> io::Result<std::path::PathBuf> 
         }
     }
     Ok(path)
+}
+
+/// `error` at `path`, named: a store two accounts share fails on one file,
+/// and a bare `Permission denied` cannot say which.
+fn at(path: &Path, error: &io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{}: {error}", path.display()))
 }
 
 #[cfg(test)]

@@ -253,13 +253,32 @@ impl Drop for FileLock {
     }
 }
 
+/// Opens (creating if missing, never truncating) `path` for reading and writing, the way a
+/// lock file is normally made by its owner: a new lock file is written, so it needs write
+/// access.
+///
+/// `flock(2)` itself needs no write access: a shared or exclusive lock can be taken on a
+/// descriptor opened for reading alone. So when `path` exists but this account may not write
+/// it, the file is opened for reading instead. A lock file is often shared between accounts
+/// (a device's package store: its daemon and a person's session), and the one that did not
+/// create it must still be able to take the lock. [`FileLock::resource_owner`], which writes
+/// the holder's pid, fails on such a read-only descriptor; a holder that records itself must
+/// own the file.
 pub fn open_lock_file(path: &Path) -> io::Result<File> {
-    OpenOptions::new()
+    let writable = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(path)
+        .open(path);
+    match writable {
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            // Not writable by this account: lock what it may read. A file that is missing
+            // (its directory not writable either) fails here as it did above.
+            OpenOptions::new().read(true).open(path).map_err(|_| error)
+        }
+        result => result,
+    }
 }
 
 /// The process id a holder recorded with [`FileLock::resource_owner`], if the

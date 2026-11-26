@@ -56,6 +56,13 @@ pub enum StoreError {
     NoHome,
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
+    #[error("I/O: {operation} {path}: {source}")]
+    IoAt {
+        operation: &'static str,
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error(transparent)]
     Registry(#[from] RegistryError),
     #[error("package refused: {0}")]
@@ -83,6 +90,23 @@ pub enum StoreError {
     Pinned(String),
     #[error("installed package {0} has an unreadable record: {1}")]
     CorruptPackage(String, String),
+}
+
+/// An I/O error at `path`, named with what was being done there.
+///
+/// A store can be shared by more than one account (a device's daemon and a person's session),
+/// and then a failure is one account meeting a file the other made. A bare `Permission denied`
+/// cannot say which file or which operation, so every store I/O failure names both.
+pub(crate) fn io_at(
+    operation: &'static str,
+    path: impl Into<std::path::PathBuf>,
+) -> impl FnOnce(std::io::Error) -> StoreError {
+    let path = path.into();
+    move |source| StoreError::IoAt {
+        operation,
+        path,
+        source,
+    }
 }
 
 /// Recursive byte sum of every regular file under `path`; 0 when absent.
