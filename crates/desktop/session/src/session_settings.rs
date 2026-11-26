@@ -276,7 +276,7 @@ impl Stores for SessionStores {
             .block_on(crate::broker_services::daemon_resource_command(
                 &self.daemon,
                 self.workspace.clone(),
-                settings_store::workspace::APP.to_owned(),
+                settings_store::workspace::SURFACE_APP.to_owned(),
                 &command,
             ))
     }

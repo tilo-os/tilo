@@ -8,11 +8,8 @@ use serde_json::{Map, Value};
 
 use crate::placement;
 
-/// The app the settings' resources are kept under.
-pub const APP: &str = tilo_app_id::apps::SETTINGS;
-
-/// The app id the settings' declared kinds and verbs are named under: every section's kind, and
-/// the family of its setters.
+/// The app id the settings' declared kinds and verbs are named under, and the app the settings'
+/// resources are kept under: every section's kind, and the family of its setters.
 pub use tilo_actions::remote::settings_resources::SURFACE_APP;
 
 /// The verb a setting `leaf` is written by.
