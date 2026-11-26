@@ -54,11 +54,24 @@ pub(super) fn registry_rows(registries: &RegistriesFile) -> Vec<PackageRegistry>
 /// Private: this reads each registry's catalogue with a client that blocks, so it is only ever
 /// reached from [`on_this_device_awaited`]'s thread, never from a task of the app runtime.
 fn on_this_device(registries: &RegistriesFile) -> Vec<AppRelease> {
-    resolve(
+    resolve_in(
         fleet_catalogue::default_apps(),
         &offered(registries),
-        &cached,
+        package_store::Catalog::from_env().ok().as_ref(),
     )
+}
+
+/// [`resolve`] in one [`package_store::Catalog`] for every app, when there is one: a catalog
+/// built per lookup re-reads the system store each time, and a founding looks up every default
+/// app.
+fn resolve_in(
+    defaults: &[&str],
+    offered: &[Offered],
+    catalog: Option<&package_store::Catalog>,
+) -> Vec<AppRelease> {
+    resolve(defaults, offered, &|app| {
+        catalog.and_then(|catalog| cached(catalog, app))
+    })
 }
 
 /// [`on_this_device`], with the registries asked on a thread of their own and the answer awaited.
@@ -77,7 +90,11 @@ pub(super) async fn on_this_device_awaited(registries: &RegistriesFile) -> Vec<A
         });
     let unasked = || {
         // No thread to ask on: the workspace starts with the releases this device's cache holds.
-        resolve(fleet_catalogue::default_apps(), &[], &cached)
+        resolve_in(
+            fleet_catalogue::default_apps(),
+            &[],
+            package_store::Catalog::from_env().ok().as_ref(),
+        )
     };
     match started {
         Ok(_) => heard.await.unwrap_or_else(|_| unasked()),
@@ -154,8 +171,8 @@ fn from_cache(app: &str, cached: &dyn Fn(&str) -> Option<AppRelease>) -> Option<
 
 /// The release of `app` this device's package cache holds: the version installed, its signed
 /// package root and publisher, and the compiled surface its signed payload ships.
-fn cached(app: &str) -> Option<AppRelease> {
-    let package = package_store::find_installed(app).ok()??;
+fn cached(catalog: &package_store::Catalog, app: &str) -> Option<AppRelease> {
+    let package = catalog.find(app).ok()??;
     if package.package_id_hex.is_empty() || package.publisher_key_hex.is_empty() {
         // A development fixture names no signed root: nothing a workspace can bind to.
         return None;
@@ -370,7 +387,11 @@ mod tests {
         let asked = runtime.block_on(on_this_device_awaited(&registries));
         assert_eq!(
             asked,
-            resolve(fleet_catalogue::default_apps(), &[], &cached),
+            resolve_in(
+                fleet_catalogue::default_apps(),
+                &[],
+                package_store::Catalog::from_env().ok().as_ref(),
+            ),
             "with no catalogue answering, a workspace starts with the releases the cache holds"
         );
     }

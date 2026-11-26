@@ -451,13 +451,23 @@ fn one_key_makes_and_works_in_hundreds_of_workspaces_at_once() {
             .post("/v1/resources/account/workspaces/actions/list", &json!({}))
             .await;
         assert_eq!(status, 200, "{listed}");
+        let workspaces = listed["result"]["workspaces"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        for customer in 0..CUSTOMERS {
+            let name = format!("Customer {customer}");
+            assert!(
+                workspaces
+                    .iter()
+                    .any(|workspace| workspace["name"].as_str() == Some(name.as_str())),
+                "the workspace named {name} is listed: {listed}"
+            );
+        }
         assert_eq!(
-            listed["result"]["workspaces"]
-                .as_array()
-                .map(Vec::len)
-                .unwrap_or_default(),
-            CUSTOMERS,
-            "each of the backend's workspaces is listed: {listed}"
+            workspaces.len(),
+            CUSTOMERS + 1,
+            "each of the backend's workspaces is listed, beside the person's own: {listed}"
         );
         let mut sorted = creating.clone();
         sorted.sort();

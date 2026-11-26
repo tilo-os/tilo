@@ -285,12 +285,17 @@ impl Workspaces {
             );
             return false;
         }
-        for change in changes {
-            if let Err(error) = person_workspace::apply_on(self, &own, IDENTITY_LIST, change).await
-            {
-                tracing::warn!(%error, %own, "the person's list of workspaces was not written");
-                return false;
-            }
+        if changes.is_empty() {
+            return true;
+        }
+        // One write for the whole listing: a listing is up to three changes of the one record, and
+        // a write of it is a sync of the record's store. Written one change at a time, a workspace
+        // made waits for the disk three times.
+        if let Err(error) =
+            person_workspace::apply_actions_on(self, &own, IDENTITY_LIST, changes, None).await
+        {
+            tracing::warn!(%error, %own, "the person's list of workspaces was not written");
+            return false;
         }
         true
     }
