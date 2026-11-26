@@ -1464,7 +1464,7 @@ pub(super) async fn may_take_look(
     let Ok(personal) = super::assistant_of(workspaces, workspace, &person).await else {
         return false;
     };
-    personal.is_none_or(|personal| personal.id.0 != agent)
+    personal.is_some_and(|personal| personal.id.0 != agent)
         || super::events::member_event(&workspaces.workspace_root(workspace), id, &person)
 }
 

@@ -1610,6 +1610,7 @@ mod tests {
         {
             let chat = workspace();
             let cause = chat::cause::Cause {
+                look_grant: None,
                 kind: tilo_resource::Atom("reminder".into()),
                 label: "Call mum".into(),
                 key: tilo_resource::Atom("run-1".into()),
