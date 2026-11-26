@@ -1856,7 +1856,8 @@ mod identity_admin_tests {
                         providers: Some(providers(host.clone())),
                         ..Default::default()
                     },
-                , true);
+                    true,
+                );
                 if revoked {
                     f.authority
                         .revoked

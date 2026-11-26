@@ -421,7 +421,7 @@ mod tests {
                     own_device: Some(network.clone()),
                     ..Default::default()
                 },
-            );
+             false);
             let asked = request(&invocation(SETTINGS));
             *network.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
             let receipt = f.invoke(&asked).unwrap();
@@ -468,7 +468,7 @@ mod tests {
                         own_device: Some(network.clone()),
                         ..Default::default()
                     },
-                );
+                 false);
                 let asked = request(&invocation(SETTINGS));
                 f.invoke(&asked).unwrap();
                 let answer = network.answers.lock().unwrap().pop().unwrap();
@@ -508,7 +508,7 @@ mod tests {
                         own_device: Some(network.clone()),
                         ..Default::default()
                     },
-                );
+                 false);
                 let asked = request(&invocation(SETTINGS));
                 if admission_failure {
                     f.fail_next_barrier();
@@ -549,7 +549,7 @@ mod tests {
                     own_device: Some(network.clone()),
                     ..Default::default()
                 },
-            );
+             false);
             let asked = request(&invocation(SETTINGS));
             *network.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
             assert!(matches!(
@@ -578,7 +578,8 @@ mod tests {
                         own_device: Some(network.clone()),
                         ..Default::default()
                     },
-                , true);
+                    true,
+                );
                 if revoked {
                     f.authority
                         .revoked

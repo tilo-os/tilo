@@ -94,7 +94,7 @@ tilo_test_env::scenario! {
     {
         let fixture = crate::collab_app_broker::provided::signed_test_support::Fixture::new(
             crate::services::ProcessServices::default(),
-        );
+         false);
         let descriptor = descriptor();
         let request = request(&descriptor);
         let admitted = fixture
@@ -163,7 +163,7 @@ tilo_test_env::scenario! {
     {
         let fixture = crate::collab_app_broker::provided::signed_test_support::Fixture::new(
             crate::services::ProcessServices::default(),
-        );
+         false);
         let descriptor = descriptor();
         let mut request = request(&descriptor);
         request.revision = Some("selected-revision".into());
