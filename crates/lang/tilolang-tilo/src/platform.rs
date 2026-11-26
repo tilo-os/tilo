@@ -174,6 +174,9 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("invite", "Invite", "session:invite"),
     ("nearby_send", "NearbySend", "session:nearby-send"),
     ("devices", "Devices", "session:devices"),
+    // The person's Tilo below their workspaces: their workspaces elsewhere and the hosts running
+    // theirs, with the plan, what it used and its credit.
+    ("yours", "Yours", "session:yours"),
     ("server", "Server", "device:server"),
     ("speakers", "Speakers", "session:speakers"),
     ("printers", "Printers", "printers"),

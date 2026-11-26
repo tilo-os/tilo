@@ -8,6 +8,12 @@
 //! provider's own page for a card, a plan or an invoice. The reading is the person's,
 //! so only Settings reads it.
 //!
+//! The same answer is what the person's Tilo overview shows (`session:yours`,
+//! [`tilo_device_surfaces::yours`]): the host running their workspaces with the plan, what it
+//! used and its credit, and the workspaces their host offers elsewhere. That row is the shell's
+//! alone, and it is the whole account's facts less the invoices, which stay Settings' page. Both
+//! readings are one read of the host, so a plan or a card written on the host shows on both.
+//!
 //! The host is asked off the session's loop: a read waits on the host's socket, and
 //! the loop draws windows while it does. Until the first answer lands the reading says
 //! it is reading, and a host that cannot be asked is a state of its own
@@ -18,15 +24,21 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
-use tilo_action_services::server_account::{InvoiceStatus, ServerAccount};
+use tilo_action_services::server_account::{InvoiceStatus, ServerAccount, ServerKind};
 use tilo_actions::{ActionAddress, ApiError};
+use tilo_device_surfaces::yours::{Elsewhere, Host, Yours};
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Service, Started};
+use tilo_session_core::desktop::state::{DesktopHandle, HostActionSource};
+use tilo_session_core::shell::SHELL_APP;
 
 use crate::server_account::Source;
 
 /// The resource this session publishes the account as.
 pub(crate) const RESOURCE: &str = "host-account";
+
+/// The resource this session publishes the person's Tilo as, for the shell's overview of it.
+pub(crate) const YOURS_RESOURCE: &str = "session:yours";
 
 /// The app the account is read for: billing is the person's own, and Settings shows
 /// it. An agent learns what it needs from the refusal of the action it took.
@@ -40,6 +52,11 @@ const RETRY: Duration = Duration::from_secs(30);
 #[derive(tilo_resource::Row)]
 #[row(kind = "host-account", label = "Hosting account")]
 pub struct HostAccountRoot;
+
+/// The person's Tilo resource, as the session's catalogue holds it.
+#[derive(tilo_resource::Row)]
+#[row(kind = "yours", label = "Your Tilo")]
+pub struct YoursRoot;
 
 /// Where the account stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +88,9 @@ impl State {
 /// The host account as a view reads it.
 pub(crate) struct Served {
     source: Source,
+    /// The person's workspaces the host offers elsewhere, as it offers them now: the host actions
+    /// whose source is another of their workspaces.
+    elsewhere: std::rc::Rc<dyn Fn() -> Vec<Elsewhere>>,
     /// The reading as it stands, once the host answered.
     held: Mutex<Option<Value>>,
     /// The reading that landed and the loop has not taken yet.
@@ -87,13 +107,24 @@ pub(crate) struct Served {
 }
 
 impl Served {
-    /// The account of this session's host, watched where it keeps its plans.
-    pub(crate) fn new() -> Self {
-        Self::of(Source::session())
+    /// The account of this session's host, watched where it keeps its plans, and the workspaces
+    /// the person's host offers elsewhere.
+    pub(crate) fn new(handle: &DesktopHandle) -> Self {
+        let handle = handle.clone();
+        Self::with(
+            Source::session(),
+            std::rc::Rc::new(move || elsewhere_of(&handle.host_actions())),
+        )
     }
 
-    /// The account `source` answers.
+    /// The account `source` answers, with no workspace elsewhere.
+    #[cfg(test)]
     pub(crate) fn of(source: Source) -> Self {
+        Self::with(source, std::rc::Rc::new(Vec::new))
+    }
+
+    /// The account `source` answers, and the workspaces `elsewhere` names.
+    fn with(source: Source, elsewhere: std::rc::Rc<dyn Fn() -> Vec<Elsewhere>>) -> Self {
         let stale = Arc::new(AtomicBool::new(true));
         let watch = match &source {
             Source::Hosted(hosted) => {
@@ -110,6 +141,7 @@ impl Served {
         };
         Self {
             source,
+            elsewhere,
             held: Mutex::default(),
             landed: Arc::default(),
             stale,
@@ -133,7 +165,34 @@ impl Served {
         if let Some(held) = held {
             return held;
         }
-        shell(State::Reading, host_name(&self.source), "")
+        shell(
+            State::Reading,
+            host_name(&self.source),
+            "",
+            source_kind(&self.source),
+        )
+    }
+
+    /// The person's Tilo, as the shell's overview of it draws it: the workspaces the host offers
+    /// elsewhere, and the host running theirs when hosting means anything yet.
+    fn yours(&self) -> Value {
+        // The answer is this module's own reading, so a host that does not read as a row is a
+        // fault of the build's: the page says nothing of it rather than a row of empty fields.
+        let host = tilo_failure::ignored!(
+            "the host's answer is the fields of its own row; one that does not read shows none",
+            serde_json::from_value::<Host>(self.reading()).ok()
+        );
+        let hosts = host.filter(Host::matters).into_iter().collect();
+        match serde_json::to_value(Yours {
+            elsewhere: (self.elsewhere)(),
+            hosts,
+        }) {
+            Ok(reading) => reading,
+            Err(error) => {
+                tracing::warn!(%error, "host account: the person's Tilo does not write");
+                Value::Object(Map::new())
+            }
+        }
     }
 
     /// Whether the host could not be asked last time, so it is worth asking again.
@@ -149,20 +208,34 @@ impl Served {
 
 impl Service for Served {
     fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
-        vec![tilo_resource::typed_resource::<HostAccountRoot>(
-            RESOURCE,
-            crate::i18n::t("session-host-account"),
-        )]
+        vec![
+            tilo_resource::typed_resource::<HostAccountRoot>(
+                RESOURCE,
+                crate::i18n::t("session-host-account"),
+            ),
+            tilo_resource::typed_resource::<YoursRoot>(
+                YOURS_RESOURCE,
+                crate::i18n::t("session-yours"),
+            ),
+        ]
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
-        (resource == RESOURCE).then(|| self.reading())
+        match resource {
+            RESOURCE => Some(self.reading()),
+            YOURS_RESOURCE => Some(self.yours()),
+            _ => None,
+        }
     }
 
-    /// The reading for the app `app` reading it: the person's own account is
-    /// Settings', and another program reads none of it.
+    /// The reading for the app `app` reading it: the person's own account is Settings', the
+    /// overview of their Tilo is the shell's, and another program reads none of either.
     fn read_for(&self, app: &str, _workspace: &str, resource: &str) -> Option<Value> {
-        (resource == RESOURCE && app == SETTINGS_APP).then(|| self.reading())
+        match resource {
+            RESOURCE => (app == SETTINGS_APP).then(|| self.reading()),
+            YOURS_RESOURCE => (app == SHELL_APP).then(|| self.yours()),
+            _ => None,
+        }
     }
 
     fn invoke(
@@ -223,14 +296,47 @@ pub(crate) fn reading_of(source: &Source) -> Value {
             State::Unreachable,
             host_name(source),
             &format!("Your host did not answer: {why}"),
+            source_kind(source),
         ),
         Ok(account) if !account.sells() => shell(
             State::NoAccount,
             &account.server,
             "Your workspaces run on this server itself, so there is nothing to pay for.",
+            kind_word(account.kind),
         ),
         Ok(account) => account_reading(&account),
     }
+}
+
+/// What a host is, as a view shows it.
+const fn kind_word(kind: ServerKind) -> &'static str {
+    match kind {
+        ServerKind::Device => "device",
+        ServerKind::SelfHosted => "self-hosted",
+        ServerKind::Provider => "provider",
+    }
+}
+
+/// What the host `source` names is, for a host that did not answer: this computer, or a server
+/// whose kind only its answer would say.
+fn source_kind(source: &Source) -> &'static str {
+    match source {
+        Source::Device(_) => "device",
+        Source::Hosted(_) => "",
+    }
+}
+
+/// The person's workspaces the host offers elsewhere, as the host publishes them: the host
+/// actions whose source is another of their workspaces.
+fn elsewhere_of(actions: &[tilo_session_core::desktop::state::HostAction]) -> Vec<Elsewhere> {
+    actions
+        .iter()
+        .filter(|action| action.source == Some(HostActionSource::Workspaces))
+        .map(|action| Elsewhere {
+            action: action.id.clone(),
+            name: action.title.clone(),
+        })
+        .collect()
 }
 
 /// The reading of a host that sells: what the account is on, and the invoices it was
@@ -250,7 +356,7 @@ fn account_reading(account: &ServerAccount) -> Value {
             "You are not signed in to this host yet: sign in on its page to see the plan and invoices.",
         )
     };
-    let mut reading = shell(state, &account.server, words);
+    let mut reading = shell(state, &account.server, words, kind_word(account.kind));
     let mut put = |key: &str, value: Value| {
         if let Some(map) = reading.as_object_mut() {
             map.insert(key.to_owned(), value);
@@ -309,12 +415,13 @@ fn account_reading(account: &ServerAccount) -> Value {
     reading
 }
 
-/// A reading with `state`, `server` and `words`, and nothing else the host has said:
+/// A reading with `state`, `server`, `words` and `kind`, and nothing else the host has said:
 /// every other field reads empty.
-fn shell(state: State, server: &str, words: &str) -> Value {
+fn shell(state: State, server: &str, words: &str, kind: &str) -> Value {
     json!({
         "state": state.word(),
         "server": server,
+        "kind": kind,
         "words": words,
         "plan_name": "",
         "plan_price": "",

@@ -52,7 +52,9 @@ view overview() {
     }
 }
 
-/// The workspaces the person is in, as chips that switch to them, and how many people are here.
+/// The workspaces the person is in, as chips that switch to them, how many people are here, and
+/// the way to their Tilo as a whole: every workspace, and below them their workspaces elsewhere,
+/// the hosts running theirs and the agents they let in (`workspaces.tl`).
 view workspaces_here() {
     if not layout.workspaces.is_empty() or not layout.people.is_empty() {
         row(gap: .related, align: .center, wrap: true) {
@@ -70,6 +72,9 @@ view workspaces_here() {
                 if not layout.people.is_empty() {
                     ui.Fact("{layout.people.len()} here", icon: .users)
                 }
+            }
+            ui.Button("Your Tilo", icon: .globe, size: .small) {
+                on press: device.show_surface(device.overlays, surface: "workspaces")
             }
         }
     }

@@ -712,6 +712,8 @@ session-this-computer = This computer
 
 session-host-account = Hosting account
 
+session-yours = Your Tilo
+
 daemon-reconnecting = Reconnecting…
 daemon-unreachable = The device's service is not running; reconnecting…
 

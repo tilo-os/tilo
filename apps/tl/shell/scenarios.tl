@@ -1734,7 +1734,8 @@ scenario "the notification centre, cleared" {
     stage(device.notifications, device.Notifications(notices: [], undo: true))
 }
 
-/// The workspaces: every one the person is in, and who is here in the one in front.
+/// The workspaces: every one the person is in, and below them their Tilo — the workspaces they
+/// have elsewhere, the host running theirs with its plan, and the agents they let in.
 scenario "the workspaces" {
     let d = root Layout
     d.person = "Ada Lovelace"
@@ -1746,6 +1747,65 @@ scenario "the workspaces" {
     d.workspaces.insert(LayoutWorkspace(key: "garden", name: "Garden"))
     d.people.insert(LayoutPerson(key: "mia", name: "Mia Clayton"))
     d.people.insert(LayoutPerson(key: "sam", name: "Sam Okafor"))
+    stage(
+        device.yours,
+        device.Yours(
+            elsewhere: [
+                device.Elsewhere(action: "open-workspace:https://tilo.sh/abc", name: "Tilo"),
+                device.Elsewhere(action: "open-workspace:https://tilo.sh/def", name: "Release 5"),
+            ],
+            hosts: [
+                device.Host(
+                    server: "Tilo Cloud",
+                    kind: "provider",
+                    state: "available",
+                    plan_name: "Pro",
+                    plan_price: "$20 a month",
+                    has_card: true,
+                    usage_seconds: 3720,
+                    included_seconds: 360000,
+                    credit: "$12.40",
+                    manage: "https://tilo.sh/billing",
+                ),
+            ],
+        ),
+    )
+    stage(
+        device.devices,
+        device.Devices(
+            signed_in: true,
+            access: [
+                device.AccessKey(
+                    id: "9f2c",
+                    label: "Claude Code",
+                    kind: .agent,
+                    agent: "Claude Code",
+                    online: true,
+                    fingerprint: "9f2c1a",
+                ),
+                device.AccessKey(
+                    id: "7b41",
+                    label: "Ada's laptop",
+                    kind: .device,
+                    current: true,
+                    fingerprint: "7b41c3",
+                ),
+            ],
+        ),
+    )
+}
+
+/// The workspaces with nothing else hosting them: this computer runs them itself, and no agent
+/// acts as the person, so both sections under their Tilo say what that means.
+scenario "the workspaces, with nothing hosting them" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    stage(device.time, device.Time(clock: "9:12 AM"))
+    stage(device.overlays, device.Overlays(here: "workspaces"))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
+    stage(device.yours, device.Yours(elsewhere: [], hosts: []))
+    stage(device.devices, device.Devices(signed_in: true, access: []))
 }
 
 /// The phone's shell, signed out: the page asks for the ticket another device printed.

@@ -727,6 +727,7 @@ d-rcjzvfxp = Übersicht
 
 d-766s7y4k = Arbeitsbereiche hier
     .w-here = { $len } hier
+    .w-your-tilo = Dein Tilo
 
 d-7nxhynyj = Bild
 
@@ -2403,3 +2404,54 @@ d-73qaarxf = Freigabeangabe
     .w-can-edit = darf bearbeiten
     .w-can-view = darf ansehen
     .w-outside-this-workspace = { $who }, außerhalb dieses Arbeitsbereichs, { $what }
+d-qoiyh5y7 = Eine Webseite öffnen
+    .doc = Eine Webseite in der App öffnen, die Webadressen öffnet.
+
+d-qoiyh5y7-url = URL
+
+d-jexq3d24 = Hostworte
+    .w-reading-your-account = Lese dein Konto…
+    .w-your-host-could-not-be-reached = Dein Host war nicht erreichbar.
+    .w-not-signed-in-yet-so-there = Noch nicht angemeldet, daher kein Tarif.
+    .w-your-workspaces-run-on-this-machine = Deine Arbeitsbereiche laufen auf diesem Rechner selbst, es gibt nichts zu bezahlen.
+    .w-no-plan-yet = Noch kein Tarif
+    .w-of-this-period = { $machine_time } von { $machine_time2 } in diesem Zeitraum
+    .w-nothing-used-this-period = In diesem Zeitraum nichts genutzt
+    .w-this-period = { $machine_time } in diesem Zeitraum
+    .w-credit = { $plan } · { $used } · { $credit } Guthaben
+
+d-cpntobds = Agentenworte
+    .w-removed-every-device-of-yours-refuses = Entfernt; jedes deiner Geräte lehnt ihn ab
+    .w-a-program-of-yours-acting-as = Ein Programm von dir, das als du handelt
+    .w-online-now-acting-as-you = Jetzt online, handelt als du
+    .w-acting-as-you = Handelt als du
+
+d-p4iyapc6 = Maschinenzeit
+    .w-hr-min = { $hours } Std. { $minutes } Min.
+    .w-hr = { $hours } Std.
+    .w-min = { $minutes } Min.
+    .w-s = { $seconds } s
+
+d-xai2nlf5 = Dein Tilo
+    .w-your-tilo = Dein Tilo
+    .w-more-workspaces = Weitere Arbeitsbereiche
+    .w-on-one-of-your-hosts = Auf einem deiner Hosts
+
+d-znvl3q45 = Hosts
+    .w-hosts-compute = Hosts & Rechenleistung
+    .w-no-other-machine-runs-your-workspaces = Kein anderer Rechner führt deine Arbeitsbereiche aus
+    .w-this-computer-runs-them-itself-and = Dieser Rechner führt sie selbst aus, es gibt nichts zu bezahlen.
+    .w-manage-billing = Abrechnung verwalten
+    .w-add-a-card = Karte hinzufügen
+
+d-m54htipi = Agenten
+    .w-agents-let-in = Zugelassene Agenten
+    .w-no-agent-acts-as-you-yet = Noch kein Agent handelt als du
+    .w-an-agent-you-let-in-shows = Ein Agent, den du zulässt, steht hier, mit dem Weg, ihn zu entfernen.
+
+d-pou22ylc = Agentenmenü
+    .w-manage = { $label } verwalten
+    .w-remove-no-longer-used = { $label } entfernen — nicht mehr genutzt
+    .w-remove-it-was-lost = { $label } entfernen — verloren
+    .w-remove-it-was-stolen = { $label } entfernen — gestohlen
+    .w-remove-someone-knows-its-key = { $label } entfernen — jemand kennt den Schlüssel

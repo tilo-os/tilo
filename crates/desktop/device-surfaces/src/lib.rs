@@ -34,6 +34,7 @@ pub mod room;
 pub mod shares;
 pub mod time;
 pub mod windows;
+pub mod yours;
 
 /// The device's resources, as their surfaces: each reading and the actions it offers, in the order
 /// the shell reads them.
@@ -114,6 +115,9 @@ pub fn device_surfaces() -> Vec<Surface> {
         people::surface(),
         shares::shares_surface(),
         lists::invite_surface(),
+        // The person's Tilo below their workspaces: their workspaces elsewhere, and the hosts
+        // running theirs with the plan, what it used and its credit.
+        yours::surface(),
     ]
 }
 

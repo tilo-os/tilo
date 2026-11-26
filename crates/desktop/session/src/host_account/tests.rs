@@ -332,3 +332,154 @@ fn the_reading_is_what_the_packages_surface_declares() {
         );
     }
 }
+
+/// The person's Tilo as the shell reads it: the workspaces their host offers elsewhere, and the
+/// host running their workspaces with the plan, what it used and its credit.
+#[test]
+fn the_persons_tilo_names_the_workspaces_elsewhere_and_the_host() {
+    let (_dir, source) = host(Some("acct-1"), selling());
+    let mut served = Served::with(
+        source,
+        std::rc::Rc::new(|| {
+            vec![Elsewhere {
+                action: "open-workspace:https://tilo.sh/abc".to_owned(),
+                name: "Tilo".to_owned(),
+            }]
+        }),
+    );
+    served.refresh();
+    let _ = served.poll();
+    let reading = served
+        .read_for(SHELL_APP, "ws1", YOURS_RESOURCE)
+        .expect("the shell reads the person's Tilo");
+    let yours: Yours = serde_json::from_value(reading).expect("the person's Tilo reads");
+    assert_eq!(
+        yours.elsewhere,
+        [Elsewhere {
+            action: "open-workspace:https://tilo.sh/abc".to_owned(),
+            name: "Tilo".to_owned(),
+        }],
+        "a workspace elsewhere is named as its host names it"
+    );
+    let host = yours
+        .hosts
+        .first()
+        .expect("the host running their workspaces");
+    assert_eq!(host.server, "Tilo Cloud");
+    assert_eq!(host.kind, "provider");
+    assert_eq!(host.state, "available");
+    assert_eq!(host.plan_name, "Pro");
+    assert_eq!(host.plan_price, "$20 a month");
+    assert!(host.has_card, "the account has a card on file");
+    assert_eq!(host.credit, "$12.40");
+    assert_eq!(host.manage, "https://tilo.sh/billing?account=acct-1");
+}
+
+/// What the account's Linux machines used is the host's count, and the plan's inclusion its own:
+/// the overview reads both, so a plan says "1 hr of 100 hr" from these two numbers.
+#[test]
+fn a_plans_usage_and_inclusion_are_the_accounts_own_numbers() {
+    use tilo_action_services::server_account::{
+        Limits, PlanOffer, Subscription, Usage, WorkspaceUsage,
+    };
+
+    let included = 360_000_u64;
+    let account = ServerAccount {
+        server: "Tilo Cloud".to_owned(),
+        kind: ServerKind::Provider,
+        plans: vec![PlanOffer {
+            id: "pro".to_owned(),
+            name: "Pro".to_owned(),
+            price: Some("$20 a month".to_owned()),
+            limits: Limits {
+                included_vm_seconds: Some(included),
+                ..Limits::default()
+            },
+        }],
+        subscription: Some(Subscription {
+            account: "acct-1".to_owned(),
+            plan: Some("pro".to_owned()),
+            limits: Some(Limits {
+                included_vm_seconds: Some(included),
+                ..Limits::default()
+            }),
+            usage: Usage {
+                workspaces: vec![WorkspaceUsage {
+                    workspace: "ws-build".to_owned(),
+                    vm_seconds: 3600,
+                    ..WorkspaceUsage::default()
+                }],
+                ..Usage::default()
+            },
+            ..Subscription::default()
+        }),
+        manage_billing: Some("https://tilo.sh/billing".to_owned()),
+    };
+    let host: Host =
+        serde_json::from_value(account_reading(&account)).expect("the host reads as a row");
+    assert_eq!(host.usage_seconds, 3600, "an hour ran this period");
+    assert_eq!(host.included_seconds, Some(360_000), "the plan's hour");
+    assert_eq!(host.plan_name, "Pro");
+    assert_eq!(host.credit, "");
+}
+
+/// One computer that runs its workspaces itself has no hosting to show: the section stands empty
+/// rather than as a host with nothing on it.
+#[test]
+fn a_computer_that_sells_nothing_leaves_no_hosting_to_show() {
+    let mut served = Served::of(Source::Device("Ada's laptop".to_owned()));
+    served.refresh();
+    let _ = served.poll();
+    let reading = served
+        .read_for(SHELL_APP, "ws1", YOURS_RESOURCE)
+        .expect("the shell reads the person's Tilo");
+    let yours: Yours = serde_json::from_value(reading).expect("the person's Tilo reads");
+    assert!(yours.hosts.is_empty(), "{yours:?}");
+    assert!(yours.elsewhere.is_empty());
+}
+
+/// A host that could not be reached stays a row of its own on the overview, saying so: never an
+/// account that vanished, and never an empty section.
+#[test]
+fn a_host_out_of_reach_shows_as_unreachable() {
+    let (dir, source) = host(None, "{ this does not read");
+    let mut served = Served::of(source);
+    served.refresh();
+    let _ = served.poll();
+    let reading = served
+        .read_for(SHELL_APP, "ws1", YOURS_RESOURCE)
+        .expect("the shell reads the person's Tilo");
+    let yours: Yours = serde_json::from_value(reading).expect("the person's Tilo reads");
+    let host = yours
+        .hosts
+        .first()
+        .expect("a host that could not be reached is still a row");
+    assert_eq!(host.state, "unreachable");
+    assert!(
+        host.words.contains("plans.json"),
+        "the host's own words: {host:?}"
+    );
+    drop(dir);
+}
+
+/// The overview of the person's Tilo is the shell's: no other app reads their plan, usage or
+/// credit from it.
+#[test]
+fn only_the_shell_reads_the_persons_tilo() {
+    let (_dir, source) = host(Some("acct-1"), selling());
+    let mut served = Served::of(source);
+    served.refresh();
+    let _ = served.poll();
+    assert!(
+        served
+            .read_for(SHELL_APP, "ws1", YOURS_RESOURCE)
+            .is_some_and(|reading| reading["hosts"].as_array().is_some_and(|h| h.len() == 1))
+    );
+    for app in ["so.tilo.notes", "tilo.agent", "so.tilo.settings"] {
+        assert_eq!(
+            served.read_for(app, "ws1", YOURS_RESOURCE),
+            None,
+            "{app} reads no part of the person's Tilo"
+        );
+    }
+}

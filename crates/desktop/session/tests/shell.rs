@@ -3158,6 +3158,108 @@ fn creating_a_named_workspace_from_the_workspaces_surface_makes_it() {
     );
 }
 
+// ---- the person's Tilo below their workspaces ------------------------------------------
+
+/// A plans file of a host that sells Pro, with the person's account on it, as the hosted server
+/// writes it in `TILO_HOSTED_PLANS`.
+fn hosted_plans() -> &'static str {
+    r#"{"sells":{"host":"Tilo Cloud",
+        "plans":[{"id":"pro","name":"Pro","price":"$20 a month",
+                  "limits":{"max_running":2,"max_vms":5,"sizes":["small"]}}],
+        "add_payment_method":"https://tilo.sh/billing/card?account={account}",
+        "manage_billing":"https://tilo.sh/billing?account={account}"},
+        "accounts":{"acct-1":{"max_running":2,"max_vms":5,"sizes":["small"],"plan":"pro",
+                  "credit":"$12.40","card":{"brand":"Visa","last4":"4242"}}}}"#
+}
+
+/// The workspaces page shows the person's workspaces and, below them, their Tilo: the workspaces
+/// they have elsewhere, and the host running theirs with the plan and what it used. Opening the
+/// workspace that is not in front switches to it.
+#[test]
+fn the_workspaces_page_shows_the_persons_tilo_and_switches_between_them() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let dir = tempfile::tempdir().expect("a directory");
+    let plans = dir.path().join("plans.json");
+    std::fs::write(&plans, hosted_plans()).expect("the plans file");
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    environment
+        .set("TILO_HOSTED_ACCOUNT", "acct-1")
+        .set("TILO_HOSTED_PLANS", &plans)
+        .set("TILO_HOSTED_NAME", "Tilo Cloud");
+    let mut session = session();
+    until(&mut session, |session| says(session, &time(session).clock));
+    // Another workspace to switch between, made as a person makes one on this page.
+    show(&mut session, "workspaces");
+    until(&mut session, |session| {
+        session.shell_control(WORKSPACE_NAME).is_some()
+    });
+    press(&mut session, WORKSPACE_NAME);
+    type_text(&mut session, "studio");
+    press(&mut session, "Create");
+    until(&mut session, |session| {
+        shell(session)
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.name == "studio")
+    });
+    // The host offers one of the person's workspaces elsewhere, which the page lists too.
+    session.handle().set_host_actions(vec![HostAction {
+        id: "open-workspace:https://tilo.sh/abc".to_owned(),
+        title: "Tilo".to_owned(),
+        label: None,
+        subtitle: None,
+        icon: None,
+        destructive: false,
+        unasked: false,
+        source: Some(HostActionSource::Workspaces),
+    }]);
+    // The page shows both workspaces, their Tilo's workspaces elsewhere, and the host with the
+    // plan it is on and what it used.
+    until(&mut session, |session| {
+        says(session, "studio") && says(session, "Tilo Cloud") && says(session, "Your Tilo")
+    });
+    let shown: Vec<String> = shell(&session)
+        .workspaces
+        .iter()
+        .map(|workspace| workspace.name.clone())
+        .collect();
+    assert_eq!(shown.len(), 2, "the person is in two workspaces: {shown:?}");
+    for name in &shown {
+        assert!(says(&session, name), "the page shows {name}");
+    }
+    assert!(
+        says(&session, "More workspaces"),
+        "the workspaces elsewhere show"
+    );
+    assert!(
+        says(&session, "On one of your hosts"),
+        "the workspace their host offers elsewhere is a row of its own"
+    );
+    assert!(says(&session, "Pro"), "the plan shows");
+    assert!(
+        says(&session, "this period"),
+        "what the machines used shows"
+    );
+    assert!(
+        says(&session, "Agents let in"),
+        "the agents the person let in have their section"
+    );
+    // Opening the workspace that is not in front switches to it.
+    let other = shell(&session)
+        .workspaces
+        .iter()
+        .find(|workspace| !workspace.current)
+        .map(|workspace| workspace.name.clone())
+        .expect("a workspace is not in front");
+    press(&mut session, &other);
+    until(&mut session, |session| shell(session).workspace == other);
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
 // ---- the bar's trailing group, its material and a compact bar ---------------------------
 
 /// The people who come here in these tests, in the order they arrive.
