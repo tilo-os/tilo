@@ -346,6 +346,28 @@ impl SettingsSource for ChannelSettings {
         values: Map<String, Value>,
         origin: &settings_store::ChangeOrigin,
     ) -> std::io::Result<()> {
+        // A window writes only its own app's preferences, into the sections that hold one object
+        // per app: another app's entry is that app's to write, and a section the shell keeps is
+        // the shell's alone. Refused here, the write never reaches the shell's view.
+        if !settings_store::placement::per_app(name) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("{} may not write the {name} settings", self.app_id),
+            ));
+        }
+        let mut entries = values.iter();
+        let (Some((entry, Value::Object(_))), None) = (entries.next(), entries.next()) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{} writes one object under its own id", self.app_id),
+            ));
+        };
+        if entry != &self.app_id {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("{} may not write the settings of {entry}", self.app_id),
+            ));
+        }
         {
             let mut state = self.lock();
             // Shown at once as the shell will store it; a write the shell
