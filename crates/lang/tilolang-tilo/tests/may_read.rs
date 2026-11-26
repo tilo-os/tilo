@@ -207,7 +207,7 @@ fn a_read_refuses_what_the_reader_may_not_read() {
     let read = |who: MemberId, note: &ResourceRef| {
         let reader = Actor::from(who);
         ada.host.read_resource(
-            &tilolang_tilo::ReadAsk::of(Some(&tilolang_tilo::publish::resource_id(
+            &tilolang_tilo::ReadAsk::of(Some(&tilolang_tilo::naming::resource_id(
                 APP,
                 &note.id_string(),
             ))),

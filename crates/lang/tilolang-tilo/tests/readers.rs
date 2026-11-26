@@ -275,7 +275,7 @@ fn a_record_an_agent_makes_is_the_person_it_acts_for() {
             APP,
             &meta.kind_of("Desk"),
             &action_id(&meta, "write"),
-            Some(&tilolang_tilo::publish::resource_id(APP, &desk.id_string())),
+            Some(&tilolang_tilo::naming::resource_id(APP, &desk.id_string())),
             args.as_object().expect("an object"),
             Some(&caller),
             None,

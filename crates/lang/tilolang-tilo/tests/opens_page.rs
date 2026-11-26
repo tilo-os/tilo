@@ -165,7 +165,7 @@ fn what_a_primary_action_made_opens_its_page_with_its_first_field_focused() {
         InvokeOutcome::Done(Value::Ref(made)) => ResourceRef::clone(&made.target),
         other => panic!("new_note makes a note: {other:?}"),
     };
-    instance.opens_what_it_made(tilolang_tilo::publish::resource_id(APP, &made.id_string()));
+    instance.opens_what_it_made(tilolang_tilo::naming::resource_id(APP, &made.id_string()));
     // What the host does once the press ran: show what it made, then tell the window it ran.
     instance.show_ran();
     instance.sync();

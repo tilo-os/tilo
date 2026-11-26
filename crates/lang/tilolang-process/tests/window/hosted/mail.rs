@@ -398,7 +398,7 @@ impl Session {
         {
             return Err(format!("Mail declares no action {name}"));
         }
-        let resource = tilolang_tilo::publish::resource_id(APP, &on.id_string());
+        let resource = tilolang_tilo::naming::resource_id(APP, &on.id_string());
         let arguments = arguments.as_object().cloned().unwrap_or_default();
         // The API runs an action by the name the app publishes it under. What the action asks
         // on the way (a send its code makes) waits in its asked record, and the person allows
@@ -469,7 +469,7 @@ impl Session {
     /// Open `resource` through the `open` the app publishes for it, by the address the
     /// catalogue offers it under, as a person's row or an agent's call does; then settle.
     fn open_showing(&mut self, resource: &ResourceRef) {
-        let published = tilolang_tilo::publish::resource_id(APP, &resource.id_string());
+        let published = tilolang_tilo::naming::resource_id(APP, &resource.id_string());
         if let Err(error) = self.invoke(None, None, &published, "open", &serde_json::Map::new()) {
             panic!("{published}'s open answers: {error}");
         }
@@ -2766,7 +2766,7 @@ fn a_drafts_changes_are_its_authors_alone_until_it_is_sent() {
     );
 
     // Sent, the draft is every member's: Bo's history and feed list the change that sent it.
-    let resource = tilolang_tilo::publish::resource_id(APP, &id);
+    let resource = tilolang_tilo::naming::resource_id(APP, &id);
     ada.invoke(
         None,
         None,
@@ -3758,7 +3758,7 @@ fn an_agent_drafts_a_message_the_person_sends() {
     let (_connector, mut session) = window_of(account(&servers));
     synced(&mut session);
     let root = session.mail_root();
-    let resource = tilolang_tilo::publish::resource_id(APP, &root.id_string());
+    let resource = tilolang_tilo::naming::resource_id(APP, &root.id_string());
     let (agent, ambient) = super::agent_session();
     let arguments = json!({
         "to": "bo@chen.example",
@@ -4446,7 +4446,7 @@ fn an_agents_drafting_reaches_the_workspace_mail() {
     let (_connector, mut session) = window_of(account(&servers));
     synced(&mut session);
     let root = session.mail_root();
-    let resource = tilolang_tilo::publish::resource_id(APP, &root.id_string());
+    let resource = tilolang_tilo::naming::resource_id(APP, &root.id_string());
     let (agent, ambient) = super::agent_session();
 
     let drafted = session

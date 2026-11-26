@@ -75,7 +75,7 @@ pub(super) fn address(host: &Host, app: &str, aref: &ActionRef) -> Option<Action
     })?;
     let resource = match aref.args.first() {
         Some(Value::Ref(on)) => crate::call::address_of(app, &on.target),
-        _ => crate::publish::package_resource_id(app),
+        _ => crate::naming::package_resource_id(app),
     };
     Some(ActionAddress::new(resource, name))
 }
@@ -138,7 +138,7 @@ pub(super) fn own_record_call(
     let resource = root
         .published
         .clone()
-        .unwrap_or_else(|| crate::publish::resource_id(app, &format!("root-{}", root.ty)));
+        .unwrap_or_else(|| crate::naming::resource_id(app, &format!("root-{}", root.ty)));
     let owner = |other: &str| {
         host.package(other)
             .map(|package| package.meta)

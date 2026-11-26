@@ -8,8 +8,9 @@ use tilolang_runtime::store::VersionKind;
 use tilolang_runtime::{Meta, SourceWords};
 use tilolang_tilo::action::{ACTION_TYPE, DynAction, register_actions};
 use tilolang_tilo::meta::MetaExt as _;
+use tilolang_tilo::naming::resource_id;
 use tilolang_tilo::publish::{
-    ActionTypes, PlanRequest, Planner, publish_package, publish_resource, resource_id,
+    ActionTypes, PlanRequest, Planner, publish_package, publish_resource,
 };
 use tilolang_tilo::surface::{HOST_KIND, host_surface, package_surfaces, surface_bytes};
 

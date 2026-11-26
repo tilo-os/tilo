@@ -95,7 +95,7 @@ fn press(media: &NativeMediaService, call: &OwnCall, command: &str) -> Option<Op
                 workspace: call.workspace.clone(),
                 app: call.app.clone(),
                 record: call.record.clone(),
-                resource: tilolang_tilo::publish::resource_id(&call.app, &call.channel),
+                resource: tilolang_tilo::naming::resource_id(&call.app, &call.channel),
             });
         }
         other => {

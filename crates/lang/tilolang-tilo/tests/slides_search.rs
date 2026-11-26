@@ -155,10 +155,7 @@ fn notes_bound_to(host: &Host, tree: &tilolang_runtime::UiNode) -> Vec<String> {
         if let Some((target, name)) = node.binding.as_ref().and_then(|binding| binding.field())
             && *name == field
         {
-            out.push(tilolang_tilo::publish::resource_id(
-                APP,
-                &target.id_string(),
-            ));
+            out.push(tilolang_tilo::naming::resource_id(APP, &target.id_string()));
         }
         pending.extend(&node.children);
     }
@@ -289,7 +286,7 @@ fn search(host: &Host, needle: &str, deck: &ResourceRef) -> Vec<tilo_desktop_sea
         "ada",
         Arc::new(|| {}),
     );
-    let scope = tilolang_tilo::publish::resource_id(APP, &deck.id_string());
+    let scope = tilolang_tilo::naming::resource_id(APP, &deck.id_string());
     content.for_app(APP, Some(scope)).query(needle)
 }
 
@@ -366,7 +363,7 @@ fn a_search_inside_one_deck_finds_its_slides_and_opens_the_one_chosen() {
         [format!("¶{place}:1")],
         "the notes editor shows the paragraph the hit named"
     );
-    let budget_id = tilolang_tilo::publish::resource_id(APP, &budget.id_string());
+    let budget_id = tilolang_tilo::naming::resource_id(APP, &budget.id_string());
     assert_eq!(
         notes_bound_to(&host, &window.root_tree().expect("the window's tree")),
         [budget_id],
@@ -397,7 +394,7 @@ fn a_text_box_is_found_and_opening_it_shows_its_slide() {
 
     open(&mut window, &mut window_end, &anchor);
     let tree = window.root_tree().expect("the window's tree");
-    let route_id = tilolang_tilo::publish::resource_id(APP, &route.id_string());
+    let route_id = tilolang_tilo::naming::resource_id(APP, &route.id_string());
     assert_eq!(
         notes_bound_to(&host, &tree),
         [route_id],

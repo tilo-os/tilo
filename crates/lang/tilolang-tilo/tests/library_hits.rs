@@ -16,7 +16,7 @@ use tilolang_tilo::OpenEffect;
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::host::{Host, RootView};
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
-use tilolang_tilo::publish::resource_id;
+use tilolang_tilo::naming::resource_id;
 use tilolang_tilo::runtime::NameHost;
 use tilolang_tilo::runtime::ids::MemberId;
 

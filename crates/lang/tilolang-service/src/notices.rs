@@ -191,10 +191,10 @@ impl Held {
         let record = String::new();
         let app = package.as_ref().map_or_else(
             || schema.app.clone(),
-            |package| tilolang_tilo::publish::app_name(&*host.runtime().words(), &package.meta),
+            |package| tilolang_tilo::naming::app_name(&*host.runtime().words(), &package.meta),
         );
         // Every published resource opens itself, at itself, as its search hit does.
-        let resource = tilolang_tilo::publish::resource_id(&schema.app, &self.opens.id_string());
+        let resource = tilolang_tilo::naming::resource_id(&schema.app, &self.opens.id_string());
         let place = Place {
             app: schema.app.clone(),
             record,

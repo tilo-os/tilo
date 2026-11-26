@@ -99,7 +99,7 @@ fn file_action(
     let target = application_action_target(
         workspace,
         &meta.app,
-        tilolang_tilo::publish::resource_id(&meta.app, &format!("root-{}", root.id)),
+        tilolang_tilo::naming::resource_id(&meta.app, &format!("root-{}", root.id)),
         tilolang_tilo::meta::published_name(action),
     );
     Ok((target, arguments))
@@ -122,7 +122,7 @@ pub(crate) fn item_of(app: &str, anchor: &str) -> Option<String> {
         None => resource,
     };
     let (root, item) = id.split_once('/')?;
-    (!root.is_empty() && !item.is_empty()).then(|| tilolang_tilo::publish::resource_id(app, id))
+    (!root.is_empty() && !item.is_empty()).then(|| tilolang_tilo::naming::resource_id(app, id))
 }
 
 impl Apps {

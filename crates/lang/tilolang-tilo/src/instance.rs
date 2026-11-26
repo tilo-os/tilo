@@ -1646,7 +1646,7 @@ impl Instance {
                     // the window draws that, once the window shows the resource.
                     let in_text = block.is_some();
                     self.revealing = block.map(|block| Revealing {
-                        resource: crate::publish::resource_id(
+                        resource: crate::naming::resource_id(
                             &plan.app,
                             &tilolang_runtime::value::flat_id(anchor),
                         ),
@@ -2250,7 +2250,7 @@ impl Instance {
             return None;
         };
         let address = ActionAddress::new(
-            crate::publish::resource_id(&app, &target.target.id_string()),
+            crate::naming::resource_id(&app, &target.target.id_string()),
             tilo_action_services::approved_checks::ACTION_ID,
         );
         let argument = format!(
@@ -2377,7 +2377,7 @@ impl Instance {
             // runtime holds it by its id.
             let id = address
                 .resource
-                .strip_prefix(&crate::publish::resource_id(&meta.app, ""))
+                .strip_prefix(&crate::naming::resource_id(&meta.app, ""))
                 .unwrap_or(&address.resource);
             let Some(target) = ResourceRef::parse_id(id, target.id.clone()) else {
                 return false;

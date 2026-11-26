@@ -1089,7 +1089,7 @@ fn approving_a_pressed_send_through_the_ask_bar_sends_the_letter_once() {
 /// The person runs the letter's Send through the action API, as the shell's palette, a search
 /// row or a script of theirs runs it: to the app as their own step.
 fn run_send(session: &mut Session, draft: &ResourceRef) -> Result<(), String> {
-    let resource = tilolang_tilo::publish::resource_id(LETTERS, &draft.id_string());
+    let resource = tilolang_tilo::naming::resource_id(LETTERS, &draft.id_string());
     let ran = session
         .invoke(None, None, &resource, "send", &Map::new())
         .map(drop);

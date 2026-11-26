@@ -341,8 +341,7 @@ fn invoke_opened(
     {
         Ok(InvokeOutcome::Done(Value::Ref(made))) => {
             let made = Rc::unwrap_or_clone(made.target);
-            instance
-                .opens_what_it_made(tilolang_tilo::publish::resource_id(app, &made.id_string()));
+            instance.opens_what_it_made(tilolang_tilo::naming::resource_id(app, &made.id_string()));
             Ok(())
         }
         // An action that made no resource, and one that waits on another app or a person, which

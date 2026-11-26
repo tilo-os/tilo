@@ -13,7 +13,8 @@ use tilo_action_policy::{
 use tilo_actions::ResourceSpec;
 use tilolang_runtime::rich::{Reference, RichValue};
 use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, Value};
-use tilolang_tilo::publish::{ActionTypes, Planner, publish_resource, resource_id};
+use tilolang_tilo::naming::resource_id;
+use tilolang_tilo::publish::{ActionTypes, Planner, publish_resource};
 use tilolang_tilo::runtime::ids::{AppId, MemberId};
 
 use crate::fixtures::{Replica, target};

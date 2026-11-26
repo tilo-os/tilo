@@ -16,7 +16,7 @@ use tilolang_runtime::value::{ActionRef, ResourceRef};
 use tilolang_runtime::{Actor, InvokeOutcome, Meta, Value};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::meta::MetaExt as _;
-use tilolang_tilo::publish::resource_id;
+use tilolang_tilo::naming::resource_id;
 use tilolang_tilo::runtime::ids::MemberId;
 
 use crate::fixtures::{Replica, Workspace, action_id, field_id, type_id};

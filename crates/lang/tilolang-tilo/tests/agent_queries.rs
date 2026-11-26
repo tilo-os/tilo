@@ -69,7 +69,7 @@ fn world() -> World {
     let apps = Apps::new(&[with_tasks, with_notes_and_chat]);
     {
         let todo = apps.replica(TODO);
-        todo.host.set_clock(tilolang_tilo::host::system_time);
+        todo.host.set_clock(tilolang_tilo::clock::system_time);
     }
     for app in ["so.tilo.notes", "so.tilo.chat", "so.tilo.lang.board"] {
         let other = apps.replica(app);
@@ -88,7 +88,7 @@ fn world() -> World {
     let apps = Rc::new(apps);
     let task = apps.task();
     // The task reads times as they are: what an app wrote just now was changed within any recent window.
-    task.set_clock(tilolang_tilo::host::system_time);
+    task.set_clock(tilolang_tilo::clock::system_time);
     World { task }
 }
 
@@ -457,7 +457,7 @@ fn what_changed_in_the_notes_this_week_is_found_by_when_each_last_changed() {
         notes.commit();
     }
     let task = apps.task();
-    task.set_clock(tilolang_tilo::host::system_time);
+    task.set_clock(tilolang_tilo::clock::system_time);
     let run = |source: &str| {
         task.run(
             source,
@@ -467,7 +467,7 @@ fn what_changed_in_the_notes_this_week_is_found_by_when_each_last_changed() {
         )
     };
     // Groceries changes now; every other note was written in October.
-    *clock.borrow_mut() = tilolang_tilo::host::system_time();
+    *clock.borrow_mut() = tilolang_tilo::clock::system_time();
     let pinned = run(r#"notes.pin(find(notes.Note).filter(n -> n.title == "Groceries").single())"#);
     assert_eq!(pinned["state"], "done", "{pinned:#}");
 

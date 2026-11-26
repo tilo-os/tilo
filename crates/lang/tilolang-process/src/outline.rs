@@ -143,7 +143,7 @@ impl Reading<'_> {
         format!(
             "{}/{}",
             self.app,
-            tilolang_tilo::publish::resource_id(self.app, id)
+            tilolang_tilo::naming::resource_id(self.app, id)
         )
     }
 

@@ -18,7 +18,7 @@ use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::host_work::{EngineHost, JobHandlers, VaultCode, VaultHost};
 use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::{UiNode, Value};
-use tilolang_tilo::publish::resource_id;
+use tilolang_tilo::naming::resource_id;
 
 use crate::fixtures::{Replica, Workspace, call, target};
 

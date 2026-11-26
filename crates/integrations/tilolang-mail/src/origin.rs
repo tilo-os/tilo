@@ -1473,7 +1473,7 @@ fn take_in_step(
                     &t.thread,
                     &mut fields,
                     "arrived",
-                    Value::Opt(Some(Box::new(text(&tilolang_tilo::host::iso_utc(*at))))),
+                    Value::Opt(Some(Box::new(text(&tilolang_tilo::clock::iso_utc(*at))))),
                 );
                 announcements.push(OriginWrite::Set {
                     target: thread.record.clone(),
@@ -1651,7 +1651,7 @@ fn message_fields(ty: &OriginType, m: &ImapMessage) -> Vec<(String, Value)> {
         ty,
         &mut f,
         "received",
-        text(&tilolang_tilo::host::iso_utc(m.received)),
+        text(&tilolang_tilo::clock::iso_utc(m.received)),
     );
     put(ty, &mut f, "snippet", text(&snippet_of(&m.body)));
     put(ty, &mut f, "body", text(&m.body));
@@ -1762,7 +1762,7 @@ fn summarize(host: &Host, t: &Types, acct: &Acct, threads: &BTreeSet<String>) ->
             &t.thread,
             &mut fields,
             "latest",
-            text(&tilolang_tilo::host::iso_utc(newest.received)),
+            text(&tilolang_tilo::clock::iso_utc(newest.received)),
         );
         put(&t.thread, &mut fields, "snippet", text(&newest.snippet));
         put(&t.thread, &mut fields, "senders", text(&senders.join(", ")));

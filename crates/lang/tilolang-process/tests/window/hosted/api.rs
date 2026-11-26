@@ -106,7 +106,7 @@ fn what_an_agent_session_does_is_its_own_for_the_person() {
     assert!(person >= 1, "the person's own changes are in history too");
     // The app's undo, as its record publishes it: it takes back the agent's last step, read from
     // the store's own log.
-    let record = tilolang_tilo::publish::package_resource_id(NOTES);
+    let record = tilolang_tilo::naming::package_resource_id(NOTES);
     app.invoke(Some(agent), Some(&ambient), &record, "undo", &Map::new())
         .expect("the store takes it back");
     settle(&mut app);

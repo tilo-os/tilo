@@ -116,7 +116,7 @@ fn undo_named_from_a_view_takes_back_that_step() {
     let root = root(&mut window);
     let add = action(&window, &root, "new_task");
     // The tilolang host publishes the history verbs every app has on the app's own resource.
-    let record = tilolang_tilo::publish::package_resource_id(TASKS);
+    let record = tilolang_tilo::naming::package_resource_id(TASKS);
     window
         .invoke(None, None, &root, &add, &titled("Call the landlord"))
         .unwrap();
@@ -144,7 +144,7 @@ fn a_person_restores_a_named_version_and_undoes_the_restore() {
     let mut window = Session::tasks();
     let root = root(&mut window);
     let add = action(&window, &root, "new_task");
-    let record = tilolang_tilo::publish::package_resource_id(TASKS);
+    let record = tilolang_tilo::naming::package_resource_id(TASKS);
     window
         .invoke(None, None, &root, &add, &titled("Call the landlord"))
         .unwrap();
@@ -183,7 +183,7 @@ fn a_person_restores_a_named_version_and_undoes_the_restore() {
         .expect("the checkpoint names its change")
         .to_owned();
     let packing =
-        tilolang_tilo::publish::resource_id(TASKS, &task(&window, "Pack the boxes").id_string());
+        tilolang_tilo::naming::resource_id(TASKS, &task(&window, "Pack the boxes").id_string());
     let mut asked = serde_json::Map::new();
     asked.insert("version".to_owned(), checkpoint.into());
     asked.insert("paths".to_owned(), serde_json::json!([packing]));
@@ -222,7 +222,7 @@ fn a_checkpoint_is_restored_after_a_review_and_undo_takes_the_restore_back() {
     let mut window = Session::tasks();
     let root = root(&mut window);
     let add = action(&window, &root, "new_task");
-    let record = tilolang_tilo::publish::package_resource_id(TASKS);
+    let record = tilolang_tilo::naming::package_resource_id(TASKS);
     window
         .invoke(None, None, &root, &add, &titled("Call the landlord"))
         .unwrap();
@@ -252,7 +252,7 @@ fn a_checkpoint_is_restored_after_a_review_and_undo_takes_the_restore_back() {
 
     // A review of going back names the task made since; a task added after it makes it stale.
     let packing =
-        tilolang_tilo::publish::resource_id(TASKS, &task(&window, "Pack the boxes").id_string());
+        tilolang_tilo::naming::resource_id(TASKS, &task(&window, "Pack the boxes").id_string());
     let mut asked = serde_json::Map::new();
     asked.insert("version".to_owned(), change.into());
     asked.insert("paths".to_owned(), serde_json::json!([packing]));

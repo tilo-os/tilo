@@ -7,7 +7,8 @@ use tilolang_runtime::store::{Store as _, Version};
 use tilolang_runtime::value::ResourceRef;
 
 use crate::host::Host;
-use crate::publish::{resource_id, split_published};
+use crate::naming::resource_id;
+use crate::publish::split_published;
 
 /// `version`, of a resource of `app` that `host` reads, as its history lists it: the version,
 /// its resource by the id it is published under, the label the app's history calls it by, and

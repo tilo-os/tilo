@@ -43,7 +43,7 @@ pub use tilo_reference::Embed as Reference;
 pub use tilo_reference::embed::{Reading, UNSHARED, UNSHARED_PHRASE};
 
 /// The catalogue's id of the tilolang resource `id` of `app`, as its app publishes it
-/// (`tilolang_tilo::publish::resource_id`).
+/// (`tilolang_tilo::naming::resource_id`).
 #[must_use]
 pub fn published_id(app: &str, id: &str) -> String {
     format!("tl:{app}:{id}")

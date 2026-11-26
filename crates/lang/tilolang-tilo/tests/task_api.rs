@@ -12,7 +12,8 @@ use tilolang_runtime::Actor;
 use tilolang_runtime::reads::ReadRequest;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::meta::MetaExt as _;
-use tilolang_tilo::publish::{PlanRequest, edit_action, resource_id};
+use tilolang_tilo::naming::resource_id;
+use tilolang_tilo::publish::{PlanRequest, edit_action};
 use tilolang_tilo::task::{Answered, TaskApi, TaskSession};
 
 use crate::fixtures::{Replica, Workspace};

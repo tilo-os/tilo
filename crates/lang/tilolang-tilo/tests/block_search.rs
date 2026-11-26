@@ -307,7 +307,7 @@ fn a_search_inside_one_notebook_finds_only_the_notes_it_holds() {
     // index publishes it under; every note of it carries that address as the resource it lives
     // in.
     let notebook = host.root_of(APP).expect("the notebook");
-    let anchor = tilolang_tilo::publish::resource_id(APP, &notebook.id_string());
+    let anchor = tilolang_tilo::naming::resource_id(APP, &notebook.id_string());
     let scoped = search_within(&host, "budget", Some(anchor));
     let titles: Vec<&str> = scoped.iter().map(|hit| hit.title.as_str()).collect();
     assert!(

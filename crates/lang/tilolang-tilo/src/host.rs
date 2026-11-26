@@ -29,6 +29,7 @@ use tilolang_runtime::{
 
 use crate::action::{Authorship, DynAction};
 use crate::authority::TiloAuthority;
+use crate::clock::system_time;
 use crate::meta::MetaExt as _;
 use crate::publish::{Caller, PlanRequest, Planner};
 use crate::resources::{ResourceStore, Turn};
@@ -425,7 +426,7 @@ fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Va
             };
             // The published id of the resource (`tl:<app>:<id>`), or the id inside the app.
             let id = text
-                .strip_prefix(&crate::publish::resource_id(&key.app, ""))
+                .strip_prefix(&crate::naming::resource_id(&key.app, ""))
                 .unwrap_or(text);
             let target = ResourceRef::parse_id(id, type_id)
                 .ok_or_else(|| format!("`{text}` is not a resource id"))?;
@@ -558,7 +559,7 @@ fn published_roots(meta: &Meta) -> Meta {
     let device_roots = meta.device_roots.clone();
     meta.roots.retain(|ty| !device_roots.contains(ty));
     for ty in meta.roots.clone() {
-        let published = crate::publish::resource_id(&meta.app, &format!("root-{ty}"));
+        let published = crate::naming::resource_id(&meta.app, &format!("root-{ty}"));
         if let Some(named) = meta.named_roots.iter_mut().find(|root| root.ty == ty) {
             named.published.get_or_insert(published);
         } else {
@@ -593,10 +594,7 @@ fn resources_named(
     match value {
         Value::Ref(made) => {
             let owner = app_of(&made.target.ty).unwrap_or_else(|| app.to_owned());
-            out.push(crate::publish::resource_id(
-                &owner,
-                &made.target.id_string(),
-            ));
+            out.push(crate::naming::resource_id(&owner, &made.target.id_string()));
         }
         Value::List(items) | Value::Tuple(items) => {
             for item in items {
@@ -885,7 +883,7 @@ impl HostInner {
             return None;
         }
         let id = resource
-            .strip_prefix(&crate::publish::resource_id(&app, ""))
+            .strip_prefix(&crate::naming::resource_id(&app, ""))
             .unwrap_or(resource);
         let target = ResourceRef::parse_id(id, declared)?;
         // What deciding the action read: what it shows, what applies decided, and what its
@@ -1503,7 +1501,7 @@ impl Host {
             if named.len() < 2 {
                 return package.meta.action_published_as(action).cloned();
             }
-            let id = resource.strip_prefix(&crate::publish::resource_id(app, ""))?;
+            let id = resource.strip_prefix(&crate::naming::resource_id(app, ""))?;
             let ty = self.store().type_of_id(id)?;
             let name = &package.meta.types.iter().find(|t| t.id == ty)?.name;
             named
@@ -1595,7 +1593,7 @@ impl Host {
             for made in made {
                 let id = made.id_string();
                 let owner = app_of(&made.ty).unwrap_or_else(|| app.to_owned());
-                let address = crate::publish::resource_id(&owner, &id);
+                let address = crate::naming::resource_id(&owner, &id);
                 if seen.insert(address.clone()) {
                     output.resources.push(address.clone());
                 }
@@ -1782,7 +1780,7 @@ impl Host {
     /// The module does not link.
     ///
     /// Its views read its roots as they do in its own app (`let m = root Mail`): each root is
-    /// the resource its app publishes it as ([`crate::publish::resource_id`]), whose reading
+    /// the resource its app publishes it as ([`crate::naming::resource_id`]), whose reading
     /// the session hands in as it does any other of that app's.
     pub fn load_foreign_package(&self, wasm: &[u8], meta: &Meta) -> Result<(), HostError> {
         let meta = published_roots(meta);
@@ -2216,22 +2214,4 @@ impl Host {
     pub fn argument(&self, meta: &Meta, json: &Json, ty: &str) -> Result<Value, String> {
         value_of(&self.inner, meta, json, ty)
     }
-}
-
-/// The system time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`: what `now` reads.
-#[must_use]
-pub fn system_time() -> String {
-    let secs = tilo_clock::wall()
-        .duration_since(tilo_clock::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    iso_utc(secs)
-}
-
-/// Seconds since the Unix epoch as ISO-8601 UTC text.
-#[must_use]
-pub fn iso_utc(secs: u64) -> String {
-    let (h, m, s) = (secs % 86_400 / 3600, secs % 3600 / 60, secs % 60);
-    let (year, month, day) =
-        tilolang::calendar::civil_from_days(i64::try_from(secs / 86_400).unwrap_or(i64::MAX));
-    format!("{year:04}-{month:02}-{day:02}T{h:02}:{m:02}:{s:02}Z")
 }

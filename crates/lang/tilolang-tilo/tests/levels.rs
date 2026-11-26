@@ -9,7 +9,8 @@ use std::sync::Arc;
 use tilo_actions::api::{PlacedAction, survey_placed};
 use tilolang_runtime::Actor;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::publish::{PlanRequest, Planner, Publications, resource_id};
+use tilolang_tilo::naming::resource_id;
+use tilolang_tilo::publish::{PlanRequest, Planner, Publications};
 
 use crate::fixtures::{Replica, Workspace};
 

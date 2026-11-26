@@ -154,7 +154,7 @@ pub fn published_of(host: &Host, target: &ResourceRef) -> Option<(String, String
     use crate::meta::MetaExt as _;
     host.find_in_packages(|package| {
         let declared = package.meta.type_named(&target.ty)?;
-        let id = crate::publish::resource_id(&package.meta.app, &target.id_string());
+        let id = crate::naming::resource_id(&package.meta.app, &target.id_string());
         Some((package.meta.kind_of(&declared.name), id))
     })
 }
@@ -471,7 +471,7 @@ pub(crate) fn invokes(
                         Some(if package.meta.target_of(&action.params).is_some() {
                             target.target.id_string()
                         } else {
-                            crate::publish::package_resource_id(&package.meta.app)
+                            crate::naming::package_resource_id(&package.meta.app)
                         })
                     }
                     _ => None,

@@ -11,8 +11,8 @@ use tilolang_runtime::meta::{Meta, parse_ty};
 use tilolang_runtime::value::{ResourceRef, Value, from_json};
 
 use crate::host::argument_json;
+use crate::naming::{package_resource_id, resource_id};
 use crate::native::Native;
-use crate::publish::{package_resource_id, resource_id};
 use crate::task::Answered;
 
 /// The apps a runtime calls without running their code, and how each is reached.

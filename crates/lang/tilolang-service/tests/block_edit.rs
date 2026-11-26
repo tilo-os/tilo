@@ -8,7 +8,7 @@ use tilo_service::Service as _;
 use tilolang_runtime::store::{Store as _, VersionKind};
 use tilolang_runtime::{ResourceRef, Value};
 use tilolang_service::ResourceService;
-use tilolang_tilo::publish::resource_id;
+use tilolang_tilo::naming::resource_id;
 
 use crate::IntoService as _;
 use crate::fixtures::call;

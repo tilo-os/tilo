@@ -929,7 +929,7 @@ impl Instance {
     /// Put the link of `target`, a resource of `app`, on the person's clipboard, minted as other
     /// devices and people open it ([`Self::share_link`]), and say that it is there, or why not.
     fn copy_link(&mut self, target: &ResourceRef, app: &str) {
-        let resource = crate::publish::resource_id(app, &target.id_string());
+        let resource = crate::naming::resource_id(app, &target.id_string());
         let url = self.share_link(&resource).and_then(|output| {
             output
                 .value

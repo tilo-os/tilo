@@ -82,7 +82,7 @@ mod session_tests {
                 let root = record.host().root_of(app).unwrap();
                 (
                     format!("tl:{app}"),
-                    tilolang_workspace::publish::resource_id(app, &root.id_string()),
+                    tilolang_workspace::naming::resource_id(app, &root.id_string()),
                 )
             })
             .collect();

@@ -29,6 +29,7 @@ use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::words::Words;
 
 use crate::meta::{MetaExt as _, action_kind};
+use crate::naming::{HOST_RESOURCE, app_name, package_resource_id, resource_id};
 use crate::surface::{
     Merge, editable_field_names, is_destructive, published_param, rich_field_names,
 };
@@ -155,12 +156,6 @@ pub trait Planner: Send + Sync {
     }
 }
 
-/// The id of the published resource for the tilolang resource `id` of `app`.
-#[must_use]
-pub fn resource_id(app: &str, id: &str) -> String {
-    format!("tl:{app}:{id}")
-}
-
 /// The app whose published resource `resource` is: a document's or item's (`tl:<app>:<id>`,
 /// [`resource_id`]) or its package's own (`tl:<app>`, [`package_resource_id`]).
 #[must_use]
@@ -208,22 +203,6 @@ fn untitled_of(meta: &Meta, declared: &tilolang::meta::TypeMeta, words: &dyn Wor
         crate::schema::spoken(&declared.name)
     }
 }
-
-/// What the app `meta` is called in the reader's language: its title, in the words the package's
-/// own catalogue writes for it.
-#[must_use]
-pub fn app_name(words: &dyn Words, meta: &Meta) -> String {
-    label_of(words, &meta.app, &meta.title)
-}
-
-/// The id of a package's own resource, for its document-less actions.
-#[must_use]
-pub fn package_resource_id(app: &str) -> String {
-    format!("tl:{app}")
-}
-
-/// The id of the host resource.
-pub const HOST_RESOURCE: &str = "tl:host";
 
 /// The type of the typed action `action` on resources of kind `kind`, whose build runs
 /// `planner` on the target its spec is bound to: the resource id it is published on, a

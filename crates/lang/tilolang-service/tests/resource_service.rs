@@ -13,7 +13,7 @@ use tilolang_runtime::{Actor, ResourceRef, UiNode, Value};
 use tilolang_service::notices::Notices;
 use tilolang_service::{ResourceService, reading_type};
 use tilolang_tilo::host::Host;
-use tilolang_tilo::publish::resource_id;
+use tilolang_tilo::naming::resource_id;
 
 use crate::fixtures::{Replica, field_id};
 
@@ -449,7 +449,7 @@ fn notices(host: &Host) -> Vec<(String, String, String, String)> {
             };
             let target = &reference.target;
             let app = &tilolang_tilo::schema::lookup(&target.ty)?.app;
-            let opens = tilolang_tilo::publish::resource_id(app, &target.id_string());
+            let opens = tilolang_tilo::naming::resource_id(app, &target.id_string());
             Some((to, title, body, opens))
         })
         .collect()

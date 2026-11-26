@@ -41,7 +41,7 @@ use tilolang_runtime::store::{FieldSpec, FieldValue, Store as _};
 use tilolang_runtime::value::ResourceRef;
 
 use crate::host::Host;
-use crate::publish::resource_id;
+use crate::naming::resource_id;
 use crate::resources::ResourceStore;
 
 /// One searchable resource.
@@ -590,7 +590,7 @@ pub fn hits(host: &Host, meta: &Meta, doc: &str) -> Vec<Hit> {
     let holdings = Holdings::of(host);
     let store = host.store();
     let reads = host.reads_for(host.viewer());
-    let title = crate::publish::app_name(&*host.runtime().words(), meta);
+    let title = crate::naming::app_name(&*host.runtime().words(), meta);
     let Some(ty) = store.type_of_id(doc) else {
         return Vec::new();
     };
@@ -651,7 +651,7 @@ pub fn every_hit(host: &Host) -> Vec<Hit> {
     let mut out = Vec::new();
     for package in host.packages() {
         let meta = &package.meta;
-        let title = crate::publish::app_name(&*words, meta);
+        let title = crate::naming::app_name(&*words, meta);
         for declared in &meta.types {
             let fields = texted(store, meta, &declared.id);
             if fields.is_empty() {
@@ -714,7 +714,7 @@ fn index_entries_of(host: &Host, meta: &Meta, ty: &str, id: &str) -> Vec<IndexEn
     if !host.reads_for(host.viewer())(&at) {
         return Vec::new();
     }
-    let title = crate::publish::app_name(&*host.runtime().words(), meta);
+    let title = crate::naming::app_name(&*host.runtime().words(), meta);
     let Some(hit) = hit_at(&Holdings::of(host), (meta, &title), &at, &fields) else {
         return Vec::new();
     };

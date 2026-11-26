@@ -206,7 +206,7 @@ const PLAYER_KEY: &str = "player";
 /// id `id` under, with its app; `None` for a kind no tilolang app declares.
 pub(crate) fn address(kind: &str, id: &str) -> Option<(String, String)> {
     let (app, _) = kind.strip_prefix("tl.")?.rsplit_once('.')?;
-    Some((tilolang_tilo::publish::resource_id(app, id), app.to_owned()))
+    Some((tilolang_tilo::naming::resource_id(app, id), app.to_owned()))
 }
 
 /// Where the live `row` is published, by the app it is published by, and what is published of

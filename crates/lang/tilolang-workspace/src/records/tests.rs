@@ -27,7 +27,7 @@ use std::rc::Rc;
 
 use serde_json::Value as Json;
 use tilo_actions::{ActionAddress, ActionContext, ActionInvoker, ActionOutput};
-use tilolang_tilo::publish::{package_resource_id, resource_id};
+use tilolang_tilo::naming::{package_resource_id, resource_id};
 
 use super::{LocalPort, Opened, ResourceStore, built_in, member};
 

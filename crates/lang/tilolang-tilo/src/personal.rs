@@ -430,7 +430,7 @@ fn stamp(verb: &str, person: &str) -> Stamp {
         verb: verb.to_owned(),
         invoker: Stamp::by(&actor(person)),
         invocation: uuid::Uuid::new_v4().to_string(),
-        at: crate::host::system_time(),
+        at: crate::clock::system_time(),
         ..Stamp::default()
     }
 }

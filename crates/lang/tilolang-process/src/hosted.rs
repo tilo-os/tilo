@@ -51,7 +51,7 @@ use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::call::Callees;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::{Config, Instance, LaterBuilds, Locale, Mode, Platform, Publication};
-use tilolang_tilo::publish::HOST_RESOURCE;
+use tilolang_tilo::naming::HOST_RESOURCE;
 use tilolang_tilo::publish::{Caller, Moved, Planner, Publications, publish_package};
 use tilolang_tilo::resources::ResourceStore;
 use tilolang_tilo::runtime::delegate::{Invocation, Invoked, Invoker};
@@ -2807,7 +2807,7 @@ impl Hosted {
             Ok(InvokeOutcome::Done(Value::Ref(made))) => {
                 let made = Rc::unwrap_or_clone(made.target);
                 self.instance
-                    .opens_what_it_made(tilolang_tilo::publish::resource_id(
+                    .opens_what_it_made(tilolang_tilo::naming::resource_id(
                         &self.spec.app,
                         &made.id_string(),
                     ));
@@ -2901,7 +2901,7 @@ impl Hosted {
         };
         if let Some(made) = made {
             self.instance
-                .opens_what_it_made(tilolang_tilo::publish::resource_id(
+                .opens_what_it_made(tilolang_tilo::naming::resource_id(
                     &self.spec.app,
                     &made.id_string(),
                 ));
@@ -5361,7 +5361,7 @@ fn output_of(app: &str, value: &Value) -> tilo_actions::ActionOutput {
     match value {
         Value::Ref(made) => tilo_actions::ActionOutput {
             value: None,
-            resources: vec![tilolang_tilo::publish::resource_id(
+            resources: vec![tilolang_tilo::naming::resource_id(
                 app,
                 &made.target.id_string(),
             )],

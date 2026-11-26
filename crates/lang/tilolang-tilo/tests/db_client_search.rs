@@ -332,7 +332,7 @@ fn a_table_hit_opens_on_the_database_window() {
     );
     assert_eq!(
         action.resource,
-        tilolang_tilo::publish::resource_id(APP, &app.root.id_string()),
+        tilolang_tilo::naming::resource_id(APP, &app.root.id_string()),
         "the database window is the record the table is shown in"
     );
 }

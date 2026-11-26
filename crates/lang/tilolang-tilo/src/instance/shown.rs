@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use tilo_render_protocol::patch::Level;
 
 use super::{Instance, Shown};
-use crate::publish::resource_id;
+use crate::naming::resource_id;
 use crate::runtime::{ResourceRef, UiNode, Value};
 
 impl Instance {

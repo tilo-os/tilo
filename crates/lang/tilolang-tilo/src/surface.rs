@@ -798,7 +798,7 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
         .collect();
     surfaces.push(Surface {
         kind: meta.package_kind(),
-        label: crate::publish::app_name(words, meta),
+        label: crate::naming::app_name(words, meta),
         version: VERSION,
         person: meta.keeps_own_resources(),
         readers: None,

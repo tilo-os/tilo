@@ -514,7 +514,7 @@ impl Pending {
                     .strip_prefix("tl.")
                     .and_then(|rest| rest.rsplit_once('.'))
                     .unwrap_or_default();
-                let prefix = crate::publish::resource_id(app, "");
+                let prefix = crate::naming::resource_id(app, "");
                 out.extend(
                     crate::search::every_hit(host)
                         .into_iter()
@@ -719,7 +719,7 @@ fn text_of(meta: &Meta, ty: &FieldType, value: &Value) -> String {
         Value::Float(number) => number.to_string(),
         Value::Opt(Some(held)) => text_of(meta, ty, held),
         Value::Actor(who) => crate::runtime::ids::actor_text(who),
-        Value::Ref(r) => crate::publish::resource_id(&meta.app, &r.target.id_string()),
+        Value::Ref(r) => crate::naming::resource_id(&meta.app, &r.target.id_string()),
         Value::Enum(case) => meta
             .enums
             .iter()

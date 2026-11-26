@@ -14,6 +14,7 @@ pub mod styles;
 
 use std::sync::Arc;
 
+pub use tilolang_tilo::naming;
 pub use tilolang_tilo::publish;
 pub use tilolang_tilo::runtime;
 

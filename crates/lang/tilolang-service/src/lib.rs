@@ -35,9 +35,8 @@ use tilolang_runtime::value::{ResourceRef, Value};
 
 use tilolang_tilo::action::{ACTION_TYPE, DynAction, EDIT_FLAG_ACTION, EDIT_TEXT_ACTION};
 use tilolang_tilo::host::Host;
-use tilolang_tilo::publish::{
-    Planner, Publications, publish_package, resource_id, split_published,
-};
+use tilolang_tilo::naming::resource_id;
+use tilolang_tilo::publish::{Planner, Publications, publish_package, split_published};
 use tilolang_tilo::readings::{reading_of, resource_at};
 use tilolang_tilo::versions::{each_published, published_refs, store_ref, version_entry, versions};
 
@@ -138,7 +137,7 @@ impl ResourceService {
             notices: crate::notices::Notices::new(person.clone()),
             tell: None,
             person,
-            clock: Box::new(tilolang_tilo::host::system_time),
+            clock: Box::new(tilolang_tilo::clock::system_time),
             moved: BTreeSet::new(),
             moved_unsaid: false,
             shared: BTreeMap::new(),
@@ -368,7 +367,7 @@ impl ResourceService {
         if self.origins.borrow().is_empty() {
             return false;
         }
-        let now = tilolang_tilo::host::system_time();
+        let now = tilolang_tilo::clock::system_time();
         let waker = self.origin_waker.clone().unwrap_or_else(|| Arc::new(|| {}));
         let origins: Vec<tilolang_tilo::origin::SharedOrigin> = self.origins.borrow().clone();
         let mut wrote = false;

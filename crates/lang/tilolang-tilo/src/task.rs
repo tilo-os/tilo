@@ -56,8 +56,8 @@ use crate::bundle::Bundle;
 use crate::call::Callees;
 use crate::host::Host;
 use crate::meta::MetaExt as _;
+use crate::naming::{package_resource_id, resource_id};
 use crate::native::Native;
-use crate::publish::{package_resource_id, resource_id};
 
 /// More resources than this changed by one program are many: it answers with a preview first.
 pub const MANY_RESOURCES: usize = 3;
@@ -288,7 +288,7 @@ impl TaskSession {
         // resource reads the same here as there.
         let reading_of = Rc::clone(api);
         runtime.set_readings_asked_for(move |target| reading_of.reading(target));
-        runtime.set_clock(crate::host::system_time);
+        runtime.set_clock(crate::clock::system_time);
         let session = Self {
             runtime,
             person: person

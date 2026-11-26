@@ -35,6 +35,7 @@ pub mod background;
 pub mod bundle;
 pub mod call;
 pub mod catalogue;
+pub mod clock;
 pub mod content;
 pub mod effects;
 #[cfg(any(unix, windows))]
@@ -44,6 +45,7 @@ pub mod instance;
 pub mod members;
 pub mod meta;
 pub mod names;
+pub mod naming;
 pub mod native;
 pub mod origin;
 pub mod page;

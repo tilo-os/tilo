@@ -174,7 +174,7 @@ fn published_ids(value: &mut Json, app: &str) {
                 .get("id")
                 .and_then(Json::as_str)
                 .filter(|_| fields.contains_key("type"))
-                .map(|id| crate::publish::resource_id(app, id));
+                .map(|id| crate::naming::resource_id(app, id));
             if let Some(id) = id {
                 fields.insert("item".into(), Json::String(id));
             }
@@ -726,7 +726,7 @@ impl Host {
                 let at = ResourceRef::root(doc.clone(), ty);
                 reads(&at).then(|| {
                     json!({
-                        "item": crate::publish::resource_id(&package.meta.app, &doc),
+                        "item": crate::naming::resource_id(&package.meta.app, &doc),
                         "kind": package.meta.kind_of(&type_name),
                         "title": self.label_at(&at),
                         "created": self.created_json(&at, reads),
@@ -831,7 +831,7 @@ impl Host {
             let next = at.item(&next, String::new());
             out.insert(
                 "next".into(),
-                json!(crate::publish::resource_id(&app, &next.id_string())),
+                json!(crate::naming::resource_id(&app, &next.id_string())),
             );
         }
         Ok(Json::Object(out))
@@ -884,7 +884,7 @@ impl Host {
             let app = self.app_of_type(&from.ty).unwrap_or_default();
             out.insert(
                 "from".into(),
-                json!(crate::publish::resource_id(&app, &from.id_string())),
+                json!(crate::naming::resource_id(&app, &from.id_string())),
             );
         }
         Json::Object(out)

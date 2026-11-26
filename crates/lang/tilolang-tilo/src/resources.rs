@@ -687,7 +687,7 @@ impl ResourceStore {
                 refused: RefCell::default(),
                 watches: RefCell::default(),
                 last_write: RefCell::default(),
-                now: RefCell::new(Rc::new(crate::host::system_time)),
+                now: RefCell::new(Rc::new(crate::clock::system_time)),
             }),
         }
     }
@@ -3900,7 +3900,7 @@ impl ResourceStore {
         Some(tilo_actions::InteractionAnchor::Text {
             region,
             ranges: vec![tilo_actions::InteractionTextRange {
-                block: crate::publish::resource_id(app, &block),
+                block: crate::naming::resource_id(app, &block),
                 start,
                 end,
             }],

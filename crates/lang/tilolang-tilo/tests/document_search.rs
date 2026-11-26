@@ -195,7 +195,7 @@ fn a_search_inside_one_document_finds_its_lines_and_shows_the_one_chosen() {
 
     // The document a window shows is the scope its search button opens on: what the index
     // publishes for it is the address every line of its source lives in.
-    let scope = tilolang_tilo::publish::resource_id(APP, &route.id_string());
+    let scope = tilolang_tilo::naming::resource_id(APP, &route.id_string());
     let hits = search(&host, "figure", Some(scope.clone()));
     let line = hits
         .iter()

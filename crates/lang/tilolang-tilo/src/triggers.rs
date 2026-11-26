@@ -283,7 +283,7 @@ fn time_where(field: &str, op: CmpOp, now: i64) -> Pred {
             },
             absent: Lit::Absent,
         }),
-        Operand::Lit(Lit::Time(crate::host::iso_utc(now.cast_unsigned()))),
+        Operand::Lit(Lit::Time(crate::clock::iso_utc(now.cast_unsigned()))),
     )
 }
 
@@ -439,7 +439,7 @@ pub fn landing(host: &Host, device: &str, person: &str, now: i64) -> Vec<Landing
                     &due.run(),
                     &by,
                     (due.action.as_str(), due.args.clone()),
-                    &crate::host::iso_utc(at.cast_unsigned()),
+                    &crate::clock::iso_utc(at.cast_unsigned()),
                 ) {
                     Ok(told) => told,
                     Err(error) => {

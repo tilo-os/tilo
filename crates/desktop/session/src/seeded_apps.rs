@@ -161,7 +161,7 @@ fn seeded_app(person: &str, app: &InstalledApp) -> Result<ResourceService, Strin
                 tilolang_tilo::origin::take_in_samples(
                     host,
                     &name,
-                    &tilolang_tilo::host::system_time(),
+                    &tilolang_tilo::clock::system_time(),
                 )?;
             }
             if let Some((called, action)) = &scenario
@@ -182,7 +182,12 @@ fn seeded_app(person: &str, app: &InstalledApp) -> Result<ResourceService, Strin
             }
             // A workspace of many items, to feel the app as a person with that many does.
             if let Some(items) = seed_items() {
-                tilolang_tilo::seed::seed(host, &name, items, &tilolang_tilo::host::system_time())?;
+                tilolang_tilo::seed::seed(
+                    host,
+                    &name,
+                    items,
+                    &tilolang_tilo::clock::system_time(),
+                )?;
             }
             Ok(())
         }

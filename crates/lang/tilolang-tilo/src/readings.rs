@@ -7,7 +7,8 @@ use tilolang_runtime::store::Store as _;
 use tilolang_runtime::value::ResourceRef;
 
 use crate::host::Host;
-use crate::publish::{resource_id, split_published};
+use crate::naming::resource_id;
+use crate::publish::split_published;
 
 /// The pseudo-field of a reading of an item that names what holds it, as a link names what links
 /// to it (`{"ref": <published id>, "ty": "<app>#<Type>"}`): the conversation a message is in, the

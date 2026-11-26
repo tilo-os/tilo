@@ -569,7 +569,7 @@ tilo_test_env::scenario! {
         }]);
         let read = |reader: &Actor| {
             ada.replica.host.read_resource(
-                &tilolang_tilo::ReadAsk::of(Some(&tilolang_tilo::publish::resource_id(APP, &review.id_string()))),
+                &tilolang_tilo::ReadAsk::of(Some(&tilolang_tilo::naming::resource_id(APP, &review.id_string()))),
                 &ada.replica.host.reads_for(reader),
             )
         };
