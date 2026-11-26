@@ -436,6 +436,7 @@ pub(crate) fn found_and_certify(identity_dir: &Path) -> Result<bool, String> {
     // The device's own person acts as the device itself: the daemon made this account no key of
     // its own, and there is nothing to certify.
     if who.certify_person.is_none() {
+        record_setup_backup();
         return Ok(true);
     }
     // The account a person's own daemon runs as holds the root it just made, and certifies its
@@ -452,7 +453,17 @@ pub(crate) fn found_and_certify(identity_dir: &Path) -> Result<bool, String> {
             tilo_api::daemon::who::certify_here()?;
         }
     }
+    record_setup_backup();
     Ok(true)
+}
+
+/// Keep that this device's setup stopped at the backup step: the person made here still has
+/// their recovery key written down and goes through the tour, as a computer set up through setup
+/// does.
+fn record_setup_backup() {
+    if let Err(error) = tilo_onboarding_session::view::record_backup_step() {
+        tracing::warn!(%error, "this device's setup step was not kept");
+    }
 }
 
 /// Verify the identity `identity_dir` holds at the clock's reading now.

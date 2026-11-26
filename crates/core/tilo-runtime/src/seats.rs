@@ -475,6 +475,21 @@ impl Seats {
         self.admission.founded(seat.uid, person)
     }
 
+    /// Record that `uid` joined the person `person` its computer now serves: the person the
+    /// account made here for its setup is retired, and the seats the sign-in linked act as the
+    /// joined person from now on.
+    pub(crate) fn adopted_login(&self, uid: u32, person: [u8; 32]) {
+        if let Err(error) = self.admission.adopted(uid, person) {
+            tracing::warn!(%error, "this computer did not keep whose person its account joined");
+        }
+        self.keys.lock_recover().remove(&uid);
+        for ((held, _), link) in self.links.lock_recover().iter_mut() {
+            if *held == uid && matches!(link, SeatLink::Founding) {
+                *link = SeatLink::Person(person);
+            }
+        }
+    }
+
     /// A one-use secret the sign-in of the account `uid` answers for its session's founding
     /// link: the process that redeems it may make a person or join one, and reaches nothing else
     /// of a person's until it does.
@@ -512,11 +527,14 @@ impl Seats {
     }
 
     /// The person the seat `(uid, pid)` acts for, when a founding link or a person's link was
-    /// admitted for it here.
+    /// admitted for it here: the person its account certified once it made one, or the one its
+    /// shell link became.
     pub(crate) fn seated_person(&self, uid: u32, pid: u32) -> Option<[u8; 32]> {
         match self.links.lock_recover().get(&(uid, pid)) {
             Some(SeatLink::Person(person)) => Some(*person),
-            Some(SeatLink::Founding) | None => None,
+            // A founding session acts for the person it made once its certified key is theirs.
+            Some(SeatLink::Founding) => self.admission.person_of(uid),
+            None => None,
         }
     }
 
@@ -574,13 +592,19 @@ impl Seats {
         if let Some(pid) = peer.pid.filter(|_| app.is_none()) {
             match self.links.lock_recover().get(&(peer.uid, pid)).cloned() {
                 Some(SeatLink::Founding) => {
-                    let key = self
-                        .admission
-                        .founding(peer.uid)
-                        .or_else(|| self.admission.awaiting(peer.uid).map(|(_, key)| key))
-                        .unwrap_or_default();
-                    admitted = Admitted::Founding { key };
                     founding = true;
+                    // Until the account acts as a person, its session reaches only what makes
+                    // or joins one. Once its certified key or a login serves it, the account's
+                    // own admission stands, and this process only keeps the device's setup
+                    // actions.
+                    if !admitted.served() {
+                        let key = self
+                            .admission
+                            .founding(peer.uid)
+                            .or_else(|| self.admission.awaiting(peer.uid).map(|(_, key)| key))
+                            .unwrap_or_default();
+                        admitted = Admitted::Founding { key };
+                    }
                 }
                 Some(SeatLink::Person(person)) if self.device.person() == Some(person) => {
                     admitted = Admitted::Person(person);
@@ -945,18 +969,7 @@ impl Seats {
             ));
         }
         let key = cert.device_public_key;
-        let person = cert.user_public_key;
         self.admission.certified(seat.uid, cert)?;
-        // The session whose founding link this was is the person's from now on: its next
-        // connections, and the link it asks for, reach them with no restart.
-        if let Some(pid) = seat.pid
-            && matches!(
-                self.links.lock_recover().get(&(seat.uid, pid)),
-                Some(SeatLink::Founding)
-            )
-        {
-            self.record_person(seat.uid, pid, person);
-        }
         Ok(json!({"key": hex::encode(key)}))
     }
 

@@ -92,6 +92,15 @@ impl Onboarding {
         }
     }
 
+    /// Open the nearby-device flow from the backup step a person made on this computer reaches:
+    /// they choose to join the person they already have instead, and this computer becomes one of
+    /// their devices rather than a device of its own.
+    pub fn choose_nearby_from_backup(&mut self) {
+        if self.screen == Screen::Done && self.minted.is_some() {
+            self.screen = Screen::Nearby;
+        }
+    }
+
     /// Open the backup-restore flow from the use-existing choice.
     pub fn choose_restore(&mut self) {
         if self.screen == Screen::Existing {
@@ -109,6 +118,12 @@ impl Onboarding {
 
     pub fn back(&mut self) {
         match self.screen {
+            // A person made on this computer joins the person they already have, and a step that
+            // join opened goes back to the backup it left, not to a choice an identity already
+            // settles.
+            Screen::Nearby | Screen::Restore | Screen::RecoveryKey if self.minted.is_some() => {
+                self.screen = Screen::Done;
+            }
             Screen::Nearby | Screen::Restore | Screen::RecoveryKey => {
                 self.screen = Screen::Existing;
             }
@@ -494,6 +509,27 @@ mod tests {
             assert!(o.complete(minted));
             assert_eq!(o.screen(), Screen::Done);
             assert!(o.is_done());
+        }
+
+        phase the_backup_step_of_a_person_made_here_opens_the_join_and_returns_to_it;
+        {
+            // A person made on this computer reaches the backup step with an identity already
+            // here: joining the person they already have opens from it.
+            let mut o = Onboarding::new();
+            o.resume_created(MintedIdentity {
+                fingerprint: "ab".repeat(32),
+                path: PathBuf::from("/nowhere/primary.json"),
+            });
+            assert_eq!(o.screen(), Screen::Done);
+            o.choose_nearby_from_backup();
+            assert_eq!(o.screen(), Screen::Nearby);
+            o.back();
+            assert_eq!(o.screen(), Screen::Done, "back returns to the backup it left");
+            // Before an identity is here the backup step does not exist, and the join still
+            // opens from the choice that offers it.
+            let mut fresh = Onboarding::new();
+            fresh.choose_nearby_from_backup();
+            assert_eq!(fresh.screen(), Screen::Intro);
         }
 
     }

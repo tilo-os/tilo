@@ -1157,6 +1157,24 @@ impl Ceremony {
                     .with_id("onboarding.backup.heading")
                     .with_role(ui::tokens::typography::TextRole::LargeTitle),
             ));
+        // The identity on this computer may not be the one the person wants: a computer set up
+        // for someone who already uses Tilo joins the person they have, with a code from one of
+        // their devices, instead of keeping the one made here.
+        if !self.page.recovery_only && !self.page.portable_backup_only {
+            let dispatch = self.dispatch.clone();
+            page = page.push(Box::new(Section::new(vec![Box::new(
+                ListRow::new(
+                    "onboarding.backup.join.row",
+                    t("onboarding-backup-join"),
+                )
+                .icon(ui::icons::Icon::Monitor)
+                .secondary(t("onboarding-backup-join-detail"))
+                .disclosure()
+                .on_activate(move || {
+                    dispatch.effect(&OnboardingEffect::choose("nearby"));
+                }),
+            )])));
+        }
         if self.page.backup_error.is_some()
             || self.page.backup_saved.is_some()
             || self.page.backup_was_verified

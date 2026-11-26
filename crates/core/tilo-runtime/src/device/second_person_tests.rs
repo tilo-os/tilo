@@ -27,7 +27,9 @@ static PEER: AtomicU32 = AtomicU32::new(DAEMON);
 fn test_peer(_: &UnixStream) -> io::Result<crate::seats::Peer> {
     Ok(crate::seats::Peer {
         uid: PEER.load(Ordering::SeqCst),
-        pid: None,
+        // A founding link is tied to the process that redeems it: these connections come from
+        // this test's own process.
+        pid: Some(std::process::id()),
     })
 }
 
@@ -244,16 +246,30 @@ fn do_here(socket: &Path, uid: u32, path: &str, args: &Value) -> Value {
     )
 }
 
-/// Root signs `uid` in, saying nothing of a person it holds.
+/// Root signs `uid` in, saying nothing of a person it holds: the account's session redeems the
+/// founding link its sign-in answers, as a session does.
 fn signed_in(socket: &Path, uid: u32) -> Value {
-    ask(
+    let answer = ask(
         socket,
         tilo_api::daemon::admission::ROOT,
         &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
             "name": "tilo_do",
             "arguments": {"path": "seats#signed-in", "args": {"uid": uid}},
         }}),
-    )
+    );
+    if let Some(token) = answered_json(&answer)["token"].as_str() {
+        let linked = ask(
+            socket,
+            uid,
+            &json!({"native": "shells#link", "token": token}),
+        );
+        assert_eq!(
+            linked["founding"],
+            json!(true),
+            "the sign-in's founding link is not the account's: {linked}"
+        );
+    }
+    answer
 }
 
 fn who_here(socket: &Path, uid: u32) -> Value {

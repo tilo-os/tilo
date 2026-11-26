@@ -90,19 +90,18 @@ pub fn founding_link() -> Option<std::os::fd::OwnedFd> {
         .ok()
         .map(|place| place.native())?;
     let deadline = std::time::Instant::now() + PERSON_LINK_WITHIN;
-    let mut last = String::new();
     loop {
-        match tilo_session_client::daemon_documents::link_with(&socket, None) {
+        let why = match tilo_session_client::daemon_documents::link_with(&socket, None) {
             Ok(tilo_session_client::daemon_documents::ShellLinkAnswer::Shell(link)) => {
                 return Some(link);
             }
             Ok(tilo_session_client::daemon_documents::ShellLinkAnswer::Founding) => {
-                last = "this computer is still setting its person up".to_owned();
+                "this computer is still setting its person up".to_owned()
             }
-            Err(error) => last = error,
-        }
+            Err(error) => error,
+        };
         if std::time::Instant::now() >= deadline {
-            eprintln!("tilo-session: this session's person's link: {last}");
+            eprintln!("tilo-session: this session's person's link: {why}");
             return None;
         }
         std::thread::sleep(PERSON_LINK_EVERY);

@@ -1619,6 +1619,11 @@ impl Native {
             };
             return take(stream, slot, seated, app);
         }
+        // The session a sign-in answered a founding link reaches the device's setup actions
+        // about its person, whatever it acts as now: making one, joining one, what the device is.
+        if seated.seat.founding && asks_the_founding(&stream) {
+            return self.device_only(stream, slot, seated);
+        }
         // Another person than the device's acts as their own key, and is never served the
         // person's endpoint: until it runs, the device's own actions answer them.
         if matches!(seated.seat.admitted, Admitted::Key { .. }) {

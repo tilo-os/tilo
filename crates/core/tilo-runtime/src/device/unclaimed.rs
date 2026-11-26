@@ -756,6 +756,13 @@ impl DeviceOnly {
         let device =
             tilo_api::daemon::enter::log_in_here(&self.0.key, &self.0.place, ticket, agent, label)
                 .await?;
+        // The account joined the person this computer now serves: the person it made here for
+        // its setup is retired, and the session that asked is the joined person's from now on.
+        if let Some(seated) = &self.1 {
+            seated
+                .seats
+                .adopted_login(seated.seat.uid, device.cert.user_public_key);
+        }
         let said = logged_in(&device);
         *self.0.entered.lock_recover() = Some(device);
         Ok(said)

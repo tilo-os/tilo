@@ -371,6 +371,45 @@ impl Admission {
         Ok(())
     }
 
+    /// Record that the account `uid` joined the person `person` this computer now serves,
+    /// replacing the person it made here before: the person made for the setup is retired, and
+    /// the account acts as the joined one.
+    ///
+    /// # Errors
+    /// The record could not be kept.
+    pub fn adopted(&self, uid: u32, person: [u8; 32]) -> Result<(), String> {
+        if !self.system || uid == ROOT || uid == self.own {
+            return Ok(());
+        }
+        {
+            let mut accounts = self.accounts.lock().unwrap_or_else(PoisonError::into_inner);
+            for held in accounts.values_mut() {
+                if held.device && held.person != person {
+                    held.device = false;
+                }
+            }
+            accounts.insert(uid, AccountPerson { person, device: true });
+        }
+        self.seats
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(uid, Seat::Person(person));
+        if let Some(profile) = &self.kept {
+            let path = person_record(profile, uid);
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).map_err(|error| {
+                    format!("this computer could not keep which account is whose person: {error}")
+                })?;
+            }
+            let record = serde_json::json!({ "person": hex::encode(person), "device": true });
+            let bytes = serde_json::to_vec(&record).map_err(|error| error.to_string())?;
+            tilo_files::native::atomic::write_private(&path, &bytes).map_err(|error| {
+                format!("this computer could not keep which account is whose person: {error}")
+            })?;
+        }
+        Ok(())
+    }
+
     /// The account `uid` signed in with no person yet, whose key here `key` is: it may make one,
     /// and then acts as that key.
     ///
@@ -703,6 +742,31 @@ mod tests {
         admission.founded_by(1000, [7; 32]).unwrap();
         assert!(admission.has_person(1000));
         assert!(!admission.has_person(1001));
+    }
+
+    #[test]
+    fn an_account_that_joins_a_person_retires_the_one_it_made_here() {
+        let profile = tempfile::tempdir().unwrap();
+        let admission = Admission::new(990, true)
+            .keeping_accounts_in(profile.path().to_path_buf())
+            .unwrap();
+        admission.founded_by(1000, [7; 32]).unwrap();
+        admission.signed_in(ROOT, 1000, [7; 32]).unwrap();
+        assert_eq!(admission.admit(1000), Admitted::Person([7; 32]));
+        assert!(admission.recorded_person(1000).unwrap().device);
+        // The computer joined the person the account already had: the person it made here for
+        // its setup is retired, and the account acts as the one it joined.
+        admission.adopted(1000, [8; 32]).unwrap();
+        assert_eq!(admission.admit(1000), Admitted::Person([8; 32]));
+        let held = admission.recorded_person(1000).expect("the joined person");
+        assert_eq!(held.person, [8; 32]);
+        assert!(held.device, "the joined person is the one this device serves");
+        // It survives a restart as the account's person.
+        let restarted = Admission::new(990, true)
+            .keeping_accounts_in(profile.path().to_path_buf())
+            .unwrap();
+        assert_eq!(restarted.recorded_person(1000).unwrap().person, [8; 32]);
+        assert!(restarted.recorded_person(1000).unwrap().device);
     }
 
     #[test]

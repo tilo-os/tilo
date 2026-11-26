@@ -71,6 +71,20 @@ pub fn setup_unfinished() -> bool {
     progress::unfinished(&crate::firstboot::collaboration_identity_paths())
 }
 
+/// Record that this device's setup reached its backup step: what startup writes after this
+/// computer's daemon made the account's person here, so a computer set up for one person still
+/// offers the recovery key and the tour rather than opening straight into the desktop.
+///
+/// # Errors
+/// This device's key or the person's settings could not be read or written.
+pub fn record_backup_step() -> Result<(), String> {
+    progress::record(
+        &crate::firstboot::collaboration_identity_paths(),
+        Some(Stage::IdentityReady),
+    )
+    .map_err(|error| error.to_string())
+}
+
 pub const KEY_BEGIN: &str = "onboarding.begin";
 pub const KEY_EXISTING: &str = "onboarding.existing";
 pub const KEY_CHOOSE_NEARBY: &str = "onboarding.existing.nearby";
@@ -1686,16 +1700,28 @@ impl Widget for OnboardingView {
         self.sync_recovery_key();
 
         // Choosing the nearby flow opens the code's screen; nothing is sent
-        // until the person has typed the code and chosen Join.
-        if self.pressed.take(KEY_CHOOSE_NEARBY)
-            && self.flow.screen() == Screen::Existing
-            && self.identity_idle()
-        {
-            clear_secret(&self.ticket);
-            self.error = None;
-            self.nearby_failure = None;
-            self.flow.choose_nearby();
-            self.invalidation.structure();
+        // until the person has typed the code and chosen Join. The backup step
+        // a person made on this computer offers it too: they join the person
+        // they already have instead of keeping the one made here.
+        if self.pressed.take(KEY_CHOOSE_NEARBY) && self.identity_idle() {
+            let from_backup = self.flow.screen() == Screen::Done && !self.identity_ready_page;
+            match self.flow.screen() {
+                Screen::Existing => {
+                    clear_secret(&self.ticket);
+                    self.error = None;
+                    self.nearby_failure = None;
+                    self.flow.choose_nearby();
+                    self.invalidation.structure();
+                }
+                Screen::Done if from_backup => {
+                    clear_secret(&self.ticket);
+                    self.error = None;
+                    self.nearby_failure = None;
+                    self.flow.choose_nearby_from_backup();
+                    self.invalidation.structure();
+                }
+                _ => {}
+            }
         }
 
         if self.pressed.take(KEY_CONNECT_BROWSE)
@@ -3090,6 +3116,39 @@ mod tests {
             .expect("another device's step");
             assert!(!progress::unfinished(&device.paths));
             assert_eq!(device.restarted(directory.path()).flow().screen(), Screen::Intro);
+        }
+
+        phase a_person_made_here_lands_on_the_backup_and_may_join_the_person_they_had;
+        {
+            let directory = TempDir::new().expect("identity directory");
+            write_fixture_identity(directory.path());
+            let device = Device::new();
+            // Startup made this account's person through the daemon, and recorded the step that
+            // leaves the person at their backup: a computer set up for one person still gets it.
+            record_backup_step().expect("the setup step is kept");
+            assert!(progress::unfinished(&device.paths));
+            let mut backup = device.restarted(directory.path());
+            assert_eq!(backup.flow().screen(), Screen::Done);
+            assert!(
+                !backup.identity_ready_page,
+                "the backup step, not the ready page"
+            );
+            assert!(
+                accessibility_for_id(laid_out(&mut backup), "onboarding.backup.heading").is_some()
+            );
+            // The person who already uses Tilo on another device joins it here.
+            assert!(
+                accessibility_for_id(laid_out(&mut backup), "onboarding.backup.join.row").is_some(),
+                "the join choice is visible on the backup step"
+            );
+            let mut document = AutoCommit::new();
+            press(&backup, &mut document, KEY_CHOOSE_NEARBY);
+            sync_settled(&mut backup, &document);
+            assert_eq!(backup.flow().screen(), Screen::Nearby);
+            // Back returns to the backup it left, not to a choice an identity already settles.
+            press(&backup, &mut document, KEY_BACK);
+            sync_settled(&mut backup, &document);
+            assert_eq!(backup.flow().screen(), Screen::Done);
         }
 
         phase recovery_never_resumes_a_step_that_assumes_the_identity_signs;

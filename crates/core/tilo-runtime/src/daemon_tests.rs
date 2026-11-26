@@ -3008,6 +3008,10 @@ fn a_session_that_cannot_be_made_is_refused_within_seconds() {
 /// person through the same endpoint, and root's next sign-in answers a person. An action that
 /// needs a person before one exists is refused at once.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "a sign-in, its founding link, a refusal, founding and the second sign-in, read top to bottom"
+)]
 fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
     use io::{BufRead as _, Write as _};
     use serde_json::{Value, json};
@@ -3021,6 +3025,8 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
     let root = home.root().to_owned();
     let keys = tilo_api::calls::device_keys();
     let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+    // The daemon signs as this device: it takes the key before founding a person for an account.
+    let _key_taken = tilo_device_identity::persist::take_device_key(&keys).unwrap();
     let place = tilo_device_identity::login::Place::at(root.join("login"), keys);
     let admission: &'static tilo_api::daemon::admission::Admission = Box::leak(Box::new(
         tilo_api::daemon::admission::Admission::new(DAEMON, true),
@@ -3115,7 +3121,7 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
 
     // A founding link reaches what makes or joins its person, and nothing else of the computer:
     // another action is refused, saying what this session may do until it has one.
-    let (refused, why) = call(ADA, "devices#identities", json!({}));
+    let (refused, why) = call(ADA, "devices#renewCertificates", json!({}));
     assert!(refused, "a founding link asked beyond its setup: {why}");
     assert!(
         why.contains("may make one or join one"),
@@ -3161,7 +3167,10 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
         Some(64),
         "the session that made the person acts as them: {who}"
     );
-    assert_eq!(who["claimed"], true, "{who}");
+    assert!(
+        who["key"].as_str().is_some_and(|key| key.len() == 64),
+        "the session acts as the key its person's root certified: {who}"
+    );
 
     // Root says it signed in again, and the daemon answers the person, not a second founding.
     let (failed, said) = call(0, "seats#signed-in", json!({"uid": ADA}));
@@ -3180,6 +3189,10 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
 /// an app the account runs, and any other program of theirs, is not that session. Neither redeems
 /// the secret, and neither makes a person.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "a sign-in, an app's try, the session's link and another program's, read top to bottom"
+)]
 fn a_founding_link_is_never_an_apps_or_another_programs() {
     use io::{BufRead as _, Write as _};
     use serde_json::{Value, json};
