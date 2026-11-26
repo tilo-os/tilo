@@ -346,25 +346,46 @@ const ASKING_SHOWN: usize = 300;
 /// says what it asked while it runs: every other ask of the shell's that waits on it, and the
 /// desktop that waits on those, is found from it.
 pub(super) fn answer(shell: Option<Shell>, call: ShellCall) -> ShellAnswer {
-    // The shell's follow of the writes it took waits for the next one by design.
+    // The shell's follow of the writes it took waits for the next one, however long that is.
     if matches!(call, ShellCall::Writes) {
         return answered(shell, call);
     }
+    // A read or an observe that asked to be held until something moves is held at most
+    // `MAX_REMOTE_WAIT`: only past that is it slow, so a follow never reads as a stuck call.
+    let patience = if asks_to_wait(&call) {
+        SLOW_CALL.saturating_add(tilo_actions::remote::MAX_REMOTE_WAIT)
+    } else {
+        SLOW_CALL
+    };
     let asking = asking(&call);
-    Box::pin(watched(answered(shell, call), asking))
+    Box::pin(watched(answered(shell, call), asking, patience))
 }
 
-/// `answer`, saying what it asked every time it ran as long again as it had.
+/// Whether `call` is an action that asked its provider to hold the answer until something moves.
+fn asks_to_wait(call: &ShellCall) -> bool {
+    match call {
+        ShellCall::Action { frame, .. } => tilo_actions::remote::RemoteActionFrame::decode(frame)
+            .is_ok_and(|frame| frame.message.waits()),
+        _ => false,
+    }
+}
+
+/// `answer`, saying what it asked once it ran past `first`, and every time it ran as long
+/// again as it had.
 #[expect(
     clippy::future_not_send,
     reason = "a shell's answer runs on the broker's local set, as `ShellAnswer` says"
 )]
-async fn watched(mut answer: ShellAnswer, asking: String) -> Result<Reply, String> {
+async fn watched(
+    mut answer: ShellAnswer,
+    asking: String,
+    first: std::time::Duration,
+) -> Result<Reply, String> {
     let started = tilo_clock::now();
-    let mut patience = SLOW_CALL;
+    let mut patience = first;
     loop {
         if let Ok(answered) = tokio::time::timeout(patience, &mut answer).await {
-            if patience > SLOW_CALL {
+            if patience > first {
                 tracing::warn!(
                     running_ms = running_ms(started),
                     asking = %asking,

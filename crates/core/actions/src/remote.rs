@@ -2010,8 +2010,9 @@ impl RemoteActionMessage {
     }
 
     /// Whether this request asks its provider to hold the answer until the
-    /// invocation moves, or until a person answers, so whatever carries it must not wait behind
-    /// it.
+    /// invocation moves, a person answers, or a record is written past what its reader saw, so
+    /// whatever carries it must not wait behind it, and nothing that watches for stuck calls
+    /// takes the wait it asked for as one.
     #[must_use]
     pub const fn waits(&self) -> bool {
         matches!(
@@ -2023,6 +2024,13 @@ impl RemoteActionMessage {
                 wait_ms: Some(_),
                 ..
             }) | Self::ChangedRequest { .. }
+                | Self::ResourceRead {
+                    read: ResourceReadRequest {
+                        wait_ms: Some(_),
+                        ..
+                    },
+                    ..
+                }
         )
     }
 
