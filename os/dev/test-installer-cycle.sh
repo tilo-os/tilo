@@ -776,11 +776,13 @@ if [ "$oobe_started" -ne 1 ]; then
   fi
   # The screen alone does not say why. The account has its password from the
   # installer and is in wheel, which reads the system journal: sign in on the
-  # serial console and keep this boot's warnings and the account's own log.
+  # serial console and keep this boot's warnings, the account's own log, and
+  # the desktop's own record of each of its runs (the session wrapper keeps
+  # them beside the person's state).
   python3 "$dev_dir/serial-console.py" "$run/serial.sock" \
     --log "$out/target-console.log" --login "$TILO_USER:$TILO_PASS" \
-    --timeout 60 --deadline 120 \
-    --run 'journalctl -b -o short-monotonic --no-pager -p 4; journalctl -b -o short-monotonic --no-pager _UID=$(id -u)' \
+    --timeout 60 --deadline 300 \
+    --run 'journalctl -b -o short-monotonic --no-pager -p 4; journalctl -b -o short-monotonic --no-pager _UID=$(id -u); for log in ~/.local/state/tilo/session-logs/*; do echo "== $log"; tail -c 150000 "$log"; done' \
     > "$out/target-journal.txt" 2> "$out/target-journal-console.txt" || true
   die "first installed boot did not reach direct OOBE"
 fi
