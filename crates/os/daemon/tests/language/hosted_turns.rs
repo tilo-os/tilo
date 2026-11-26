@@ -503,29 +503,20 @@ fn a_hosted_agent_uses_the_same_workspace_skills_actions() {
     });
 }
 
-/// The events the workspace's host keeps, as its person's own call lists them.
+/// The events the workspace's host keeps, as its person's own call lists them: the call followed
+/// to its end, where the host takes it as an invocation of its own first.
 async fn events_of(host: &Host) -> Vec<tilo_action_services::workspace_events::EventView> {
     use tilo_action_services::workspace_events;
     let address = ActionAddress::new(workspace_events::RESOURCE, workspace_events::LIST);
-    let receipt = host
-        .dispatch()
-        .invoke(
-            &host.caller(),
-            host::call(workspace_events::PROVIDER, address, &json!({})),
-        )
+    let request = host::call(workspace_events::PROVIDER, address, &json!({}));
+    let output = host::output(host, request.target, Value::Null)
         .await
-        .expect("the dispatch answers")
         .unwrap_or_else(|error| panic!("the events list: {error:?}"));
-    match receipt.status {
-        ReceiptStatus::Completed { output } => {
-            serde_json::from_value::<workspace_events::Events>(
-                output.value.expect("the events answer a value"),
-            )
-            .expect("the list reads as events")
-            .events
-        }
-        other => panic!("the events list: {other:?}"),
-    }
+    serde_json::from_value::<workspace_events::Events>(
+        output.value.expect("the events answer a value"),
+    )
+    .expect("the list reads as events")
+    .events
 }
 
 /// A reminder the person's assistant set up itself, from the asking to the answer. The person
