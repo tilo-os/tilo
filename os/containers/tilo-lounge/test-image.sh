@@ -84,6 +84,25 @@ for program in tilo-runtime discord-worker; do
   [[ $(head -c 4 "$root/usr/local/bin/$program" | od -An -c | tr -d ' ') == '177ELF' ]] \
     || fail "/usr/local/bin/$program is not a program"
 done
+# The apps its workspace's people open: the launcher each app's process starts in, beside the
+# daemon (a Tilo program finds it by its own name there), the runtimes the apps execute at the
+# root a Tilo program resolves its bundles from, the key they and the packages are signed with
+# where a device's trust list is, and the store the packages were installed into — a device's
+# four, no different here.
+for program in tilo-launcher tilolang-process; do
+  [[ -x $root/usr/local/bin/$program ]] || fail "/usr/local/bin/$program is missing or not executable"
+done
+[[ -x $root/usr/bin/bwrap ]] || fail "the image carries no bwrap: the launcher starts every app in one"
+[[ -s $root/etc/tilo/runtime-bundle-trusted-publishers.txt ]] \
+  || fail "the image names no runtime publisher: no bundle or package it carries would be trusted"
+runtimes=$(find "$root/usr/lib/tilo-runtime" -mindepth 1 -maxdepth 1 -type d | wc -l)
+[[ $runtimes -ge 2 ]] \
+  || fail "the image carries $runtimes runtime bundle(s), not the Tilo and tilolang runtime the apps run on"
+[[ -s $root/usr/share/tilo-apps/registry.toml ]] || fail "the image's app store holds no package"
+for app in so.tilo.shell so.tilo.notes; do
+  grep -Fq "id = \"$app\"" "$root/usr/share/tilo-apps/registry.toml" \
+    || fail "the image's app store holds no $app: its page would be refused"
+done
 # The catalog must be this build's: a container has no system fonts, so the
 # app components would lay text out in whatever is left.
 cmp -s "$root/usr/share/fonts/tilo/manifest.toml" "$repo_root/$font_catalog_source/manifest.toml" \

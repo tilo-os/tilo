@@ -16,8 +16,11 @@
 # records). `restart_lounge` stops the Lounge alone and starts it
 # again on the volume it kept, the site left serving, as a deployment's restart
 # does. It needs node, chromium, curl, and TILO_SERVER_BIN and TILO_CRYPTO_BIN
-# naming built programs, and TILO_FONTS_DIR the product's font catalog. The
-# caller's EXIT trap must call `stop_lounge`.
+# naming built programs, and TILO_FONTS_DIR the product's font catalog.
+# TILO_LOUNGE_APPS, when set, names the apps its workspace runs
+# (tools/ci/publish/lounge-apps.sh): the launcher goes beside the server and the
+# packages are installed into the volume's own store, as a device installs the
+# packages it is given. The caller's EXIT trap must call `stop_lounge`.
 #
 # Its addresses are LOUNGE_PORT_BASE (default 19780) and the two ports after
 # it — the daemon's HTTPS web listener, its packet relay, and the site — so a
@@ -54,6 +57,10 @@ run_lounge() {
   # read why it did or did not do something.
   env -i HOME="$lounge_home" PATH="$lounge_bin:/usr/bin:/bin" \
     ${LOUNGE_LOG:+TILO_SERVER_LOG="$LOUNGE_LOG"} \
+    ${lounge_apps:+TILO_APPS_DATA_DIR="$lounge_volume/apps"} \
+    ${lounge_apps:+TILO_RUNTIME_BUNDLE_DIR="$lounge_apps/runtimes"} \
+    ${lounge_apps:+TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE="$lounge_apps/runtime-publishers.txt"} \
+    ${lounge_apps:+TILO_LAUNCHER_PATH="$lounge_bin/tilo-launcher"} \
     TILO_SOURCE_REVISION=direct-lounge \
     TILO_SECRETS_DIR="$lounge_volume/secrets" \
     TILO_WORKSPACES_ROOT_FILE="$lounge_volume/secrets/workspace-root" \
@@ -198,6 +205,17 @@ start_lounge() {
   # lay text out, and a host that seeds them has no system fonts).
   cp "$server_bin" "$work/bin/tilo-runtime"
   cp -R "$fonts" "$work/bin/fonts"
+  # The apps the workspace runs, beside the server and installed into this
+  # volume's store as a device's are (TILO_LOUNGE_APPS, when the check has them).
+  lounge_apps=${TILO_LOUNGE_APPS:-}
+  if [[ -n $lounge_apps ]]; then
+    [[ -x $lounge_apps/bin/tilo-launcher && -x $lounge_apps/bin/tilo-install && -d $lounge_apps/packages ]] \
+      || lounge_fail "TILO_LOUNGE_APPS names no apps in $lounge_apps"
+    cp "$lounge_apps/bin/tilo-launcher" "$work/bin/"
+    TILO_INSTALL="$lounge_apps/bin/tilo-install" TILO_RUNTIME_BUNDLE_DIR="$lounge_apps/runtimes" \
+      sh "$lounge_here/install-apps.sh" "$lounge_apps/packages" "$volume/apps" >&2 \
+      || lounge_fail 'could not install the apps the workspace runs'
+  fi
 
   # This Lounge's server configuration: its web UI and packet relay on this
   # check's ports, so two runs beside each other bind their own, and the

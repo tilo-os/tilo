@@ -3,4 +3,8 @@
 !fonts/
 !surfaces/
 !entrypoint.sh
+!install-apps.sh
+!runtimes/
+!packages/
+!runtime-publishers.txt
 !verify-no-cisco-openh264.sh

@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
 # The Lounge image's build context (os/containers/tilo-lounge): the programs
-# (lounge-binaries.sh) and
-# the product font catalog its app components lay text out from, since a
-# container has no system fonts. usage: lounge-context.sh OUT BINARIES FONTS
+# (lounge-binaries.sh), the product font catalog its app components lay text out
+# from, since a container has no system fonts, and the apps its workspace runs
+# (lounge-apps.sh). usage: lounge-context.sh OUT BINARIES FONTS APPS
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-usage='usage: lounge-context.sh OUT BINARIES FONTS'
+usage='usage: lounge-context.sh OUT BINARIES FONTS APPS'
 out=${1:?$usage}
 binaries=${2:?$usage}
 fonts=${3:?$usage}
+apps=${4:?$usage}
 cd "$repo_root"
 [[ -x $binaries/tilo-runtime && -x $binaries/discord-worker ]] || die "no Lounge programs in $binaries"
 [[ -f $fonts/manifest.toml ]] || die "no product font catalog in $fonts"
+[[ -x $apps/bin/tilo-launcher && -d $apps/runtimes && -d $apps/packages ]] || die "no Lounge apps in $apps"
 rm -rf "$out"
 mkdir -p "$out/bin" "$out/fonts"
-cp "$binaries/tilo-runtime" "$binaries/discord-worker" "$out/bin/"
+cp "$binaries/tilo-runtime" "$binaries/discord-worker" \
+  "$apps/bin/tilo-launcher" "$apps/bin/tilolang-process" "$apps/bin/tilo-install" "$out/bin/"
+cp -a "$apps/runtimes" "$apps/packages" "$apps/runtime-publishers.txt" "$out/"
 cp -a "$fonts/." "$out/fonts/"
 # Every version of each built-in app's compiled surface the apps' history holds, one
 # file per version: the server publishes them into its content store at start, so
@@ -65,7 +69,7 @@ fi
 echo "surfaces: $(ls "$out/surfaces" | wc -l) versions of the built-in apps' compiled surfaces"
 container=os/containers/tilo-lounge
 cp "$container/Containerfile" "$container/Containerfile.dockerignore" "$container/entrypoint.sh" \
-  os/scripts/verify-no-cisco-openh264.sh "$out/"
+  "$container/install-apps.sh" os/scripts/verify-no-cisco-openh264.sh "$out/"
 # The image's revision label and TILO_SOURCE_REVISION: the commit this context
 # was built from, which GET /mode reports.
 printf '%s\n' "${TILO_LOUNGE_SURFACE_COMMIT:-$(git rev-parse HEAD)}" > "$out/source-revision"

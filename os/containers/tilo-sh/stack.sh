@@ -1802,14 +1802,32 @@ lay_out_lounge() {
     # programs, the catalog, the files the image's context takes and this
     # commit, whose history the app surfaces come from.
     local stamp container=$repo/os/containers/tilo-lounge
+    local apps=${TILO_SH_APPS:-} apps_stamp=
+    if [[ -n $apps ]]; then apps_stamp=$(made_from "$apps/bin/tilo-launcher" "$apps/runtime-publishers.txt"); fi
     stamp=$(made_from "$programs/tilo-runtime" "$programs/discord-worker" "$fonts/manifest.toml" \
       "$repo/tools/ci/publish/lounge-context.sh" "$container/Containerfile" "$container/Containerfile.dockerignore" \
       "$container/entrypoint.sh" "$repo/apps/discord/bridge/program.json")
-    if [[ $(cat "$native/lounge.made-from" 2>/dev/null) != "$stamp" || ! -x $native/lounge/bin/tilo-runtime ]]; then
+    if [[ $(cat "$native/lounge.made-from" 2>/dev/null) != "$stamp $apps_stamp" || ! -x $native/lounge/bin/tilo-runtime ]]; then
+      # The apps the workspace runs: the launcher, the runtimes and the signed packages
+      # (lounge-apps.sh), which a caller may hand over, else t builds beside the programs.
+      if [[ -z $apps ]]; then
+        if [[ $build == t ]]; then
+          t_build "the apps the workspace runs" lounge-check-apps
+          apps=$t_fetched/target/publish/lounge-check/apps
+        else
+          [[ -f $repo/target/thin-dev/tilolang-process ]] \
+            || bash "$repo/dist/dev/tilolang-runtime-build.sh" >&2 \
+              || die 'could not build the thin tilolang runtime the apps run on'
+          apps=$native/apps
+          bash "$repo/tools/ci/publish/lounge-apps.sh" "$apps" "$repo/target/thin-dev" "$fonts" lounge-check >&2 \
+            || die 'could not build the apps the workspace runs (lounge-apps.sh)'
+        fi
+      fi
+      apps_stamp=$(made_from "$apps/bin/tilo-launcher" "$apps/runtime-publishers.txt")
       TILO_LOUNGE_SURFACE_COMMIT=$commit \
-        bash "$repo/tools/ci/publish/lounge-context.sh" "$native/lounge" "$programs" "$fonts" >/dev/null \
+        bash "$repo/tools/ci/publish/lounge-context.sh" "$native/lounge" "$programs" "$fonts" "$apps" >/dev/null \
         || die 'could not lay out the server (lounge-context.sh)'
-      printf '%s\n' "$stamp" > "$native/lounge.made-from"
+      printf '%s\n' "$stamp $apps_stamp" > "$native/lounge.made-from"
     fi
     lounge=$native/lounge
   fi
@@ -2129,6 +2147,12 @@ start_native_server() {
   # configuration hands it (make_secrets): it founds and keeps the Lounge, and
   # no ticket joins it.
   stack_person >/dev/null
+  # The apps the workspace runs, installed into this server's own store as a
+  # device installs the packages it is given (install-apps.sh): once per set of
+  # packages this context carries, and again when a build changes them.
+  TILO_INSTALL="$lounge/bin/tilo-install" TILO_RUNTIME_BUNDLE_DIR="$lounge/runtimes" \
+    sh "$lounge/install-apps.sh" "$lounge/packages" "$state/server/apps" >&2 \
+    || die 'could not install the apps the workspace runs'
   { private_env server "$lounge/bin"
     image_env_here "$repo/os/containers/tilo-lounge/Containerfile" \
       "TILO_WORKSPACES_STATE=$state/server" "TILO_SECRETS_DIR=$state/server/secrets"
@@ -2136,6 +2160,16 @@ start_native_server() {
     # and the product font catalog its components lay text out from.
     printf '%s\n' "TILO_SURFACES=$lounge/surfaces"
     printf '%s\n' "TILO_FONT_CATALOG=${font_catalog:-$lounge/fonts}"
+    # The store the apps were installed into, the runtimes they execute, and
+    # the key they and the packages are trusted by. The image keeps all three
+    # where a Tilo program looks by itself (the store a device's own, the
+    # bundles in /usr/lib/tilo-runtime, the list in /etc/tilo); outside it they
+    # are this context's, and the launcher — a `lounge-check` build, which
+    # honours where the trust list is — is told.
+    printf '%s\n' "TILO_APPS_DATA_DIR=$state/server/apps" \
+      "TILO_RUNTIME_BUNDLE_DIR=$lounge/runtimes" \
+      "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$lounge/runtime-publishers.txt" \
+      "TILO_LAUNCHER_PATH=$lounge/bin/tilo-launcher"
     server_env
   } > "$runs/server.env"
   run_native server "$state/server" sh "$lounge/entrypoint.sh"

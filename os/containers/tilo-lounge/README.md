@@ -67,6 +67,18 @@ never joins with a ticket: it is that owner's own device.
 `TILO_SOURCE_REVISION` is the image's own revision; `TILO_SECRETS_DIR` already
 points into the state volume, where the workspace secrets are kept sealed.
 
+## The apps the workspace runs
+
+A page runs the app it shows on the daemon, as any device does: the image
+carries the four a device has — the launcher every app's process starts in
+(`/usr/local/bin/tilo-launcher`, beside the daemon), the Tilo and tilolang
+runtime bundles (`/usr/lib/tilo-runtime`), the key those and the packages are
+signed with (`/etc/tilo/runtime-bundle-trusted-publishers.txt`), and the
+default collection's tilolang packages, installed into the image's own store
+(`/usr/share/tilo-apps`) by `install-apps.sh` through `tilo-install`. Nothing
+about an app is special here: it is a signed package in the store, opened by
+the name people know it by.
+
 ## State on the volume
 
 ```
@@ -81,10 +93,11 @@ $TILO_WORKSPACES_STATE/
 ## Building
 
 `tools/ci/publish/lounge-binaries.sh` builds the programs,
-`tools/ci/publish/lounge-fonts.sh` the product font catalog and
+`tools/ci/publish/lounge-apps.sh` the launcher, the runtimes and the signed
+packages, `tools/ci/publish/lounge-fonts.sh` the product font catalog and
 `tools/ci/publish/lounge-context.sh` lays out the build context. t's
-`lounge-binaries`, `lounge-fonts`, `image-lounge-context` and `image-lounge`
-checks build and test this image; `image-web-entry-context`, `image-web-entry`
+`lounge-binaries`, `lounge-apps`, `lounge-fonts`, `image-lounge-context` and
+`image-lounge` checks build and test this image; `image-web-entry-context`, `image-web-entry`
 and `publish-web-entry` do the same for the web entry; `publish-lounge` and
 `publish-web-entry` publish both from one commit, so a change is built by
 naming the checks.

@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1.7
 # The Lounge's host: the device's one daemon, keeping the public workspace
 # placed on it, with the Discord connector's worker beside it. Nothing here
-# compiles: the programs are built by tools/ci/publish/lounge-binaries.sh and
-# laid out with the product font catalog by lounge-context.sh.
+# compiles: the programs are built by tools/ci/publish/lounge-binaries.sh, the
+# apps its workspace runs by lounge-apps.sh, and all of them laid out with the
+# product font catalog by lounge-context.sh.
 # Pinned on registry.fedoraproject.org, which keeps superseded digests;
 # quay.io prunes them, so a digest pinned there stops resolving.
 FROM registry.fedoraproject.org/fedora-minimal:44@sha256:694cfd38a85e4c48bae777d37e4ca8d5f0ee0dd36ace04294f23b72bf9bd3475 AS runtime
@@ -19,16 +20,33 @@ LABEL org.opencontainers.image.title="Tilo Lounge" \
 # is checked after it (os/scripts/verify-no-cisco-openh264.sh, copied into the
 # context by tools/ci/publish/lounge-context.sh).
 # ca-certificates is the trust store tilo-net reads for Discord's API and the
-# fetch proxy; the binaries themselves are static against the rest of Fedora.
+# fetch proxy; bubblewrap is the sandbox every app's process starts in, which
+# the launcher never does without.
 RUN --mount=type=bind,source=verify-no-cisco-openh264.sh,target=/run/tilo-verify-no-cisco-openh264.sh,ro \
   rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo \
-  && microdnf install -y --setopt=install_weak_deps=0 ca-certificates \
+  && microdnf install -y --setopt=install_weak_deps=0 ca-certificates bubblewrap \
   && microdnf clean all \
-  && command -v bash rpm grep sort tr >/dev/null \
+  && command -v bash rpm grep sort tr bwrap >/dev/null \
   && bash /run/tilo-verify-no-cisco-openh264.sh
-# The daemon, and the Discord connector's outside worker beside it (the
-# connector finds `<app>-worker` next to the server it runs under).
+# The daemon, the Discord connector's outside worker beside it (the connector
+# finds `<app>-worker` next to the server it runs under), the launcher every
+# app's process starts in, the tilolang process an agent task's programs run
+# in, and the installer this build uses once, below.
 COPY bin/ /usr/local/bin/
+# The runtimes the apps execute, at the root a Tilo program resolves its
+# bundles from, trusted by the one key this build signed them and the packages
+# with: a device's own trust list, in the image's /etc/tilo.
+COPY runtimes/ /usr/lib/tilo-runtime/
+COPY runtime-publishers.txt /etc/tilo/runtime-bundle-trusted-publishers.txt
+# The signed packages the workspace's apps are, and the store they install into
+# once: the image-wide store a device boots with, so the first page that asks
+# for an app finds it installed and runs it as any device does.
+COPY packages/ /usr/local/share/tilo/packages/
+COPY --chmod=0755 install-apps.sh /usr/local/bin/tilo-lounge-install-apps
+RUN export TILO_RUNTIME_BUNDLE_DIR=/usr/lib/tilo-runtime \
+  && /usr/local/bin/tilo-lounge-install-apps /usr/local/share/tilo/packages /usr/share/tilo-apps \
+  && rm -rf /usr/local/share/tilo/packages /usr/local/bin/tilo-install \
+    /usr/local/bin/tilo-lounge-install-apps
 # Every version of the built-in apps' compiled surface, which the server publishes
 # into its content store at start: history written by an older version than this
 # build runs is decided with the surface it was written with.

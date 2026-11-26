@@ -34,7 +34,14 @@ INCLUDE_PACKAGES=$(jq -r '.packages | join(" ")' <<<"$runtime_plan") \
 
 rm -rf "$out"
 mkdir -p "$out"
-cp -p "$target/thin-dev/tilolang-process" "$target/thin-dev/libruntime_dylib.so" "$out/"
+cp -p "$target/thin-dev/tilolang-process" "$target/thin-dev/libruntime_dylib.so" \
+    "$target/thin-dev/runtime-engines" "$out/"
+# What a runtime bundle baked from this build carries beside the library
+# (tools/ci/publish/lounge-apps.sh): the engines it loads and the exact libstd it links.
+while IFS= read -r engine; do cp -p "$target/thin-dev/$engine" "$out/"; done < "$out/runtime-engines"
+needed_std=$(readelf -dW "$out/libruntime_dylib.so" | sed -n 's/.*Shared library: \[\(libstd-[^]]*\)\].*/\1/p')
+[[ -n $needed_std ]] || { echo "libruntime_dylib.so links no libstd" >&2; exit 1; }
+cp -p "$(rustc --print target-libdir)/$needed_std" "$out/"
 # Which tree made these: the runtime a session swaps in (`tilolang dev --build-runtime`) and
 # the `thin-dev` build beside it must be this tree's, and a run that reuses either checks the
 # record before it starts (dist/dev/build-provenance.sh).
