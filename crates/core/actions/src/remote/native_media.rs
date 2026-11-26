@@ -29,7 +29,8 @@ pub const PICTURES_HOLD: std::time::Duration = std::time::Duration::from_secs(5)
 #[serde(deny_unknown_fields)]
 pub struct Request {
     pub version: u8,
-    /// Route-owner sequence; zero is a local template or a Status query.
+    /// The turn this command is in the connection's own order: every command that changes the
+    /// call carries a later one than any before, and a read carries none.
     pub intent: u64,
     pub command: Command,
 }
@@ -396,7 +397,7 @@ pub struct Snapshot {
     pub publication: Option<String>,
     #[serde(default)]
     pub publishers: Vec<String>,
-    /// Who is in the call of each of this route's voice channels, before
+    /// Who is in the call of each of the app's workspace's voice channels, before
     /// and while this device takes part: what a voice channel shows.
     #[serde(default)]
     pub rosters: Vec<Roster>,
@@ -618,7 +619,7 @@ impl Request {
             }
     }
 
-    /// Whether this command carries a route intent: everything that changes
+    /// Whether this command carries an intent: everything that changes
     /// the call. A status, a watch and collecting pictures only read, and
     /// saying which pictures are shown or how loud someone plays changes
     /// nothing of the call itself.
