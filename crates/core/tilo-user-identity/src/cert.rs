@@ -105,8 +105,8 @@ const FOREIGN_BINARY_MARKER: u8 = 2;
 const EXTENDED_BINARY_MARKER: u8 = 3;
 const EXTENDED_FOREIGN: u8 = 1;
 /// Bit 2 let a device drive the person's other devices. Grants on a device's resource decide that
-/// now, so the bit is never written; a certificate an earlier build signed with it still reads, as
-/// one without it.
+/// now, so no new certificate sets it; one an earlier build signed with it keeps it
+/// ([`RetiredFlags`]), which its signature covers, and is granted nothing by it.
 const RETIRED_ADMINISTER: u8 = 2;
 const EXTENDED_AGENT: u8 = 4;
 const EXTENDED_STAND_IN: u8 = 8;
@@ -490,7 +490,12 @@ impl Serialize for AgentScope {
         match self {
             Self::Agent(grant) if serializer.is_human_readable() => AgentGrantJson {
                 agent: grant.agent.clone(),
-                workspaces: grant.workspaces.iter().copied().map(WorkspaceOnly).collect(),
+                workspaces: grant
+                    .workspaces
+                    .iter()
+                    .copied()
+                    .map(WorkspaceOnly)
+                    .collect(),
                 apps: grant.apps.clone(),
             }
             .serialize(serializer),
@@ -530,7 +535,11 @@ impl<'de> Deserialize<'de> for AgentScope {
                     AgentGrantJson::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
                 let grant = AgentGrant {
                     agent: json.agent,
-                    workspaces: json.workspaces.into_iter().map(|WorkspaceOnly(id)| id).collect(),
+                    workspaces: json
+                        .workspaces
+                        .into_iter()
+                        .map(|WorkspaceOnly(id)| id)
+                        .collect(),
                     apps: json.apps,
                 };
                 if !grant.is_well_formed() {
@@ -678,8 +687,9 @@ pub struct DeviceCapabilities {
     pub retired: RetiredFlags,
 }
 
-/// Two grants certificates carried until they were retired: serving the person always on, and
-/// reading every workspace of the person. Neither grants anything now. A certificate signed with
+/// Three grants certificates carried until they were retired: serving the person always on,
+/// reading every workspace of the person, and driving the person's other devices. None grants
+/// anything now. A certificate signed with
 /// one set keeps it, read and written exactly as signed: its signature covers those bytes, and
 /// people's devices still hold such certificates, which must keep loading. Nothing outside this
 /// module sets one.
@@ -687,6 +697,10 @@ pub struct DeviceCapabilities {
 pub struct RetiredFlags {
     act_as_host: bool,
     read_all_workspaces: bool,
+    /// [`RETIRED_ADMINISTER`]: only ever set on the person's own devices, beside nothing an
+    /// agent's grant, a stand-in or a workspace service carries, so [`Self::any`] does not count
+    /// it.
+    administer: bool,
 }
 
 impl RetiredFlags {
@@ -862,6 +876,8 @@ struct CapabilitiesJson {
     can_act_as_host: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     can_read_all_workspaces: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    can_administer: bool,
 }
 
 impl Serialize for DeviceCapabilities {
@@ -881,6 +897,7 @@ impl Serialize for DeviceCapabilities {
                 placing: self.placing.as_ref().map(PlacedJson::of),
                 can_act_as_host: self.retired.act_as_host,
                 can_read_all_workspaces: self.retired.read_all_workspaces,
+                can_administer: self.retired.administer,
             }
             .serialize(serializer);
         }
@@ -919,7 +936,9 @@ fn binary_agent_scope(
             || capabilities.records.is_some()
             || capabilities.placing.is_some())
     {
-        return Err("an agent's grant reaches the workspaces it names, and no device's confinement");
+        return Err(
+            "an agent's grant reaches the workspaces it names, and no device's confinement",
+        );
     }
     Ok((scope, named))
 }
@@ -973,7 +992,8 @@ fn serialize_binary_capabilities<S: serde::Serializer>(
         | bit(issued, EXTENDED_ISSUED)
         | bit(capabilities.server_key, EXTENDED_SERVER_KEY)
         | bit(capabilities.browser_pages, EXTENDED_BROWSER_PAGES)
-        | bit(capabilities.workspace_service, EXTENDED_WORKSPACE_SERVICE);
+        | bit(capabilities.workspace_service, EXTENDED_WORKSPACE_SERVICE)
+        | bit(capabilities.retired.administer, RETIRED_ADMINISTER);
     // A placed device and a placement grant always take the extended form,
     // which is the one form their marker is followed by.
     let extended_form = extended & !EXTENDED_FOREIGN != 0
@@ -1050,6 +1070,7 @@ impl<'de> Deserialize<'de> for DeviceCapabilities {
                 retired: RetiredFlags {
                     act_as_host: json.can_act_as_host,
                     read_all_workspaces: json.can_read_all_workspaces,
+                    administer: json.can_administer,
                 },
             });
         }
@@ -1241,7 +1262,8 @@ fn named_agent_grant<'de, A: serde::de::SeqAccess<'de>>(
     Ok(grant)
 }
 
-/// The extended capability bits after the extended marker, and the agent scope they grant: the
+/// The extended capability bits after the extended marker, [`RETIRED_ADMINISTER`] among them, and
+/// the agent scope they grant: the
 /// `named` grant read before them, or the scope that follows them. `placed` marks a placed
 /// device's or a placement grant's, which take the extended form with no bit of their own.
 fn extended_capabilities<E: serde::de::Error>(
@@ -1251,6 +1273,7 @@ fn extended_capabilities<E: serde::de::Error>(
 ) -> Result<(u8, Option<AgentScope>), E> {
     let written = next()?;
     let extended = written & !RETIRED_ADMINISTER;
+    let retired = written & RETIRED_ADMINISTER;
     // Only an agent's grant, a stand-in, an issuer, a server key,
     // Browser pages and a workspace service need the extended form; anything else has exactly
     // one encoding already.
@@ -1281,7 +1304,7 @@ fn extended_capabilities<E: serde::de::Error>(
         (false, Some(grant)) => Some(AgentScope::Agent(grant)),
         (false, None) => Some(agent_scope::<E>(next)?),
     };
-    Ok((extended, agent))
+    Ok((extended | retired, agent))
 }
 
 impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
@@ -1372,6 +1395,7 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                 retired: RetiredFlags {
                     act_as_host: flag(flags[2])?,
                     read_all_workspaces: flag(flags[3])?,
+                    administer: extended & RETIRED_ADMINISTER != 0,
                 },
             },
             extended & EXTENDED_ISSUED != 0,
@@ -1399,6 +1423,7 @@ impl DeviceCapabilities {
             retired: RetiredFlags {
                 act_as_host: false,
                 read_all_workspaces: false,
+                administer: false,
             },
         }
     }
@@ -1532,7 +1557,11 @@ impl DeviceCapabilities {
     /// UUID, or `all` for the account): where it acts as the person.
     #[must_use]
     pub fn own_key_in(&self, workspace: &str) -> bool {
-        self.server_key && self.agent.as_ref().is_some_and(|scope| scope.reaches(workspace))
+        self.server_key
+            && self
+                .agent
+                .as_ref()
+                .is_some_and(|scope| scope.reaches(workspace))
     }
 
     /// Whether these are an agent's grant's capabilities that hold: the

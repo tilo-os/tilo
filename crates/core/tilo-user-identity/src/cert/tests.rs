@@ -363,7 +363,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_certificate_written_with_the_retired_administer_bit_reads_without_it;
+    phase a_certificate_written_with_the_retired_administer_bit_reads_and_writes_back_with_it;
     {
         let stand_in = golden_cert_with(DeviceCapabilities::stand_in_approver());
         let bytes = crate::canonical::canonical_bytes(&stand_in).unwrap();
@@ -371,10 +371,20 @@ tilo_test_env::scenario! {
         let mut retired = bytes.clone();
         retired[marker + 1] = EXTENDED_STAND_IN | 2;
         let read = crate::canonical::from_canonical_bytes::<DeviceCert>(&retired).unwrap();
-        assert_eq!(read.capabilities, stand_in.capabilities);
+        assert!(read.capabilities.retired.administer);
+        assert!(!read.capabilities.retired.any(), "the bit grants nothing");
+        assert_eq!(
+            DeviceCapabilities {
+                retired: RetiredFlags::default(),
+                ..read.capabilities.clone()
+            },
+            stand_in.capabilities
+        );
+        assert_eq!(crate::canonical::canonical_bytes(&read).unwrap(), retired);
         let mut only_retired = bytes;
         only_retired[marker + 1] = 2;
-        assert!(crate::canonical::from_canonical_bytes::<DeviceCert>(&only_retired).is_ok());
+        let read = crate::canonical::from_canonical_bytes::<DeviceCert>(&only_retired).unwrap();
+        assert_eq!(crate::canonical::canonical_bytes(&read).unwrap(), only_retired);
     }
 
     phase binary_capabilities_refuse_flag_bytes_other_than_zero_or_one;
@@ -387,7 +397,7 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A certificate signed while its device was granted the two retired grants, as people's
+/// A certificate signed while its device was granted the retired grants, as people's
 /// devices still keep it, reads from the JSON they stored, verifies, and writes back exactly as it
 /// was signed in both encodings: dropping the reader left every such device unable to start an app.
 #[test]
@@ -396,7 +406,9 @@ fn a_certificate_signed_with_the_retired_grants_still_loads_and_verifies() {
         retired: RetiredFlags {
             act_as_host: true,
             read_all_workspaces: true,
+            administer: true,
         },
+        foreign: true,
         ..DeviceCapabilities::member()
     });
     let stored = serde_json::to_string(&cert).unwrap();
@@ -405,6 +417,7 @@ fn a_certificate_signed_with_the_retired_grants_still_loads_and_verifies() {
         stored.contains(r#""can_read_all_workspaces":true"#),
         "{stored}"
     );
+    assert!(stored.contains(r#""can_administer":true"#), "{stored}");
     let read: DeviceCert = serde_json::from_str(&stored).unwrap();
     assert_eq!(read, cert);
     verify_device_cert_at(&read, 1_500_000).expect("a certificate signed with them verifies");
