@@ -608,39 +608,6 @@ impl App {
                 resources.push(edit);
             }
         }
-        // An app that hosts its own components still offers what its root publishes: the walk of
-        // unbound resources leaves a host's own out, and the component that stands for it publishes
-        // only its own controls. The app's actions join the resource that already stands for it —
-        // one it has not reached is offered on its own — so an app with no window offers its
-        // commands and its records as a window of it does.
-        for resource in tilo_ui_base::widget::resources::resources_for(
-            &*self.root_widget,
-            None,
-            &self.state.doc,
-        ) {
-            let stands_for = resources.iter().position(|have| {
-                have.semantic_identity.as_ref().is_some_and(|identity| {
-                    identity.kind == resource.kind && identity.key == resource.id.as_str()
-                })
-            });
-            match stands_for {
-                Some(at) => {
-                    let joined = &mut resources[at];
-                    for action in resource.actions {
-                        if !joined.actions.iter().any(|offered| offered.id == action.id) {
-                            joined.actions.push(action);
-                        }
-                    }
-                }
-                None if !resources
-                    .iter()
-                    .any(|have| have.id.as_str() == resource.id.as_str()) =>
-                {
-                    resources.push(resource);
-                }
-                None => {}
-            }
-        }
         // Every window zooms: an agent or script asked to make it larger
         // reaches the zoom the keys do.
         #[cfg(feature = "native")]

@@ -140,14 +140,14 @@ impl App {
     }
 
     /// Which own ids more than one component publishes ([`Self::directory_name`]) is learnt as the
-    /// window publishes its components. A window asked for its directory before it published
-    /// anything reads what each component publishes first, so a page names what it lists as every
-    /// later page does.
+    /// window publishes its components — or, a window asked for its directory before it published
+    /// anything, by reading what each component publishes once, so a page names what it lists as
+    /// every later page does. A directory set aside because the app moved on has learnt them
+    /// already, and a read never builds the app's surface again.
     fn learn_shared_ids(&mut self) {
-        if self.actions.action_directory_snapshot.is_none()
-            && self.actions.last_published_actions.is_none()
-        {
+        if !self.actions.action_directory_learnt {
             let _ = self.publication_resources();
+            self.actions.action_directory_learnt = true;
         }
     }
 
@@ -555,7 +555,17 @@ impl App {
                     budget_exhausted: true,
                 };
             }
-            let parent = self.resolve_publication_resource(&query.parent_resource, "");
+            // A parent the snapshot holds is answered from it alone: a remote page never asks the
+            // widget what it publishes now, which would rebuild the app's surface on a read. One
+            // the snapshot does not hold (an app that published no directory) is resolved live.
+            let projected_parent = self
+                .actions
+                .action_directory_snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.nodes.contains_key(&query.parent_resource));
+            let parent = (!projected_parent)
+                .then(|| self.resolve_publication_resource(&query.parent_resource, ""))
+                .flatten();
             let parent_actions = parent.as_ref().map_or_else(Vec::new, |resource| {
                 resource
                     .actions

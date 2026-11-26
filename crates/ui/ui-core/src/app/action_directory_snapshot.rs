@@ -394,6 +394,9 @@ impl App {
         resources: &[ResourceSpec],
         descriptors: &[ActionDescriptor],
     ) {
+        // A publication learnt which ids more than one component publishes: a read after the
+        // directory moved on does not build the surface again to learn them.
+        self.actions.action_directory_learnt = true;
         // Establish current ownership/generation observations before comparing data.
         if self.try_action_directory_revision().is_err() {
             return;

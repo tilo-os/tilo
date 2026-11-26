@@ -482,6 +482,10 @@ pub(super) struct ActionRuntime {
     pub(super) action_directory_borrowed:
         Option<super::action_directory_snapshot::ModelDirectoryCandidate>,
     #[cfg(feature = "model")]
+    /// Whether the window has learnt which ids more than one of its components publishes, once
+    /// through a publication or a read before one ([`super::App::learn_shared_ids`]).
+    pub(super) action_directory_learnt: bool,
+    #[cfg(feature = "model")]
     pub(super) local_document_directory_pins:
         Vec<std::rc::Weak<super::action_directory_snapshot::LocalDocumentDirectoryPin>>,
     #[cfg(feature = "model")]
@@ -635,6 +639,8 @@ impl ActionRuntime {
             action_directory_retired: None,
             #[cfg(feature = "model")]
             action_directory_borrowed: None,
+            #[cfg(feature = "model")]
+            action_directory_learnt: false,
             #[cfg(feature = "model")]
             local_document_directory_pins: Vec::new(),
             #[cfg(feature = "model")]
