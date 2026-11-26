@@ -1496,7 +1496,10 @@ fn the_desktop_keeps_what_its_next_session_opens_on_as_the_devices_records() {
         .record("so.tilo.session-file-paste")
         .set_now(json!({ "version": 1 }))
         .expect("a receipt is kept before the paste goes on");
-    first.flush();
+    assert!(
+        first.flush(tilo_test_env::hang_bound()),
+        "the daemon takes all the desktop's writes"
+    );
     assert_eq!(
         session
             .workspaces
@@ -1529,7 +1532,10 @@ fn the_desktop_keeps_what_its_next_session_opens_on_as_the_devices_records() {
         })
         .expect("the record is followed");
     wallpapers.set(json!({ "schema": 1, "this": "ours" }));
-    next.flush();
+    assert!(
+        next.flush(tilo_test_env::hang_bound()),
+        "the daemon takes all the session's writes"
+    );
     let elsewhere = desktop();
     elsewhere
         .record("so.tilo.session-wallpapers")
