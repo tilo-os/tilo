@@ -1627,9 +1627,13 @@ mod tests {
         let at: Vec<f64> = states
             .iter()
             .map(|state| {
-                state
-                    .parse::<f64>()
-                    .unwrap_or_else(|_| panic!("a play says where it is, not {state:?}"))
+                // What a play says of itself: where its playhead got to, and what the mix it
+                // heard measured (`play_word`).
+                let word: serde_json::Value = serde_json::from_str(state)
+                    .unwrap_or_else(|_| panic!("a play says where it is, not {state:?}"));
+                word.get("at")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or_else(|| panic!("a play says where it is, not {state:?}"))
             })
             .collect();
         assert!(
