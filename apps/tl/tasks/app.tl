@@ -1623,12 +1623,7 @@ view board(t: Tasks) {
                             std.add_entry("New task", new_task(tasks, status: .some(s)))
                         }
                         for x in cards {
-                            let total = totals.find(c -> c.key == .some(x))
-                            let done = finished_totals.find(c -> c.key == .some(x))
-                            let progress = if let total = total {
-                                if total.count > 0 { "{done?.count ?? 0}/{total.count}" }
-                            }
-                            task_card(x, .none, progress)
+                            task_card(x, .none, tally(totals, finished_totals, x))
                         }
                     }
                 }
@@ -1653,6 +1648,23 @@ view to_do(t: Tasks) {
             ui.EmptyState("Nothing to do", icon: .list_checks)
         } else {
             task_list(open, true, false, false, opened, .none)
+        }
+    }
+}
+
+/// How many of a task's subtasks are done ("1/3"), wherever they stand, from the counts a page
+/// read once: how many tasks stand under each, and how many of those are finished.
+fn tally(
+    totals: List<(Option<Task>, Int)>,
+    finished: List<(Option<Task>, Int)>,
+    t: Task,
+) -> Option<Text> {
+    let total = totals.find(c -> c.key == .some(t))
+    let done = finished.find(c -> c.key == .some(t))
+    if let total = total {
+        if total.count > 0 {
+            let closed = if let done = done { done.count } else { 0 }
+            "{closed}/{total.count}"
         }
     }
 }
@@ -1685,12 +1697,16 @@ view task_list(
                 p
             }
         }
-        let total = totals.find(c -> c.key == .some(x))
-        let done = finished_totals.find(c -> c.key == .some(x))
-        let progress = if let total = total {
-            if total.count > 0 { "{done?.count ?? 0}/{total.count}" }
-        }
-        task_item(x, at, project, heading, done_place, tail, above, progress)
+        task_item(
+            x,
+            at,
+            project,
+            heading,
+            done_place,
+            tail,
+            above,
+            tally(totals, finished_totals, x),
+        )
     }
 }
 
@@ -1795,12 +1811,7 @@ view project_board(p: Project) {
                             std.add_entry("New task", new_task(tasks, p: p, status: .some(s)))
                         }
                         for x in cards {
-                            let total = totals.find(c -> c.key == .some(x))
-                            let done = finished_totals.find(c -> c.key == .some(x))
-                            let progress = if let total = total {
-                                if total.count > 0 { "{done?.count ?? 0}/{total.count}" }
-                            }
-                            task_card(x, .some(p), progress)
+                            task_card(x, .some(p), tally(totals, finished_totals, x))
                         }
                     }
                 }
@@ -2105,13 +2116,7 @@ template view task_body(t: Task) {
                         "No subtasks yet",
                         (moved, parent, before) -> move_to(moved, parent, before),
                         x -> check(x),
-                        progress: x -> if let total = totals.find(
-                                c -> c.key == .some(x),
-                            ) {
-                            if total.count > 0 {
-                                "{finished_totals.find(d -> d.key == .some(x))?.count ?? 0}/{total.count}"
-                            }
-                        },
+                        progress: x -> tally(totals, finished_totals, x),
                         fill: false,
                     ) { (x, under) ->
                         task_outline_row(x, t.project, under)
