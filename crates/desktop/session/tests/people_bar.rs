@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 use collab_types::presence::{Payload, Presence};
 use iroh::EndpointId;
 use neighbour_wire::NeighbourMsg;
+use serde_json::{Value, json};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_session::sync::{Client, Event, OwnPresence};
 use tilo_session::{Options, Session};
@@ -124,11 +125,12 @@ fn settings_home() -> (tempfile::TempDir, tilo_test_env::ScopedEnv) {
 }
 
 /// A shell taking part in the workspace through `sync`, drawing what the session publishes of who
-/// is here.
+/// is here. The person's own settings are beside it, so a run may choose the light theme.
 fn session_over(sync: &Rc<Client>) -> Session {
     let mut session = crate::common::headless(Options {
         person: "Quinten".to_owned(),
         sync: Some(Rc::clone(sync)),
+        services: vec![Box::new(settings_sections::service::SettingsService::new())],
         ..Options::default()
     });
     session.handle().replace_tree(shell());
@@ -136,6 +138,75 @@ fn session_over(sync: &Rc<Client>) -> Session {
         session.shell_control("Top bar").is_some()
     });
     session
+}
+
+/// Whether this run takes its pictures in the light theme.
+fn light() -> bool {
+    std::env::var_os("TILO_PEOPLE_LIGHT").is_some()
+}
+
+/// Choose the light theme, as Settings' Appearance page does: the appearance section's own
+/// setters, which every device of the person reads.
+#[track_caller]
+fn choose_light(session: &mut Session) {
+    // The settings service publishes its sections on a pass of its own.
+    for _ in 0..4 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    let set = |session: &mut Session, field: &str, value: Value| {
+        let arguments: serde_json::Map<String, Value> = json!({ "value": value })
+            .as_object()
+            .cloned()
+            .expect("an object");
+        let action = format!("set-{}", field.replace('_', "-"));
+        session
+            .invoke("settings/appearance", &action, &arguments)
+            .unwrap_or_else(|error| panic!("the appearance's {action}: {error:?}"));
+    };
+    set(session, "light_theme", json!("paper-light"));
+    set(session, "mode", json!("light"));
+    // The shell draws the choice once the section holds it.
+    for _ in 0..8 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+}
+
+/// Keep the screen, and the band of the bar across its top, as `name.png` and `name-bar.png` where
+/// `TL_SHELL_SHOTS` names: what the bar looks like with what it is saying now. A relative directory
+/// is read from the package, so a run elsewhere can name one beside the checkout.
+#[track_caller]
+fn keep_bar(session: &mut Session, name: &str) {
+    let Some(directory) = std::env::var_os("TL_SHELL_SHOTS") else {
+        return;
+    };
+    let theme = if light() { "light" } else { "dark" };
+    let mut directory = std::path::PathBuf::from(directory);
+    if directory.is_relative() {
+        directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(directory);
+    }
+    std::fs::create_dir_all(&directory).expect("the captures' directory");
+    let shot = session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("a picture of the display");
+    let width = usize::try_from(shot.width).expect("a display's width");
+    image::save_buffer(
+        directory.join(format!("{name}-{theme}.png")),
+        &shot.rgba,
+        shot.width,
+        shot.height,
+        image::ColorType::Rgba8,
+    )
+    .expect("the screen");
+    let band = width.saturating_mul(56 * 4).min(shot.rgba.len());
+    image::save_buffer(
+        directory.join(format!("{name}-{theme}-bar.png")),
+        &shot.rgba[..band],
+        shot.width,
+        56,
+        image::ColorType::Rgba8,
+    )
+    .expect("the bar's band");
 }
 
 /// Whether the bar of `session` says `words`.
@@ -172,6 +243,10 @@ fn the_bar_says_who_arrived_who_waved_and_who_follows_this_person() {
     };
     let sync = Rc::new(Client::untethered(publisher(0xf0), own));
     let mut session = session_over(&sync);
+    if light() {
+        // The theme before anyone arrives, so every picture this run takes is the same bar.
+        choose_light(&mut session);
+    }
     // Nobody else is here yet.
     assert!(bar_says(&session, "People"));
 
@@ -182,6 +257,7 @@ fn the_bar_says_who_arrived_who_waved_and_who_follows_this_person() {
     crate::common::until(&mut session, "Ada's arrival", |session| {
         session.shell_control("Ada is here").is_some()
     });
+    keep_bar(&mut session, "people-bar-arrival");
     // The arrival is a notice, not a row: no hand takes it away, and the session gives it up when
     // its four seconds are over.
     bar_gone(&mut session, "Ada is here", Duration::from_secs(8));
@@ -198,6 +274,7 @@ fn the_bar_says_who_arrived_who_waved_and_who_follows_this_person() {
     crate::common::until(&mut session, "Ada's wave", |session| {
         bar_says(session, "Ada Lovelace waved at you")
     });
+    keep_bar(&mut session, "people-bar-wave");
     // And it goes by itself, after its six seconds, with nothing pressed since it was heard.
     bar_gone(
         &mut session,
@@ -216,6 +293,7 @@ fn the_bar_says_who_arrived_who_waved_and_who_follows_this_person() {
     crate::common::until(&mut session, "Ada to follow", |session| {
         bar_says(session, "Ada Lovelace, follows you")
     });
+    keep_bar(&mut session, "people-bar-follower");
 
     // She stops: nothing on the bar says she follows any more.
     presence(

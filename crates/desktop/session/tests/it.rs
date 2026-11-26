@@ -204,6 +204,8 @@ mod part_view;
 mod people;
 #[path = "people_bar.rs"]
 mod people_bar;
+#[path = "people_between_devices.rs"]
+mod people_between_devices;
 #[path = "people_cards.rs"]
 mod people_cards;
 #[path = "person_workspace.rs"]
