@@ -4,6 +4,22 @@
 //! Other apps can join a shared workspace record from their own windows; the workspace's grants on
 //! its app still decide every read and change.
 
+/// Who reads and changes a record an app keeps for the whole workspace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Readers {
+    /// The workspace's members, as its grants on the app decide.
+    Members,
+    /// It is decided as its app's own record (`""`): it moved out of that record, and reading or
+    /// changing it takes what reading or changing the app's own record takes, so no other app
+    /// joins it.
+    AppRecord,
+    /// No one: an earlier build kept several people's private records in it with no owner to say
+    /// whose, so neither a role nor a grant may disclose it.
+    NoOne,
+    /// Only the workspace's owner reads or changes anything its app keeps.
+    Owner,
+}
+
 /// A record an app keeps for the whole workspace.
 #[expect(
     clippy::struct_excessive_bools,
@@ -20,15 +36,8 @@ pub struct WorkspaceDocument {
     pub fixed: Option<&'static str>,
     /// Whether it is kept under keys of its own from its first write.
     pub sealed: bool,
-    /// Whether it is decided as its app's own record (`""`): it moved out of that record, and
-    /// reading or changing it takes what reading or changing the app's own record takes, so no
-    /// other app joins it.
-    pub as_app_record: bool,
-    /// Whether no one reads it: an earlier build kept several people's private records in it with
-    /// no owner to say whose, so neither a role nor a grant may disclose it.
-    pub unread: bool,
-    /// Whether only the workspace's owner reads or changes anything its app keeps.
-    pub owner_only: bool,
+    /// Who reads and changes it, beyond what the workspace's grants on its app decide.
+    pub readers: Readers,
     /// The prefix each member's own record of the kind is kept under, before their id
     /// ([`WorkspaceDocument::record_of`]): every member reads each, and only its person changes
     /// theirs.
@@ -42,9 +51,7 @@ impl WorkspaceDocument {
             kind,
             fixed: None,
             sealed: false,
-            as_app_record: false,
-            unread: false,
-            owner_only: false,
+            readers: Readers::Members,
             each_person: None,
         }
     }
@@ -99,7 +106,7 @@ pub const WORKSPACE_DOCUMENTS: &[WorkspaceDocument] = &[
     WorkspaceDocument::kept("so.tilo.workspace", "tilo.workspace.agent"),
     // The reports and decisions Chat keeps for its workspace, decided as Chat's own record.
     WorkspaceDocument {
-        as_app_record: true,
+        readers: Readers::AppRecord,
         ..WorkspaceDocument::kept("so.tilo.chat", "tilo.moderation")
     },
     // Each person's place in the workspace's tilolang apps: their windows' and
@@ -145,24 +152,24 @@ pub const WORKSPACE_DOCUMENTS: &[WorkspaceDocument] = &[
     // `workspaces::OWNERSHIP`).
     WorkspaceDocument {
         fixed: Some("ownership"),
-        owner_only: true,
+        readers: Readers::Owner,
         ..WorkspaceDocument::kept("so.tilo.ownership", "tilo.ownership")
     },
 ];
 
 /// Records earlier builds kept for a whole workspace and no build writes now: each person's unsent
 /// Messages drafts and Tube watch history, all in one record. They stay bound to their kind and
-/// unread ([`WorkspaceDocument::unread`]) wherever a device still keeps one, and are no workspace
+/// unread ([`Readers::NoOne`]) wherever a device still keeps one, and are no workspace
 /// record an app keeps.
 pub const EARLIER_RECORDS: &[WorkspaceDocument] = &[
     WorkspaceDocument {
         fixed: Some("uuid:fe64cba3-45c6-4e34-a3ac-95b0038e889a"),
-        unread: true,
+        readers: Readers::NoOne,
         ..WorkspaceDocument::kept("so.tilo.messages", "messages.workspace-drafts")
     },
     WorkspaceDocument {
         fixed: Some("uuid:3bd2daf5-120b-469b-be38-d5203c58efb2"),
-        unread: true,
+        readers: Readers::NoOne,
         ..WorkspaceDocument::kept("so.tilo.tube", "tube.workspace-history")
     },
 ];
@@ -229,10 +236,12 @@ mod tests {
     fn a_declared_record_is_its_apps_alone_and_named_by_its_own_id() {
         let moderation = derived_record("tilo.moderation");
         assert!(
-            declared_record("so.tilo.chat", &moderation).is_some_and(|kept| kept.as_app_record)
+            declared_record("so.tilo.chat", &moderation)
+                .is_some_and(|kept| kept.readers == Readers::AppRecord)
         );
         assert!(
-            declared_record("dev.tilo.chat", &moderation).is_some_and(|kept| kept.as_app_record),
+            declared_record("dev.tilo.chat", &moderation)
+                .is_some_and(|kept| kept.readers == Readers::AppRecord),
             "a development build's Chat is Chat"
         );
         assert!(declared_record("so.tilo.notes", &moderation).is_none());
@@ -254,7 +263,9 @@ mod tests {
         assert!(person_record("so.tilo.notes", "view-of-ada").is_none());
         for earlier in EARLIER_RECORDS {
             let id = earlier.fixed.unwrap();
-            assert!(declared_record(earlier.app, id).is_some_and(|kept| kept.unread));
+            assert!(
+                declared_record(earlier.app, id).is_some_and(|kept| kept.readers == Readers::NoOne)
+            );
             assert_eq!(fixed_kind(id), Some(earlier.kind));
             assert!(declared_record("so.tilo.notes", id).is_none());
         }

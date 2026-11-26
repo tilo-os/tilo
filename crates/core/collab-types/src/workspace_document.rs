@@ -84,23 +84,25 @@ pub fn is_content_refusal_document(document: &str) -> bool {
 }
 
 /// Whether `app`'s `record` is decided as the app's own record (`""`), as its declaration says
-/// ([`WorkspaceDocument::as_app_record`]).
+/// ([`app_fleet::Readers::AppRecord`]).
 #[must_use]
 pub fn decided_as_app_record(app: &str, record: &str) -> bool {
-    app_fleet::declared_record(app, record).is_some_and(|kept| kept.as_app_record)
+    app_fleet::declared_record(app, record)
+        .is_some_and(|kept| kept.readers == app_fleet::Readers::AppRecord)
 }
 
 /// Whether no one reads `app`'s `record`, as its declaration says
-/// ([`WorkspaceDocument::unread`]): not its person, an owner, a role or a grant.
+/// ([`app_fleet::Readers::NoOne`]): not its person, an owner, a role or a grant.
 #[must_use]
 pub fn is_unread_record(app: &str, record: &str) -> bool {
-    app_fleet::declared_record(app, record).is_some_and(|kept| kept.unread)
+    app_fleet::declared_record(app, record)
+        .is_some_and(|kept| kept.readers == app_fleet::Readers::NoOne)
 }
 
 /// A workspace record that even apps without a declared read of its owner may join.
 #[must_use]
 pub fn shared_workspace_document(app: &str, document: &str) -> Option<&'static WorkspaceDocument> {
-    workspace_document(app, document).filter(|kept| !kept.as_app_record)
+    workspace_document(app, document).filter(|kept| kept.readers != app_fleet::Readers::AppRecord)
 }
 
 #[cfg(test)]

@@ -120,12 +120,12 @@ pub fn is_device_settings(node: &TreePath) -> bool {
 }
 
 /// Whether `node` is in a record no one reads, as its declaration says
-/// ([`app_fleet::WorkspaceDocument::unread`]).
+/// ([`app_fleet::Readers::NoOne`]).
 pub(crate) fn in_unread_record(node: &TreePath) -> bool {
     node.id_at(Level::App)
         .zip(node.id_at(Level::Resource))
         .and_then(|(app, record)| app_fleet::declared_record(app, record))
-        .is_some_and(|kept| kept.unread)
+        .is_some_and(|kept| kept.readers == app_fleet::Readers::NoOne)
 }
 
 /// The kind id of the workspace's own resource. Its actions are the workspace's
@@ -860,7 +860,7 @@ pub fn role_rules(role: Role, workspace: &str) -> Vec<Rule> {
         rules.extend(
             app_fleet::WORKSPACE_DOCUMENTS
                 .iter()
-                .filter(|kept| kept.owner_only)
+                .filter(|kept| kept.readers == app_fleet::Readers::Owner)
                 .map(|kept| {
                     Rule::new(
                         TreePath::workspace(workspace).app(kept.app),

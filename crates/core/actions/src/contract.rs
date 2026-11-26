@@ -455,7 +455,7 @@ pub fn resource_node(
             app_fleet::declared_record(app, &app_fleet::derived_record(resource_kind))
                 .filter(|_| resource == resource_kind)
         })
-        .is_some_and(|kept| kept.as_app_record);
+        .is_some_and(|kept| kept.readers == app_fleet::Readers::AppRecord);
     if as_app_record {
         return base
             .clone()

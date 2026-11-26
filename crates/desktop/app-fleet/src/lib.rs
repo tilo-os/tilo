@@ -138,7 +138,7 @@ mod default_apps;
 mod kept;
 
 pub use kept::{
-    EARLIER_RECORDS, PERSON_VIEW_PREFIX, VAULT_KIND, VAULT_RECORD, WORKSPACE_DOCUMENTS,
+    EARLIER_RECORDS, PERSON_VIEW_PREFIX, Readers, VAULT_KIND, VAULT_RECORD, WORKSPACE_DOCUMENTS,
     WorkspaceDocument, declared_record, derived_kind, derived_record, fixed_kind, person_record,
 };
 
