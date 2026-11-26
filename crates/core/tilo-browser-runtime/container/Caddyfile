@@ -145,7 +145,11 @@
 	# site's own origin, so the page proves itself with the device this
 	# browser already keeps for the site.
 	handle /w/* {
-		reverse_proxy {$TILO_WEB_SERVER:127.0.0.1:9}
+		# The server as its own address: a deployment's edge names it as it is
+		# reached (the stack's tls container matches it by that name).
+		reverse_proxy {$TILO_WEB_SERVER:127.0.0.1:9} {
+			header_up Host {upstream_hostport}
+		}
 	}
 
 	# The sign-in page a service's sign-in link lands on. It answers with a

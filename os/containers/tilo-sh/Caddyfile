@@ -46,6 +46,19 @@ http://127.0.0.1:{$TILO_SH_LIVE_PORT}, http://localhost:{$TILO_SH_LIVE_PORT} {
 # It is a name under localhost, which a browser resolves to loopback itself
 # and treats as a secure context: a passkey's relying party is the page's
 # host name, which an address cannot be.
+#
+# The server's own paths are the site's, as production's edge routes them:
+# a page asks the site for its host, the directory, an invitation and the
+# join there (`/peer/v1`), exactly as it asks tilo.sh.
 http://tilo.localhost:{$TILO_SH_SITE_PORT} {
-	reverse_proxy 127.0.0.1:{$TILO_SH_WEB_PORT}
+	handle /peer/v1/* {
+		# As its own origin: the server's address is the block above, which
+		# this request would otherwise re-enter under the site's name.
+		reverse_proxy http://127.0.0.1:{$TILO_SH_SERVER_PORT} {
+			header_up Host 127.0.0.1:{$TILO_SH_SERVER_PORT}
+		}
+	}
+	handle {
+		reverse_proxy 127.0.0.1:{$TILO_SH_WEB_PORT}
+	}
 }

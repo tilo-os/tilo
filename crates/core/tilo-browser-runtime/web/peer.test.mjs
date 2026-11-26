@@ -1077,6 +1077,7 @@ test('refresh-checkpoint subscribes the workspace again and resolves once the ho
 
 test('httpsPost accepts a loopback http workspace for local review', () => {
   assert.doesNotThrow(() => httpsPost('http://localhost:9764'));
+  assert.doesNotThrow(() => httpsPost('http://tilo.localhost:9764'));
   assert.doesNotThrow(() => httpsPost('http://127.0.0.1:9764'));
   assert.throws(() => httpsPost('http://10.0.0.2:9764'), TypeError);
 });

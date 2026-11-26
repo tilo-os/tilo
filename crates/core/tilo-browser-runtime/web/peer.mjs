@@ -181,9 +181,13 @@ function wireConfirmation(confirmation) {
 }
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
+/** Whether `host` is this machine: `localhost` and every name under it, which
+ * a browser resolves to loopback itself, and the loopback addresses. */
+const loopback = host => LOOPBACK.has(host) || host.endsWith('.localhost');
 /** A host reached over plain HTTP on this machine: the daemon behind a local
- * proxy serves its pages that way, as the tilo.sh stack's Caddy does. */
-const isLoopbackHttp = url => url.protocol === 'http:' && LOOPBACK.has(url.hostname);
+ * proxy serves its pages that way, as the tilo.sh stack's Caddy does (its site
+ * is `tilo.localhost`). */
+const isLoopbackHttp = url => url.protocol === 'http:' && loopback(url.hostname);
 
 /** `post(path, body)` over `fetch` to the host origin: https, or loopback
  * http for local review (no certificate exception needed). The request names

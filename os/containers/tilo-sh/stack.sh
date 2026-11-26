@@ -198,10 +198,16 @@ address themselves, and
 \`restart server\` and \`restart api\`; an empty value goes back to the stack's
 own relay.
 
-The Lounge's workspace is the stack's own person's: their device founds it,
-settles its entry and places it on the server, which keeps and serves it.
+The Lounge's workspace is the deployment's own: its server, the person's own
+device under the owner root the stack keeps, founds it with the entry and the
+words the deployment names, keeps it and serves it, and makes the invitations
+and admissions it hands out. A link it makes opens the stack's own site, so a
+person running a stack invites people to their own stack. The stack's own
+person is an administrator of it, made once on the server.
 TILO_SH_ADMISSION=invite (production's, and the default) lists it and admits
-only people it invited; =open admits anyone who asks, as an editor. An
+only people it invited; =open admits anyone who asks, as an editor.
+TILO_SH_DESCRIPTION is what the directory says of it (production's words
+unless named). An
 invitation-only entry keeps a wait list that mails each address through the
 stack's own sink: TILO_SH_WAIT_LIST_MAX (default 100) says how many it keeps,
 TILO_SH_MAIL_FROM (default wait-list@tilo.sh) who it mails from,
@@ -429,9 +435,11 @@ use_mode() {
   if [[ $mode == native || $mode == remote ]]; then
     secrets_path=$state/secrets
     api_state=$state/api
+    server_config=$state/server/server.toml
   else
     secrets_path=/run/secrets
     api_state=/state
+    server_config=/run/tilo-workspaces/server.toml
   fi
 }
 use_mode "$(cat "$state/mode" 2>/dev/null || echo native)"
@@ -691,9 +699,21 @@ server_env() {
   fi
   # The server configuration, under the state this stack keeps for it: the
   # daemon reads where it binds and is reached from here, so a restart serves
-  # the same addresses. The Lounge's workspace is not named here: the stack's
-  # own person founds it and places it on the server (lounge_up).
+  # the same addresses. The Lounge's workspace is named here, once, as a
+  # deployment names it: the server founds it under the owner root it is handed
+  # and keeps it from then on, with the entry and the words the deployment gives
+  # it. Its server therefore makes the Lounge's invitations, and the links it
+  # hands out open the stack's own site.
   mkdir -p "$state/server"
+  local id_file=$state/server/lounge/workspace-id admission
+  mkdir -p "$(dirname "$id_file")"
+  [[ -s $id_file ]] || python3 -c 'import uuid; print(uuid.uuid4())' > "$id_file" \
+    || die 'could not name the Lounge'
+  admission=$(cat "$state/admission" 2>/dev/null || echo invite)
+  case $admission in
+    open|invite) ;;
+    *) die "TILO_SH_ADMISSION is invite (production's) or open, not $admission" ;;
+  esac
   {
     printf 'iroh_listen = "%s"\n' "$iroh_bind"
     if [[ $live_bind != none ]]; then
@@ -702,12 +722,26 @@ server_env() {
     printf 'packet_relay_url = "%s"\n' "${live_published%/}"
     printf 'web_entry = "%s"\n' "$site_origin/"
     printf 'web_listen = "127.0.0.1:%s"\n' "$server_web_port"
+    printf '\n[[kept]]\nid = "%s"\nname = "Lounge"\nentry = "%s"\ndefault_role = "editor"\n' \
+      "$(cat "$id_file")" "$admission"
+    printf 'description = "%s"\n' "${TILO_SH_DESCRIPTION:-The Tilo community: chat, notes and a shared desktop}"
+    if [[ $admission == invite ]]; then
+      printf 'wait_list_max = %s\n' "${TILO_SH_WAIT_LIST_MAX:-100}"
+      printf 'mail_from = "%s"\n' "${TILO_SH_MAIL_FROM:-wait-list@tilo.sh}"
+      printf 'contact = "%s"\n' "${TILO_SH_CONTACT:-hello@tilo.localhost}"
+      [[ -z ${TILO_SH_MAIL_TEMPLATES:-} ]] \
+        || printf 'mail_templates = "%s"\n' "$TILO_SH_MAIL_TEMPLATES"
+    fi
   } > "$state/server/server.toml"
   # The mail the entry sends: the stack's sink takes what Resend's API takes, and
   # the key stays a file among the deployment's secrets, never in a workspace's
   # records. Every address here is loopback, so the links mails carry open here.
-  local env=("TILO_SERVER_CONFIG=$state/server/server.toml"
-    "TILO_WORKSPACES_RESEND_KEY_FILE=$state/secrets/resend-key"
+  # The owner root the deployment hands makes this volume that person's own
+  # device, which founds the workspace its configuration keeps; the site is this
+  # machine's, so the links it mints open here.
+  local env=("TILO_SERVER_CONFIG=$server_config"
+    "TILO_WORKSPACES_ROOT_FILE=$secrets_path/workspace-root-lounge"
+    "TILO_WORKSPACES_RESEND_KEY_FILE=$secrets_path/resend-key"
     "TILO_WORKSPACES_RESEND_URL=http://127.0.0.1:$mail_port/emails"
     "TILO_WORKSPACES_LOCAL=1")
   # Not here: the summary model key (no model is asked locally).
@@ -804,8 +838,12 @@ api_env() {
 # none (TILO_SH_HOME_APP=).
 web_env() {
   local workspace=$1 info=$2
+  # The site is the deployment's public origin, as tilo.sh is production's: the
+  # home workspace's host is named at the site's own address, which plays
+  # Cloudflare's edge in front of the server (`/peer/v1` below), so a page and a
+  # link name one origin.
   printf '%s\n' \
-    "TILO_WEB_HOME_HOST=127.0.0.1:$server_port" \
+    "TILO_WEB_HOME_HOST=$site_host:$site_port" \
     "TILO_WEB_HOME_HOST_INFO=$info" \
     TILO_WEB_HOME_NAME=Lounge \
     "TILO_WEB_HOME_APP=${TILO_SH_HOME_APP-so.tilo.chat}" \
@@ -1004,10 +1042,11 @@ EOF
 }
 
 # invite [WORKSPACE] [-- --role ROLE] [--email ADDRESS]: an invite link to
-# WORKSPACE (the Lounge when none), made by the stack's own person, its owner,
-# with `tilo do workspace/invitations#invite`, as any owner makes one. Opened in any browser,
-# one with no Tilo identity yet included, the page makes the person's identity
-# and joins.
+# WORKSPACE (the Lounge when none), made by the Lounge's server with
+# `tilo do workspace/invitations#invite`, as a deployment's server makes one: it holds the
+# workspace's keys and serves its pages. The link names the stack's own site, and a browser
+# that opens it, one with no Tilo identity yet included, makes the person's identity and
+# joins there.
 invite_link() {
   local workspace=''
   local role=editor
@@ -1030,7 +1069,7 @@ invite_link() {
     esac
   done
   [[ -n $workspace ]] || workspace=$(lounge_id)
-  owner_tilo do workspace/invitations#invite role="$role" "${asked[@]}" -w "$workspace" --json \
+  server_tilo -w "$workspace" do workspace/invitations#invite role="$role" "${asked[@]}" --json \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["link"])'
 }
 
@@ -1041,64 +1080,19 @@ lounge_id() {
   cat "$id_file"
 }
 
-# The Lounge's workspace: the stack's own person's, founded on their device with
-# the entry $state/admission names, then placed on the server, which keeps it and
-# serves it. A stack that has one keeps it as its owners left it: the entry is
-# settled once, when the workspace is founded, and a start after that settles
-# nothing again. Prints its id.
+# The Lounge's workspace: founded by its server under the owner root the deployment hands it,
+# with the entry and the words $state/admission and TILO_SH_DESCRIPTION name, and served by it.
+# A stack that has one keeps it as its owners left it: a later start founds nothing again.
+# The stack's own person is made an administrator of it once, on its server, so that
+# `stack.sh invite`, `stack.sh owner` and the person's own TILO_API_KEY reach it. Prints its id.
 lounge_up() {
-  local id_file=$state/server/lounge/workspace-id id admission answer
-  admission=$(cat "$state/admission" 2>/dev/null || echo invite)
-  case $admission in
-    open) ;;
-    invite) ;;
-    *) die "TILO_SH_ADMISSION is open (anyone who asks joins as a guest) or invite (only people it invited), not $admission" ;;
-  esac
-  if [[ -s $id_file && -e $id_file.placed ]]; then cat "$id_file"; return 0; fi
-  if [[ -s $id_file ]]; then
-    id=$(cat "$id_file")
-  else
-    answer=$(owner_tilo do account/workspaces#create name=Lounge --json) \
-      || die 'the stack'"'"'s person founded no Lounge (stack.sh logs person says why)'
-    id=$(printf '%s' "$answer" | python3 -c 'import json,sys
-made = json.load(sys.stdin)["result"]["workspace"]
-print(made if isinstance(made, str) else made.get("id") or made.get("workspace"))' 2>/dev/null) \
-      || die "the Lounge's id did not read from the answer: $answer"
-    mkdir -p "$(dirname "$id_file")"
-    printf '%s\n' "$id" > "$id_file"
-  fi
-  # The entry is the workspace's own setting, settled by its owner: listed, and
-  # anyone who asks joins at an editor's part, or only people it invited. An
-  # invitation-only entry keeps the wait list the onboarding walk leaves an
-  # address on: it mails each address from the sender the deployment names,
-  # through the sink the server posts to.
-  local wait_list=()
-  if [[ $admission == invite ]]; then
-    wait_list+=("wait_list_max=${TILO_SH_WAIT_LIST_MAX:-100}")
-    wait_list+=("mail_from=${TILO_SH_MAIL_FROM:-wait-list@tilo.sh}")
-    [[ -z ${TILO_SH_CONTACT:-} ]] || wait_list+=("contact=$TILO_SH_CONTACT")
-    [[ -z ${TILO_SH_MAIL_TEMPLATES:-} ]] || wait_list+=("mail_templates=$TILO_SH_MAIL_TEMPLATES")
-  fi
-  owner_tilo do workspace#publish default_role=editor description=Lounge \
-    admission="$admission" "${wait_list[@]}" -w "$id" >/dev/null \
-    || die "the stack's person did not settle the Lounge's entry"
-  # The server keeps it from here: the person's device holds the workspace and
-  # its governance, and the server serves it. Where it is reached at is what it
-  # writes once its web UI serves: read it, or wait for it.
-  local line='' host=''
-  for _ in $(seq 1 240); do
-    line=$(server_web_host)
-    [[ -s $line ]] && break
-    sleep 0.25
-  done
-  [[ -s $line ]] || die "the server said nothing of itself (no web-host.json under $state/server/state)"
-  # The line is JSON, and `tilo do` reads a value that is JSON as that value: it is
-  # handed as the text it is, quoted, so the action's `host` is the line itself.
-  host=$(python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' < "$line") \
-    || die "the server's line did not read from $line"
-  owner_tilo do workspace/servers#add host="$host" -w "$id" >/dev/null \
-    || die "the stack's server did not take the Lounge"
-  : > "$id_file.placed" || die "the stack could not keep the Lounge's placement"
+  local id_file=$state/server/lounge/workspace-id id
+  [[ -s $id_file ]] || die "the Lounge has no id ($id_file); the server configuration names one"
+  id=$(cat "$id_file")
+  if [[ -e $id_file.admitted ]]; then printf '%s\n' "$id"; return 0; fi
+  server_tilo -w "$id" do workspace/members#admit person="$(stack_person)" role=administrator >/dev/null \
+    || die "the Lounge's server did not make the stack's own person an administrator"
+  : > "$id_file.admitted" || die "the stack could not keep the Lounge's administrator"
   printf '%s\n' "$id"
 }
 
@@ -1107,9 +1101,9 @@ print(made if isinstance(made, str) else made.get("id") or made.get("workspace")
 # administrator of the Lounge and lets them in. The Lounge has one owner, the
 # stack's own person, and only they hand it on, from a device of their own.
 # With KEY, the person whose user public key (hex) is KEY is an administrator
-# at once: the stack's own person adds them (`tilo do workspace/members#admit
-# person=KEY role=administrator`), and a key of theirs reaches the Lounge before any
-# device of theirs joins. NAME is how the Lounge names them then.
+# at once: the Lounge's server, which owns it, adds them (`tilo do
+# workspace/members#admit person=KEY role=administrator`), and a key of theirs reaches the
+# Lounge before any device of theirs joins. NAME is how the Lounge names them then.
 declare_owner() {
   local key=''
   local name=''
@@ -1139,7 +1133,7 @@ declare_owner() {
   [[ $key =~ ^[0-9a-f]{64}$ ]] || die 'owner KEY: the person'"'"'s user public key, 64 hex characters (tilo login --json names it as user_public_key)'
   local -a named=()
   [[ -z $name ]] || named=("name=$name")
-  owner_tilo do workspace/members#admit person="$key" role=administrator "${named[@]}" -w "$(lounge_id)" >/dev/null \
+  server_tilo -w "$(lounge_id)" do workspace/members#admit person="$key" role=administrator "${named[@]}" >/dev/null \
     || die "the Lounge did not make $key an administrator"
   say "$key is an administrator of the Lounge: let in at once${name:+ as $name}"
 }
@@ -1167,7 +1161,36 @@ owner_run() {
     XDG_DATA_HOME=$home/.local/share XDG_CACHE_HOME=$home/.cache \
     TILO_IDENTITY_ROOT=$home/.local/share/tilo \
     TILO_DEVICE_PORT=$person_port \
-    TILO_SITE=$site_origin "$@" 9>&-
+    TILO_SITE=$site_origin TILO_RELAY=$live_origin "$@" 9>&-
+}
+
+# Where the server's daemon answers and the profile it serves: its own runtime directory
+# (private_env server), or the volume's, which the image mounts at /run/tilo-workspaces. A
+# client reaching it names the same pair wherever the daemon runs.
+server_runtime() {
+  if [[ ${mode:-} == images ]]; then printf '%s' "$state/server/run"; else stack_runtime server; fi
+}
+
+server_profile() {
+  if [[ ${mode:-} == images ]]; then printf '%s' /run/tilo-workspaces; else printf '%s' "$state/server"; fi
+}
+
+# server_tilo …: the tilo command as the server's own device, in its daemon. What the Lounge's
+# members see is its server's to make, as a deployment's server makes it: an invitation, an
+# admission, a name. A link it hands out names the stack's own site, and the page that follows
+# it joins through the server, which serves the workspace's pages. The client runs under the
+# stack person's home, whose login is the device the server answers for.
+server_tilo() {
+  local home=$state/owner/home runtime profile
+  stack_person >/dev/null
+  mkdir -p "$home"
+  runtime=$(server_runtime) || exit 1
+  profile=$(server_profile) || exit 1
+  env -u DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR=$runtime TILO_RUNTIME_PROFILE=$profile \
+    HOME=$home XDG_CONFIG_HOME=$home/.config XDG_STATE_HOME=$home/.local/state \
+    XDG_DATA_HOME=$home/.local/share XDG_CACHE_HOME=$home/.cache \
+    TILO_IDENTITY_ROOT=$home/.local/share/tilo \
+    TILO_SITE=$site_origin "$(find_tilo)" "$@" 9>&-
 }
 
 # The daemon of the stack's person's device, once they logged in, run as their service would
@@ -1320,7 +1343,8 @@ owner_here() {
   stack_person >/dev/null
   api_key=$(owner_api_key) || exit 1
   if [[ -n $name ]]; then
-    owner_tilo do workspace/members#name name="$name" -w "$(lounge_id)" >/dev/null \
+    server_tilo -w "$(lounge_id)" do workspace/members#admit person="$(stack_person)" \
+      role=administrator name="$name" >/dev/null \
       || die "the Lounge did not name its owner $name"
   fi
   say "the owner's key is kept for stack.sh env; stack.sh tilo … acts as them"
@@ -1328,11 +1352,11 @@ owner_here() {
 }
 
 # An administrator link: whoever opens it is an administrator from then on,
-# as the stack's own person invites them (`tilo do
+# as the Lounge's server invites them (`tilo do
 # workspace/invitations#invite role=administrator`).
 owner_link() {
   local link
-  link=$(owner_tilo do workspace/invitations#invite role=administrator -w "$(lounge_id)" --json \
+  link=$(server_tilo -w "$(lounge_id)" do workspace/invitations#invite role=administrator --json \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["link"])') \
     || die 'the Lounge made no administrator link'
   say 'opening this link in any browser makes that person an administrator of the Lounge:'
@@ -2090,17 +2114,11 @@ start_native_tls() {
 }
 
 start_native_server() {
-  local lounge=${lounge:-$native/lounge} ticket=()
-  # The first start joins the person's devices with one of the first tickets
-  # their founding issued: the daemon spends it once, and the volume keeps the
-  # login.
-  if [[ ! -s $state/server/identity/device/cert.bin ]]; then
-    local made
-    stack_person >/dev/null
-    made=$(take_ticket server) \
-      || die "the stack's person has no first ticket for the Lounge left: one stack.sh up --fresh makes its person again, with a new Lounge"
-    ticket=("TILO_TICKET=$made")
-  fi
+  local lounge=${lounge:-$native/lounge}
+  # The server is the person's own device, made by the owner root its
+  # configuration hands it (make_secrets): it founds and keeps the Lounge, and
+  # no ticket joins it.
+  stack_person >/dev/null
   { private_env server "$lounge/bin"
     image_env_here "$repo/os/containers/tilo-lounge/Containerfile" \
       "TILO_WORKSPACES_STATE=$state/server" "TILO_SECRETS_DIR=$state/server/secrets"
@@ -2109,7 +2127,6 @@ start_native_server() {
     printf '%s\n' "TILO_SURFACES=$lounge/surfaces"
     printf '%s\n' "TILO_FONT_CATALOG=${font_catalog:-$lounge/fonts}"
     server_env
-    if ((${#ticket[@]})); then printf '%s\n' "${ticket[@]}"; fi
   } > "$runs/server.env"
   run_native server "$state/server" sh "$lounge/entrypoint.sh"
 }
@@ -2278,7 +2295,7 @@ up_native() {
   start_native_server
   wait_server
   local workspace
-  workspace=$(lounge_up) || die 'the Lounge was not made'
+  workspace=$(lounge_up) || die 'the Lounge is not served'
   say "server ready: the Lounge is $workspace ($((SECONDS - phase))s, $((SECONDS - began))s in)"
   phase=$SECONDS
   start_native_api
@@ -2466,7 +2483,7 @@ up() {
   if [[ $remote == 1 ]]; then
     link=$(remote_cmd owner | head -1) || true
   else
-    link=$(owner_tilo do workspace/invitations#invite role=administrator -w "$(lounge_id)" --json \
+    link=$(server_tilo -w "$(lounge_id)" do workspace/invitations#invite role=administrator --json \
       | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["link"])') || true
   fi
   if [[ -n $link ]]; then
@@ -2537,6 +2554,7 @@ up_images() {
     --env "TILO_SH_LIVE_PORT=$live_port" --env "TILO_SH_PACKET_PORT=$packet_port" \
     --env "TILO_SH_CADDY_HTTP_PORT=$caddy_http_port" \
     --env "TILO_SH_SITE_PORT=$site_port" --env "TILO_SH_WEB_PORT=$web_port" \
+    --env "TILO_SH_SERVER_WEB_PORT=$server_web_port" \
     -v "$state/tls/Caddyfile:/etc/caddy/Caddyfile:ro,Z" \
     -v "$state/tls/caddy:/data/caddy:Z" -v "$state/tls/config:/config:Z" \
     "$caddy_image" caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
@@ -2547,6 +2565,7 @@ up_images() {
   # relay), so it trusts the local CA as production trusts Cloudflare's: in
   # the bundle at the path every Tilo client, iroh's included, reads.
   trust_bundle
+  mkdir -p -m 0700 "$state/server/run"
   local server_args=()
   mapfile -d '' server_args < <(server_env | env_args)
   local server_user=()
@@ -2555,11 +2574,12 @@ up_images() {
     -v "$state/server:/run/tilo-workspaces:Z" -v "$state/secrets:/run/secrets:ro,Z" \
     -v "$state/trust-bundle.pem:/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem:ro,Z" \
     --env "TILO_SOURCE_REVISION=local-$commit" \
+    --env XDG_RUNTIME_DIR=/run/tilo-workspaces/run \
     "${server_args[@]}" "$lounge"
   wait_server_up
   wait_for 'tls (the server through Caddy)' "$server_origin/mode" 60
   local workspace
-  workspace=$(lounge_up) || die 'the Lounge was not made'
+  workspace=$(lounge_up) || die 'the Lounge is not served'
   say "server ready: the Lounge is $workspace ($((SECONDS - began))s)"
 
   # The API server: uid 65532, its state on its own volume.
