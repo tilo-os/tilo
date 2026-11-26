@@ -37,7 +37,7 @@ required-features = ["rystic-tests"]
 [dev-dependencies]
 cloud-source = { package = "tilo-cloud-source", path = "../cloud-source", features = ["conformance"] }
 # The conformance run needs the fake server of this very crate.
-cloud-source-dropbox = { package = "tilo-cloud-source-dropbox", path = ".", features = ["fake-server"] }
+tilo-cloud-source-dropbox = { path = ".", features = ["fake-server"] }
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["blocking"] }
 uuid.workspace = true
 zeroize.workspace = true
